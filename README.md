@@ -47,6 +47,7 @@ flowchart LR
 | [Architecture](docs/architecture.md) | Components, agent hosts, job flow and lifecycle, where it runs |
 | [Orchestrator](docs/orchestrator.md) | Ports & adapters, event/command model, inbox/outbox, core types, data model, crate layout, testing |
 | [MVP](docs/mvp.md) | Build order, smallest working loop first |
+| [Chat API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the only interface between the chat UI and the orchestrator (threads, messages, event log, SSE stream) |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
 | [Lessons from Agent Canvas](docs/lessons-from-agent-canvas.md) | What running OpenHands Agent Canvas taught us, as requirements |
 
