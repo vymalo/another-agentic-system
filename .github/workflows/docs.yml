@@ -1,0 +1,29 @@
+name: Docs
+
+# Every Mermaid diagram must parse and every relative Markdown link must
+# resolve. Same script agents and humans run locally (see CLAUDE.md).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install pinned checker dependencies
+        run: npm --prefix tools/docs-check ci --no-fund --no-audit
+      - name: Check diagrams and links
+        run: node tools/docs-check/check-docs.mjs
