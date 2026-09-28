@@ -34,7 +34,12 @@ no code yet.
 4. **Verification over consensus (ADR 0002)** and **git is the artifact (ADR 0003).**
 5. **The core is pure (orchestrator.md).** `transition(&state, &event)` has no
    I/O; protocols are closed enums (ADR 0004).
-6. **Naming:** this is the *orchestration layer*. "Harness" means an agent's
+6. **Swappable implementations (ADR 0009).** Every infrastructure boundary is a
+   trait in the `ports` crate, with a conformance testkit; implementations are
+   separate crates; binaries are only compositions. No implementation types in
+   trait signatures. Swapping happens at build time (features + config, or your
+   own composition root) — not via runtime plugins.
+7. **Naming:** this is the *orchestration layer*. "Harness" means an agent's
    internal framework in another-agentic-platform — don't reuse it here.
 
 ## Skills

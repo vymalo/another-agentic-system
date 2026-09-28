@@ -178,14 +178,17 @@ and streams to the browser over SSE. No separate broker.
 ```
 crates/
   core/            # pure types + transition(); no async, no I/O
-  store/           # sqlx: jobs, inbox, outbox, events, timers
+  ports/           # traits for every infrastructure boundary + conformance testkit (ADR 0009)
+  store-postgres/  # default JobStore: sqlx — jobs, inbox, outbox, events, timers
+  wakeup-pg/       # default Wakeup: LISTEN/NOTIFY
   adapters/
     a2a/           # server (agent card, message/send, tasks) + client (a2a-lf)
     mcp/           # server (start_job, get_job, answer) + client
     chat/          # HTTP API for the control plane
     github/  slack/  webhook/  timer/
 bin/
-  orchestrator/    # axum wiring for inbound + the dispatcher loop
+  orchestrator/    # default composition root: axum inbound + dispatcher loop;
+                   # built-in implementations selected by Cargo features + config
 ```
 
 ## Testing
