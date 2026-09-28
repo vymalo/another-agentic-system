@@ -2,7 +2,7 @@
 
 Before designing this, we ran [OpenHands Agent Canvas](https://github.com/OpenHands/OpenHands/tree/v1.24.0/helm/agent-canvas)
 `1.24.0` on netcup (2026-09-28, `WhyThatFunction/home-os` PRs #166–#171,
-image repo [vymalo/openhand-images](https://github.com/vymalo/openhand-images)).
+image repo [vymalo/another-agentic-images](https://github.com/vymalo/another-agentic-images)).
 Every item below was hit live, not predicted.
 
 Since this system became protocol-only (ADR 0007), most items are requirements

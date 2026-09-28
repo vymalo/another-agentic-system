@@ -5,7 +5,7 @@ multi-agent until one agent works end to end.
 
 This system needs agents to drive but does not host them. The first coding
 agent is built **once** as another-agentic-platform's scenario-B harness
-(ADK-Rust + `opencode acp`, toolchain image from vymalo/openhand-images) and
+(ADK-Rust + `opencode acp`, toolchain image from vymalo/another-agentic-images) and
 run **standalone** until the platform exists — the same A2A endpoint either
 way.
 
