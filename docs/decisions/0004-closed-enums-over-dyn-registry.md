@@ -1,6 +1,6 @@
 # ADR 0004 — Protocols as closed enums, not a dynamic adapter registry
 
-- **Status:** accepted (2026-09-28)
+- **Status:** accepted (2026-09-28). Amended (2026-09-28) by ADR 0009: the set of `Event`/`Command` variants stays closed; the implementations behind each port are swappable at build time.
 
 ## Context
 
@@ -24,5 +24,6 @@ an adapter module translating at the edge. Outbound dispatch is a `match` over
 
 ## Consequences
 
-Adding a protocol is a code change plus a release — acceptable for a
-single-owner system. Revisit only if third parties need to add adapters.
+Adding a protocol (a new `Event`/`Command` variant) is a code change plus a
+release. Swapping the *implementation* of an existing port is not — see
+ADR 0009.
