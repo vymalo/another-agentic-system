@@ -1,0 +1,278 @@
+openapi: 3.1.0
+info:
+  title: another-agentic-system chat API
+  version: 0.1.0
+  description: |
+    The only interface between the chat surface (web/) and the orchestrator
+    (ADR 0009: the UI is swappable). Everything a user sees in a thread is an
+    Event from the thread's append-only event log; the UI renders events, it
+    never invents state.
+
+    Authentication: the API sits behind oauth2-proxy. The orchestrator trusts
+    `X-Auth-Request-Email` (and `X-Auth-Request-User`) set by the proxy and
+    rejects requests without it with 401 (fail closed). Local development may
+    set `AUTH_DEV_USER` to inject a fixed identity; it must be refused when
+    unset.
+servers:
+  - url: /
+security:
+  - proxyIdentity: []
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      security: []
+      summary: Liveness
+      responses:
+        "200": { description: Process is up }
+        "503": { description: Shutting down }
+  /readyz:
+    get:
+      operationId: getReady
+      security: []
+      summary: Readiness (database reachable, migrations applied)
+      responses:
+        "200": { description: Ready }
+        "503": { description: Not ready }
+  /api/agents:
+    get:
+      operationId: listAgents
+      summary: Agents the user can target
+      description: |
+        Configured A2A agents (static configuration in the MVP). For each, the
+        orchestrator reads the live agent card; `releases` is present only when
+        the card advertises the release-channels extension (ADR 0008).
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
+  /api/threads:
+    get:
+      operationId: listThreads
+      summary: List the caller's threads, newest first
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: before, in: query, description: "Cursor: thread id to page before", schema: { type: string } }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: Threads
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
+    post:
+      operationId: createThread
+      summary: Start a thread with a first message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewThread" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "201":
+          description: Created; the first message is already in the event log
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+        "400": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: getThread
+      summary: One thread
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: Thread
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/events:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: listEvents
+      summary: Event history, oldest first
+      parameters:
+        - { name: after, in: query, description: "Only events with seq > after", schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 200 } }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Event" } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/stream:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: streamEvents
+      summary: Live events (Server-Sent Events)
+      description: |
+        Each SSE message has `id: <seq>`, `event: <kind>` and `data: <Event JSON>`.
+        On reconnect the browser sends `Last-Event-ID`; the server first
+        replays every event with a greater seq, then streams live ones, so a
+        client never misses or duplicates an event. A comment line
+        (`: keepalive`) is sent at least every 15 s.
+      parameters:
+        - { name: Last-Event-ID, in: header, schema: { type: string } }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: text/event-stream of Event
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/messages:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    post:
+      operationId: postMessage
+      summary: Send a user message (a follow-up, or an answer to a blocked job)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewMessage" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "202":
+          description: Accepted; appended to the event log
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { description: Thread is finished; start a new one, $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/cancel:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    post:
+      operationId: cancelThread
+      summary: Cancel the thread's running work (A2A tasks/cancel on the target)
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "202": { description: Cancellation requested; the outcome arrives as events }
+        "404": { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    proxyIdentity:
+      type: apiKey
+      in: header
+      name: X-Auth-Request-Email
+      description: Set by oauth2-proxy after OIDC login; requests without it get 401.
+  parameters:
+    ThreadId:
+      name: threadId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Problem:
+      description: RFC 9457 problem details
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            required: [title, status]
+            properties:
+              type: { type: string }
+              title: { type: string }
+              status: { type: integer }
+              detail: { type: string }
+  schemas:
+    Agent:
+      type: object
+      required: [id, name, cardUrl]
+      properties:
+        id: { type: string, description: "Configuration key, e.g. coder" }
+        name: { type: string }
+        description: { type: string }
+        cardUrl: { type: string, format: uri }
+        releases:
+          description: Present only when the card advertises the release-channels extension
+          type: object
+          required: [defaultChannel, channels]
+          properties:
+            defaultChannel: { type: string }
+            channels: { type: object, additionalProperties: { type: string } }
+            revisions: { type: array, items: { type: string } }
+    AgentTarget:
+      type: object
+      required: [agentId]
+      properties:
+        agentId: { type: string }
+        release: { type: string, description: "Channel or exact revision; only valid when the agent has releases" }
+    NewThread:
+      type: object
+      required: [target, text]
+      properties:
+        title: { type: string, maxLength: 200 }
+        target: { $ref: "#/components/schemas/AgentTarget" }
+        text: { type: string, minLength: 1, maxLength: 100000 }
+    NewMessage:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 100000 }
+    Thread:
+      type: object
+      required: [id, title, target, state, createdAt, updatedAt, lastSeq]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        target: { $ref: "#/components/schemas/AgentTarget" }
+        state: { $ref: "#/components/schemas/ThreadState" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastSeq: { type: integer, format: int64 }
+    ThreadState:
+      type: string
+      description: MVP subset of the job lifecycle (docs/architecture.md)
+      enum: [queued, working, blocked, done, failed, cancelled]
+    Event:
+      type: object
+      required: [seq, threadId, at, kind, actor, data]
+      properties:
+        seq: { type: integer, format: int64, description: "Strictly increasing within a thread, starting at 1" }
+        threadId: { type: string, format: uuid }
+        at: { type: string, format: date-time }
+        kind: { $ref: "#/components/schemas/EventKind" }
+        actor: { $ref: "#/components/schemas/Actor" }
+        data:
+          description: Shape depends on kind (see EventData)
+          $ref: "#/components/schemas/EventData"
+    EventKind:
+      type: string
+      enum:
+        - user_message        # data: { text }
+        - agent_message       # data: { text, final: bool }  (final=false: streamed partial, replaced by the next agent_message with the same messageId)
+        - agent_status        # data: { status: submitted|working|input_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState)
+        - artifact            # data: { name, mimeType?, uri?, text? }  e.g. a branch, a PR URL, a patch
+        - thread_state        # data: { state: ThreadState }
+        - error               # data: { message, retryable: bool }
+    Actor:
+      type: object
+      required: [type, name]
+      properties:
+        type: { type: string, enum: [user, agent, system] }
+        name: { type: string, description: "User email, agent id, or 'orchestrator'" }
+        revision: { type: string, description: "Agent revision that produced this event, when known (ADR 0008 echo)" }
+    EventData:
+      type: object
+      additionalProperties: true
+      properties:
+        text: { type: string }
+        messageId: { type: string }
+        final: { type: boolean }
+        status: { type: string }
+        detail: { type: string }
+        name: { type: string }
+        mimeType: { type: string }
+        uri: { type: string }
+        state: { $ref: "#/components/schemas/ThreadState" }
+        message: { type: string }
+        retryable: { type: boolean }
