@@ -29,4 +29,4 @@ These are agent-hosting concerns now that this system is protocol-only (ADR 0007
 | 2 | Sandbox hosting for coding workers (`SandboxTemplate` etc.). |
 | 5 | Worker model auth (gateway keys vs subscription logins). |
 | 7 | Sandbox isolation (NetworkPolicy, no sudo, separation from CI) → platform `SecurityProfile`. |
-| 9 | Workspace image refactor of vymalo/openhand-images. |
+| 9 | Workspace image refactor of vymalo/another-agentic-images. |
