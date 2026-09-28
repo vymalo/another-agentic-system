@@ -3,8 +3,12 @@
 Before designing this, we ran [OpenHands Agent Canvas](https://github.com/OpenHands/OpenHands/tree/v1.24.0/helm/agent-canvas)
 `1.24.0` on netcup (2026-09-28, `WhyThatFunction/home-os` PRs #166–#171,
 image repo [vymalo/openhand-images](https://github.com/vymalo/openhand-images)).
-Every item below was hit live, not predicted. Each one is a requirement for
-this system.
+Every item below was hit live, not predicted.
+
+Since this system became protocol-only (ADR 0007), most items are requirements
+on the **agent host** — another-agentic-platform — rather than on this
+repository. Items 8–10 (MCP env, credentials in the browser, shared config
+namespaces) also bind this system directly.
 
 | # | What happened | Requirement it creates |
 |---|---|---|

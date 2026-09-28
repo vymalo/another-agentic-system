@@ -1,6 +1,6 @@
 # ADR 0003 — git is the durable artifact; workers are ephemeral
 
-- **Status:** accepted (2026-09-28)
+- **Status:** accepted (2026-09-28); amended by ADR 0007 — workers are provided by agent hosts.
 
 ## Context
 
@@ -13,10 +13,10 @@ worktrees lived in `/tmp` ([lessons](../lessons-from-agent-canvas.md) #4).
 - Durable state lives in exactly three places: Postgres (chat, job ledger,
   events), **git** (every worker pushes a branch; the result is a PR), and
   persistent caches (sccache/CI cache, npm, cargo, uv).
-- Workers are ephemeral sandbox pods: clone, work, push, die. A step is not
-  complete until its branch is pushed.
-- Worker images bake toolchains under `/opt` (recipe from
-  vymalo/openhand-images).
+- Workers are ephemeral — provided by whichever agent host runs them (for
+  another-agentic-platform: per-run worktrees on disposable runtimes). A step
+  is not complete until its branch is pushed.
+- Toolchain images and sandboxing are the host's concern (ADR 0007).
 
 ## Consequences
 
