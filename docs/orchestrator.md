@@ -1,6 +1,7 @@
 # Orchestrator
 
-The orchestrator is a Rust service that owns every job's state. It accepts
+The orchestrator is a Rust service that owns every job's state. Its replicas
+are stateless; all state is in Postgres (ADR 0001, ADR 0007). It accepts
 input from **anything** (A2A, the chat, MCP, webhooks, timers, …) and produces
 output to **anything** (A2A, MCP tools, the chat, Slack, GitHub, webhooks, …).
 The way to get that without rewriting the core per protocol is **ports and
@@ -115,6 +116,13 @@ pub enum Command {
 
 pub struct Transition { pub next: JobState, pub commands: Vec<Command> }
 
+/// An agent is an A2A agent-card URL — nothing host-specific.
+pub struct AgentRef {
+    pub card_url: Url,
+    /// Only set when the card advertises the release-channels extension (ADR 0008).
+    pub release: Option<ReleaseSelector>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TransitionError {
     #[error("{event} is not valid in state {state}")]
@@ -141,6 +149,10 @@ pub fn transition(state: &JobState, event: &Event) -> Result<Transition, Transit
   (`message/send` returns a `working` task; updates follow by push or stream).
   For MCP, `start_job` returns a job id at once; progress arrives as MCP
   notifications or via a `get_job` tool.
+- **Optional protocol extensions are capability-detected.** The A2A adapter
+  reads each agent card; host-specific conveniences such as release selection
+  (ADR 0008) are only used when the card advertises them, and are sent via the
+  `A2A-Extensions` header plus namespaced message metadata.
 - **Idempotency at the inbox.** Webhooks and push notifications are redelivered;
   `UNIQUE (source, idempotency_key)` makes a redelivery a no-op.
 - **Optimistic concurrency on jobs.** `version` column; a transition that lost

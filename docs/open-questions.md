@@ -1,16 +1,32 @@
 # Open questions
 
-Things we have not verified or decided. Each should be closed by an experiment
-or an ADR, not by assumption.
+Things not yet verified or decided. Each should be closed by an experiment or
+an ADR, not by assumption.
+
+## Open
 
 | # | Question | Why it matters | How to close it |
 |---|---|---|---|
-| 1 | **kagent 0.x or 1.x?** `v1.0.0-alpha5` shipped 2026-09-27 on a new `v1alpha3` API (`Agent`, `ModelConfig`, `RemoteMCPServer`, `SandboxTemplate`); the docs still call 0.x "current". | Building on an alpha API means churn; building on 0.x means a migration later. | Read the 1.x changelog; prototype one agent on each. |
-| 2 | **Can kagent host our sandbox workers?** 1.x has a `SandboxTemplate` resource whose image must be pinned by `sha256` digest (verified in `sandboxtemplate_types.go`). | Could replace a custom sandbox launcher. | Prototype an opencode worker as a kagent sandbox. |
-| 3 | **opencode A2A wrapper** — opencode speaks its own HTTP API (`opencode serve`, default `127.0.0.1:4096`, basic auth via `OPENCODE_SERVER_PASSWORD`), not A2A. | This wrapper is real custom code and a core dependency. | Spike: A2A server (a2a-lf) → `opencode serve` session → stream events → push branch. |
-| 4 | **a2a-lf maturity.** The official Rust SDK is new. | The orchestrator depends on it for both directions. | Spike against a kagent agent. |
-| 5 | **Worker auth to models:** gateway API keys (AISIX) or subscription logins (Claude/Codex)? | Subscription logins are per-person and live on disk; gateway keys are central and budgetable. | Decide per worker type; default to AISIX keys. |
-| 6 | **Budgets:** attempts, tokens, wall clock per job and per step. | Multi-agent loops can burn tokens silently. | ADR once AISIX usage data exists. |
-| 7 | **Sandbox isolation:** NetworkPolicy, no sudo, separate namespace/nodes from CI runners. | Agents run arbitrary code (see lessons #12). | Threat model before step 2 of the MVP. |
-| 8 | **Where does the verifier run?** Real CI (GitHub Actions on the ARC runners) or checks inside the sandbox? | CI is the source of truth but slower; in-sandbox is fast but can diverge. | Start with in-sandbox checks, gate the PR on real CI. |
-| 9 | **Workspace image.** Refactor `vymalo/openhand-images` so the toolchain recipe is a shared script with two images (`agent-canvas`, `workspace`). | Workers need the toolchains without Agent Canvas. | Do it with MVP step 2. |
+| 4 | **a2a-lf maturity.** The official A2A Rust SDK ([`a2aproject/a2a-rs`](https://github.com/a2aproject/a2a-rs), crate `a2a-lf`) is new. | The orchestrator depends on it in both directions. | Spike against one A2A agent (ADK-Rust or kagent). |
+| 6 | **Budgets:** attempts, wall clock and tokens per job and per step. | Multi-agent loops can burn tokens silently. The orchestrator owns attempts and wall clock; tokens are spent by agents and measured by their gateways. | ADR once gateway usage data (EAIG / AISIX) is reachable. |
+| 8 | **Where does verification run?** Real CI (GitHub checks arriving by webhook) or a verifier agent over A2A? | CI is the source of truth but slower; a verifier agent is faster but can diverge. | Gate the PR on real CI; allow a verifier agent for inner loops. |
+| 10 | **Release-channels extension v1 stability.** The contract lives in another-agentic-platform (`docs/extensions/release-channels-v1.md`) and is a draft. | ADR 0008 depends on it. | Freeze v1 when the platform's MVP step 5 ships. |
+| 11 | **Authentication to agents.** How does the orchestrator authenticate to A2A agents and MCP servers (per agent card's security schemes)? | Protocol-only doesn't mean anonymous. | Support the schemes the first agents declare; secrets via external-secrets. |
+
+## Closed
+
+| # | Question | Resolution |
+|---|---|---|
+| 3 | opencode speaks its own API, not A2A — who writes the wrapper? | The agent host's harness: another-agentic-platform runs ADK-Rust (A2A via `adk-server`) driving `opencode acp` over stdio in the same Pod. |
+
+## Moved to another-agentic-platform
+
+These are agent-hosting concerns now that this system is protocol-only (ADR 0007):
+
+| # | Question |
+|---|---|
+| 1 | kagent 0.x vs 1.x — kagent is now just one optional agent host. |
+| 2 | Sandbox hosting for coding workers (`SandboxTemplate` etc.). |
+| 5 | Worker model auth (gateway keys vs subscription logins). |
+| 7 | Sandbox isolation (NetworkPolicy, no sudo, separation from CI) → platform `SecurityProfile`. |
+| 9 | Workspace image refactor of vymalo/openhand-images. |
