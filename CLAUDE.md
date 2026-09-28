@@ -37,12 +37,60 @@ no code yet.
 6. **Naming:** this is the *orchestration layer*. "Harness" means an agent's
    internal framework in another-agentic-platform — don't reuse it here.
 
+## Skills
+
+Skills live in `.agents/skills/` (symlinked into `.claude/skills/`). Most are
+vendored from `addyosmani/agent-skills`, `actionbook/rust-skills` and
+`leonardomso/rust-skills` and pinned in `skills-lock.json` — update them with
+the skills CLI, never by hand-editing their files.
+
+**Precedence when they disagree:** this file's *Invariants* → the repo's own
+skill (`write-adr`) → vendored skills. For example, `documentation-and-adrs`
+carries its own ADR template; ADRs here use `write-adr`'s format and numbering.
+
+Start with `using-agent-skills` if unsure which applies.
+
+| When you are… | Use |
+|---|---|
+| Recording, amending or superseding a decision | **`write-adr`** (repo skill); `documentation-and-adrs` only for the reasoning style |
+| Turning a vague request into a design | `idea-refine`, `interview-me` (ask the owner one question at a time) |
+| Writing a spec for a feature or MVP step | `spec-driven-development`, then `planning-and-task-breakdown` |
+| Making a decision that is hard to reverse | `doubt-driven-development` (adversarial review before it stands) |
+| Checking a claim about a library, protocol or product | `source-driven-development` — and mark it *verified* with date + source |
+| Designing a port, trait, protocol adapter or public API | `api-and-interface-design`; Rust side: `m04-zero-cost`, `m05-type-driven` |
+| Implementing anything | `incremental-implementation` + `test-driven-development` |
+| Rust: first stop for any Rust question | `rust-router`, which dispatches to the `m01`…`m15` skills |
+| Rust: borrow-checker, ownership, smart pointers, mutability errors | `m01-ownership`, `m02-resource`, `m03-mutability` |
+| Rust: errors | `m06-error-handling`, `m13-domain-error` (house rule: `thiserror` in libraries, `anyhow` in binaries) |
+| Rust: async, Postgres claims, dispatcher loops | `m07-concurrency`, `m12-lifecycle` |
+| Rust: the event/command model | `m09-domain`, `m05-type-driven` |
+| Rust: crates, workspace, features | `m11-ecosystem`, `rust-learner` (versions), `rust-deps-visualizer` |
+| Rust: navigating or refactoring code | `rust-code-navigator`, `rust-symbol-analyzer`, `rust-trait-explorer`, `rust-call-graph`, `rust-refactor-helper` |
+| Rust: rules catalogue / anti-patterns | `rust-skills`, `coding-guidelines`, `m15-anti-pattern`; `unsafe-checker` if `unsafe` ever appears |
+| HTTP/SSE/A2A/MCP adapters (axum, reqwest) | `domain-web`, `security-and-hardening` (inbound auth is fail-closed) |
+| Deploying (Kubernetes, containers, probes) | `domain-cloud-native`, `shipping-and-launch` |
+| Chat surface (Next.js + assistant-ui) | `frontend-ui-engineering`, `browser-testing-with-devtools` |
+| Logs, metrics, traces | `observability-and-instrumentation` |
+| Throughput or latency of the orchestrator/dispatcher | `performance-optimization`, `m10-performance` |
+| Something broke | `debugging-and-error-recovery` |
+| Before opening or merging a PR | `code-review-and-quality`, `code-simplification`, `git-workflow-and-versioning` |
+| CI workflows | `ci-cd-and-automation` |
+| Replacing an implementation or retiring an API | `deprecation-and-migration` |
+| Setting or raising the quality bar | `constraint-driven-development` |
+| Editing this file or other agent context | `context-engineering` |
+
+Not for direct use: `core-actionbook`, `core-agent-browser`, `core-dynamic-skills`,
+`core-fix-skill-docs` (internal helpers invoked by other rust-skills workflows),
+`meta-cognition-parallel` (experimental), `rust-skill-creator`, `rust-daily`,
+`m14-mental-model` (learning aids). Off-domain here: `domain-cli`,
+`domain-embedded`, `domain-fintech`, `domain-iot`, `domain-ml`.
+
 ## Writing docs
 
 - **Decisions are ADRs.** New file `docs/decisions/NNNN-kebab-title.md` (next
   number), added to the README's Decisions table. Change a past decision by
   amending it with a dated status note, or superseding it with a new ADR —
-  never silently rewriting it. Skill: `write-adr`.
+  never silently rewriting it. Skill: `write-adr` (see *Skills*).
 - **Mark facts** as *verified* (with date and source) or *unverified*.
 - **Processes are diagrams.** A Mermaid pair — `sequenceDiagram` for the
   interaction, `stateDiagram-v2` for the lifecycle — then prose.
