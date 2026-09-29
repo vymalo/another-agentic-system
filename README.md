@@ -70,3 +70,9 @@ flowchart LR
 - **another-agentic-platform** — the agent platform: versioned agent services,
   release channels, runtimes, harnesses. This system consumes it over A2A like
   any other host, with an optional release picker.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. Vendored agent skills keep their own
+licenses; see [third-party-notices.md](third-party-notices.md).
