@@ -8,13 +8,16 @@
 #
 #   docker compose --profile app up -d --build --wait
 #
-# The script goes through the chat API, as the UI does: it creates a thread for the default agent
-# (the first entry of dev/agents.yaml) with a task that names the seeded repository, waits for a
-# terminal state, and checks the whole chain. It prints one ok or FAIL line per check and exits 1
-# if any failed:
+# The script speaks AG-UI, as the UI does (docs/api/agui.md): it runs a thread for the default agent
+# (the first entry of dev/agents.yaml) with one POST /agui/agents/{agentId} whose message names the
+# seeded repository, waits for a terminal state, and checks the whole chain. The agent list and the
+# thread state come from the resource API. The deprecated chat API routes are not used: they are
+# served only with ORCH_SURFACES=agui,chat-api, and compose does not set that. It prints one ok or
+# FAIL line per check and exits 1 if any failed:
 #   * the default agent of GET /api/agents is `coder`;
-#   * the thread ends `done` within TIMEOUT;
-#   * the events carry the `branch` and `pull_request` artifacts (their JSON is in `data.text`);
+#   * the run stream ends with RUN_FINISHED (success), and the thread ends `done` within TIMEOUT;
+#   * the thread's AG-UI frames (GET /agui/threads/{id}/connect?mode=run) carry the `branch` and
+#     `pull_request` artifacts (`vymalo.artifact` activities; their JSON is in `content.text`);
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
 #   * git-server has the branch, and hello.txt on it is `hello`.
@@ -31,7 +34,8 @@
 #   TIMEOUT          300    seconds to wait for the thread to end
 #   NO_OPENCODE      unset  1 = the [mock:no-opencode] script
 #
-# Needs curl, jq and git. Verified by CI only, in .github/workflows/coder-e2e.yml.
+# Needs curl, jq and git (and /proc or uuidgen for a UUID). Verified by CI only, in
+# .github/workflows/coder-e2e.yml.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -58,13 +62,14 @@ finish() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-api() { # api METHOD PATH [JSON]: the body on stdout, non-zero when the status is not 2xx
-  if [ $# -ge 3 ]; then
-    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email" \
-      -H 'content-type: application/json' -d "$3"
-  else
-    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
-  fi
+api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
+  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
+}
+
+uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+
+sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one JSON per line
+  sed -n 's/^data: *//p' "$1"
 }
 
 # --- the default agent -----------------------------------------------------------
@@ -96,17 +101,31 @@ for m in "$github" "$openai"; do
   if [ "$code" = 200 ]; then ok "journal reset: $m"; else bad "journal reset: $m answered HTTP $code"; fi
 done
 
-body=$(jq -n --arg t "$text" --arg a "$agent_id" '{title: "coder e2e", text: $t, target: {agentId: $a}}')
-if ! created=$(api POST /api/threads "$body" 2>"$tmp/err"); then
-  bad "POST /api/threads: $(head -c 300 "$tmp/err") $created"
+# The consumer mints the thread id (a UUID); the first run creates the thread, owned by the edge
+# identity and targeting the agent of the URL. The response streams until the run ends.
+thread=$(uuid)
+input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$text" '{
+  threadId: $thread, runId: $run, state: {}, tools: [], context: [],
+  messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
+echo "thread $thread"
+deadline=$(( $(date +%s) + timeout ))
+code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
+  "$base/agui/agents/$agent_id" -H "X-Auth-Request-Email: $email" \
+  -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" 2>"$tmp/err" || true)
+if [ "$code" != 200 ]; then
+  bad "POST /agui/agents/$agent_id answered HTTP ${code:-none}: $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse")"
   finish
 fi
-thread=$(printf '%s' "$created" | jq -r .id)
-echo "thread $thread"
+outcome=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last
+  | if . == null then "" elif .type == "RUN_ERROR" then "error: \(.code // "")" else (.outcome.type // "success") end' 2>/dev/null || true)
+if [ "$outcome" = success ]; then
+  ok "the run stream ended with RUN_FINISHED (success)"
+else
+  bad "the run stream ended with '${outcome:-no terminal event}', want RUN_FINISHED (success)"
+fi
 
 # --- wait for a terminal state ----------------------------------------------------------
 # `blocked` is not final for a thread but nothing here will answer it, so it ends the wait too.
-deadline=$(( $(date +%s) + timeout ))
 state=
 while :; do
   state=$(api GET "/api/threads/$thread" 2>/dev/null | jq -r '.state // empty' || true)
@@ -114,22 +133,26 @@ while :; do
   if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
   sleep 2
 done
+# The thread's AG-UI frames as one JSON array: the viewer replay, which closes after the run.
 events=$tmp/events.json
-api GET "/api/threads/$thread/events" > "$events" 2>/dev/null || echo '[]' > "$events"
+curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  "$base/agui/threads/$thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$events" 2>/dev/null ||
+  echo '[]' > "$events"
 
 if [ "$state" = "done" ]; then
   ok "the thread ended done"
 else
   bad "the thread did not end done (state: '${state:-unknown}' after at most ${timeout}s)"
-  jq -r '.[] | select(.kind == "error" or .kind == "agent_status" or .kind == "agent_message")
-         | "     \(.seq) \(.kind) \(.data.status // "") \(.data.message // .data.detail // .data.text // "")"' "$events" | head -n 20
+  jq -r '.[] | select(.type == "RUN_ERROR" or (.type == "ACTIVITY_SNAPSHOT" and (.activityType == "vymalo.status" or .activityType == "vymalo.error")))
+         | "     \(.type) \(.activityType // "") \(.content.status // "") \(.content.message // .content.detail // .message // "")"' "$events" | head -n 20
 fi
 
 # --- artifacts ---------------------------------------------------------------------------
-# An artifact event is {name, mimeType, text}: the JSON the coder sent as a data part is in `text`.
+# An artifact reaches AG-UI as an ACTIVITY_SNAPSHOT of type vymalo.artifact whose content is
+# {name, mimeType, text}: the JSON the coder sent as a data part is in `content.text`.
 artifact() { # artifact NAME FIELD -> the field of the last artifact of that name ("" if absent)
-  jq -r --arg n "$1" --arg f "$2" '[.[] | select(.kind == "artifact" and .data.name == $n)
-    | .data.text | fromjson? | .[$f] // empty] | last // empty' "$events"
+  jq -r --arg n "$1" --arg f "$2" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.artifact" and .content.name == $n)
+    | .content.text | fromjson? | .[$f] // empty] | last // empty' "$events"
 }
 branch=$(artifact branch branch)
 commit=$(artifact branch commit)

@@ -30,7 +30,12 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built (the A2UI key is not yet declared) |
 | Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
-| Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated (`deprecated: true`, `Deprecation` header); mounted only with `ORCH_SURFACES` including `chat-api` |
+| Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated (`deprecated: true`, `Deprecation` header); **off by default**, mounted only with `ORCH_SURFACES` including `chat-api` (`ORCH_SURFACES=agui,chat-api` keeps them) |
+
+The default is `ORCH_SURFACES=agui`: the AG-UI routes and the resource API. With it the four legacy
+routes answer 404 (`POST /api/threads` answers 405, because its path also serves the thread list).
+A deployment that still needs them sets `ORCH_SURFACES=agui,chat-api`; see
+[`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#surfaces).
 
 All `/agui/*` routes sit behind the edge identity (`X-Auth-Request-Email`, fail closed). Every
 pre-stream rejection is an RFC 9457 `application/problem+json` response; nothing is streamed

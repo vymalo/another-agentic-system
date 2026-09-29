@@ -17,7 +17,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,chat-api` (the AG-UI routes the web runs on, beside the deprecated chat API, which nothing here calls any more). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is not set, so it is the default `agui`: the AG-UI routes the web and the scripts here run on, beside the resource API. The deprecated chat API routes are not mounted; to get them back add `ORCH_SURFACES: agui,chat-api` to the shared `x-orchestrator-env` of `compose.yaml`. |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`) and the AG-UI routes (`/agui/*`, streams unbuffered). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -38,23 +38,23 @@ sequenceDiagram
   participant O as orchestrator
   participant P as postgres
   participant M as mock-agent (WireMock)
-  U->>E: GET / and /api/* on 127.0.0.1:8080
-  E->>W: everything except /api/*
-  E->>O: /api/* with X-Auth-Request-Email: dev@example.com (any client value replaced)
+  U->>E: GET / , /api/* and /agui/* on 127.0.0.1:8080
+  E->>W: everything except /api/* and /agui/*
+  E->>O: /api/* and /agui/* with X-Auth-Request-Email: dev@example.com (any client value replaced)
   O->>P: append the event, enqueue the delegation
   O->>M: GET /.well-known/agent-card.json
   M-->>O: card (streaming, bearer scheme, interface URL from the Host header)
   O->>M: POST /a2a SendStreamingMessage, Authorization: Bearer dev-mock-token
   M-->>O: SSE: task, statusUpdate, artifactUpdate, statusUpdate
   O->>P: append agent_status, artifact and thread_state events
-  U->>E: GET /api/threads/{id}/stream
+  U->>E: POST /agui/agents/{agentId} (the run), or GET /agui/threads/{id}/connect
   E->>O: SSE (unbuffered)
-  O-->>U: the events, live
+  O-->>U: the AG-UI frames, live
 ```
 
 ### The edge is not oauth2-proxy
 
-`edge` puts the chat UI, the chat API and the AG-UI route on one origin, as the production ingress does, and sets
+`edge` puts the chat UI, the resource API and the AG-UI routes on one origin, as the production ingress does, and sets
 `X-Auth-Request-Email: dev@example.com` on every API and AG-UI request, replacing whatever the client sent.
 It authenticates nobody. It exists so the UI works locally without an identity provider; it must
 never be exposed beyond `127.0.0.1` (the compose file binds it there) and never used in production,
@@ -107,7 +107,7 @@ sequenceDiagram
   participant M as mock-openai
   participant G as git-server
   participant H as mock-github
-  U->>E: GET /api/agents, POST /api/threads (target = the first agent)
+  U->>E: GET /api/agents, POST /agui/agents/coder (the first agent)
   E->>O: with X-Auth-Request-Email
   O->>C: SendStreamingMessage, bearer CODER_A2A_TOKEN
   C->>M: chat completions, model mock-coder (tool calls, one per turn)
@@ -115,7 +115,7 @@ sequenceDiagram
   C->>M: OpenCode runs, model mock-opencode, bash echo hello
   C->>H: POST /repos/local/sandbox/pulls
   C-->>O: artifacts branch and pull_request, then completed
-  O-->>U: thread done, events with the two artifacts
+  O-->>U: RUN_FINISHED, then the frames with the two artifacts
   U->>H: __admin journal, exactly one POST
   U->>M: __admin journal, nothing unmatched
   U->>G: ls-remote and clone, hello.txt is hello
@@ -123,7 +123,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Created: POST /api/threads
+  [*] --> Created: POST /agui/agents/coder
   Created --> Delegated: dispatcher sends the message
   Delegated --> Scripted: mock-coder answers each turn
   Scripted --> Scripted: next tool call
@@ -145,9 +145,12 @@ NO_OPENCODE=1 dev/coder-e2e.sh                         # the check command makes
 docker compose down -v                                 # also forgets the pushed branches
 ```
 
-`dev/coder-e2e.sh` goes through the edge, checks the default agent, waits for the thread to end `done`,
-and prints one `ok` or `FAIL` line for each check: the two artifacts (the JSON the coder sent is in the
-`data.text` of the artifact events), exactly one `POST /repos/local/sandbox/pulls` on `mock-github`
+`dev/coder-e2e.sh` goes through the edge and speaks AG-UI, as the web does (the deprecated chat API is not
+mounted by default and the script does not use it): it checks the default agent, runs the thread with one
+`POST /agui/agents/coder` (a UUID it mints as `threadId`), waits for the thread to end `done`,
+and prints one `ok` or `FAIL` line for each check: the run stream ends with `RUN_FINISHED`, the two artifacts
+(the JSON the coder sent is in the `content.text` of the `vymalo.artifact` activities of
+`GET /agui/threads/{id}/connect?mode=run`), exactly one `POST /repos/local/sandbox/pulls` on `mock-github`
 with the branch as head and `main` as base, no unmatched request on `mock-openai` and at least one
 `mock-opencode` request (none with `NO_OPENCODE=1`), and the branch with `hello.txt` on `git-server`. It
 resets both journals first, so it can be run repeatedly. To use the chat by hand, open
@@ -211,7 +214,7 @@ sequenceDiagram
   participant A as orchestrator-worker-1
   participant B as orchestrator-worker-2
   participant M as mock-agent
-  U->>E: POST /api/threads (mock-coder, text with slow)
+  U->>E: POST /agui/agents/mock-coder (text with slow)
   E->>C: with X-Auth-Request-Email
   C->>P: thread, events, outbox row (pending)
   A->>P: claim the row (lease 5 s, attempts 1)
@@ -224,7 +227,7 @@ sequenceDiagram
   B->>M: SubscribeToTask (task not found), then GetTask
   M-->>B: completed
   B->>P: thread_state done, row delivered
-  U->>E: GET /api/threads/id, done, one done event
+  U->>E: GET /api/threads/id, done, and connect?mode=run holds one RUN_FINISHED
   U->>C: /metrics through edge: due 0, leased 0
   U->>A: docker compose up (started again)
 ```
@@ -333,17 +336,20 @@ docker compose up -d --wait
 dev/check-mocks.sh                                # one call per scenario (curl, jq)
 ```
 
-With the `app` profile up, or any orchestrator that serves the chat API:
+With the `app` profile up, or any orchestrator that serves the AG-UI routes (the default):
 
 ```sh
-dev/try-thread.sh "add a health endpoint"                        # done: 5 events
+dev/try-thread.sh "add a health endpoint"                        # done
 dev/try-thread.sh "ask me which branch"                          # blocked, prints the thread id
 THREAD_ID=<id> dev/try-thread.sh "use main"                      # the answer: done
 dev/try-thread.sh "fail please"                                  # failed
 AGENT_ID=mock-coder-releases RELEASE=staging dev/try-thread.sh "ship it"   # events carry [coder-r51]
 ```
 
-The script prints one line per event (`seq`, kind, detail) and exits 0 for `done` and `blocked`.
+The script runs the thread with `POST /agui/agents/{agentId}` (a UUID it mints as the thread id; `THREAD_ID`
+sends a follow-up run to an existing thread) and prints one line per AG-UI frame of the thread (number,
+event type, detail; `[coder-r51]` marks the revision that answered), read from
+`GET /agui/threads/{id}/connect?mode=run`. It exits 0 for `done` and `blocked`.
 `BASE_URL` (default `http://127.0.0.1:8080`, the edge) and `AUTH_EMAIL` point it elsewhere. Its default
 target is `mock-coder`, not the default agent: the real coder is driven by
 [`coder-e2e.sh`](#the-default-agent).
@@ -369,7 +375,7 @@ and needs none of this.
 
 ### The Rust test against the mocks
 
-`orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real chat API, dispatcher and A2A adapter
+`orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real dispatcher and A2A adapter (driven through the legacy chat API surface of the test instance, which the binary mounts only with `ORCH_SURFACES=agui,chat-api`)
 against the mocks: the default script, `ask` and its answer, `fail`, `error` and `reject`, cancelling
 a blocked thread, and the release echo. It skips unless told where the mocks are:
 
@@ -423,6 +429,13 @@ The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
   vendored `seed/` and a stand-in chat API that ran the script and pushed the branch: every check printed `ok`, exit 0;
   with a thread that ended `failed` it printed `FAIL` lines and exited 1; with the API down it failed at the first call.
   This proves the script's jq paths and journal queries, not the real stack.
+- The scripts on AG-UI (2026-09-29, after the chat API went off by default): `dev/try-thread.sh` (a new thread, a
+  blocked one and its answer with `THREAD_ID`) and the AG-UI half of `dev/coder-e2e.sh` (the run stream ends
+  with `RUN_FINISHED`, the thread ends `done`, its frames are fetched with `connect?mode=run`; the artifact `jq`
+  paths on hand-written frames) against the real `orchestrator` binary at its default `ORCH_SURFACES` (`agui`), the
+  `orch-fake-agent` and a real Postgres; the background run and the frame count of `dev/split-e2e.sh` the same
+  way. This proves the AG-UI calls and the `jq` paths, not the compose stack: the mock and git checks of
+  `coder-e2e.sh` and the docker steps of `split-e2e.sh` still run only in CI.
 - `docker compose config` (Compose v5.1.1, no daemon) accepts both profiles; `shellcheck dev/*.sh dev/coder/*.sh` and
   `actionlint` are clean; the docs check passes.
 - The ghcr manifest and digest of `coder:sha-0e08fe0` (anonymous token, `docker-content-digest`), and the tag list of

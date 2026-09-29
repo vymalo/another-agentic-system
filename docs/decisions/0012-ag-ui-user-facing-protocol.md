@@ -33,6 +33,15 @@
   runtime. (4) The browser mints thread ids as UUIDv7, because the resource API lists threads by
   id. Details: [`web/README.md`](../../web/README.md#the-chat-layer),
   [`web/patches/UPSTREAM.md`](../../web/patches/UPSTREAM.md).
+  Status note (2026-09-29): the legacy chat API surface is off by default. `ORCH_SURFACES` defaults to
+  `agui`; the resource API and health are still mounted whatever it says, so the web's thread list
+  and Cancel keep working. An operator who still has clients of `createThread`, `postMessage`,
+  `listEvents` or `streamEvents` sets `ORCH_SURFACES=agui,chat-api`; without it those routes answer
+  404 (`POST /api/threads` answers 405: its path is the thread list's). Compose sets nothing and runs
+  on the default, and the dev scripts (`dev/coder-e2e.sh`, `dev/split-e2e.sh`, `dev/try-thread.sh`)
+  drive the orchestrator over AG-UI. This is step 2 of "The legacy interaction endpoints are
+  deprecated by the flag"; step 3 (removal) is not done. The decision stands. A breaking change for
+  operators: `feat(orchestrator)!`.
 
 ## Context
 
@@ -209,7 +218,8 @@ plus configuration, no plugins.
 - The binary's configuration moves to **clap with environment fallback**; every existing variable
   keeps its name. `--surfaces` / `ORCH_SURFACES` is a comma-separated list, for example
   `ORCH_SURFACES=agui,chat-api`. The **default is `agui`** once the web runs on AG-UI; until then
-  it is `agui,chat-api`, so nothing breaks mid-migration. The resource API and health are always
+  it was `agui,chat-api`, so nothing broke mid-migration (it is `agui` since the status note of
+  2026-09-29 above). The resource API and health are always
   mounted (they stay in `orch-api` with the auth layer and the problem mapping).
 - **Fail closed:** an unknown name, an empty list, or a surface whose feature was not compiled in
   stops startup with an error naming the surface and the feature.
@@ -223,8 +233,8 @@ The four REST interaction operations are deprecated **by configuration, not by a
 1. **Until the web migrates:** mounted by default (`agui,chat-api`), and the compose stack sets it
    explicitly. The operations are marked `deprecated: true` in the contract and answer with a
    `Deprecation` header (RFC 9745; built, see the status note above).
-2. **When the web runs on AG-UI:** not mounted by default. An operator who still needs them sets
-   `ORCH_SURFACES=agui,chat-api`.
+2. **When the web runs on AG-UI:** not mounted by default (done, see the status note above). An
+   operator who still needs them sets `ORCH_SURFACES=agui,chat-api`.
 3. **Later:** the crate, the feature and the operations are removed in their own PR.
 
 ### The web

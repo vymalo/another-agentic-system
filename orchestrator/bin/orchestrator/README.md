@@ -52,7 +52,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
-| `ORCH_SURFACES` | `agui,chat-api` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error |
+| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error. `agui,chat-api` also serves the deprecated legacy routes (see [Surfaces](#surfaces)) |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
 
@@ -109,6 +109,28 @@ The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
 named but not compiled in stops startup with an error naming its feature. The
 binary is `orchestrator` (`cargo run -p orchestrator`).
 
+## Surfaces
+
+The resource API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`,
+`POST /api/threads/{id}/cancel`) and health are `orch-api`'s and are mounted whatever
+`ORCH_SURFACES` says. The interaction surfaces are chosen by it:
+
+| `ORCH_SURFACES` | Serves |
+|---|---|
+| unset, or `agui` (the default) | the AG-UI routes: `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect`, `GET /agui/agents/{agentId}/capabilities` |
+| `agui,chat-api` | the same, and the **deprecated** legacy routes: `POST /api/threads`, `POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`, `GET /api/threads/{id}/stream`, each answering with `Deprecation` |
+| `chat-api` | the legacy routes alone |
+
+**Migrating an existing deployment.** Before 2026-09-29 the default was `agui,chat-api`. It is now
+`agui`, so a deployment with a client that still creates threads or posts messages over the
+legacy routes must set `ORCH_SURFACES=agui,chat-api` (or `--surfaces agui,chat-api`) to keep it
+working; without it those routes answer 404 (`POST /api/threads` answers 405, because its path
+is also the thread list). The better move is the client's: create a thread and send a message
+with one `POST /agui/agents/{agentId}` (a UUID you mint as `threadId`), read the log with
+`GET /agui/threads/{threadId}/connect` ([`docs/api/agui.md`](../../../docs/api/agui.md)).
+The web app runs on AG-UI only. The legacy routes, the crate and the feature are removed in a
+later release ([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)).
+
 ## Tests
 
 * Unit tests in `src/config.rs`: no database, no environment (defaults, the
@@ -121,9 +143,12 @@ binary is `orchestrator` (`cargo run -p orchestrator`).
   tests always run (the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, and
-  `--surfaces chat-api` serving the legacy routes and not the AG-UI one, and the default mounting both
-  (the AG-UI route answers 400 to `{}` and 401 without identity). With a database: `/healthz`, `/readyz`, 401 without
-  identity, a thread completed through a fake agent with the bearer from
+  `--surfaces chat-api` serving the legacy routes and not the AG-UI one, `--surfaces agui,chat-api`
+  serving both (every legacy route answers with `Deprecation`), and the default serving `agui`
+  and the resource API only (the AG-UI route answers 400 to `{}` and 401 without identity; the
+  four legacy routes answer 404, or 405 for `POST /api/threads`, while the thread list, an
+  unknown thread and cancel answer as resources). With a database: `/healthz`, `/readyz`, 401 without
+  identity, a thread run and completed over AG-UI (the default surface) through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
   database with a SIGKILL mid-task. The roles: `--role worker` (over a
   nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` answers 404 on
