@@ -17,6 +17,7 @@ use a2a_client::rest::RestTransportFactory;
 use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use orch_core::BoxError;
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, SendRequest, TaskHandle,
     TaskSnapshot,
@@ -58,14 +59,55 @@ impl Default for A2aConfig {
 
 /// The HTTP client could not be built (TLS backend initialisation).
 #[derive(Debug, thiserror::Error)]
-#[error("cannot build the A2A HTTP client: {0}")]
-pub struct BuildError(String);
+#[error("cannot build the A2A HTTP client")]
+pub struct BuildError(#[source] BoxError);
 
 /// Installs the process-wide `rustls` crypto provider (`aws-lc-rs`, the one the A2A SDK's
 /// `reqwest` uses). Idempotent; an already installed provider is left alone.
 pub fn install_crypto_provider() {
     // Err means a provider is already installed, which is what we want.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
+/// The longest `Retry-After` honoured: a peer cannot park a delivery for longer.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+
+/// `Retry-After` as delta-seconds or an HTTP date, capped at [`MAX_RETRY_AFTER`].
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    let wait = match value.parse::<u64>() {
+        Ok(secs) => Duration::from_secs(secs),
+        Err(_) => {
+            let at = jiff::fmt::rfc2822::parse(value).ok()?;
+            let ahead = at.timestamp().duration_since(jiff::Timestamp::now());
+            Duration::try_from(ahead).unwrap_or(Duration::ZERO)
+        }
+    };
+    Some(wait.min(MAX_RETRY_AFTER))
+}
+
+/// What an unsuccessful answer to the card request means (fixes a 429 or 408 being a permanent
+/// rejection): 401/403 need other credentials, 429 asks to slow down, 408 and 5xx are the
+/// agent's (or its proxy's) trouble, other statuses refuse the request for good.
+fn card_status_error(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> AgentError {
+    use reqwest::StatusCode as S;
+    let detail = format!("the agent card request answered HTTP {status}");
+    match status {
+        S::UNAUTHORIZED | S::FORBIDDEN => AgentError::unauthenticated(detail),
+        S::TOO_MANY_REQUESTS => AgentError::RateLimited {
+            retry_after: retry_after(headers),
+        },
+        S::REQUEST_TIMEOUT => AgentError::unreachable(detail),
+        s if s.is_server_error() => AgentError::unreachable(detail),
+        _ => AgentError::Rejected(detail),
+    }
 }
 
 /// Adds the `A2A-Extensions` header that activates the release-channels extension.
@@ -118,12 +160,12 @@ impl A2aAgentClient {
             .timeout(cfg.card_timeout)
             .connect_timeout(cfg.connect_timeout)
             .build()
-            .map_err(|e| BuildError(e.to_string()))?;
+            .map_err(|e| BuildError(e.without_url().into()))?;
         let rpc_http = base(reqwest::Client::builder())
             .connect_timeout(cfg.connect_timeout)
             .read_timeout(cfg.read_timeout)
             .build()
-            .map_err(|e| BuildError(e.to_string()))?;
+            .map_err(|e| BuildError(e.without_url().into()))?;
         Ok(A2aAgentClient {
             card_http,
             rpc_http,
@@ -147,27 +189,19 @@ impl A2aAgentClient {
         if let Some(token) = &ep.bearer {
             req = req.bearer_auth(token);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| AgentError::Unreachable(format!("failed to fetch agent card: {e}")))?;
+        let resp = req.send().await.map_err(|e| {
+            AgentError::unreachable("the agent card could not be fetched")
+                .with_source(e.without_url())
+        })?;
         let status = resp.status();
-        if status.is_server_error() {
-            return Err(AgentError::Unreachable(format!(
-                "agent card fetch returned HTTP {status}"
-            )));
-        }
         if !status.is_success() {
-            return Err(AgentError::Rejected(format!(
-                "agent card fetch returned HTTP {status}"
-            )));
+            return Err(card_status_error(status, resp.headers()));
         }
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| AgentError::Unreachable(format!("failed to read agent card: {e}")))?;
+        let body = resp.bytes().await.map_err(|e| {
+            AgentError::unreachable("the agent card could not be read").with_source(e.without_url())
+        })?;
         serde_json::from_slice::<AgentCard>(&body).map_err(|e| {
-            AgentError::Protocol(format!("the agent card is not a valid A2A 1.0 card: {e}"))
+            AgentError::protocol("the agent card is not a valid A2A 1.0 card").with_source(e)
         })
     }
 
@@ -219,7 +253,7 @@ impl A2aAgentClient {
     ) -> Result<T, AgentError> {
         match tokio::time::timeout(self.cfg.call_timeout, call).await {
             Ok(result) => result.map_err(classify),
-            Err(_) => Err(AgentError::Unreachable(format!(
+            Err(_) => Err(AgentError::unreachable(format!(
                 "{what} timed out after {:?}",
                 self.cfg.call_timeout
             ))),
@@ -269,10 +303,9 @@ fn map_stream(inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>) 
                 None => {
                     st.ended = true;
                     if !st.seen_any {
-                        st.queue.push_back(Err(AgentError::Protocol(
+                        st.queue.push_back(Err(AgentError::protocol(
                             "the agent closed the stream without sending an event; check its \
-                             authentication and availability"
-                                .to_owned(),
+                             authentication and availability",
                         )));
                     }
                 }

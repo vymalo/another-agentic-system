@@ -6,12 +6,14 @@
 //! that it stays pure (ADR 0001, ADR 0004).
 
 mod agent;
+mod error;
 mod event;
 mod ids;
 mod thread;
 mod transition;
 
 pub use agent::{AgentTaskState, AgentUpdate};
+pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData,
     Event, EventBody, EventKind, ThreadStateData, UserMessageData,

@@ -1,8 +1,9 @@
 use std::fmt;
 use std::future::Future;
+use std::time::Duration;
 
 use futures::stream::BoxStream;
-use orch_core::{AgentId, AgentTaskState, AgentUpdate, Releases};
+use orch_core::{AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases};
 
 /// Where an agent lives. `Debug` never prints the bearer token.
 #[derive(Clone, PartialEq, Eq)]
@@ -105,11 +106,23 @@ pub struct TaskSnapshot {
 pub type AgentStream = BoxStream<'static, Result<AgentEnvelope, AgentError>>;
 
 /// Agent failure, classified so the dispatcher can decide between retry and give-up.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// `Rejected`, `TaskNotFound`, `Unsupported` and `NotCancelable` carry the peer's own message.
+/// `Unreachable` and `Protocol` describe this side; the transport error is their `source`
+/// (adapters box theirs: ADR 0009) and may hold URLs, so it never reaches the chat log:
+/// [`AgentError::public_detail`] is what may.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AgentError {
-    /// Could not reach the agent. Retryable.
-    #[error("agent unreachable: {0}")]
-    Unreachable(String),
+    /// Could not reach the agent (connection, timeout, 5xx). Retryable.
+    #[error("agent unreachable: {detail}")]
+    Unreachable {
+        /// What was attempted, without URLs or secrets.
+        detail: String,
+        /// The transport error.
+        #[source]
+        source: Option<BoxError>,
+    },
     /// The agent refused the request for good (invalid params, extension required, release rejected).
     #[error("agent rejected the request: {0}")]
     Rejected(String),
@@ -123,19 +136,105 @@ pub enum AgentError {
     #[error("task not cancelable: {0}")]
     NotCancelable(String),
     /// Unexpected protocol behaviour. Retryable (bounded).
-    #[error("protocol error: {0}")]
-    Protocol(String),
+    #[error("protocol error: {detail}")]
+    Protocol {
+        /// What was unexpected, without URLs or secrets.
+        detail: String,
+        /// The lower error.
+        #[source]
+        source: Option<BoxError>,
+    },
+    /// The agent refused the orchestrator's credentials, or wants some it was not given.
+    #[error("agent refused the credentials: {detail}")]
+    Unauthenticated {
+        /// What was refused.
+        detail: String,
+    },
+    /// The agent (or a proxy in front of it) asked the orchestrator to slow down.
+    #[error("agent rate limited the request")]
+    RateLimited {
+        /// How long the peer asked to wait, when it said.
+        retry_after: Option<Duration>,
+    },
 }
 
 impl AgentError {
-    /// `Unreachable` and `Protocol` are worth retrying.
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            AgentError::Unreachable(_) | AgentError::Protocol(_) => true,
+    /// The agent could not be reached.
+    pub fn unreachable(detail: impl Into<String>) -> Self {
+        AgentError::Unreachable {
+            detail: detail.into(),
+            source: None,
+        }
+    }
+
+    /// The agent behaved unexpectedly.
+    pub fn protocol(detail: impl Into<String>) -> Self {
+        AgentError::Protocol {
+            detail: detail.into(),
+            source: None,
+        }
+    }
+
+    /// The agent refused the credentials.
+    pub fn unauthenticated(detail: impl Into<String>) -> Self {
+        AgentError::Unauthenticated {
+            detail: detail.into(),
+        }
+    }
+
+    /// Keeps `source` as the cause of an `Unreachable` or `Protocol` error; the other variants
+    /// carry peer text and have no source, so they are returned unchanged.
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<BoxError>) -> Self {
+        match &mut self {
+            AgentError::Unreachable { source: slot, .. }
+            | AgentError::Protocol { source: slot, .. } => *slot = Some(source.into()),
             AgentError::Rejected(_)
             | AgentError::TaskNotFound(_)
             | AgentError::Unsupported(_)
-            | AgentError::NotCancelable(_) => false,
+            | AgentError::NotCancelable(_)
+            | AgentError::Unauthenticated { .. }
+            | AgentError::RateLimited { .. } => {}
+        }
+        self
+    }
+
+    /// What may be shown to the chat's users: the agent's own message where it gave one that is
+    /// about the request, otherwise fixed text for the class. Never transport text (URLs,
+    /// proxy bodies): that goes to the operator through [`report`](orch_core::report).
+    pub fn public_detail(&self) -> String {
+        match self {
+            AgentError::Rejected(m)
+            | AgentError::TaskNotFound(m)
+            | AgentError::Unsupported(m)
+            | AgentError::NotCancelable(m) => m.clone(),
+            AgentError::Unreachable { .. } => "the agent could not be reached".to_owned(),
+            AgentError::Protocol { .. } => "the agent sent an unexpected response".to_owned(),
+            AgentError::Unauthenticated { .. } => {
+                "the agent did not accept the orchestrator's credentials".to_owned()
+            }
+            AgentError::RateLimited { .. } => "the agent is limiting requests".to_owned(),
+        }
+    }
+}
+
+impl Classify for AgentError {
+    fn class(&self) -> ErrorClass {
+        match self {
+            AgentError::Unreachable { .. } | AgentError::Protocol { .. } => ErrorClass::Transient,
+            AgentError::RateLimited { .. } => ErrorClass::RateLimited,
+            AgentError::Unauthenticated { .. } => ErrorClass::Unauthenticated,
+            AgentError::Rejected(_) => ErrorClass::Invalid,
+            AgentError::TaskNotFound(_) => ErrorClass::NotFound,
+            AgentError::Unsupported(_) => ErrorClass::Unsupported,
+            AgentError::NotCancelable(_) => ErrorClass::Rejected,
+        }
+    }
+
+    fn retry_after(&self) -> Option<Duration> {
+        match self {
+            AgentError::RateLimited { retry_after } => *retry_after,
+            _ => None,
         }
     }
 }
@@ -181,4 +280,78 @@ pub trait AgentClient: Send + Sync + 'static {
         context_id: &str,
         message_id: &str,
     ) -> impl Future<Output = Result<Option<String>, AgentError>> + Send;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn all() -> Vec<AgentError> {
+        vec![
+            AgentError::unreachable("card fetch failed"),
+            AgentError::Rejected("bad params".into()),
+            AgentError::TaskNotFound("t1".into()),
+            AgentError::Unsupported("nope".into()),
+            AgentError::NotCancelable("done".into()),
+            AgentError::protocol("odd answer"),
+            AgentError::unauthenticated("401"),
+            AgentError::RateLimited { retry_after: None },
+        ]
+    }
+
+    #[test]
+    fn class_table() {
+        for e in all() {
+            // Exhaustive: a new variant forces a class decision.
+            let expected = match &e {
+                AgentError::Unreachable { .. } => ErrorClass::Transient,
+                AgentError::Protocol { .. } => ErrorClass::Transient,
+                AgentError::RateLimited { .. } => ErrorClass::RateLimited,
+                AgentError::Unauthenticated { .. } => ErrorClass::Unauthenticated,
+                AgentError::Rejected(_) => ErrorClass::Invalid,
+                AgentError::TaskNotFound(_) => ErrorClass::NotFound,
+                AgentError::Unsupported(_) => ErrorClass::Unsupported,
+                AgentError::NotCancelable(_) => ErrorClass::Rejected,
+            };
+            assert_eq!(e.class(), expected, "{e}");
+            assert_eq!(e.is_retryable(), expected.is_retryable());
+        }
+    }
+
+    #[test]
+    fn retry_after_comes_from_rate_limiting_only() {
+        let e = AgentError::RateLimited {
+            retry_after: Some(Duration::from_secs(7)),
+        };
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(7)));
+        assert_eq!(AgentError::unreachable("x").retry_after(), None);
+    }
+
+    #[test]
+    fn the_source_is_kept_and_never_printed_twice() {
+        let cause = std::io::Error::other("connection refused to http://10.0.0.1/secret");
+        let e = AgentError::unreachable("card fetch failed").with_source(cause);
+        assert!(std::error::Error::source(&e).is_some());
+        assert!(!e.to_string().contains("connection refused"));
+        assert_eq!(
+            orch_core::report(&e),
+            "agent unreachable: card fetch failed: connection refused to http://10.0.0.1/secret"
+        );
+    }
+
+    #[test]
+    fn public_detail_never_carries_transport_text() {
+        let cause = std::io::Error::other("dial http://internal.example:9/token=abc");
+        let e = AgentError::unreachable("card fetch failed").with_source(cause);
+        assert_eq!(e.public_detail(), "the agent could not be reached");
+        assert_eq!(
+            AgentError::Rejected("release nightly is unknown".into()).public_detail(),
+            "release nightly is unknown"
+        );
+        for e in all() {
+            let d = e.public_detail();
+            assert!(!d.contains("http"), "{d}");
+        }
+    }
 }

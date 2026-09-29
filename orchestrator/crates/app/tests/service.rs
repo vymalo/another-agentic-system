@@ -8,9 +8,10 @@ use std::time::Duration;
 use futures::StreamExt;
 use orch_app::{AppError, ApplyOutcome, NewThread};
 use orch_core::{
-    AgentId, AgentTarget, AgentTaskState, AgentUpdate, EventKind, Input, ThreadId, ThreadState,
+    AgentId, AgentTarget, AgentTaskState, AgentUpdate, Classify, ErrorClass, EventKind, Input,
+    ThreadId, ThreadState,
 };
-use orch_ports::ThreadStore;
+use orch_ports::{StoreError, ThreadStore};
 use support::*;
 use uuid::Uuid;
 
@@ -139,14 +140,18 @@ async fn validation() {
         .unwrap();
     // Fail closed: an unreachable card cannot validate a release.
     w.agent.set_card_down("coder", true);
-    assert!(
-        invalid(
-            app.create_thread(&u, new_thread("coder", Some("staging"), "hi"))
-                .await
-                .unwrap_err()
-        )
-        .contains("card unreachable")
-    );
+    let err = app
+        .create_thread(&u, new_thread("coder", Some("staging"), "hi"))
+        .await
+        .unwrap_err();
+    match &err {
+        AppError::Upstream { agent, source } => {
+            assert_eq!(agent.as_str(), "coder");
+            assert!(source.is_retryable(), "{source:?}");
+        }
+        other => panic!("expected Upstream, got {other:?}"),
+    }
+    assert_eq!(err.class(), ErrorClass::Transient);
     // ... but a thread without a release does not need the card.
     app.create_thread(&u, new_thread("coder", None, "hi"))
         .await
@@ -444,4 +449,35 @@ async fn the_event_stream_ends_once_caught_up_when_shutdown_started() {
         .await
         .expect("the stream must end within a poll interval");
     assert!(end.is_none());
+}
+
+#[tokio::test]
+async fn a_thread_that_keeps_changing_under_the_commit_loop_is_contended() {
+    let w = World::new();
+    let app = w.app();
+    let u = alice();
+    let t = create(&app, &u, "plain", "hi").await;
+    // Every attempt of the optimistic loop loses its race: after `max_commit_attempts` the
+    // caller is told to try again, which is not an internal error.
+    w.store
+        .fail_next_commits(100, || StoreError::VersionConflict);
+    let err = app.cancel(&u, t.id).await.unwrap_err();
+    assert!(matches!(err, AppError::Contended), "{err:?}");
+    assert_eq!(err.class(), ErrorClass::Conflict);
+    assert!(err.is_retryable());
+}
+
+#[tokio::test]
+async fn a_store_outage_is_transient_and_keeps_its_source() {
+    let w = World::new();
+    let app = w.app();
+    let u = alice();
+    let t = create(&app, &u, "plain", "hi").await;
+    w.store.fail_next_commits(1, || {
+        StoreError::unavailable(std::io::Error::other("pool timed out"))
+    });
+    let err = app.cancel(&u, t.id).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Transient);
+    assert_eq!(err.to_string(), "store unavailable");
+    assert_eq!(orch_core::report(&err), "store unavailable: pool timed out");
 }

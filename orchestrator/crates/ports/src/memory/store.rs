@@ -26,6 +26,10 @@ struct Inner {
     threads: HashMap<ThreadId, ThreadEntry>,
     /// Insertion order is the `ord` of the Postgres outbox.
     outbox: Vec<OutboxItem>,
+    /// Failures the next `commit`s return instead of running (fault injection).
+    commit_faults: std::collections::VecDeque<StoreError>,
+    /// Failures the next `create_thread`s return instead of running (fault injection).
+    create_faults: std::collections::VecDeque<StoreError>,
 }
 
 /// A [`ThreadStore`] in process memory. Clones share the data, which lets tests run two
@@ -45,6 +49,26 @@ impl MemoryStore {
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The next `n` commits fail with what `error` builds (a `StoreError` is not `Clone`),
+    /// before anything is written: `|| StoreError::VersionConflict` exhausts the optimistic
+    /// loop, `|| StoreError::unavailable(..)` simulates an outage. A running dispatcher commits
+    /// too and would consume them: use it where nothing else writes.
+    pub fn fail_next_commits(&self, n: usize, error: impl Fn() -> StoreError) {
+        let mut inner = self.lock();
+        for _ in 0..n {
+            inner.commit_faults.push_back(error());
+        }
+    }
+
+    /// The next `n` `create_thread`s fail with what `error` builds. Only the API creates
+    /// threads, so this is safe next to a running dispatcher.
+    pub fn fail_next_creates(&self, n: usize, error: impl Fn() -> StoreError) {
+        let mut inner = self.lock();
+        for _ in 0..n {
+            inner.create_faults.push_back(error());
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -138,8 +162,11 @@ impl ThreadStore for MemoryStore {
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
         let mut inner = self.lock();
+        if let Some(fault) = inner.create_faults.pop_front() {
+            return Err(fault);
+        }
         if inner.threads.contains_key(&new.id) {
-            return Err(StoreError::Corrupt("thread id already exists".to_owned()));
+            return Err(StoreError::corrupt("thread id already exists"));
         }
         let record = ThreadRecord {
             id: new.id,
@@ -169,7 +196,7 @@ impl ThreadStore for MemoryStore {
             },
         );
         let (mut record, events) = write_commit(&mut inner, new.id, first)
-            .ok_or_else(|| StoreError::Corrupt("thread vanished".to_owned()))?;
+            .ok_or_else(|| StoreError::corrupt("thread vanished"))?;
         // Creation is version 1 whatever the first commit wrote.
         if let Some(entry) = inner.threads.get_mut(&new.id) {
             entry.record.version = 1;
@@ -224,6 +251,9 @@ impl ThreadStore for MemoryStore {
         commit: Commit,
     ) -> Result<CommitOutcome, StoreError> {
         let mut inner = self.lock();
+        if let Some(fault) = inner.commit_faults.pop_front() {
+            return Err(fault);
+        }
         let entry = inner.threads.get(&thread).ok_or(StoreError::NotFound)?;
         if entry.record.version != expected_version {
             return Err(StoreError::VersionConflict);

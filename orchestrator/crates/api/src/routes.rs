@@ -17,7 +17,7 @@ type ApiResult<T> = Result<T, ApiError>;
 /// Parses a `{threadId}`; anything that is not a UUID is simply a thread that does not exist.
 pub(crate) fn parse_thread_id(raw: &str) -> Result<ThreadId, ApiError> {
     raw.parse::<ThreadId>()
-        .map_err(|_| ApiError(orch_app::AppError::NotFound))
+        .map_err(|_| ApiError::App(orch_app::AppError::NotFound))
 }
 
 pub(crate) async fn healthz<P: Ports>(State(state): State<ApiState<P>>) -> Response {

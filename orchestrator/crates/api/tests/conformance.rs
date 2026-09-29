@@ -113,6 +113,33 @@ async fn every_operation_conforms_to_the_contract() {
         assert_eq!(r.status, 400, "{bad}");
         c.check("createThread", &r);
     }
+    // 502: the release cannot be validated because the agent's card is down. 503: storage
+    // fails. Both are documented on createThread.
+    h.agent.set_card_down("coder", true);
+    let r = h
+        .post(
+            "/api/threads",
+            Some(ALICE),
+            json!({"target": {"agentId": "coder", "release": "staging"}, "text": "x"}),
+        )
+        .await;
+    assert_eq!(r.status, 502);
+    c.check("createThread", &r);
+    h.agent.set_card_down("coder", false);
+    h.store.fail_next_creates(1, || {
+        orch_ports::StoreError::unavailable(std::io::Error::other("pool timed out"))
+    });
+    let r = h
+        .post(
+            "/api/threads",
+            Some(ALICE),
+            json!({"target": {"agentId": "plain"}, "text": "x"}),
+        )
+        .await;
+    assert_eq!(r.status, 503);
+    c.check("createThread", &r);
+    assert_eq!(r.json()["detail"], "storage is unavailable");
+
     // Malformed JSON and a wrong content type are 400 problems as well.
     let r = h
         .client

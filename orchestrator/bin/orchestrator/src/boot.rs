@@ -6,13 +6,16 @@
 //! clock) and sequences start and stop.
 
 use std::future::Future;
+use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig};
 use orch_app::{AgentDirectory, App, AppConfig, Dispatcher, DispatcherConfig};
+use orch_core::BoxError;
 use orch_ports::{PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
@@ -23,6 +26,30 @@ use crate::config::Config;
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
 /// retrying in the background, and consumers poll in the meantime.
 const LISTEN_ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Failures of a running service that the exit code tells apart (see `main::exit_code`).
+#[derive(Debug, thiserror::Error)]
+pub enum Fatal {
+    /// The listen address could not be bound.
+    #[error("cannot listen on {addr}")]
+    Listen {
+        /// The configured address.
+        addr: SocketAddr,
+        /// Why the bind failed.
+        #[source]
+        source: io::Error,
+    },
+    /// One half of the service (the HTTP server or the dispatcher) ended, failed or panicked
+    /// while the other was still running.
+    #[error("{half} stopped unexpectedly")]
+    Stopped {
+        /// Which half.
+        half: &'static str,
+        /// The error or panic that ended it, if it reported one.
+        #[source]
+        source: Option<BoxError>,
+    },
+}
 
 type Stack = PortSet<PgStore, PgWakeup, A2aAgentClient, SystemClock, UuidV7Ids>;
 
@@ -92,7 +119,10 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     };
     let listener = TcpListener::bind(cfg.listen_addr)
         .await
-        .with_context(|| format!("cannot listen on {}", cfg.listen_addr))?;
+        .map_err(|source| Fatal::Listen {
+            addr: cfg.listen_addr,
+            source,
+        })?;
     tracing::info!(
         addr = %listener.local_addr().context("listener address")?,
         instance = %cfg.instance_id,
@@ -127,8 +157,18 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     // Run until the signal, or until one half dies (then exit non-zero so it is restarted).
     let failure = tokio::select! {
         () = shutdown => None,
-        r = &mut server => Some(anyhow::anyhow!("the HTTP server stopped unexpectedly: {r:?}")),
-        r = &mut dispatcher => Some(anyhow::anyhow!("the dispatcher stopped unexpectedly: {r:?}")),
+        r = &mut server => Some(Fatal::Stopped {
+            half: "the HTTP server",
+            source: match r {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(Box::new(e) as BoxError),
+                Err(join) => Some(Box::new(join) as BoxError),
+            },
+        }),
+        r = &mut dispatcher => Some(Fatal::Stopped {
+            half: "the dispatcher",
+            source: r.err().map(|join| Box::new(join) as BoxError),
+        }),
     };
     tracing::info!("shutting down");
 
@@ -150,7 +190,7 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     tracing::info!("stopped");
 
     match failure {
-        Some(e) => bail!(e),
+        Some(fatal) => Err(fatal.into()),
         None => Ok(()),
     }
 }

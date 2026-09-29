@@ -196,7 +196,9 @@ async fn a_release_is_offered_validated_sent_and_echoed() {
             json!({"target": {"agentId": "coder", "release": "stable"}, "text": "x"}),
         )
         .await;
-    assert_eq!(r.status, 400);
+    // The agent's failure, not the caller's mistake: 502 (it used to be a 400).
+    assert_eq!(r.status, 502);
+    assert_eq!(r.json()["detail"], "agent coder is unavailable");
 }
 
 #[tokio::test]
@@ -232,4 +234,42 @@ async fn concurrent_threads_of_two_users_do_not_interfere() {
         assert_eq!(shape(&h.events(user, id).await), FIVE);
     }
     assert_eq!(h.agent.sends().len(), 8);
+}
+
+#[tokio::test]
+async fn failures_of_others_are_502_and_503_with_a_retry_after_and_no_internals() {
+    let h = Harness::start().await;
+    let post = |body: serde_json::Value| {
+        h.client
+            .post(h.url("/api/threads"))
+            .header("X-Auth-Request-Email", ALICE)
+            .json(&body)
+            .send()
+    };
+    let release = json!({"target": {"agentId": "coder", "release": "staging"}, "text": "x"});
+
+    // The agent's card is down: the agent's failure, not the caller's.
+    h.agent.set_card_down("coder", true);
+    let r = post(release.clone()).await.unwrap();
+    assert_eq!(r.status().as_u16(), 502);
+    assert!(r.headers().get("retry-after").is_none());
+    assert_eq!(r.headers()["content-type"], "application/problem+json");
+    h.agent.set_card_down("coder", false);
+
+    // Storage is down: 503 with a Retry-After, and the cause stays in the log.
+    h.store.fail_next_creates(1, || {
+        orch_ports::StoreError::unavailable(std::io::Error::other(
+            "postgres://user:hunter2@db.internal/orch",
+        ))
+    });
+    let r = post(json!({"target": {"agentId": "plain"}, "text": "x"}))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 503);
+    assert_eq!(r.headers()["retry-after"], "5");
+    let body = r.text().await.unwrap();
+    assert!(
+        !body.contains("hunter2") && !body.contains("db.internal"),
+        "{body}"
+    );
 }
