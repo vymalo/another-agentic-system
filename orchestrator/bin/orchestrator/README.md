@@ -27,7 +27,7 @@ Running it, the container image, configuration and shutdown are documented in
 |---|---|
 | `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` half of the service stopped, `1` otherwise) |
 | `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
-| `src/boot.rs` | `run(cfg, shutdown)`: builds the adapters, migrates, mounts the configured surfaces on the resource API, serves HTTP and the dispatcher until told to stop, drains gracefully |
+| `src/boot.rs` | `run(cfg, shutdown)`, in three parts: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`); `control_plane` (the HTTP server: health, the resource API, the configured surfaces; a future that ends when its `CancellationToken` is cancelled); `worker` (the dispatcher, same contract). `supervise` drives any list of such halves: the first to end on its own is fatal (exit `70`), then readiness flips, every half is cancelled and they are awaited in order, each for `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher releases its leases as it stops). `run` starts both; there is no role flag yet, so a later change can run one half by building only its future (a worker-only process can serve probes with [`orch_api::health_router`](../../crates/api/README.md)) |
 
 ## Environment
 

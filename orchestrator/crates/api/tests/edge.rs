@@ -142,6 +142,49 @@ async fn health_needs_no_identity_and_everything_else_does() {
 }
 
 #[tokio::test]
+async fn the_health_router_serves_health_only_and_needs_no_identity() {
+    let app = new_app();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = orch_api::health_router(Arc::clone(&app));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let get = |path: &'static str| {
+        let client = client.clone();
+        async move {
+            client
+                .get(format!("http://{addr}{path}"))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // No identity header, and it answers like the full router does.
+    let healthz = get("/healthz").await;
+    assert_eq!(healthz.status(), 200);
+    assert!(healthz.headers().contains_key("x-request-id"));
+    assert_eq!(healthz.text().await.unwrap(), "ok");
+    let readyz = get("/readyz").await;
+    assert_eq!(readyz.status(), 200);
+    assert_eq!(readyz.text().await.unwrap(), "ready");
+
+    // Nothing else is served: no resource API, and no identity check to answer 401 with.
+    for path in ["/api/agents", "/api/threads", "/api/nothing"] {
+        assert_eq!(get(path).await.status(), 404, "{path}");
+    }
+
+    // The same state machine: not ready, then shutting down.
+    app.set_ready(false);
+    assert_eq!(get("/readyz").await.status(), 503);
+    app.set_shutting_down();
+    assert_eq!(get("/healthz").await.status(), 503);
+    server.abort();
+}
+
+#[tokio::test]
 async fn the_resource_api_is_served_without_any_surface() {
     let e = edge(ApiConfig::default(), vec![]).await;
     let id = e.thread().await;
