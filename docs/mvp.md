@@ -9,6 +9,11 @@ agent is built **once** as another-agentic-platform's scenario-B harness
 run **standalone** until the platform exists — the same A2A endpoint either
 way.
 
+*Note (2026-09-29):* the first agent is adam-coder from
+[`vymalo/another-adam-rs`](https://github.com/vymalo/another-adam-rs), a plain A2A agent listed
+first in `AGENTS_FILE` ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md)). The
+platform harness remains the way to host agents later.
+
 | Step | Delivers | Done when | Status (checked against the code, 2026-09-29) |
 |---|---|---|---|
 | 1. **Skeleton** | Postgres schema (jobs, inbox, outbox, events, timers), stateless orchestrator, chat surface; model calls to a configured OpenAI-compatible endpoint | A job typed in the chat appears in the event log, and a second orchestrator replica takes over when the first is killed. | **Built, except the model endpoint.** Schema: `threads`, `events`, `a2a_bindings`, `outbox` (no `inbox` or `timers` yet, no job table: a thread is the unit). Orchestrator, chat API and `web/` exist. "Second replica takes over" is tested: `orch-e2e` `restart` and `replicas`, and the binary's SIGKILL smoke test. Nothing calls a model yet. |

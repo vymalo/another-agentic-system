@@ -78,6 +78,8 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0011](docs/decisions/0011-web-shadcn-tailwind-feature-layout.md) | Chat surface: shadcn/ui on Tailwind v4, kebab-case feature layout |
 | [0012](docs/decisions/0012-ag-ui-user-facing-protocol.md) | AG-UI 1.0 as the user-facing protocol; REST kept for resources; surfaces mounted by configuration |
 | [0013](docs/decisions/0013-a2ui-generative-ui.md) | A2UI for generative UI, end to end over A2A and AG-UI |
+| [0014](docs/decisions/0014-adam-coder-default-agent-over-a2a.md) | adam-coder is the default agent (first `AGENTS_FILE` entry), over plain A2A |
+| [0015](docs/decisions/0015-control-plane-and-workers-on-adam-rs.md) | Control plane and workers on adam-rs (`Role` enum, git rev); in-process agents behind a feature; amends 0001 and 0007 |
 
 ## Local development
 

@@ -46,7 +46,7 @@ An empty value counts as unset.
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string. Never logged. |
-| `AGENTS_FILE` | required | YAML list of `{id, name, cardUrl, tokenEnv?}`, see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. |
+| `AGENTS_FILE` | required | YAML list of `{id, name, cardUrl, tokenEnv?}`, see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. The first entry is the default agent the chat UI preselects ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)). |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | |
 | `ORCH_SURFACES` | `chat-api` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `chat-api`, the legacy interaction routes, deprecated in favour of AG-UI ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md)); `agui` arrives with its own slice. An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-chat-api`) is not in the build is a startup error. The resource API and health are always mounted. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |

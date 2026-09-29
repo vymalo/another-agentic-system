@@ -27,12 +27,15 @@ webhooks, and can be driven the same way. **Status: MVP steps 1–2 are built**
 
 1. **Protocols only (ADR 0007).** No dependency on an agent host, gateway
    product or host SDK. An agent is an A2A agent-card URL; models are one
-   OpenAI-compatible endpoint (ADR 0005).
+   OpenAI-compatible endpoint (ADR 0005). *(Amended by ADR 0015: `adam-host` is a git
+   dependency, and a worker may host adam agents in-process behind the off-by-default
+   feature `agent-local`; remote agents stay plain A2A.)*
 2. **Host conveniences are optional extensions (ADR 0008).** Capability-detected
    from a standard protocol's extension mechanism, read live, never cached,
    fail closed, removable without breaking plain A2A.
 3. **Stateless processes, one event log (ADR 0001).** Only the job ledger and
-   event log (the chat) persist, in Postgres.
+   event log (the chat) persist, in Postgres. *(Amended by ADR 0015: a local agent's journal
+   counts as job ledger.)*
 4. **Verification over consensus (ADR 0002)** and **git is the artifact (ADR 0003).**
 5. **The core is pure (orchestrator.md).** `transition(&state, &event)` has no
    I/O; protocols are closed enums (ADR 0004).
@@ -147,3 +150,4 @@ is validated too.
 
 - `vymalo/another-agentic-platform` — the agent platform (first-class, optional agent host).
 - `vymalo/another-agentic-images` — toolchain images.
+- `vymalo/another-adam-rs` — adam-coder, the default A2A coding agent; also the adam-rs library (see the pending ADR 0015).

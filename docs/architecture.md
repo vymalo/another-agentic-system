@@ -42,9 +42,9 @@ state is the job ledger and event log (the chat) in Postgres.
 
 | Component | Role | Notes |
 |---|---|---|
-| **Orchestrator** (Rust, this repo) | Durable thread state machine; decides what happens next | Stateless replicas over Postgres. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md)) |
+| **Orchestrator** (Rust, this repo) | Durable thread state machine; decides what happens next | Stateless replicas over Postgres, run as a **control plane** (API, surfaces) and **workers** (dispatcher, in-process agents), or both in one process. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md), [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)) |
 | **Postgres (CNPG)** | Threads, the event log (= the chat), the A2A binding, the outbox | Also the work queue (`SKIP LOCKED`) and the wake-up bus (`LISTEN/NOTIFY`). The inbox and timers are planned. |
-| **Control plane** (Next.js + assistant-ui, this repo) | Chat surface and thread list | Renders the event log the orchestrator serves. Built: it follows the chat API's SSE stream ([ADR 0006](decisions/0006-assistant-ui-external-store.md)). Planned: AG-UI 1.0 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md)); generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)). It has no server-side code: the browser talks to the orchestrator through the edge. |
+| **Web chat surface** (Next.js + assistant-ui, this repo) | Chat surface and thread list | Renders the event log the orchestrator serves. Built: it follows the chat API's SSE stream ([ADR 0006](decisions/0006-assistant-ui-external-store.md)). Planned: AG-UI 1.0 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md)); generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)). It has no server-side code: the browser talks to the orchestrator through the edge. |
 | **Agents** (external) | Planner, coding workers, reviewers, specialists | Anything reachable by an A2A agent-card URL. |
 | **Tools** (external) | GitHub, docs, search, … | MCP servers. Planned. |
 | **Model endpoint** (external) | The orchestrator's own model calls | Any OpenAI-compatible endpoint — EAIG / Agent Router, AISIX, … ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)). Planned: nothing calls a model yet. |
