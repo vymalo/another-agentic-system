@@ -1,11 +1,12 @@
 name: Compose
 
-# The local development stack (compose.yaml, dev/): both compose profiles must parse, the WireMock
+# The local development stack (compose.yaml, dev/): every compose profile must parse, the WireMock
 # stand-in agents must answer as documented, and the REAL orchestrator client must still work against
 # them, so the mocks cannot drift from the protocol code they exist to test.
-# The `app` profile builds the orchestrator and web images, which the Orchestrator and Web workflows
-# already build; here it is only validated with `docker compose config`. It is RUN by the Coder E2E
-# workflow (coder-e2e.yml), which also checks the mocks vendored under dev/coder.
+# The `app` and `split` profiles build the orchestrator and web images, which the Orchestrator and Web
+# workflows already build; here they are only validated with `docker compose config`. They are RUN by the
+# Coder E2E workflow (coder-e2e.yml), which also checks the mocks vendored under dev/coder and runs the
+# split roles (dev/split-e2e.sh).
 #
 # Path filters mean this check must not be made "required" for unrelated PRs.
 
@@ -43,10 +44,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"
-      - name: Both profiles parse
+      - name: Every profile parses
         run: |
           docker compose config -q
           docker compose --profile app config -q
+          docker compose --profile split config -q
+          docker compose --profile app --profile split config -q
       - name: Start the infrastructure and the mocks
         run: docker compose up -d --wait postgres mock-agent mock-agent-releases
       - name: Every mock scenario answers as documented

@@ -99,10 +99,19 @@ dev/try-thread.sh "add a health endpoint"            # or drive a mock thread fr
 docker compose --profile app down -v                 # stop and forget the database
 ```
 
+The `split` profile adds two workers, so the orchestrator can run as a control plane beside them
+([`dev/README.md`](dev/README.md#the-split-profile-a-control-plane-and-two-workers)):
+
+```sh
+ORCHESTRATOR_ROLE=control-plane docker compose --profile app --profile split up -d --build --wait
+dev/split-e2e.sh                                     # kills the worker that holds a task; the other finishes it
+```
+
 | Profile | Services | Ports on 127.0.0.1 |
 |---|---|---|
 | default | `postgres`, `mock-agent`, `mock-agent-releases` | 5432, 8081, 8082 |
 | `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
+| `split` | + `orchestrator-worker-1`, `orchestrator-worker-2` (dispatcher only; beside `app`, with `ORCHESTRATOR_ROLE=control-plane`) | none published |
 | `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
 
 The `edge` proxy replaces oauth2-proxy locally by injecting `X-Auth-Request-Email: dev@example.com`.

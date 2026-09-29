@@ -326,3 +326,32 @@ The placement policy in adam-rs is separate design work and has no slot here yet
   reaching the agent through the worker that took a task over after a graceful stop is covered by
   `a_worker_stopped_with_a_running_task_hands_it_over_at_once`; the SIGKILL test with two workers
   finishes the task instead of cancelling it.
+
+### Status note, 2026-09-29: migration step 7 built
+
+Role and instance on every log line, queue metrics for autoscaling, and a compose `split` profile. Trace context
+is **deferred**.
+
+- Every log line carries `role` and `instance` (the lease owner): an event formatter adds them (a root span would
+  not reach the dispatcher's spawned tasks), and each claimed outbox row runs inside an `outbox` span. The
+  configuration is read before logging starts, so a line about an invalid configuration has neither.
+- `ThreadStore::outbox_stats(now)` (a new port method with a conformance case, so the memory and Postgres stores
+  agree) counts the open outbox rows as due, waiting and leased, with the age of the oldest due one. Every role
+  serves it as Prometheus text on `GET /metrics`, without an identity. The counts are global, so an aggregation
+  across replicas takes `max`, never `sum`. See `docs/orchestrator.md`, "Observability and scaling".
+- The compose `split` profile runs a control plane beside two workers, and `dev/split-e2e.sh` kills the worker that
+  holds a task and checks that the other finishes it; CI runs it at the end of the Coder E2E workflow.
+- **Trace context is deferred**: carrying a W3C `traceparent` across the outbox needs a column (a migration) and an
+  OpenTelemetry exporter, which is a design of its own; the `outbox` span, the request id and the thread id tie
+  the lines together meanwhile. Open question 27.
+- *Verified 2026-09-29* (this repository, `cargo test --workspace` against Postgres 16, and the binary's smoke
+  tests): the `outbox_stats` conformance case passes on both stores; `/metrics` is served by the full router and
+  the worker's health router without an identity; a control plane alone reports one due row until a worker starts,
+  and every JSON log line of a worker carries `role` and `instance`; `docker compose config` accepts every
+  combination of the `app` and `split` profiles.
+- *Unverified:* the split profile running in containers (`dev/split-e2e.sh` in CI is its first run, with the
+  workers having no healthcheck and `wget` in the caddy image assumed), and everything about KEDA: that a
+  `prometheus` trigger over `max(due) + max(leased)` with `DISPATCHER_CONCURRENCY` as the threshold scales the
+  workers, that a worker Deployment scales to zero on it while the control plane is scraped, and that the
+  `postgresql` scaler with the count in `docs/orchestrator.md` does the same without Prometheus. These are from
+  memory of the KEDA and Prometheus documentation; no cluster was involved.

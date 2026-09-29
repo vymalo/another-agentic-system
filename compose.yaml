@@ -7,6 +7,15 @@
 #   docker compose up -d --wait                  # infrastructure + mocks (fast, nothing is built)
 #   docker compose --profile app up -d --build --wait   # ... plus orchestrator, web, edge -> http://127.0.0.1:8080
 #
+# The `split` profile adds two workers, so the orchestrator can run as a control plane beside them
+# (ADR 0015); `dev/split-e2e.sh` kills the worker that holds a task and checks that the other one
+# finishes it:
+#
+#   ORCHESTRATOR_ROLE=control-plane docker compose --profile app --profile split up -d --build --wait
+#
+# `orchestrator` is `all` (its own dispatcher) unless ORCHESTRATOR_ROLE says otherwise; the workers
+# are always `worker`, with a 5 s lease so a killed one is replaced within seconds.
+#
 # The `app` profile also pulls the coder image (about 2.9 GB, linux/amd64 only) and builds the
 # git-server; `dev/coder-e2e.sh` then turns one chat message into a pull request. The coder is the
 # first entry of dev/agents.yaml, so it is the default agent. The other agents need only the
@@ -23,6 +32,30 @@ x-wiremock: &wiremock
     timeout: 3s
     retries: 12
     start_period: 5s
+
+# The orchestrator image and environment, shared by the `orchestrator` service and the split workers.
+# YAML merge keys are shallow, so the environment is an anchor of its own that a service extends.
+x-orchestrator: &orchestrator
+  build:
+    context: ./orchestrator
+  image: another-agentic-system/orchestrator:dev
+  volumes:
+    - ./dev/agents.yaml:/etc/orchestrator/agents.yaml:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mock-agent:
+      condition: service_healthy
+    mock-agent-releases:
+      condition: service_healthy
+
+x-orchestrator-env: &orchestrator-env
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/orch
+  AGENTS_FILE: /etc/orchestrator/agents.yaml
+  MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
+  CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
+  LOG_FORMAT: text
+  # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
 
 services:
   postgres:
@@ -62,29 +95,39 @@ services:
       - ./dev/wiremock/agent-releases/__files:/home/wiremock/__files:ro
 
   orchestrator:
+    <<: *orchestrator
     profiles: [app]
-    build:
-      context: ./orchestrator
-    image: another-agentic-system/orchestrator:dev
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/orch
-      AGENTS_FILE: /etc/orchestrator/agents.yaml
-      MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
-      CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
-      LOG_FORMAT: text
-      # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
-    volumes:
-      - ./dev/agents.yaml:/etc/orchestrator/agents.yaml:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mock-agent:
-        condition: service_healthy
-      mock-agent-releases:
-        condition: service_healthy
+      <<: *orchestrator-env
+      # `all` (control plane and dispatcher in one process) unless the split profile is in use, where
+      # ORCHESTRATOR_ROLE=control-plane leaves the delivery to the workers. The instance id stays the
+      # default ($HOSTNAME-<uuid>).
+      ORCH_ROLE: ${ORCHESTRATOR_ROLE:-all}
     # No `depends_on` for `coder`: the agent card is read when a thread is delegated, never at boot, and a
     # coder that is down leaves it first in the list and fails the thread like any agent that is down.
     # No healthcheck of its own: the distroless image has no shell or curl. `edge` probes /readyz through the proxy.
+
+  # Two workers for the `split` profile: the dispatcher and a probes-and-metrics port, no API. The instance
+  # id is the service name, so `lease_owner` in the outbox says which worker holds a task
+  # (dev/split-e2e.sh reads it). A 5 s lease (the binary's minimum is 3) lets the survivor take a killed
+  # worker's task over within seconds instead of 30. No published port and no healthcheck, like `orchestrator`.
+  orchestrator-worker-1:
+    <<: *orchestrator
+    profiles: [split]
+    environment:
+      <<: *orchestrator-env
+      ORCH_ROLE: worker
+      ORCH_INSTANCE_ID: orchestrator-worker-1
+      OUTBOX_LEASE_SECS: "5"
+
+  orchestrator-worker-2:
+    <<: *orchestrator
+    profiles: [split]
+    environment:
+      <<: *orchestrator-env
+      ORCH_ROLE: worker
+      ORCH_INSTANCE_ID: orchestrator-worker-2
+      OUTBOX_LEASE_SECS: "5"
 
   web:
     profiles: [app]

@@ -17,9 +17,10 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise. |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI and the API. |
+| `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
@@ -170,6 +171,80 @@ in a data part).
   gives the next run a fresh repository and fresh databases.
 - The coder does not support `ListTasks`: if the orchestrator dies between sending a message and
   recording the task, the retry starts a second run (ADR 0014).
+
+## The split profile: a control plane and two workers
+
+The `split` profile runs what [ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)
+describes: the `orchestrator` service as a **control plane** (the API and the surfaces, no dispatcher) and two
+**workers** (`orchestrator-worker-1` and `-2`, the dispatcher only), all on the one Postgres. They share nothing
+else: a thread created through the control plane is `queued` until a worker claims its outbox row.
+
+```sh
+ORCHESTRATOR_ROLE=control-plane docker compose --profile app --profile split up -d --build --wait
+dev/split-e2e.sh
+docker compose --profile app --profile split down -v
+```
+
+`ORCHESTRATOR_ROLE` is the role of the `orchestrator` service (default `all`, as before); the workers are always
+`worker`. Left at `all`, the orchestrator delivers threads itself and `dev/split-e2e.sh` fails saying so. The edge
+and the web UI are unchanged: they talk to `orchestrator:8080`, the control plane. The workers publish nothing;
+every process serves `GET /metrics` (the outbox queue, see
+[`docs/orchestrator.md`](../docs/orchestrator.md#observability-and-scaling)), which the edge does not route, so read it
+from inside the network: `docker compose exec -T edge wget -qO- http://orchestrator-worker-1:8080/metrics`.
+Log lines start `role=worker instance=orchestrator-worker-1`.
+
+**The handover.** `dev/split-e2e.sh` creates a thread for `mock-coder` with the keyword `slow` (an 8 s answer, see
+[the scenarios](#mock-agent-scenarios)), waits for `working`, reads which worker holds the delegate row
+(`SELECT lease_owner FROM outbox ...`), kills that container with `SIGKILL`, and checks that the thread still ends
+`done`: the survivor claims the row once the 5 s lease has lapsed, resubscribes (the mock answers task not found) and
+polls `GetTask`, which is `completed`. It then asserts the row was claimed twice and ended `delivered`, that the
+thread has exactly one `thread_state: done` event and that the control plane's `/metrics` shows nothing due or
+leased. The killed worker is started again when the script ends. It prints one `ok` or `FAIL` line per check, like
+`coder-e2e.sh`, and needs `curl`, `jq` and `docker compose`; CI runs it at the end of the Coder E2E workflow.
+
+```mermaid
+sequenceDiagram
+  actor U as split-e2e.sh
+  participant E as edge
+  participant C as orchestrator (control plane)
+  participant P as postgres
+  participant A as orchestrator-worker-1
+  participant B as orchestrator-worker-2
+  participant M as mock-agent
+  U->>E: POST /api/threads (mock-coder, text with slow)
+  E->>C: with X-Auth-Request-Email
+  C->>P: thread, events, outbox row (pending)
+  A->>P: claim the row (lease 5 s, attempts 1)
+  A->>M: SendStreamingMessage, an 8 s answer
+  U->>E: GET /api/threads/id, until working
+  U->>P: lease_owner of the inflight row is worker-1
+  U->>A: docker compose kill -s SIGKILL
+  Note over A: no goodbye, no lease release
+  B->>P: claim the row once the lease lapsed (attempts 2)
+  B->>M: SubscribeToTask (task not found), then GetTask
+  M-->>B: completed
+  B->>P: thread_state done, row delivered
+  U->>E: GET /api/threads/id, done, one done event
+  U->>C: /metrics through edge: due 0, leased 0
+  U->>A: docker compose up (started again)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued: control plane commits the thread and the outbox row
+  Queued --> HeldByOne: a worker claims the row (attempts 1)
+  HeldByOne --> Working: the agent answers, task known
+  Working --> Orphaned: the holder is killed, its lease runs out
+  Orphaned --> HeldBySurvivor: the other worker claims it (attempts 2)
+  HeldBySurvivor --> Done: task completed, row delivered
+  Done --> Verified: one done event, nothing due or leased
+  Verified --> [*]
+```
+
+**Limits.** Only the mock agent is used, so the resubscribe falls back to polling: a real agent that supports
+`SubscribeToTask` is covered by the binary's smoke tests instead. The workers have no healthcheck (the image has no
+shell), so `up --wait` returns when they run, and the script waits for each `/metrics` itself. Both workers' logs are
+in `docker compose logs`.
 
 ## Mock agent scenarios
 
@@ -353,6 +428,22 @@ The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
 - The ghcr manifest and digest of `coder:sha-0e08fe0` (anonymous token, `docker-content-digest`), and the tag list of
   the repository. adam-rs's `coder` workflow built, smoke-tested and ran its own compose e2e (both variants) on this
   image before pushing it.
+
+The split profile (`orchestrator-worker-*`, `dev/split-e2e.sh`):
+
+*Verified 2026-09-29*: `docker compose config` (Compose v5.1.1, no daemon) accepts every combination of the `app`
+and `split` profiles, and the resolved `orchestrator` service differs from the earlier one only by `ORCH_ROLE=all`;
+`shellcheck` and `actionlint` are clean; `dev/split-e2e.sh` against a stand-in `docker` and a stand-in chat API over a
+real Postgres, in the passing case and with the wrong owner, a missing `/metrics`, a second done event and a wrong
+attempt count (this proves the script's control flow, its queries and its `jq` paths, not the stack); the binary's smoke
+test with one control plane and two workers, a SIGKILL of the holder and a finish by the other, over real processes and
+a real Postgres.
+
+*Unverified*: the split profile running in containers: `up --wait` with the workers (no healthcheck), the recreation of
+`orchestrator` as a control plane while `edge` runs, `docker compose exec edge wget` (busybox `wget` in the caddy image is
+assumed, as its healthcheck uses it), `docker compose kill` and `up` of a single worker, and the mock agent's
+`SubscribeToTask` and `GetTask` answers during the handover (from `dev/README.md`, checked only by curl). The first run is
+the `Coder E2E` workflow.
 
 *Unverified*:
 
