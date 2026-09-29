@@ -54,8 +54,24 @@ impl Contract {
         out
     }
 
+    /// The operations this crate's harness serves: all but the `/agui/*` ones, which are
+    /// `orch-surface-agui`'s.
     pub fn operation_ids(&self) -> BTreeSet<String> {
-        self.operations().into_iter().map(|(id, _, _)| id).collect()
+        self.operations()
+            .into_iter()
+            .filter(|(_, path, _)| !path.starts_with("/agui/"))
+            .map(|(id, _, _)| id)
+            .collect()
+    }
+
+    /// Whether the contract marks `operation` `deprecated: true`.
+    pub fn is_deprecated(&self, operation: &str) -> bool {
+        let (_, path, method) = self
+            .operations()
+            .into_iter()
+            .find(|(id, _, _)| id == operation)
+            .unwrap_or_else(|| panic!("unknown operation {operation}"));
+        self.doc["paths"][&path][&method]["deprecated"] == Value::Bool(true)
     }
 
     fn resolve<'a>(&'a self, node: &'a Value) -> &'a Value {

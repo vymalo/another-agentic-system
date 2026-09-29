@@ -29,6 +29,8 @@ pub const BOB: &str = "bob@example.com";
 pub struct Resp {
     pub status: u16,
     pub content_type: String,
+    /// The `Deprecation` header (RFC 9745), if the response carries one.
+    pub deprecation: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -171,9 +173,14 @@ impl Harness {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        let deprecation = resp
+            .headers()
+            .get("deprecation")
+            .map(|v| v.to_str().unwrap().to_owned());
         Resp {
             status,
             content_type,
+            deprecation,
             body: resp.bytes().await.unwrap().to_vec(),
         }
     }
@@ -293,6 +300,7 @@ impl Conformance {
     /// well-formed problem), the media type matches, and the body validates against the schema.
     pub fn check(&mut self, operation: &str, resp: &Resp) {
         self.exercised.insert(operation.to_owned());
+        self.check_deprecation(operation, resp);
         match self.contract.response(operation, resp.status) {
             Some(Some((content_type, schema))) => {
                 assert!(
@@ -321,6 +329,26 @@ impl Conformance {
         }
     }
 
+    /// RFC 9745: every response an operation marked `deprecated: true` produces carries
+    /// `Deprecation`, no other operation's does. A 401 comes from the identity layer that every
+    /// route shares, before the operation, and never carries it.
+    fn check_deprecation(&self, operation: &str, resp: &Resp) {
+        let expected = resp.status != 401 && self.contract.is_deprecated(operation);
+        assert_eq!(
+            resp.deprecation.is_some(),
+            expected,
+            "{operation} {}: Deprecation header {:?}, the contract says deprecated = {}",
+            resp.status,
+            resp.deprecation,
+            self.contract.is_deprecated(operation)
+        );
+        if let Some(value) = &resp.deprecation {
+            assert_eq!(value, orch_surface_chat_api::DEPRECATION, "{operation}");
+        }
+    }
+
+    /// Every operation this crate serves (the `/agui/*` operations belong to `orch-surface-agui`,
+    /// whose contract test covers them).
     pub fn assert_all_operations_exercised(&self) {
         assert_eq!(self.exercised, self.contract.operation_ids());
     }

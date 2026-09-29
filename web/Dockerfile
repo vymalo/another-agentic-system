@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# Build context is the REPOSITORY ROOT (the API types are generated from docs/api/chat-api.yaml):
+# Build context is the REPOSITORY ROOT (the API types are generated from docs/api/chat-api.yaml, which
+# references the vendored AG-UI JSON Schema by file):
 #   docker build -f web/Dockerfile -t web .
 FROM node:24-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm \
@@ -15,6 +16,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 FROM base AS build
 WORKDIR /app
 COPY docs/api/chat-api.yaml docs/api/chat-api.yaml
+COPY orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json
 COPY web/ web/
 COPY --from=deps /app/web/node_modules web/node_modules
 WORKDIR /app/web

@@ -13,6 +13,22 @@ info:
     rejects requests without it with 401 (fail closed). Local development may
     set `AUTH_DEV_USER` to inject a fixed identity; it must be refused when
     unset.
+
+    Interaction (start a thread, send a message, answer a question, follow a
+    thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
+    the `/agui/*` operations below, with the mapping, the connect binding and
+    the `vymalo.*` schemas in [`agui.md`](agui.md). Their request and event
+    schemas are the vendored AG-UI 1.0 JSON Schema, referenced by file. The
+    thread list, thread details, cancel, the agent list and health stay REST.
+
+    Deprecation: `createThread`, `postMessage`, `listEvents` and `streamEvents`
+    are deprecated in favour of the AG-UI operations. They are served only
+    while `ORCH_SURFACES` includes `chat-api`, and every response the
+    operation itself produces carries `Deprecation: @1790640000` (RFC 9745:
+    an sf-date, 2026-09-29T00:00:00Z, the day they were deprecated). A
+    401 comes from the identity layer, which is shared, and carries no
+    `Deprecation`. There is no `Sunset`: removal is tied to the web's
+    migration, not to a date.
 servers:
   - url: /
 security:
@@ -67,7 +83,11 @@ paths:
               schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
     post:
       operationId: createThread
+      deprecated: true
       summary: Start a thread with a first message
+      description: |
+        **Deprecated:** use `runAgent` (`POST /agui/agents/{agentId}`) with a new, consumer-minted `threadId`.
+        Served only while `ORCH_SURFACES` includes `chat-api`; responses carry `Deprecation`.
       requestBody:
         required: true
         content:
@@ -77,6 +97,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "201":
           description: Created; the first message is already in the event log
+          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
@@ -100,7 +121,12 @@ paths:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
       operationId: listEvents
+      deprecated: true
       summary: Event history, oldest first
+      description: |
+        **Deprecated:** use `connectThread` (`GET /agui/threads/{threadId}/connect`, with `?mode=run` for a
+        finite replay). Served only while `ORCH_SURFACES` includes `chat-api`; responses carry
+        `Deprecation`.
       parameters:
         - { name: after, in: query, description: "Only events with seq > after", schema: { type: integer, format: int64, minimum: 0 } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 200 } }
@@ -108,6 +134,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
           description: Events
+          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Event" } }
@@ -116,8 +143,12 @@ paths:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
       operationId: streamEvents
+      deprecated: true
       summary: Live events (Server-Sent Events)
       description: |
+        **Deprecated:** use `connectThread`, which takes the same `Last-Event-ID` cursor. Served only while
+        `ORCH_SURFACES` includes `chat-api`; responses carry `Deprecation`.
+
         Each SSE message has `id: <seq>`, `event: <kind>` and `data: <Event JSON>`.
         On reconnect the browser sends `Last-Event-ID`; the server first
         replays every event with a greater seq, then streams live ones, so a
@@ -129,6 +160,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
           description: text/event-stream of Event
+          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
           content:
             text/event-stream:
               schema: { type: string }
@@ -137,7 +169,12 @@ paths:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     post:
       operationId: postMessage
+      deprecated: true
       summary: Send a user message (a follow-up, or an answer to a blocked job)
+      description: |
+        **Deprecated:** use `runAgent` with the same `threadId` and a new `runId` (an answer to a blocked
+        thread is a `resume`, or simply the next message). Served only while `ORCH_SURFACES` includes
+        `chat-api`; responses carry `Deprecation`.
       requestBody:
         required: true
         content:
@@ -147,6 +184,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "202":
           description: Accepted; appended to the event log
+          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Event" }
@@ -161,6 +199,88 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "202": { description: Cancellation requested; the outcome arrives as events }
         "404": { $ref: "#/components/responses/Problem" }
+  /agui/agents/{agentId}:
+    parameters: [ { $ref: "#/components/parameters/AgentId" } ]
+    post:
+      operationId: runAgent
+      summary: Run an agent (AG-UI 1.0 HTTP + SSE binding)
+      description: |
+        The standard AG-UI run endpoint ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md),
+        [`agui.md`](agui.md#run-binding)). Creates a thread (the consumer mints `threadId`, a UUID),
+        sends a message, answers an interrupt (`resume`) or attaches to a run already in the log
+        (a retry with the same `runId`). The response streams the AG-UI events of that run, from
+        `RUN_STARTED` to `RUN_FINISHED` or `RUN_ERROR`, then ends; closing it never cancels the run.
+
+        Every rejection is decided before the first stream byte and is a problem response; nothing
+        was written. Cancel a run with `cancelThread`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgUiRunAgentInput" }
+      responses:
+        "200":
+          description: The run's events (`text/event-stream`); frames carry `id:` on resume points
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
+        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not configured, or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
+        "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
+        "409": { description: "The thread targets another agent, a run is already open on it, or it is finished (`done`, `failed`, `cancelled`)", $ref: "#/components/responses/Problem" }
+        "413": { description: "The body is larger than 8 MiB", $ref: "#/components/responses/Problem" }
+        "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
+        "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`", $ref: "#/components/responses/Problem" }
+        "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, the thread is contended, or the target agent is rate limiting; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+  /agui/threads/{threadId}/connect:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: connectThread
+      summary: Follow a thread (AG-UI, our connect extension)
+      description: |
+        Our documented extension of the AG-UI transport ([`agui.md`](agui.md#connect-binding)):
+        replay the thread's events as AG-UI runs, then follow it live across runs, with keepalive
+        comments at least every 15 s. `Last-Event-ID` (the `id:` of the last frame the client
+        holds, a log `seq`) resumes after that point on any replica; absent or empty replays the
+        whole thread. A cursor beyond the last seq waits for new events. `mode=run` closes the
+        stream after the active run's terminal event, or right after the replay when no run is open.
+        Closing the stream never cancels a run.
+      parameters:
+        - { name: Last-Event-ID, in: header, description: "Resume after this seq: the id of the last frame the client holds", schema: { type: string, pattern: "^[0-9]*$" } }
+        - { name: mode, in: query, description: "`run`: close after the active run; absent: stay open", schema: { type: string, enum: [run] } }
+      responses:
+        "200":
+          description: The thread's events (`text/event-stream`); frames carry `id:` on resume points
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
+        "400": { description: "`Last-Event-ID` is not a non-negative integer, or `mode` is not `run`", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread does not exist for the caller: it is missing, its id is not a UUID, or it belongs to someone else (one answer for all three)", $ref: "#/components/responses/Problem" }
+        "406": { description: "`Accept` excludes `text/event-stream`", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+  /agui/agents/{agentId}/capabilities:
+    parameters: [ { $ref: "#/components/parameters/AgentId" } ]
+    get:
+      operationId: getAgentCapabilities
+      summary: What an agent can do (AG-UI AgentCapabilities)
+      description: |
+        The shape is the spec's `AgentCapabilities`; retrieval is ours ([`agui.md`](agui.md#capabilities-document)).
+        The agent card is read on every request and never cached (ADR 0008); a card that cannot be read
+        in time gives the smaller document (identity with the name only, no `custom`).
+      responses:
+        "200":
+          description: Capabilities
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgUiAgentCapabilities" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not configured", $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
     proxyIdentity:
@@ -174,6 +294,18 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      description: Configuration key of the agent, as listed by `listAgents` (`Agent.id`)
+      schema: { type: string }
+  headers:
+    Deprecation:
+      description: |
+        RFC 9745: the operation is deprecated. An sf-date (RFC 9651): `@` and the unix time in seconds
+        of the day it was deprecated. Sent on every response the deprecated operations produce.
+      schema: { type: string, pattern: "^@[0-9]+$", example: "@1790640000" }
   responses:
     Problem:
       description: RFC 9457 problem details
@@ -290,3 +422,25 @@ components:
         state: { $ref: "#/components/schemas/ThreadState" }
         message: { type: string }
         retryable: { type: boolean }
+    AgUiRunAgentInput:
+      description: The AG-UI 1.0 `RunAgentInput` (the vendored JSON Schema, `$defs/RunAgentInput`)
+      $ref: "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json#/$defs/RunAgentInput"
+    AgUiEvent:
+      description: Any AG-UI 1.0 event (the vendored JSON Schema, `$defs/Event`); the `data:` of every frame
+      $ref: "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json#/$defs/Event"
+    AgUiAgentCapabilities:
+      description: The AG-UI 1.0 `AgentCapabilities` (the vendored JSON Schema, `$defs/AgentCapabilities`)
+      $ref: "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json#/$defs/AgentCapabilities"
+    AgUiSseFrame:
+      description: |
+        One server-sent-events message of an AG-UI stream, as OpenAPI 3.2 `itemSchema` would say it
+        (carried as `x-itemSchema` because this document is 3.1): `data` is one JSON `AgUiEvent`, `id`
+        is the log `seq`, present only on a resume point. There is no `event:` name.
+      type: object
+      required: [data]
+      properties:
+        id: { type: string, pattern: "^[0-9]+$" }
+        data:
+          type: string
+          contentMediaType: application/json
+          contentSchema: { $ref: "#/components/schemas/AgUiEvent" }

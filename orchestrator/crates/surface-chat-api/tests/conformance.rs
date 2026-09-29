@@ -329,6 +329,10 @@ async fn every_operation_conforms_to_the_contract() {
         &Resp {
             status: 200,
             content_type: "text/event-stream".into(),
+            deprecation: sse
+                .headers
+                .get("deprecation")
+                .map(|v| v.to_str().unwrap().to_owned()),
             body: vec![],
         },
     );

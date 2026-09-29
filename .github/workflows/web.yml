@@ -6,10 +6,10 @@ name: Web
 
 on:
   pull_request:
-    paths: ["web/**", "docs/api/chat-api.yaml", "docs/api/examples/**", ".github/workflows/web.yml"]
+    paths: ["web/**", "docs/api/chat-api.yaml", "orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json", "docs/api/examples/**", ".github/workflows/web.yml"]
   push:
     branches: [main]
-    paths: ["web/**", "docs/api/chat-api.yaml", "docs/api/examples/**", ".github/workflows/web.yml"]
+    paths: ["web/**", "docs/api/chat-api.yaml", "orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json", "docs/api/examples/**", ".github/workflows/web.yml"]
 
 permissions:
   contents: read

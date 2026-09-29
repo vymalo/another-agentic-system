@@ -16,7 +16,10 @@ The only interface is [`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml). Typ
 from it at build time (`pnpm gen:api`, openapi-typescript + openapi-fetch); `src/lib/api/schema.d.ts`
 is never committed. `src/lib/api/contract.typecheck.ts` holds deliberate mismatches
 (`@ts-expect-error`) that must stay type errors, so a contract change that the client does not
-follow fails `pnpm typecheck`.
+follow fails `pnpm typecheck`. The contract also carries the AG-UI operations (`/agui/*`), whose
+schemas reference the vendored AG-UI JSON Schema by file (`orchestrator/crates/agui-proto/schema/`, which
+`web/Dockerfile` copies in beside the contract); the four legacy interaction operations are
+`deprecated: true`.
 
 The browser calls `/api/*` on its own origin only. In production oauth2-proxy / the ingress routes
 `/api/*` to the orchestrator; there are no Next.js API routes, server-side fetches or secrets.

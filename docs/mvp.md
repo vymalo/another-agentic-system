@@ -40,7 +40,8 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 | Goldens read through the reference client in CI (`tools/agui-conformance`) | Built |
 | The AG-UI run route (`orch-surface-agui`): `POST /agui/agents/{agentId}` | Built |
 | The AG-UI connect stream and capabilities (`GET /agui/threads/{id}/connect`, `GET /agui/agents/{agentId}/capabilities`) | Built |
-| The web on `@assistant-ui/react-ag-ui`; deprecation markers on the chat API | Planned |
+| The AG-UI operations in `chat-api.yaml` (the vendored schema by reference); the four legacy operations `deprecated: true` and answering with `Deprecation` (RFC 9745) | Built |
+| The web on `@assistant-ui/react-ag-ui` | Planned |
 | A2UI generative UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Planned |
 
 ## Out of scope for the MVP
