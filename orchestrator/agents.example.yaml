@@ -5,12 +5,23 @@
 #
 #   id        lower-case letters, digits and dashes (^[a-z0-9][a-z0-9-]{0,62}$); the key in the API
 #   name      shown in the chat
-#   transport optional: how the orchestrator reaches the agent. Only `a2a` exists, and it is
-#             the default when the key is absent.
-#   cardUrl   the agent's A2A agent card (https, or http inside the cluster)
-#   tokenEnv  optional: the NAME of an environment variable holding the bearer token.
+#   transport optional: how the orchestrator reaches the agent, `a2a` (the default when the key
+#             is absent) or `local` (hosted in the orchestrator's own process, see below).
+#   cardUrl   a2a only, required: the agent's A2A agent card (https, or http inside the cluster)
+#   tokenEnv  a2a only, optional: the NAME of an environment variable holding the bearer token.
 #             The variable must be set and non-empty, or the orchestrator refuses to start.
+#   agent     local only, required: the kind of in-process agent (`echo`). A local agent has no
+#             card and no token: `cardUrl` and `tokenEnv` next to `transport: local` are errors.
 - id: coder
   name: Coder
   cardUrl: https://coder.example.com/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
+
+# An agent hosted in-process. Not available yet: until a build has local agents (Cargo feature
+# `agent-local`, arriving with the orch-agent-adam crate, ADR 0015 step 12) the orchestrator
+# refuses to start with this entry rather than skipping it.
+#
+# - id: helper
+#   name: Helper
+#   transport: local
+#   agent: echo

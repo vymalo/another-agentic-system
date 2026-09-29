@@ -116,9 +116,13 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         A2aAgentClient::new(A2aConfig::default()).context("cannot build the A2A client")?;
     for agent in &cfg.agents {
         let e = &agent.endpoint;
-        let AgentTransport::A2a { card_url, bearer } = &e.transport;
-        if bearer.is_some() && card_url.starts_with("http://") {
-            tracing::warn!(agent = %e.id, "a bearer token is sent to this agent over plain http");
+        match &e.transport {
+            AgentTransport::A2a { card_url, bearer }
+                if bearer.is_some() && card_url.starts_with("http://") =>
+            {
+                tracing::warn!(agent = %e.id, "a bearer token is sent to this agent over plain http");
+            }
+            AgentTransport::A2a { .. } | AgentTransport::Local { .. } => {}
         }
     }
     if cfg.role.runs_control_plane()

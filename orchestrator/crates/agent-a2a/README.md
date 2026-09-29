@@ -52,8 +52,9 @@ README.
 
 No Cargo features. The crate reads no environment variables; bearer tokens
 arrive in the endpoint's `AgentTransport::A2a { card_url, bearer }` (the binary
-resolves `tokenEnv` from `AGENTS_FILE`); the adapter serves that transport, the
-only one so far.
+resolves `tokenEnv` from `AGENTS_FILE`); the adapter serves that transport only.
+An `AgentTransport::Local` endpoint (an agent hosted in-process) is answered with
+`AgentError::Unsupported` by every operation, never dereferenced as a card URL.
 
 ## Tests
 

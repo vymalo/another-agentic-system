@@ -159,3 +159,18 @@ migration step 11 of [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md), w
 
 - *Verified 2026-09-29* (`orchestrator/bin/orchestrator/src/config.rs`, its unit tests): an absent key and
   `transport: a2a` give the same endpoint; `transport: local` is refused with a message that names `a2a`.
+
+### Status note, 2026-09-29: `transport: local`, and `cardUrl` becomes optional
+
+An `AGENTS_FILE` entry is now `{id, name, transport?, cardUrl?, tokenEnv?, agent?}`. `transport` is `a2a` (still the
+default when the key is absent, so every file written for this decision stays valid; `cardUrl` is required for it)
+or `local`, an agent hosted in the orchestrator's own process (`agent` names its kind, `cardUrl` and `tokenEnv` are
+refused). A `local` entry is refused at startup with `LocalAgentsNotCompiled` (exit 78) until a build has local
+agents. The default-agent rule is unchanged: the first entry, in file order, whatever its transport. This is
+migration step 12 of [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md), first part.
+
+- *Verified 2026-09-29* (`orchestrator/bin/orchestrator/src/config.rs`, its unit tests): an `a2a` entry without a
+  `cardUrl` is an error, `agent` on an `a2a` entry is an error, a `local` entry with a `cardUrl` or `tokenEnv` is an
+  error, an unknown or missing `agent` is an error listing the kinds, and a valid `local` entry is refused with
+  `LocalAgentsNotCompiled` in this build and becomes `AgentEndpoint::local` when the build has its kind (tested
+  through the parser's injected predicate).

@@ -190,12 +190,15 @@ components:
   schemas:
     Agent:
       type: object
-      required: [id, name, cardUrl]
+      required: [id, name]
       properties:
         id: { type: string, description: "Configuration key, e.g. coder" }
         name: { type: string }
         description: { type: string }
-        cardUrl: { type: string, format: uri }
+        cardUrl:
+          type: string
+          format: uri
+          description: URL of the agent card; absent for an agent hosted in the orchestrator's own process
         releases:
           description: Present only when the card advertises the release-channels extension
           type: object

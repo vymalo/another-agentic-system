@@ -390,3 +390,28 @@ An `AgentClient` conformance testkit, a closed `AgentTransport` enum, and a fenc
   heartbeat and the stream in a random order, so the "late result was dropped" log line would only appear about
   half of the time, and the outcome without the fence is the same as with it (the replayed keys are duplicates).
   `skip_unsent_delegates` and `release_leases` are not fenced.
+
+### Status note, 2026-09-29: migration step 12, first two changes built
+
+Step 12 is split. These two come first, because they need no adam-rs dependency and the third builds on them.
+
+- **The A2A-to-envelope mapping in its own crate.** `StreamMapper`, `snapshot` and the release-channels URI moved from
+  `orch-agent-a2a` to the pure crate `orch-a2a-mapping` (no I/O, no async, no HTTP client). No behaviour change: the
+  mapping's tests moved with it and pass unchanged. The point is that the in-process A2A host of the next change and
+  the HTTP client share one set of idempotency keys.
+- **`AgentTransport::Local { name }`**, `AgentEndpoint::local(id, name)`, in `orch-ports`, always compiled (the enum
+  stays closed). The A2A adapter answers a local endpoint with `AgentError::Unsupported` on every operation, through
+  one helper. `LocalAgentKind` (closed, `Echo` only) lives in the binary's `config.rs`, so the configuration names
+  kinds without an adam crate. `AGENTS_FILE` takes `transport: local` with `agent: <kind>`; `cardUrl` is optional in
+  the file (required for `a2a`, refused for `local`); `AgentInfo.card_url` is `Option` and `AgentInfo.cardUrl` is
+  optional in `docs/api/chat-api.yaml` (`required: [id, name]`).
+- **The Cargo feature `agent-local` is not defined yet.** A feature that enabled nothing would move the failure from
+  startup to the first message, so `transport: local` is refused with `ConfigError::LocalAgentsNotCompiled { agent,
+  feature: "agent-local" }` (exit 78) in every build, and `LocalAgentKind::compiled_in` is `false`. The change that
+  adds `orch-agent-adam` defines the feature, turns `compiled_in` into `cfg!(feature = "agent-local")`, and replaces
+  the message's "not available yet".
+- *Verified 2026-09-29* (this repository): `cargo test --workspace` against Postgres 16 passes; the generated web types
+  make `cardUrl` optional and `pnpm check`, `pnpm typecheck`, `pnpm test` and `pnpm build` in `web/` pass unchanged (no UI code
+  reads `cardUrl`); `GET /api/agents` validates against the contract with an agent that has no card URL
+  (`surface-chat-api`'s conformance test lists one from the scripted stack).
+- *Unverified:* a real deployment reading an agents file with a `local` entry; none can run until the next change.

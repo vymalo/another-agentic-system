@@ -127,8 +127,10 @@ pub struct AgentInfo {
     /// Description from the live card, when readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// URL of the agent card.
-    pub card_url: String,
+    /// URL of the agent card. Absent for an agent hosted in the orchestrator's own process,
+    /// which has no card URL (ADR 0015).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_url: Option<String>,
     /// Present only when the live card advertises the release-channels extension (ADR 0008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub releases: Option<Releases>,

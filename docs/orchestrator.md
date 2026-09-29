@@ -389,15 +389,28 @@ pub fn transition(state: &ThreadState, input: &Input)
 ```
 
 An agent is a configured A2A agent-card URL and nothing host-specific. `AgentEndpoint { id, transport }`
-in `orch-ports` says how to reach it, and `AgentTransport` is a closed enum (ADR 0004) with one
-variant, `A2a { card_url, bearer }`. It lives in the ports, not in the core, because it carries a
-secret (the resolved bearer, redacted in `Debug`) that `transition` never sees. A second variant
-arrives with its implementation, not before: in-process adam agents behind `agent-local` are the
-next one ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md), migration step 12), and
-adding it makes the compiler list every `match` that must handle it. In `AGENTS_FILE` an entry may
-say `transport: a2a`, which is also the default when the key is absent, so existing files are
-unchanged; any other value is a startup error. The chat API's `AgentInfo.cardUrl` stays required for
-now; step 12 makes it optional, since a local agent has no card URL. A release selection travels as
+in `orch-ports` says how to reach it, and `AgentTransport` is a closed enum (ADR 0004) with two
+variants: `A2a { card_url, bearer }` and `Local { name }`, an agent hosted in the orchestrator's own
+process, where `name` is the kind of local agent (`AgentEndpoint::local(id, name)`). It lives in the
+ports, not in the core, because it carries a secret (the resolved bearer, redacted in `Debug`) that
+`transition` never sees. Both variants are always compiled, whatever the Cargo features: what a build
+can *serve* is decided at the composition root. The A2A adapter answers a `Local` endpoint with
+`AgentError::Unsupported` on every operation, and the binary refuses a `Local` agent it cannot host
+at startup (below). Which kinds exist is a second closed enum, `LocalAgentKind`, in the binary's
+configuration (`Echo` is the only one so far), so the configuration can name and validate kinds
+without depending on any implementation crate
+([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md), migration step 12).
+
+In `AGENTS_FILE` an entry has an optional `transport`: `a2a` (the default when the key is absent, so
+existing files are unchanged) needs `cardUrl` and takes an optional `tokenEnv`; `local` needs `agent`
+(a `LocalAgentKind`) and refuses `cardUrl` and `tokenEnv` rather than ignoring them, so a lost
+`transport: a2a` is a startup error, not a silently local agent. A `local` entry in a build without
+local agents fails closed with `ConfigError::LocalAgentsNotCompiled` (exit 78), as an
+`ORCH_SURFACES` name without its feature does. No build has them yet: the Cargo feature `agent-local`
+and the crate `orch-agent-adam` that implement them arrive in the next step-12 change, so today
+every `transport: local` entry is refused at startup. The chat API's `AgentInfo.cardUrl` is optional
+(`required: [id, name]`): an A2A agent has one, a local agent has none and the key is absent from
+the JSON. A release selection travels as
 `AgentTarget.release` and is only accepted when the *live* card advertises the release-channels
 extension (ADR 0008).
 
