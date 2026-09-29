@@ -45,7 +45,7 @@ for (const scheme of ["light", "dark"] as const) {
     });
 
     test("axe: a blocked thread has no serious violations", async ({ page }) => {
-      await startThread(page, "question: which branch");
+      await startThread(page, "ask which branch");
       await expect(badge(page)).toHaveText("Waiting for you");
       expect(await axeViolations(page)).toEqual([]);
     });

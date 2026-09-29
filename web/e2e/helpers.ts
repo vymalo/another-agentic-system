@@ -11,6 +11,18 @@ export async function startThread(page: Page, text: string, agent?: string) {
   await page.getByLabel("Message").fill(text);
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page).toHaveURL(THREAD_URL);
+  await expectNoHorizontalScroll(page);
+}
+
+/** The page never scrolls sideways, on a phone or anywhere else. */
+export async function expectNoHorizontalScroll(page: Page) {
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow, "horizontal overflow in px").toBeLessThanOrEqual(0);
 }
 
 export const badge = (page: Page) => page.getByRole("status", { name: /^Thread state:/ });
+
+/** The page's own error line (Next's route announcer is a `role="alert"` too). */
+export const errorLine = (page: Page) => page.locator("p.inline-status--error");

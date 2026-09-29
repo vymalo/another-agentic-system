@@ -17,12 +17,14 @@
     "build:e2e": "pnpm gen:api && MOCK_API_ORIGIN=http://127.0.0.1:4010 next build",
     "start": "next start -p 3000",
     "start:e2e": "MOCK_API_ORIGIN=http://127.0.0.1:4010 next start -p 3000",
+    "build:system": "pnpm gen:api && API_ORIGIN=http://127.0.0.1:8080 next build",
     "check": "biome ci .",
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "pnpm gen:api && next typegen && tsc --noEmit",
     "test": "pnpm gen:api && vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:system": "playwright test -c playwright.system.config.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.22",
@@ -40,6 +42,7 @@
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "~16.3.3",
     "@types/node": "^22.20.4",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
@@ -49,6 +52,7 @@
     "jsdom": "^30.1.1",
     "lighthouse": "13.5.0",
     "openapi-typescript": "7.13.0",
+    "pg": "^8.23.0",
     "tsx": "^4.23.15",
     "typescript": "5.9.3",
     "vite": "^8.3.1",

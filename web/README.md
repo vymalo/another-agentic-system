@@ -19,7 +19,8 @@ follow fails `pnpm typecheck`.
 
 The browser calls `/api/*` on its own origin only. In production oauth2-proxy / the ingress routes
 `/api/*` to the orchestrator; there are no Next.js API routes, server-side fetches or secrets.
-`MOCK_API_ORIGIN` (dev and e2e only) adds a rewrite to the mock server.
+`MOCK_API_ORIGIN` (dev and e2e only) adds a rewrite to the mock server; `API_ORIGIN` (the system e2e
+build) adds the same rewrite to a real orchestrator.
 
 ## Scripts
 
@@ -32,6 +33,7 @@ pnpm typecheck     # generated types + tsc
 pnpm test          # vitest: reducer, mapping, event stream hook, mock-vs-contract
 pnpm build         # production build (standalone)
 pnpm test:e2e      # Playwright + axe + Lighthouse (>= 95 accessibility) against the mock
+pnpm test:e2e:system   # Playwright against the REAL orchestrator, see "System tests"
 ```
 
 Playwright uses the browser Playwright pins (`@playwright/test` is pinned exactly; CI runs
@@ -41,16 +43,57 @@ Playwright uses the browser Playwright pins (`@playwright/test` is pinned exactl
 
 `mock/server.ts` is a small stateful server (not Prism: it needs the create, stream, follow-up and
 cancel flow, including `Last-Event-ID` replay). `mock/server.contract.test.ts` validates every
-response and SSE frame against the schemas in the contract. The first message picks the script:
+response and SSE frame against the schemas in the contract. The first word of the first message
+picks the script, the same words as the orchestrator's fake agent:
 
-| The message contains | Behaviour |
+| First word | Behaviour |
 |---|---|
-| anything else | working, streamed reply, artifact (PR link), done |
-| `question` | asks "Which branch should I use?", blocks; the follow-up resumes to done |
+| anything else (`echo`) | working, artifact `echo: <text>` with a PR link, done |
+| `ask` | asks "Which branch?", blocks; the follow-up resumes to an `answered: <text>` artifact and done |
 | `slow` | works until cancelled |
-| `fail` | error event, failed |
+| `fail` | `agent_status: failed` with detail `scripted failure` (no `error` event), thread failed |
+| `talk` | working, a status with text, one final agent message, the result, done |
+| `partial` | mock only, **not produced by the current orchestrator**: a partial `agent_message` replaced by its final version |
+| `unreachable` | mock only: an `error` event (delivery dead-lettered), thread blocked |
+
+The scripts follow what the real orchestrator emits: `mock/golden.test.ts` replays every golden
+transcript of [`docs/api/examples`](../docs/api/examples/README.md) against the mock and requires
+the same kinds, actor types and data, so the mock cannot drift from the orchestrator unnoticed.
 
 Agents: `coder` (has `releases`) and `reviewer` (none).
+
+## System tests
+
+`pnpm test:e2e:system` runs the UI in Chromium against the **real orchestrator** (no mock of the
+API): the `orchestrator` binary on Postgres, two scripted A2A agents from `orch-fake-agent`
+(a test-only binary of the orchestrator workspace), and the production build of this app with
+`/api/*` rewritten to the orchestrator. Identity plays oauth2-proxy: the browser context sends
+`X-Auth-Request-Email` and the orchestrator runs without `AUTH_DEV_USER`.
+
+```sh
+(cd ../orchestrator && cargo build --locked -p orchestrator -p orch-testsupport \
+  --bin orchestrator --bin orch-fake-agent)
+createdb orch_system            # empty and dedicated: the tests TRUNCATE it
+export ORCH_BIN=$PWD/../orchestrator/target/debug/orchestrator
+export FAKE_AGENT_BIN=$PWD/../orchestrator/target/debug/orch-fake-agent
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch_system
+pnpm test:e2e:system
+```
+
+| Port | What |
+|---|---|
+| 3100 | the app (`pnpm build:system`, then `next start`) |
+| 8080 | the orchestrator |
+| 4020 | fake-agent control: `POST /__control/{coder,plain}/release-gate`, `GET /__control/{coder,plain}/calls` |
+| 4021, 4022 | the `coder` (with release channels) and `plain` fake agents |
+| 3101 | `reconnect.spec.ts` only: a TCP forwarder in front of the app that cuts the event stream |
+
+`e2e-system/*.spec.ts` cover the identity through the rewrite (and 401, and user isolation),
+the create/echo lifecycle, agent text, ask and answer on the same A2A task, cancel reaching the
+agent, the failure shape, the 409 on a finished thread, releases, a dropped stream, a SIGKILLed
+orchestrator, history by URL and paging of the thread list. Every test starts on an empty
+database; the orchestrator log of a run is `e2e-system/.run/orchestrator.log`. CI runs it as the
+`system-e2e` job of `.github/workflows/system.yml`.
 
 ## Image
 

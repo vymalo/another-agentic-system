@@ -1,0 +1,8 @@
+# AGENTS_FILE of the system e2e tests: the two agents of `orch-fake-agent`
+# (orchestrator/crates/testsupport/src/bin/orch-fake-agent.rs).
+- id: coder
+  name: Coder
+  cardUrl: http://127.0.0.1:4021/.well-known/agent-card.json
+- id: plain
+  name: Plain
+  cardUrl: http://127.0.0.1:4022/.well-known/agent-card.json

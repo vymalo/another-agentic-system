@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { badge, startThread } from "./helpers";
 
 test("cancel calls the endpoint and the thread ends cancelled", async ({ page }) => {
-  await startThread(page, "a slow task");
+  await startThread(page, "slow task");
 
   const cancel = page.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeVisible();

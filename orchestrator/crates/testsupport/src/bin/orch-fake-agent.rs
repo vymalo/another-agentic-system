@@ -1,0 +1,111 @@
+//! Test-only executable: two scripted A2A agents plus a control server, for the system
+//! end-to-end tests (`web/e2e-system`), where a real orchestrator process delegates to them.
+//!
+//! It reuses [`FakeAgent`] unchanged (scripts: see `orch_testsupport::fake`). It is never built
+//! into the orchestrator image, which builds `--package orchestrator` only.
+//!
+//! | Environment | Default | |
+//! |---|---|---|
+//! | `FAKE_CODER_ADDR` | `127.0.0.1:4021` | the `coder` agent, with the sample release channels |
+//! | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
+//! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
+//!
+//! Control endpoints (`<agent>` is `coder` or `plain`), so a browser test can drive the `gate`
+//! script and assert what reached the agent:
+//!
+//! - `POST /__control/<agent>/release-gate`: lets one waiting `gate` task continue;
+//! - `GET /__control/<agent>/calls`: JSON array of what the agent's executor saw, in order.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::Json;
+use axum::Router;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use orch_testsupport::{Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases};
+use serde_json::{Value, json};
+
+struct Agents {
+    coder: FakeAgent,
+    plain: FakeAgent,
+}
+
+impl Agents {
+    fn get(&self, name: &str) -> Option<&FakeAgent> {
+        match name {
+            "coder" => Some(&self.coder),
+            "plain" => Some(&self.plain),
+            _ => None,
+        }
+    }
+}
+
+fn addr(var: &str, default: &str) -> SocketAddr {
+    std::env::var(var)
+        .unwrap_or_else(|_| default.to_owned())
+        .parse()
+        .unwrap_or_else(|e| panic!("{var} is not a socket address: {e}"))
+}
+
+fn call_json(c: &Call) -> Value {
+    json!({
+        "kind": match c.kind { CallKind::Execute => "execute", CallKind::Cancel => "cancel" },
+        "taskId": c.task_id,
+        "contextId": c.context_id,
+        "messageId": c.message_id,
+        "text": c.text,
+        "resuming": c.resuming,
+        "extensionsHeader": c.extensions_header,
+        "activatesReleaseChannels": c.activates_release_channels(),
+        "release": c.release,
+    })
+}
+
+async fn release_gate(State(agents): State<Arc<Agents>>, Path(name): Path<String>) -> StatusCode {
+    match agents.get(&name) {
+        Some(agent) => {
+            agent.release_gate();
+            StatusCode::NO_CONTENT
+        }
+        None => StatusCode::NOT_FOUND,
+    }
+}
+
+async fn calls(
+    State(agents): State<Arc<Agents>>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let agent = agents.get(&name).ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(Value::Array(
+        agent.calls().iter().map(call_json).collect(),
+    )))
+}
+
+#[tokio::main]
+async fn main() {
+    let coder = FakeAgent::spawn(FakeAgentOptions {
+        releases: Some(FakeReleases::sample()),
+        bind: Some(addr("FAKE_CODER_ADDR", "127.0.0.1:4021")),
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    let plain = FakeAgent::spawn(FakeAgentOptions {
+        bind: Some(addr("FAKE_PLAIN_ADDR", "127.0.0.1:4022")),
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    println!("coder: {}", coder.card_url());
+    println!("plain: {}", plain.card_url());
+
+    let app = Router::new()
+        .route("/__control/{agent}/release-gate", post(release_gate))
+        .route("/__control/{agent}/calls", get(calls))
+        .with_state(Arc::new(Agents { coder, plain }));
+    let control = addr("FAKE_CONTROL_ADDR", "127.0.0.1:4020");
+    let listener = tokio::net::TcpListener::bind(control).await.unwrap();
+    println!("control: http://{control}/__control");
+    axum::serve(listener, app).await.unwrap();
+}

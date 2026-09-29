@@ -12,12 +12,14 @@ on:
     paths:
       - "orchestrator/**"
       - "docs/api/chat-api.yaml"
+      - "docs/api/examples/**"
       - ".github/workflows/orchestrator.yml"
   push:
     branches: [main]
     paths:
       - "orchestrator/**"
       - "docs/api/chat-api.yaml"
+      - "docs/api/examples/**"
       - ".github/workflows/orchestrator.yml"
 
 permissions:

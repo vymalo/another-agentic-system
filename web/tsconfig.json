@@ -25,6 +25,7 @@
     "src/**/*",
     "mock/**/*",
     "e2e/**/*",
+    "e2e-system/**/*",
     "*.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"

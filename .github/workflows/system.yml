@@ -1,0 +1,90 @@
+name: System
+
+# system-e2e: the chat surface in a real browser against the REAL orchestrator (the release
+# binary of the orchestrator workspace on Postgres) and the scripted fake A2A agents of
+# `orch-fake-agent`. No mock of the API contract is involved. See web/README.md.
+#
+# The path filters are broad on purpose: a change to either side, or to the contract or the
+# golden transcripts, must meet the other side. It can be made a required check.
+
+on:
+  pull_request:
+    paths:
+      - "orchestrator/**"
+      - "web/**"
+      - "docs/api/**"
+      - ".github/workflows/system.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orchestrator/**"
+      - "web/**"
+      - "docs/api/**"
+      - ".github/workflows/system.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: system-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  system-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orch_system
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        working-directory: orchestrator
+        run: rustup toolchain install 1.94.1 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+      - name: Build the orchestrator and the fake agents
+        working-directory: orchestrator
+        run: cargo build --locked -p orchestrator -p orch-testsupport --bin orchestrator --bin orch-fake-agent
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install the web dependencies and the browser
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Playwright against the real orchestrator
+        working-directory: web
+        run: pnpm test:e2e:system
+        env:
+          CI: "true"
+          ORCH_BIN: ${{ github.workspace }}/orchestrator/target/debug/orchestrator
+          FAKE_AGENT_BIN: ${{ github.workspace }}/orchestrator/target/debug/orch-fake-agent
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch_system
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: system-e2e-report
+          path: |
+            web/playwright-report
+            web/test-results
+            web/e2e-system/.run/orchestrator.log
+          if-no-files-found: ignore

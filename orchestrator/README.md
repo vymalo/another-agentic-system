@@ -120,7 +120,7 @@ change of the composition root, never a runtime plugin.
 | `crates/api` | `orch-api` | axum 0.8 routes for every operation of the contract, proxy-identity auth (fail closed), RFC 9457 problems, SSE. |
 | `crates/store-postgres` | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
 | `crates/agent-a2a` | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
-| `crates/testsupport` | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients. |
+| `crates/testsupport` | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
 | `crates/e2e` | `orch-e2e` | Tests only: chat API + dispatcher + A2A adapter + fake agent over real HTTP, on either store. |
 | `bin/orchestrator` | `orchestrator` | The composition root: environment and `AGENTS_FILE` parsing (`config.rs`, unit-tested) and the wiring, startup and graceful shutdown (`boot.rs`). No logic of its own. |
 
@@ -241,6 +241,10 @@ pass; CI always sets it (a `postgres:16` service). With it set:
   and a clean exit on SIGTERM. Its configuration-error tests (and the unit tests
   in `config.rs`) need no database; the unreachable-database one waits out sqlx's
   30 s connect timeout.
+
+- **Golden transcripts.** `crates/e2e/tests/golden.rs` writes what the orchestrator emits for
+  each scripted agent behaviour to [`docs/api/examples`](../docs/api/examples/README.md) and
+  fails when they differ (`UPDATE_GOLDEN=1` rewrites them). The web replays them.
 
 The contract conformance test (`crates/api/tests/conformance.rs`) starts the
 real router on a TCP port over the in-memory stack, drives every operation and
