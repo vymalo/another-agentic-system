@@ -20,5 +20,5 @@ message's `messageId` is `<message-id>`.
   runs each script through the real chat API, dispatcher and A2A adapter, and fails when a file
   differs. After an intended change, regenerate and review the diff:
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden`.
-- **Consumers:** `web/src/chat/golden.test.ts` maps every file with the chat surface's reducer
+- **Consumers:** `web/src/features/chat/lib/golden.test.ts` maps every file with the chat surface's reducer
   and converters, and `web/mock/golden.test.ts` requires the mock server to tell the same story.

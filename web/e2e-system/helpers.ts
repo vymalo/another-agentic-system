@@ -3,10 +3,36 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
 import pg from "pg";
-import { badge, errorLine, startThread, THREAD_URL } from "../e2e/helpers";
+import {
+  actorLabel,
+  agentMessage,
+  badge,
+  conversation,
+  errorLine,
+  openThreadList,
+  revisionOptions,
+  selectedOption,
+  startThread,
+  THREAD_URL,
+  threadList,
+  threadRows,
+} from "../e2e/helpers";
 import { DATABASE_URL, FAKE_CONTROL, ORCH, ORCH_SCRIPT, orchestratorEnv, RUN_DIR } from "./env";
 
-export { badge, errorLine, startThread, THREAD_URL };
+export {
+  actorLabel,
+  agentMessage,
+  badge,
+  conversation,
+  errorLine,
+  openThreadList,
+  revisionOptions,
+  selectedOption,
+  startThread,
+  THREAD_URL,
+  threadList,
+  threadRows,
+};
 
 export const ALICE = "alice@example.com";
 export const BOB = "bob@example.com";

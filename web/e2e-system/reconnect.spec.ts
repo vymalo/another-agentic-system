@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { WEB } from "./env";
+import { proxyOrigin, WEB } from "./env";
 import { FlakyProxy } from "./flaky-proxy";
 import { badge, releaseGate, resetDb, startThread, waitForExecution } from "./helpers";
 
 const PROXY_PORT = 3101;
 
 // The page is served through a forwarder that can cut the network under the open event stream.
-test.use({ baseURL: `http://127.0.0.1:${PROXY_PORT}` });
+test.use({ baseURL: proxyOrigin(PROXY_PORT) });
 
 const proxy = new FlakyProxy({ host: "127.0.0.1", port: Number(new URL(WEB).port) });
 test.beforeAll(() => proxy.start(PROXY_PORT));

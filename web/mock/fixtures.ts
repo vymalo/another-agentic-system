@@ -1,4 +1,4 @@
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 
 type Agent = components["schemas"]["Agent"];
 

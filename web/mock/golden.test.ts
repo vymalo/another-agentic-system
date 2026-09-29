@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 import { createMockServer } from "./server";
 
 /**
@@ -23,6 +23,7 @@ const server = createMockServer({ stepMs: 2, keepaliveMs: 1000 });
 let base = "";
 beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 afterAll(async () => {

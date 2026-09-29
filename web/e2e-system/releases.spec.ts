@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { badge, callsFor, resetDb, startThread } from "./helpers";
+import { badge, callsFor, resetDb, revisionOptions, selectedOption, startThread } from "./helpers";
 
 test.beforeEach(resetDb);
 
@@ -11,8 +11,8 @@ test("coder offers releases, plain does not; staging is echoed as coder-r51", as
   await page.getByLabel("Agent").selectOption({ label: "Coder" });
   const release = page.getByLabel("Release");
   await expect(release).toHaveValue("production");
-  await expect(release.locator("option:checked")).toHaveText("production — coder-r47");
-  await expect(release.locator('optgroup[label="Revisions"] option')).toHaveCount(3);
+  await expect(selectedOption(release)).toHaveText("production — coder-r47");
+  await expect(revisionOptions(release)).toHaveCount(3);
 
   await release.selectOption("staging");
   await page.getByLabel("Message").fill("echo use staging");

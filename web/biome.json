@@ -4,7 +4,7 @@
   "files": {
     "includes": [
       "**",
-      "!src/api/schema.d.ts",
+      "!src/lib/api/schema.d.ts",
       "!.next",
       "!test-results",
       "!playwright-report",
@@ -12,6 +12,7 @@
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
+  "css": { "parser": { "tailwindDirectives": true } },
   "javascript": { "formatter": { "quoteStyle": "double" } },
   "linter": {
     "enabled": true,
@@ -19,7 +20,13 @@
     "rules": {
       "preset": "recommended",
       "suspicious": { "noExplicitAny": "error" },
-      "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error" }
+      "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error" },
+      "style": {
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": { "filenameCases": ["kebab-case"], "requireAscii": true }
+        }
+      }
     }
   },
   "assist": { "actions": { "source": { "organizeImports": "on" } } }

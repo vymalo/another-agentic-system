@@ -5,9 +5,16 @@ import path from "node:path";
  * `playwright.system.config.ts` starts the orchestrator with it, and `restart.spec.ts` starts
  * it again after killing it.
  */
+// nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
 export const ORCH = "http://127.0.0.1:8080";
+// nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
 export const WEB = "http://127.0.0.1:3100";
+// nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
 export const FAKE_CONTROL = "http://127.0.0.1:4020/__control";
+
+/** The origin of the forwarder `reconnect.spec.ts` puts in front of the app. */
+// nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
+export const proxyOrigin = (port: number) => `http://127.0.0.1:${port}`;
 
 export const RUN_DIR = path.resolve(import.meta.dirname, ".run");
 export const ORCH_SCRIPT = path.resolve(import.meta.dirname, "orch.sh");

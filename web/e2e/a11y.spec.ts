@@ -4,20 +4,18 @@ import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { chromium, expect, test } from "@playwright/test";
 import lighthouse from "lighthouse";
-import { badge, startThread } from "./helpers";
-
-const BASE = "http://127.0.0.1:3000";
+import { BASE_URL, badge, startThread } from "./helpers";
 
 async function finishedThreadUrl(): Promise<string> {
-  const res = await fetch(`${BASE}/api/threads`, {
+  const res = await fetch(`${BASE_URL}/api/threads`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target: { agentId: "coder" }, text: "Implement the thing" }),
   });
   const { id } = (await res.json()) as { id: string };
   for (let i = 0; i < 100; i++) {
-    const t = (await (await fetch(`${BASE}/api/threads/${id}`)).json()) as { state: string };
-    if (t.state === "done") return `${BASE}/threads/${id}`;
+    const t = (await (await fetch(`${BASE_URL}/api/threads/${id}`)).json()) as { state: string };
+    if (t.state === "done") return `${BASE_URL}/threads/${id}`;
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error("thread never finished");

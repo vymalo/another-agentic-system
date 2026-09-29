@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 import { AGENTS, DEV_USER } from "./fixtures";
 import { cancelSteps, type Step, scriptFor } from "./scripts";
 

@@ -1,5 +1,13 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
-import { badge, startThread } from "./helpers";
+import {
+  actorLabel,
+  agentMessage,
+  badge,
+  openThreadList,
+  startThread,
+  threadList,
+} from "./helpers";
 
 test("create a thread and watch it finish", async ({ page }) => {
   await startThread(page, "Implement the thing");
@@ -18,13 +26,9 @@ test("create a thread and watch it finish", async ({ page }) => {
   await expect(page.getByText("This thread is done.")).toBeVisible();
 
   // the thread shows up in the list (on a phone the list is a collapsed disclosure)
-  const disclosure = page.locator("summary.sidebar__summary");
-  if (await disclosure.isVisible()) await disclosure.click();
+  await openThreadList(page);
   await expect(
-    page
-      .getByRole("navigation", { name: "Threads" })
-      .getByRole("button", { name: "Implement the thing" })
-      .first(),
+    threadList(page).getByRole("button", { name: "Implement the thing" }).first(),
   ).toBeVisible();
 });
 
@@ -35,9 +39,7 @@ test("agent text renders once, with a status line and the actor", async ({ page 
   await expect(badge(page)).toHaveText("Done");
   await expect(log.getByText("Working: Reading the repository")).toBeVisible();
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
-  await expect(
-    log.locator(".msg--agent", { hasText: "Plan: add a test" }).locator(".actor"),
-  ).toHaveText("coder · coder-r47");
+  await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("coder · coder-r47");
 });
 
 test("a partial agent message is replaced by its final version and renders once", async ({
@@ -53,4 +55,35 @@ test("a partial agent message is replaced by its final version and renders once"
     log.getByText("make the smallest change that fixes it", { exact: false }),
   ).toHaveCount(1);
   await expect(log.getByText("I'll start with the failing test")).toHaveCount(1);
+});
+
+test("phone: the thread list is a sheet that returns focus and has no serious violations", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(!isMobile, "the sheet is the phone layout; wide screens show a fixed column");
+  await startThread(page, "Implement the thing");
+  await expect(badge(page)).toHaveText("Done");
+
+  const trigger = page.getByRole("button", { name: "Threads" });
+  await expect(threadList(page)).toHaveCount(0);
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Threads" });
+  await expect(dialog).toBeVisible();
+  await expect(threadList(page)).toHaveCount(1);
+
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  expect(
+    results.violations.filter((v) => v.impact === "serious" || v.impact === "critical"),
+  ).toEqual([]);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  // picking a thread closes the sheet
+  await trigger.click();
+  await threadList(page).getByRole("button", { name: "New thread" }).click();
+  await expect(page).toHaveURL("/");
+  await expect(dialog).toHaveCount(0);
 });

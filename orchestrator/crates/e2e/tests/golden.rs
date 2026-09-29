@@ -1,6 +1,6 @@
 //! Golden transcripts: what the real orchestrator emits for each scripted agent behaviour,
 //! written to `docs/api/examples/*.events.json` and replayed by the web's
-//! `src/chat/golden.test.ts`, so the chat surface is checked against the orchestrator's real
+//! `src/features/chat/lib/golden.test.ts`, so the chat surface is checked against the orchestrator's real
 //! event sequences (kinds, status spellings, failure shape, message finality), not only
 //! against the schema in `docs/api/chat-api.yaml`.
 //!

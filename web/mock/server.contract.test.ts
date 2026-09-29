@@ -5,7 +5,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 import { createMockServer } from "./server";
 
 /**
@@ -69,6 +69,7 @@ const server = createMockServer({ stepMs: 5, keepaliveMs: 50 });
 let base = "";
 beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 afterAll(async () => {
