@@ -1,5 +1,15 @@
 # AGENTS_FILE of the compose `orchestrator` service (format: orchestrator/agents.example.yaml).
-# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN is a dummy set in compose.yaml.
+#
+# The FIRST entry is the default agent: GET /api/agents keeps this order and the chat UI preselects
+# the first (ADR 0014). That is the coder; the two mocks below are the scripted stand-ins to try the
+# other thread endings (dev/README.md). The coder needs the `app` profile of compose.yaml.
+#
+# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN and CODER_A2A_TOKEN are dummies set in
+# compose.yaml, and CODER_A2A_TOKEN equals A2A_BEARER_TOKENS of the `coder` service.
+- id: coder
+  name: Coder
+  cardUrl: http://coder:8080/.well-known/agent-card.json
+  tokenEnv: CODER_A2A_TOKEN
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json

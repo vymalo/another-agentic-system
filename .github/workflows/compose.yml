@@ -4,7 +4,8 @@ name: Compose
 # stand-in agents must answer as documented, and the REAL orchestrator client must still work against
 # them, so the mocks cannot drift from the protocol code they exist to test.
 # The `app` profile builds the orchestrator and web images, which the Orchestrator and Web workflows
-# already build; here it is only validated with `docker compose config`.
+# already build; here it is only validated with `docker compose config`. It is RUN by the Coder E2E
+# workflow (coder-e2e.yml), which also checks the mocks vendored under dev/coder.
 #
 # Path filters mean this check must not be made "required" for unrelated PRs.
 
@@ -68,4 +69,4 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Shellcheck the dev scripts
-        run: shellcheck dev/check-mocks.sh dev/try-thread.sh
+        run: shellcheck dev/*.sh dev/coder/*.sh

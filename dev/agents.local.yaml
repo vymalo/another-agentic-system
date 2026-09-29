@@ -1,6 +1,11 @@
 # AGENTS_FILE for running the orchestrator on the host (`cargo run -p orchestrator`) against the
 # compose mocks' published ports (defaults of compose.yaml; keep in step with MOCK_AGENT_PORT and
 # MOCK_AGENT_RELEASES_PORT if you change them). Needs MOCK_AGENT_TOKEN=<anything> in the environment.
+#
+# The coder (the default agent of dev/agents.yaml) is deliberately not listed: its agent card
+# advertises PUBLIC_URL, which in compose must be http://coder:8080/, a name a host-run orchestrator
+# cannot resolve (ADR 0014). To use the coder, run the orchestrator inside the compose network
+# (`docker compose --profile app up`). Here the first entry, mock-coder, is the default.
 - id: mock-coder
   name: Mock coder
   cardUrl: http://127.0.0.1:8081/.well-known/agent-card.json
