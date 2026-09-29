@@ -1,5 +1,5 @@
-//! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore) and
-//! [`Wakeup`](crate::Wakeup) implementation must pass it.
+//! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
+//! [`Wakeup`](crate::Wakeup) and [`AgentClient`](crate::AgentClient) implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -7,6 +7,7 @@
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+pub mod agent_client;
 pub mod thread_store;
 pub mod wakeup;
 
@@ -58,5 +59,36 @@ macro_rules! wakeup_conformance {
                 None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
             }
         }
+    };
+}
+
+/// Generates one `#[tokio::test]` per `AgentClient` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated [`AgentFixture`](agent_client::AgentFixture)
+/// (`None` skips the suite). Each case gives up after 10 s. The calling crate needs `tokio`
+/// (with `macros` and `rt`) as a dev-dependency.
+#[macro_export]
+macro_rules! agent_client_conformance {
+    ($make:path) => {
+        $crate::agent_client_conformance!(@cases $make;
+            read_card_is_live_and_unreachable_is_transient first_envelope_names_the_task
+            keys_are_unique_within_a_turn get_task_matches_the_live_stream
+            follow_up_after_input_required_continues_the_task
+            resubscribe_while_running_yields_the_rest_with_the_same_keys
+            finished_or_unknown_task_is_not_found a_turn_outlives_its_stream
+            cancel_running_then_cancel_finished_is_refused failed_task_carries_its_message
+            find_task_by_message_never_names_a_wrong_task
+            unreachable_send_has_a_clean_public_detail
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::agent_client::$case(fixture).await,
+                    None => eprintln!("skipped: no agent available"),
+                }
+            }
+        )*
     };
 }

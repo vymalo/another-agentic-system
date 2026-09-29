@@ -24,6 +24,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 tokio = { workspace = true, features = ["time", "io-util"] }
 

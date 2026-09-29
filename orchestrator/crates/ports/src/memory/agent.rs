@@ -74,6 +74,7 @@ struct State {
     calls: Vec<Call>,
     cards: HashMap<AgentId, AgentCardInfo>,
     cards_down: HashSet<AgentId>,
+    unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
     no_resubscribe: bool,
 }
@@ -97,6 +98,7 @@ struct Shared {
 /// - `gate`: `working`, then waits for [`ScriptedAgent::release_gate`], then artifact, `completed`;
 /// - `drop`: like `gate`, but the initial stream is cut after two envelopes;
 /// - `slow`: `working`, then runs until cancelled;
+/// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
 pub struct ScriptedAgent {
@@ -147,6 +149,13 @@ impl ScriptedAgent {
         } else {
             st.cards_down.remove(&AgentId::new(agent));
         }
+    }
+
+    /// Makes the whole agent unreachable, as if nothing listened at its address: reading its
+    /// card, sending, resubscribing, polling, cancelling and searching all fail with
+    /// `Unreachable`. (`set_card_down` only affects the card.)
+    pub fn set_unreachable(&self, agent: &str) {
+        self.state().unreachable.insert(AgentId::new(agent));
     }
 
     /// The next `n` sends fail with what `error` builds (an `AgentError` is not `Clone`).
@@ -304,7 +313,7 @@ impl Shared {
 }
 
 async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
-    use AgentTaskState::{Completed, InputRequired, Working};
+    use AgentTaskState::{Completed, Failed, InputRequired, Working};
     let script = text.split_whitespace().next().unwrap_or("").to_owned();
     shared.push_status(&task, Working, None);
     match script.as_str() {
@@ -313,6 +322,7 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
+        "failed" => shared.push_status(&task, Failed, Some("scripted failure")),
         "gate" | "drop" => {
             shared.gate.notified().await;
             shared.push_artifact(&task, "echo", format!("echo: {text}"));
@@ -334,7 +344,7 @@ impl AgentClient for ScriptedAgent {
         st.calls.push(Call::ReadCard {
             agent: ep.id.clone(),
         });
-        if st.cards_down.contains(&ep.id) {
+        if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
             return Err(AgentError::unreachable("card unreachable"));
         }
         Ok(st.cards.get(&ep.id).cloned().unwrap_or(AgentCardInfo {
@@ -355,6 +365,9 @@ impl AgentClient for ScriptedAgent {
                 text: req.text.clone(),
                 release: req.release.clone(),
             });
+            if st.unreachable.contains(&req.endpoint.id) {
+                return Err(AgentError::unreachable("agent unreachable"));
+            }
             if let Some(err) = st.fail_sends.pop_front() {
                 return Err(err);
             }
@@ -420,6 +433,9 @@ impl AgentClient for ScriptedAgent {
             st.calls.push(Call::Resubscribe {
                 task_id: task.task_id.clone(),
             });
+            if st.unreachable.contains(&task.endpoint.id) {
+                return Err(AgentError::unreachable("agent unreachable"));
+            }
             if st.no_resubscribe {
                 return Err(AgentError::Unsupported("resubscribe".to_owned()));
             }
@@ -462,6 +478,9 @@ impl AgentClient for ScriptedAgent {
         st.calls.push(Call::GetTask {
             task_id: task.task_id.clone(),
         });
+        if st.unreachable.contains(&task.endpoint.id) {
+            return Err(AgentError::unreachable("agent unreachable"));
+        }
         snapshot(&st, &task.task_id)
     }
 
@@ -471,6 +490,9 @@ impl AgentClient for ScriptedAgent {
             st.calls.push(Call::Cancel {
                 task_id: task.task_id.clone(),
             });
+            if st.unreachable.contains(&task.endpoint.id) {
+                return Err(AgentError::unreachable("agent unreachable"));
+            }
             let rec = st
                 .tasks
                 .get(&task.task_id)
@@ -494,11 +516,13 @@ impl AgentClient for ScriptedAgent {
         context_id: &str,
         message_id: &str,
     ) -> Result<Option<String>, AgentError> {
-        let _ = ep;
         let mut st = self.state();
         st.calls.push(Call::Find {
             message_id: message_id.to_owned(),
         });
+        if st.unreachable.contains(&ep.id) {
+            return Err(AgentError::unreachable("agent unreachable"));
+        }
         Ok(st
             .tasks
             .iter()

@@ -144,7 +144,7 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres | **Built** |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0 | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
@@ -658,8 +658,16 @@ by the orchestrator: the web has no server-side code and never touches Postgres.
   `orch-surface-chat-api` drives every operation and validates each response against them.
 - **Conformance testkit per port:** `thread_store_conformance!` and `wakeup_conformance!` run
   against the in-memory implementations and against Postgres, so "does my store behave" is a test,
-  not a reading exercise (ADR 0009, rule 3). There is no testkit for `AgentClient` yet; the A2A
-  adapter is tested against an in-process A2A 1.0 agent over real HTTP.
+  not a reading exercise (ADR 0009, rule 3). `agent_client_conformance!` does the same for
+  `AgentClient`: twelve cases (a live card and a transient failure for an unreachable one; the first
+  envelope names the task; unique idempotency keys; `get_task` agrees with the stream; a follow-up
+  continues an `input-required` task; `resubscribe` yields the rest under the same keys, or says
+  `Unsupported`; a finished or unknown task is not found; a turn outlives its dropped stream; a
+  running task is cancelled and a completed one is refused; a failed task carries its message;
+  `find_task_by_message` never names a wrong task; an unreachable send has a public detail without an
+  address). Each has a 10 s timeout, and an implementation supplies an `AgentFixture`. It runs
+  against the scripted in-memory agent and against the A2A adapter over real HTTP, with an in-process
+  A2A 1.0 agent behind it.
 - **End to end, on both stores:** `orch-e2e` runs each scenario as `<name>::memory` and
   `<name>::postgres` (chat API, dispatcher, A2A adapter, a fake agent): restart mid-stream with no
   gap and no duplicate, several replicas on one database, SSE resume, blocked and follow-up, cancel,
@@ -672,8 +680,7 @@ by the orchestrator: the web has no server-side code and never touches Postgres.
   tests check that streams are well formed at every prefix and that resuming from any resume point
   yields exactly the remaining suffix.
 
-**Planned:** contract tests per further protocol against recorded fixtures, and a conformance
-testkit for `AgentClient`.
+**Planned:** contract tests per further protocol against recorded fixtures.
 
 ## Libraries
 

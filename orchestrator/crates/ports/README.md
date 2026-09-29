@@ -42,7 +42,7 @@ let _store = ports.store();
 
 | Feature | Default | Effect |
 |---|---|---|
-| `testkit` | no | `memory::{MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds, ..}`, and the conformance `testkit` with the macros `thread_store_conformance!` and `wakeup_conformance!`. Enable it as a **dev-dependency** feature in adapter crates |
+| `testkit` | no | `memory::{MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds, ..}`, and the conformance `testkit` with the macros `thread_store_conformance!`, `wakeup_conformance!` and `agent_client_conformance!`. `ScriptedAgent` runs the scripts `echo`, `ask`, `gate`, `slow`, `failed` (fails the task with a message; `fail` rejects the send) and `drop`, and `set_unreachable(agent)` makes every call to that agent fail as if nothing listened. Enable it as a **dev-dependency** feature in adapter crates |
 
 ## Tests
 
@@ -51,6 +51,7 @@ let _store = ports.store();
   implementation of the suite.
 * The store cases `stale_attempt_is_fenced`, `commit_after_another_owner_reclaims_is_fenced`,
   `commit_after_complete_is_fenced` and `expired_unclaimed_lease_still_commits` pin the fence.
+* `tests/agent_conformance.rs`: the `AgentClient` testkit against `ScriptedAgent`.
 * Unit tests in `src/` pin the error classification tables.
 
 Adapters run the same testkit; see
@@ -60,6 +61,13 @@ or `Wakeup` implementation:
 ```rust
 async fn make() -> Option<MyStore> { /* fresh, isolated store; None skips */ }
 orch_ports::thread_store_conformance!(make);
+```
+
+An `AgentClient` implementation supplies an `AgentFixture` (the client, an endpoint of an agent that runs the scripts `echo`, `ask`, `gate`, `slow` and `fail`, an endpoint nobody listens on, and the gate the `gate` script waits for; override `text(script)` if the agent's words differ):
+
+```rust
+async fn make() -> Option<MyFixture> { /* client + a healthy agent; None skips */ }
+orch_ports::agent_client_conformance!(make);
 ```
 
 The calling crate needs `tokio` (with `macros` and `rt`) as a dev-dependency.
