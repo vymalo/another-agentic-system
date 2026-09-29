@@ -79,6 +79,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { $ref: "#/components/responses/Problem" }
+        "502": { description: "The target agent could not be reached to validate the request (a release is selected and its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the target agent is rate limiting; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
