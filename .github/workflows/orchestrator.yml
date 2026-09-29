@@ -1,0 +1,58 @@
+name: Orchestrator
+
+# fmt, clippy and tests of the orchestrator workspace. The container image job
+# is added together with the Dockerfile.
+#
+# Path filters mean this check must not be made "required" for unrelated PRs.
+
+on:
+  pull_request:
+    paths:
+      - "orchestrator/**"
+      - "docs/api/chat-api.yaml"
+      - ".github/workflows/orchestrator.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orchestrator/**"
+      - "docs/api/chat-api.yaml"
+      - ".github/workflows/orchestrator.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orchestrator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orch_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ORCH_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch_test
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
