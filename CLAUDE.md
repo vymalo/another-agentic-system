@@ -20,7 +20,7 @@ webhooks, and can be driven the same way. **Status: MVP steps 1–2 are built**
 | `docs/mvp.md`, `docs/open-questions.md`, `docs/lessons-from-agent-canvas.md` | Build order, open/closed questions, lessons as requirements |
 | `tools/docs-check/` | Diagram + link checker (also run in CI) |
 | `tools/agui-conformance/` | Reads the AG-UI goldens through the reference client, `@ag-ui/client` 1.0.0 (also run in CI) |
-| `compose.yaml`, `dev/` | Local stack: Postgres, WireMock A2A mock agents, and the `app` profile (orchestrator, web, edge proxy standing in for oauth2-proxy, and adam-coder, the default agent, pinned by tag and digest beside mocks vendored from adam-rs into `dev/coder/`, see `dev/coder/UPSTREAM`); `dev/coder-e2e.sh` turns a chat message into a pull request (CI: `coder-e2e.yml`); `dev/README.md` documents the scenarios |
+| `compose.yaml`, `dev/` | Local stack: Postgres, WireMock A2A mock agents, and the `app` profile (orchestrator, web, edge proxy standing in for oauth2-proxy, and adam-coder, the default agent, pinned by tag and digest beside mocks vendored from adam-rs into `dev/coder/`, see `dev/coder/UPSTREAM`); `dev/coder-e2e.sh` turns a chat message into a pull request (CI: `coder-e2e.yml`); the `split` profile adds two workers beside the orchestrator as a control plane, and `dev/split-e2e.sh` kills the worker that holds a task (same workflow); `dev/README.md` documents the scenarios |
 | `.agents/skills/` | Repo skills; `.claude/skills/*` are symlinks to them |
 
 ## Invariants — check every change against these

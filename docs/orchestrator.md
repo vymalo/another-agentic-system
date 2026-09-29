@@ -454,6 +454,9 @@ next_attempt_at <= now()) OR (status = 'inflight')` (every `inflight` row is eit
 so both are counted). The edge proxy of the compose stack routes only the application and does not
 expose `/metrics`; scrape the pods, not the public ingress.
 
+The `split` profile of the compose stack ([`dev/README.md`](../dev/README.md#the-split-profile-a-control-plane-and-two-workers))
+runs a control plane and two workers, and `dev/split-e2e.sh` kills the worker that holds a task.
+
 **Trace context** is not carried yet. A W3C `traceparent` would have to cross the outbox, which
 means a column (a migration), and an OpenTelemetry exporter; see the open question in
 [open-questions.md](open-questions.md).

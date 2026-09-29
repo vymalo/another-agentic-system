@@ -8,7 +8,9 @@ name: Coder E2E
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run the script twice
-#              (with OpenCode, then NO_OPENCODE=1)
+#              (with OpenCode, then NO_OPENCODE=1), then restart the orchestrator as a control plane
+#              beside two workers (profile `split`) and run dev/split-e2e.sh, which SIGKILLs the
+#              worker that holds a task (ADR 0015)
 #
 # The path filters are broad on purpose: a change to the orchestrator, the web UI, the API contract
 # or the dev stack must meet the coder. Path filters mean this check must not be made "required"
@@ -100,8 +102,20 @@ jobs:
         run: dev/coder-e2e.sh
       - name: The same without OpenCode (the check command makes the change)
         run: NO_OPENCODE=1 dev/coder-e2e.sh
+      - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
+        # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
+        # two workers from the same image; the script then needs every process to deliver through them.
+        env:
+          COMPOSE_PROFILES: app,split
+          ORCHESTRATOR_ROLE: control-plane
+        run: |
+          docker compose up -d --no-build --wait --wait-timeout 300
+          dev/split-e2e.sh
       - name: Logs and journals
         if: failure()
+        # The split profile is named here too, so the workers' logs are in the output.
+        env:
+          COMPOSE_PROFILES: app,split
         run: |
           docker compose ps --all || true
           docker compose logs --no-color || true
@@ -113,4 +127,6 @@ jobs:
           curl -s http://127.0.0.1:8091/__admin/requests/unmatched | jq -c '.requests[] | {method: .method, url: .url, body: (.body // "" | .[0:300])}' || true
       - name: Tear down
         if: always()
+        env:
+          COMPOSE_PROFILES: app,split
         run: docker compose down -v
