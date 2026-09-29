@@ -1,35 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyEvents, emptyLog, lastThreadStateEvent } from "@/features/chat/lib/event-log";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, problemMessage } from "@/lib/api/client";
-import type { ApiEvent, ApiThread, ThreadState } from "@/lib/api/types";
-import { isTerminal } from "@/lib/api/types";
-import { type Connection, useEventStream } from "./use-event-stream";
+import type { ApiThread } from "@/lib/api/types";
 
-export type ThreadView = {
-  log: ReturnType<typeof emptyLog>;
+export type ThreadMeta = {
+  /** `GET /api/threads/{id}`: title, target and the newest `lastSeq`; null until fetched. */
   thread: ApiThread | null;
-  /** Server-derived state: a `thread_state` event newer than the last fetch, else the fetch. */
-  state: ThreadState | undefined;
-  loaded: boolean;
   notFound: boolean;
   error: string | null;
-  connection: Connection;
-  /** Feed events known to be real (server responses), e.g. the 202 body of a follow-up. */
-  addEvents: (events: readonly ApiEvent[]) => void;
+  /** Fetch again soon (debounced): the conversation moved on. */
+  refetchSoon: () => void;
   reload: () => void;
 };
 
 const REFETCH_DEBOUNCE_MS = 150;
-const REFETCH_KINDS = new Set(["user_message", "agent_status", "thread_state"]);
 
-/** One thread: its event log (via SSE), its metadata (via GET) and the state derived from both. */
-export function useThread(threadId: string | null): ThreadView {
-  const [log, setLog] = useState(() => emptyLog(threadId ?? ""));
+/**
+ * The resource half of a thread (`GET /api/threads/{id}`). The conversation itself is AG-UI:
+ * `ThreadAgent` follows it and the runtime renders it; this is only the metadata around it.
+ */
+export function useThreadMeta(threadId: string | null): ThreadMeta {
   const [thread, setThread] = useState<ApiThread | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const refetchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const fetchThread = useCallback(async () => {
     if (threadId === null) return;
@@ -37,9 +31,7 @@ export function useThread(threadId: string | null): ThreadView {
       data,
       error: err,
       response,
-    } = await api.GET("/api/threads/{threadId}", {
-      params: { path: { threadId } },
-    });
+    } = await api.GET("/api/threads/{threadId}", { params: { path: { threadId } } });
     if (data) {
       setThread(data);
       setError(null);
@@ -54,42 +46,21 @@ export function useThread(threadId: string | null): ThreadView {
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey re-runs the initial fetch
   useEffect(() => {
     void fetchThread().catch((e: unknown) => setError(problemMessage(e)));
-    return () => clearTimeout(refetchTimer.current);
+    return () => clearTimeout(timer.current);
   }, [fetchThread, reloadKey]);
 
-  const addEvents = useCallback(
-    (events: readonly ApiEvent[]) => {
-      setLog((prev) => applyEvents(prev, events));
-      if (events.some((e) => REFETCH_KINDS.has(e.kind))) {
-        clearTimeout(refetchTimer.current);
-        refetchTimer.current = setTimeout(() => {
-          void fetchThread().catch(() => {});
-        }, REFETCH_DEBOUNCE_MS);
-      }
-    },
-    [fetchThread],
-  );
-
-  const stateEvent = lastThreadStateEvent(log);
-  const state = useMemo<ThreadState | undefined>(() => {
-    if (stateEvent && (!thread || stateEvent.seq > thread.lastSeq)) return stateEvent.state;
-    return thread?.state ?? stateEvent?.state;
-  }, [stateEvent, thread]);
-
-  // A finished thread that is fully loaded needs no stream. Its 404/error also stops it.
-  const caughtUp = thread !== null && log.lastSeq >= thread.lastSeq;
-  const enabled = threadId !== null && !notFound && !(isTerminal(state) && caughtUp);
-  const connection = useEventStream(threadId ?? "", { enabled, onEvents: addEvents });
+  const refetchSoon = useCallback(() => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      void fetchThread().catch(() => {});
+    }, REFETCH_DEBOUNCE_MS);
+  }, [fetchThread]);
 
   return {
-    log,
     thread,
-    state,
-    loaded: threadId === null || thread !== null || notFound,
     notFound,
     error,
-    connection,
-    addEvents,
+    refetchSoon,
     reload: () => setReloadKey((k) => k + 1),
   };
 }

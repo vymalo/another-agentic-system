@@ -27,7 +27,10 @@
     "test:e2e:system": "playwright test -c playwright.system.config.ts"
   },
   "dependencies": {
+    "@ag-ui/client": "1.0.0",
     "@assistant-ui/react": "0.15.22",
+    "@assistant-ui/react-ag-ui": "0.0.62",
+    "@assistant-ui/react-generative-ui": "0.0.21",
     "@assistant-ui/react-markdown": "0.14.17",
     "@tailwindcss/postcss": "4.3.3",
     "class-variance-authority": "0.7.1",
@@ -39,6 +42,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "remark-gfm": "4.0.1",
+    "rxjs": "7.8.1",
     "shadcn": "4.21.0",
     "tailwind-merge": "3.7.0",
     "tailwindcss": "4.3.3",

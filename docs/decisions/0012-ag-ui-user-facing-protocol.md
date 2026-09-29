@@ -17,6 +17,22 @@
   them with `Deprecation: @1790640000` (RFC 9745; the day of this note), on those operations only. No
   `Sunset` (removal follows the web, not a date) and no `Link` (optional in the RFC, and the successor is
   a URI template). The decision stands. Details: [`api/agui.md`](../api/agui.md#the-contract).
+  Status note (2026-09-29): the web runs on AG-UI. `@assistant-ui/react-ag-ui` 0.0.62 and
+  `@assistant-ui/react-generative-ui` 0.0.21 are pinned exactly, `@ag-ui/client` is overridden to
+  1.0.0 (spike S5: the runtime works on it), and the REST interaction path is gone from the web. The
+  decision stands; how the section "The web" was carried out differs in four places, each for a
+  reason found while building it. (1) `abortRun()` is a truncation, not the cancel endpoint: the
+  runtime calls it on unmount and on thread switches, so navigating away would have cancelled the
+  run; Cancel is a separate call (`ThreadAgent.cancel()`), the outcome still arrives as
+  `RUN_FINISHED{cancelled}`. (2) There is no history adapter: reload replays the connect stream
+  through the runtime's own run path, and runs the client did not start are applied through the
+  runtime's public API (`thread.startRun`, `steerAway`), so patches 1 (activities dropped on
+  reload) and 2 (live subscription) are not needed, and only the `cancelled` outcome is patched;
+  the three gaps are drafted as upstream issues anyway. (3) The connect stream is handed over in
+  whole groups (an `id:` closes one), so a cut connection cannot leave half a message in the
+  runtime. (4) The browser mints thread ids as UUIDv7, because the resource API lists threads by
+  id. Details: [`web/README.md`](../../web/README.md#the-chat-layer),
+  [`web/patches/UPSTREAM.md`](../../web/patches/UPSTREAM.md).
 
 ## Context
 
@@ -219,15 +235,16 @@ fix proposed upstream.
 - A `ThreadAgent` (an `AbstractAgent` subclass) owns one connect stream per open thread. `run()`
   POSTs and then yields that run's frames from the connect stream (deduplicated by seq) until its
   terminal event. `abortRun()` calls the cancel endpoint and keeps reading until
-  `RUN_FINISHED{outcome:{type:"cancelled"}}`.
+  `RUN_FINISHED{outcome:{type:"cancelled"}}`. *(Built differently: see the status note above.)*
 - **Patches** live in `web/patches/` through pnpm `patchedDependencies`; a dependency change goes
   through pnpm `overrides`, never a patched `package.json`. Each patch names its upstream issue or
   pull request and is deleted when a pinned release contains the fix. The known gaps:
   1. **Activities are dropped on reload** when no assistant message precedes them (our first
-     status line). The patch keeps an owner-less activity as its own message.
+     status line). The patch keeps an owner-less activity as its own message. *(Not needed: see the
+     status note above.)*
   2. **No live subscription:** the runtime applies only events of a run it started. The patch lets
      it apply runs it did not start (another tab, a producer-initiated run, a run in flight at
-     reload), fed by our connect stream.
+     reload), fed by our connect stream. *(Done outside the package, see the status note above.)*
   3. **Pre-1.0 client:** it depends on `@ag-ui/client` `^0.0.59`. We override it to 1.0.0 when a
      spike shows the runtime works on 1.0 (patching the few renamed events and adding the
      `cancelled` outcome); otherwise the runtime keeps 0.0.59 while our goldens are checked with

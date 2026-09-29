@@ -55,8 +55,8 @@ x-orchestrator-env: &orchestrator-env
   MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
   LOG_FORMAT: text
-  # The interaction surfaces to mount (ADR 0012): the AG-UI routes, and the legacy chat API the web
-  # still uses. It becomes `agui` alone once the web runs on AG-UI.
+  # The interaction surfaces to mount (ADR 0012): the AG-UI routes, and the legacy chat API, which
+  # the web no longer calls (it runs on AG-UI). It becomes `agui` alone in the next slice.
   ORCH_SURFACES: agui,chat-api
   # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
 

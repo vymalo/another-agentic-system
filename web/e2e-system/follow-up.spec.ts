@@ -8,8 +8,13 @@ test("a finished thread refuses a follow-up with the 409 problem", async ({ page
   await expect(badge(page)).toHaveText("Done");
   await expect(page.getByLabel("Message")).toBeDisabled();
 
-  const res = await page.request.post(`/api/threads/${threadId(page)}/messages`, {
-    data: { text: "one more thing" },
+  const res = await page.request.post("/agui/agents/plain", {
+    headers: { Accept: "text/event-stream" },
+    data: {
+      threadId: threadId(page),
+      runId: crypto.randomUUID(),
+      messages: [{ id: crypto.randomUUID(), role: "user", content: "one more thing" }],
+    },
   });
   expect(res.status()).toBe(409);
   expect(res.headers()["content-type"]).toContain("application/problem+json");

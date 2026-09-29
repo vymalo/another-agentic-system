@@ -15,8 +15,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > [Capabilities document](#capabilities-document)), all tested end to end, the connect stream also
 > with a replica killed under it. The three routes are operations of [`chat-api.yaml`](chat-api.yaml)
 > ([The contract](#the-contract)), and the four legacy operations it deprecates answer with
-> `Deprecation`. Not built: the web on AG-UI and A2UI: for those this page is the contract the next
-> slices implement. What is built and what is planned, as a diagram:
+> `Deprecation`. The **web runs on it** (2026-09-29): `@assistant-ui/react-ag-ui` over a `ThreadAgent`
+> that follows the connect stream and sends runs to the run route, see
+> [`web/README.md`](../../web/README.md#the-chat-layer). Not built: A2UI: for it this page is the
+> contract the next slices implement. What is built and what is planned, as a diagram:
 > [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were *verified
 > 2026-09-29* against the pages linked.
 
@@ -78,7 +80,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 
 | Id | Rule |
 |---|---|
-| `threadId` | The thread UUID. Minted by the consumer on its first run (a UUID; 400 otherwise); the legacy `createThread` mints it server-side. |
+| `threadId` | The thread UUID. Minted by the consumer on its first run (a UUID; 400 otherwise); the legacy `createThread` mints it server-side. The resource API lists threads by id, newest first, so a consumer should mint a time-ordered **UUIDv7**, as the web does: a random v4 would shuffle the list. |
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id). |
@@ -153,7 +155,7 @@ gets everything.
 | Known `threadId`, URL `agentId` is not the thread's target | 409 before the stream |
 | Known `threadId`, exactly one user message id not in the log, text content | `Input::UserMessage` |
 | Several new messages, or a new non-user message | 422 before the stream (the orchestrator owns the history) |
-| Messages whose ids are already in the log | Ignored: reconciliation by id, so a client that re-sends the whole transcript works |
+| Messages whose ids are already in the log | Ignored: reconciliation by id, so a client that re-sends the whole transcript works (the web sends only the one new message, or only the `resume`) |
 | `resume:[{interruptId:"int-n", status:"resolved", payload:{text}}]` on a blocked thread | `Input::UserMessage{text}` (the A2A task continues) |
 | `resume` `cancelled` plus a new user message | `Input::UserMessage` with the new text |
 | `resume` `cancelled`, nothing new | `Input::Cancel` |

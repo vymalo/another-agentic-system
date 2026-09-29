@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { revisionOptions, selectedOption } from "./helpers";
+import { RELEASE_CHANNELS_URI, revisionOptions, selectedOption } from "./helpers";
 
 test("the release dropdown appears only for an agent with releases", async ({ page }) => {
   await page.goto("/");
@@ -19,13 +19,13 @@ test("the selected release is sent with the new thread", async ({ page }) => {
   await page.getByLabel("Release").selectOption("staging");
   await page.getByLabel("Message").fill("Use staging");
   const request = page.waitForRequest(
-    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/api/threads",
+    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/coder",
   );
   await page.getByRole("button", { name: "Send" }).click();
-  expect((await request).postDataJSON()).toEqual({
-    target: { agentId: "coder", release: "staging" },
-    text: "Use staging",
-  });
+  const body = (await request).postDataJSON();
+  // the release travels in forwardedProps under the extension URI (ADR 0008); the text is the message
+  expect(body.forwardedProps).toEqual({ [RELEASE_CHANNELS_URI]: { release: "staging" } });
+  expect(body.messages).toMatchObject([{ role: "user", content: "Use staging" }]);
   await expect(page).toHaveURL(/\/threads\//);
   await expect(page.getByText("coder · staging")).toBeVisible();
   await expect(page.getByText("coder · coder-r51").first()).toBeVisible();
@@ -36,11 +36,8 @@ test("an agent without releases sends no release", async ({ page }) => {
   await page.getByLabel("Agent").selectOption({ label: "Reviewer" });
   await page.getByLabel("Message").fill("Review please");
   const request = page.waitForRequest(
-    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/api/threads",
+    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/reviewer",
   );
   await page.getByRole("button", { name: "Send" }).click();
-  expect((await request).postDataJSON()).toEqual({
-    target: { agentId: "reviewer" },
-    text: "Review please",
-  });
+  expect((await request).postDataJSON().forwardedProps).toEqual({});
 });

@@ -3,14 +3,16 @@ import { badge, resetDb, startThread } from "./helpers";
 
 test.beforeEach(resetDb);
 
-test("a finished thread opened by URL renders once and the stream closes", async ({ page }) => {
+test("a finished thread opened by URL renders once and the connect stream closes", async ({
+  page,
+}) => {
   await startThread(page, "echo history", "Plain");
   await expect(badge(page)).toHaveText("Done");
 
-  // every /stream request the page makes from here on, and whether it has ended
+  // every connect request the page makes from here on, and whether it has ended
   const open = new Set<Request>();
   let started = 0;
-  const isStream = (r: Request) => new URL(r.url()).pathname.endsWith("/stream");
+  const isStream = (r: Request) => new URL(r.url()).pathname.endsWith("/connect");
   page.on("request", (r) => {
     if (!isStream(r)) return;
     started++;
@@ -28,11 +30,11 @@ test("a finished thread opened by URL renders once and the stream closes", async
   await expect(log.getByRole("link", { name: /^Pull request / })).toHaveCount(1);
   await expect(log.getByText("echo: echo history")).toHaveCount(1);
 
-  // the history was replayed through the stream once, and the stream is closed afterwards
+  // the history was replayed through the connect stream once, and the stream is closed afterwards
   expect(started).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => open.size, { message: "open /stream requests" }).toBe(0);
+  await expect.poll(() => open.size, { message: "open /connect requests" }).toBe(0);
   const total = started;
-  // a window focus refetches the thread list; it must not reopen the finished thread's stream
+  // a window focus refetches the thread list; it must not reopen the finished thread's connect stream
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page.waitForLoadState("networkidle");
   expect(started).toBe(total);

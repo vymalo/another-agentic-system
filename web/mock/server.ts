@@ -1,16 +1,19 @@
 /**
- * A small stateful mock of docs/api/chat-api.yaml for `pnpm dev:mock` and the e2e tests.
+ * A small stateful mock of the orchestrator for `pnpm dev:mock` and the e2e tests: the REST
+ * resource API of docs/api/chat-api.yaml (agents, threads, cancel) and the AG-UI operations
+ * (`POST /agui/agents/{agentId}`, `GET /agui/threads/{id}/connect`, capabilities).
  *
- * It is typed from the generated contract types and checked against the contract's schemas by
- * server.contract.test.ts. Authentication is not enforced (oauth2-proxy's job in production).
- * The first word of the first message picks a scripted agent behaviour: see scripts.ts and
- * web/README.md. The scripts follow what the real orchestrator emits (docs/api/examples).
+ * It is typed from the generated contract types and checked against the contract by
+ * server.contract.test.ts; the AG-UI frames are the orchestrator's (mock/projection.ts, checked
+ * against the goldens of docs/api/examples/agui by golden.test.ts). Authentication is not enforced
+ * (oauth2-proxy's job in production). The first word of the first message picks a scripted agent
+ * behaviour: see scripts.ts and web/README.md.
  */
-import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import type { components } from "../src/lib/api/schema";
 import { AGENTS, DEV_USER } from "./fixtures";
+import { type Audience, type Frame, Projector } from "./projection";
 import { cancelSteps, type Step, scriptFor } from "./scripts";
 
 type Thread = components["schemas"]["Thread"];
@@ -18,10 +21,25 @@ type Event = components["schemas"]["Event"];
 type Actor = components["schemas"]["Actor"];
 type ThreadState = components["schemas"]["ThreadState"];
 
+const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 type Run = {
   timer: NodeJS.Timeout | undefined;
   pending: Step[];
   resume: ((answer: string) => Step[]) | undefined;
+};
+
+/** One open response that gets the frames of a thread as its log grows. */
+type Viewer = {
+  res: http.ServerResponse;
+  projector: Projector;
+  audience: Audience;
+  /** When the response ends: `first-close` at the first run close (a run response), `after-replay` when the replay is over and no run is open (`?mode=run`), else never. */
+  end: "first-close" | "after-replay" | "never";
+  keepalive: NodeJS.Timeout;
+  /** Test hook: frames left before the connection is cut. */
+  cutAfter: number | undefined;
 };
 
 export type MockOptions = { stepMs?: number; keepaliveMs?: number };
@@ -32,16 +50,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 
   const threads = new Map<string, Thread>();
   const events = new Map<string, Event[]>();
-  const subscribers = new Map<string, Set<http.ServerResponse>>();
+  const viewers = new Map<string, Set<Viewer>>();
   const runs = new Map<string, Run>();
+  let cutNextConnectAfter: number | undefined;
 
   const reset = () => {
     for (const r of runs.values()) clearTimeout(r.timer);
-    for (const set of subscribers.values()) for (const res of set) res.end();
+    for (const set of viewers.values()) for (const v of set) closeViewer(v, true);
     threads.clear();
     events.clear();
-    subscribers.clear();
+    viewers.clear();
     runs.clear();
+    cutNextConnectAfter = undefined;
   };
 
   // ---- helpers -------------------------------------------------------------------------
@@ -81,6 +101,83 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     t.updatedAt = new Date().toISOString();
   };
 
+  const infoOf = (t: Thread) => ({
+    threadId: t.id,
+    title: t.title,
+    target: {
+      agentId: t.target.agentId,
+      ...(t.target.release ? { release: t.target.release } : {}),
+    },
+  });
+
+  // ---- streams -------------------------------------------------------------------------
+
+  const frameText = ({ id, event }: Frame) =>
+    `${id === undefined ? "" : `id: ${id}\n`}data: ${JSON.stringify(event)}\n\n`;
+
+  function closeViewer(v: Viewer, abrupt = false) {
+    clearInterval(v.keepalive);
+    for (const set of viewers.values()) set.delete(v);
+    if (abrupt) v.res.destroy();
+    else v.res.end();
+  }
+
+  function write(v: Viewer, frames: Frame[]) {
+    for (const f of frames) {
+      if (v.cutAfter !== undefined) {
+        if (v.cutAfter <= 0) return closeViewer(v, true);
+        v.cutAfter -= 1;
+      }
+      v.res.write(frameText(f));
+    }
+    if (v.cutAfter !== undefined && v.cutAfter <= 0) closeViewer(v, true);
+  }
+
+  /**
+   * Starts an SSE response for `thread`: the frames of the events after `fromSeq` (the ones up to
+   * it are folded and not written, like the orchestrator does), then the live ones.
+   */
+  function startViewer(
+    res: http.ServerResponse,
+    thread: Thread,
+    opts: { fromSeq: number; audience?: Audience; end: Viewer["end"] },
+  ) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    const projector = new Projector(infoOf(thread));
+    const log = events.get(thread.id) ?? [];
+    for (const e of log) if (e.seq <= opts.fromSeq) projector.apply(e);
+    const viewer: Viewer = {
+      res,
+      projector,
+      audience: opts.audience ?? {},
+      end: opts.end,
+      keepalive: setInterval(() => res.write(": keepalive\n\n"), keepaliveMs),
+      cutAfter: cutNextConnectAfter,
+    };
+    viewer.keepalive.unref();
+    cutNextConnectAfter = undefined;
+    res.on("close", () => {
+      clearInterval(viewer.keepalive);
+      viewers.get(thread.id)?.delete(viewer);
+    });
+    write(viewer, projector.preamble());
+    for (const e of log) {
+      if (e.seq <= opts.fromSeq) continue;
+      const wasOpen = projector.runOpen;
+      write(viewer, projector.apply(e, viewer.audience));
+      if (viewer.end === "first-close" && wasOpen && !projector.runOpen) return closeViewer(viewer);
+    }
+    if (viewer.end === "after-replay" && !projector.runOpen) return closeViewer(viewer);
+    const set = viewers.get(thread.id) ?? new Set();
+    viewers.set(thread.id, set);
+    set.add(viewer);
+  }
+
   function append(threadId: string, kind: Event["kind"], actor: Actor, data: Event["data"]): Event {
     const log = events.get(threadId) ?? [];
     events.set(threadId, log);
@@ -98,8 +195,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       t.lastSeq = event.seq;
       touch(t);
     }
-    const frame = `id: ${event.seq}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`;
-    for (const res of subscribers.get(threadId) ?? []) res.write(frame);
+    for (const v of [...(viewers.get(threadId) ?? [])]) {
+      const wasOpen = v.projector.runOpen;
+      write(v, v.projector.apply(event, v.audience));
+      if (v.end !== "never" && wasOpen && !v.projector.runOpen) closeViewer(v);
+    }
     return event;
   }
 
@@ -161,23 +261,36 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       reset();
       return void res.writeHead(204).end();
     }
+    // Test hooks: cut every open stream (the network went away), or cut the next connect stream
+    // after `frames` frames, mid-group.
+    if (path === "/__mock/drop-streams" && method === "POST") {
+      for (const set of viewers.values()) for (const v of [...set]) closeViewer(v, true);
+      return void res.writeHead(204).end();
+    }
+    if (path === "/__mock/cut-next-connect" && method === "POST") {
+      cutNextConnectAfter = Number(url.searchParams.get("frames") ?? 0) || 0;
+      return void res.writeHead(204).end();
+    }
     if (path === "/api/agents" && method === "GET") return sendJson(res, 200, AGENTS);
 
-    if (path === "/api/threads") {
-      if (method === "GET") return listThreads(res, url);
-      if (method === "POST") return createThread(req, res);
+    if (path === "/api/threads" && method === "GET") return listThreads(res, url);
+
+    const run = /^\/agui\/agents\/([^/]+)$/.exec(path);
+    if (run && method === "POST") return runAgent(req, res, decodeURIComponent(run[1] ?? ""));
+    const caps = /^\/agui\/agents\/([^/]+)\/capabilities$/.exec(path);
+    if (caps && method === "GET") return capabilities(res, decodeURIComponent(caps[1] ?? ""));
+    const connect = /^\/agui\/threads\/([^/]+)\/connect$/.exec(path);
+    if (connect && method === "GET") {
+      return connectThread(req, res, url, decodeURIComponent(connect[1] ?? ""));
     }
 
-    const m = /^\/api\/threads\/([^/]+)(?:\/(events|stream|messages|cancel))?$/.exec(path);
+    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
       const sub = m[2];
       const thread = threads.get(id);
       if (!thread) return problem(res, 404, "Thread not found");
       if (!sub && method === "GET") return sendJson(res, 200, thread);
-      if (sub === "events" && method === "GET") return listEvents(res, url, thread);
-      if (sub === "stream" && method === "GET") return stream(req, res, thread);
-      if (sub === "messages" && method === "POST") return postMessage(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
     }
     return problem(res, 404, "Not found");
@@ -194,102 +307,208 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     sendJson(res, 200, all.slice(0, limit));
   }
 
-  async function createThread(req: http.IncomingMessage, res: http.ServerResponse) {
-    let body: unknown;
+  function capabilities(res: http.ServerResponse, agentId: string) {
+    const agent = AGENTS.find((a) => a.id === agentId);
+    if (!agent) return problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
+    res.setHeader("Cache-Control", "no-store");
+    sendJson(res, 200, {
+      identity: {
+        name: agent.name,
+        ...(agent.description ? { description: agent.description } : {}),
+      },
+      transport: { streaming: true, resumable: true },
+      humanInTheLoop: { supported: true, interrupts: true },
+      multiAgent: {
+        supported: true,
+        delegation: true,
+        subagents: [
+          { name: agent.id, ...(agent.description ? { description: agent.description } : {}) },
+        ],
+      },
+      ...(agent.releases ? { custom: { [RELEASE_CHANNELS_URI]: agent.releases } } : {}),
+    });
+  }
+
+  function connectThread(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    threadId: string,
+  ) {
+    const thread = threads.get(threadId);
+    if (!thread) return problem(res, 404, "Thread not found");
+    const mode = url.searchParams.get("mode");
+    if (mode !== null && mode !== "run") {
+      return problem(res, 400, "Invalid request", "mode must be run");
+    }
+    const header = req.headers["last-event-id"];
+    const cursor = typeof header === "string" ? header : "";
+    if (cursor !== "" && !/^\d+$/.test(cursor)) {
+      return problem(res, 400, "Invalid request", "Last-Event-ID must be a non-negative integer");
+    }
+    startViewer(res, thread, {
+      fromSeq: Number(cursor || 0),
+      end: mode === "run" ? "after-replay" : "never",
+    });
+  }
+
+  const messageText = (m: Record<string, unknown>): string | undefined => {
+    if (typeof m.content === "string") return m.content;
+    if (!Array.isArray(m.content)) return undefined;
+    const parts = m.content.flatMap((p: unknown) => {
+      const part = p as { type?: unknown; text?: unknown };
+      return part.type === "text" && typeof part.text === "string" ? [part.text] : [];
+    });
+    return parts.length ? parts.join("\n") : undefined;
+  };
+
+  async function runAgent(req: http.IncomingMessage, res: http.ServerResponse, agentId: string) {
+    let body: Record<string, unknown> | null;
     try {
-      body = await readJson(req);
+      body = (await readJson(req)) as Record<string, unknown> | null;
     } catch {
-      return problem(res, 400, "Invalid JSON");
+      return problem(res, 400, "Invalid request", "the body is not JSON");
     }
-    const b = body as Partial<components["schemas"]["NewThread"]> | null;
-    const text = b?.text;
-    if (typeof text !== "string" || text.length < 1 || text.length > 100_000) {
-      return problem(res, 400, "Invalid request", "text must be 1 to 100000 characters");
+    if (!body || typeof body !== "object") {
+      return problem(res, 400, "Invalid request", "the body is not a RunAgentInput");
     }
-    const target = b?.target;
-    if (typeof target?.agentId !== "string") {
-      return problem(res, 400, "Invalid request", "target.agentId is required");
+    const { threadId, runId } = body;
+    if (
+      typeof threadId !== "string" ||
+      typeof runId !== "string" ||
+      !Array.isArray(body.messages)
+    ) {
+      return problem(res, 400, "Invalid request", "threadId, runId and messages are required");
     }
-    const agent = AGENTS.find((a) => a.id === target.agentId);
-    if (!agent) return problem(res, 400, "Unknown agent", `No agent "${target.agentId}"`);
-    const release = target.release;
-    if (release !== undefined) {
-      if (!agent.releases) {
-        return problem(res, 400, "Invalid request", `${agent.id} does not offer releases`);
+    if (!UUID.test(threadId))
+      return problem(res, 400, "Invalid request", "threadId must be a UUID");
+    const agent = AGENTS.find((a) => a.id === agentId);
+    if (!agent) return problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
+
+    const messages = body.messages as Record<string, unknown>[];
+    const resume = Array.isArray(body.resume)
+      ? (body.resume as { interruptId?: string; status?: string; payload?: { text?: unknown } }[])
+      : [];
+    const thread = threads.get(threadId);
+    const log = events.get(threadId) ?? [];
+    const known = new Set(log.map((e) => e.data.messageId).filter((v) => typeof v === "string"));
+    const fresh = messages.filter(
+      (m) => m.role === "user" && typeof m.id === "string" && !known.has(m.id),
+    );
+    if (messages.some((m) => m.role !== "user" && typeof m.id === "string" && !known.has(m.id))) {
+      return problem(res, 422, "Unprocessable", "a new message that is not from the user");
+    }
+
+    if (!thread) {
+      const first = fresh[0];
+      const text = first ? messageText(first) : undefined;
+      if (fresh.length !== 1 || !first || typeof text !== "string" || text === "") {
+        return problem(res, 422, "Unprocessable", "a new thread takes exactly one user message");
       }
-      const known =
-        release in agent.releases.channels || (agent.releases.revisions ?? []).includes(release);
-      if (!known) return problem(res, 400, "Unknown release", `No release "${release}"`);
+      if (text.length > 100_000) {
+        return problem(res, 400, "Invalid request", "text must be 1 to 100000 characters");
+      }
+      const props = (body.forwardedProps ?? {}) as Record<string, { release?: unknown }>;
+      const release = props[RELEASE_CHANNELS_URI]?.release;
+      if (release !== undefined) {
+        if (typeof release !== "string" || !agent.releases) {
+          return problem(res, 400, "Invalid request", `${agent.id} does not offer releases`);
+        }
+        const ok =
+          release in agent.releases.channels || (agent.releases.revisions ?? []).includes(release);
+        if (!ok) return problem(res, 400, "Unknown release", `No release "${release}"`);
+      }
+      const now = new Date().toISOString();
+      const created: Thread = {
+        id: threadId,
+        title: text.slice(0, 60),
+        target: { agentId: agent.id, ...(typeof release === "string" ? { release } : {}) },
+        state: "queued",
+        createdAt: now,
+        updatedAt: now,
+        lastSeq: 0,
+      };
+      threads.set(created.id, created);
+      events.set(created.id, []);
+      const event = append(
+        created.id,
+        "user_message",
+        { type: "user", name: DEV_USER },
+        { text, messageId: first.id as string, runId },
+      );
+      const script = scriptFor(text);
+      runs.set(created.id, { timer: undefined, pending: [], resume: script.resume });
+      play(created, script.start);
+      return startViewer(res, created, {
+        fromSeq: event.seq - 1,
+        audience: { skipUserMessageIds: new Set([first.id as string]) },
+        end: "first-close",
+      });
     }
-    const now = new Date().toISOString();
-    const thread: Thread = {
-      id: randomUUID(),
-      title: (b?.title ?? text).slice(0, 60),
-      target: { agentId: agent.id, ...(release !== undefined ? { release } : {}) },
-      state: "queued",
-      createdAt: now,
-      updatedAt: now,
-      lastSeq: 0,
-    };
-    threads.set(thread.id, thread);
-    events.set(thread.id, []);
-    append(thread.id, "user_message", { type: "user", name: DEV_USER }, { text });
-    const script = scriptFor(text);
-    runs.set(thread.id, { timer: undefined, pending: [], resume: script.resume });
-    play(thread, script.start);
-    sendJson(res, 201, thread);
-  }
 
-  function listEvents(res: http.ServerResponse, url: URL, thread: Thread) {
-    const after = Number(url.searchParams.get("after") ?? 0) || 0;
-    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200));
-    sendJson(res, 200, (events.get(thread.id) ?? []).filter((e) => e.seq > after).slice(0, limit));
-  }
-
-  function stream(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    res.write("retry: 1000\n\n");
-    const last = Number(req.headers["last-event-id"] ?? 0) || 0;
-    for (const e of events.get(thread.id) ?? []) {
-      if (e.seq > last) res.write(`id: ${e.seq}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
+    if (thread.target.agentId !== agentId) {
+      return problem(res, 409, "Conflict", `the thread targets ${thread.target.agentId}`);
     }
-    const set = subscribers.get(thread.id) ?? new Set();
-    subscribers.set(thread.id, set);
-    set.add(res);
-    const keepalive = setInterval(() => res.write(": keepalive\n\n"), keepaliveMs);
-    keepalive.unref();
-    res.on("close", () => {
-      clearInterval(keepalive);
-      set.delete(res);
-    });
-  }
-
-  async function postMessage(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
-    let body: unknown;
-    try {
-      body = await readJson(req);
-    } catch {
-      return problem(res, 400, "Invalid JSON");
-    }
-    const text = (body as { text?: unknown } | null)?.text;
-    if (typeof text !== "string" || text.length < 1 || text.length > 100_000) {
-      return problem(res, 400, "Invalid request", "text must be 1 to 100000 characters");
+    // A retry of a run the log holds attaches to it.
+    const recorded = log.find((e) => e.kind === "user_message" && e.data.runId === runId);
+    if (recorded && fresh.length === 0 && resume.length === 0) {
+      return startViewer(res, thread, {
+        fromSeq: recorded.seq - 1,
+        audience: { skipUserMessageIds: new Set(messages.map((m) => String(m.id))) },
+        end: "first-close",
+      });
     }
     if (thread.state === "done" || thread.state === "failed" || thread.state === "cancelled") {
-      return problem(res, 409, "Thread is finished", "Start a new thread to continue.");
+      return problem(
+        res,
+        409,
+        "Conflict",
+        `the thread is finished (${thread.state}); start a new thread`,
+      );
     }
-    const event = append(thread.id, "user_message", { type: "user", name: DEV_USER }, { text });
-    if (thread.state === "blocked") {
-      setState(thread, "queued");
-      const resume = runs.get(thread.id)?.resume;
-      if (resume) play(thread, resume(text));
+    if (thread.state === "queued" || thread.state === "working") {
+      return problem(
+        res,
+        409,
+        "Conflict",
+        "a run is already open on this thread; wait for it to finish",
+      );
     }
-    sendJson(res, 202, event);
+    const answer = resume.find((r) => r.status === "resolved");
+    let text: string | undefined;
+    let messageId: string | undefined;
+    if (answer) {
+      if (fresh.length > 0) {
+        return problem(res, 422, "Unprocessable", "a resume answer together with a new message");
+      }
+      text = typeof answer.payload?.text === "string" ? answer.payload.text : undefined;
+      if (text === undefined) {
+        return problem(res, 422, "Unprocessable", "a resume payload with no text");
+      }
+    } else {
+      if (fresh.length !== 1) {
+        return problem(res, 422, "Unprocessable", "nothing to run, or more than one new message");
+      }
+      text = messageText(fresh[0] as Record<string, unknown>);
+      messageId = fresh[0]?.id as string;
+      if (typeof text !== "string" || text === "") {
+        return problem(res, 422, "Unprocessable", "a message without text");
+      }
+    }
+    const event = append(
+      thread.id,
+      "user_message",
+      { type: "user", name: DEV_USER },
+      { text, ...(messageId ? { messageId } : {}), runId },
+    );
+    setState(thread, "queued");
+    const resumeScript = runs.get(thread.id)?.resume;
+    if (resumeScript) play(thread, resumeScript(text));
+    return startViewer(res, thread, {
+      fromSeq: event.seq - 1,
+      audience: { skipUserMessageIds: new Set(messageId ? [messageId] : []) },
+      end: "first-close",
+    });
   }
 
   function cancel(res: http.ServerResponse, thread: Thread) {
@@ -312,7 +531,7 @@ async function main() {
   const stepMs = process.env.MOCK_STEP_MS ? Number(process.env.MOCK_STEP_MS) : undefined;
   const server = createMockServer(stepMs === undefined ? {} : { stepMs });
   server.listen(port, "127.0.0.1", () => {
-    console.log(`mock chat API on http://127.0.0.1:${port}`);
+    console.log(`mock orchestrator on http://127.0.0.1:${port}`);
   });
 }
 

@@ -135,8 +135,10 @@ flowchart LR
 
 ### A chat turn
 
-One user message, from the browser to the agent and back, over the chat API (the only interaction
-surface built). The dispatcher may run on a different replica than the one that took the request.
+One user message, from the browser to the agent and back, over the **legacy chat API**. The web no
+longer takes this path: it sends `POST /agui/agents/{agentId}` and follows
+`GET /agui/threads/{id}/connect` (below); the sequence from the orchestrator inward is the same.
+The dispatcher may run on a different replica than the one that took the request.
 
 ```mermaid
 sequenceDiagram
@@ -294,8 +296,8 @@ The user-facing protocol is decided to be **AG-UI 1.0**, with the event log as t
 truth ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md); the mapping tables, endpoints and
 `vymalo.*` schemas are [`api/agui.md`](api/agui.md)). The chat turn above is what runs. The
 projection is built as pure code, and the routes that serve it are built: the run route, the connect
-stream (replay, cursor, following across runs) and the capabilities document. The web still follows
-the chat API's stream.
+stream (replay, cursor, following across runs) and the capabilities document. The web runs on them
+([`web/README.md`](../web/README.md#the-chat-layer)).
 
 ```mermaid
 flowchart LR
@@ -327,12 +329,13 @@ flowchart LR
 | Conformance | Schema validation of every frame; well-formedness properties; resume-from-any-point property; goldens read through `@ag-ui/client` 1.0.0 by `tools/agui-conformance` in CI | |
 | HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, follows across runs and replicas); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature | |
 | Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (there is no inbox table yet) | |
-| The web | Follows the chat API's SSE stream | `@assistant-ui/react-ag-ui` with the connect stream ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) |
+| The web | `@assistant-ui/react-ag-ui` (pinned, one patch) over a `ThreadAgent`: the connect stream with `Last-Event-ID`, runs by `POST /agui/agents/{agentId}`, interrupts by `resume`, Cancel by the resource API ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) | |
 | Generative UI | | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)): `ui_surface` and `ui_action` events; `forwardedProps.a2uiAction` is ignored with a warning today |
 | Deprecating the chat API's interaction routes | The crate is separate and mounted by flag | The `deprecated` markers in `chat-api.yaml` and the `Deprecation` header of ADR 0012 |
 
-`ORCH_SURFACES` accepts `agui` and `chat-api` and defaults to both, until the web runs on AG-UI; a name
-whose Cargo feature is not compiled in is a startup error (exit 78).
+`ORCH_SURFACES` accepts `agui` and `chat-api` and defaults to both; the web no longer uses `chat-api`,
+so the next slice makes `agui` the default. A name whose Cargo feature is not compiled in is a startup
+error (exit 78).
 
 ## How a job flows
 

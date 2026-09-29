@@ -2,15 +2,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { safeLinkHref } from "@/features/chat/lib/artifact";
-import type { ArtifactPartData } from "@/features/chat/lib/to-items";
+import type { ArtifactContent } from "@/features/chat/lib/agui/vymalo";
+import { detectPullRequest, safeLinkHref } from "@/features/chat/lib/artifact";
 import { ActorLabel } from "../actor-label";
 
 const LINK = "h-auto justify-start px-0 font-semibold [overflow-wrap:anywhere] whitespace-normal";
 
 /** An artifact: a pull request becomes a link card, other URIs a link, inline text a disclosure. */
-export function ArtifactCard({ data }: { data: ArtifactPartData }) {
+export function ArtifactCard({ data }: { data: ArtifactContent }) {
   const href = safeLinkHref(data.uri);
+  const pr = detectPullRequest(data.uri);
   return (
     <Card
       size="sm"
@@ -27,10 +28,10 @@ export function ArtifactCard({ data }: { data: ArtifactPartData }) {
         </CardAction>
       </CardHeader>
       <CardContent className="gap-2">
-        {data.pr ? (
+        {pr ? (
           <Button asChild variant="link" className={LINK}>
-            <a href={data.pr.href} target="_blank" rel="noopener noreferrer">
-              Pull request {data.pr.label}
+            <a href={pr.href} target="_blank" rel="noopener noreferrer">
+              Pull request {pr.label}
             </a>
           </Button>
         ) : href ? (

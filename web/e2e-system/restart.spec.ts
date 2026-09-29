@@ -2,11 +2,12 @@ import { expect, test } from "@playwright/test";
 import {
   badge,
   callsFor,
-  eventsOf,
-  FIVE,
+  ECHO,
+  framesOf,
   killOrchestrator,
   releaseGate,
   resetDb,
+  seqs,
   shape,
   startOrchestrator,
   startThread,
@@ -34,9 +35,9 @@ test("orchestrator restart mid-thread: the page recovers and finishes", async ({
   await expect(log.getByText("echo: gate restart")).toHaveCount(1);
   await expect(log.getByText("Working")).toHaveCount(1);
 
-  const events = await eventsOf(page.request, id);
-  expect(shape(events)).toEqual(FIVE);
-  expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+  const frames = await framesOf(page.request, id);
+  expect(shape(frames)).toEqual(ECHO);
+  expect(seqs(frames)).toEqual([1, 2, 3, 4, 5]);
   // the message reached the agent exactly once: the new process resumed the task
   const executions = (await callsFor(page.request, "plain", "gate restart")).filter(
     (c) => c.kind === "execute",

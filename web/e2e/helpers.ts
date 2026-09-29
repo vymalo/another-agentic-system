@@ -4,6 +4,9 @@ import { expect, type Locator, type Page } from "@playwright/test";
 // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
 export const BASE_URL = "http://127.0.0.1:3000";
 
+/** ADR 0008: the release channel travels in `forwardedProps` under this URI. */
+export const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
+
 export const THREAD_URL = /\/threads\/[0-9a-f-]{36}$/;
 
 /** Start a thread from the home page with the given agent (default: the first, Coder). */

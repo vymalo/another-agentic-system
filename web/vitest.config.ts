@@ -8,5 +8,7 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx", "mock/**/*.test.ts"],
     environment: "node",
+    // the jsdom tests run the whole app against the mock orchestrator, and CI shares its cores
+    testTimeout: 20_000,
   },
 });

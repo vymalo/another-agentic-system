@@ -4,15 +4,23 @@ import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { chromium, expect, test } from "@playwright/test";
 import lighthouse from "lighthouse";
+import { uuidv7 } from "../src/lib/uuid";
 import { BASE_URL, badge, startThread } from "./helpers";
 
 async function finishedThreadUrl(): Promise<string> {
-  const res = await fetch(`${BASE_URL}/api/threads`, {
+  // A thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it.
+  const id = uuidv7();
+  const res = await fetch(`${BASE_URL}/agui/agents/coder`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target: { agentId: "coder" }, text: "Implement the thing" }),
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({
+      threadId: id,
+      runId: "run-1",
+      messages: [{ id: "m-1", role: "user", content: "Implement the thing" }],
+    }),
   });
-  const { id } = (await res.json()) as { id: string };
+  if (!res.ok) throw new Error(`run refused: ${res.status}`);
+  await res.text(); // the response ends with the run
   for (let i = 0; i < 100; i++) {
     const t = (await (await fetch(`${BASE_URL}/api/threads/${id}`)).json()) as { state: string };
     if (t.state === "done") return `${BASE_URL}/threads/${id}`;

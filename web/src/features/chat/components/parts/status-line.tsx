@@ -1,4 +1,4 @@
-import type { StatusPartData } from "@/features/chat/lib/to-items";
+import type { StatusContent } from "@/features/chat/lib/agui/vymalo";
 import type { AgentStatus } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 import { ActorLabel } from "../actor-label";
@@ -26,7 +26,7 @@ const TONE: Record<AgentStatus, { line?: string; dot?: string }> = {
 };
 
 /** One compact, muted line per `agent_status` event. */
-export function StatusLine({ data }: { data: StatusPartData }) {
+export function StatusLine({ data }: { data: StatusContent }) {
   const label = STATUS_TEXT[data.status];
   const tone = TONE[data.status];
   return (

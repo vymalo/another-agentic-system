@@ -11,6 +11,8 @@ RUN corepack enable
 FROM base AS deps
 WORKDIR /app/web
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
+# patchedDependencies (pnpm-workspace.yaml) must be on disk when pnpm resolves the install
+COPY web/patches ./patches
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
 FROM base AS build

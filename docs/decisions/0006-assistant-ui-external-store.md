@@ -7,7 +7,9 @@
   (pinned, patched where needed) instead of `useExternalStoreRuntime`; messages arrive as AG-UI
   events projected from the event log, and live updates come from the orchestrator's AG-UI connect
   stream, not a Next.js `LISTEN`. Next.js, assistant-ui, the `data-*` renderers, the event log as
-  the single source and "no Assistant Cloud" stand.
+  the single source and "no Assistant Cloud" stand. Done (2026-09-29): the web runs on
+  `@assistant-ui/react-ag-ui`; the external store, `to-items` and the SSE hook are gone, and the
+  renderers are the `agui-activity/vymalo.*` parts (see [`web/README.md`](../../web/README.md)).
 
 ## Context
 

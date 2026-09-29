@@ -1,31 +1,28 @@
 // @vitest-environment jsdom
 import {
   AssistantRuntimeProvider,
+  type ThreadMessageLike,
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { type ChatItem, convertMessage } from "@/features/chat/lib/to-items";
 import { AssistantMessage } from "./thread.aui";
 
 afterEach(cleanup);
 
 /** Renders `text` as an agent message through the real message component (no viewport). */
 function Harness({ text }: { text: string }) {
-  const item: ChatItem = {
+  const message: ThreadMessageLike = {
     id: "msg-1",
-    seq: 1,
-    at: "2026-09-29T09:00:00Z",
-    actor: { type: "agent", name: "coder" },
-    kind: "agent_text",
-    text,
-    final: true,
+    role: "assistant",
+    content: [{ type: "text", text }],
+    status: { type: "complete", reason: "stop" },
   };
-  const runtime = useExternalStoreRuntime<ChatItem>({
-    messages: [item],
-    convertMessage,
+  const runtime = useExternalStoreRuntime<ThreadMessageLike>({
+    messages: [message],
+    convertMessage: (m) => m,
     isRunning: false,
     onNew: async () => {},
   });

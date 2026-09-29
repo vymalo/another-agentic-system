@@ -23,15 +23,10 @@ export const badThread: ApiThread = {
 };
 
 export async function badCalls() {
-  // @ts-expect-error NewThread requires target
-  await api.POST("/api/threads", { body: { text: "hi" } });
   // @ts-expect-error unknown path
   await api.GET("/api/thread");
-  await api.POST("/api/threads/{threadId}/messages", {
-    params: { path: { threadId: "x" } },
-    // @ts-expect-error NewMessage requires text
-    body: {},
-  });
+  // @ts-expect-error a thread id is required
+  await api.POST("/api/threads/{threadId}/cancel", {});
 }
 
 /** The AG-UI operations: bodies and documents are the vendored AG-UI 1.0 schema, by reference. */
