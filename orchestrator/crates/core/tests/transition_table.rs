@@ -62,10 +62,7 @@ fn row1_user_message_in_queued_or_working() {
             Command::Append(d) => {
                 assert_eq!(d.actor, Actor::user(&user()));
                 assert_eq!(d.actor.name, "me@example.com");
-                assert_eq!(
-                    d.body,
-                    EventBody::UserMessage(UserMessageData { text: "hi".into() })
-                );
+                assert_eq!(d.body, EventBody::UserMessage(UserMessageData::new("hi")));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -171,24 +168,81 @@ fn row8_input_required_blocks() {
 }
 
 #[test]
-fn row8_auth_required_blocks_with_prefixed_detail() {
+fn row8_auth_required_blocks_with_its_own_status() {
+    // Same thread behaviour as input-required (blocked, resumable), but the status says what
+    // it is and the detail is the agent's own text, not a prefixed sentence.
     let (next, cmds) = run(
         Working,
         &status(AgentTaskState::AuthRequired, Some("github")),
     );
     assert_eq!(next, Blocked);
     assert_eq!(
-        bodies(&cmds)[0],
-        &status_body(
-            AgentStatus::InputRequired,
-            Some("authentication required: github")
-        )
+        bodies(&cmds),
+        [
+            &status_body(AgentStatus::AuthRequired, Some("github")),
+            &state_body(Blocked)
+        ]
     );
-    let (_, cmds) = run(Working, &status(AgentTaskState::AuthRequired, None));
+    let (next, cmds) = run(Queued, &status(AgentTaskState::AuthRequired, None));
+    assert_eq!(next, Blocked);
     assert_eq!(
-        bodies(&cmds)[0],
-        &status_body(AgentStatus::InputRequired, Some("authentication required"))
+        bodies(&cmds),
+        [
+            &status_body(AgentStatus::AuthRequired, None),
+            &state_body(Blocked)
+        ]
     );
+}
+
+#[test]
+fn row8b_auth_required_in_blocked_repeats_only_with_detail() {
+    assert_eq!(
+        run(Blocked, &status(AgentTaskState::AuthRequired, None)),
+        (Blocked, vec![])
+    );
+    let (next, cmds) = run(
+        Blocked,
+        &status(AgentTaskState::AuthRequired, Some("gitlab")),
+    );
+    assert_eq!(next, Blocked);
+    assert_eq!(
+        bodies(&cmds),
+        [&status_body(AgentStatus::AuthRequired, Some("gitlab"))]
+    );
+}
+
+#[test]
+fn row8c_auth_required_is_resumable_by_a_user_message() {
+    let (next, cmds) = run(Blocked, &um("signed in"));
+    assert_eq!(next, Queued);
+    assert!(cmds.iter().any(|c| matches!(c, Command::Delegate { .. })));
+}
+
+#[test]
+fn row8e_auth_and_input_required_take_the_same_thread_path() {
+    // The new status changes what the event says, never what the thread does.
+    for s in ALL {
+        for detail in [None, Some("x")] {
+            let auth = transition(&s, &status(AgentTaskState::AuthRequired, detail));
+            let input = transition(&s, &status(AgentTaskState::InputRequired, detail));
+            match (auth, input) {
+                (Ok((a_next, a_cmds)), Ok((i_next, i_cmds))) => {
+                    assert_eq!(a_next, i_next, "{s:?}/{detail:?}");
+                    assert_eq!(a_cmds.len(), i_cmds.len(), "{s:?}/{detail:?}");
+                    for (a, i) in a_cmds.iter().zip(&i_cmds) {
+                        match (a, i) {
+                            (Command::Append(a), Command::Append(i)) => {
+                                assert_eq!(a.body.kind(), i.body.kind());
+                                assert_eq!(a.actor, i.actor);
+                            }
+                            (a, i) => assert_eq!(a, i),
+                        }
+                    }
+                }
+                (a, i) => assert_eq!(a, i, "{s:?}/{detail:?}"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -319,7 +373,11 @@ fn row14_message_keeps_state() {
 #[test]
 fn row15_agent_input_in_terminal_is_invalid() {
     for s in TERMINAL {
-        for st in [AgentTaskState::Working, AgentTaskState::Completed] {
+        for st in [
+            AgentTaskState::Working,
+            AgentTaskState::Completed,
+            AgentTaskState::AuthRequired,
+        ] {
             assert_eq!(
                 transition(&s, &status(st, None)),
                 Err(TransitionError::InvalidInState {

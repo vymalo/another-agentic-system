@@ -94,13 +94,15 @@ async fn auth_required_blocks_with_its_detail(backend: Backend) {
         [
             "user_message",
             "agent_status:working",
-            "agent_status:input_required",
+            "agent_status:auth_required",
             "thread_state:blocked"
         ]
     );
     assert_eq!(
-        events[2]["data"]["detail"], "authentication required: github",
-        "the chat is told it is an authentication request, and for what"
+        events[2]["data"],
+        serde_json::json!({"status": "auth_required", "detail": "github"}),
+        "the chat is told it is an authentication request, and for what: its own status, the \
+         agent's detail unprefixed"
     );
 
     // The user answers (say, "done, retry"): the same A2A task continues.

@@ -102,6 +102,10 @@ pub enum AgentStatus {
     Working,
     /// Waiting for user input.
     InputRequired,
+    /// Waiting for the user to authenticate somewhere (A2A `auth-required`). The thread is
+    /// blocked and resumable exactly as for [`AgentStatus::InputRequired`]; the detail names
+    /// what to authenticate to.
+    AuthRequired,
     /// Finished successfully.
     Completed,
     /// Failed.
@@ -111,10 +115,31 @@ pub enum AgentStatus {
 }
 
 /// `data` of a `user_message`.
+///
+/// `message_id` and `run_id` are set when the message came from a surface that names them (an
+/// AG-UI message id and run id); both are absent, never `null`, otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserMessageData {
     /// Message text.
     pub text: String,
+    /// The id the surface gave this message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// The id of the run this message started or continued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+}
+
+impl UserMessageData {
+    /// A message with no surface-assigned ids.
+    pub fn new(text: impl Into<String>) -> Self {
+        UserMessageData {
+            text: text.into(),
+            message_id: None,
+            run_id: None,
+        }
+    }
 }
 
 /// `data` of an `agent_message`.

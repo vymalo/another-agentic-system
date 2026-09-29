@@ -47,7 +47,7 @@ fn event(text: &str, key: Option<String>) -> NewEvent {
     NewEvent {
         at: t0(),
         actor: Actor::user(&user()),
-        body: EventBody::UserMessage(UserMessageData { text: text.into() }),
+        body: EventBody::UserMessage(UserMessageData::new(text)),
         idempotency_key: key,
     }
 }
