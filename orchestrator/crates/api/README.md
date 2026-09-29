@@ -22,7 +22,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | Item | What |
 |---|---|
 | `router::<P>(Arc<App<P>>, ApiConfig) -> axum::Router` | health and the resource API, no interaction surface |
-| `health_router::<P>(Arc<App<P>>) -> axum::Router` | `/healthz` and `/readyz` only, no identity, every other path 404: for a process with no HTTP interface (a worker-only orchestrator). The full routers serve the same health routes |
+| `health_router::<P>(Arc<App<P>>) -> axum::Router` | `/healthz`, `/readyz` and `/metrics` only, no identity, every other path 404: for a process with no HTTP interface (a worker-only orchestrator). The full routers serve the same routes |
 | `router_with_surfaces::<P>(app, ApiConfig, Vec<SurfaceRoutes>)` | the same plus the routes of the given surfaces, all behind the identity layer |
 | `SurfaceRoutes` | what a surface contributes: `plain(Router)` (request timeout applies) and `streaming(Router)` (SSE, no timeout); already bound to the surface's own state |
 | `ApiConfig` | `auth`, `sse_keepalive` (15 s; read by surfaces, not by this crate), `request_timeout` (30 s, everything but streaming routes) |
@@ -32,7 +32,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `parse_thread_id` | a path `{threadId}` that is not a UUID is a thread that does not exist |
 | `sse::keep_alive`, `sse::stream_headers` | the `: keepalive` comment and the no-buffering headers every stream shares |
 
-Routes served here: `GET /healthz`, `GET /readyz`, `GET /api/agents`,
+Routes served here: `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /api/agents`,
 `GET /api/threads`, `GET /api/threads/{id}`,
 `POST /api/threads/{id}/cancel`. The interaction operations
 (`createThread`, `postMessage`, `listEvents`, `streamEvents`) come from a
@@ -48,11 +48,28 @@ let router = orch_api::router_with_surfaces(app, cfg, vec![chat]);
 // axum::serve(listener, router).await
 ```
 
-Identity comes from `X-Auth-Request-Email`; every path except `/healthz` and
-`/readyz` answers 401 without it, surfaces' paths and unknown ones included, and
+Identity comes from `X-Auth-Request-Email`; every path except `/healthz`,
+`/readyz` and `/metrics` answers 401 without it, surfaces' paths and unknown ones included, and
 a present but malformed header is refused even when a dev user is configured.
 **The header is only trustworthy behind a proxy (oauth2-proxy) that strips
 client-supplied copies.**
+
+### `GET /metrics`
+
+The outbox queue as Prometheus text (`text/plain; version=0.0.4`), written by hand (four
+samples; no metrics crate), read from the store on every scrape through
+`App::outbox_stats`. A store failure is 503. The values are global (every replica's rows), so
+any process can answer.
+
+| Sample | Meaning |
+|---|---|
+| `orch_outbox_rows{state="due"}` | rows a worker could claim now: `pending` and due, or `inflight` with a lapsed lease |
+| `orch_outbox_rows{state="waiting"}` | rows `pending` in retry backoff |
+| `orch_outbox_rows{state="leased"}` | rows `inflight` under a live lease: a worker is on them |
+| `orch_outbox_oldest_due_age_seconds` | whole seconds since the oldest due row became due, `0` when none |
+
+The pure `render(&OutboxStats, now)` is unit tested against a golden text. How to scale
+workers on it: [`docs/orchestrator.md`](../../../docs/orchestrator.md#observability-and-scaling).
 
 ## Features and environment
 
@@ -65,8 +82,10 @@ Offline: the in-memory stack from `orch-ports` (feature `testkit`), over real
 HTTP. No environment variables.
 
 * `src/problem.rs` unit tests: the status and `Retry-After` for every error class.
-* `tests/edge.rs`: health without identity; `health_router` serving health
-  only (no identity header needed, 404 elsewhere, 503 when not ready or shutting
+* `src/metrics.rs` unit tests: the exposition text against a golden, an empty outbox, whole
+  seconds and the clamp to zero.
+* `tests/edge.rs`: health and `/metrics` without identity; `health_router` serving health
+  and metrics only (no identity header needed, 404 elsewhere, 503 when not ready or shutting
   down); the resource API without any
   surface; interaction routes absent unless mounted; a mounted surface sits
   behind the identity layer (also with a dev user); streaming routes skip the

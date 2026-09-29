@@ -55,6 +55,23 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
 
+### Logs and metrics
+
+Every log line carries the process's `role` and `instance` (the lease owner), so lines of several
+replicas can be told apart in a collector. In JSON they are the first two keys of the object
+(`{"role":"worker","instance":"w1","timestamp":...}`); in text the line starts
+`role=worker instance=w1 `. They are added by the event formatter (`src/logging.rs`), not by a
+span, so the dispatcher's spawned tasks have them too. The configuration is read before logging
+starts: a line about an invalid configuration has neither (there is no role yet). While a
+dispatcher processes an outbox row, its lines also sit in an `outbox` span (`id`, `thread`,
+`kind`, `attempt`; JSON keys `span` and `spans`).
+
+Every role serves `GET /metrics` on `LISTEN_ADDR` without an identity: the outbox queue as
+Prometheus text, for dashboards and for scaling the workers (see
+[`orch-api`](../../crates/api/README.md#get-metrics) for the samples, and
+[`docs/orchestrator.md`](../../../docs/orchestrator.md#observability-and-scaling) for the KEDA
+recipe). The edge proxy of the compose stack does not route it.
+
 ### Roles
 
 `ORCH_ROLE` is `adam_host::Role`, a closed enum owned by adam-rs, so the names are the same for every
@@ -96,7 +113,8 @@ binary is `orchestrator` (`cargo run -p orchestrator`).
   environment/flag mapping, unknown, empty and repeated surfaces, a surface not
   compiled in, `--help` naming every variable, the role: default `all`, each
   value, blank, unknown, the flag collected raw). `src/main.rs` maps every
-  `HostError` to exit 70.
+  `HostError` to exit 70. `src/logging.rs`: role and instance first on every JSON and text
+  line (an instance with a quote stays valid JSON, no fields means the stock line).
 * `tests/smoke.rs`: the built executable as a process. Configuration-error
   tests always run (the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
@@ -105,10 +123,10 @@ binary is `orchestrator` (`cargo run -p orchestrator`).
   identity, a thread completed through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
   database with a SIGKILL mid-task. The roles: `--role worker` (over a
-  nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` and answers 404 on
-  `/api/...`; a `control-plane` process serves the API but the thread stays
-  `queued` and the agent is never called until a worker process starts, then
-  it completes; one control plane and two workers, where the worker that holds
+  nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` answers 404 on
+  `/api/...` and `/metrics` with role and instance on every log line; a `control-plane` process serves the API but the thread stays
+  `queued` and the agent is never called until a worker process starts (its `/metrics` shows one
+  due row meanwhile), then it completes and the backlog reads zero; one control plane and two workers, where the worker that holds
   the delegation is SIGKILLed and the other finishes it (message delivered once,
   events once each); a worker stopped on SIGTERM within its grace hands a running
   task over at once.

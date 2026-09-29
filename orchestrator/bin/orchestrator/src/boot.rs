@@ -165,8 +165,6 @@ async fn listen(cfg: &Config) -> anyhow::Result<TcpListener> {
     };
     tracing::info!(
         addr = %listener.local_addr().context("listener address")?,
-        instance = %cfg.instance_id,
-        role = %cfg.role,
         agents = cfg.agents.len(),
         surfaces = %surfaces,
         "orchestrator listening"

@@ -19,7 +19,7 @@ in the composition root, not through runtime plugins. Depends on
 
 | Trait | What |
 |---|---|
-| `ThreadStore` | threads, the per-thread event log with a strictly increasing `seq` (`commit` is atomic and version-checked), the A2A binding, and the outbox (`claim_outbox`, `renew_lease`, `mark_sent`, `retry_outbox`, `complete_outbox`, `skip_unsent_delegates`, `release_leases`, `get_outbox`, `list_open_outbox`); `ping` for readiness |
+| `ThreadStore` | threads, the per-thread event log with a strictly increasing `seq` (`commit` is atomic and version-checked), the A2A binding, and the outbox (`claim_outbox`, `renew_lease`, `mark_sent`, `retry_outbox`, `complete_outbox`, `skip_unsent_delegates`, `release_leases`, `get_outbox`, `list_open_outbox`, and `outbox_stats(now) -> OutboxStats { due, waiting, leased, oldest_due_at }`, the counts behind `/metrics`); `ping` for readiness |
 | `Wakeup` | `notify(Topic)`, `subscribe()`, `capabilities()`; `Topic` is `Thread(ThreadId)`, `Outbox` or `Resync` (a hint only: the store is the truth) |
 | `AgentClient` | `read_card`, `send_stream`, `resubscribe`, `get_task`, `cancel`, `find_task_by_message` |
 | `Clock`, `IdGen` | time and identifiers; `SystemClock`, `UuidV7Ids` |

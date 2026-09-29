@@ -11,7 +11,8 @@ use orch_core::{
 };
 use orch_ports::{
     AgentClient, AgentError, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, NewEvent,
-    NewOutbox, NewThreadRecord, OutboxPayload, Ports, StoreError, ThreadStore, Topic, Wakeup,
+    NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats, Ports, StoreError, ThreadStore, Topic,
+    Wakeup,
 };
 use tokio::time::Instant;
 
@@ -134,6 +135,15 @@ impl<P: Ports> App<P> {
     /// Ready flag set and the store reachable.
     pub async fn is_ready(&self) -> bool {
         self.ready.load(Ordering::SeqCst) && self.ports.store().ping().await.is_ok()
+    }
+
+    /// The open outbox rows counted at the application clock's `now`, with that `now`: the
+    /// numbers behind `/metrics` and autoscaling. The counts are global, over every replica's
+    /// rows, whichever process answers.
+    pub async fn outbox_stats(&self) -> Result<(Timestamp, OutboxStats), AppError> {
+        let now = self.ports.clock().now();
+        let stats = self.ports.store().outbox_stats(now).await?;
+        Ok((now, stats))
     }
 
     async fn notify(&self, topic: Topic) {

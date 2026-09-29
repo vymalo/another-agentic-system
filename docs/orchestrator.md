@@ -338,7 +338,7 @@ dependency pinned to a commit sha); this repository adds no role and no supervis
 | Role | Runs | Serves on `LISTEN_ADDR` |
 |---|---|---|
 | `control-plane` | migrations, the HTTP server: the resource API, the surfaces in `ORCH_SURFACES`, health. No dispatcher | the full API |
-| `worker` | migrations, the dispatcher (including the transitions for agent updates) | health only (`/healthz`, `/readyz`), so probes work; everything else is 404 |
+| `worker` | migrations, the dispatcher (including the transitions for agent updates) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
 | `all` (default) | both, as before the role existed | the full API |
 
 The halves are already decoupled: the only things they share are the outbox, the thread version
@@ -382,6 +382,88 @@ stateDiagram-v2
 A worker is ready when the store answers and its dispatcher has started; the other roles are ready
 once the database is migrated and answers. The probe router of a worker is a worker component that
 ends after the dispatcher, so a draining worker answers 503 rather than refusing connections.
+
+### Observability and scaling
+
+**Built** (checked against `orchestrator/bin/orchestrator/src/logging.rs` and
+`orchestrator/crates/api/src/metrics.rs` on 2026-09-29).
+
+**Logs.** Every log line carries the process's `role` and `instance` (the id that owns its outbox
+leases): the first two keys of the JSON object, or a `role=worker instance=w1 ` prefix in text
+format. The event formatter adds them, not a root span, because the dispatcher runs each outbox
+row in a spawned task that would not inherit one. Lines written while a row is processed also sit
+in an `outbox` span (`id`, `thread`, `kind`, `attempt`). The configuration is read before logging
+starts, so a line about an invalid configuration has no role yet.
+
+**Metrics.** Every role serves `GET /metrics` on `LISTEN_ADDR`, without an identity (it is part of
+the health routes). It reads the outbox from Postgres on each scrape (one aggregate over the open
+rows, `ThreadStore::outbox_stats`), so the numbers are **global**: every replica reports the same
+queue, whatever it runs itself.
+
+| Sample | Meaning |
+|---|---|
+| `orch_outbox_rows{state="due"}` | claimable now: `pending` and due, or `inflight` with a lapsed lease |
+| `orch_outbox_rows{state="waiting"}` | `pending` in retry backoff |
+| `orch_outbox_rows{state="leased"}` | `inflight` under a live lease: a worker is on it |
+| `orch_outbox_oldest_due_age_seconds` | whole seconds since the oldest due row became due, `0` when none |
+
+The queue that matters for scaling is `due + leased`: rows waiting for a worker plus rows workers
+are busy with. Because the values are global, an aggregation across the replicas that report them
+takes `max`, never `sum` (three replicas would triple the count).
+
+```mermaid
+sequenceDiagram
+  participant K as KEDA (scaler)
+  participant P as Prometheus
+  participant C as Control plane /metrics
+  participant D as Postgres
+  participant W as Worker Deployment
+  loop every scrape interval
+    P->>C: GET /metrics
+    C->>D: outbox_stats(now): count due, waiting, leased
+    D-->>C: counts, oldest due time
+    C-->>P: orch_outbox_rows{state}, orch_outbox_oldest_due_age_seconds
+  end
+  loop every polling interval
+    K->>P: query max(due) + max(leased)
+    P-->>K: rows in flight or waiting
+    K->>W: replicas = ceil(rows / DISPATCHER_CONCURRENCY), 0 when none
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Waiting: pending, next_attempt_at in the future (retry backoff)
+  [*] --> Due: pending, next_attempt_at reached
+  Waiting --> Due: backoff over
+  Due --> Leased: a worker claims it
+  Leased --> Leased: heartbeat renews the lease
+  Leased --> Waiting: delivery failed, retry_outbox
+  Leased --> Due: lease lapsed (worker died), or released on shutdown
+  Leased --> [*]: complete_outbox (delivered, dead, skipped)
+```
+
+*Unverified* (KEDA and Prometheus behaviour from memory of their documentation, not checked
+against a running cluster): a `prometheus` trigger with the query
+`max(orch_outbox_rows{state="due"}) + max(orch_outbox_rows{state="leased"})` and a threshold equal to
+`DISPATCHER_CONCURRENCY` (default 32) gives one worker per 32 open rows. Scaling a worker
+Deployment **to zero** needs a control plane that stays up and is scraped, since a worker that does
+not run cannot report the rows waiting for it. Without Prometheus, KEDA's `postgresql` scaler can
+run the same count directly: `SELECT count(*) FROM outbox WHERE (status = 'pending' AND
+next_attempt_at <= now()) OR (status = 'inflight')` (every `inflight` row is either leased or due,
+so both are counted). The edge proxy of the compose stack routes only the application and does not
+expose `/metrics`; scrape the pods, not the public ingress.
+
+**Trace context** is not carried yet. A W3C `traceparent` would have to cross the outbox, which
+means a column (a migration), and an OpenTelemetry exporter; see the open question in
+[open-questions.md](open-questions.md).
+
+**Testing.** `ThreadStore::outbox_stats` has a conformance case (`outbox_stats`, run by the memory
+and Postgres stores: empty, due, backoff, live and lapsed leases, completed rows); the exposition
+text is checked against a golden; `/metrics` is checked without identity on the full and the
+health-only router; the binary's smoke tests read it from a control plane (one due row before a
+worker exists, none after) and from a worker, and parse every JSON log line of a worker for its
+`role` and `instance`.
 
 ## Design choices
 

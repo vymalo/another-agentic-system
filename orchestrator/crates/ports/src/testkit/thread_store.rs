@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal,
-    OutboxId, OutboxKind, OutboxPayload, OutboxStatus, StoreError, ThreadStore,
+    OutboxId, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, StoreError, ThreadStore,
 };
 
 /// The class of the error, if any: cases assert classes, never concrete variants or sources.
@@ -984,4 +984,101 @@ pub async fn binding_applied_with_commit<S: ThreadStore>(store: S) {
     assert_eq!(b.task_id.as_deref(), Some("t9"));
     assert_eq!(b.task_state, Some(AgentTaskState::Working));
     assert_eq!(b.revision.as_deref(), Some("r"));
+}
+
+pub async fn outbox_stats<S: ThreadStore>(store: S) {
+    let stats = |due, waiting, leased, oldest_due_at| OutboxStats {
+        due,
+        waiting,
+        leased,
+        oldest_due_at,
+    };
+
+    assert_eq!(
+        store.outbox_stats(at(5)).await.unwrap(),
+        OutboxStats::default(),
+        "an empty outbox counts nothing and has no oldest due row"
+    );
+
+    // Three delegate rows, all due since t0.
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(
+        store.outbox_stats(at(5)).await.unwrap(),
+        stats(3, 0, 0, Some(t0()))
+    );
+
+    // Row 1 is claimed (lease until at(35)); row 2 is claimed and put back in backoff.
+    let first = store.claim_outbox("a", at(5), LEASE, 1).await.unwrap();
+    assert_eq!(first[0].id, outbox_id(1));
+    let second = store.claim_outbox("a", at(5), LEASE, 1).await.unwrap();
+    assert_eq!(second[0].id, outbox_id(2));
+    assert!(
+        store
+            .retry_outbox(outbox_id(2), "a", at(1000), "later".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.outbox_stats(at(6)).await.unwrap(),
+        stats(1, 1, 1, Some(t0())),
+        "row 3 is due, row 2 waits, row 1 is leased"
+    );
+
+    // Row 3 is claimed too (lease until at(36)). The lease of row 1 lapses at at(35): from
+    // then on the row is due again, since when its lease lapsed.
+    let third = store.claim_outbox("c", at(6), LEASE, 1).await.unwrap();
+    assert_eq!(third[0].id, outbox_id(3));
+    assert_eq!(
+        store.outbox_stats(at(34)).await.unwrap(),
+        stats(0, 1, 2, None)
+    );
+    assert_eq!(
+        store.outbox_stats(at(35)).await.unwrap(),
+        stats(1, 1, 1, Some(at(35))),
+        "a lease is live only until `lease_until`, exclusive"
+    );
+    assert_eq!(
+        store.outbox_stats(at(36)).await.unwrap(),
+        stats(2, 1, 0, Some(at(35))),
+        "the oldest due row is the one whose lease lapsed first"
+    );
+
+    // Finishing a row removes it from every count.
+    let both = claim(&store, "b", at(36)).await;
+    assert_eq!(both.len(), 2, "rows 1 and 3; row 2 is still in backoff");
+    assert_eq!(
+        store.outbox_stats(at(37)).await.unwrap(),
+        stats(0, 1, 2, None)
+    );
+    for id in [outbox_id(1), outbox_id(3)] {
+        assert!(
+            store
+                .complete_outbox(id, "b", OutboxFinal::Delivered, at(37))
+                .await
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        store.outbox_stats(at(37)).await.unwrap(),
+        stats(0, 1, 0, None)
+    );
+
+    // Row 2 falls due at at(1000), is claimed and finished.
+    assert_eq!(
+        store.outbox_stats(at(1000)).await.unwrap(),
+        stats(1, 0, 0, Some(at(1000)))
+    );
+    assert_eq!(claim(&store, "b", at(1000)).await.len(), 1);
+    assert!(
+        store
+            .complete_outbox(outbox_id(2), "b", OutboxFinal::Delivered, at(1001))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.outbox_stats(at(1001)).await.unwrap(),
+        OutboxStats::default()
+    );
 }

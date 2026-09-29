@@ -24,6 +24,7 @@ use orch_ports::{
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{App, AppError};
 
@@ -173,7 +174,19 @@ impl<P: Ports> Dispatcher<P> {
                         for row in rows {
                             let this = Arc::clone(&self);
                             let token = shutdown.child_token();
-                            workers.spawn(async move { this.worker(row, token).await });
+                            // Every log line of the row's processing, including the ones the
+                            // agent adapter emits, carries the row (the task is spawned, so a
+                            // span entered here would not follow it).
+                            let span = tracing::info_span!(
+                                "outbox",
+                                id = %row.id,
+                                thread = %row.thread_id,
+                                kind = ?row.kind,
+                                attempt = row.attempts,
+                            );
+                            workers.spawn(
+                                async move { this.worker(row, token).await }.instrument(span),
+                            );
                         }
                     }
                     Err(e) => tracing::warn!(error = %report(&e), "claiming outbox rows failed"),

@@ -4,26 +4,16 @@
 
 mod boot;
 mod config;
+mod logging;
 
 use std::process::ExitCode;
 
 use adam_host::HostError;
-use anyhow::Context as _;
 use boot::Fatal;
 use clap::Parser as _;
 use config::{Args, Config, ConfigError, LogFormat};
 use orch_core::{Classify as _, ErrorClass};
 use orch_ports::StoreError;
-use tracing_subscriber::EnvFilter;
-
-fn init_tracing(format: LogFormat) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match format {
-        LogFormat::Json => builder.json().init(),
-        LogFormat::Text => builder.init(),
-    }
-}
 
 /// Resolves on SIGTERM (Kubernetes) or SIGINT (Ctrl-C).
 async fn termination() {
@@ -85,18 +75,28 @@ fn exit_code(err: &anyhow::Error) -> u8 {
     1
 }
 
-async fn run(args: Args) -> anyhow::Result<()> {
-    let cfg = Config::from_args(args).context("reading the configuration")?;
-    boot::run(cfg, termination()).await
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     // `--help` and `--version` exit 0 here, and a malformed command line exits 2 (clap's usage
     // error); every problem with a *value* is a `ConfigError`, exit 78, after tracing is up.
     let args = Args::parse();
-    init_tracing(LogFormat::parse(args.log_format.as_deref()));
-    match run(args).await {
+    let format = LogFormat::parse(args.log_format.as_deref());
+    // The configuration is read before tracing is installed, so that every line carries the
+    // role and the instance id. A bad configuration is logged like any other fatal error, just
+    // without them (there is no role yet).
+    let cfg = Config::from_args(args);
+    logging::init(
+        format,
+        cfg.as_ref().ok().map(|cfg| logging::ProcessFields {
+            role: cfg.role.as_str(),
+            instance: cfg.instance_id.clone(),
+        }),
+    );
+    let outcome = match cfg {
+        Ok(cfg) => boot::run(cfg, termination()).await,
+        Err(e) => Err(anyhow::Error::from(e).context("reading the configuration")),
+    };
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             // One structured line, so a log collector sees why the process died: every layer

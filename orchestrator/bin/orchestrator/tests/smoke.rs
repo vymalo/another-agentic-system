@@ -812,6 +812,28 @@ async fn status_as_alice(client: &reqwest::Client, url: &str) -> u16 {
         .as_u16()
 }
 
+/// `GET /metrics` (no identity) as `(status, content type, body)`.
+async fn metrics(client: &reqwest::Client, base: &str) -> (u16, String, String) {
+    let response = client.get(format!("{base}/metrics")).send().await.unwrap();
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    (status, content_type, response.text().await.unwrap())
+}
+
+/// Every JSON line of `log` (the lines that start with `{`), parsed; a line that starts with
+/// `{` and is not valid JSON fails the test.
+fn json_lines(log: &str) -> Vec<serde_json::Value> {
+    log.lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("not JSON ({e}): {line}")))
+        .collect()
+}
+
 #[tokio::test]
 async fn a_worker_serves_probes_and_no_api() {
     let Some(db) = pgdb::TestDb::new().await else {
@@ -829,10 +851,16 @@ async fn a_worker_serves_probes_and_no_api() {
         &url,
         &agents,
         &["--role", "worker"],
-        &[("ORCH_ROLE", "nonsense")],
+        &[("ORCH_ROLE", "nonsense"), ("ORCH_INSTANCE_ID", "w1")],
     );
     worker.wait_ready().await;
     let base = &worker.base;
+    // The queue metrics are served by every role, without an identity.
+    let (status, content_type, body) = metrics(&worker.client, base).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(content_type, "text/plain; version=0.0.4; charset=utf-8");
+    assert!(body.contains("# TYPE orch_outbox_rows gauge"), "{body}");
+    assert!(body.contains("orch_outbox_rows{state=\"due\"} 0"), "{body}");
     for path in ["/healthz", "/readyz"] {
         assert_eq!(
             http_status(&worker.client, &format!("{base}{path}")).await,
@@ -865,7 +893,6 @@ async fn a_worker_serves_probes_and_no_api() {
     assert_eq!(post.status().as_u16(), 404, "a worker creates no thread");
 
     let log = worker.run.borrow().log();
-    assert!(log.contains("\"role\":\"worker\""), "{log}");
     assert!(
         log.contains("\"surfaces\":\"\""),
         "no surface is mounted: {log}"
@@ -874,6 +901,19 @@ async fn a_worker_serves_probes_and_no_api() {
     let log = worker.run.borrow().log();
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
     assert!(log.contains("shutting down"), "{log}");
+    // Every line, not only the first, says which process wrote it.
+    let lines = json_lines(&log);
+    assert!(lines.len() >= 3, "expected several log lines: {log}");
+    for line in &lines {
+        assert_eq!(line["role"], "worker", "{line}");
+        assert_eq!(line["instance"], "w1", "{line}");
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["fields"]["message"] == "shutting down"),
+        "the shutdown line has them too: {log}"
+    );
 }
 
 #[tokio::test]
@@ -912,6 +952,15 @@ async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
         "no worker, so no call to the agent"
     );
     assert_eq!(agent.rpc_count("send_streaming_message"), 0);
+    // The backlog is what an autoscaler reads from the control plane: one row is waiting for
+    // a worker that does not exist yet.
+    let (status, _, body) = metrics(&cp.client, &cp.base).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("orch_outbox_rows{state=\"due\"} 1"), "{body}");
+    assert!(
+        body.contains("orch_outbox_rows{state=\"leased\"} 0"),
+        "{body}"
+    );
 
     // A worker process appears; the control plane and the worker share only the database.
     let worker = Replica::start_with(
@@ -951,6 +1000,14 @@ async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
         ]
     );
     assert_eq!(agent.rpc_count("send_streaming_message"), 1);
+    // The row is closed with the thread: nothing is due or leased any more.
+    eventually("the backlog is empty", || async {
+        let (_, _, body) = metrics(&cp.client, &cp.base).await;
+        (body.contains("orch_outbox_rows{state=\"due\"} 0")
+            && body.contains("orch_outbox_rows{state=\"leased\"} 0"))
+        .then_some(())
+    })
+    .await;
 
     // Each role exits cleanly on SIGTERM. The worker drains its dispatcher; the control plane
     // has none.

@@ -6,14 +6,14 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{Event, ThreadId, ThreadRecord, UserId};
 use orch_ports::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord,
-    OutboxFinal, OutboxId, OutboxItem, StoreError, ThreadStore,
+    OutboxFinal, OutboxId, OutboxItem, OutboxStats, StoreError, ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::codec::{
-    binding_from_row, enum_str, event_from_row, outbox_cols, outbox_from_row, thread_cols,
-    thread_from_row, to_db, ts,
+    binding_from_row, enum_str, event_from_row, get_ts_opt, outbox_cols, outbox_from_row,
+    thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
 use crate::wakeup::{CHANNEL_OUTBOX, CHANNEL_THREAD};
@@ -618,6 +618,37 @@ impl ThreadStore for PgStore {
             notify_outbox(&self.pool).await?;
         }
         Ok(n)
+    }
+
+    async fn outbox_stats(&self, now: Timestamp) -> Result<OutboxStats, StoreError> {
+        // One scan of the `outbox_open` partial index (only open rows are in it). The due
+        // predicate is the one `claim_outbox` uses. `count(*)` is bigint, and the aggregate of
+        // no row is 0 / NULL, so an empty outbox gives zeros and `None`.
+        let row = sqlx::query(
+            "SELECT \
+               count(*) FILTER (WHERE (status = 'pending' AND next_attempt_at <= $1) \
+                                   OR (status = 'inflight' AND lease_until <= $1)) AS due, \
+               count(*) FILTER (WHERE status = 'pending' AND next_attempt_at > $1) AS waiting, \
+               count(*) FILTER (WHERE status = 'inflight' AND lease_until > $1) AS leased, \
+               min(CASE WHEN status = 'pending' AND next_attempt_at <= $1 THEN next_attempt_at \
+                        WHEN status = 'inflight' AND lease_until <= $1 THEN lease_until END) \
+                 AS oldest_due_at \
+             FROM outbox WHERE status IN ('pending', 'inflight')",
+        )
+        .bind(to_db(now))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_err)?;
+        let count = |name: &str| -> Result<u64, StoreError> {
+            let n: i64 = row.try_get(name).map_err(store_err)?;
+            u64::try_from(n).map_err(|e| StoreError::corrupt_with("negative outbox count", e))
+        };
+        Ok(OutboxStats {
+            due: count("due")?,
+            waiting: count("waiting")?,
+            leased: count("leased")?,
+            oldest_due_at: get_ts_opt(&row, "oldest_due_at")?,
+        })
     }
 
     async fn get_outbox(&self, id: OutboxId) -> Result<Option<OutboxItem>, StoreError> {
