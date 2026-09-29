@@ -83,7 +83,7 @@ flowchart LR
   subgraph REPLICA["Orchestrator process: stateless, any number, one binary (ORCH_ROLE: all, control-plane, worker)"]
     direction TB
     api["<b>orch-api</b><br/>identity layer, resource API, health"]
-    surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities), chat-api: built, the default<br/>a2a: planned"]
+    surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities): built, the default<br/>chat-api: built, deprecated, opt-in<br/>a2a: planned"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event streams"]
     disp["<b>Dispatcher</b><br/>claims outbox rows, delegates, applies replies"]
     adapters["adapters chosen in bin/orchestrator<br/>PgStore, PgWakeup, A2aAgentClient"]
@@ -135,7 +135,8 @@ flowchart LR
 
 ### A chat turn
 
-One user message, from the browser to the agent and back, over the **legacy chat API**. The web no
+One user message, from the browser to the agent and back, over the **legacy chat API**, which is served only with
+`ORCH_SURFACES=agui,chat-api`. The web no
 longer takes this path: it sends `POST /agui/agents/{agentId}` and follows
 `GET /agui/threads/{id}/connect` (below); the sequence from the orchestrator inward is the same.
 The dispatcher may run on a different replica than the one that took the request.
@@ -333,9 +334,10 @@ flowchart LR
 | Generative UI | | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)): `ui_surface` and `ui_action` events; `forwardedProps.a2uiAction` is ignored with a warning today |
 | Deprecating the chat API's interaction routes | The crate is separate and mounted by flag | The `deprecated` markers in `chat-api.yaml` and the `Deprecation` header of ADR 0012 |
 
-`ORCH_SURFACES` accepts `agui` and `chat-api` and defaults to both; the web no longer uses `chat-api`,
-so the next slice makes `agui` the default. A name whose Cargo feature is not compiled in is a startup
-error (exit 78).
+`ORCH_SURFACES` accepts `agui` and `chat-api` and defaults to `agui` (2026-09-29: the web no longer
+uses `chat-api`, so it is off unless listed; `ORCH_SURFACES=agui,chat-api` keeps the legacy routes). The
+resource API and health are mounted whatever it says. A name whose Cargo feature is not compiled in is a
+startup error (exit 78).
 
 ## How a job flows
 

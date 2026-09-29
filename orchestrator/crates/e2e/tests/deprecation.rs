@@ -1,4 +1,5 @@
-//! The composed process (AG-UI and the chat API mounted, as the default `ORCH_SURFACES` does):
+//! The composed process (AG-UI and the chat API both mounted, as `ORCH_SURFACES=agui,chat-api`
+//! does; the default is `agui` alone, see the binary's `tests/smoke.rs`):
 //! the four legacy operations announce their deprecation (RFC 9745) and nothing else does.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 

@@ -5,8 +5,10 @@ The legacy interaction surface of the chat API: `createThread`, `postMessage`,
 [`docs/api/chat-api.yaml`](../../../docs/api/chat-api.yaml), moved out of
 [`orch-api`](../api/README.md) unchanged. **Deprecated** in favour of AG-UI
 ([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)): it is
-mounted only while `ORCH_SURFACES` includes `chat-api`, is off by default once
-the web runs on AG-UI, and is removed after that.
+mounted only while `ORCH_SURFACES` includes `chat-api`. It is **off by default**
+(the default is `agui`; the web runs on AG-UI), and is removed after that. To keep
+serving it, set `ORCH_SURFACES=agui,chat-api` on the orchestrator (see
+[`bin/orchestrator`](../../bin/orchestrator/README.md#surfaces)).
 
 ## Where it sits
 

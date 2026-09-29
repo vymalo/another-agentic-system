@@ -8,15 +8,19 @@
 # The `orchestrator` service must be the control plane (ORCHESTRATOR_ROLE=control-plane, see
 # compose.yaml): as `all` it would deliver the task itself, and there would be no worker to kill.
 #
-# The script goes through the chat API, as the UI does, and prints one ok or FAIL line per check;
-# it exits 1 if any failed:
+# The script speaks AG-UI, as the UI does (docs/api/agui.md): one POST /agui/agents/{agentId} runs
+# the thread (its response streams while the task runs, so the script reads it from the background),
+# the thread state comes from the resource API, and the events are the thread's AG-UI frames. The
+# deprecated chat API routes are not used: they are served only with ORCH_SURFACES=agui,chat-api,
+# and compose does not set that. It prints one ok or FAIL line per check; it exits 1 if any failed:
 #   * GET /metrics answers on the control plane and on both workers, with the outbox gauge;
 #   * a thread for the mock agent with the keyword `slow` (an 8 s answer, dev/README.md) reaches
 #     `working`, and its delegate row is held by orchestrator-worker-1 or -2 (`lease_owner`);
 #   * that worker is killed (`docker compose kill -s SIGKILL`) mid-task, and the thread still ends
 #     `done` on the other worker: it takes the row over when the 5 s lease lapses;
 #   * the delegate row was claimed twice (attempts = 2) and ended `delivered`;
-#   * the thread has exactly one `thread_state: done` event;
+#   * the thread's frames (GET /agui/threads/{id}/connect?mode=run) hold exactly one RUN_FINISHED
+#     (success) and no RUN_ERROR: the task finished once, not once per worker;
 #   * the control plane's /metrics then reports no due and no leased row.
 # The killed worker is started again when the script ends, whatever the result.
 #
@@ -27,7 +31,7 @@
 #   COMPOSE_PROFILES  app,split unless set, so `docker compose` can address the worker services
 #   TIMEOUT           120    seconds to wait for each step
 #
-# Needs curl, jq and docker compose (the metrics are read from inside the network, through the `edge`
+# Needs curl, jq and docker compose (and /proc or uuidgen for a UUID; the metrics are read from inside the network, through the `edge`
 # container, and the database through the `postgres` container). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
@@ -48,7 +52,9 @@ bad() { echo "FAIL $1"; fail=1; }
 
 tmp=$(mktemp -d)
 killed=
+run_pid=
 cleanup() {
+  if [ -n "$run_pid" ]; then kill "$run_pid" 2>/dev/null || true; fi
   rm -rf "$tmp"
   if [ -n "$killed" ]; then
     echo "starting $killed again"
@@ -61,14 +67,11 @@ finish() {
   if [ "$fail" -eq 0 ]; then echo "split e2e passed"; else echo "split e2e FAILED"; exit 1; fi
 }
 
-api() { # api METHOD PATH [JSON]: the body on stdout, non-zero when the status is not 2xx
-  if [ $# -ge 3 ]; then
-    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email" \
-      -H 'content-type: application/json' -d "$3"
-  else
-    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
-  fi
+api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
+  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
 }
+
+uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 metrics() { # metrics SERVICE: the /metrics text of a service, read from inside the compose network
   docker compose exec -T edge wget -qO- "http://$1:8080/metrics"
@@ -112,16 +115,22 @@ fi
 # --- a slow task ------------------------------------------------------------------------------------
 # The keyword `slow` makes the mock agent answer over 8 s (dev/README.md), so the task is still
 # running when its worker dies.
-body=$(jq -n --arg a "$agent_id" '{title: "split e2e", text: "a slow task for the split roles", target: {agentId: $a}}')
-if ! created=$(api POST /api/threads "$body" 2>"$tmp/err"); then
-  bad "POST /api/threads: $(head -c 300 "$tmp/err") $created"
-  finish
-fi
-thread=$(printf '%s' "$created" | jq -r .id)
+# The consumer mints the thread id (a UUID); the first run creates the thread. The response streams
+# until the run ends, which is after the worker below is killed, so the request runs in the
+# background and its answer (the HTTP status, then the frames) is read from files.
+thread=$(uuid)
 echo "thread $thread"
 case $thread in
   *[!0-9a-f-]* | '') bad "the thread id '$thread' is not a UUID"; finish ;;
 esac
+input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" '{
+  threadId: $thread, runId: $run, state: {}, tools: [], context: [],
+  messages: [{id: $msg, role: "user", content: "a slow task for the split roles"}], forwardedProps: {}}')
+curl -sS -N --max-time $(( timeout * 3 )) -o "$tmp/run.sse" -w '%{http_code}' -X POST \
+  "$base/agui/agents/$agent_id" -H "X-Auth-Request-Email: $email" \
+  -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" \
+  > "$tmp/run.code" 2>"$tmp/err" &
+run_pid=$!
 
 deadline=$(( $(date +%s) + timeout ))
 state=
@@ -134,7 +143,7 @@ done
 if [ "$state" = working ]; then
   ok "the thread is working"
 else
-  bad "the thread is '${state:-unknown}', want working (a worker must be delivering; done already means the task was not slow)"
+  bad "the thread is '${state:-unknown}', want working (a worker must be delivering; done already means the task was not slow; run answered HTTP $(cat "$tmp/run.code" 2>/dev/null || true): $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse" 2>/dev/null))"
   finish
 fi
 
@@ -168,13 +177,16 @@ while :; do
   if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
   sleep 1
 done
+# The thread's AG-UI frames as one JSON array: the viewer replay, which closes after the run.
 events=$tmp/events.json
-api GET "/api/threads/$thread/events" > "$events" 2>/dev/null || echo '[]' > "$events"
+curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  "$base/agui/threads/$thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$events" 2>/dev/null ||
+  echo '[]' > "$events"
 if [ "$state" = "done" ]; then
   ok "the thread ended done after $owner died"
 else
   bad "the thread did not end done (state: '${state:-unknown}' after at most ${timeout}s)"
-  jq -r '.[] | "     \(.seq) \(.kind) \(.data.state // .data.status // .data.message // "")"' "$events" | head -n 20
+  jq -r '.[] | "     \(.type) \(.snapshot.thread.state // .content.status // .outcome.type // .message // "")"' "$events" | head -n 20
 fi
 
 # --- the outbox row ---------------------------------------------------------------------------------------------
@@ -194,11 +206,12 @@ else
 fi
 
 # --- the events -----------------------------------------------------------------------------------------------------
-dones=$(jq -r '[.[] | select(.kind == "thread_state" and .data.state == "done")] | length' "$events" 2>/dev/null || echo '?')
-if [ "$dones" = 1 ]; then
-  ok "exactly one thread_state done event"
+dones=$(jq -r '[.[] | select(.type == "RUN_FINISHED" and (.outcome.type // "success") == "success")] | length' "$events" 2>/dev/null || echo '?')
+errors=$(jq -r '[.[] | select(.type == "RUN_ERROR")] | length' "$events" 2>/dev/null || echo '?')
+if [ "$dones" = 1 ] && [ "$errors" = 0 ]; then
+  ok "exactly one RUN_FINISHED (success) and no RUN_ERROR"
 else
-  bad "$dones thread_state done events, want exactly 1 ($(jq -c '[.[] | .kind]' "$events" 2>/dev/null))"
+  bad "$dones RUN_FINISHED (success) and $errors RUN_ERROR frames, want exactly 1 and 0 ($(jq -c '[.[] | .type]' "$events" 2>/dev/null))"
 fi
 
 # --- the queue is empty again ------------------------------------------------------------------------------------------

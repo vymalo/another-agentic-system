@@ -1,6 +1,7 @@
 //! The built binary as a process: configuration errors are fatal and readable; against a real
-//! database it serves the chat API, runs a thread to completion through an A2A agent, and exits
-//! cleanly on SIGTERM.
+//! database it serves the resource API and the AG-UI surface (the default), runs a thread to
+//! completion through an A2A agent, and exits cleanly on SIGTERM. The legacy chat API is off by
+//! default: the tests that drive it say `ORCH_SURFACES=agui,chat-api` themselves.
 //!
 //! The database tests need `ORCH_TEST_DATABASE_URL` (they skip without); the configuration
 //! tests always run.
@@ -394,20 +395,23 @@ async fn the_chat_api_surface_is_mounted_by_the_flag() {
     assert!(log.contains("\"surfaces\":\"chat-api\""), "{log}");
 }
 
-#[tokio::test]
-async fn by_default_the_agui_and_chat_api_surfaces_are_both_mounted() {
-    let Some(db) = pgdb::TestDb::new().await else {
-        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
-        return;
-    };
-    let scratch = Scratch::new();
-    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+/// Starts the binary on a free port with `args` and the agents file of these tests, and waits for
+/// `/healthz`. Returns the process, its base URL and a client.
+async fn serve_with(
+    db: &pgdb::TestDb,
+    scratch: &Scratch,
+    log_name: &str,
+    args: &[&str],
+) -> (std::cell::RefCell<Running>, String, reqwest::Client) {
+    let agents = write_agents(scratch, &agents_yaml("https://a.example.com/card"));
     let addr = format!("127.0.0.1:{}", free_port());
-    let database_url = database_url_of(&db);
+    let database_url = database_url_of(db);
+    let mut all_args = vec!["--listen-addr", addr.as_str()];
+    all_args.extend_from_slice(args);
     let run = std::cell::RefCell::new(spawn_with_args(
-        &scratch,
-        "default-surfaces.log",
-        &["--listen-addr", &addr],
+        scratch,
+        log_name,
+        &all_args,
         &[
             ("DATABASE_URL", &database_url),
             ("AGENTS_FILE", path_str(&agents)),
@@ -426,25 +430,144 @@ async fn by_default_the_agui_and_chat_api_surfaces_are_both_mounted() {
         (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
     })
     .await;
+    (run, base, client)
+}
+
+/// The routes of the deprecated chat API interaction surface, as method and path.
+const LEGACY_ROUTES: [(&str, &str); 4] = [
+    ("POST", "/api/threads"),
+    (
+        "GET",
+        "/api/threads/00000000-0000-7000-8000-000000000001/events",
+    ),
+    (
+        "POST",
+        "/api/threads/00000000-0000-7000-8000-000000000001/messages",
+    ),
+    (
+        "GET",
+        "/api/threads/00000000-0000-7000-8000-000000000001/stream",
+    ),
+];
+
+async fn status_of(
+    client: &reqwest::Client,
+    base: &str,
+    method: &str,
+    path: &str,
+    user: Option<&str>,
+) -> u16 {
+    let mut req = client.request(method.parse().unwrap(), format!("{base}{path}"));
+    if let Some(user) = user {
+        req = req.header("X-Auth-Request-Email", user);
+    }
+    if method == "POST" {
+        req = req.json(&serde_json::json!({}));
+    }
+    req.send().await.unwrap().status().as_u16()
+}
+
+#[tokio::test]
+async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    // No `--surfaces`, no `ORCH_SURFACES`: what an operator gets who sets nothing.
+    let (run, base, client) = serve_with(&db, &scratch, "default-surfaces.log", &[]).await;
+    let alice = Some("alice@example.com");
+    // The AG-UI route answers (an empty body is a 400, not a 404/405), behind the identity layer.
+    assert_eq!(
+        status_of(&client, &base, "POST", "/agui/agents/plain", alice).await,
+        400
+    );
+    assert_eq!(
+        status_of(&client, &base, "POST", "/agui/agents/plain", None).await,
+        401
+    );
+    // The resource API is always there: the agent list, the thread list, a thread and cancel.
+    for path in ["/api/agents", "/api/threads"] {
+        assert_eq!(
+            status_of(&client, &base, "GET", path, alice).await,
+            200,
+            "{path}"
+        );
+    }
+    let missing = "/api/threads/00000000-0000-7000-8000-000000000001";
+    assert_eq!(
+        status_of(&client, &base, "GET", missing, alice).await,
+        404,
+        "a thread that does not exist: the route is there, the thread is not"
+    );
+    assert_eq!(
+        status_of(&client, &base, "POST", &format!("{missing}/cancel"), alice).await,
+        404,
+        "cancel is routed too: it answers about the thread, not the route"
+    );
+    // The legacy interaction routes are not mounted. `POST /api/threads` shares its path with
+    // the thread list, so it is a 405; the others match no route at all.
+    for (method, path) in LEGACY_ROUTES {
+        let want = if (method, path) == ("POST", "/api/threads") {
+            405
+        } else {
+            404
+        };
+        assert_eq!(
+            status_of(&client, &base, method, path, alice).await,
+            want,
+            "{method} {path}"
+        );
+    }
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("\"surfaces\":\"agui\""), "{log}");
+}
+
+#[tokio::test]
+async fn the_legacy_routes_come_back_with_agui_and_chat_api_listed() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (run, base, client) = serve_with(
+        &db,
+        &scratch,
+        "both-surfaces.log",
+        &["--surfaces", "agui,chat-api"],
+    )
+    .await;
+    let alice = Some("alice@example.com");
     // Both interaction routes answer (an empty body is a 400, not a 404/405) ...
     for path in ["/api/threads", "/agui/agents/plain"] {
-        let post = client
-            .post(format!("{base}{path}"))
-            .header("X-Auth-Request-Email", "alice@example.com")
-            .json(&serde_json::json!({}))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(post.status().as_u16(), 400, "{path}");
+        assert_eq!(
+            status_of(&client, &base, "POST", path, alice).await,
+            400,
+            "{path}"
+        );
     }
-    // ... and the AG-UI one is behind the identity layer like the rest.
-    let anonymous = client
-        .post(format!("{base}/agui/agents/plain"))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(anonymous.status().as_u16(), 401);
+    // ... and every legacy route answers as itself: with `Deprecation`, which an unknown route
+    // (the 404 of the default) never carries.
+    for (method, path) in LEGACY_ROUTES {
+        let mut req = client
+            .request(method.parse().unwrap(), format!("{base}{path}"))
+            .header("X-Auth-Request-Email", "alice@example.com");
+        if method == "POST" {
+            req = req.json(&serde_json::json!({}));
+        }
+        let resp = req.send().await.unwrap();
+        assert!(
+            resp.headers().contains_key("deprecation"),
+            "{method} {path} ({}) is served by the chat API surface",
+            resp.status()
+        );
+    }
+    assert_eq!(
+        status_of(&client, &base, "GET", "/api/agents", alice).await,
+        200
+    );
     let status = run.borrow_mut().terminate(Duration::from_secs(20));
     let log = run.borrow().log();
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
@@ -553,18 +676,37 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
     let (status, agents_body) = chat.get("/api/agents").await;
     assert_eq!(status, 200);
     assert_eq!(agents_body[0]["id"], "fake");
-    let id = chat.create_thread("fake", "echo smoke", None).await;
-    chat.wait_state(&id, "done").await;
-    assert_eq!(
-        shape(&chat.events(&id).await),
-        [
-            "user_message",
-            "agent_status:working",
-            "artifact",
-            "agent_status:completed",
-            "thread_state:done"
-        ]
+    // The default surface is AG-UI: the run is one POST whose response ends with the run.
+    let id = uuid::Uuid::now_v7().to_string();
+    let input = Chat::agui_input(
+        &id,
+        "run-1",
+        &[("msg-1", "echo smoke")],
+        serde_json::json!({}),
     );
+    let mut sse = chat.agui_run("fake", &input).await;
+    let frames = sse.collect_frames(Duration::from_secs(20)).await;
+    let types: Vec<&str> = frames
+        .iter()
+        .map(|f| f.event["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types.first(), Some(&"RUN_STARTED"), "{types:?}");
+    assert_eq!(types.last(), Some(&"RUN_FINISHED"), "{types:?}");
+    assert_eq!(
+        frames.last().unwrap().event["outcome"],
+        serde_json::json!({"type": "success"})
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.event["activityType"] == "vymalo.artifact"),
+        "the agent's artifact reaches the requester: {types:?}"
+    );
+    // The thread the consumer named is an ordinary thread of the resource API.
+    chat.wait_state(&id, "done").await;
+    // ... and the legacy interaction routes are not there to read its log.
+    let (legacy, _) = chat.get(&format!("/api/threads/{id}/events")).await;
+    assert_eq!(legacy, 404);
     let calls = agent.executions();
     assert_eq!(calls.len(), 1);
     assert_eq!(
@@ -628,6 +770,10 @@ impl Replica {
             ("AGENTS_FILE", path_str(agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
             ("NO_PROXY", "127.0.0.1,localhost"),
+            // The multi-process tests below drive threads through the legacy client of
+            // `orch-testsupport` (create, events, stream), and the chat API is off by default:
+            // they ask for it, so they do not depend on the default.
+            ("ORCH_SURFACES", "agui,chat-api"),
         ];
         env.extend_from_slice(extra);
         Replica {

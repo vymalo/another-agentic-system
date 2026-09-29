@@ -23,7 +23,8 @@ info:
 
     Deprecation: `createThread`, `postMessage`, `listEvents` and `streamEvents`
     are deprecated in favour of the AG-UI operations. They are served only
-    while `ORCH_SURFACES` includes `chat-api`, and every response the
+    while `ORCH_SURFACES` includes `chat-api` (off by default: the default is
+    `agui`; set `ORCH_SURFACES=agui,chat-api` to keep them), and every response the
     operation itself produces carries `Deprecation: @1790640000` (RFC 9745:
     an sf-date, 2026-09-29T00:00:00Z, the day they were deprecated). A
     401 comes from the identity layer, which is shared, and carries no

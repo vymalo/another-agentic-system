@@ -10,7 +10,7 @@ A dev-dependency of [`orch-agent-a2a`](../agent-a2a/README.md),
 [`orch-e2e`](../e2e/README.md) and the
 [`orchestrator`](../../bin/orchestrator/README.md) binary's tests. It depends on
 [`orch-app`](../app/README.md), [`orch-api`](../api/README.md),
-[`orch-surface-agui`](../surface-agui/README.md) and [`orch-surface-chat-api`](../surface-chat-api/README.md) (both mounted by `TestInstance`, like the default `ORCH_SURFACES`) and
+[`orch-surface-agui`](../surface-agui/README.md) and [`orch-surface-chat-api`](../surface-chat-api/README.md) (both mounted by `TestInstance`, like `ORCH_SURFACES=agui,chat-api`; the default is `agui` alone, and a test that needs the legacy `Chat` methods relies on this explicit choice) and
 [`orch-ports`](../ports/README.md), and on `a2a-server-lf` for the fake agent.
 Its helpers panic on failure, by design.
 

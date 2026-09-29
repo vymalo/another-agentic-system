@@ -40,7 +40,8 @@ small REST resource API beside it ([ADR 0012](decisions/0012-ag-ui-user-facing-p
 binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, the legacy chat API, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
 (`ORCH_SURFACES`). **Built:** the mechanism, the `agui` surface (the run route, the connect stream and
-the capabilities document) and the `chat-api` surface, both mounted by default. **Planned:** `a2a`.
+the capabilities document, mounted by default) and the deprecated `chat-api` surface (off unless
+`ORCH_SURFACES=agui,chat-api`). **Planned:** `a2a`.
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP

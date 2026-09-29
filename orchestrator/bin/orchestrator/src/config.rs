@@ -244,7 +244,8 @@ pub enum Surface {
     /// The AG-UI routes (`orch-surface-agui`: run, connect, capabilities): the default user-facing
     /// protocol (ADR 0012).
     Agui,
-    /// The legacy chat API interaction routes (`orch-surface-chat-api`). Deprecated.
+    /// The legacy chat API interaction routes (`orch-surface-chat-api`). Deprecated, and off
+    /// unless `ORCH_SURFACES` lists it: `agui,chat-api` keeps them beside the AG-UI ones.
     ChatApi,
 }
 
@@ -312,10 +313,12 @@ impl fmt::Display for Surface {
 
 /// The surfaces mounted when `ORCH_SURFACES` is not set, as far as this build contains them
 /// (a build without a surface's feature simply does not serve it by default, whereas *asking*
-/// for it by name is an error). The list moves with the AG-UI migration (ADR 0012): `agui` beside
-/// `chat-api` while the web still uses the legacy routes, then `agui` alone.
+/// for it by name is an error). The list moved with the AG-UI migration (ADR 0012): `chat-api`
+/// alone, then `agui,chat-api` while the web was migrated, and now `agui` alone, because the web
+/// speaks only AG-UI. The deprecated `chat-api` routes stay in the build and are opt-in:
+/// `ORCH_SURFACES=agui,chat-api`.
 fn default_surfaces() -> Vec<Surface> {
-    [Surface::Agui, Surface::ChatApi]
+    [Surface::Agui]
         .into_iter()
         .filter(|s| s.compiled_in())
         .collect()
@@ -383,9 +386,9 @@ pub struct Args {
     #[arg(long, env = "ORCH_ROLE", value_name = "ROLE")]
     pub role: Option<String>,
 
-    /// Interaction surfaces to mount, comma separated (default agui,chat-api, as far as the
-    /// build has them). Known: agui, chat-api (deprecated). The resource API and health are
-    /// always mounted.
+    /// Interaction surfaces to mount, comma separated (default agui, as far as the build has
+    /// it). Known: agui, chat-api (deprecated, off by default: use agui,chat-api to keep the
+    /// legacy routes). The resource API and health are always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
     pub surfaces: Option<String>,
 
@@ -1204,16 +1207,31 @@ mod tests {
         assert_eq!(LogFormat::parse(Some(" Text ")), LogFormat::Text);
     }
 
-    #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
+    #[cfg(feature = "surface-agui")]
     #[test]
-    fn the_default_surfaces_are_agui_and_the_chat_api() {
-        let both = vec![Surface::Agui, Surface::ChatApi];
+    fn the_default_surface_is_agui_alone() {
+        let agui = vec![Surface::Agui];
         let cfg = load(&base(), AGENTS).unwrap();
-        assert_eq!(cfg.surfaces, both);
+        assert_eq!(cfg.surfaces, agui);
+        assert!(
+            !cfg.surfaces.contains(&Surface::ChatApi),
+            "the deprecated chat API is opt-in"
+        );
         // A blank value is unset, as for every variable.
         let mut env = base();
         env.push(("ORCH_SURFACES", "  "));
-        assert_eq!(load(&env, AGENTS).unwrap().surfaces, both);
+        assert_eq!(load(&env, AGENTS).unwrap().surfaces, agui);
+    }
+
+    #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
+    #[test]
+    fn the_legacy_routes_are_kept_by_listing_the_chat_api_beside_agui() {
+        let mut env = base();
+        env.push(("ORCH_SURFACES", "agui,chat-api"));
+        assert_eq!(
+            load(&env, AGENTS).unwrap().surfaces,
+            vec![Surface::Agui, Surface::ChatApi]
+        );
     }
 
     #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
