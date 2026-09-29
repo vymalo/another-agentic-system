@@ -23,6 +23,7 @@ an ADR, not by assumption.
 | 20 | **External programmatic AG-UI clients.** How do they authenticate through the edge? | Browser sessions go through oauth2-proxy; a CLI has no cookie. | oauth2-proxy JWT bearer pass-through; decide when there is a client. |
 | 21 | **`@assistant-ui/react-ag-ui` on `@ag-ui/client` 1.0.** It depends on `^0.0.59`; our patches and an `overrides` entry may bridge it. | Patches rot on upgrade; the runtime's `unstable_` APIs may change in a patch release. | Spike: run the pinned runtime on 1.0 via `overrides`; propose the bump and our fixes upstream; drop each patch when a release contains it. |
 | 22 | **A2UI 1.0.** The A2A extension URI we detect is `…/a2ui/v0.9.1`; v1.0 is a candidate ([ADR 0013](decisions/0013-a2ui-generative-ui.md)). | A new URI means a card change on the agent side and a detection change here. | Detect both URIs while v1.0 settles; bump in a reviewed PR. |
+| 23 | **Explicit default marker (`default: true`) instead of list order?** The default agent is the first `AGENTS_FILE` entry ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md)). | Reordering a file changes the default silently; a marker is explicit but adds startup errors (none or two defaults). | Keep order until a deployment reorders by accident or a second client needs another default; then an ADR. |
 
 ## Closed
 

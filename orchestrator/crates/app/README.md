@@ -51,7 +51,8 @@ Offline: they use the in-memory implementations of `orch-ports` (feature
 `testkit`). No environment variables.
 
 * `tests/service.rs`: the thread service without a dispatcher (validation,
-  isolation between users, streams, idempotency).
+  isolation between users, streams, idempotency; `list_agents` reads live cards,
+  fails closed and keeps configuration order, so the first agent stays the default).
 * `tests/dispatcher.rs`: the dispatcher against the scripted agent.
 * `tests/restart.rs`: two app instances over one shared in-memory "database",
   the first killed mid-stream.

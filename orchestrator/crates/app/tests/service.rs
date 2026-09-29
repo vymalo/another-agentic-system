@@ -175,6 +175,11 @@ async fn list_agents_reads_live_cards_and_fails_closed() {
     assert!(agents[1].releases.is_none());
     w.agent.set_card_down("coder", true);
     let agents = app.list_agents().await;
+    assert_eq!(
+        agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+        ["coder", "plain"],
+        "an agent whose card is down keeps its place: the first stays the default"
+    );
     assert!(
         agents[0].releases.is_none(),
         "no picker when the card cannot be read"

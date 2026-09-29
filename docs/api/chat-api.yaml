@@ -42,6 +42,8 @@ paths:
         Configured A2A agents (static configuration in the MVP). For each, the
         orchestrator reads the live agent card; `releases` is present only when
         the card advertises the release-channels extension (ADR 0008).
+        Listed in configuration order; the first is the default target, which clients
+        preselect. An agent whose card cannot be read stays in its place.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":

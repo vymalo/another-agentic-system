@@ -147,3 +147,4 @@ is validated too.
 
 - `vymalo/another-agentic-platform` — the agent platform (first-class, optional agent host).
 - `vymalo/another-agentic-images` — toolchain images.
+- `vymalo/another-adam-rs` — adam-coder, the default A2A coding agent; also the adam-rs library (see the pending ADR 0015).
