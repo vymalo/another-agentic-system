@@ -118,6 +118,7 @@ change of the composition root, never a runtime plugin.
 |---|---|---|
 | [`crates/core`](crates/core/README.md) | `orch-core` | Pure: contract types (`ThreadState`, `Event`, `EventKind`, `Actor`, …) and `transition`. No async, no I/O. |
 | [`crates/ports`](crates/ports/README.md) | `orch-ports` | Traits `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`; feature `testkit` adds in-memory implementations, a scripted fake agent and the conformance testkit. |
+| [`crates/agui-proto`](crates/agui-proto/README.md) | `orch-agui-proto` | AG-UI 1.0 wire types as closed serde enums (all 31 events, `RunAgentInput`), the vendored official JSON Schema, and a `testkit` that validates against it. No `orch-*` dependencies. |
 | [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams) and the durable outbox `Dispatcher`, written against the ports. |
 | [`crates/api`](crates/api/README.md) | `orch-api` | axum 0.8 routes for every operation of the contract, proxy-identity auth (fail closed), RFC 9457 problems, SSE. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
