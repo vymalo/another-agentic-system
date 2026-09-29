@@ -430,3 +430,18 @@ async fn the_event_stream_survives_a_missing_wakeup_via_the_safety_poll() {
         .unwrap();
     assert_eq!(ev.seq, 2);
 }
+
+#[tokio::test]
+async fn the_event_stream_ends_once_caught_up_when_shutdown_started() {
+    let w = World::new();
+    let app = w.app();
+    let t = create(&app, &alice(), "plain", "hi").await;
+    let mut stream = app.event_stream(&alice(), t.id, 0).await.unwrap();
+    app.set_shutting_down();
+    // Buffered history is still delivered, then the stream ends instead of waiting for more.
+    assert_eq!(stream.next().await.unwrap().seq, 1);
+    let end = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("the stream must end within a poll interval");
+    assert!(end.is_none());
+}

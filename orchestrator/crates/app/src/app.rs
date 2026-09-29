@@ -465,6 +465,7 @@ impl<P: Ports> App<P> {
 
     /// Replays every event with `seq > after`, then streams live ones, without gaps or
     /// duplicates. Wakeups make it prompt; a periodic poll makes it correct without them.
+    /// Once shutdown started and the stream has caught up, it ends (within one poll interval).
     pub async fn event_stream(
         self: &Arc<Self>,
         user: &UserId,
@@ -509,6 +510,11 @@ impl<P: Ports> App<P> {
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!(error = %e, "event stream read failed; retrying"),
+                }
+                // Caught up and the process is going away: end the stream so the client
+                // reconnects (with `Last-Event-ID`) to another replica and shutdown can drain.
+                if st.app.is_shutting_down() {
+                    return None;
                 }
                 let tick = tokio::time::sleep_until(Instant::now() + st.app.cfg.stream_poll);
                 tokio::pin!(tick);

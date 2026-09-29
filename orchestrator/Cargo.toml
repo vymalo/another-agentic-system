@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]  # slice 3 adds "bin/*" with the composition root
+members = ["crates/*", "bin/*"]
 
 [workspace.package]
 edition = "2024"
@@ -51,4 +51,5 @@ serde_norway = "0.9.42"
 jsonschema = { version = "0.58", default-features = false }
 eventsource-stream = "0.2.3"
 proptest = "1"
+url = "2"
 chrono = { version = "0.4", default-features = false }
