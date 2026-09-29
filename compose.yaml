@@ -176,16 +176,12 @@ services:
     volumes:
       - git-data:/srv/git
 
-  # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag should be
-  # the adam-rs commit in dev/coder/UPSTREAM (sha-22d7c6e), which dev/coder/check-vendored.sh asserts.
-  # Verified 2026-09-29 (ghcr API, anonymous token): sha-22d7c6e is NOT published, because the coder
-  # workflow of adam-rs failed on that commit in its kubeconform step (HTTP 500 from the CRD catalog)
-  # and skipped the image job. sha-7f607d0 is the newest tag; from there to 22d7c6e adam-rs changed no
-  # crate or Docker file (only tests, mocks, compose, docs and workflows), so it is the same coder.
-  # Re-run that workflow, then replace this line with coder:sha-22d7c6e@sha256:<digest>.
+  # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
+  # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.
+  # Verified 2026-09-29 (ghcr API, anonymous token): coder:sha-0e08fe0 and its digest below.
   coder:
     profiles: [app]
-    image: ghcr.io/vymalo/another-adam-rs/coder:sha-7f607d0@sha256:8533d570eddf99a1e72af32644649af8bbaf3bb1d192735036ca9e7e9f73244e
+    image: ghcr.io/vymalo/another-adam-rs/coder:sha-0e08fe0@sha256:fa1ac3df38a49de3d7678e38c7aeb2a7e1919d8cd30fd005e0f0341d703ac95d
     depends_on:
       coder-postgres:
         condition: service_healthy

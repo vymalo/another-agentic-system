@@ -5,4 +5,4 @@
 # dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream. Never edit them here: change
 # them upstream, then update this commit, the copies and the coder image pin in compose.yaml together.
 repo=vymalo/another-adam-rs
-commit=22d7c6e126b8faec7fd2eca84259903ff25b02f0
+commit=0e08fe07eaea7022a08f0fc5c883a373e17e6ca3

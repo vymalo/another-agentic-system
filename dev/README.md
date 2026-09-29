@@ -335,7 +335,7 @@ The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
 
 *Verified 2026-09-29*:
 
-- The vendored files are byte-identical to `vymalo/another-adam-rs` at `22d7c6e126b8` (`dev/coder/check-vendored.sh`, over
+- The vendored files are byte-identical to `vymalo/another-adam-rs` at `0e08fe07eaea` (the scripted mocks landed in `22d7c6e126b8` and did not change since) (`dev/coder/check-vendored.sh`, over
   `raw.githubusercontent.com`; the same script also asserts the image pin, see below).
 - The vendored WireMock mappings load in `wiremock-standalone-3.13.2.jar` (16 mappings for `mock-openai`, 13 for
   `mock-github`, run with `--global-response-templating`), and the whole `mock-coder` script, the `mock-opencode` turns
@@ -346,21 +346,16 @@ The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
   This proves the script's jq paths and journal queries, not the real stack.
 - `docker compose config` (Compose v5.1.1, no daemon) accepts both profiles; `shellcheck dev/*.sh dev/coder/*.sh` and
   `actionlint` are clean; the docs check passes.
-- The ghcr manifest and digest of `coder:sha-7f607d0` (anonymous token, `docker-content-digest`), and the tag list of
-  the repository.
-- From `7f607d0` to `22d7c6e`, adam-rs changed no crate, Cargo file or Docker file except `crates/adam-coder/README.md`
-  (`git diff --stat`), so the two images hold the same coder.
+- The ghcr manifest and digest of `coder:sha-0e08fe0` (anonymous token, `docker-content-digest`), and the tag list of
+  the repository. adam-rs's `coder` workflow built, smoke-tested and ran its own compose e2e (both variants) on this
+  image before pushing it.
 
 *Unverified*:
 
 - **A run of the stack.** The machine that wrote this had no Docker daemon: the coder container, its health check and
-  environment (variable names were read from `crates/adam-coder/src/config.rs` at `22d7c6e`), the git-server build,
+  environment (variable names were read from `crates/adam-coder/src/config.rs` at `22d7c6e`, unchanged at `0e08fe0`), the git-server build,
   `up --no-build --wait`, and `dev/coder-e2e.sh` against the real orchestrator, web, edge and coder. The first run is the
   `Coder E2E` workflow.
-- **The image pin.** `sha-22d7c6e`, the tag `check-vendored.sh` expects, was not published on 2026-09-29: the coder
-  workflow of adam-rs failed on that commit in its kubeconform step (HTTP 500 from the CRD catalog) and skipped the
-  image job. `compose.yaml` pins `sha-7f607d0` until that workflow is re-run and the line is replaced, so the
-  `vendored` job fails on the pin until then.
 - That `mock-openai` matches every request of a real coder and OpenCode without the upstream `models.json`,
   `chat-completions.json` and `errors.json`, which are not vendored: the "nothing unmatched" check will say.
 - That the orchestrator's delegation of a run that takes minutes stays within its own limits on the CI runner.
