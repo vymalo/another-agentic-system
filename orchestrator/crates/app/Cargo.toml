@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 description = "Orchestrator application service: thread service (transition + commit loop) and the durable outbox dispatcher, written against the ports only."
+readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true

@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 license.workspace = true
 description = "Test-only helpers: an in-process fake A2A agent (a2a-server-lf), a test instance of the orchestrator over real HTTP, and small HTTP/SSE clients."
+readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true

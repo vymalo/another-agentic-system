@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 description = "The chat HTTP API (docs/api/chat-api.yaml): axum routes, proxy-identity auth, RFC 9457 problems and SSE."
+readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true

@@ -7,8 +7,8 @@
 A protocol-agnostic **orchestration layer** for multi-agent work: a chat
 surface (Next.js + assistant-ui) and a stateless Rust orchestrator over one
 Postgres event log. It drives any A2A agent, uses tools over MCP, reacts to
-webhooks, and can be driven the same way. **Status: design only** — there is
-no code yet.
+webhooks, and can be driven the same way. **Status: MVP steps 1–2 are built**
+(`orchestrator/`, `web/`); later steps are still design (`docs/mvp.md`).
 
 ## Layout
 
@@ -104,6 +104,12 @@ Not for direct use: `core-actionbook`, `core-agent-browser`, `core-dynamic-skill
   don't delete them.
 
 ## Code (when it starts)
+
+Every crate under `orchestrator/crates/` and `orchestrator/bin/` has a
+`README.md` next to its `Cargo.toml` (and `readme = "README.md"` in the
+manifest). Update it in the same PR as any change to the crate's public API,
+environment variables or tests. `tools/docs-check` fails when a crate has no
+README and checks its relative links; it cannot check accuracy, so review does.
 
 Rust: `thiserror` in library crates, `anyhow` in binaries, no `f64` for time or
 money, `jiff` for time, `sqlx` + `axum`. The `core` crate stays free of async

@@ -1,6 +1,8 @@
 // Validates the repository's Markdown:
 //   1. every ```mermaid block parses with the pinned Mermaid version, and
-//   2. every relative Markdown link points at a file or directory that exists.
+//   2. every relative Markdown link points at a file or directory that exists, and
+//   3. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
+//      orchestrator/bin/) has a README.md next to it.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
 // Exits 1 on any failure, listing file:line for each.
 import fs from 'node:fs';
@@ -60,7 +62,26 @@ for (const file of markdownFiles(root)) {
   }
 }
 
-console.log(`${diagrams} diagrams, ${links} relative links checked`);
+// Every crate documents itself: a directory under these roots with a Cargo.toml needs a
+// README.md, updated in the same change as any change to its public API, environment
+// variables or tests (CLAUDE.md, "Code").
+const crateRoots = ['orchestrator/crates', 'orchestrator/bin'];
+let crates = 0;
+for (const crateRoot of crateRoots) {
+  const dir = path.join(root, crateRoot);
+  if (!fs.existsSync(dir)) continue;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const crateDir = path.join(dir, entry.name);
+    if (!fs.existsSync(path.join(crateDir, 'Cargo.toml'))) continue;
+    crates++;
+    if (!fs.existsSync(path.join(crateDir, 'README.md'))) {
+      failures.push(`${path.relative(root, crateDir)}: crate has a Cargo.toml but no README.md`);
+    }
+  }
+}
+
+console.log(`${diagrams} diagrams, ${links} relative links, ${crates} crate READMEs checked`);
 if (failures.length) {
   console.error(failures.join('\n'));
   console.error(`${failures.length} problem(s)`);

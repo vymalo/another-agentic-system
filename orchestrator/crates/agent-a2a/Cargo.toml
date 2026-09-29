@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 description = "AgentClient over the A2A protocol (a2a-client-lf): card and release discovery, streaming delegation, resubscribe, polling and cancel."
+readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true

@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 license.workspace = true
 description = "End-to-end tests: the chat API, the dispatcher and the A2A adapter against an in-process fake A2A agent over real HTTP."
+readme = "README.md"
 
 [dependencies]
 

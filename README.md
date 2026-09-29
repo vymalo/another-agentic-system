@@ -5,8 +5,10 @@ job from a chat — or another system starts one over A2A, MCP or a webhook.
 Agents plan it, work it in parallel, verify it against real checks, review it,
 and hand back a pull request. You read the chat surface.
 
-> **Status: design only.** No code yet. Decisions are recorded as ADRs; what
-> is not yet verified is listed in [open questions](docs/open-questions.md).
+> **Status: MVP steps 1–2 are built** — the orchestrator (`orchestrator/`) and
+> the chat surface (`web/`); later steps are still design ([MVP](docs/mvp.md)).
+> Decisions are recorded as ADRs; what is not yet verified is listed in
+> [open questions](docs/open-questions.md).
 
 It hosts no agents. It drives anything that speaks A2A, uses tools over MCP,
 reacts to webhooks, and can be driven the same way. Its processes are
