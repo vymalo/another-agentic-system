@@ -1,3 +1,5 @@
+import { ChatShell } from "@/components/ChatShell";
+
 export default function Home() {
-  return <p>Loading…</p>;
+  return <ChatShell threadId={null} />;
 }
