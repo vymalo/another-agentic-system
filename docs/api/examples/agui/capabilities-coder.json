@@ -1,0 +1,40 @@
+{
+  "custom": {
+    "https://agents.vymalo.com/a2a/extensions/release-channels/v1": {
+      "channels": {
+        "latest": "coder-r53",
+        "production": "coder-r47",
+        "staging": "coder-r51"
+      },
+      "defaultChannel": "production",
+      "revisions": [
+        "coder-r53",
+        "coder-r51",
+        "coder-r47"
+      ]
+    }
+  },
+  "humanInTheLoop": {
+    "interrupts": true,
+    "supported": true
+  },
+  "identity": {
+    "description": "in-process fake A2A agent",
+    "name": "Coder",
+    "version": "1.0.0"
+  },
+  "multiAgent": {
+    "delegation": true,
+    "subagents": [
+      {
+        "description": "in-process fake A2A agent",
+        "name": "coder"
+      }
+    ],
+    "supported": true
+  },
+  "transport": {
+    "resumable": true,
+    "streaming": true
+  }
+}

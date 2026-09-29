@@ -60,3 +60,29 @@ responses in order, one run each. The consumer's thread id is `<thread-id>`; its
 - **Producer:** `orchestrator/crates/e2e/tests/agui_run.rs` (`run_responses_match_docs_api_examples`);
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_run` regenerates them; review the diff.
 - **Consumers:** `tools/agui-conformance` reads them like the others.
+
+### Connect streams
+
+[`agui/connect-<name>.agui.json`](agui/) is what the **connect stream** (`GET /agui/threads/{threadId}/connect`,
+see [`../agui.md`](../agui.md#connect-binding)) sent a **viewer**, over real HTTP, in the same frame format:
+everything, including the user messages the requester holds already. The consumer's thread id is
+`<thread-id>`.
+
+| File | Thread | What the viewer reads |
+|---|---|---|
+| `connect-echo.agui.json` | `echo hi` | the replay of one finished run (`?mode=run`, so the stream ends) |
+| `connect-ask.agui.json` | `ask about branches`, answered `main` | the replay of two runs on one stream: interrupt, then success |
+| `connect-cancel.agui.json` | `slow work`, cancelled | the replay of a cancelled run |
+| `connect-cursor.agui.json` | `gate hold`, the client held log event 2 and reconnects with `Last-Event-ID: 2` | the **preamble** (`RUN_STARTED` of the same run, `SUBAGENT_STARTED`, `STATE_SNAPSHOT`, none with an `id:`), then the rest of the run |
+
+[`agui/capabilities-<agent>.json`](agui/) is the `AgentCapabilities` document
+(`GET /agui/agents/{agentId}/capabilities`, see [`../agui.md`](../agui.md#capabilities-document)) of the two
+agents of the end-to-end world: `coder` (its card lists release channels) and `plain` (it does not). Not
+`*.agui.json`: it is a document, not a stream, and the reference client has no reader for it; the
+Rust tests validate it against the vendored schema (`#/$defs/AgentCapabilities`).
+
+- **Producer:** `orchestrator/crates/e2e/tests/agui_connect.rs` (`connect_streams_match_docs_api_examples`,
+  `capabilities_match_docs_api_examples`); `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_connect`
+  regenerates them; review the diff.
+- **Consumers:** `tools/agui-conformance` reads the `connect-*` streams like the others, as one connect
+  stream through `connectAgent` and each run alone through `runAgent`.

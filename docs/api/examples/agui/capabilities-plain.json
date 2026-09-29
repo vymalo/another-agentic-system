@@ -1,0 +1,25 @@
+{
+  "humanInTheLoop": {
+    "interrupts": true,
+    "supported": true
+  },
+  "identity": {
+    "description": "in-process fake A2A agent",
+    "name": "Plain",
+    "version": "1.0.0"
+  },
+  "multiAgent": {
+    "delegation": true,
+    "subagents": [
+      {
+        "description": "in-process fake A2A agent",
+        "name": "plain"
+      }
+    ],
+    "supported": true
+  },
+  "transport": {
+    "resumable": true,
+    "streaming": true
+  }
+}

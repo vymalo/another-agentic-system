@@ -14,7 +14,7 @@ node tools/agui-conformance/check.mjs       # every docs/api/examples/agui/*.agu
 ## What it does
 
 For each `docs/api/examples/agui/<name>.agui.json` (an array of `{id?, event}`, written by
-`orch-agui-projection`, see [`docs/api/examples`](../../docs/api/examples/README.md)) the frames
+`orch-agui-projection` and, for the `run-*` and `connect-*` files, captured over real HTTP by `orch-e2e`; see [`docs/api/examples`](../../docs/api/examples/README.md)) the frames
 are framed as SSE the way the surface writes them (`id:` and `data:` lines, LF, a keepalive
 comment after each run) and read through the reference `HttpAgent` pipeline:
 

@@ -1,5 +1,8 @@
-//! The AG-UI interaction surface: `POST /agui/agents/{agentId}` of `docs/api/agui.md`, over
-//! [`orch_app::App`].
+//! The AG-UI interaction surface of `docs/api/agui.md`, over [`orch_app::App`]: the run route
+//! `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and
+//! the capabilities document `GET /agui/agents/{agentId}/capabilities`.
+//!
+//! # The run route
 //!
 //! A consumer sends an AG-UI `RunAgentInput` and gets an SSE stream of AG-UI events back: the
 //! [`Requester`](orch_agui_projection::Audience::Requester) projection of the thread's event
@@ -22,12 +25,31 @@
 //!
 //! A run is not tied to its connection: dropping the response never cancels anything.
 //!
+//! # The connect stream
+//!
+//! A viewer's stream of a thread, our extension of the transport: the
+//! [`Viewer`](orch_agui_projection::Audience::Viewer) projection of the log, replayed from the
+//! start or from a `Last-Event-ID` cursor (with a preamble that re-opens the run that is open
+//! there) and then followed across runs, with keepalive comments. `?mode=run` closes after the
+//! active run. The stream is [`orch_agui_projection::Connect`] driven by
+//! [`App::event_stream`](orch_app::App::event_stream), so it lives in the log and not in the
+//! process: any replica serves any viewer, and a client whose replica died reconnects to another
+//! with its last `id:`. A thread that is missing, malformed or someone else's is one 404, before
+//! any stream byte.
+//!
+//! # The capabilities document
+//!
+//! [`orch_agui_projection::agent_capabilities`] over the agent's card, read live for each request
+//! ([`App::describe_agent`](orch_app::App::describe_agent)) and never cached.
+//!
 //! The surface is one of those the binary mounts with `ORCH_SURFACES` (name `agui`, Cargo
 //! feature `surface-agui`). It depends only on `App`, `orch-core`, the pure AG-UI crates and the
 //! shared HTTP pieces of `orch-api`, so it can be switched off or replaced without touching the
 //! resource API. Mount it with [`orch_api::router_with_surfaces`]; the identity layer then wraps
 //! every route below.
 
+mod capabilities;
+mod connect;
 mod refuse;
 mod run;
 mod stream;
@@ -36,7 +58,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::routing::post;
+use axum::routing::{get, post};
 use orch_api::SurfaceRoutes;
 use orch_app::App;
 use orch_ports::Ports;
@@ -59,8 +81,10 @@ impl<P: Ports> Clone for State<P> {
     }
 }
 
-/// The routes of the surface: `POST /agui/agents/{agentId}`, a streaming route (no request
-/// timeout) whose `: keepalive` comment is sent every `sse_keepalive`.
+/// The routes of the surface. `POST /agui/agents/{agentId}` (a run) and
+/// `GET /agui/threads/{threadId}/connect` (attach, replay, follow) are streaming routes (no
+/// request timeout) whose `: keepalive` comment is sent every `sse_keepalive`;
+/// `GET /agui/agents/{agentId}/capabilities` is an ordinary request.
 pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRoutes {
     let state = State {
         app,
@@ -68,6 +92,16 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRou
     };
     let streaming = Router::new()
         .route("/agui/agents/{agent_id}", post(run::run::<P>))
+        .route(
+            "/agui/threads/{thread_id}/connect",
+            get(connect::connect::<P>),
+        )
+        .with_state(state.clone());
+    let plain = Router::new()
+        .route(
+            "/agui/agents/{agent_id}/capabilities",
+            get(capabilities::capabilities::<P>),
+        )
         .with_state(state);
-    SurfaceRoutes::new().streaming(streaming)
+    SurfaceRoutes::new().plain(plain).streaming(streaming)
 }

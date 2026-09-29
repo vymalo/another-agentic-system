@@ -18,6 +18,9 @@ moved later. See [ADR 0004](../../../docs/decisions/0004-closed-enums-over-dyn-r
   `Tool`, `Context`, `ResumeEntry`, `Interrupt`, `RunFinishedOutcome`,
   `SubagentFinishedOutcome`, `TokenUsage`, `JsonPatchOperation` and a
   validated `JsonPointer`.
+- `AgentCapabilities` (identity, transport, human-in-the-loop, multi-agent, `custom`), the subset of
+  the capabilities document a producer of ours declares; every member optional, "not declared" is
+  not "unsupported".
 - One newtype per id (`ThreadId`, `RunId`, `MessageId`, `ToolCallId`,
   `SubagentRunId`, `InterruptId`), all plain strings on the wire.
 - `SCHEMA_1_0` (the vendored schema text) and `PROTOCOL_VERSION = "1.0"`.
@@ -73,6 +76,8 @@ orch-agui-proto = { workspace = true, features = ["testkit"] }
 - `assert_json_conforms` / `assert_input_json_conforms` do the same for a
   `serde_json::Value` (goldens); `event_errors` / `input_errors` return the
   messages instead of panicking.
+- `assert_capabilities_conform(&AgentCapabilities)`, `assert_capabilities_json_conforms` and
+  `capabilities_errors` do the same for `#/$defs/AgentCapabilities`.
 - The schema checks **structure**. Ordering and lifecycle (runs balanced,
   nothing open at a terminal event) are behavioural and are checked elsewhere.
 - The schema is strict on purpose: do not use it to validate inbound requests.
@@ -118,4 +123,6 @@ version is a new file (`ag-ui-1.1.schema.json`), not an edit.
 - `tests/props.rs`: proptest generators for every event type and for
   `RunAgentInput` check round trips through text and `Value`, schema
   conformance, and that unknown members never change the typed view.
+- `tests/capabilities.rs`: the `AgentCapabilities` wire shape with every member set, round trip, an
+  empty document, and that the oracle says no (an undeclared member, `subagents` as a flag).
 - `tests/schema.rs`: the README's sha256 matches the vendored file.

@@ -7,7 +7,7 @@ mod directory;
 mod dispatcher;
 mod error;
 
-pub use app::{App, AppConfig, ApplyOutcome, Creation, Inbound, NewThread};
+pub use app::{AgentDescription, App, AppConfig, ApplyOutcome, Creation, Inbound, NewThread};
 pub use directory::{AgentDirectory, AgentEntry};
 pub use dispatcher::{Dispatcher, DispatcherConfig};
 pub use error::AppError;

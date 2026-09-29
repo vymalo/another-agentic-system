@@ -80,7 +80,7 @@ fn check_ids(input: &RunAgentInput) -> Result<(), Problem> {
     Ok(())
 }
 
-fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
+pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
     ThreadMeta {
         thread_id: thread.id,
         title: thread.title.clone(),

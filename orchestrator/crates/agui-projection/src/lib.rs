@@ -9,6 +9,10 @@
 //!   the same frames, so every replica and every replay agrees.
 //! - [`Projector::resume_preamble`] re-opens the current run for a client that reconnects with a
 //!   cursor in the middle of it.
+//! - [`Connect`] is the fold behind the connect stream: the frames a client gets when it attaches
+//!   with a cursor (folded silently up to the cursor, then the preamble, then everything after),
+//!   and when a `?mode=run` stream ends.
+//! - [`agent_capabilities`] builds the capabilities document of an agent from its live card.
 //! - [`translate`] turns a [`orch_agui_proto::RunAgentInput`] into core [`orch_core::Input`]s,
 //!   given a [`ThreadView`] of what the log already holds.
 //!
@@ -16,11 +20,15 @@
 //! stays a function of the log. The HTTP surface (`orch-surface-agui`) is the adapter that feeds
 //! it.
 
+mod capabilities;
+mod connect;
 mod frame;
 mod projector;
 mod translate;
 mod vocab;
 
+pub use capabilities::{CardFacts, agent_capabilities};
+pub use connect::{Connect, Follow};
 pub use frame::{Audience, Frame};
 pub use projector::{Projector, ThreadMeta};
 pub use translate::{

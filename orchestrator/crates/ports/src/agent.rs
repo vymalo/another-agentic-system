@@ -79,6 +79,8 @@ impl AgentEndpoint {
 pub struct AgentCardInfo {
     /// Card description.
     pub description: Option<String>,
+    /// Card version (the agent's own, free-form).
+    pub version: Option<String>,
     /// Present only when the card advertises the release-channels extension.
     pub releases: Option<Releases>,
 }

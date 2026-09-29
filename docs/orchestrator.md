@@ -31,7 +31,7 @@ protocol:
 |---|---|---|---|
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
 | MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `answer` | Calls tools: GitHub, docs, search, … | **Planned** |
-| Chat | The web posts user messages | Appends messages and cards to the thread | The chat API is **built** (`orch-surface-chat-api`, deprecated); AG-UI wire types, projection and run route **built** (`orch-surface-agui`), its connect stream and capabilities **planned** |
+| Chat | The web posts user messages | Appends messages and cards to the thread | The chat API is **built** (`orch-surface-chat-api`, deprecated); AG-UI wire types, projection and the run, connect and capabilities routes **built** (`orch-surface-agui`) |
 | Webhooks | GitHub, CI, Slack events | Slack posts, outgoing webhooks | **Planned** |
 | Timers | Scheduled events (timeouts, reminders, cron) | Schedules new timers | **Planned** |
 
@@ -39,8 +39,8 @@ The chat row's user-facing protocol is **AG-UI 1.0**, a pure projection of the e
 small REST resource API beside it ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
 binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, the legacy chat API, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
-(`ORCH_SURFACES`). **Built:** the mechanism, the `agui` surface (the run route) and the `chat-api`
-surface, both mounted by default. **Planned:** the connect stream and capabilities of `agui`, and `a2a`.
+(`ORCH_SURFACES`). **Built:** the mechanism, the `agui` surface (the run route, the connect stream and
+the capabilities document) and the `chat-api` surface, both mounted by default. **Planned:** `a2a`.
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
@@ -78,7 +78,7 @@ flowchart TB
   end
   subgraph G_SURF["Interaction surfaces: mounted by ORCH_SURFACES"]
     chat["<b>orch-surface-chat-api</b><br/>legacy createThread, postMessage,<br/>listEvents, streamEvents"]
-    surfagui["<b>orch-surface-agui</b><br/>run route: POST /agui/agents/{agentId}"]
+    surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
@@ -160,8 +160,8 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` | **Built** |
 | `orch-surface-chat-api` (`crates/surface-chat-api`) | Legacy interaction routes; deprecated | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
-| `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate` | **Built** |
-| `orch-surface-agui` (`crates/surface-agui`) | The run route over the projection: `POST /agui/agents/{agentId}` | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)); the connect and capabilities routes are **planned** |
+| `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
+| `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | MCP client and server, webhook, timer, GitHub and Slack adapters | The other rows of the table above | **Planned** |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
@@ -171,7 +171,7 @@ Rules the graph enforces, each checkable in the manifests:
 
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
-| `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI run route |
+| `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities) |
 | `orchestrator` | `surface-chat-api` | yes | Compiles in `orch-surface-chat-api`; it decides what *can* be mounted, `ORCH_SURFACES` what *is* |
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
@@ -665,7 +665,9 @@ them.
 `pg_notify` inside the writing transaction (channels `orch_thread` with the thread id as payload,
 and `orch_outbox`), and every orchestrator replica holds one `LISTEN` connection (`PgWakeup`) that
 fans the hints out to its own subscribers: its dispatcher (claim outbox rows) and its open SSE
-streams (`App::event_stream`). After a reconnect of the listener, or when a subscriber lags, every
+streams (`App::event_stream`, which feeds the legacy stream, the AG-UI run response and the AG-UI
+connect stream alike: a connect stream is a viewer's fold of the same log, so any replica serves any
+viewer and a reconnect with `Last-Event-ID` needs no shared memory). After a reconnect of the listener, or when a subscriber lags, every
 subscriber receives `Topic::Resync` and re-reads the store. A stream also polls every 5 s and the
 dispatcher every 2 s, so a lost notification costs latency, not correctness. The stream is served
 by the orchestrator: the web has no server-side code and never touches Postgres. No separate broker.

@@ -17,9 +17,9 @@ use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, ThreadStore, UuidV7Ids, Wakeup};
 use orch_store_postgres::{PgStore, PgWakeup};
 use orch_testsupport::{
-    Chat, FakeAgent, FakeAgentOptions, FakeReleases, TestInstance, fast_dispatcher,
+    Chat, FakeAgent, FakeAgentOptions, FakeReleases, Frame, TestInstance, fast_dispatcher,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[allow(unused_imports)]
 pub use orch_testsupport::{eventually, shape};
@@ -261,4 +261,64 @@ pub fn data_of<'a>(events: &'a [Value], kind: &str) -> Vec<&'a Value> {
         .filter(|e| e["kind"] == kind)
         .map(|e| &e["data"])
         .collect()
+}
+
+// ---- AG-UI goldens ----------------------------------------------------------------------
+
+/// `docs/api/examples/agui`.
+pub fn examples_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples/agui")
+}
+
+/// `{"id"?, "event"}` per frame, the thread id as a placeholder, like the projection's goldens.
+pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
+    fn placeholder(v: &mut Value, thread: &str) {
+        match v {
+            Value::String(s) if s == thread => *s = "<thread-id>".to_owned(),
+            Value::Array(items) => items.iter_mut().for_each(|i| placeholder(i, thread)),
+            Value::Object(map) => map.values_mut().for_each(|i| placeholder(i, thread)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    let mut value = Value::Array(
+        responses
+            .iter()
+            .flatten()
+            .map(|f| {
+                let mut frame = serde_json::Map::new();
+                if let Some(id) = f.id {
+                    frame.insert("id".to_owned(), json!(id));
+                }
+                frame.insert("event".to_owned(), f.event.clone());
+                Value::Object(frame)
+            })
+            .collect(),
+    );
+    placeholder(&mut value, thread);
+    pretty(&value)
+}
+
+/// Pretty JSON with a trailing newline, the way the goldens are stored.
+pub fn pretty(value: &Value) -> String {
+    let mut text = serde_json::to_string_pretty(value).unwrap();
+    text.push('\n');
+    text
+}
+
+/// Compares `text` with the golden `path`, or rewrites it when `UPDATE_GOLDEN=1`. Returns what
+/// is stale, if anything.
+pub fn check_golden(path: &std::path::Path, text: &str) -> Option<String> {
+    if std::env::var("UPDATE_GOLDEN").is_ok_and(|v| v == "1") {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+        return None;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(want) if want == text => None,
+        Ok(want) => Some(format!(
+            "{}: differs\n--- want\n{want}--- got\n{text}",
+            path.display()
+        )),
+        Err(e) => Some(format!("{}: {e}", path.display())),
+    }
 }

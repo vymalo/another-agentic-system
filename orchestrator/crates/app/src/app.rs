@@ -6,17 +6,17 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentInfo, AgentTarget, Classify, Command, Event, EventKind, Input, ThreadId, ThreadRecord,
-    ThreadState, Timestamp, UserId, report, transition,
+    AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, Input, ThreadId,
+    ThreadRecord, ThreadState, Timestamp, UserId, report, transition,
 };
 use orch_ports::{
-    AgentClient, AgentError, AgentTransport, BindingUpdate, Clock, Commit, CommitOutcome, IdGen,
-    Lease, NewEvent, NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats, Ports, StoreError,
-    ThreadStore, Topic, Wakeup,
+    AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock, Commit,
+    CommitOutcome, IdGen, Lease, NewEvent, NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats,
+    Ports, StoreError, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
-use crate::{AgentDirectory, AppError};
+use crate::{AgentDirectory, AgentEntry, AppError};
 
 const MAX_TEXT_CHARS: usize = 100_000;
 const MAX_TITLE_CHARS: usize = 200;
@@ -41,6 +41,17 @@ impl Default for AppConfig {
             max_commit_attempts: 8,
         }
     }
+}
+
+/// A configured agent with what its live card says right now (see [`App::describe_agent`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentDescription {
+    /// Configuration key, e.g. `coder`.
+    pub id: AgentId,
+    /// Display name from the configuration.
+    pub name: String,
+    /// The live card; `None` when it could not be read in time.
+    pub card: Option<AgentCardInfo>,
 }
 
 /// Contract `NewThread`.
@@ -184,25 +195,34 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// The live card of a configured agent; `None` when it cannot be read in time (fail closed,
+    /// ADR 0008: nothing the card would have said is assumed).
+    async fn live_card(&self, entry: &AgentEntry) -> Option<AgentCardInfo> {
+        let card = tokio::time::timeout(
+            self.cfg.card_timeout,
+            self.ports.agents().read_card(&entry.endpoint),
+        )
+        .await;
+        match card {
+            Ok(Ok(card)) => Some(card),
+            Ok(Err(e)) => {
+                tracing::warn!(agent = %entry.endpoint.id, error = %report(&e), class = ?e.class(), "agent card unreadable");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(agent = %entry.endpoint.id, "agent card timed out");
+                None
+            }
+        }
+    }
+
     /// Lists the configured agents with their live card data. A card that cannot be read
     /// in time yields an agent without `description` and `releases` (fail closed, ADR 0008).
     pub async fn list_agents(&self) -> Vec<AgentInfo> {
         let lookups = self.agents.iter().map(|entry| async move {
-            let card = tokio::time::timeout(
-                self.cfg.card_timeout,
-                self.ports.agents().read_card(&entry.endpoint),
-            )
-            .await;
-            let (description, releases) = match card {
-                Ok(Ok(card)) => (card.description, card.releases),
-                Ok(Err(e)) => {
-                    tracing::warn!(agent = %entry.endpoint.id, error = %report(&e), class = ?e.class(), "agent card unreadable");
-                    (None, None)
-                }
-                Err(_) => {
-                    tracing::warn!(agent = %entry.endpoint.id, "agent card timed out");
-                    (None, None)
-                }
+            let (description, releases) = match self.live_card(entry).await {
+                Some(card) => (card.description, card.releases),
+                None => (None, None),
             };
             // Only an A2A agent has a card URL; the contract's `cardUrl` is optional for that.
             let card_url = match &entry.endpoint.transport {
@@ -218,6 +238,17 @@ impl<P: Ports> App<P> {
             }
         });
         futures::future::join_all(lookups).await
+    }
+
+    /// One configured agent and its live card, read now and never cached; `None` when no agent
+    /// has this id. `card` is `None` when the card cannot be read in time (fail closed, ADR 0008).
+    pub async fn describe_agent(&self, id: &AgentId) -> Option<AgentDescription> {
+        let entry = self.agents.get(id)?;
+        Some(AgentDescription {
+            id: entry.endpoint.id.clone(),
+            name: entry.name.clone(),
+            card: self.live_card(entry).await,
+        })
     }
 
     async fn validate_target(&self, target: &AgentTarget) -> Result<(), AppError> {

@@ -241,7 +241,8 @@ impl LogFormat {
 /// the feature decides what *can* be mounted, `ORCH_SURFACES` what *is*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Surface {
-    /// The AG-UI run route (`orch-surface-agui`): the default user-facing protocol (ADR 0012).
+    /// The AG-UI routes (`orch-surface-agui`: run, connect, capabilities): the default user-facing
+    /// protocol (ADR 0012).
     Agui,
     /// The legacy chat API interaction routes (`orch-surface-chat-api`). Deprecated.
     ChatApi,

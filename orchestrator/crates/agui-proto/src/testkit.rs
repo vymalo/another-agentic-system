@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use jsonschema::Validator;
 use serde_json::Value;
 
-use crate::{Event, RunAgentInput, SCHEMA_1_0};
+use crate::{AgentCapabilities, Event, RunAgentInput, SCHEMA_1_0};
 
 /// The vendored schema, parsed once.
 pub fn schema() -> &'static Value {
@@ -46,6 +46,11 @@ fn input_validator() -> &'static Validator {
     V.get_or_init(|| validator_for("RunAgentInput"))
 }
 
+fn capabilities_validator() -> &'static Validator {
+    static V: OnceLock<Validator> = OnceLock::new();
+    V.get_or_init(|| validator_for("AgentCapabilities"))
+}
+
 fn errors(validator: &Validator, instance: &Value) -> Vec<String> {
     validator
         .iter_errors(instance)
@@ -64,6 +69,11 @@ pub fn event_errors(event: &Value) -> Vec<String> {
 /// Why `input` does not validate as a schema `RunAgentInput`; empty when it does.
 pub fn input_errors(input: &Value) -> Vec<String> {
     errors(input_validator(), input)
+}
+
+/// Why `capabilities` does not validate as a schema `AgentCapabilities`; empty when it does.
+pub fn capabilities_errors(capabilities: &Value) -> Vec<String> {
+    errors(capabilities_validator(), capabilities)
 }
 
 /// Panics unless the JSON `event` validates as a schema `Event`.
@@ -100,4 +110,22 @@ pub fn assert_conforms(event: &Event) {
 pub fn assert_input_conforms(input: &RunAgentInput) {
     let json = serde_json::to_value(input).expect("input serialises");
     assert_input_json_conforms(&json);
+}
+
+/// Panics unless the JSON `capabilities` validates as a schema `AgentCapabilities`.
+#[track_caller]
+pub fn assert_capabilities_json_conforms(capabilities: &Value) {
+    let problems = capabilities_errors(capabilities);
+    assert!(
+        problems.is_empty(),
+        "not an AG-UI 1.0 AgentCapabilities:\n  {}\ncapabilities: {capabilities}",
+        problems.join("\n  ")
+    );
+}
+
+/// Panics unless `capabilities` serialises to a valid schema `AgentCapabilities`.
+#[track_caller]
+pub fn assert_capabilities_conform(capabilities: &AgentCapabilities) {
+    let json = serde_json::to_value(capabilities).expect("capabilities serialise");
+    assert_capabilities_json_conforms(&json);
 }

@@ -15,6 +15,7 @@
 //!   malformed input.
 //! - **No dependency on any orchestrator crate, agent host or AG-UI SDK.**
 
+mod capabilities;
 mod event;
 mod ids;
 mod input;
@@ -25,6 +26,10 @@ mod run;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
+pub use capabilities::{
+    AgentCapabilities, HumanInTheLoopCapabilities, IdentityCapabilities, MultiAgentCapabilities,
+    SubagentInfo, TransportCapabilities,
+};
 pub use event::*;
 pub use ids::{InterruptId, MessageId, RunId, SubagentRunId, ThreadId, ToolCallId};
 pub use input::{InputError, ParsedInput, RunAgentInput};

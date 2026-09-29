@@ -1,0 +1,61 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "text": "echo hi"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "name": "result",
+        "text": "echo: echo hi",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "echo hi"
+    }
+  },
+  "pendingInterrupts": []
+}

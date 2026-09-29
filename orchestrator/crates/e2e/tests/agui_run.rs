@@ -10,7 +10,6 @@
 #[macro_use]
 mod common;
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use common::*;
@@ -392,40 +391,6 @@ backends!(
 
 // ---- goldens -----------------------------------------------------------------------------
 
-fn examples_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples/agui")
-}
-
-/// `{"id"?, "event"}` per frame, the thread id as a placeholder, like the projection's goldens.
-fn render(responses: &[Vec<Frame>], thread: &str) -> String {
-    fn placeholder(v: &mut Value, thread: &str) {
-        match v {
-            Value::String(s) if s == thread => *s = "<thread-id>".to_owned(),
-            Value::Array(items) => items.iter_mut().for_each(|i| placeholder(i, thread)),
-            Value::Object(map) => map.values_mut().for_each(|i| placeholder(i, thread)),
-            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-        }
-    }
-    let mut value = Value::Array(
-        responses
-            .iter()
-            .flatten()
-            .map(|f| {
-                let mut frame = serde_json::Map::new();
-                if let Some(id) = f.id {
-                    frame.insert("id".to_owned(), json!(id));
-                }
-                frame.insert("event".to_owned(), f.event.clone());
-                Value::Object(frame)
-            })
-            .collect(),
-    );
-    placeholder(&mut value, thread);
-    let mut text = serde_json::to_string_pretty(&value).unwrap();
-    text.push('\n');
-    text
-}
-
 /// The responses to the POSTs of one scripted scenario, in order.
 async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>> {
     let orch = world.instance("orch-1").await;
@@ -510,7 +475,6 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
 
 #[tokio::test]
 async fn run_responses_match_docs_api_examples() {
-    let update = std::env::var("UPDATE_GOLDEN").is_ok_and(|v| v == "1");
     let dir = examples_dir();
     let mut stale = Vec::new();
     for (n, name) in ["echo", "ask", "fail", "cancel", "release"]
@@ -521,19 +485,7 @@ async fn run_responses_match_docs_api_examples() {
         let thread = thread_id(100 + u32::try_from(n).unwrap());
         let text = render(&responses_of(&world, name, &thread).await, &thread);
         let path = dir.join(format!("run-{name}.agui.json"));
-        if update {
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(&path, &text).unwrap();
-            continue;
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(want) if want == text => {}
-            Ok(want) => stale.push(format!(
-                "{}: differs\n--- want\n{want}--- got\n{text}",
-                path.display()
-            )),
-            Err(e) => stale.push(format!("{}: {e}", path.display())),
-        }
+        stale.extend(check_golden(&path, &text));
     }
     assert!(
         stale.is_empty(),
