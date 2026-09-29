@@ -67,6 +67,9 @@ flowchart TB
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
     a2a["<b>orch-agent-a2a</b><br/>AgentClient over A2A 1.0<br/>a2a-client-lf"]
   end
+  subgraph G_MAP["Pure helper of the A2A adapter: no async, no I/O"]
+    a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
+  end
   subgraph G_APP["Application: written against the ports"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event_stream<br/>Dispatcher: durable outbox worker"]
   end
@@ -92,6 +95,8 @@ flowchart TB
   ports --> core
   pg --> ports
   a2a --> ports
+  a2a --> a2amap
+  a2amap --> ports
   app --> ports
   api --> app
   api --> ports
@@ -133,7 +138,9 @@ Rules the graph enforces, each checkable in the manifests:
   inputs (ADR 0001, ADR 0004, ADR 0012).
 - **Adapters depend on `orch-core` and `orch-ports` only.** `orch-store-postgres` and
   `orch-agent-a2a` name no other orchestrator crate (ADR 0009, rule 5: no implementation type in a
-  port signature).
+  port signature), except that `orch-agent-a2a` uses `orch-a2a-mapping`, its own pure helper (the
+  mapping from A2A values to envelopes, itself depending on `orch-core` and `orch-ports` only and
+  on no HTTP client), not another adapter.
 - **`orch-app` and `orch-api` name no adapter.** Only `bin/orchestrator` depends on
   the Postgres and A2A crates and chooses them (`type Stack = PortSet<PgStore, PgWakeup,
   A2aAgentClient, SystemClock, UuidV7Ids>` in `boot.rs`).
@@ -147,6 +154,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres | **Built** |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0 | **Built** |
+| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
 | `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` | **Built** |
 | `orch-surface-chat-api` (`crates/surface-chat-api`) | Legacy interaction routes; deprecated | **Built** |

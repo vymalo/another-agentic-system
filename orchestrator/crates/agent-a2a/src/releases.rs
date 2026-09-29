@@ -10,9 +10,7 @@ use a2a::AgentCard;
 use orch_core::Releases;
 use serde_json::{Map, Value};
 
-/// URI of the release-channels v1 extension.
-pub const RELEASE_CHANNELS_URI: &str =
-    "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
+pub use orch_a2a_mapping::RELEASE_CHANNELS_URI;
 
 /// Reads the release channels a live card advertises. `None` when the card does not declare
 /// the extension, or declares it with parameters that do not parse (a warning is logged).

@@ -15,6 +15,7 @@ on:
     paths:
       - "compose.yaml"
       - "dev/**"
+      - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
       - "orchestrator/crates/e2e/tests/wiremock_agent.rs"
       - ".github/workflows/compose.yml"
@@ -23,6 +24,7 @@ on:
     paths:
       - "compose.yaml"
       - "dev/**"
+      - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
       - "orchestrator/crates/e2e/tests/wiremock_agent.rs"
       - ".github/workflows/compose.yml"

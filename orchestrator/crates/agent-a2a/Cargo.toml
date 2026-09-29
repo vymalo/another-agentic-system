@@ -11,6 +11,7 @@ readme = "README.md"
 [dependencies]
 orch-core.workspace = true
 orch-ports.workspace = true
+orch-a2a-mapping.workspace = true
 a2a-lf.workspace = true
 a2a-client-lf.workspace = true
 async-trait.workspace = true

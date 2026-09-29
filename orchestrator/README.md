@@ -138,6 +138,7 @@ change of the composition root, never a runtime plugin.
 | [`crates/surface-chat-api`](crates/surface-chat-api/README.md) | `orch-surface-chat-api` | The legacy interaction surface (`createThread`, `postMessage`, `listEvents`, `streamEvents`), mounted by `ORCH_SURFACES=chat-api` (Cargo feature `surface-chat-api`). Deprecated. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
+| [`crates/a2a-mapping`](crates/a2a-mapping/README.md) | `orch-a2a-mapping` | Pure: the mapping from A2A 1.0 stream items and tasks to `AgentEnvelope`s and idempotency keys (`StreamMapper`, `snapshot`). No I/O, no async, no HTTP client. |
 | [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
 | [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: chat API + dispatcher + A2A adapter + fake agent over real HTTP, on either store. |
 | [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: flags, environment (clap) and `AGENTS_FILE` parsing (`config.rs`, unit-tested), the role (`ORCH_ROLE`, `adam_host::Role`), and the surfaces to mount and the wiring, startup and graceful shutdown on `adam_host::Host` (`boot.rs`). No logic of its own. |
@@ -147,8 +148,8 @@ in the same change as the crate's API, environment variables or tests. The docs
 check fails when one is missing.
 
 Dependency direction: `core` ← `ports` ← `app` ← `api` ← the surface crates; adapters
-(`store-postgres`, `agent-a2a`) implement the ports; only `bin/orchestrator`
-depends on all of them.
+(`store-postgres`, `agent-a2a`; the latter builds on the pure `a2a-mapping`) implement the ports;
+only `bin/orchestrator` depends on all of them.
 
 ## Behaviour worth knowing
 

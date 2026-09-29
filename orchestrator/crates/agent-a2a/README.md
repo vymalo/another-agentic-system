@@ -17,6 +17,9 @@ The release-channels extension itself is specified in the
 `vymalo/another-agentic-platform` repository
 (`docs/extensions/release-channels-v1.md` there).
 Only the binary ([`orchestrator`](../../bin/orchestrator/README.md)) depends on it.
+The pure mapping from A2A values to envelopes and idempotency keys lives in
+[`orch-a2a-mapping`](../a2a-mapping/README.md); this crate is the client around it
+(HTTP, streaming, resubscribe, errors, release channels).
 
 ## API at a glance
 
@@ -24,7 +27,7 @@ Only the binary ([`orchestrator`](../../bin/orchestrator/README.md)) depends on 
 |---|---|
 | `A2aAgentClient::new(A2aConfig) -> Result<_, BuildError>` | implements `AgentClient`; installs the `rustls` crypto provider if none is installed |
 | `A2aConfig` | `card_timeout` (5 s), `connect_timeout` (10 s), `read_timeout` (90 s), `call_timeout`, `use_system_proxy` |
-| `releases_from_card(&AgentCard) -> Option<Releases>`, `RELEASE_CHANNELS_URI` | reads the optional release-channels extension from the live card |
+| `releases_from_card(&AgentCard) -> Option<Releases>`, `RELEASE_CHANNELS_URI` | reads the optional release-channels extension from the live card (the URI is defined in [`orch-a2a-mapping`](../a2a-mapping/README.md) and re-exported) |
 | `install_crypto_provider()` | idempotent `rustls` provider setup |
 
 A selected release is sent as the `A2A-Extensions` header plus namespaced
@@ -64,5 +67,6 @@ variables. The WireMock stand-ins of `compose.yaml` are exercised by
 ## See also
 
 [`orch-ports`](../ports/README.md),
+[`orch-a2a-mapping`](../a2a-mapping/README.md),
 [`orch-testsupport`](../testsupport/README.md),
 [`orch-e2e`](../e2e/README.md).
