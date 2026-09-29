@@ -47,7 +47,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: Vendored mocks equal upstream, and the coder image pin matches
+      - name: Vendored mocks equal upstream, none is missing, and the coder image pin matches
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: dev/coder/check-vendored.sh
 
   coder-e2e:

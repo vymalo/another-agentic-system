@@ -81,8 +81,12 @@ Everything else the coder needs is vendored from the same adam-rs commit, named 
 | `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint and the seed of `local/sandbox.git`. |
 
 Do not edit them here. [`coder/check-vendored.sh`](coder/check-vendored.sh) compares every one with
-`raw.githubusercontent.com` at the commit in `UPSTREAM` and checks that `compose.yaml` pins the image
-of that commit (`sha-<first 7 characters>@sha256:`); CI runs it first. To move to a newer adam-rs
+`raw.githubusercontent.com` at the commit in `UPSTREAM`, checks that nothing is missing (every body file
+a vendored mapping names is vendored too, and `coder/git-server/` holds exactly the files of
+`dev/git-server/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
+image of that commit (`sha-<first 7 characters>@sha256:`); CI runs it first. The mappings are a
+deliberate subset, the scripted coder run only: a mapping the coder starts to need upstream shows up
+as an unmatched request in `dev/coder-e2e.sh`. To move to a newer adam-rs
 commit, change the commit in `UPSTREAM`, refresh the copies, and re-pin the image, all in one change.
 
 **The scripted run.** The coder's model is `mock-coder`, a script the mock follows by looking at which
