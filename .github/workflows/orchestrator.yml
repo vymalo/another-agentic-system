@@ -150,12 +150,14 @@ jobs:
             orchestrator:smoke)
           trap 'docker logs "$cid" || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 
-          # The running process, not just the image metadata, is not root.
-          uid=$(docker top "$cid" -eo uid | tail -n 1 | tr -d ' ')
-          [ "$uid" = "65532" ] || { echo "::error::the process runs as uid '$uid', expected 65532"; exit 1; }
-
           curl --silent --show-error --fail --output /dev/null --retry 30 --retry-delay 1 --retry-connrefused \
             http://127.0.0.1:8080/healthz
+
+          # The running process, not just the image metadata, is not root.
+          # `docker top` needs the pid column in its ps options.
+          uid=$(docker top "$cid" -eo pid,uid | awk 'NR > 1 { print $2; exit }')
+          [ "$uid" = "65532" ] || { echo "::error::the process runs as uid '$uid', expected 65532"; exit 1; }
+
           [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz)" = 200 ]
           # /readyz also needs the database (migrated at boot).
           [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)" = 200 ]
