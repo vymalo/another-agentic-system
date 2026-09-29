@@ -78,7 +78,31 @@ async fn a_client_that_reconnects_keeps_a_gapless_view(backend: Backend) {
     assert_eq!(seen, [1, 2, 3, 4, 5]);
 }
 
+/// A `Last-Event-ID` past the end of the log (a stale id, e.g. from another thread's stream)
+/// replays nothing, but the stream is not dead: what happens next arrives.
+async fn a_last_event_id_beyond_the_end_replays_nothing_then_goes_live(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let id = chat.create_thread("plain", "gate beyond", None).await;
+    chat.wait_events(&id, 2).await; // user_message, agent_status(working)
+
+    let mut sse = chat.stream(&id, Some(999)).await;
+    assert_eq!(sse.status, 200);
+    assert!(
+        sse.next_event(Duration::from_millis(400)).await.is_none(),
+        "nothing exists after seq 999"
+    );
+    world.plain.release_gate();
+    let rest = sse
+        .collect_until(WAIT, |kind, _| kind == "thread_state")
+        .await;
+    let seqs: Vec<i64> = rest.iter().map(|(s, _, _)| *s).collect();
+    assert_eq!(seqs, [3, 4, 5], "only what happened after the connection");
+}
+
 backends!(
+    a_last_event_id_beyond_the_end_replays_nothing_then_goes_live,
     last_event_id_n_replays_exactly_n_plus_one_onwards,
     a_live_stream_resumed_mid_run_delivers_each_later_event_once,
     a_client_that_reconnects_keeps_a_gapless_view,
