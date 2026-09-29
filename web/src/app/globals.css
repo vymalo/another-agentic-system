@@ -185,12 +185,6 @@
     padding-top: 2rem;
   }
 
-  .standalone {
-    max-width: 760px;
-    margin: 3rem auto;
-    padding: 0 1rem;
-  }
-
   /* ---- sidebar ---- */
   .sidebar {
     border-right: 1px solid var(--border);
@@ -255,82 +249,6 @@
     background: var(--background);
   }
 
-  /* ---- header ---- */
-  .header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 1rem 0 0.75rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .header__text {
-    min-width: 0;
-  }
-
-  .header__title {
-    margin: 0;
-    font-size: 1.125rem;
-    line-height: 1.3;
-    overflow-wrap: anywhere;
-  }
-
-  .header__meta {
-    margin: 0.125rem 0 0;
-    color: var(--muted-foreground);
-    font-size: 0.875rem;
-  }
-
-  .header__aside {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-shrink: 0;
-  }
-
-  .header__conn {
-    color: var(--muted-foreground);
-    font-size: 0.8125rem;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.125rem 0.6rem;
-    border: 1px solid currentColor;
-    border-radius: 999px;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    white-space: nowrap;
-    color: var(--muted-foreground);
-  }
-
-  .badge__dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 50%;
-    background: currentColor;
-  }
-
-  .badge--working,
-  .badge--queued {
-    color: var(--primary);
-  }
-
-  .badge--blocked {
-    color: var(--warning);
-  }
-
-  .badge--done {
-    color: var(--success);
-  }
-
-  .badge--failed {
-    color: var(--destructive);
-  }
-
   /* ---- thread ---- */
   .thread {
     flex: 1;
@@ -373,12 +291,6 @@
 
   .msg__actor:empty {
     display: none;
-  }
-
-  .actor {
-    color: var(--muted-foreground);
-    font-size: 0.75rem;
-    white-space: nowrap;
   }
 
   .bubble {
@@ -464,169 +376,6 @@
     border: 1px solid var(--border);
   }
 
-  /* status / error lines */
-  .status-line,
-  .error-line {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-    margin: 0;
-    font-size: 0.875rem;
-    color: var(--muted-foreground);
-  }
-
-  .status-line__dot {
-    flex-shrink: 0;
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: 50%;
-    background: currentColor;
-    transform: translateY(-0.05rem);
-  }
-
-  .status-line--working .status-line__dot {
-    color: var(--primary);
-  }
-
-  .status-line--input_required {
-    color: var(--warning);
-  }
-
-  .status-line--completed .status-line__dot {
-    color: var(--success);
-  }
-
-  .status-line--failed {
-    color: var(--destructive);
-  }
-
-  .status-line__text {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .error-line {
-    color: var(--destructive);
-  }
-
-  .error-line__icon {
-    flex-shrink: 0;
-    display: inline-grid;
-    place-items: center;
-    width: 1.1rem;
-    height: 1.1rem;
-    border: 1.5px solid currentColor;
-    border-radius: 50%;
-    font-size: 0.7rem;
-    font-weight: 700;
-  }
-
-  .error-line__body {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .error-line__hint {
-    display: block;
-    color: var(--muted-foreground);
-  }
-
-  /* artifact card */
-  .card {
-    max-width: 480px;
-    padding: 0.6rem 0.85rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--background);
-  }
-
-  .card__head {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  .card__kind {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted-foreground);
-  }
-
-  .card__link {
-    display: inline-block;
-    margin-top: 0.25rem;
-    font-weight: 600;
-    overflow-wrap: anywhere;
-  }
-
-  .card__name {
-    margin: 0.25rem 0 0;
-    font-weight: 600;
-  }
-
-  .card__meta {
-    margin: 0.25rem 0 0;
-    font-size: 0.75rem;
-    color: var(--muted-foreground);
-  }
-
-  .card__details pre {
-    overflow-x: auto;
-    margin: 0.5rem 0 0;
-    padding: 0.5rem;
-    background: var(--muted);
-    border-radius: 6px;
-    font-size: 0.8125rem;
-  }
-
-  /* ---- composer ---- */
-  .composer-area {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.75rem 0 1rem;
-    margin-top: auto;
-  }
-
-  .composer {
-    display: flex;
-    align-items: flex-end;
-    gap: 0.5rem;
-  }
-
-  .composer__input {
-    flex: 1;
-    min-width: 0;
-    min-height: 44px;
-    padding: 0.65rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--background);
-    color: var(--foreground);
-    font: inherit;
-    resize: none;
-  }
-
-  .composer__input::placeholder {
-    color: var(--muted-foreground);
-  }
-
-  .composer__input:disabled {
-    background: var(--muted);
-  }
-
-  .notice {
-    margin: 0;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--muted);
-    font-size: 0.875rem;
-  }
-
   .btn {
     min-height: 44px;
     padding: 0 1rem;
@@ -637,12 +386,6 @@
     font: inherit;
     font-weight: 600;
     cursor: pointer;
-  }
-
-  .btn--primary {
-    border-color: var(--primary);
-    background: var(--primary);
-    color: var(--primary-foreground);
   }
 
   .btn:disabled {
@@ -663,62 +406,6 @@
     text-decoration: underline;
     cursor: pointer;
     min-height: 32px;
-  }
-
-  .inline-status {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-    margin: 0.25rem 0;
-    font-size: 0.875rem;
-    color: var(--muted-foreground);
-  }
-
-  .inline-status--error {
-    color: var(--destructive);
-  }
-
-  /* ---- new thread ---- */
-  .new-thread__title {
-    margin: 0;
-    padding: 1rem 0 0.75rem;
-    font-size: 1.125rem;
-  }
-
-  .fields {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem 1.5rem;
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    min-width: 200px;
-  }
-
-  .field label {
-    font-size: 0.8125rem;
-    font-weight: 600;
-  }
-
-  .field select {
-    min-height: 44px;
-    padding: 0 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--background);
-    color: var(--foreground);
-    font: inherit;
-  }
-
-  .field__hint {
-    margin: 0;
-    max-width: 320px;
-    font-size: 0.8125rem;
-    color: var(--muted-foreground);
   }
 
   /* ---- phone ---- */
@@ -744,14 +431,6 @@
 
     .main {
       padding: 0 0.75rem;
-    }
-
-    .header {
-      flex-wrap: wrap;
-    }
-
-    .field {
-      flex: 1 1 100%;
     }
   }
 }

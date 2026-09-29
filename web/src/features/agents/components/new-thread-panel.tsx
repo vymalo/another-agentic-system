@@ -1,4 +1,10 @@
-import { InlineStatus } from "@/components/inline-status";
+import { InlineStatus, LoadingStatus } from "@/components/inline-status";
+import { Label } from "@/components/ui/label";
+import {
+  NativeSelect,
+  NativeSelectOptGroup,
+  NativeSelectOption,
+} from "@/components/ui/native-select";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
 import type { Selection } from "@/features/chat/hooks/use-chat-runtime";
 
@@ -8,11 +14,14 @@ type Props = {
   onSelect: (s: Selection) => void;
 };
 
+/** Native selects: the best picker on a phone, and they group revisions in an `<optgroup>`. */
+const SELECT = "w-full sm:w-64 [&_select]:h-11 sm:[&_select]:h-9";
+
 /** Agent picker, plus a release dropdown only when the selected agent offers `releases`. */
 export function NewThreadPanel({ agents, selection, onSelect }: Props) {
   const { agents: list, loading, error, retry } = agents;
   if (loading && list.length === 0)
-    return <InlineStatus role="status">Loading agents…</InlineStatus>;
+    return <LoadingStatus className="pt-4">Loading agents…</LoadingStatus>;
   if (error && list.length === 0) {
     return (
       <InlineStatus tone="error" role="alert" action={{ label: "Retry", onClick: retry }}>
@@ -31,47 +40,51 @@ export function NewThreadPanel({ agents, selection, onSelect }: Props) {
       : releases?.defaultChannel;
 
   return (
-    <section className="new-thread" aria-label="New thread">
-      <h1 className="new-thread__title">New thread</h1>
-      <div className="fields">
-        <div className="field">
-          <label htmlFor="agent">Agent</label>
-          <select
+    <section aria-label="New thread">
+      <h1 className="pt-4 pb-3 text-lg font-semibold">New thread</h1>
+      <div className="flex flex-wrap gap-x-6 gap-y-4">
+        <div className="flex min-w-50 flex-col gap-1.5 max-sm:flex-1 max-sm:basis-full">
+          <Label htmlFor="agent">Agent</Label>
+          <NativeSelect
             id="agent"
+            className={SELECT}
             value={agent?.id ?? ""}
             onChange={(e) => onSelect({ agentId: e.target.value, release: null })}
           >
             {list.map((a) => (
-              <option key={a.id} value={a.id}>
+              <NativeSelectOption key={a.id} value={a.id}>
                 {a.name}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
-          {agent?.description ? <p className="field__hint">{agent.description}</p> : null}
+          </NativeSelect>
+          {agent?.description ? (
+            <p className="max-w-xs text-[0.8125rem] text-muted-foreground">{agent.description}</p>
+          ) : null}
         </div>
         {releases ? (
-          <div className="field">
-            <label htmlFor="release">Release</label>
-            <select
+          <div className="flex min-w-50 flex-col gap-1.5 max-sm:flex-1 max-sm:basis-full">
+            <Label htmlFor="release">Release</Label>
+            <NativeSelect
               id="release"
+              className={SELECT}
               value={release ?? ""}
               onChange={(e) => onSelect({ agentId: agent?.id ?? null, release: e.target.value })}
             >
               {channels.map(([channel, revision]) => (
-                <option key={channel} value={channel}>
+                <NativeSelectOption key={channel} value={channel}>
                   {channel} — {revision}
-                </option>
+                </NativeSelectOption>
               ))}
               {releases.revisions?.length ? (
-                <optgroup label="Revisions">
+                <NativeSelectOptGroup label="Revisions">
                   {releases.revisions.map((rev) => (
-                    <option key={rev} value={rev}>
+                    <NativeSelectOption key={rev} value={rev}>
                       {rev}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </optgroup>
+                </NativeSelectOptGroup>
               ) : null}
-            </select>
+            </NativeSelect>
           </div>
         ) : null}
       </div>

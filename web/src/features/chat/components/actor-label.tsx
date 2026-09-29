@@ -4,7 +4,7 @@ import type { ApiActor } from "@/lib/api/types";
 export function ActorLabel({ actor }: { actor: ApiActor | undefined }) {
   if (!actor) return null;
   return (
-    <span className="actor">
+    <span data-slot="actor-label" className="whitespace-nowrap text-xs text-muted-foreground">
       {actor.name}
       {actor.revision ? ` · ${actor.revision}` : ""}
     </span>

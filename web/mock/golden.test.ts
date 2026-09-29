@@ -23,6 +23,7 @@ const server = createMockServer({ stepMs: 2, keepaliveMs: 1000 });
 let base = "";
 beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 afterAll(async () => {

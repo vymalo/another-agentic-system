@@ -1,6 +1,8 @@
 import { ComposerPrimitive } from "@assistant-ui/react";
 import Link from "next/link";
 import { InlineStatus } from "@/components/inline-status";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import type { ThreadState } from "@/lib/api/types";
 import { isActive, isTerminal } from "@/lib/api/types";
 
@@ -27,26 +29,28 @@ export function Composer({ state, isNew, lastQuestion, sendError }: Props) {
           : "Send a follow-up…";
 
   return (
-    <div className="composer-area">
+    <div className="mt-auto flex flex-col gap-2 pt-3 pb-4">
       {blocked ? (
-        <p className="notice" role="status">
-          <strong>Waiting for your answer.</strong>
-          {lastQuestion ? <span> {lastQuestion}</span> : null}
-        </p>
+        <Alert role="status">
+          <AlertTitle>Waiting for your answer.</AlertTitle>
+          {lastQuestion ? <AlertDescription>{lastQuestion}</AlertDescription> : null}
+        </Alert>
       ) : null}
       {finished ? (
-        <p className="notice" role="status">
-          This thread is {state}. <Link href="/">Start a new thread</Link> to continue.
-        </p>
+        <Alert role="status">
+          <AlertDescription>
+            This thread is {state}. <Link href="/">Start a new thread</Link> to continue.
+          </AlertDescription>
+        </Alert>
       ) : null}
       {sendError ? (
         <InlineStatus tone="error" role="alert">
           {sendError}
         </InlineStatus>
       ) : null}
-      <ComposerPrimitive.Root className="composer">
+      <ComposerPrimitive.Root className="flex items-end gap-2">
         <ComposerPrimitive.Input
-          className="composer__input"
+          className="min-h-11 min-w-0 flex-1 resize-none rounded-md border border-input bg-transparent px-3 py-2.5 text-base shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-muted"
           aria-label="Message"
           placeholder={placeholder}
           rows={1}
@@ -54,9 +58,17 @@ export function Composer({ state, isNew, lastQuestion, sendError }: Props) {
           cancelOnEscape={false}
         />
         {running ? (
-          <ComposerPrimitive.Cancel className="btn btn--secondary">Cancel</ComposerPrimitive.Cancel>
+          <ComposerPrimitive.Cancel asChild>
+            <Button type="button" variant="outline" className="h-11 px-5">
+              Cancel
+            </Button>
+          </ComposerPrimitive.Cancel>
         ) : (
-          <ComposerPrimitive.Send className="btn btn--primary">Send</ComposerPrimitive.Send>
+          <ComposerPrimitive.Send asChild>
+            <Button type="submit" className="h-11 px-5">
+              Send
+            </Button>
+          </ComposerPrimitive.Send>
         )}
       </ComposerPrimitive.Root>
     </div>

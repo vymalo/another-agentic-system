@@ -37,7 +37,10 @@ export function AssistantMessage() {
   const actor = useActor();
   const isText = useIsText();
   return (
-    <MessagePrimitive.Root className={`msg msg--agent ${isText ? "" : "msg--inline"}`}>
+    <MessagePrimitive.Root
+      data-slot="agent-message"
+      className={`msg msg--agent ${isText ? "" : "msg--inline"}`}
+    >
       {isText ? (
         <div className="msg__actor">
           <ActorLabel actor={actor} />

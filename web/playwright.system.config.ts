@@ -34,6 +34,7 @@ export default defineConfig({
   webServer: [
     {
       command: FAKE_AGENT_BIN,
+      // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
       url: "http://127.0.0.1:4021/.well-known/agent-card.json",
       reuseExistingServer: false,
     },

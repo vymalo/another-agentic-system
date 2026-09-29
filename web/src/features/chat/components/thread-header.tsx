@@ -1,3 +1,5 @@
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { ThreadView } from "@/features/chat/hooks/use-thread";
 import { StateBadge } from "./state-badge";
 
@@ -7,16 +9,25 @@ export function ThreadHeader({ view }: { view: ThreadView }) {
     ? [thread.target.agentId, thread.target.release].filter(Boolean).join(" · ")
     : null;
   return (
-    <header className="header">
-      <div className="header__text">
-        <h1 className="header__title">{thread?.title ?? "Loading thread…"}</h1>
-        {target ? <p className="header__meta">{target}</p> : null}
+    <header className="flex flex-wrap items-start justify-between gap-3 border-b pt-4 pb-3 md:flex-nowrap">
+      <div className="min-w-0">
+        {thread ? (
+          <h1 className="text-lg leading-tight font-semibold [overflow-wrap:anywhere]">
+            {thread.title}
+          </h1>
+        ) : (
+          <>
+            <h1 className="sr-only">Loading thread…</h1>
+            <Skeleton aria-hidden="true" className="h-6 w-48" />
+          </>
+        )}
+        {target ? <p className="mt-0.5 text-sm text-muted-foreground">{target}</p> : null}
       </div>
-      <div className="header__aside">
+      <div className="flex shrink-0 items-center gap-3">
         {connection === "reconnecting" ? (
-          <span className="header__conn" role="status">
+          <Badge variant="outline" role="status" className="text-muted-foreground">
             Reconnecting…
-          </span>
+          </Badge>
         ) : null}
         <StateBadge state={state} />
       </div>
