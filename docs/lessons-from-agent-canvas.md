@@ -26,3 +26,9 @@ namespaces) also bind this system directly.
 | 12 | **The agent had passwordless sudo** in a container on the cluster that also runs CI runners. | Sandboxes run without sudo, with NetworkPolicy, on nodes/namespaces isolated from CI. |
 | 13 | **Agent CLIs vs ACP adapters.** The adapters (`claude-agent-acp`, `codex-acp`) shipped upstream; the CLIs you sign in with did not, and a user `npm i -g` hit EACCES. Logins live on disk (`~/.claude/.credentials.json` with `CLAUDE_CONFIG_DIR`, `~/.codex/auth.json`). | Decide per worker whether it uses subscription logins or gateway API keys; persist or inject accordingly. |
 | 14 | **Recursive re-chown on every start.** The default `fsGroupChangePolicy` walks the whole volume. | `fsGroupChangePolicy: OnRootMismatch` on anything with a large volume. |
+
+> **Note (2026-09-29).** Lesson 1 stays a requirement, and
+> [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md) partly reopens it on purpose: an
+> orchestrator worker may host adam agents in-process, including agents that run builds and tools.
+> The mitigations are in that ADR: the feature is off by default, worker pods are separate from
+> control-plane pods, resource limits apply, and sandboxing is the agent's job.

@@ -4,7 +4,11 @@
   [ADR 0012](0012-ag-ui-user-facing-protocol.md): the *In* row gains AG-UI (server), the
   user-facing protocol; the chat API keeps its resource operations and its interaction
   operations are deprecated. Generative UI is A2UI, a standard A2A extension
-  ([ADR 0013](0013-a2ui-generative-ui.md)).
+  ([ADR 0013](0013-a2ui-generative-ui.md)). Amended (2026-09-29) by
+  [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md): `adam-host` (a role enum and a
+  supervisor) is a git dependency of the orchestrator binary, and a worker may host adam agents
+  in-process, behind the `AgentClient` port and the off-by-default Cargo feature `agent-local`.
+  Remote agents stay plain A2A.
 
 ## Context
 
