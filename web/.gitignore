@@ -1,0 +1,7 @@
+node_modules
+.next
+src/api/schema.d.ts
+test-results
+playwright-report
+next-env.d.ts
+*.tsbuildinfo

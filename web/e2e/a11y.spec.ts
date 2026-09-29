@@ -1,0 +1,112 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import AxeBuilder from "@axe-core/playwright";
+import { chromium, expect, test } from "@playwright/test";
+import lighthouse from "lighthouse";
+import { badge, startThread } from "./helpers";
+
+const BASE = "http://127.0.0.1:3000";
+
+async function finishedThreadUrl(): Promise<string> {
+  const res = await fetch(`${BASE}/api/threads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target: { agentId: "coder" }, text: "Implement the thing" }),
+  });
+  const { id } = (await res.json()) as { id: string };
+  for (let i = 0; i < 100; i++) {
+    const t = (await (await fetch(`${BASE}/api/threads/${id}`)).json()) as { state: string };
+    if (t.state === "done") return `${BASE}/threads/${id}`;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error("thread never finished");
+}
+
+async function axeViolations(page: import("@playwright/test").Page) {
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+}
+
+for (const scheme of ["light", "dark"] as const) {
+  test.describe(`accessibility (${scheme})`, () => {
+    test.use({ colorScheme: scheme });
+
+    test("axe: new thread page has no serious violations", async ({ page }) => {
+      await page.goto("/");
+      await expect(page.getByLabel("Agent")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a finished thread has no serious violations", async ({ page }) => {
+      await startThread(page, "Implement the thing");
+      await expect(badge(page)).toHaveText("Done");
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a blocked thread has no serious violations", async ({ page }) => {
+      await startThread(page, "question: which branch");
+      await expect(badge(page)).toHaveText("Waiting for you");
+      expect(await axeViolations(page)).toEqual([]);
+    });
+  });
+}
+
+test.describe("Lighthouse accessibility on the thread page", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const runs = [
+    { scheme: "light", port: 9222 },
+    { scheme: "dark", port: 9223 },
+  ] as const;
+
+  for (const { scheme, port } of runs) {
+    test(`score is at least 95 (${scheme})`, async () => {
+      test.setTimeout(120_000);
+      const url = await finishedThreadUrl();
+      // A persistent context is the browser's default context, which is where Lighthouse opens
+      // its tab, so the colour scheme emulated here applies to the audited page.
+      const userDataDir = mkdtempSync(path.join(tmpdir(), "lh-"));
+      const context = await chromium.launchPersistentContext(userDataDir, {
+        args: [`--remote-debugging-port=${port}`],
+        colorScheme: scheme,
+      });
+      try {
+        const audited: boolean[] = [];
+        context.on("page", (p) => {
+          p.on("load", () => {
+            if (p.url() === url) {
+              void p
+                .evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches)
+                .then((dark) => audited.push(dark))
+                .catch(() => {});
+            }
+          });
+        });
+        const result = await lighthouse(
+          url,
+          { port, onlyCategories: ["accessibility"], output: "json", logLevel: "error" },
+          {
+            extends: "lighthouse:default",
+            settings: { formFactor: "desktop", screenEmulation: { disabled: true } },
+          },
+        );
+        expect(
+          audited.length,
+          "Lighthouse loaded the page in the emulated context",
+        ).toBeGreaterThan(0);
+        expect(audited.every((dark) => dark === (scheme === "dark"))).toBe(true);
+        const lhr = result?.lhr;
+        const score = lhr?.categories.accessibility?.score ?? 0;
+        const failing = Object.values(lhr?.audits ?? {})
+          .filter((a) => a.score !== null && a.score < 1 && a.scoreDisplayMode === "binary")
+          .map((a) => `${a.id}: ${a.title}`);
+        test.info().annotations.push({ type: "score", description: `${scheme}: ${score}` });
+        expect(score, `failing audits: ${failing.join("; ")}`).toBeGreaterThanOrEqual(0.95);
+      } finally {
+        await context.close();
+        rmSync(userDataDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
