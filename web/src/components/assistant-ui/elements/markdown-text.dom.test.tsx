@@ -6,8 +6,9 @@ import {
 } from "@assistant-ui/react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { AssistantMessage } from "@/features/chat/components/messages";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { type ChatItem, convertMessage } from "@/features/chat/lib/to-items";
+import { AssistantMessage } from "./thread.aui";
 
 afterEach(cleanup);
 
@@ -30,11 +31,13 @@ function Harness({ text }: { text: string }) {
   });
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root>
-        <div role="log" aria-label="Conversation">
-          <ThreadPrimitive.Messages>{() => <AssistantMessage />}</ThreadPrimitive.Messages>
-        </div>
-      </ThreadPrimitive.Root>
+      <TooltipProvider>
+        <ThreadPrimitive.Root>
+          <div role="log" aria-label="Conversation">
+            <ThreadPrimitive.Messages>{() => <AssistantMessage />}</ThreadPrimitive.Messages>
+          </div>
+        </ThreadPrimitive.Root>
+      </TooltipProvider>
     </AssistantRuntimeProvider>
   );
 }
@@ -42,7 +45,7 @@ function Harness({ text }: { text: string }) {
 async function renderAgentText(text: string): Promise<HTMLElement> {
   render(<Harness text={text} />);
   const log = await screen.findByRole("log", { name: "Conversation" });
-  await waitFor(() => expect(log.querySelector(".md")).not.toBeNull());
+  await waitFor(() => expect(log.querySelector(".aui-md")).not.toBeNull());
   return log;
 }
 

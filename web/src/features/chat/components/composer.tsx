@@ -29,7 +29,7 @@ export function Composer({ state, isNew, lastQuestion, sendError }: Props) {
           : "Send a follow-up…";
 
   return (
-    <div className="mt-auto flex flex-col gap-2 pt-3 pb-4">
+    <div className="flex flex-col gap-2 bg-background pt-3 pb-4">
       {blocked ? (
         <Alert role="status">
           <AlertTitle>Waiting for your answer.</AlertTitle>
@@ -48,9 +48,9 @@ export function Composer({ state, isNew, lastQuestion, sendError }: Props) {
           {sendError}
         </InlineStatus>
       ) : null}
-      <ComposerPrimitive.Root className="flex items-end gap-2">
+      <ComposerPrimitive.Root className="flex items-end gap-2 rounded-xl border border-input bg-background p-2 transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
         <ComposerPrimitive.Input
-          className="min-h-11 min-w-0 flex-1 resize-none rounded-md border border-input bg-transparent px-3 py-2.5 text-base shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-muted"
+          className="max-h-48 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           aria-label="Message"
           placeholder={placeholder}
           rows={1}
@@ -59,13 +59,13 @@ export function Composer({ state, isNew, lastQuestion, sendError }: Props) {
         />
         {running ? (
           <ComposerPrimitive.Cancel asChild>
-            <Button type="button" variant="outline" className="h-11 px-5">
+            <Button type="button" variant="outline" className="h-10 px-5">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
         ) : (
           <ComposerPrimitive.Send asChild>
-            <Button type="submit" className="h-11 px-5">
+            <Button type="submit" className="h-10 px-5">
               Send
             </Button>
           </ComposerPrimitive.Send>

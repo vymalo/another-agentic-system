@@ -44,11 +44,11 @@ export const errorLine = (page: Page) =>
 export const threadList = (page: Page) => page.getByRole("navigation", { name: "Threads" });
 
 /** One entry per thread in the list, in order (the "New thread" and "Load older" buttons excluded). */
-export const threadRows = (page: Page) => threadList(page).locator(".threads__item");
+export const threadRows = (page: Page) => threadList(page).getByRole("listitem");
 
-/** Opens the thread list where it is collapsed (a phone); a no-op where it is always visible. */
+/** Opens the thread list where it is a sheet (a phone); a no-op where it is always visible. */
 export async function openThreadList(page: Page) {
-  const toggle = page.locator("summary", { hasText: "Threads" });
+  const toggle = page.getByRole("button", { name: "Threads" });
   if (await toggle.isVisible()) await toggle.click();
 }
 

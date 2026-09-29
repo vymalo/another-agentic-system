@@ -1,6 +1,8 @@
 # ADR 0006 — Chat surface: Next.js + assistant-ui with an external store
 
-- **Status:** accepted (2026-09-28)
+- **Status:** accepted (2026-09-28). Amended (2026-09-29): the UI is built with shadcn/ui and
+  the pruned assistant-ui registry components, in a feature layout; see
+  [ADR 0011](0011-web-shadcn-tailwind-feature-layout.md).
 
 ## Context
 
