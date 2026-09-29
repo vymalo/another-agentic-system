@@ -11,6 +11,8 @@ const config: NextConfig = {
   turbopack: { root: path.resolve(".") },
   poweredByHeader: false,
   reactStrictMode: true,
+  // Next 16.3 dev writes AGENTS.md/CLAUDE.md into the project; agent context lives in the repo root.
+  agentRules: false,
   images: { unoptimized: true },
   async rewrites() {
     return mockOrigin ? [{ source: "/api/:path*", destination: `${mockOrigin}/api/:path*` }] : [];

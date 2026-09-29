@@ -1,7 +1,8 @@
 name: Web
 
 # Chat surface (web/): Biome, typecheck (types generated from the API contract), unit tests,
-# production build. See web/README.md.
+# production build, Playwright + accessibility checks against the contract mock, and the
+# container image (pushed only from main). See web/README.md.
 
 on:
   pull_request:
@@ -43,3 +44,61 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
+
+  e2e:
+    needs: check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Playwright and Lighthouse against the mock
+        run: pnpm test:e2e
+        env:
+          CI: "true"
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: web/playwright-report
+
+  image:
+    needs: [check, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      # PRs build (proving the Dockerfile) but do not push.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: web/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/vymalo/another-agentic-system/web:sha-${{ steps.tag.outputs.short }}
+            ghcr.io/vymalo/another-agentic-system/web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
