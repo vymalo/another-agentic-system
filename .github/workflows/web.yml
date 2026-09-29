@@ -1,0 +1,45 @@
+name: Web
+
+# Chat surface (web/): Biome, typecheck (types generated from the API contract), unit tests,
+# production build. See web/README.md.
+
+on:
+  pull_request:
+    paths: ["web/**", "docs/api/chat-api.yaml", ".github/workflows/web.yml"]
+  push:
+    branches: [main]
+    paths: ["web/**", "docs/api/chat-api.yaml", ".github/workflows/web.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm gen:api
+      - name: Biome
+        run: pnpm check
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
