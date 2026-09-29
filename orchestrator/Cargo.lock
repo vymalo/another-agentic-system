@@ -1878,6 +1878,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "orch-a2a-mapping"
+version = "0.1.0"
+dependencies = [
+ "a2a-lf",
+ "orch-core",
+ "orch-ports",
+ "serde_json",
+]
+
+[[package]]
 name = "orch-agent-a2a"
 version = "0.1.0"
 dependencies = [
@@ -1886,6 +1896,7 @@ dependencies = [
  "async-trait",
  "futures",
  "jiff",
+ "orch-a2a-mapping",
  "orch-core",
  "orch-ports",
  "orch-testsupport",

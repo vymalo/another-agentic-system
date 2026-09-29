@@ -17,6 +17,7 @@ use a2a_client::rest::RestTransportFactory;
 use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use orch_a2a_mapping::{StreamMapper, snapshot};
 use orch_core::BoxError;
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -25,7 +26,6 @@ use orch_ports::{
 use serde_json::json;
 
 use crate::errors::classify;
-use crate::mapping::{StreamMapper, snapshot};
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 
 /// Tunables of the A2A client. The defaults suit production.

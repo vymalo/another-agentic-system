@@ -20,6 +20,7 @@ expect_used = "warn"
 orch-core = { path = "crates/core" }
 orch-ports = { path = "crates/ports" }
 orch-store-postgres = { path = "crates/store-postgres" }
+orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }

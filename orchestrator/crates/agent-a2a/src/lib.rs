@@ -15,7 +15,6 @@
 
 mod client;
 mod errors;
-mod mapping;
 mod releases;
 
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};

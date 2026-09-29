@@ -1,4 +1,8 @@
-//! Pure mapping from A2A 1.0 values to protocol-neutral [`AgentEnvelope`]s.
+//! Pure mapping from A2A 1.0 values to protocol-neutral [`AgentEnvelope`]s: no I/O, no async, no
+//! HTTP client (only the A2A value types of `a2a-lf`). The A2A client adapter (`orch-agent-a2a`)
+//! feeds it the stream; a future in-process A2A host can use the same keys.
+//!
+//! Entry points: [`StreamMapper`] for a live stream and [`snapshot`] for a polled task.
 //!
 //! Idempotency keys (the dispatcher stores them so replays never duplicate chat events):
 //!
@@ -37,12 +41,15 @@ use orch_core::{AgentTaskState, AgentUpdate};
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
 
-use crate::releases::RELEASE_CHANNELS_URI;
+/// URI of the release-channels v1 extension (ADR 0008). Here because the revision an agent echoes
+/// in event metadata is read under this key; `orch-agent-a2a` re-exports it for the request side.
+pub const RELEASE_CHANNELS_URI: &str =
+    "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 
 type Metadata = Option<HashMap<String, Value>>;
 
 /// The neutral state of an A2A state; `None` for `Unspecified`.
-pub(crate) fn state_of(state: &TaskState) -> Option<AgentTaskState> {
+fn state_of(state: &TaskState) -> Option<AgentTaskState> {
     match state {
         TaskState::Unspecified => None,
         TaskState::Submitted => Some(AgentTaskState::Submitted),
@@ -83,7 +90,7 @@ fn text_of(parts: &[Part]) -> Option<String> {
 }
 
 /// The revision the agent echoes under the extension's key (`{requested, revision}`).
-pub(crate) fn revision_of(metadata: &Metadata) -> Option<String> {
+fn revision_of(metadata: &Metadata) -> Option<String> {
     metadata
         .as_ref()?
         .get(RELEASE_CHANNELS_URI)?
@@ -176,7 +183,7 @@ fn artifact_envelope(
 
 /// Every artifact of a task, merging entries that share an id (the server appends chunk by
 /// chunk without merging), then the status.
-pub(crate) fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
+fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
     let revision = revision_of(&task.metadata);
     let mut order: Vec<&str> = Vec::new();
     let mut merged: HashMap<&str, (Option<&str>, Vec<Part>)> = HashMap::new();
@@ -210,7 +217,7 @@ pub(crate) fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
 }
 
 /// A polled view of a task. An unspecified state is a protocol violation.
-pub(crate) fn snapshot(task: &Task) -> Result<TaskSnapshot, AgentError> {
+pub fn snapshot(task: &Task) -> Result<TaskSnapshot, AgentError> {
     let state = state_of(&task.status.state).ok_or_else(|| {
         AgentError::protocol(format!("task {} reports an unspecified state", task.id))
     })?;
@@ -247,7 +254,7 @@ impl Pending {
 
 /// Stream-local state: the task the stream belongs to, and the artifact held back (if any).
 #[derive(Default)]
-pub(crate) struct StreamMapper {
+pub struct StreamMapper {
     task_id: Option<String>,
     context_id: Option<String>,
     pending: Option<Pending>,
@@ -264,7 +271,7 @@ impl StreamMapper {
     }
 
     /// Maps one stream item to zero or more envelopes (or an error).
-    pub(crate) fn map(&mut self, item: StreamResponse) -> Vec<Result<AgentEnvelope, AgentError>> {
+    pub fn map(&mut self, item: StreamResponse) -> Vec<Result<AgentEnvelope, AgentError>> {
         if let StreamResponse::ArtifactUpdate(u) = item {
             self.learn(&u.task_id, &u.context_id);
             return self.artifact_update(u).into_iter().map(Ok).collect();

@@ -1,0 +1,18 @@
+[package]
+name = "orch-a2a-mapping"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Pure mapping from A2A 1.0 values (stream items, tasks) to protocol-neutral agent envelopes and idempotency keys. No I/O, no async, no HTTP client."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+a2a-lf.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
