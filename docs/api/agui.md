@@ -6,8 +6,13 @@ How the orchestrator speaks [AG-UI 1.0](https://docs.ag-ui.com/spec/1.0/index.md
 every frame below is a function of the log. The resource API (agents, threads, cancel, health)
 stays in [`chat-api.yaml`](chat-api.yaml).
 
-> Status: **design**. The surface is built in the slices listed in ADR 0012; until then this is the
-> contract those slices implement. Spec facts were *verified 2026-09-29* against the pages linked.
+> Status: **partly built** (2026-09-29). The wire types (`orch-agui-proto`) and both directions of
+> the mapping below, as pure code (`orch-agui-projection`), are built and tested against the
+> vendored schema and the reference client. The HTTP surface that serves them (`orch-surface-agui`:
+> the run, connect and capabilities routes), the inbox key, the web on AG-UI and A2UI are not: for
+> those this page is the contract the next slices implement. What is built and what is planned,
+> as a diagram: [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were
+> *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
 

@@ -1,6 +1,15 @@
 # ADR 0009 — Swappable implementations, selected at build time
 
-- **Status:** accepted (2026-09-28). Amends ADR 0004.
+- **Status:** accepted (2026-09-28). Amends ADR 0004. Status note (2026-09-29): the decision
+  and its six rules hold in the code, but three details of the text are not what was built. The
+  ports are named `ThreadStore` (not `JobStore`), `AgentClient` (not `A2aClient`), `Wakeup`,
+  `Clock` and `IdGen`, bundled by the `Ports` trait; `McpClient`, `ModelClient`, `InboundAuth`
+  and `OutboundCredentials` have no port yet. The only Cargo feature that selects an
+  implementation is the interaction surface (`surface-chat-api`); the Postgres store and the A2A
+  adapter are unconditional dependencies of `bin/orchestrator`, so "each is a Cargo feature
+  (`store-postgres` on by default)" is not built: there is one implementation of each, and a
+  second one adds the feature. The testkit covers `ThreadStore` and `Wakeup`, not yet
+  `AgentClient`. See [orchestrator: crate layout](../orchestrator.md#crate-layout).
 
 ## Context
 
