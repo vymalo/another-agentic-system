@@ -206,6 +206,22 @@ pub struct OutboxItem {
     pub created_at: Timestamp,
 }
 
+/// A count of the open outbox rows at one instant, for metrics and autoscaling
+/// ([`ThreadStore::outbox_stats`]). A row is open while it is `pending` or `inflight`; the
+/// three counts partition the open rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutboxStats {
+    /// Rows a worker could claim now: `pending` and due, or `inflight` with an expired lease.
+    pub due: u64,
+    /// Rows `pending` in backoff, not due yet.
+    pub waiting: u64,
+    /// Rows `inflight` with a live lease: a worker is on them.
+    pub leased: u64,
+    /// The earliest moment a currently due row became due (its `next_attempt_at`, or its
+    /// `lease_until` when the lease lapsed). `None` when nothing is due.
+    pub oldest_due_at: Option<Timestamp>,
+}
+
 /// Final disposition of an outbox row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxFinal {
@@ -428,6 +444,16 @@ pub trait ThreadStore: Send + Sync + 'static {
         owner: &str,
         now: Timestamp,
     ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    /// Counts the open outbox rows at `now`: `due` is `pending` and due, or `inflight` with an
+    /// expired lease (`lease_until <= now`, the [`claim_outbox`](Self::claim_outbox)
+    /// predicate); `waiting` is `pending` and not due; `leased` is `inflight` with a live
+    /// lease. `oldest_due_at` is the earliest `next_attempt_at` (or lapsed `lease_until`)
+    /// among the due rows. Rows in any other status are not counted. Read-only.
+    fn outbox_stats(
+        &self,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<OutboxStats, StoreError>> + Send;
 
     /// Inspection: one outbox row, whatever its status.
     fn get_outbox(

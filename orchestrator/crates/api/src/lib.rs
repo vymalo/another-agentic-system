@@ -7,12 +7,13 @@
 //! so a surface cannot forget authentication.
 //!
 //! Identity comes from `X-Auth-Request-Email` (set by oauth2-proxy). Requests without it are
-//! refused with 401 everywhere except `/healthz` and `/readyz` (fail closed); the optional
+//! refused with 401 everywhere except `/healthz`, `/readyz` and `/metrics` (fail closed); the optional
 //! `AUTH_DEV_USER` identity applies only when configured. **The identity header is only
 //! trustworthy behind a proxy that strips client-supplied copies.**
 
 mod auth;
 mod extract;
+mod metrics;
 mod problem;
 mod routes;
 pub mod sse;
@@ -101,12 +102,14 @@ impl SurfaceRoutes {
     }
 }
 
-/// `GET /healthz` and `GET /readyz`, bound to `state` and without any layer (no identity, no
-/// timeout): the one definition shared by [`router_with_surfaces`] and [`health_router`].
+/// `GET /healthz`, `GET /readyz` and `GET /metrics`, bound to `state` and without any layer (no
+/// identity, no timeout): the one definition shared by [`router_with_surfaces`] and
+/// [`health_router`].
 fn health_routes<P: Ports>(state: ApiState<P>) -> Router {
     Router::new()
         .route("/healthz", get(routes::healthz::<P>))
         .route("/readyz", get(routes::readyz::<P>))
+        .route("/metrics", get(metrics::serve::<P>))
         .with_state(state)
 }
 
@@ -119,11 +122,13 @@ fn edge_layers(router: Router) -> Router {
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
-/// Builds a router that serves `/healthz` and `/readyz` and nothing else, for a process that
-/// runs no HTTP interface (a worker-only orchestrator) but must answer probes.
+/// Builds a router that serves `/healthz`, `/readyz` and `/metrics` and nothing else, for a
+/// process that runs no HTTP interface (a worker-only orchestrator) but must answer probes and
+/// be scraped.
 ///
 /// It is the same handlers, and the same tracing and request-id layers, as the health routes of
-/// [`router_with_surfaces`]; like there, health needs no identity. Every other path is 404.
+/// [`router_with_surfaces`]; like there, health and metrics need no identity. Every other path
+/// is 404.
 pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
     edge_layers(health_routes(ApiState { app }))
 }

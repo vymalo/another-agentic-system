@@ -141,6 +141,41 @@ async fn health_needs_no_identity_and_everything_else_does() {
     }
 }
 
+const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+#[tokio::test]
+async fn metrics_report_the_outbox_and_need_no_identity() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let empty = e.call(reqwest::Method::GET, "/metrics", None).await;
+    assert_eq!(empty.status(), 200);
+    assert_eq!(empty.headers()["content-type"], METRICS_CONTENT_TYPE);
+    let body = empty.text().await.unwrap();
+    assert!(body.contains("# TYPE orch_outbox_rows gauge"), "{body}");
+    assert!(body.contains("orch_outbox_rows{state=\"due\"} 0"), "{body}");
+
+    // A new thread queues one delegation, due at once.
+    e.thread().await;
+    let body = e
+        .call(reqwest::Method::GET, "/metrics", None)
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("orch_outbox_rows{state=\"due\"} 1"), "{body}");
+    assert!(
+        body.contains("orch_outbox_rows{state=\"waiting\"} 0"),
+        "{body}"
+    );
+    assert!(
+        body.contains("orch_outbox_rows{state=\"leased\"} 0"),
+        "{body}"
+    );
+    assert!(
+        body.contains("# TYPE orch_outbox_oldest_due_age_seconds gauge"),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn the_health_router_serves_health_only_and_needs_no_identity() {
     let app = new_app();
@@ -170,6 +205,18 @@ async fn the_health_router_serves_health_only_and_needs_no_identity() {
     let readyz = get("/readyz").await;
     assert_eq!(readyz.status(), 200);
     assert_eq!(readyz.text().await.unwrap(), "ready");
+
+    // The queue metrics are served too, like on the full router.
+    let metrics = get("/metrics").await;
+    assert_eq!(metrics.status(), 200);
+    assert_eq!(metrics.headers()["content-type"], METRICS_CONTENT_TYPE);
+    assert!(
+        metrics
+            .text()
+            .await
+            .unwrap()
+            .contains("# TYPE orch_outbox_rows gauge")
+    );
 
     // Nothing else is served: no resource API, and no identity check to answer 401 with.
     for path in ["/api/agents", "/api/threads", "/api/nothing"] {

@@ -7,7 +7,7 @@ use orch_core::{Event, ThreadId, ThreadRecord, UserId};
 
 use crate::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, NewThreadRecord, OutboxFinal, OutboxId,
-    OutboxItem, OutboxKind, OutboxStatus, StoreError, ThreadStore,
+    OutboxItem, OutboxKind, OutboxStats, OutboxStatus, StoreError, ThreadStore,
 };
 
 struct StoredEvent {
@@ -448,6 +448,31 @@ impl ThreadStore for MemoryStore {
             n += 1;
         }
         Ok(n)
+    }
+
+    async fn outbox_stats(&self, now: Timestamp) -> Result<OutboxStats, StoreError> {
+        let inner = self.lock();
+        let mut stats = OutboxStats::default();
+        for row in &inner.outbox {
+            // The instant a due row became due; `None` when it is not due.
+            let due_since = match row.status {
+                OutboxStatus::Pending if row.next_attempt_at <= now => Some(row.next_attempt_at),
+                OutboxStatus::Inflight => row.lease_until.filter(|until| *until <= now),
+                OutboxStatus::Pending
+                | OutboxStatus::Delivered
+                | OutboxStatus::Dead
+                | OutboxStatus::Skipped => None,
+            };
+            if let Some(since) = due_since {
+                stats.due += 1;
+                stats.oldest_due_at = Some(stats.oldest_due_at.map_or(since, |o| o.min(since)));
+            } else if row.status == OutboxStatus::Pending {
+                stats.waiting += 1;
+            } else if row.status == OutboxStatus::Inflight {
+                stats.leased += 1;
+            }
+        }
+        Ok(stats)
     }
 
     async fn get_outbox(&self, id: OutboxId) -> Result<Option<OutboxItem>, StoreError> {

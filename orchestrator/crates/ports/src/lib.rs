@@ -28,7 +28,7 @@ pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use store::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord,
-    OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStatus, StoreError,
-    ThreadStore,
+    OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus,
+    StoreError, ThreadStore,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};

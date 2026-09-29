@@ -20,7 +20,7 @@ Design: [`docs/orchestrator.md`](../../../docs/orchestrator.md).
 | Item | What |
 |---|---|
 | `App::new(ports, AgentDirectory, AppConfig)` | the thread service; `App<P>` is shared as `Arc<App<P>>` |
-| `App` operations | `list_agents`, `create_thread(user, NewThread)`, `list_threads`, `get_thread`, `list_events`, `post_message`, `cancel`, `apply` (feed an `Input`, retrying on version conflicts), `record_binding`, `event_stream(user, thread, after)` (replay then live, no gaps or duplicates; wakeups make it prompt, a poll makes it correct) |
+| `App` operations | `list_agents`, `create_thread(user, NewThread)`, `list_threads`, `get_thread`, `list_events`, `post_message`, `cancel`, `apply` (feed an `Input`, retrying on version conflicts), `record_binding`, `outbox_stats()` (the open outbox rows counted at the clock's now, returned with that now; behind `/metrics`), `event_stream(user, thread, after)` (replay then live, no gaps or duplicates; wakeups make it prompt, a poll makes it correct) |
 | `App` lifecycle | `set_ready`, `is_ready`, `set_shutting_down`, `is_shutting_down`, `ports()`, `directory()` |
 | `AppConfig` | `card_timeout` (3 s), `stream_poll` (5 s), `max_commit_attempts` (8) |
 | `NewThread`, `ApplyOutcome` (`Applied` / `Duplicate`) | request and result types |
@@ -53,7 +53,7 @@ Offline: they use the in-memory implementations of `orch-ports` (feature
 * `tests/service.rs`: the thread service without a dispatcher (validation,
   isolation between users, streams, idempotency; `list_agents` reads live cards,
   fails closed and keeps configuration order, so the first agent stays the default).
-* `tests/dispatcher.rs`: the dispatcher against the scripted agent.
+* `tests/dispatcher.rs`: the dispatcher against the scripted agent. Each claimed row is processed inside an `outbox` span (`id`, `thread`, `kind`, `attempt`), so every log line of that work carries them.
 * `tests/restart.rs`: two app instances over one shared in-memory "database",
   the first killed mid-stream.
 

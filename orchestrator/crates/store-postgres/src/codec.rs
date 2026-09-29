@@ -58,7 +58,7 @@ fn get_ts(row: &PgRow, col: &str) -> Result<Timestamp, StoreError> {
         .map_err(store_err)
 }
 
-fn get_ts_opt(row: &PgRow, col: &str) -> Result<Option<Timestamp>, StoreError> {
+pub(crate) fn get_ts_opt(row: &PgRow, col: &str) -> Result<Option<Timestamp>, StoreError> {
     row.try_get::<Option<jiff_sqlx::Timestamp>, _>(col)
         .map(|t| t.map(jiff_sqlx::Timestamp::to_jiff))
         .map_err(store_err)

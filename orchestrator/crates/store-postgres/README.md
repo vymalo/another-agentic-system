@@ -20,7 +20,7 @@ it.
 |---|---|
 | `PgStore::connect(url)`, `connect_with(url, max_connections)`, `from_pool(pool)`, `pool()` | construct; `Result<_, StoreError>` |
 | `PgStore::migrate()` | applies the embedded migrations (`migrations/`); sqlx records them under an advisory lock, so every replica may run it at boot |
-| `impl ThreadStore for PgStore` | per-thread `seq` from a counter row updated in the same transaction as the event insert (no gaps, no duplicates); optimistic `version`; outbox claims with `FOR UPDATE SKIP LOCKED` and leases |
+| `impl ThreadStore for PgStore` | per-thread `seq` from a counter row updated in the same transaction as the event insert (no gaps, no duplicates); optimistic `version`; outbox claims with `FOR UPDATE SKIP LOCKED` and leases; `outbox_stats` is one aggregate query over the open rows (the `outbox_open` partial index), with the `claim_outbox` due predicate |
 | `PgWakeup::start(pool)`, `wait_listening(timeout)` | `LISTEN/NOTIFY` fan-out; a reconnect or a lagging subscriber yields `Topic::Resync` |
 
 ```rust

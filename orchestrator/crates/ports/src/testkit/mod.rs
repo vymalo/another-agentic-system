@@ -22,7 +22,7 @@ macro_rules! thread_store_conformance {
             concurrent_writers_keep_seq_contiguous list_events_after_limit
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
-            skip_unsent_delegates release_leases binding_applied_with_commit
+            skip_unsent_delegates release_leases outbox_stats binding_applied_with_commit
         );
     };
     (@cases $make:path; $($case:ident)*) => {

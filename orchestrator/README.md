@@ -80,6 +80,9 @@ without identity, SIGTERM exits 0) and, on `main`, pushes
 `:latest` (see [the workflow](../.github/workflows/orchestrator.yml)).
 Probes: `/healthz` (503 while shutting down) and `/readyz` (also needs the
 database to answer).
+`/metrics` serves the outbox queue as Prometheus text on every role, without an identity
+(see [`bin/orchestrator`](bin/orchestrator/README.md#logs-and-metrics)). Every log line carries
+the process's `role` and `instance`.
 
 ### Shutdown
 
