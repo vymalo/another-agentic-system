@@ -1,4 +1,4 @@
-import { ChatShell } from "@/components/ChatShell";
+import { ChatShell } from "@/features/chat/components/chat-shell";
 
 export default function Home() {
   return <ChatShell threadId={null} />;

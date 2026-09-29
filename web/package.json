@@ -9,7 +9,7 @@
     "node": ">=22.19"
   },
   "scripts": {
-    "gen:api": "openapi-typescript ../docs/api/chat-api.yaml -o src/api/schema.d.ts",
+    "gen:api": "openapi-typescript ../docs/api/chat-api.yaml -o src/lib/api/schema.d.ts",
     "dev": "pnpm gen:api && next dev -p 3000",
     "mock": "tsx mock/server.ts",
     "dev:mock": "pnpm gen:api && concurrently -k -n mock,web -c blue,green \"tsx watch mock/server.ts\" \"MOCK_API_ORIGIN=http://127.0.0.1:4010 next dev -p 3000\"",

@@ -1,4 +1,4 @@
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];

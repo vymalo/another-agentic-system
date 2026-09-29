@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { revisionOptions, selectedOption } from "./helpers";
 
 test("the release dropdown appears only for an agent with releases", async ({ page }) => {
   await page.goto("/");
@@ -9,8 +10,8 @@ test("the release dropdown appears only for an agent with releases", async ({ pa
   const release = page.getByLabel("Release");
   await expect(release).toBeVisible();
   await expect(release).toHaveValue("production");
-  await expect(release.locator("option:checked")).toHaveText("production — coder-r47");
-  await expect(release.locator('optgroup[label="Revisions"] option')).toHaveCount(3);
+  await expect(selectedOption(release)).toHaveText("production — coder-r47");
+  await expect(revisionOptions(release)).toHaveCount(3);
 });
 
 test("the selected release is sent with the new thread", async ({ page }) => {

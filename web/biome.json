@@ -4,7 +4,7 @@
   "files": {
     "includes": [
       "**",
-      "!src/api/schema.d.ts",
+      "!src/lib/api/schema.d.ts",
       "!.next",
       "!test-results",
       "!playwright-report",
@@ -19,7 +19,13 @@
     "rules": {
       "preset": "recommended",
       "suspicious": { "noExplicitAny": "error" },
-      "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error" }
+      "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error" },
+      "style": {
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": { "filenameCases": ["kebab-case"], "requireAscii": true }
+        }
+      }
     }
   },
   "assist": { "actions": { "source": { "organizeImports": "on" } } }

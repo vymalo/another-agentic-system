@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 import { createMockServer } from "./server";
 
 /**

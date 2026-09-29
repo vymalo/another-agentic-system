@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { resetDb, THREAD_URL } from "./helpers";
+import { resetDb, THREAD_URL, threadList, threadRows } from "./helpers";
 
 test.beforeEach(resetDb);
 
@@ -25,8 +25,8 @@ test("newest first, Load older pages, selecting navigates", async ({ page }) => 
     .toBe(total);
 
   await page.goto("/");
-  const list = page.getByRole("navigation", { name: "Threads" });
-  const rows = list.locator(".threads__item");
+  const list = threadList(page);
+  const rows = threadRows(page);
   await expect(rows).toHaveCount(50);
   await expect(rows.first()).toHaveText(`echo n${total - 1}`);
   await expect(rows.last()).toHaveText("echo n1");

@@ -5,7 +5,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import type { components } from "../src/api/schema";
+import type { components } from "../src/lib/api/schema";
 import { createMockServer } from "./server";
 
 /**

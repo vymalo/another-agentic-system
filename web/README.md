@@ -12,8 +12,8 @@ and "running" is the server's thread state.
 ## Contract
 
 The only interface is [`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml). Types are generated
-from it at build time (`pnpm gen:api`, openapi-typescript + openapi-fetch); `src/api/schema.d.ts`
-is never committed. `src/api/contract.typecheck.ts` holds deliberate mismatches
+from it at build time (`pnpm gen:api`, openapi-typescript + openapi-fetch); `src/lib/api/schema.d.ts`
+is never committed. `src/lib/api/contract.typecheck.ts` holds deliberate mismatches
 (`@ts-expect-error`) that must stay type errors, so a contract change that the client does not
 follow fails `pnpm typecheck`.
 
