@@ -81,7 +81,43 @@ async fn a_follow_up_survives_an_orchestrator_restart_between_the_turns(backend:
     assert_contiguous(&chat.events(&id).await);
 }
 
+async fn auth_required_blocks_with_its_detail(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+
+    let id = chat.create_thread("plain", "auth to github", None).await;
+    chat.wait_state(&id, "blocked").await;
+    let events = chat.events(&id).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "agent_status:input_required",
+            "thread_state:blocked"
+        ]
+    );
+    assert_eq!(
+        events[2]["data"]["detail"], "authentication required: github",
+        "the chat is told it is an authentication request, and for what"
+    );
+
+    // The user answers (say, "done, retry"): the same A2A task continues.
+    let (status, body) = chat.post_message(&id, "signed in").await;
+    assert_eq!(status, 202, "{body}");
+    chat.wait_state(&id, "done").await;
+    let events = chat.events(&id).await;
+    assert_eq!(events[6]["data"]["text"], "answered: signed in");
+    assert_contiguous(&events);
+    let calls = world.plain.executions();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].task_id, calls[1].task_id, "same A2A task");
+    assert!(calls[1].resuming);
+}
+
 backends!(
+    auth_required_blocks_with_its_detail,
     input_required_blocks_and_the_follow_up_resumes_the_same_task,
     a_follow_up_survives_an_orchestrator_restart_between_the_turns,
 );

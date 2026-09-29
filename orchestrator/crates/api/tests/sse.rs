@@ -118,3 +118,46 @@ async fn stream_headers_and_default_keepalive() {
     assert_eq!(sse.headers["cache-control"], "no-cache, no-transform");
     assert_eq!(sse.headers["x-accel-buffering"], "no");
 }
+
+#[tokio::test]
+async fn a_garbage_or_negative_last_event_id_replays_everything() {
+    let h = Harness::start().await;
+    let id = h.create(ALICE, "plain", "echo garbage").await;
+    h.wait_state(ALICE, &id, "done").await;
+
+    // Not a number, negative, absurdly large for an i64, blank: all mean "from the start".
+    for bad in ["abc", "-5", "-9223372036854775808", "1.5", " ", "0x10"] {
+        let mut sse = h.stream(ALICE, &id, Some(bad)).await;
+        assert_eq!(sse.status.as_u16(), 200, "{bad:?} must not be refused");
+        assert_eq!(seqs(&mut sse, 5).await, [1, 2, 3, 4, 5], "{bad:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_last_event_id_beyond_the_end_replays_nothing_then_goes_live() {
+    let h = Harness::start().await;
+    let id = h.create(ALICE, "plain", "ask beyond").await;
+    h.wait_state(ALICE, &id, "blocked").await; // 4 events
+
+    let mut sse = h.stream(ALICE, &id, Some("999")).await;
+    assert_eq!(sse.status.as_u16(), 200);
+    // Nothing to replay (a keepalive comment is not an event) ...
+    assert!(
+        sse.next_event(Duration::from_millis(400)).await.is_none(),
+        "nothing exists after seq 999"
+    );
+    // ... but the stream is not dead: the next event of the thread arrives, and only it.
+    let r = h
+        .post(
+            &format!("/api/threads/{id}/messages"),
+            Some(ALICE),
+            serde_json::json!({"text": "main"}),
+        )
+        .await;
+    assert_eq!(r.status, 202);
+    let (seq, kind, data) = sse.next_event(T).await.expect("the new event");
+    assert_eq!((seq, kind.as_str()), (5, "user_message"));
+    assert_eq!(data["data"]["text"], "main");
+    // The rest of the run follows in order, without a replay of the earlier events.
+    assert_eq!(seqs(&mut sse, 4).await, [6, 7, 8, 9]);
+}

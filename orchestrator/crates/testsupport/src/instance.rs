@@ -39,7 +39,8 @@ pub struct TestInstance {
     /// `http://127.0.0.1:<port>`.
     pub base_url: String,
     server: JoinHandle<()>,
-    dispatcher: JoinHandle<()>,
+    /// `None` for an instance that only serves the API.
+    dispatcher: Option<JoinHandle<()>>,
     shutdown: CancellationToken,
 }
 
@@ -51,12 +52,23 @@ impl TestInstance {
         dispatcher: DispatcherConfig,
         owner: &str,
     ) -> Self {
+        Self::spawn_with(app, api, Some(dispatcher), owner).await
+    }
+
+    /// Like [`TestInstance::spawn`]; `dispatcher: None` serves the API only, like a replica
+    /// whose dispatcher is not running (its outbox rows are left to the other replicas).
+    pub async fn spawn_with<P: Ports>(
+        app: Arc<App<P>>,
+        api: ApiConfig,
+        dispatcher: Option<DispatcherConfig>,
+        owner: &str,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let shutdown = CancellationToken::new();
-        let dispatcher = tokio::spawn(
-            Dispatcher::new(Arc::clone(&app), dispatcher, owner).run(shutdown.clone()),
-        );
+        let dispatcher = dispatcher.map(|config| {
+            tokio::spawn(Dispatcher::new(Arc::clone(&app), config, owner).run(shutdown.clone()))
+        });
         let router = orch_api::router(app, api);
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -72,14 +84,18 @@ impl TestInstance {
     /// Simulates a crash: no graceful shutdown, no lease release.
     pub fn kill(&self) {
         self.server.abort();
-        self.dispatcher.abort();
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.abort();
+        }
     }
 
     /// Stops the dispatcher gracefully (it releases its leases) and the server.
     pub async fn shutdown(mut self) {
         self.shutdown.cancel();
         self.server.abort();
-        let _ = tokio::time::timeout(Duration::from_secs(10), &mut self.dispatcher).await;
+        if let Some(dispatcher) = &mut self.dispatcher {
+            let _ = tokio::time::timeout(Duration::from_secs(10), dispatcher).await;
+        }
     }
 }
 

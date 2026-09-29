@@ -16,6 +16,8 @@
 //! | `chunks` | `working`, one artifact sent as three appended chunks, `completed` |
 //! | `fail` | `working`, `failed("scripted failure")` |
 //! | `talk` | `working`, `working("Reading the repository")`, an agent `Message` "Plan: add a test", artifact `echo: <text>`, `completed` |
+//! | `messages` | `working`, two agent `Message` frames (`message one`, `message two`, ids `<task>-msg-<n>`), artifact `echo: <text>`, `completed`; when the text also contains the word `gate`, it waits for [`FakeAgent::release_gate`] after the messages |
+//! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
 //!
 //! With [`FakeAgentOptions::releases`] the card declares the release-channels extension, a new
 //! task starts with a `Task` frame whose metadata records `{requested, revision}`, every event
@@ -550,6 +552,16 @@ impl TaskCtx {
         StreamResponse::Message(m)
     }
 
+    /// An agent `Message` frame of the task, with a fixed id (a replay carries the same one).
+    fn message(&self, n: u32, text: &str) -> StreamResponse {
+        let mut m = Message::new(Role::Agent, vec![Part::text(text)]);
+        m.message_id = format!("{}-msg-{n}", self.task_id);
+        m.task_id = Some(self.task_id.clone());
+        m.context_id = Some(self.context_id.clone());
+        m.metadata = self.metadata.clone();
+        StreamResponse::Message(m)
+    }
+
     fn artifact(
         &self,
         artifact_id: &str,
@@ -673,6 +685,20 @@ async fn script(
     };
     match word {
         "fail" => emit(&tx, ctx.status(TaskState::Failed, Some("scripted failure"))).await?,
+        "auth" if !answering => {
+            lock(&shared.asking).insert(ctx.task_id.clone());
+            emit(&tx, ctx.status(TaskState::AuthRequired, Some("github"))).await?;
+        }
+        "messages" => {
+            emit(&tx, ctx.message(1, "message one")).await?;
+            emit(&tx, ctx.message(2, "message two")).await?;
+            if text.split_whitespace().any(|w| w == "gate") {
+                shared.gate.notified().await;
+            }
+            let (a, done) = finish(shared.next_artifact_id(), format!("echo: {text}"));
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
         "ask" if !answering => {
             lock(&shared.asking).insert(ctx.task_id.clone());
             emit(
@@ -741,10 +767,12 @@ impl AgentExecutor for Executor {
         ctx: ExecutorContext,
     ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let shared = Arc::clone(&self.0);
-        let resuming = ctx
-            .stored_task
-            .as_ref()
-            .is_some_and(|t| t.status.state == TaskState::InputRequired);
+        let resuming = ctx.stored_task.as_ref().is_some_and(|t| {
+            matches!(
+                t.status.state,
+                TaskState::InputRequired | TaskState::AuthRequired
+            )
+        });
         shared.record(&ctx, CallKind::Execute, resuming);
 
         let (task_id, context_id) = ctx.task_info();

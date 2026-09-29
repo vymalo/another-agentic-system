@@ -66,7 +66,9 @@ docker run --rm -p 8080:8080 -e DATABASE_URL=... -e AGENTS_FILE=/agents.yaml \
 
 Multi-stage (cargo-chef for the dependency layer), running as uid 65532 on
 `gcr.io/distroless/cc-debian12:nonroot` with the same Debian 12 glibc as the
-builder. CI builds it on every pull request and, on `main`, pushes
+builder. CI builds it on every pull request, runs it against a Postgres service
+(numeric non-root user, `/healthz` and `/readyz` answer, the API refuses requests
+without identity, SIGTERM exits 0) and, on `main`, pushes
 `ghcr.io/vymalo/another-agentic-system/orchestrator:sha-<7 chars>` and
 `:latest` (see [the workflow](../.github/workflows/orchestrator.yml)).
 Probes: `/healthz` (503 while shutting down) and `/readyz` (also needs the
@@ -223,7 +225,8 @@ ORCH_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch_test \
 ```
 
 Without `ORCH_TEST_DATABASE_URL` the Postgres variants print a skip notice and
-pass; CI always sets it (a `postgres:16` service). With it set:
+pass; CI always sets it (a `postgres:16` service). CI also refuses a pull request
+that edits, renames or deletes an already applied migration. With it set:
 
 - **Store conformance.** The `ThreadStore`/`Wakeup` testkit runs against both
   the in-memory and the Postgres store.
@@ -231,14 +234,20 @@ pass; CI always sets it (a `postgres:16` service). With it set:
   `<scenario>::memory` and `<scenario>::postgres`: the acceptance sequence over
   SSE and `GET /events`, restart safety (a killed instance and a new one on the
   *same* database, no gap and no duplicate), SSE resume, blocked/follow-up,
-  cancel, releases, agent auth. Each Postgres test gets its own schema
+  cancel, releases, agent auth, what the agent says (`agent_message`, once,
+  also across a crash). The tests that need separate connections (a stream on
+  one replica fed by another, a cancel through a replica that runs no
+  dispatcher) are Postgres-only. Each Postgres test gets its own schema
   (`search_path`), so they run in parallel and never see each other; every
   simulated instance opens its own pool and listener, like separate processes.
   Schemas older than an hour are dropped by later runs.
 - **The binary.** `bin/orchestrator/tests/smoke.rs` starts the built executable
   against the test database and a fake agent: `/healthz`, `/readyz`, 401 without
   identity, a thread that completes with the bearer from `tokenEnv`, JSON logs,
-  and a clean exit on SIGTERM. Its configuration-error tests (and the unit tests
+  and a clean exit on SIGTERM; and, as two real processes on one database, a
+  SIGKILL mid-task that the second process finishes (the message reaches the
+  agent once), threads served by either process, and a SIGTERM with a running
+  task that exits within `SHUTDOWN_GRACE_SECS`. Its configuration-error tests (and the unit tests
   in `config.rs`) need no database; the unreachable-database one waits out sqlx's
   30 s connect timeout.
 

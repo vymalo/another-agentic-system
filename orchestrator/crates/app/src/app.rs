@@ -463,8 +463,9 @@ impl<P: Ports> App<P> {
         Err(AppError::Store(StoreError::VersionConflict))
     }
 
-    /// Replays every event with `seq > after`, then streams live ones, without gaps or
-    /// duplicates. Wakeups make it prompt; a periodic poll makes it correct without them.
+    /// Replays every event with `seq > after` (`after` beyond the end of the log counts as the
+    /// end), then streams live ones, without gaps or duplicates. Wakeups make it prompt; a
+    /// periodic poll makes it correct without them.
     /// Once shutdown started and the stream has caught up, it ends (within one poll interval).
     pub async fn event_stream(
         self: &Arc<Self>,
@@ -472,7 +473,11 @@ impl<P: Ports> App<P> {
         id: ThreadId,
         after: i64,
     ) -> Result<BoxStream<'static, Event>, AppError> {
-        self.get_thread(user, id).await?;
+        let thread = self.get_thread(user, id).await?;
+        // A cursor beyond the end of the log names events that do not exist (a stale or forged
+        // `Last-Event-ID`). Left as it is, the stream would stay silent until the log caught
+        // up with it; clamped, the client gets every event that happens from now on.
+        let after = after.clamp(0, thread.last_seq);
         // Subscribe before the first read so nothing between read and subscribe is lost.
         let wake = self.ports.wakeup().subscribe();
         struct St<P: Ports> {
@@ -486,7 +491,7 @@ impl<P: Ports> App<P> {
         let st = St {
             app: Arc::clone(self),
             id,
-            cursor: after.max(0),
+            cursor: after,
             buf: VecDeque::new(),
             wake,
             wake_open: true,

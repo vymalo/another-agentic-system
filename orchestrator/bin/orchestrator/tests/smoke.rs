@@ -2,7 +2,7 @@
 //! database it serves the chat API, runs a thread to completion through an A2A agent, and exits
 //! cleanly on SIGTERM.
 //!
-//! The database test needs `ORCH_TEST_DATABASE_URL` (it skips without); the configuration
+//! The database tests need `ORCH_TEST_DATABASE_URL` (they skip without); the configuration
 //! tests always run.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
@@ -53,6 +53,13 @@ impl Running {
         fs::read_to_string(&self.log).unwrap_or_default()
     }
 
+    /// SIGKILL: the process gets no chance to release anything (a crash, an OOM kill).
+    fn kill_hard(&mut self) {
+        self.child.kill().unwrap();
+        let status = self.child.wait().unwrap();
+        assert!(!status.success(), "a killed process cannot exit cleanly");
+    }
+
     fn exited(&mut self) -> Option<ExitStatus> {
         self.child.try_wait().unwrap()
     }
@@ -92,7 +99,12 @@ impl Drop for Running {
 
 /// Starts the binary with exactly `env` (no inherited variables: no proxy, no stray config).
 fn spawn(scratch: &Scratch, env: &[(&str, &str)]) -> Running {
-    let log = scratch.file("out.log");
+    spawn_logging_to(scratch, "out.log", env)
+}
+
+/// [`spawn`], with the output in `log_name` (one per process when a test starts several).
+fn spawn_logging_to(scratch: &Scratch, log_name: &str, env: &[(&str, &str)]) -> Running {
+    let log = scratch.file(log_name);
     let out = fs::File::create(&log).unwrap();
     let child = Command::new(BIN)
         .env_clear()
@@ -212,8 +224,7 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
     let agents = write_agents(&scratch, &agents_yaml(&agent.card_url()));
     let port = free_port();
     let addr = format!("127.0.0.1:{port}");
-    let sep = if db.url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema);
+    let database_url = database_url_of(&db);
     let run = std::cell::RefCell::new(spawn(
         &scratch,
         &[
@@ -283,4 +294,272 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
     assert!(log.contains("orchestrator listening"), "{log}");
     assert!(log.contains("shutting down"), "{log}");
     assert!(!log.contains(TOKEN), "a secret leaked into the log");
+}
+
+/// The orchestrator database URL confined to the test's schema.
+fn database_url_of(db: &pgdb::TestDb) -> String {
+    let sep = if db.url.contains('?') { '&' } else { '?' };
+    format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema)
+}
+
+/// One orchestrator process of a multi-process test: its own address and log, the database and
+/// the agent list shared with its peers.
+struct Replica {
+    run: std::cell::RefCell<Running>,
+    base: String,
+    client: reqwest::Client,
+}
+
+impl Replica {
+    /// Starts `log_name`'s process; `extra` is added to the common environment.
+    fn start(
+        scratch: &Scratch,
+        log_name: &str,
+        database_url: &str,
+        agents: &Path,
+        extra: &[(&str, &str)],
+    ) -> Self {
+        let addr = format!("127.0.0.1:{}", free_port());
+        let mut env = vec![
+            ("DATABASE_URL", database_url),
+            ("LISTEN_ADDR", addr.as_str()),
+            ("AGENTS_FILE", path_str(agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ];
+        env.extend_from_slice(extra);
+        Replica {
+            run: std::cell::RefCell::new(spawn_logging_to(scratch, log_name, &env)),
+            base: format!("http://{addr}"),
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+        }
+    }
+
+    /// Waits until `/healthz` and `/readyz` both answer 200 (panics if the process exits first).
+    async fn wait_ready(&self) {
+        eventually("the binary answers /healthz", || async {
+            assert!(
+                self.run.borrow_mut().exited().is_none(),
+                "the binary exited early; log:\n{}",
+                self.run.borrow().log()
+            );
+            (http_status(&self.client, &format!("{}/healthz", self.base)).await == Some(200))
+                .then_some(())
+        })
+        .await;
+        assert_eq!(
+            http_status(&self.client, &format!("{}/readyz", self.base)).await,
+            Some(200),
+            "log:\n{}",
+            self.run.borrow().log()
+        );
+    }
+
+    fn chat(&self) -> Chat {
+        Chat::new(&self.base, "alice@example.com")
+    }
+}
+
+/// An agent behind the bearer token the replicas are configured with, and its `agents.yaml`.
+async fn agent_and_list(scratch: &Scratch) -> (FakeAgent, PathBuf) {
+    let agent = FakeAgent::spawn(FakeAgentOptions {
+        bearer: Some(TOKEN.to_owned()),
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    let agents = write_agents(scratch, &agents_yaml(&agent.card_url()));
+    (agent, agents)
+}
+
+#[tokio::test]
+async fn sigkill_mid_task_then_a_second_process_finishes_it() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    // A short lease: after a crash the other process may take the delegation over in 3 s (the smallest the binary accepts).
+    let first = Replica::start(
+        &scratch,
+        "a.log",
+        &url,
+        &agents,
+        &[("OUTBOX_LEASE_SECS", "3")],
+    );
+    first.wait_ready().await;
+    let chat = first.chat();
+    let id = chat.create_thread("fake", "gate sigkill", None).await;
+    chat.wait_state(&id, "working").await;
+    eventually("the agent executes the task", || async {
+        (agent.executions().len() == 1).then_some(())
+    })
+    .await;
+
+    // The process dies without a word: no shutdown, no lease release.
+    first.run.borrow_mut().kill_hard();
+
+    let second = Replica::start(
+        &scratch,
+        "b.log",
+        &url,
+        &agents,
+        &[("OUTBOX_LEASE_SECS", "3")],
+    );
+    second.wait_ready().await;
+    let chat = second.chat();
+    // Once the lease has expired the second process re-attaches to the running task; only then
+    // does the agent finish, so the rest of the run really is seen by the second process.
+    eventually("the second process re-attaches to the task", || async {
+        assert!(
+            second.run.borrow_mut().exited().is_none(),
+            "the second process died; log:\n{}",
+            second.run.borrow().log()
+        );
+        (agent.rpc_count("subscribe_to_task") >= 1).then_some(())
+    })
+    .await;
+    agent.release_gate();
+    chat.wait_state(&id, "done").await;
+
+    assert_eq!(
+        agent.rpc_count("send_streaming_message"),
+        1,
+        "the message must reach the agent exactly once"
+    );
+    assert_eq!(agent.executions().len(), 1);
+    let events = chat.events(&id).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done"
+        ],
+        "each update exactly once"
+    );
+    let seqs: Vec<i64> = events.iter().map(|e| e["seq"].as_i64().unwrap()).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5], "seq stays contiguous");
+    let status = second.run.borrow_mut().terminate(Duration::from_secs(20));
+    assert!(status.success(), "log:\n{}", second.run.borrow().log());
+}
+
+#[tokio::test]
+async fn two_processes_serve_each_others_threads() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    let a = Replica::start(&scratch, "a.log", &url, &agents, &[]);
+    let b = Replica::start(&scratch, "b.log", &url, &agents, &[]);
+    a.wait_ready().await;
+    b.wait_ready().await;
+
+    // Created through A ...
+    let id = a
+        .chat()
+        .create_thread("fake", "gate two processes", None)
+        .await;
+    // ... read and streamed through B, which is a different process on the same database.
+    let chat_b = b.chat();
+    let thread = chat_b.thread(&id).await;
+    assert_eq!(thread["id"], id.as_str());
+    let (status, listed) = chat_b.get("/api/threads").await;
+    assert_eq!(status, 200);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == id.as_str()),
+        "B lists A's thread: {listed}"
+    );
+    let mut sse = chat_b.stream(&id, None).await;
+    assert_eq!(sse.status, 200);
+    chat_b.wait_state(&id, "working").await;
+    agent.release_gate();
+    let frames = sse
+        .collect_until(Duration::from_secs(20), |kind, data| {
+            kind == "thread_state" && data["data"]["state"] == "done"
+        })
+        .await;
+    let seqs: Vec<i64> = frames.iter().map(|(s, _, _)| *s).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5]);
+    // Whichever process dispatched it, the agent saw the message once, and A reads the same log.
+    assert_eq!(agent.executions().len(), 1);
+    assert_eq!(a.chat().events(&id).await, chat_b.events(&id).await);
+
+    for replica in [&a, &b] {
+        assert_eq!(
+            http_status(&replica.client, &format!("{}/readyz", replica.base)).await,
+            Some(200)
+        );
+        let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+        assert!(status.success(), "log:\n{}", replica.run.borrow().log());
+    }
+}
+
+#[tokio::test]
+async fn sigterm_with_a_running_task_exits_within_the_grace() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    // The default lease (30 s) is left alone on purpose: only a graceful hand-over, not lease
+    // expiry, can make the second process pick the task up within this test.
+    let first = Replica::start(
+        &scratch,
+        "a.log",
+        &url,
+        &agents,
+        &[("SHUTDOWN_GRACE_SECS", "3")],
+    );
+    first.wait_ready().await;
+    let chat = first.chat();
+    let id = chat.create_thread("fake", "slow sigterm", None).await;
+    chat.wait_state(&id, "working").await;
+    eventually("the agent executes the task", || async {
+        (agent.executions().len() == 1).then_some(())
+    })
+    .await;
+
+    let started = Instant::now();
+    let status = first.run.borrow_mut().terminate(Duration::from_secs(10));
+    let took = started.elapsed();
+    let log = first.run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(
+        took < Duration::from_secs(3) + Duration::from_secs(2),
+        "SHUTDOWN_GRACE_SECS=3 must bound the shutdown, it took {took:?}; log:\n{log}"
+    );
+
+    // The task was neither failed nor lost: a second process takes it over at once and
+    // re-attaches, without sending the message again.
+    let second = Replica::start(&scratch, "b.log", &url, &agents, &[]);
+    second.wait_ready().await;
+    let chat = second.chat();
+    assert_eq!(chat.state(&id).await, "working");
+    eventually("the second process resubscribes to the task", || async {
+        (agent.rpc_count("subscribe_to_task") >= 1).then_some(())
+    })
+    .await;
+    assert_eq!(agent.rpc_count("send_streaming_message"), 1);
+    // And it is in control of it: a cancel through the second process reaches the agent.
+    assert_eq!(chat.cancel(&id).await, 202);
+    chat.wait_state(&id, "cancelled").await;
+    assert_eq!(agent.cancels().len(), 1);
+    let status = second.run.borrow_mut().terminate(Duration::from_secs(20));
+    assert!(status.success(), "log:\n{}", second.run.borrow().log());
 }
