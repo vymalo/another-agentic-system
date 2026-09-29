@@ -48,6 +48,7 @@ pub fn postgres_available() -> bool {
 
 /// Defines, for each scenario `fn name(backend: Backend)`, the tests `name::memory` and
 /// `name::postgres`. A scenario nobody lists is dead code, which the lints refuse.
+#[allow(unused_macros)] // a test binary may use only one of the two
 macro_rules! backends {
     ($($name:ident),+ $(,)?) => {
         $(
@@ -57,6 +58,25 @@ macro_rules! backends {
                     super::$name(crate::common::Backend::Memory).await;
                 }
 
+                #[tokio::test]
+                async fn postgres() {
+                    if crate::common::postgres_available() {
+                        super::$name(crate::common::Backend::Postgres).await;
+                    }
+                }
+            }
+        )+
+    };
+}
+
+/// Defines, for each scenario `fn name(backend: Backend)` that needs a real database (separate
+/// connections, `LISTEN`/`NOTIFY` across them), the single test `name`, a no-op unless
+/// `ORCH_TEST_DATABASE_URL` is set.
+#[allow(unused_macros)]
+macro_rules! postgres_only {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            mod $name {
                 #[tokio::test]
                 async fn postgres() {
                     if crate::common::postgres_available() {
@@ -194,6 +214,12 @@ impl World {
 
     /// Starts an orchestrator instance (API + dispatcher) named `owner`.
     pub async fn instance(&self, owner: &str) -> TestInstance {
+        self.instance_with(owner, true).await
+    }
+
+    /// Starts an instance named `owner`; `dispatch: false` serves the API only.
+    pub async fn instance_with(&self, owner: &str, dispatch: bool) -> TestInstance {
+        let dispatcher = dispatch.then(fast_dispatcher);
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
             ..ApiConfig::default()
@@ -201,7 +227,7 @@ impl World {
         match &self.db {
             Db::Memory { store, wakeup } => {
                 let app = self.app(store.clone(), wakeup.clone());
-                TestInstance::spawn(app, api, fast_dispatcher(), owner).await
+                TestInstance::spawn_with(app, api, dispatcher, owner).await
             }
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
@@ -211,7 +237,7 @@ impl World {
                     "the wakeup listener did not attach"
                 );
                 let app = self.app(PgStore::from_pool(pool), wakeup);
-                TestInstance::spawn(app, api, fast_dispatcher(), owner).await
+                TestInstance::spawn_with(app, api, dispatcher, owner).await
             }
         }
     }
