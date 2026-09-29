@@ -1,9 +1,11 @@
 name: Orchestrator
 
 # check: fmt, clippy and the tests of the orchestrator workspace, with a Postgres service so
-#        the store, end-to-end and binary tests all run against a real database.
+#        the store, end-to-end and binary tests all run against a real database; on pull
+#        requests also the guard that applied migrations are never edited.
 # image: builds the container image (pull requests: build only, to validate the Dockerfile;
-#        main: build and push to ghcr.io).
+#        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
+#        Postgres service: non-root, /healthz and /readyz answer, SIGTERM exits cleanly.
 #
 # Path filters mean this check must not be made "required" for unrelated PRs.
 
@@ -52,6 +54,23 @@ jobs:
         working-directory: orchestrator
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The migrations guard diffs against the base branch.
+          fetch-depth: 0
+      - name: Applied migrations stay append-only
+        if: github.event_name == 'pull_request'
+        # A migration that has run anywhere is history: editing, renaming or deleting it makes
+        # sqlx refuse to start against a database that applied the old bytes. Only additions pass.
+        working-directory: .
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-status "origin/${BASE_REF}...HEAD" -- orchestrator/crates/store-postgres/migrations | grep -v '^A' || true)
+          if [ -n "$changed" ]; then
+            echo "::error::Applied migrations must not be modified, renamed or deleted; add a new numbered migration instead."
+            echo "$changed"
+            exit 1
+          fi
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
@@ -68,6 +87,18 @@ jobs:
     permissions:
       contents: read
       packages: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orch
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       IMAGE: ghcr.io/vymalo/another-agentic-system/orchestrator
     steps:
@@ -88,14 +119,62 @@ jobs:
           tags: |
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
-      - name: Build (and push on main)
+      - name: Build
         uses: docker/build-push-action@v7
         with:
           context: orchestrator
           file: orchestrator/Dockerfile
           platforms: linux/amd64
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          # Loaded into the local daemon so the smoke test below runs what would be pushed.
+          load: true
+          push: false
+          tags: orchestrator:smoke
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=orchestrator
           cache-to: type=gha,mode=max,scope=orchestrator
+      - name: Smoke test the image
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch
+          # The card is only fetched when a thread is delegated, never at boot.
+          CODER_A2A_TOKEN: dummy-token-for-the-smoke-test
+        run: |
+          set -euo pipefail
+          expected_user=65532:65532
+          user=$(docker inspect -f '{{.Config.User}}' orchestrator:smoke)
+          [ "$user" = "$expected_user" ] || { echo "::error::image user is '$user', expected $expected_user"; exit 1; }
+
+          cid=$(docker run -d --network host \
+            -e DATABASE_URL -e CODER_A2A_TOKEN \
+            -e AGENTS_FILE=/agents.yaml -e LISTEN_ADDR=127.0.0.1:8080 \
+            -v "$PWD/orchestrator/agents.example.yaml:/agents.yaml:ro" \
+            orchestrator:smoke)
+          trap 'docker logs "$cid" || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          # The running process, not just the image metadata, is not root.
+          uid=$(docker top "$cid" -eo uid | tail -n 1 | tr -d ' ')
+          [ "$uid" = "65532" ] || { echo "::error::the process runs as uid '$uid', expected 65532"; exit 1; }
+
+          curl --silent --show-error --fail --output /dev/null --retry 30 --retry-delay 1 --retry-connrefused \
+            http://127.0.0.1:8080/healthz
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz)" = 200 ]
+          # /readyz also needs the database (migrated at boot).
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)" = 200 ]
+          # Fail closed: the API needs the identity header the proxy adds.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/agents)" = 401 ]
+
+          # SIGTERM drains and exits 0 well inside the timeout (137 would mean it was killed).
+          docker stop --time 20 "$cid" >/dev/null
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
+          [ "$code" = 0 ] || { echo "::error::exit code $code after SIGTERM, expected 0"; exit 1; }
+          docker logs "$cid" 2>&1 | grep -q 'shutting down' || { echo "::error::no clean shutdown in the log"; exit 1; }
+      - name: Push (main only)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v7
+        with:
+          context: orchestrator
+          file: orchestrator/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=orchestrator
