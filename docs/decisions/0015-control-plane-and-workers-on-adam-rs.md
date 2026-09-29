@@ -304,3 +304,25 @@ The placement policy in adam-rs is separate design work and has no slot here yet
   `MIT OR Apache-2.0`). It comes from the planning notes of 2026-09-29, not from a build. PR 6
   proves it.
 - *Unverified:* that `NOTIFY` payloads are limited to 8000 bytes.
+
+### Status note, 2026-09-29: migration step 6 built
+
+`orchestrator` takes `--role` / `ORCH_ROLE` through `adam-host` and runs on `adam_host::Host`.
+
+- *Verified 2026-09-29* (this repository, `cargo fetch --locked` with an empty `CARGO_HOME`): cargo
+  fetches `adam-host` by git rev from `github.com/vymalo/another-adam-rs` with no credentials. The
+  orchestrator toolchain (Rust 1.94.1) builds it. The lock file gains two packages, `adam-host` and
+  `adam-error`, and `tokio-util` gains a `futures-io` edge from `adam-host`'s workspace features;
+  nothing else moves, so the "same major versions" *unverified* item above holds for what the
+  orchestrator links.
+- *Verified 2026-09-29* (`orchestrator/bin/orchestrator/tests/smoke.rs`): `--role worker` serves
+  only the probes; a `control-plane` process leaves a thread `queued` until a worker process starts;
+  with one control plane and two workers, SIGKILL of the worker holding the delegation lets the other
+  finish it exactly once.
+- *Unverified:* the Docker build with the git dependency (`cargo chef prepare` and `cook`): there is no
+  Docker daemon in the environment where this was built. CI's `image` job is the proof.
+- `boot.rs` now uses `Host` for the stop order, with the two grace times both set to
+  `SHUTDOWN_GRACE_SECS`, so the hand-written supervisor is gone. A cancel sent to the control plane
+  reaching the agent through the worker that took a task over after a graceful stop is covered by
+  `a_worker_stopped_with_a_running_task_hands_it_over_at_once`; the SIGKILL test with two workers
+  finishes the task instead of cancelling it.

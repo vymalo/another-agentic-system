@@ -88,6 +88,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-error"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=0e08fe07eaea7022a08f0fc5c883a373e17e6ca3#0e08fe07eaea7022a08f0fc5c883a373e17e6ca3"
+
+[[package]]
+name = "adam-host"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=0e08fe07eaea7022a08f0fc5c883a373e17e6ca3#0e08fe07eaea7022a08f0fc5c883a373e17e6ca3"
+dependencies = [
+ "adam-error",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2050,6 +2067,7 @@ dependencies = [
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [
+ "adam-host",
  "anyhow",
  "axum",
  "clap",
@@ -3459,6 +3477,7 @@ checksum = "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "futures-util",
  "libc",

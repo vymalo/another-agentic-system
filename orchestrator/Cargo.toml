@@ -27,6 +27,9 @@ orch-surface-chat-api = { path = "crates/surface-chat-api" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
+# Process plumbing shared with every adam-rs host: the `Role` enum and the role-aware `Host`
+# supervisor (ADR 0015). Pinned to a full commit sha, never a branch or a tag; a PR bumps it.
+adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "0e08fe07eaea7022a08f0fc5c883a373e17e6ca3", default-features = false, features = ["supervisor"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

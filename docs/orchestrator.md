@@ -328,6 +328,61 @@ commands `CallTool`, `Reply`, `Notify` and `Schedule`. They arrive with the MCP,
 steps ([MVP](mvp.md)); the closed enums make the compiler list every `match` that must handle them
 (ADR 0004). The AG-UI design adds `ui_surface` and `ui_action` events ([ADR 0013](decisions/0013-a2ui-generative-ui.md)).
 
+## Process roles
+
+**Built** (checked against `bin/orchestrator/src/boot.rs` on 2026-09-29). One binary, one image. What a
+process runs is its **role**, `ORCH_ROLE` or `--role` ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
+The enum, `Role`, and the supervisor, `Host`, come from the `adam-host` crate of adam-rs (a git
+dependency pinned to a commit sha); this repository adds no role and no supervisor of its own.
+
+| Role | Runs | Serves on `LISTEN_ADDR` |
+|---|---|---|
+| `control-plane` | migrations, the HTTP server: the resource API, the surfaces in `ORCH_SURFACES`, health. No dispatcher | the full API |
+| `worker` | migrations, the dispatcher (including the transitions for agent updates) | health only (`/healthz`, `/readyz`), so probes work; everything else is 404 |
+| `all` (default) | both, as before the role existed | the full API |
+
+The halves are already decoupled: the only things they share are the outbox, the thread version
+compare-and-swap and `LISTEN/NOTIFY`, all in Postgres, so there is no new protocol between them and
+`transition` stays the one pure function both call. A thread created through a control plane is
+`queued` until a worker claims its outbox row; a control plane never calls an agent. Wake-ups
+between processes are the ones the replicas already use (Postgres `LISTEN/NOTIFY`, backed up by the
+dispatcher's and the streams' own polling), so a lost notification costs latency, not correctness.
+
+```mermaid
+sequenceDiagram
+  participant S as Signal (SIGTERM)
+  participant B as boot::run
+  participant H as adam_host::Host
+  participant C as HTTP server (control plane)
+  participant W as Dispatcher (worker)
+  participant P as Health router (worker role only)
+  B->>H: register every component, Host starts those the role asks for
+  S-->>B: shutdown
+  B->>B: /healthz and /readyz answer 503
+  B->>H: shutdown resolved
+  H->>C: cancel, drain (SHUTDOWN_GRACE_SECS)
+  C-->>H: drained, or aborted after the grace
+  H->>W: cancel, stop workers, release leases (SHUTDOWN_GRACE_SECS)
+  W-->>P: as it ends, stop the probe router
+  W-->>H: stopped
+  H-->>B: Ok, or the first failure by component name (exit 70)
+  B->>B: close the pool, exit
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Starting: configuration valid, role known
+  Starting --> Running: migrated, listener bound, components of the role started
+  Starting --> [*]: database down (69), address taken (71), bad configuration (78)
+  Running --> DrainingControlPlane: shutdown signal, or a component ended on its own
+  DrainingControlPlane --> StoppingWorkers: server drained, or the grace is over
+  StoppingWorkers --> [*]: dispatcher stopped (exit 0 after a signal, 70 after a failure)
+```
+
+A worker is ready when the store answers and its dispatcher has started; the other roles are ready
+once the database is migrated and answers. The probe router of a worker is a worker component that
+ends after the dispatcher, so a draining worker answers 503 rather than refusing connections.
+
 ## Design choices
 
 - **Closed enums + `match`, not a `dyn Adapter` registry. Built.** The set of

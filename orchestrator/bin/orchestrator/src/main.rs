@@ -7,6 +7,7 @@ mod config;
 
 use std::process::ExitCode;
 
+use adam_host::HostError;
 use anyhow::Context as _;
 use boot::Fatal;
 use clap::Parser as _;
@@ -54,7 +55,7 @@ const EX_CONFIG: u8 = 78;
 const EX_UNAVAILABLE: u8 = 69;
 /// sysexits.h: an operating system error (the listen address cannot be bound).
 const EX_OSERR: u8 = 71;
-/// sysexits.h: an internal software error (a half of the service stopped or panicked).
+/// sysexits.h: an internal software error (a component of the service stopped or panicked).
 const EX_SOFTWARE: u8 = 70;
 
 /// The exit code for a fatal error, found by walking its source chain for the first cause
@@ -70,10 +71,12 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         {
             return EX_UNAVAILABLE;
         }
-        match cause.downcast_ref::<Fatal>() {
-            Some(Fatal::Listen { .. }) => return EX_OSERR,
-            Some(Fatal::Stopped { .. }) => return EX_SOFTWARE,
-            None => {}
+        if let Some(Fatal::Listen { .. }) = cause.downcast_ref::<Fatal>() {
+            return EX_OSERR;
+        }
+        // A component (the HTTP server, the dispatcher) stopped, ended early or panicked.
+        if cause.downcast_ref::<HostError>().is_some() {
+            return EX_SOFTWARE;
         }
         if cause.downcast_ref::<tokio::task::JoinError>().is_some() {
             return EX_SOFTWARE;
@@ -140,11 +143,21 @@ mod tests {
         });
         assert_eq!(exit_code(&listen), 71);
 
-        let stopped = anyhow::Error::from(Fatal::Stopped {
-            half: "the dispatcher",
-            source: Some(boxed("panicked")),
+        let stopped = anyhow::Error::from(HostError::Stopped {
+            component: "the dispatcher".to_owned(),
+            source: boxed("lost the database"),
         });
         assert_eq!(exit_code(&stopped), 70);
+        let panicked = anyhow::Error::from(HostError::Panicked {
+            component: "the HTTP server".to_owned(),
+            source: boxed("boom"),
+        });
+        assert_eq!(exit_code(&panicked), 70);
+        let early = anyhow::Error::from(HostError::EndedEarly {
+            component: "the dispatcher".to_owned(),
+        });
+        assert_eq!(exit_code(&early), 70);
+        assert_eq!(exit_code(&anyhow::Error::from(HostError::NothingToRun)), 70);
 
         assert_eq!(exit_code(&anyhow::anyhow!("something else")), 1);
     }
