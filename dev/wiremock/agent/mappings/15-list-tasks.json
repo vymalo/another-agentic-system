@@ -1,0 +1,28 @@
+{
+  "name": "ListTasks: always empty",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "ListTasks"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "list-tasks.json"
+  }
+}

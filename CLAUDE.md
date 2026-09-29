@@ -19,6 +19,7 @@ no code yet.
 | `docs/decisions/NNNN-*.md` | ADRs |
 | `docs/mvp.md`, `docs/open-questions.md`, `docs/lessons-from-agent-canvas.md` | Build order, open/closed questions, lessons as requirements |
 | `tools/docs-check/` | Diagram + link checker (also run in CI) |
+| `compose.yaml`, `dev/` | Local stack: Postgres, WireMock A2A mock agents, and the `app` profile (orchestrator, web, edge proxy standing in for oauth2-proxy); `dev/README.md` documents the mock scenarios |
 | `.agents/skills/` | Repo skills; `.claude/skills/*` are symlinks to them |
 
 ## Invariants — check every change against these

@@ -1,0 +1,34 @@
+{
+  "name": "SendMessage: keyword ask -> input-required task",
+  "priority": 7,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "(?is).*\\bask\\b.*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "send-ask.json"
+  }
+}

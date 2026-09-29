@@ -1,0 +1,80 @@
+{
+  "name": "mock-coder-releases",
+  "description": "WireMock stand-in for an A2A 1.0 coding agent that declares the release-channels extension (local development only).",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/release-channels/v1",
+        "description": "Select a release channel or an exact revision of this agent.",
+        "required": false,
+        "params": {
+          "service": "mock-coder",
+          "defaultChannel": "production",
+          "channels": {
+            "production": "coder-r47",
+            "staging": "coder-r51",
+            "latest": "coder-r53"
+          },
+          "revisions": [
+            {
+              "name": "coder-r53",
+              "createdAt": "2026-09-28T09:10:00Z"
+            },
+            {
+              "name": "coder-r51",
+              "createdAt": "2026-09-26T14:02:00Z"
+            },
+            {
+              "name": "coder-r47",
+              "createdAt": "2026-09-20T08:45:00Z"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "code",
+      "name": "Code",
+      "description": "Pretends to make a change and open a pull request.",
+      "tags": [
+        "mock",
+        "code"
+      ],
+      "examples": [
+        "add a health endpoint",
+        "ask which branch",
+        "fail please"
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

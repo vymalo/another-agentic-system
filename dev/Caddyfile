@@ -1,0 +1,33 @@
+# The `edge` service of compose.yaml: a local stand-in for oauth2-proxy.
+#
+# It puts the chat UI and the chat API on ONE origin (as the production ingress does) and
+# injects a fixed identity. It performs no authentication at all: every request is "dev@example.com".
+# Local development only. Never expose it beyond 127.0.0.1 and never use it in production, where
+# oauth2-proxy authenticates the user and strips client-supplied copies of X-Auth-Request-Email.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# `header_up <name> <value>` REPLACES any value the client sent, like oauth2-proxy does.
+	handle /api/* {
+		reverse_proxy orchestrator:8080 {
+			header_up X-Auth-Request-Email dev@example.com
+			# Server-sent events must not be buffered.
+			flush_interval -1
+		}
+	}
+
+	# Probes: /readyz is what `docker compose up --wait` waits on (it needs the database).
+	handle /healthz {
+		reverse_proxy orchestrator:8080
+	}
+	handle /readyz {
+		reverse_proxy orchestrator:8080
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
