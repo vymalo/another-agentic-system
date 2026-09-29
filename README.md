@@ -22,7 +22,7 @@ in Postgres.
 flowchart LR
   you((You)) -- browser --> edge[Edge proxy<br/>oauth2-proxy]
   edge -- UI --> cp[Web chat surface<br/>Next.js + assistant-ui]
-  edge -- "/api/*" --> orch[Orchestrator<br/>stateless Rust replicas]
+  edge -- "/api/*, /agui/*" --> orch[Orchestrator<br/>stateless Rust replicas]
   orch <--> db[(Postgres / CNPG<br/>chat · threads · outbox)]
   orch -- A2A --> agents[Agents — any A2A host<br/>another-agentic-platform · kagent · …]
   agents -- push branch --> git[(git → PR)]
@@ -53,11 +53,11 @@ orchestrator through the edge. Component, request and state diagrams:
 
 | Document | What it covers |
 |---|---|
-| [Architecture](docs/architecture.md) | Components, agent hosts, **as built** (component diagram, a chat turn, thread state, AG-UI planned against built), the target job flow and lifecycle, where it runs |
-| [Orchestrator](docs/orchestrator.md) | Ports & adapters, the crate dependency graph, event flow (design against built), outbox lifecycle, transition table, core types, data model, testing |
+| [Architecture](docs/architecture.md) | Components, agent hosts, **as built** (component diagram, a chat turn over AG-UI, thread state, how AG-UI is served), the target job flow and lifecycle, where it runs |
+| [Orchestrator](docs/orchestrator.md) | Ports & adapters, the crate dependency graph, event flow (design against built), outbox lifecycle, transition table, core types, data model, live updates (how AG-UI streams come from the log), testing |
 | [Orchestrator workspace](orchestrator/README.md) | Running it, configuration, shutdown, error classes; each crate has its own README (role, API, environment, tests) |
 | [MVP](docs/mvp.md) | Build order, smallest working loop first, with what is built |
-| [Chat API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health) and the deprecated REST interaction endpoints |
+| [API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health), the AG-UI operations and the deprecated REST interaction endpoints (off by default) |
 | [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
 | [Lessons from Agent Canvas](docs/lessons-from-agent-canvas.md) | What running OpenHands Agent Canvas taught us, as requirements |
@@ -71,7 +71,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0003](docs/decisions/0003-git-as-durable-state-ephemeral-workers.md) | git is the durable artifact; workers are ephemeral |
 | [0004](docs/decisions/0004-closed-enums-over-dyn-registry.md) | Protocols as closed enums, not a dynamic adapter registry |
 | [0005](docs/decisions/0005-openai-compatible-model-endpoint.md) | Model access through any OpenAI-compatible endpoint |
-| [0006](docs/decisions/0006-assistant-ui-external-store.md) | Chat surface: Next.js + assistant-ui with an external store |
+| [0006](docs/decisions/0006-assistant-ui-external-store.md) | Chat surface: Next.js + assistant-ui (an external store at first, now the AG-UI runtime per 0012) |
 | [0007](docs/decisions/0007-protocol-only-dependencies.md) | Protocol-only dependencies: an agnostic orchestration layer |
 | [0008](docs/decisions/0008-platform-integration-via-a2a-extension.md) | Optional another-agentic-platform integration via an A2A extension |
 | [0009](docs/decisions/0009-swappable-implementations-at-build-time.md) | Swappable implementations, selected at build time |

@@ -16,10 +16,12 @@ change.
 
 > **What is built.** Facts in this page are marked **Built** (present in
 > `orchestrator/` and checked against the code on 2026-09-29) or **Planned**
-> (design only). Today: the chat surface's API, the pure core, the Postgres
-> store, the durable dispatcher, the A2A client adapter, the AG-UI wire types
-> and the pure AG-UI projection. Not yet: the AG-UI HTTP surface, an A2A or MCP
-> server, webhooks, timers, an inbox, MCP tools, and the model endpoint. The
+> (design only). Today: the pure core, the Postgres store, the durable dispatcher,
+> the A2A client adapter, and two interaction surfaces over one `App`: AG-UI
+> (the wire types, the pure projection, and the run, connect and capabilities
+> routes, with A2UI surfaces and actions; the default) and the deprecated legacy
+> chat API (off unless mounted). Not yet: an A2A or MCP server, webhooks,
+> timers, an inbox, MCP tools, and the model endpoint. The
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
 
 ## It is symmetric
@@ -31,17 +33,18 @@ protocol:
 |---|---|---|---|
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
 | MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `answer` | Calls tools: GitHub, docs, search, … | **Planned** |
-| Chat | The web posts user messages | Appends messages and cards to the thread | The chat API is **built** (`orch-surface-chat-api`, deprecated); AG-UI wire types, projection and the run, connect and capabilities routes **built** (`orch-surface-agui`) |
+| AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
+| Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Serves the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Built** (`orch-surface-chat-api`), deprecated, off by default (`ORCH_SURFACES=agui,chat-api` mounts it) |
 | Webhooks | GitHub, CI, Slack events | Slack posts, outgoing webhooks | **Planned** |
 | Timers | Scheduled events (timeouts, reminders, cron) | Schedules new timers | **Planned** |
 
-The chat row's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
-small REST resource API beside it ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
+The chat's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
+small REST resource API beside it (agents, threads, cancel, health: always mounted) ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
 binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, the legacy chat API, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
-(`ORCH_SURFACES`). **Built:** the mechanism, the `agui` surface (the run route, the connect stream and
-the capabilities document, mounted by default) and the deprecated `chat-api` surface (off unless
-`ORCH_SURFACES=agui,chat-api`). **Planned:** `a2a`.
+(`ORCH_SURFACES`, default `agui`). **Built:** the mechanism, the `agui` surface (the run route, the connect
+stream and the capabilities document) and the deprecated `chat-api` surface. **Planned:** `a2a`; removing
+`chat-api` is a separate change ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag)).
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
@@ -51,8 +54,8 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has eleven
-library crates and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has thirteen
+library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
 
@@ -114,6 +117,7 @@ flowchart TB
   surfagui --> api
   surfagui --> app
   surfagui --> proj
+  surfagui --> proto
   ts --> api
   ts --> app
   ts --> chat
@@ -206,15 +210,15 @@ sequenceDiagram
   D->>DB: delivered | retry with backoff
 ```
 
-**Built today** differs in four places, all consequences of having one input path (a person using
-the chat API) and one output (an A2A agent):
+**Built today** differs in four places, all consequences of having one input path (a person in the chat, over AG-UI) and one output (an A2A
+agent):
 
 | Design | Built |
 |---|---|
 | Inbound adapters write an `inbox` row; a worker claims it and runs the transition | No inbox table. The request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. The inbox arrives with the webhook and MCP inputs |
 | Inbound events are deduplicated by `UNIQUE (source, idempotency_key)` | Events carry an optional `idempotency_key`, unique per thread (`events_idempotency`); the dispatcher derives keys from the agent's own ids, so a resumed or replayed stream never duplicates an event |
 | The job row holds the state as `jsonb` | The `threads` row holds `state` as text with a `CHECK`; the state has no payload |
-| Async results re-enter as new inbound events | The dispatcher turns everything the agent reports into `Input::Agent` and calls `App::apply`, the same entry point the chat API uses |
+| Async results re-enter as new inbound events | The dispatcher turns everything the agent reports into `Input::Agent` and calls `App::apply`, the same entry point every surface uses |
 
 The turn as the code runs it, step by step, is a sequence diagram in
 [Architecture: a chat turn](architecture.md#a-chat-turn).
@@ -660,19 +664,82 @@ erDiagram
 | `outbox` | Commands to dispatch (`delegate`, `cancel`) | Status, attempts, `next_attempt_at`, lease owner and expiry, `sent_at`; two partial indexes over the open rows |
 
 **Planned** tables of the design: `inbox` (received, authenticated events, for webhooks and MCP),
-`timers` (scheduled events) and a job-level snapshot for multi-step jobs. The chat API needs none of
+`timers` (scheduled events) and a job-level snapshot for multi-step jobs. The chat needs none of
 them.
 
-**Live updates.** Postgres `LISTEN/NOTIFY` carries hints, never data. `PgStore` sends
+### Live updates
+
+Postgres `LISTEN/NOTIFY` carries hints, never data. `PgStore` sends
 `pg_notify` inside the writing transaction (channels `orch_thread` with the thread id as payload,
 and `orch_outbox`), and every orchestrator replica holds one `LISTEN` connection (`PgWakeup`) that
-fans the hints out to its own subscribers: its dispatcher (claim outbox rows) and its open SSE
-streams (`App::event_stream`, which feeds the legacy stream, the AG-UI run response and the AG-UI
-connect stream alike: a connect stream is a viewer's fold of the same log, so any replica serves any
-viewer and a reconnect with `Last-Event-ID` needs no shared memory). After a reconnect of the listener, or when a subscriber lags, every
+fans the hints out to its own subscribers: its dispatcher (claim outbox rows) and its open streams
+(`App::event_stream`). After a reconnect of the listener, or when a subscriber lags, every
 subscriber receives `Topic::Resync` and re-reads the store. A stream also polls every 5 s and the
-dispatcher every 2 s, so a lost notification costs latency, not correctness. The stream is served
+dispatcher every 2 s, so a lost notification costs latency, not correctness. The streams are served
 by the orchestrator: the web has no server-side code and never touches Postgres. No separate broker.
+
+**How an AG-UI stream is produced.** `App::event_stream` is the only source of live events, and it
+feeds the legacy stream, the AG-UI run response and the AG-UI connect stream alike. It is a read of
+the log with a wake-up under it, not a subscription to a message bus, so a stream lives in the log
+and not in the process. What differs per surface is the pure fold applied to the events: for the
+connect stream, `orch_agui_projection::Connect` over a `Projector` in the *viewer* audience; for the
+run response, the same `Projector` in the *requester* audience, from the first event the request's
+input caused to the terminal event of that run.
+
+```mermaid
+sequenceDiagram
+  participant C as AG-UI client
+  participant S as orch-surface-agui
+  participant A as orch-app App
+  participant W as PgWakeup<br/>(one LISTEN per replica)
+  participant DB as Postgres
+  participant P as orch-agui-projection<br/>(pure: Connect, Projector)
+  C->>S: GET /agui/threads/{id}/connect, Last-Event-ID: c
+  S->>A: get_thread(user, id): missing, malformed and foreign ids are one 404, before any byte
+  S->>A: event_stream(user, id, 0)
+  A->>W: subscribe, before the first read
+  loop until the client closes, or Connect says the stream is over
+    A->>DB: list_events(after the cursor, 500)
+    DB-->>A: events, in seq order
+    A-->>S: each event
+    S->>P: Connect::feed(event): fold it, frames are written from the cursor c on
+    P-->>S: frames (the preamble once, at c, when a run is open there)
+    S-->>C: SSE data: frame, id: seq on resume points, a keepalive comment every 15 s
+    Note over A,W: caught up: wait for Topic::Thread(id), Topic::Resync or the 5 s tick
+    DB-->>W: NOTIFY orch_thread, from any replica's commit
+    W-->>A: Topic::Thread(id)
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Reading: subscribe, then read the events after the cursor
+  Reading --> Reading: a page of events (up to 500): hand them on
+  Reading --> Waiting: caught up
+  Waiting --> Reading: NOTIFY for this thread, Resync, or the 5 s poll
+  Reading --> [*]: caught up and the process is shutting down (a truncated stream: the client reconnects)
+  Reading --> [*]: the client closes
+  Waiting --> [*]: the client closes
+```
+
+- **Nothing about a connection is kept.** There is no registry of connections or runs. A reconnect
+  with `Last-Event-ID` builds a new `Connect` from the log: the events up to the cursor are folded
+  and not written, so the projector's state at the cursor is the same on every replica, the
+  preamble re-opens the run that is open there, and the rest is exactly what an uninterrupted stream
+  would have written. Any replica serves any viewer, and a hundred viewers of a thread are a hundred
+  independent folds. The cost is a read of the thread's log from its start on every connect.
+- **Every id is derived from the log** (run, message, activity, subagent, interrupt), so replicas and
+  replays emit identical frames; `id:` is the log's `seq`, written only on the last frame of an
+  event and only when no text message is open, so a resume never splits a message.
+- **A2UI travels the same way.** A `ui_surface` event becomes the *whole* surface as one
+  `a2ui-surface` activity snapshot each time, so the last snapshot renders on the live stream, on
+  replay and in history; a `ui_action` opens a run like a message does.
+- **Closing a stream never cancels a run,** and a run started by the orchestrator itself (an event that
+  arrives when no run is open) reaches a connect stream as a run of its own.
+
+The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the connect fold in
+[`orch-agui-projection`](../orchestrator/crates/agui-projection/README.md) and the streaming code in
+[`orch-surface-agui`](../orchestrator/crates/surface-agui/README.md).
 
 ## Testing
 
@@ -698,9 +765,10 @@ by the orchestrator: the web has no server-side code and never touches Postgres.
   against the scripted in-memory agent and against the A2A adapter over real HTTP, with an in-process
   A2A 1.0 agent behind it.
 - **End to end, on both stores:** `orch-e2e` runs each scenario as `<name>::memory` and
-  `<name>::postgres` (chat API, dispatcher, A2A adapter, a fake agent): restart mid-stream with no
-  gap and no duplicate, several replicas on one database, SSE resume, blocked and follow-up, cancel,
-  releases, agent auth. The binary is also tested as a process, including a SIGKILL of one of two
+  `<name>::postgres` (the AG-UI run route and connect stream, the chat API, dispatcher, A2A adapter, a
+  fake agent): restart mid-stream with no gap and no duplicate, several replicas on one database,
+  SSE resume, blocked and follow-up, cancel, releases, agent auth, a connect stream reconnected to
+  another replica after the first is killed, A2UI surfaces and actions. The binary is also tested as a process, including a SIGKILL of one of two
   replicas mid-task.
 - **Golden transcripts:** [`api/examples`](api/examples/README.md) pin what the orchestrator emits;
   the web and its mock replay them, and `orch-agui-projection` projects them to AG-UI streams that

@@ -6,8 +6,8 @@ How the orchestrator speaks [AG-UI 1.0](https://docs.ag-ui.com/spec/1.0/index.md
 every frame below is a function of the log. The resource API (agents, threads, cancel, health)
 stays in [`chat-api.yaml`](chat-api.yaml).
 
-> Status: **partly built** (2026-09-29). Built: the wire types (`orch-agui-proto`), both directions
-> of the mapping below as pure code (`orch-agui-projection`), tested against the vendored schema
+> Status: **built** (2026-09-29); removing the legacy chat API is a separate, later change. Built: the wire types
+> (`orch-agui-proto`), both directions of the mapping below as pure code (`orch-agui-projection`), tested against the vendored schema
 > and the reference client, and the three routes of `orch-surface-agui`: the **run route**
 > (`POST /agui/agents/{agentId}`, see [Run binding](#run-binding)), the **connect stream**
 > (`GET /agui/threads/{threadId}/connect`, see [Connect binding](#connect-binding)) and the
@@ -20,8 +20,9 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > [`web/README.md`](../../web/README.md#the-chat-layer). **A2UI is relayed by the orchestrator**
 > (2026-09-29): surfaces from agents, actions from users, capability detection, see
 > [A2UI](#a2ui-generative-ui). **The web renders it** (2026-09-29): a validator, a shadcn vocabulary and
-> actions on a user gesture only, see [`web/README.md`](../../web/README.md#a2ui-surfaces). What is built
-> and what is planned, as a diagram: [architecture](../architecture.md#ag-ui-planned-against-built).
+> actions on a user gesture only, see [`web/README.md`](../../web/README.md#a2ui-surfaces). How it is served, as
+> diagrams: [architecture](../architecture.md#ag-ui-how-it-is-served) and
+> [orchestrator: live updates](../orchestrator.md#live-updates).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -109,7 +110,7 @@ gets everything.
 | `user_message{text}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor"}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
 | `user_message` | Run open (a follow-up mid-run) | The user triad inside the current run |
 | `agent_message{messageId, text, final:true}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId}` → `CONTENT` → `END` |
-| `agent_message{final:false}` (cumulative partial) | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: open question 14. |
+| `agent_message{final:false}` (cumulative partial) | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). |
 | `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
 | `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The status activity, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
 | `thread_state{blocked}` | After input or auth required | `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[{id:"int-n", reason:"input_required" \| "auth_required", message:detail, subagentRunId, responseSchema}]}}` |
@@ -140,7 +141,7 @@ gets everything.
   `{result:{status:"canceled"}}` on cancel, `suspended` on an interrupt, `SUBAGENT_ERROR` on an
   error. A suspended invocation reappears under its own `subagentRunId` when the thread
   continues; after an error the next one is new.
-- **Partial agent messages** (open question 14). A text that does not extend what was said
+- **Partial agent messages** (question 14, closed 2026-09-29). A text that does not extend what was said
   closes the open message and starts a new one, `messageId` `<id>~<seq>`. The same final message
   twice is said once.
 - **Why activities, not `CUSTOM`.** Activity messages are part of the message sequence and of
@@ -166,7 +167,7 @@ gets everything.
 | `resume:[{interruptId:"int-n", status:"resolved", payload:{text}}]` on a blocked thread | `Input::UserMessage{text}` (the A2A task continues) |
 | `resume` `cancelled` plus a new user message | `Input::UserMessage` with the new text |
 | `resume` `cancelled`, nothing new | `Input::Cancel` |
-| A new user message on a blocked thread without `resume` | Accepted as the answer (open question 13) |
+| A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
 | `a2uiAction` that is not an action, or names a surface the thread does not have (never had, or deleted), or is sent for a new thread | 422 before the stream; nothing is written or sent |

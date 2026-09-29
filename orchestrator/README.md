@@ -1,15 +1,17 @@
 # Orchestrator
 
-A stateless Rust service that implements the chat API
+A stateless Rust service that speaks AG-UI to people
+([`docs/api/agui.md`](../docs/api/agui.md)), keeps a small resource API beside it
 ([`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml)) and delegates each
 thread to one configured A2A agent. Every thread is an event log in Postgres;
 the process itself keeps nothing, so a restart mid-task loses nothing. Design:
 [`docs/orchestrator.md`](../docs/orchestrator.md); decisions: ADRs 0001, 0004,
 0007, 0008, 0009 in [`docs/decisions/`](../docs/decisions/).
 
-> **Status:** MVP steps 1–2 of issue #9 are implemented: the chat API, the
+> **Status:** MVP steps 1–2 of issue #9 are implemented: the AG-UI surface (run,
+> connect, capabilities; A2UI surfaces and actions), the resource API, the
 > durable dispatcher, the A2A adapter, the Postgres store and the runnable
-> binary and image. The planner, verify/rework, reviewers and the MCP/webhook
+> binary and image. The legacy chat API is deprecated and off by default. The planner, verify/rework, reviewers and the MCP/webhook
 > inputs come in later steps ([`docs/mvp.md`](../docs/mvp.md)).
 
 ## Run it locally
@@ -27,13 +29,26 @@ LOG_FORMAT=text \
   cargo run -p orchestrator
 ```
 
-Migrations are applied at boot. Then, for example:
+Migrations are applied at boot. Then, for example (`AUTH_DEV_USER` above supplies the identity,
+so no header is needed here):
 
 ```sh
 curl -s localhost:8080/api/agents
-curl -s -X POST localhost:8080/api/threads -H 'content-type: application/json' \
-  -d '{"target":{"agentId":"coder"},"text":"say hello"}'
+# a run: the thread id is a UUID you mint; the response streams until the run ends
+ID=$(uuidgen | tr A-F a-f)
+curl -sN -X POST localhost:8080/agui/agents/coder -H 'content-type: application/json' \
+  -H 'accept: text/event-stream' -d '{
+    "threadId": "'$ID'", "runId": "'$(uuidgen | tr A-F a-f)'", "state": {}, "tools": [], "context": [],
+    "messages": [{"id": "'$(uuidgen | tr A-F a-f)'", "role": "user", "content": "say hello"}],
+    "forwardedProps": {}}'
+# the whole thread, replayed and followed; ends when the replay is done and no run is open
+curl -sN -H 'accept: text/event-stream' "localhost:8080/agui/threads/$ID/connect?mode=run"
+curl -s localhost:8080/api/threads/$ID     # the thread's state, from the resource API
 ```
+
+`dev/try-thread.sh` does the same with `jq` ([`dev/README.md`](../dev/README.md)). The legacy
+`POST /api/threads` (and `…/messages`, `…/events`, `…/stream`) is served only with
+`ORCH_SURFACES=agui,chat-api`; without it that path answers 405.
 
 ### Configuration
 
@@ -140,7 +155,7 @@ change of the composition root, never a runtime plugin.
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
 | [`crates/a2a-mapping`](crates/a2a-mapping/README.md) | `orch-a2a-mapping` | Pure: the mapping from A2A 1.0 stream items and tasks to `AgentEnvelope`s and idempotency keys (`StreamMapper`, `snapshot`). No I/O, no async, no HTTP client. |
 | [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
-| [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: chat API + dispatcher + A2A adapter + fake agent over real HTTP, on either store. |
+| [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: AG-UI surface, chat API, dispatcher and A2A adapter against a fake agent over real HTTP, on either store. |
 | [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: flags, environment (clap) and `AGENTS_FILE` parsing (`config.rs`, unit-tested), the role (`ORCH_ROLE`, `adam_host::Role`), and the surfaces to mount and the wiring, startup and graceful shutdown on `adam_host::Host` (`boot.rs`). No logic of its own. |
 
 Every crate has its own README (role, public API, environment, tests); update it
@@ -160,9 +175,10 @@ only `bin/orchestrator` depends on all of them.
 - **`thread_state` events** are appended only when a thread *enters* `blocked`,
   `done`, `failed` or `cancelled`; entering `queued`/`working` is implied by
   `user_message` / `agent_status`.
-- **No inbox table.** The chat API runs the transition inside the request and
-  writes the events and the outbox row in one transaction, so redeliveries
-  cannot happen on this path. The inbox of `docs/orchestrator.md` arrives with
+- **No inbox table.** A surface (the AG-UI run route, or the legacy chat API)
+  runs the transition inside the request and writes the events and the outbox
+  row in one transaction, so redeliveries cannot happen on this path (a retried
+  AG-UI run carries an idempotency key on the event and attaches). The inbox of `docs/orchestrator.md` arrives with
   the webhook/MCP inputs.
 - **Durability.** A delegation is an outbox row claimed under a lease. A worker
   that dies leaves the row to be re-claimed; `sent_at` tells the next worker to
