@@ -310,11 +310,22 @@ export const surfaceLibrary: GenerativeUILibrary = {
   [CHECK_BOX]: entry(CheckBoxInput as (props: never) => ReactNode),
 };
 
+/**
+ * Catches a surface that throws while it draws. `spec` is the surface it guards: a snapshot that
+ * replaces the surface in the same run gives a new spec (`prepared` is memoized on the
+ * operations), and a new spec gets a fresh try instead of the fallback of the one that failed.
+ */
 class Boundary extends Component<
-  { children: ReactNode; fallback: ReactNode },
-  { failed: boolean }
+  { children: ReactNode; fallback: ReactNode; spec: unknown },
+  { failed: boolean; spec: unknown }
 > {
-  override state = { failed: false };
+  override state = { failed: false, spec: this.props.spec };
+  static getDerivedStateFromProps(
+    props: { spec: unknown },
+    state: { failed: boolean; spec: unknown },
+  ) {
+    return props.spec === state.spec ? null : { failed: false, spec: props.spec };
+  }
   static getDerivedStateFromError() {
     return { failed: true };
   }
@@ -359,7 +370,7 @@ export function SurfaceView({
     live && prepared.eventActions > 0 ? hint(host.canSend, isTerminal(host.state)) : null;
   return (
     <ViewCtx.Provider value={view}>
-      <Boundary fallback={fallback}>
+      <Boundary fallback={fallback} spec={prepared.spec}>
         <div className="flex min-w-0 flex-col gap-2">
           {renderGenerativeUI(prepared.spec, surfaceLibrary, { status: "done" })}
         </div>

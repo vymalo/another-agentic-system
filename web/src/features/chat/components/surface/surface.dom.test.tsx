@@ -4,11 +4,13 @@ import {
   cleanup,
   configure,
   fireEvent,
+  render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Prepared, prepareSurface } from "@/features/chat/lib/a2ui/prepare";
 import {
   button,
   column,
@@ -20,7 +22,7 @@ import {
   text,
 } from "@/features/chat/lib/a2ui/testing";
 import { loadGolden } from "@/features/chat/lib/agui/testing";
-import { surfaceLibrary } from "./surface-view";
+import { SurfaceView, surfaceLibrary } from "./surface-view";
 import { mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
 
 configure({ asyncUtilTimeout: 10_000 });
@@ -44,6 +46,33 @@ async function feed(m: Mounted, frames: ReturnType<typeof surfaceRun>) {
 
 const region = () => screen.getByRole("region", { name: /^Interface from / });
 const regions = () => screen.queryAllByRole("region", { name: /^Interface from / });
+
+/** A surface of one Card around one text. */
+const cardSaying = (words: string) =>
+  surface([{ id: "root", component: "Card", child: "t" }, text("t", words)]);
+
+/** Makes the Card throw while it draws until `fix()`; `restore()` undoes the spies. */
+function breakableCard() {
+  const card = surfaceLibrary.Card as unknown as { render: (...args: unknown[]) => unknown };
+  const real = card.render;
+  let broken = true;
+  const spy = vi.spyOn(card, "render").mockImplementation((...args: unknown[]) => {
+    if (broken) throw new Error("boom");
+    return real.apply(card, args);
+  });
+  const quiet = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  return {
+    fix: () => {
+      broken = false;
+    },
+    restore: () => {
+      spy.mockRestore();
+      quiet.mockRestore();
+      error.mockRestore();
+    },
+  };
+}
 
 /** A title, a text field and two buttons: the Go button sends, the Open link is a link. */
 const go = (name = "go", context?: Record<string, unknown>) => [
@@ -218,6 +247,42 @@ describe("what is drawn", () => {
     quiet.mockRestore();
     error.mockRestore();
     m.agent.stop();
+  });
+
+  it("a newer copy in the same run is drawn again after a copy that failed to draw", async () => {
+    const card = breakableCard();
+    const m = mountSurfaces();
+    const frames = surfaceRun([cardSaying("first"), cardSaying("second")]);
+    // up to and including the first snapshot, then the rest of the same run
+    const cut = frames.findIndex((f) => f.event.type === "ACTIVITY_SNAPSHOT") + 1;
+    await feed(m, frames.slice(0, cut));
+    expect(screen.getByText(/the interface failed to draw/)).toBeTruthy();
+    card.fix();
+    await feed(m, frames.slice(cut));
+    await waitFor(() => expect(within(region()).getByText("second")).toBeTruthy());
+    expect(screen.queryByText(/the interface failed to draw/)).toBeNull();
+    expect(regions()).toHaveLength(1);
+    card.restore();
+    m.agent.stop();
+  });
+
+  it("the render guard gives a replaced surface a fresh try, even when the view is kept", () => {
+    const card = breakableCard();
+    const drawn = (words: string) =>
+      prepareSurface(cardSaying(words)) as Extract<Prepared, { kind: "surface" }>;
+    const fallback = <p>the interface failed to draw</p>;
+    const { rerender } = render(<SurfaceView prepared={drawn("first")} live fallback={fallback} />);
+    expect(screen.getByText("the interface failed to draw")).toBeTruthy();
+    card.fix();
+    const second = drawn("second");
+    // the same view instance, a new spec: the guard of the failed one does not stick
+    rerender(<SurfaceView prepared={second} live fallback={fallback} />);
+    expect(screen.getByText("second")).toBeTruthy();
+    expect(screen.queryByText("the interface failed to draw")).toBeNull();
+    // the same spec again is not a new try of anything: it stays drawn
+    rerender(<SurfaceView prepared={second} live fallback={fallback} />);
+    expect(screen.getByText("second")).toBeTruthy();
+    card.restore();
   });
 
   it("a surface that is refused after it was drawn is replaced by the refusal", async () => {

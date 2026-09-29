@@ -217,6 +217,7 @@ stateDiagram-v2
   Drawn --> Superseded: a later run holds a newer copy
   Drawn --> Inert: the thread is not blocked, or is finished
   Inert --> Drawn: the thread blocks again
+  Refused --> Received: the next snapshot in the same run
   Refused --> [*]
   Deleted --> [*]
   Superseded --> [*]
@@ -320,7 +321,8 @@ usable on a finished thread.
   finished thread.
 - Only the **newest copy** of a surface is live: an update in a later run leaves the earlier message with
   "This interface was updated further down.", and its buttons are gone.
-- A surface that fails while it draws is caught by an error boundary and shows the refusal line.
+- A surface that fails while it draws is caught by an error boundary and shows the refusal line. The
+  boundary guards one spec: a snapshot that replaces the surface in the same run gets a fresh try.
 
 A refusal is one line in the `vymalo.error` style: "Interface not shown: <reason>", the rule
 (`data-rule`), and the raw operations (first 4000 characters) in a disclosure, as text.
