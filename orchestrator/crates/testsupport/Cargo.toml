@@ -1,0 +1,28 @@
+[package]
+name = "orch-testsupport"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+description = "Test-only helpers: an in-process fake A2A agent (a2a-server-lf), a test instance of the orchestrator over real HTTP, and small HTTP/SSE clients."
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+orch-app.workspace = true
+orch-api.workspace = true
+a2a-lf.workspace = true
+a2a-server-lf.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+bytes = "1"
+
+[lints]
+workspace = true

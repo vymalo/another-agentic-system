@@ -1,0 +1,99 @@
+name: Orchestrator
+
+# check: fmt, clippy and the tests of the orchestrator workspace, with a Postgres service so
+#        the store, end-to-end and binary tests all run against a real database.
+# image: builds the container image (pull requests: build only, to validate the Dockerfile;
+#        main: build and push to ghcr.io).
+#
+# Path filters mean this check must not be made "required" for unrelated PRs.
+
+on:
+  pull_request:
+    paths:
+      - "orchestrator/**"
+      - "docs/api/chat-api.yaml"
+      - ".github/workflows/orchestrator.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orchestrator/**"
+      - "docs/api/chat-api.yaml"
+      - ".github/workflows/orchestrator.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orchestrator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orch_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ORCH_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch_test
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  image:
+    needs: check
+    runs-on: ubuntu-latest
+    # The only job that may write packages; it gets the token only through docker/login-action.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/vymalo/another-agentic-system/orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build (and push on main)
+        uses: docker/build-push-action@v7
+        with:
+          context: orchestrator
+          file: orchestrator/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=orchestrator
+          cache-to: type=gha,mode=max,scope=orchestrator
