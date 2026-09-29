@@ -1773,6 +1773,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-agui-proto"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "orch-agui-proto",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+]
+
+[[package]]
 name = "orch-api"
 version = "0.1.0"
 dependencies = [

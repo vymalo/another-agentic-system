@@ -1,0 +1,29 @@
+[package]
+name = "orch-agui-proto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "AG-UI 1.0 wire types as closed serde enums, checked against the vendored official JSON Schema. No orchestrator dependencies."
+readme = "README.md"
+
+[features]
+default = []
+# `testkit`: assert_conforms / assert_input_conforms against the vendored 1.0 schema.
+# Enable as a dev-dependency feature in crates that emit AG-UI events.
+testkit = ["dep:jsonschema"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+jsonschema = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+sha2 = "0.10"
+orch-agui-proto = { path = ".", features = ["testkit"] }
+
+[lints]
+workspace = true

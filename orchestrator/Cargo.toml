@@ -24,6 +24,7 @@ orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-testsupport = { path = "crates/testsupport" }
+orch-agui-proto = { path = "crates/agui-proto" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2.0.21"
