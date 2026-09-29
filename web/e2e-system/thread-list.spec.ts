@@ -1,17 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { resetDb, THREAD_URL, threadList, threadRows } from "./helpers";
+import { createThread, resetDb, THREAD_URL, threadList, threadRows } from "./helpers";
 
 test.beforeEach(resetDb);
 
 test("newest first, Load older pages, selecting navigates", async ({ page }) => {
   test.setTimeout(120_000);
   const total = 51;
-  for (let i = 0; i < total; i++) {
-    const res = await page.request.post("/api/threads", {
-      data: { target: { agentId: "plain" }, text: `echo n${i}` },
-    });
-    expect(res.status()).toBe(201);
-  }
+  for (let i = 0; i < total; i++) await createThread(page.request, "plain", `echo n${i}`);
   // let them all finish, so nothing is in flight when the next test truncates the database
   await expect
     .poll(

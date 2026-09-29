@@ -41,7 +41,7 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 | The AG-UI run route (`orch-surface-agui`): `POST /agui/agents/{agentId}` | Built |
 | The AG-UI connect stream and capabilities (`GET /agui/threads/{id}/connect`, `GET /agui/agents/{agentId}/capabilities`) | Built |
 | The AG-UI operations in `chat-api.yaml` (the vendored schema by reference); the four legacy operations `deprecated: true` and answering with `Deprecation` (RFC 9745) | Built |
-| The web on `@assistant-ui/react-ag-ui` | Planned |
+| The web on `@assistant-ui/react-ag-ui` (`ThreadAgent` over the connect stream, live runs, interrupts by `resume`, patched `cancelled` outcome; the REST interaction path removed) | Built |
 | A2UI generative UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Planned |
 
 ## Out of scope for the MVP

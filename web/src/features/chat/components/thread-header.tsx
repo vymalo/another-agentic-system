@@ -1,10 +1,12 @@
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { ThreadView } from "@/features/chat/hooks/use-thread";
+import type { Connection } from "@/features/chat/lib/agui/thread-agent";
+import type { ApiThread, ThreadState } from "@/lib/api/types";
 import { StateBadge } from "./state-badge";
 
-export function ThreadHeader({ view }: { view: ThreadView }) {
-  const { thread, state, connection } = view;
+type Props = { thread: ApiThread | null; state: ThreadState | undefined; connection: Connection };
+
+export function ThreadHeader({ thread, state, connection }: Props) {
   const target = thread
     ? [thread.target.agentId, thread.target.release].filter(Boolean).join(" · ")
     : null;

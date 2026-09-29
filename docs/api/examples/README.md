@@ -20,8 +20,9 @@ message's `messageId` is `<message-id>`.
   runs each script through the real chat API, dispatcher and A2A adapter, and fails when a file
   differs. After an intended change, regenerate and review the diff:
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden`.
-- **Consumers:** `web/src/features/chat/lib/golden.test.ts` maps every file with the chat surface's reducer
-  and converters, and `web/mock/golden.test.ts` requires the mock server to tell the same story.
+- **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
+  and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the
+  same story. (The web renders the AG-UI goldens, not these event logs: see the next section.)
 
 ## AG-UI streams
 
@@ -38,7 +39,10 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
   diff.
 - **Consumers:** the same test checks every event against the vendored AG-UI schema and every
   stream against the well-formedness rules; `tools/agui-conformance` feeds the frames, as SSE, through
-  the reference client (`@ag-ui/client` 1.0.0) in CI.
+  the reference client (`@ag-ui/client` 1.0.0) in CI; `web/mock/golden.test.ts` requires the mock
+  server to produce them, and `web/src/features/chat/lib/agui/runtime-goldens.dom.test.tsx` runs them
+  (and the `connect-*` ones) through the runtime the chat surface uses, `@assistant-ui/react-ag-ui`
+  with `web/patches` applied, and checks the transcript.
 
 ### Run responses
 

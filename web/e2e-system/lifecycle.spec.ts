@@ -3,10 +3,11 @@ import {
   actorLabel,
   agentMessage,
   badge,
-  eventsOf,
-  FIVE,
+  ECHO,
+  framesOf,
   PR_URL,
   resetDb,
+  seqs,
   shape,
   startThread,
   threadId,
@@ -28,9 +29,10 @@ test("echo: user message, Working, PR card, Completed, Done", async ({ page }) =
   await expect(log.getByText("echo: echo hello")).toHaveCount(1);
   await expect(page.getByLabel("Message")).toBeDisabled();
 
-  const events = await eventsOf(page.request, threadId(page));
-  expect(shape(events)).toEqual(FIVE);
-  expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+  // the log behind it: five events, once each (the resume points of the connect stream)
+  const frames = await framesOf(page.request, threadId(page));
+  expect(shape(frames)).toEqual(ECHO);
+  expect(seqs(frames)).toEqual([1, 2, 3, 4, 5]);
 });
 
 test("agent text renders once, with the actor", async ({ page }) => {

@@ -6,6 +6,14 @@ import addFormats from "ajv-formats";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import type { components } from "../src/lib/api/schema";
+import {
+  connect,
+  type Frame,
+  frames,
+  isTerminal,
+  postRun,
+  RELEASE_CHANNELS_URI,
+} from "./agui-client";
 import { createMockServer } from "./server";
 
 /**
@@ -14,7 +22,6 @@ import { createMockServer } from "./server";
  */
 
 type Thread = components["schemas"]["Thread"];
-type Event = components["schemas"]["Event"];
 
 const contract = parse(
   readFileSync(path.resolve(import.meta.dirname, "../../docs/api/chat-api.yaml"), "utf8"),
@@ -28,10 +35,26 @@ const interop = <T>(m: T): T => (m as unknown as { default?: T }).default ?? m;
 const ajv = new (interop(Ajv2020))({ strict: false, allErrors: true });
 interop(addFormats)(ajv);
 ajv.addFormat("int64", true);
-ajv.addSchema({ $id: "chat", components: contract.components });
+// The AG-UI schemas of the contract are references to the vendored JSON Schema, by file.
+const AGUI_SCHEMA_REF = "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json";
+const aguiSchema = JSON.parse(
+  readFileSync(
+    path.resolve(
+      import.meta.dirname,
+      "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json",
+    ),
+    "utf8",
+  ),
+) as { $id: string };
+ajv.addSchema(aguiSchema);
 
 const rewriteRefs = (schema: unknown) =>
-  JSON.parse(JSON.stringify(schema).replaceAll('"#/components', '"chat#/components'));
+  JSON.parse(
+    JSON.stringify(schema)
+      .replaceAll('"#/components', '"chat#/components')
+      .replaceAll(`"${AGUI_SCHEMA_REF}#`, `"${aguiSchema.$id}#`),
+  );
+ajv.addSchema({ $id: "chat", components: rewriteRefs(contract.components) });
 
 function resolveRef<T>(node: unknown): T {
   const ref = (node as { $ref?: string }).$ref;
@@ -84,11 +107,35 @@ const post = (p: string, body?: unknown) =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
-async function create(text: string, target: Thread["target"] = { agentId: "coder" }) {
-  const res = await post("/api/threads", { target, text });
-  const body = (await expectDocumented("/api/threads", "post", res)) as Thread;
-  expect(res.status).toBe(201);
-  return body;
+let counter = 0;
+const newId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;
+
+/** A run's frames, each validated against the vendored AG-UI schema (`AgUiEvent` of the contract). */
+async function validated(list: Frame[], label: string): Promise<Frame[]> {
+  for (const f of list) validateAgainst({ $ref: "#/components/schemas/AgUiEvent" }, f.event, label);
+  return list;
+}
+
+async function startThread(
+  text: string,
+  agent = "coder",
+  extra: { forwardedProps?: Record<string, unknown> } = {},
+) {
+  // A run that waits (slow) never ends its response: read up to RUN_STARTED.
+  const untilStarted = text.startsWith("slow");
+  const threadId = newId();
+  const res = await postRun(base, agent, {
+    threadId,
+    runId: "run-1",
+    messages: [{ id: "m-1", role: "user", content: text }],
+    ...extra,
+  });
+  expect(res.status).toBe(200);
+  const body = await validated(
+    await frames(res, untilStarted ? (f) => f.event.type === "RUN_STARTED" : undefined),
+    "run frames",
+  );
+  return { threadId, body };
 }
 
 async function waitForState(id: string, states: Thread["state"][]): Promise<Thread> {
@@ -101,49 +148,7 @@ async function waitForState(id: string, states: Thread["state"][]): Promise<Thre
   throw new Error(`thread ${id} never reached ${states.join("|")}`);
 }
 
-const getEvents = async (id: string, query = "") => {
-  const res = await fetch(`${base}/api/threads/${id}/events${query}`);
-  return (await expectDocumented("/api/threads/{threadId}/events", "get", res)) as Event[];
-};
-
-/** Read the SSE stream until `count` data frames arrived, validating framing and payloads. */
-async function readStream(id: string, count: number, lastEventId?: number) {
-  const ac = new AbortController();
-  const res = await fetch(`${base}/api/threads/${id}/stream`, {
-    signal: ac.signal,
-    headers: lastEventId === undefined ? {} : { "Last-Event-ID": String(lastEventId) },
-  });
-  await expectDocumented("/api/threads/{threadId}/stream", "get", res);
-  expect(res.headers.get("content-type")).toContain("text/event-stream");
-  const frames: { id: string; event: string; data: Event }[] = [];
-  const decoder = new TextDecoder();
-  let buf = "";
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error("no body");
-  while (frames.length < count) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let i = buf.indexOf("\n\n");
-    while (i >= 0) {
-      const raw = buf.slice(0, i);
-      buf = buf.slice(i + 2);
-      i = buf.indexOf("\n\n");
-      const fields = Object.fromEntries(
-        raw
-          .split("\n")
-          .filter((l) => l && !l.startsWith(":") && l.includes(":"))
-          .map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]),
-      );
-      if (!fields.data) continue; // retry: / keepalive
-      const data = JSON.parse(fields.data) as Event;
-      validateAgainst({ $ref: "#/components/schemas/Event" }, data, "SSE data frame");
-      frames.push({ id: fields.id ?? "", event: fields.event ?? "", data });
-    }
-  }
-  ac.abort();
-  return frames;
-}
+const types = (list: Frame[]) => list.map((f) => f.event.type);
 
 describe("mock server honours docs/api/chat-api.yaml", () => {
   it("lists agents; only coder advertises releases", async () => {
@@ -157,170 +162,225 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(agents.find((a) => a.id === "reviewer")?.releases).toBeUndefined();
   });
 
-  it("happy path: 201, ordered events, SSE ids/kinds, Last-Event-ID replay", async () => {
-    const t = await create("Implement the thing");
-    expect(t).toMatchObject({ state: "queued", lastSeq: 1, target: { agentId: "coder" } });
-    const done = await waitForState(t.id, ["done"]);
-    const evts = await getEvents(t.id);
-    expect(evts.map((e) => e.seq)).toEqual(evts.map((_, i) => i + 1));
-    expect(done.lastSeq).toBe(evts.length);
-    // the orchestrator's five events of a plain successful run (golden: docs/api/examples)
-    expect(evts.map((e) => e.kind)).toEqual([
-      "user_message",
-      "agent_status",
-      "artifact",
-      "agent_status",
-      "thread_state",
-    ]);
-    expect(evts[2]?.data).toMatchObject({ name: "result", text: "echo: Implement the thing" });
-    expect(evts[1]?.actor).toEqual({ type: "agent", name: "coder", revision: "coder-r47" });
-
-    const all = await readStream(t.id, evts.length);
-    expect(all.map((f) => Number(f.id))).toEqual(evts.map((e) => e.seq));
-    expect(all.every((f) => f.event === f.data.kind && Number(f.id) === f.data.seq)).toBe(true);
-
-    const replay = await readStream(t.id, evts.length - 3, 3);
-    expect(replay.map((f) => f.data.seq)).toEqual(evts.slice(3).map((e) => e.seq));
-    expect(await getEvents(t.id, "?after=5")).toHaveLength(evts.length - 5);
+  it("run route: RUN_STARTED first, the run to its terminal event, then EOF; frames conform", async () => {
+    const { threadId, body } = await startThread("Implement the thing");
+    expect(body[0]?.event).toMatchObject({ type: "RUN_STARTED", threadId, runId: "run-1" });
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    // the requester holds its own message: the user's text is not sent back
+    expect(types(body)).not.toContain("TEXT_MESSAGE_START");
+    const t = await waitForState(threadId, ["done"]);
+    expect(t).toMatchObject({
+      lastSeq: 5,
+      target: { agentId: "coder" },
+      title: "Implement the thing",
+    });
   });
 
-  it("streams live events after the replay", async () => {
-    const t = await create("Another one");
-    const frames = await readStream(t.id, 5);
-    expect(frames.map((f) => f.data.seq)).toEqual([1, 2, 3, 4, 5]);
+  it("connect route: replay, ids on the last frame of each log event, Last-Event-ID resumes", async () => {
+    const { threadId } = await startThread("Another one");
+    await waitForState(threadId, ["done"]);
+    const all = await validated(
+      await frames(await connect(base, threadId, { mode: "run" })),
+      "connect",
+    );
+    const ids = all.flatMap((f) => (f.id === undefined ? [] : [f.id]));
+    expect(ids).toEqual([1, 2, 3, 4, 5]);
+    expect(types(all)[0]).toBe("RUN_STARTED");
+    const resumed = await frames(await connect(base, threadId, { mode: "run", lastEventId: 3 }));
+    expect(types(resumed).slice(0, 3)).toEqual([
+      "RUN_STARTED",
+      "SUBAGENT_STARTED",
+      "STATE_SNAPSHOT",
+    ]);
+    expect(
+      resumed
+        .slice(3)
+        .map((f) => f.id)
+        .filter((v) => v !== undefined),
+    ).toEqual([4, 5]);
+    // a cursor at the end of a finished thread: nothing to send, the stream just ends
+    expect(await frames(await connect(base, threadId, { mode: "run", lastEventId: 5 }))).toEqual(
+      [],
+    );
+  });
+
+  it("connect route stays open for the next run and streams it live", async () => {
+    const { threadId } = await startThread("ask which branch");
+    await waitForState(threadId, ["blocked"]);
+    const ac = new AbortController();
+    const live = frames(await connect(base, threadId, { lastEventId: 4, signal: ac.signal }), (f) =>
+      isTerminal(f),
+    );
+    const answer = await postRun(base, "coder", {
+      threadId,
+      runId: "run-2",
+      messages: [],
+      resume: [{ interruptId: "int-3", status: "resolved", payload: { text: "main" } }],
+    });
+    expect(answer.status).toBe(200);
+    const list = await validated(await live, "live");
+    ac.abort();
+    expect(types(list)[0]).toBe("RUN_STARTED");
+    expect(list[0]?.event.runId).toBe("run-2");
+    expect(list.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
   });
 
   it("uses the selected release for the actor revision", async () => {
-    const t = await create("Use staging", { agentId: "coder", release: "staging" });
+    const { threadId, body } = await startThread("Use staging", "coder", {
+      forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "staging" } },
+    });
+    const t = await waitForState(threadId, ["done"]);
     expect(t.target.release).toBe("staging");
-    const evts = await getEvents(t.id);
-    await waitForState(t.id, ["done"]);
-    expect((await getEvents(t.id)).some((e) => e.actor.revision === "coder-r51")).toBe(true);
-    expect(evts[0]?.kind).toBe("user_message");
+    expect(JSON.stringify(body)).toContain('"revision":"coder-r51"');
   });
 
-  it("rejects bad thread creation with problem+json 400", async () => {
-    for (const body of [
-      { target: { agentId: "nope" }, text: "hi" },
-      { target: { agentId: "reviewer", release: "staging" }, text: "hi" },
-      { target: { agentId: "coder", release: "nope" }, text: "hi" },
-      { target: { agentId: "coder" }, text: "" },
-    ]) {
-      const res = await post("/api/threads", body);
-      expect(res.status).toBe(400);
-      await expectDocumented("/api/threads", "post", res);
+  it("rejects bad runs with a documented problem", async () => {
+    const good = {
+      threadId: newId(),
+      runId: "r",
+      messages: [{ id: "m", role: "user" as const, content: "hi" }],
+    };
+    const cases: [number, string, Parameters<typeof postRun>[2]][] = [
+      [400, "coder", { ...good, threadId: "not-a-uuid" }],
+      [404, "nope", good],
+      [
+        400,
+        "reviewer",
+        { ...good, forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "staging" } } },
+      ],
+      [400, "coder", { ...good, forwardedProps: { [RELEASE_CHANNELS_URI]: { release: "nope" } } }],
+      [422, "coder", { ...good, messages: [] }],
+    ];
+    for (const [status, agent, input] of cases) {
+      const res = await postRun(base, agent, input);
+      expect(res.status, JSON.stringify(input)).toBe(status);
+      await expectDocumented("/agui/agents/{agentId}", "post", res);
     }
   });
 
+  it("answers 409 for a run already open, a finished thread and another agent", async () => {
+    const slow = await startThread("slow task", "reviewer");
+    await waitForState(slow.threadId, ["working"]);
+    const open = await postRun(base, "reviewer", {
+      threadId: slow.threadId,
+      runId: "run-2",
+      messages: [{ id: "m-2", role: "user", content: "again" }],
+    });
+    expect(open.status).toBe(409);
+    await expectDocumented("/agui/agents/{agentId}", "post", open);
+    const other = await postRun(base, "coder", {
+      threadId: slow.threadId,
+      runId: "run-3",
+      messages: [{ id: "m-3", role: "user", content: "again" }],
+    });
+    expect(other.status).toBe(409);
+    await post(`/api/threads/${slow.threadId}/cancel`);
+    await waitForState(slow.threadId, ["cancelled"]);
+    const late = await postRun(base, "reviewer", {
+      threadId: slow.threadId,
+      runId: "run-4",
+      messages: [{ id: "m-4", role: "user", content: "more" }],
+    });
+    expect(late.status).toBe(409);
+    await expectDocumented("/agui/agents/{agentId}", "post", late);
+  });
+
   it("answers 404 problems for unknown threads", async () => {
-    const id = "00000000-0000-4000-8000-000000000000";
+    const id = "00000000-0000-4000-8000-00000000ffff";
     const cases: [string, string, string][] = [
       ["/api/threads/{threadId}", "get", `/api/threads/${id}`],
-      ["/api/threads/{threadId}/events", "get", `/api/threads/${id}/events`],
-      ["/api/threads/{threadId}/stream", "get", `/api/threads/${id}/stream`],
+      ["/agui/threads/{threadId}/connect", "get", `/agui/threads/${id}/connect`],
     ];
     for (const [tpl, method, p] of cases) {
       const res = await fetch(base + p);
       expect(res.status).toBe(404);
       await expectDocumented(tpl, method, res);
     }
-    for (const [tpl, p] of [
-      ["/api/threads/{threadId}/messages", `/api/threads/${id}/messages`],
-      ["/api/threads/{threadId}/cancel", `/api/threads/${id}/cancel`],
-    ] as const) {
-      const res = await post(p, { text: "x" });
-      expect(res.status).toBe(404);
-      await expectDocumented(tpl, "post", res);
+    const res = await post(`/api/threads/${id}/cancel`);
+    expect(res.status).toBe(404);
+    await expectDocumented("/api/threads/{threadId}/cancel", "post", res);
+  });
+
+  it("connect route rejects a bad cursor and a bad mode with 400", async () => {
+    const { threadId } = await startThread("echo");
+    for (const res of [
+      await fetch(`${base}/agui/threads/${threadId}/connect`, {
+        headers: { "Last-Event-ID": "x" },
+      }),
+      await fetch(`${base}/agui/threads/${threadId}/connect?mode=forever`),
+    ]) {
+      expect(res.status).toBe(400);
+      await expectDocumented("/agui/threads/{threadId}/connect", "get", res);
     }
   });
 
-  it("blocked thread: an answer resumes it; a finished thread answers 409", async () => {
-    const t = await create("ask which branch");
-    const blocked = await waitForState(t.id, ["blocked"]);
-    const evts = await getEvents(t.id);
-    expect(evts.at(-1)).toMatchObject({ kind: "thread_state", data: { state: "blocked" } });
-    expect(evts.find((e) => e.data.status === "input_required")?.data.detail).toBe("Which branch?");
-    expect(blocked.lastSeq).toBe(evts.length);
-
-    const res = await post(`/api/threads/${t.id}/messages`, { text: "main" });
-    expect(res.status).toBe(202);
-    const echoed = (await expectDocumented(
-      "/api/threads/{threadId}/messages",
-      "post",
-      res,
-    )) as Event;
-    expect(echoed).toMatchObject({
-      kind: "user_message",
-      data: { text: "main" },
-      actor: { type: "user" },
-    });
-    await waitForState(t.id, ["done"]);
-    expect((await getEvents(t.id)).find((e) => e.kind === "artifact")?.data.text).toBe(
-      "answered: main",
-    );
-
-    const late = await post(`/api/threads/${t.id}/messages`, { text: "more" });
-    expect(late.status).toBe(409);
-    await expectDocumented("/api/threads/{threadId}/messages", "post", late);
+  it("capabilities: an AgentCapabilities, with the release channels only for coder", async () => {
+    for (const [agent, releases] of [
+      ["coder", true],
+      ["reviewer", false],
+    ] as const) {
+      const res = await fetch(`${base}/agui/agents/${agent}/capabilities`);
+      const doc = (await expectDocumented("/agui/agents/{agentId}/capabilities", "get", res)) as {
+        custom?: Record<string, unknown>;
+      };
+      expect(doc.custom !== undefined).toBe(releases);
+    }
+    const missing = await fetch(`${base}/agui/agents/nope/capabilities`);
+    expect(missing.status).toBe(404);
+    await expectDocumented("/agui/agents/{agentId}/capabilities", "get", missing);
   });
 
-  it("cancel: 202, then agent_status canceled and thread_state cancelled", async () => {
-    const t = await create("slow task");
-    await waitForState(t.id, ["working"]);
-    const res = await post(`/api/threads/${t.id}/cancel`);
+  it("cancel: 202, then the cancelled outcome on the stream", async () => {
+    const { threadId } = await startThread("slow task", "reviewer");
+    await waitForState(threadId, ["working"]);
+    const res = await post(`/api/threads/${threadId}/cancel`);
     expect(res.status).toBe(202);
     await expectDocumented("/api/threads/{threadId}/cancel", "post", res);
-    await waitForState(t.id, ["cancelled"]);
-    const evts = await getEvents(t.id);
-    expect(evts.map((e) => e.kind).slice(-2)).toEqual(["agent_status", "thread_state"]);
-    expect(evts.at(-2)?.data.status).toBe("canceled");
+    await waitForState(threadId, ["cancelled"]);
+    const list = await frames(await connect(base, threadId, { mode: "run" }));
+    expect(list.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "cancelled" },
+    });
   });
 
-  it("agent failure: failed status with the agent's detail and no error event", async () => {
-    const t = await create("fail please");
-    await waitForState(t.id, ["failed"]);
-    const evts = await getEvents(t.id);
-    expect(evts.map((e) => e.kind)).toEqual([
-      "user_message",
-      "agent_status",
-      "agent_status",
-      "thread_state",
-    ]);
-    expect(evts[2]?.data).toEqual({ status: "failed", detail: "scripted failure" });
-    expect(evts.some((e) => e.kind === "error")).toBe(false);
+  it("agent failure: a failed status with the agent's detail, RUN_ERROR agent_failed, no error activity", async () => {
+    const { threadId, body } = await startThread("fail please", "reviewer");
+    await waitForState(threadId, ["failed"]);
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_ERROR",
+      code: "agent_failed",
+      message: "scripted failure",
+    });
+    expect(JSON.stringify(body)).not.toContain("vymalo.error");
   });
 
-  it("talk: a status with text, one final agent message, the result", async () => {
-    const t = await create("talk to me");
-    await waitForState(t.id, ["done"]);
-    const evts = await getEvents(t.id);
-    expect(evts.map((e) => e.kind)).toEqual([
-      "user_message",
-      "agent_status",
-      "agent_status",
-      "agent_message",
-      "artifact",
-      "agent_status",
-      "thread_state",
-    ]);
-    expect(evts[2]?.data.detail).toBe("Reading the repository");
-    expect(evts[3]?.data).toMatchObject({ final: true, text: "Plan: add a test" });
+  it("partial (mock only): one message, said once", async () => {
+    const { threadId } = await startThread("partial please");
+    await waitForState(threadId, ["done"]);
+    const list = await frames(await connect(base, threadId, { mode: "run" }));
+    const say = list.filter(
+      (f) => f.event.type === "TEXT_MESSAGE_CONTENT" && !f.event.subagentRunId === false,
+    );
+    expect(say.map((f) => f.event.delta).join("")).toContain(
+      "I'll start with the failing test, then make",
+    );
+    expect(
+      list.filter((f) => f.event.type === "TEXT_MESSAGE_END" && f.event.subagentRunId),
+    ).toHaveLength(1);
   });
 
-  it("partial (mock only): a partial agent message is followed by its final version", async () => {
-    const t = await create("partial please");
-    await waitForState(t.id, ["done"]);
-    const messages = (await getEvents(t.id)).filter((e) => e.kind === "agent_message");
-    expect(messages.map((e) => e.data.final)).toEqual([false, true]);
-    expect(messages[0]?.data.messageId).toBe(messages[1]?.data.messageId);
-  });
-
-  it("unreachable (mock only): a system error event, then blocked", async () => {
-    const t = await create("unreachable agent");
-    await waitForState(t.id, ["blocked"]);
-    const evts = await getEvents(t.id);
-    expect(evts.map((e) => e.kind)).toEqual(["user_message", "error", "thread_state"]);
-    expect(evts[1]).toMatchObject({ actor: { type: "system" }, data: { retryable: true } });
+  it("unreachable (mock only): an error activity, then RUN_ERROR delivery_failed and blocked", async () => {
+    const { threadId, body } = await startThread("unreachable agent");
+    await waitForState(threadId, ["blocked"]);
+    expect(body.at(-1)?.event).toMatchObject({ type: "RUN_ERROR", code: "delivery_failed" });
+    expect(JSON.stringify(body)).toContain('"activityType":"vymalo.error"');
   });
 
   it("lists threads newest first, with limit and before", async () => {

@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { badge, errorLine, startThread } from "./helpers";
+import { badge, conversation, errorLine, startThread } from "./helpers";
 
 const problem = (status: number, title: string, detail: string) => ({
   status,
@@ -34,7 +34,7 @@ test("a failed agent list shows the problem and Retry loads it", async ({ page }
 });
 
 test("a rejected new thread shows the problem and keeps the text", async ({ page }) => {
-  await failNext(page, "**/api/threads", "POST", 400, "text must be 1 to 100000 characters");
+  await failNext(page, "**/agui/agents/*", "POST", 400, "text must be 1 to 100000 characters");
   await page.goto("/");
   await expect(page.getByLabel("Agent")).toBeVisible();
   await page.getByLabel("Message").fill("keep me");
@@ -49,7 +49,7 @@ test("a failing follow-up shows the problem and keeps the text", async ({ page }
   await startThread(page, "ask pick a branch");
   await expect(badge(page)).toHaveText("Waiting for you");
 
-  await failNext(page, "**/api/threads/*/messages", "POST", 500, "the store is unavailable");
+  await failNext(page, "**/agui/agents/*", "POST", 503, "the store is unavailable");
   await page.getByLabel("Message").fill("main");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(errorLine(page)).toContainText("the store is unavailable");
@@ -57,16 +57,25 @@ test("a failing follow-up shows the problem and keeps the text", async ({ page }
   await expect(badge(page)).toHaveText("Waiting for you");
 });
 
-test("a follow-up refused with 409 tells the user the thread is finished", async ({ page }) => {
+test("an answer the orchestrator refuses with 409 shows its reason and keeps the text", async ({
+  page,
+}) => {
   await startThread(page, "ask pick a branch");
   await expect(badge(page)).toHaveText("Waiting for you");
 
-  await failNext(page, "**/api/threads/*/messages", "POST", 409, "Start a new thread to continue.");
+  await failNext(
+    page,
+    "**/agui/agents/*",
+    "POST",
+    409,
+    "the thread is finished (Done); start a new thread",
+  );
   await page.getByLabel("Message").fill("late answer");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(errorLine(page)).toContainText(
-    "This thread is finished. Start a new thread to continue.",
-  );
+  await expect(errorLine(page)).toContainText("the thread is finished (Done); start a new thread");
+  await expect(page.getByLabel("Message")).toHaveValue("late answer");
+  // the refused answer is not left in the transcript
+  await expect(conversation(page).getByText("late answer", { exact: true })).toHaveCount(0);
 });
 
 test("an unknown thread shows the not-found message", async ({ page }) => {

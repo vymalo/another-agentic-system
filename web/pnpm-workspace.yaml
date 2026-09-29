@@ -1,3 +1,7 @@
 onlyBuiltDependencies:
   - esbuild
   - sharp
+overrides:
+  "@ag-ui/client": 1.0.0
+patchedDependencies:
+  '@assistant-ui/react-ag-ui@0.0.62': patches/@assistant-ui__react-ag-ui@0.0.62.patch

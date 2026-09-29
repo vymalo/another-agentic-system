@@ -1,105 +1,110 @@
-import {
-  type AppendMessage,
-  type AssistantRuntime,
-  useExternalStoreRuntime,
-} from "@assistant-ui/react";
+import { type AgUiAssistantRuntime, useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef } from "react";
-import { visibleEvents } from "@/features/chat/lib/event-log";
-import { type ChatItem, convertMessage, toItems } from "@/features/chat/lib/to-items";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { dropFailedSend } from "@/features/chat/lib/agui/failed-send";
+import {
+  type SendError,
+  type Target,
+  ThreadAgent,
+  type ThreadSnapshot,
+} from "@/features/chat/lib/agui/thread-agent";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
-import { api, problemMessage } from "@/lib/api/client";
-import { isActive, isTerminal } from "@/lib/api/types";
-import type { ThreadView } from "./use-thread";
+import { isTerminal } from "@/lib/api/types";
+import { uuidv7 } from "@/lib/uuid";
 
 export type Selection = { agentId: string | null; release: string | null };
 
 type Args = {
+  /** null on the new-thread page: the agent mints the id of the thread its first send creates. */
   threadId: string | null;
-  view: ThreadView;
+  /** Where a send goes: the open thread's agent, or the new-thread page's selection. */
+  target: Selection;
   threads: ThreadsView;
-  selection: Selection;
-  onSendError: (message: string | null) => void;
+  /** `lastSeq` of `GET /api/threads/{id}`: how far the conversation is; null until fetched. */
+  threadLastSeq: number | null;
+  notFound: boolean;
+  onSendFailed: (message: string, status: number | undefined) => void;
+  onSending: () => void;
 };
 
-const textOf = (message: AppendMessage) =>
-  message.content
-    .flatMap((p) => (p.type === "text" ? [p.text] : []))
-    .join("\n")
-    .trim();
+export type ChatRuntime = {
+  runtime: AgUiAssistantRuntime;
+  agent: ThreadAgent;
+  snapshot: ThreadSnapshot;
+  /** The conversation is caught up with the server (sticky: a later event does not unload it). */
+  loaded: boolean;
+};
+
+const newThreadId = (): string => uuidv7();
 
 /**
- * assistant-ui external-store runtime over the event log.
+ * `@assistant-ui/react-ag-ui` over one `ThreadAgent` (ADR 0006, ADR 0012).
  *
- * Messages are events (never optimistic guesses): a sent message shows up when the server
- * returns it (202 body or the SSE echo). Running state is the server's thread state.
+ * The conversation is AG-UI: the agent follows `GET /agui/threads/{id}/connect`, a send is
+ * `POST /agui/agents/{agentId}`. What the pages read besides (thread list, thread details) is the
+ * REST resource API. `LiveRuns` (mounted inside the provider) feeds the runs the user did not start.
  */
 export function useChatRuntime({
   threadId,
-  view,
+  target,
   threads,
-  selection,
-  onSendError,
-}: Args): AssistantRuntime {
+  threadLastSeq,
+  notFound,
+  onSendFailed,
+  onSending,
+}: Args): ChatRuntime {
   const router = useRouter();
-  const runtimeRef = useRef<AssistantRuntime | null>(null);
+  const targetRef = useRef<Target>(target);
+  targetRef.current = target;
+  const onSendFailedRef = useRef(onSendFailed);
+  onSendFailedRef.current = onSendFailed;
+  const onSendingRef = useRef(onSending);
+  onSendingRef.current = onSending;
+  const runtimeRef = useRef<AgUiAssistantRuntime | null>(null);
 
-  const items = useMemo(() => toItems(visibleEvents(view.log)), [view.log]);
-  const { state, addEvents, loaded } = view;
+  const agent = useMemo(
+    () =>
+      new ThreadAgent({
+        threadId: threadId ?? newThreadId(),
+        target: () => targetRef.current,
+        onSending: () => onSendingRef.current(),
+        // The first send of the new-thread page creates the thread: go to it.
+        onAccepted: ({ threadId: id }) => {
+          if (threadId === null) router.push(`/threads/${id}`);
+        },
+      }),
+    [threadId, router],
+  );
 
-  const runtime = useExternalStoreRuntime<ChatItem>({
-    messages: items,
-    convertMessage,
-    isRunning: isActive(state),
-    isDisabled: threadId !== null && isTerminal(state),
-    isSendDisabled: threadId === null && !selection.agentId,
-    isLoading: !loaded,
-    onNew: async (message) => {
-      const text = textOf(message);
-      if (!text) return;
-      onSendError(null);
-      const restore = (reason: string) => {
-        onSendError(reason);
-        runtimeRef.current?.thread.composer.setText(text);
-      };
-      try {
-        if (threadId === null) {
-          if (!selection.agentId) return restore("Choose an agent first.");
-          const { data, error } = await api.POST("/api/threads", {
-            body: {
-              target: {
-                agentId: selection.agentId,
-                ...(selection.release ? { release: selection.release } : {}),
-              },
-              text,
-            },
-          });
-          if (!data) return restore(problemMessage(error));
-          router.push(`/threads/${data.id}`);
-          return;
-        }
-        const { data, error, response } = await api.POST("/api/threads/{threadId}/messages", {
-          params: { path: { threadId } },
-          body: { text },
-        });
-        if (!data) {
-          return restore(
-            response.status === 409
-              ? "This thread is finished. Start a new thread to continue."
-              : problemMessage(error),
-          );
-        }
-        addEvents([data]); // a real server event with a seq; the SSE echo is deduped
-      } catch (e) {
-        restore(problemMessage(e));
-      }
-    },
-    onCancel: async () => {
-      if (threadId === null) return;
-      const { error } = await api.POST("/api/threads/{threadId}/cancel", {
-        params: { path: { threadId } },
-      });
-      if (error) onSendError(problemMessage(error));
+  const snapshot = useSyncExternalStore(agent.onChange, agent.getSnapshot, agent.getSnapshot);
+
+  const caughtUp = threadLastSeq !== null && snapshot.lastSeq >= threadLastSeq;
+  // A finished thread that is fully loaded needs no stream, and neither does one that is not there.
+  const paused =
+    notFound || snapshot.notFound || (isTerminal(snapshot.state) && caughtUp && !snapshot.openRun);
+  useEffect(() => {
+    if (threadId === null || paused) return;
+    agent.start();
+    return () => agent.stop();
+  }, [agent, threadId, paused]);
+
+  const [loaded, setLoaded] = useState(threadId === null);
+  useEffect(() => {
+    if (caughtUp || notFound || snapshot.notFound) setLoaded(true);
+  }, [caughtUp, notFound, snapshot.notFound]);
+
+  const runtime = useAgUiRuntime({
+    agent,
+    resumeTranscript: "appended",
+    // A run that ends in RUN_ERROR reports through here too; only a refused send is a send error
+    // (the rest of a failed run is in the transcript as its status lines).
+    onError: () => {
+      const failure: SendError | null = agent.takeSendError();
+      const current = runtimeRef.current;
+      if (!failure || !current) return;
+      // the composer takes its text back by itself (the failure is a MessageNotSentError)
+      dropFailedSend(current);
+      onSendFailedRef.current(failure.message, failure.status);
     },
     adapters: {
       threadList: {
@@ -111,10 +116,14 @@ export function useChatRuntime({
           title: t.title,
         })),
         onSwitchToNewThread: () => router.push("/"),
-        onSwitchToThread: (id) => router.push(`/threads/${id}`),
+        onSwitchToThread: (id: string) => {
+          router.push(`/threads/${id}`);
+          return { messages: [] };
+        },
       },
     },
   });
   runtimeRef.current = runtime;
-  return runtime;
+
+  return { runtime, agent, snapshot, loaded };
 }

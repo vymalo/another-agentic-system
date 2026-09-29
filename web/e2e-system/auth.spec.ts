@@ -5,7 +5,7 @@ import {
   BOB,
   badge,
   errorLine,
-  eventsOf,
+  framesOf,
   resetDb,
   startThread,
   threadCount,
@@ -24,11 +24,12 @@ test("the proxy identity reaches the orchestrator", async ({ page }) => {
   await page.getByLabel("Agent").selectOption({ label: "Plain" });
   await page.getByLabel("Message").fill("echo hello");
   await page.getByRole("button", { name: "Send" }).click();
-  // the EventSource carries the header too: the events arrive and the badge follows
+  // the connect stream carries the header too: the events arrive and the badge follows
   await expect(badge(page)).toHaveText("Done");
 
-  const events = await eventsOf(page.request, threadId(page));
-  expect(events[0]?.actor).toEqual({ type: "user", name: ALICE });
+  const frames = await framesOf(page.request, threadId(page));
+  const user = frames.find((f) => f.event.type === "TEXT_MESSAGE_START");
+  expect(user?.event.metadata).toEqual({ "vymalo.actor": { type: "user", name: ALICE } });
 });
 
 test.describe("without the proxy header", () => {
@@ -66,7 +67,18 @@ test("bob does not see alice's threads", async ({ page, browser }) => {
 
     await bobPage.goto(`/threads/${id}`);
     await expect(bobPage.getByText("Thread not found.")).toBeVisible();
-    expect((await bob.request.get(`/api/threads/${id}/events`)).status()).toBe(404);
+    expect((await bob.request.get(`/api/threads/${id}`)).status()).toBe(404);
+    expect((await bob.request.get(`/agui/threads/${id}/connect`)).status()).toBe(404);
+    // nor can bob run into it with the same id: existence is not leaked, the id is his to mint
+    const run = await bob.request.post("/agui/agents/plain", {
+      headers: { Accept: "text/event-stream" },
+      data: {
+        threadId: id,
+        runId: "run-x",
+        messages: [{ id: "m-x", role: "user", content: "echo hijack" }],
+      },
+    });
+    expect(run.status()).toBe(404);
   } finally {
     await bob.close();
   }

@@ -1,0 +1,98 @@
+# @assistant-ui/react-ag-ui@0.0.62: RUN_FINISHED{outcome:{type:"cancelled"}} ends the message as
+# incomplete/cancelled (AG-UI 1.0 lifecycle), not as complete. src/ and dist/, which is what runs.
+# upstream: not yet filed - see UPSTREAM.md#run-outcome-cancelled
+# Remove this patch when a pinned release parses the outcome (web/README.md, "Patches").
+diff --git a/dist/runtime/adapter/run-aggregator.js b/dist/runtime/adapter/run-aggregator.js
+index a3cfd199b71f4449211d39e640b6faeecbaa2586..3db63f905c2c551b789115bc66084450d4323c92 100644
+--- a/dist/runtime/adapter/run-aggregator.js
++++ b/dist/runtime/adapter/run-aggregator.js
+@@ -148,6 +148,16 @@ var RunAggregator = class {
+ 					this.emit();
+ 					break;
+ 				}
++				if (event.outcome?.type === "cancelled") {
++					this.interrupts = void 0;
++					this.status = {
++						type: "incomplete",
++						reason: "cancelled"
++					};
++					this.closeOpenSubagentRuns(this.status);
++					this.emit();
++					break;
++				}
+ 				this.interrupts = void 0;
+ 				const hasUnresolvedToolCalls = Array.from(this.toolCalls.values()).some((tc) => tc.result === void 0);
+ 				this.status = hasUnresolvedToolCalls ? {
+diff --git a/dist/runtime/event-parser.js b/dist/runtime/event-parser.js
+index c0d75a101f82c0f44225e9a074d765c8f0585f73..f6386d0679db2533dfed2914c9cb9da873df0626 100644
+--- a/dist/runtime/event-parser.js
++++ b/dist/runtime/event-parser.js
+@@ -41,6 +41,7 @@ const parseRunFinishedOutcome = (raw, runId, logger) => {
+ 		return;
+ 	}
+ 	if (raw.type === "success") return { type: "success" };
++	if (raw.type === "cancelled") return { type: "cancelled" };
+ 	if (raw.type === "interrupt") {
+ 		if (!Array.isArray(raw.interrupts)) {
+ 			logRejectedEvent(logger, "RUN_FINISHED", {
+diff --git a/dist/runtime/types.d.ts b/dist/runtime/types.d.ts
+index f999362b18b999019a7a74e48391e515d00c6ea3..514bf0adae3e51f5d6fae512a5230996157c218e 100644
+--- a/dist/runtime/types.d.ts
++++ b/dist/runtime/types.d.ts
+@@ -113,6 +113,8 @@ export type AgUiRunFinishedOutcome = {
+ } | {
+     type: "interrupt";
+     interrupts: AgUiInterrupt[];
++} | {
++    type: "cancelled";
+ };
+ export type AgUiSubagentFinishedOutcome = {
+     type: "success";
+diff --git a/src/runtime/adapter/run-aggregator.ts b/src/runtime/adapter/run-aggregator.ts
+index ea260ace9bbafe2bb5cd4248b93c4d1b7a6ad9e5..36ff82571d765cfd95ba2e5a10935a22bbd0db13 100644
+--- a/src/runtime/adapter/run-aggregator.ts
++++ b/src/runtime/adapter/run-aggregator.ts
+@@ -298,6 +298,16 @@ export class RunAggregator {
+           break;
+         }
+ 
++        if (event.outcome?.type === "cancelled") {
++          // Stopped on purpose (AG-UI 1.0 lifecycle): neither success nor failure, the same
++          // status a local abort gives.
++          this.interrupts = undefined;
++          this.status = { type: "incomplete", reason: "cancelled" };
++          this.closeOpenSubagentRuns(this.status);
++          this.emit();
++          break;
++        }
++
+         this.interrupts = undefined;
+         // A call nested inside a subagent message is answerable the same way
+         // a root call is: getPendingToolCalls and addToolResult walk
+diff --git a/src/runtime/event-parser.ts b/src/runtime/event-parser.ts
+index 0d382ad42bd2b3baec5ef449feaa672e7b0c0ee1..1ba56f824b635f09fe01e97e4d6bcd643283c0ee 100644
+--- a/src/runtime/event-parser.ts
++++ b/src/runtime/event-parser.ts
+@@ -80,6 +80,8 @@ const parseRunFinishedOutcome = (
+     return undefined;
+   }
+   if (raw.type === "success") return { type: "success" };
++  // AG-UI 1.0: a run stopped on purpose ends with outcome "cancelled".
++  if (raw.type === "cancelled") return { type: "cancelled" };
+   if (raw.type === "interrupt") {
+     if (!Array.isArray(raw.interrupts)) {
+       logRejectedEvent(
+diff --git a/src/runtime/types.ts b/src/runtime/types.ts
+index b4c211da5807a177ccd155f517c470e3d98ed1c7..b96cd0deb928573a396eb67d426ae766063493fd 100644
+--- a/src/runtime/types.ts
++++ b/src/runtime/types.ts
+@@ -151,7 +151,8 @@ export type AgUiRuntimeExtras = {
+ 
+ export type AgUiRunFinishedOutcome =
+   | { type: "success" }
+-  | { type: "interrupt"; interrupts: AgUiInterrupt[] };
++  | { type: "interrupt"; interrupts: AgUiInterrupt[] }
++  | { type: "cancelled" };
+ 
+ export type AgUiSubagentFinishedOutcome =
+   | { type: "success" }

@@ -17,6 +17,7 @@ import {
   threadList,
   threadRows,
 } from "../e2e/helpers";
+import { uuidv7 } from "../src/lib/uuid";
 import { DATABASE_URL, FAKE_CONTROL, ORCH, ORCH_SCRIPT, orchestratorEnv, RUN_DIR } from "./env";
 
 export {
@@ -65,29 +66,87 @@ export async function resetDb() {
   await query("TRUNCATE threads CASCADE");
 }
 
-export type ApiEvent = {
-  seq: number;
-  kind: string;
-  actor: { type: string; name: string; revision?: string };
-  data: Record<string, unknown>;
+export type Frame = { id?: number; event: Record<string, unknown> & { type: string } };
+
+/** One frame per entry: the event type, and what tells apart the ones that repeat. */
+const label = (f: Frame): string => {
+  const e = f.event;
+  switch (e.type) {
+    case "ACTIVITY_SNAPSHOT": {
+      const content = e.content as { status?: string };
+      return `${e.type}:${String(e.activityType)}${content.status ? `:${content.status}` : ""}`;
+    }
+    case "RUN_FINISHED":
+      return `${e.type}:${(e.outcome as { type: string } | undefined)?.type ?? "success"}`;
+    case "RUN_ERROR":
+      return `${e.type}:${String(e.code)}`;
+    case "STATE_SNAPSHOT":
+      return `${e.type}:${String((e.snapshot as { thread: { state: string } }).thread.state)}`;
+    default:
+      return e.type;
+  }
 };
 
-/** `kind` (with the status or state, for the kinds that have one) of each event. */
-export const shape = (events: ApiEvent[]): string[] =>
-  events.map((e) =>
-    e.kind === "agent_status"
-      ? `${e.kind}:${e.data.status}`
-      : e.kind === "thread_state"
-        ? `${e.kind}:${e.data.state}`
-        : e.kind,
-  );
+/** The frames a thread's connect stream replays (`?mode=run`), as the web's ThreadAgent reads them. */
+export async function framesOf(request: APIRequestContext, id: string): Promise<Frame[]> {
+  const res = await request.get(`/agui/threads/${id}/connect?mode=run`);
+  expect(res.status()).toBe(200);
+  const out: Frame[] = [];
+  for (const block of (await res.text()).split("\n\n")) {
+    const lines = block.split("\n").filter((l) => !l.startsWith(":"));
+    const data = lines.filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+    if (data.length === 0) continue;
+    const idLine = lines.find((l) => l.startsWith("id:"));
+    out.push({
+      ...(idLine ? { id: Number(idLine.slice(3).trim()) } : {}),
+      event: JSON.parse(data.join("\n")) as Frame["event"],
+    });
+  }
+  return out;
+}
 
-export const FIVE = [
-  "user_message",
-  "agent_status:working",
-  "artifact",
-  "agent_status:completed",
-  "thread_state:done",
+/** The type (and outcome, activity, state) of each frame. */
+export const shape = (frames: Frame[]): string[] => frames.map(label);
+
+/** The log `seq` of each resume point: the events of the log, one per id. */
+export const seqs = (frames: Frame[]): number[] =>
+  frames.flatMap((f) => (f.id === undefined ? [] : [f.id]));
+
+/** A thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it. */
+export async function createThread(
+  request: APIRequestContext,
+  agent: "coder" | "plain",
+  text: string,
+): Promise<string> {
+  const id = uuidv7();
+  const res = await request.post(`/agui/agents/${agent}`, {
+    headers: { Accept: "text/event-stream" },
+    data: {
+      threadId: id,
+      runId: crypto.randomUUID(),
+      messages: [{ id: crypto.randomUUID(), role: "user", content: text }],
+    },
+  });
+  expect(res.status()).toBe(200);
+  await res.text(); // the response ends with the run
+  return id;
+}
+
+/** The echo script as a viewer replays it (docs/api/examples/agui/connect-echo.agui.json). */
+export const ECHO = [
+  "RUN_STARTED",
+  "STATE_SNAPSHOT:queued",
+  "TEXT_MESSAGE_START",
+  "TEXT_MESSAGE_CONTENT",
+  "TEXT_MESSAGE_END",
+  "SUBAGENT_STARTED",
+  "ACTIVITY_SNAPSHOT:vymalo.status:working",
+  "STATE_SNAPSHOT:working",
+  "ACTIVITY_SNAPSHOT:vymalo.artifact",
+  "ACTIVITY_SNAPSHOT:vymalo.status:completed",
+  "SUBAGENT_FINISHED",
+  "STATE_SNAPSHOT:done",
+  "RUN_FINISHED:success",
 ];
 
 export const threadId = (page: Page): string => {
@@ -95,13 +154,6 @@ export const threadId = (page: Page): string => {
   if (!id) throw new Error(`no thread id in ${page.url()}`);
   return id;
 };
-
-/** `GET /api/threads/{id}/events` through the app's rewrite, as the page's user. */
-export async function eventsOf(request: APIRequestContext, id: string): Promise<ApiEvent[]> {
-  const res = await request.get(`/api/threads/${id}/events?limit=500`);
-  expect(res.status()).toBe(200);
-  return (await res.json()) as ApiEvent[];
-}
 
 export type AgentCall = {
   kind: "execute" | "cancel";
