@@ -2,7 +2,8 @@
 
 The HTTP edge of the orchestrator: an axum 0.8 router with proxy-identity auth,
 RFC 9457 problems, the resource API (agents, thread list and details, cancel)
-and health, over `orch_app::App`. Interaction surfaces plug into it.
+and health, over `orch_app::App`. Interaction surfaces plug into it, and
+`health_router` serves health alone.
 
 ## Where it sits
 
@@ -21,6 +22,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | Item | What |
 |---|---|
 | `router::<P>(Arc<App<P>>, ApiConfig) -> axum::Router` | health and the resource API, no interaction surface |
+| `health_router::<P>(Arc<App<P>>) -> axum::Router` | `/healthz` and `/readyz` only, no identity, every other path 404: for a process with no HTTP interface (a worker-only orchestrator). The full routers serve the same health routes |
 | `router_with_surfaces::<P>(app, ApiConfig, Vec<SurfaceRoutes>)` | the same plus the routes of the given surfaces, all behind the identity layer |
 | `SurfaceRoutes` | what a surface contributes: `plain(Router)` (request timeout applies) and `streaming(Router)` (SSE, no timeout); already bound to the surface's own state |
 | `ApiConfig` | `auth`, `sse_keepalive` (15 s; read by surfaces, not by this crate), `request_timeout` (30 s, everything but streaming routes) |
@@ -63,7 +65,9 @@ Offline: the in-memory stack from `orch-ports` (feature `testkit`), over real
 HTTP. No environment variables.
 
 * `src/problem.rs` unit tests: the status and `Retry-After` for every error class.
-* `tests/edge.rs`: health without identity; the resource API without any
+* `tests/edge.rs`: health without identity; `health_router` serving health
+  only (no identity header needed, 404 elsewhere, 503 when not ready or shutting
+  down); the resource API without any
   surface; interaction routes absent unless mounted; a mounted surface sits
   behind the identity layer (also with a dev user); streaming routes skip the
   request timeout; several surfaces merge.

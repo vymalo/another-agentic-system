@@ -101,6 +101,33 @@ impl SurfaceRoutes {
     }
 }
 
+/// `GET /healthz` and `GET /readyz`, bound to `state` and without any layer (no identity, no
+/// timeout): the one definition shared by [`router_with_surfaces`] and [`health_router`].
+fn health_routes<P: Ports>(state: ApiState<P>) -> Router {
+    Router::new()
+        .route("/healthz", get(routes::healthz::<P>))
+        .route("/readyz", get(routes::readyz::<P>))
+        .with_state(state)
+}
+
+/// The layers every served router carries: body limit, request tracing and request ids.
+fn edge_layers(router: Router) -> Router {
+    router
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(TraceLayer::new_for_http())
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+}
+
+/// Builds a router that serves `/healthz` and `/readyz` and nothing else, for a process that
+/// runs no HTTP interface (a worker-only orchestrator) but must answer probes.
+///
+/// It is the same handlers, and the same tracing and request-id layers, as the health routes of
+/// [`router_with_surfaces`]; like there, health needs no identity. Every other path is 404.
+pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
+    edge_layers(health_routes(ApiState { app }))
+}
+
 /// Builds the router for the resource API and health, with no interaction surface mounted.
 pub fn router<P: Ports>(app: Arc<App<P>>, cfg: ApiConfig) -> Router {
     router_with_surfaces(app, cfg, Vec::new())
@@ -118,10 +145,7 @@ pub fn router_with_surfaces<P: Ports>(
     surfaces: Vec<SurfaceRoutes>,
 ) -> Router {
     let state = ApiState { app };
-    let health = Router::new()
-        .route("/healthz", get(routes::healthz::<P>))
-        .route("/readyz", get(routes::readyz::<P>))
-        .with_state(state.clone());
+    let health = health_routes(state.clone());
     let resource = Router::new()
         .route("/api/agents", get(routes::list_agents::<P>))
         .route("/api/threads", get(routes::list_threads::<P>))
@@ -150,11 +174,5 @@ pub fn router_with_surfaces<P: Ports>(
             Arc::new(cfg.auth),
             auth::require_identity,
         ));
-    Router::new()
-        .merge(health)
-        .merge(api)
-        .layer(DefaultBodyLimit::max(1024 * 1024))
-        .layer(TraceLayer::new_for_http())
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+    edge_layers(Router::new().merge(health).merge(api))
 }
