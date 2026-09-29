@@ -54,6 +54,34 @@ pub struct NewThread {
     pub text: String,
 }
 
+/// What a surface tells the log about the input it forwards: the ids the consumer gave, and the
+/// idempotency key that makes a retry of the same input a no-op.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Inbound {
+    /// The id the surface gave the user message (an AG-UI message id).
+    pub message_id: Option<String>,
+    /// The id of the run the message starts or continues.
+    pub run_id: Option<String>,
+    /// Makes a replay of this input a no-op: the first event carries it, and a second commit
+    /// with the same key is [`ApplyOutcome::Duplicate`].
+    pub key: Option<String>,
+}
+
+/// Result of [`App::create_thread_as`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Creation {
+    /// The thread was created, with its first events.
+    Created {
+        /// The new thread.
+        thread: ThreadRecord,
+        /// Its first events, with their `seq`.
+        events: Vec<Event>,
+    },
+    /// The caller's own thread with this id exists already: a concurrent request created it
+    /// between the caller's lookup and this call. Nothing was written; look it up again.
+    Exists,
+}
+
 /// Result of [`App::apply`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
@@ -235,6 +263,32 @@ impl<P: Ports> App<P> {
         user: &UserId,
         req: NewThread,
     ) -> Result<ThreadRecord, AppError> {
+        let id = ThreadId(self.ports.ids().new_id());
+        match self
+            .create_thread_as(user, id, req, Inbound::default())
+            .await?
+        {
+            Creation::Created { thread, .. } => Ok(thread),
+            Creation::Exists => Err(AppError::internal(
+                "a freshly minted thread id was already taken",
+            )),
+        }
+    }
+
+    /// Creates the thread `id`, which the caller chose (a consumer-minted id, as AG-UI has it),
+    /// with `req.text` as its first message, and records `inbound` in the log.
+    ///
+    /// An id that belongs to someone else is [`AppError::NotFound`], the same answer as for an
+    /// id that does not exist for the caller, so a collision does not reveal the other thread.
+    /// The caller's own thread with that id is [`Creation::Exists`] (only a concurrent request
+    /// with the same id can have created it).
+    pub async fn create_thread_as(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+        req: NewThread,
+        inbound: Inbound,
+    ) -> Result<Creation, AppError> {
         validate_text(&req.text)?;
         if let Some(title) = &req.title
             && title.chars().count() > MAX_TITLE_CHARS
@@ -245,22 +299,21 @@ impl<P: Ports> App<P> {
         }
         self.validate_target(&req.target).await?;
 
-        let id = ThreadId(self.ports.ids().new_id());
         let now = self.ports.clock().now();
         let (next, cmds) = transition(
             &ThreadState::Queued,
             &Input::UserMessage {
                 user: user.clone(),
                 text: req.text.clone(),
-                message_id: None,
-                run_id: None,
+                message_id: inbound.message_id,
+                run_id: inbound.run_id,
             },
         )?;
         let title = req
             .title
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| default_title(&req.text));
-        let commit = self.build_commit(&req.target, next, cmds, None, None, now);
+        let commit = self.build_commit(&req.target, next, cmds, inbound.key.as_deref(), None, now);
         let new = NewThreadRecord {
             id,
             owner: user.clone(),
@@ -269,10 +322,41 @@ impl<P: Ports> App<P> {
             context_id: id.to_string(),
             now,
         };
-        let (thread, _events) = self.ports.store().create_thread(new, commit).await?;
-        self.notify(Topic::Thread(id)).await;
-        self.notify(Topic::Outbox).await;
-        Ok(thread)
+        match self.ports.store().create_thread(new, commit).await {
+            Ok((thread, events)) => {
+                self.notify(Topic::Thread(id)).await;
+                self.notify(Topic::Outbox).await;
+                Ok(Creation::Created { thread, events })
+            }
+            Err(e) => {
+                // A chosen id can be taken. The store reports that as a failure like any other,
+                // so look: someone's thread with this id is a collision, nothing there is a
+                // real failure.
+                match self.ports.store().get_thread(None, id).await {
+                    Ok(Some(existing)) if &existing.owner == user => Ok(Creation::Exists),
+                    Ok(Some(_)) => Err(AppError::NotFound),
+                    Ok(None) | Err(_) => Err(e.into()),
+                }
+            }
+        }
+    }
+
+    /// The thread `id` when it exists and is the user's; `None` when nothing has this id;
+    /// [`AppError::NotFound`] when it belongs to someone else.
+    ///
+    /// The three-way answer is for surfaces that let the consumer choose thread ids: `None`
+    /// means the id is free to create, and someone else's thread must look like any other
+    /// refusal to the caller.
+    pub async fn find_thread(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+    ) -> Result<Option<ThreadRecord>, AppError> {
+        match self.ports.store().get_thread(None, id).await? {
+            Some(thread) if &thread.owner == user => Ok(Some(thread)),
+            Some(_) => Err(AppError::NotFound),
+            None => Ok(None),
+        }
     }
 
     /// The user's threads, newest first.
@@ -341,6 +425,26 @@ impl<P: Ports> App<P> {
                 "a commit without a lease was reported as fenced",
             )),
         }
+    }
+
+    /// Applies an input a surface already translated (a user message with the ids the consumer
+    /// gave it, or a cancel) to one of the user's threads, under the idempotency `key`.
+    ///
+    /// The text of a user message is validated as for [`post_message`](Self::post_message).
+    /// [`ApplyOutcome::Duplicate`] means the key was recorded already: an earlier request did
+    /// this, and nothing was written.
+    pub async fn submit(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+        input: Input,
+        key: Option<String>,
+    ) -> Result<ApplyOutcome, AppError> {
+        if let Input::UserMessage { text, .. } = &input {
+            validate_text(text)?;
+        }
+        self.get_thread(user, id).await?;
+        self.apply(id, input, key, None, None).await
     }
 
     /// Requests cancellation of the thread's running work. A finished thread is a no-op.

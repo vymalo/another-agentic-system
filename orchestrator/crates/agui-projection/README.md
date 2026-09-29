@@ -15,8 +15,7 @@ typed events of [`orch-agui-proto`](../agui-proto/README.md).
 
 Depends on [`orch-core`](../core/README.md) (the events and inputs) and
 [`orch-agui-proto`](../agui-proto/README.md) (the wire types), and on nothing else of the
-orchestrator: no `orch-app`, no store, no HTTP. The AG-UI surface (`orch-surface-agui`, a later
-slice) is the adapter that feeds it events from `App::event_stream` and writes its frames as SSE.
+orchestrator: no `orch-app`, no store, no HTTP. The AG-UI surface ([`orch-surface-agui`](../surface-agui/README.md)) is the adapter that feeds it events from `App::event_stream` and writes its frames as SSE.
 
 ## API at a glance
 
@@ -29,7 +28,7 @@ slice) is the adapter that feeds it events from `App::event_stream` and writes i
 | `Projector::resume_preamble() -> Vec<Frame>` | re-opens the current run (same `RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`) for a client that reconnects mid-run; empty between runs |
 | `Projector::view(&UserId) -> ThreadView` | what the thread holds, for `translate` |
 | `translate(&RunAgentInput, &ThreadView) -> Result<Vec<Input>, InputError>` | new user message, `resume` answer or cancel, or attach; `translate_with_warnings` also returns what was ignored |
-| `InputError::http_status()` | the status (400, 409, 422) of a request refused before the stream |
+| `InputError::http_status()` | the status (400, 409, 422) of a request refused before the stream (including a `runId` reused for new input) |
 | `thread_id_of`, `release_selector`, `held_message_ids` | the request members a surface reads itself |
 
 ```rust

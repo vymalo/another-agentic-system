@@ -1985,6 +1985,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "orch-agent-a2a",
+ "orch-agui-proto",
  "orch-api",
  "orch-app",
  "orch-core",
@@ -2033,6 +2034,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-surface-agui"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures",
+ "orch-agui-projection",
+ "orch-agui-proto",
+ "orch-api",
+ "orch-app",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "orch-surface-chat-api"
 version = "0.1.0"
 dependencies = [
@@ -2067,6 +2088,7 @@ dependencies = [
  "orch-app",
  "orch-core",
  "orch-ports",
+ "orch-surface-agui",
  "orch-surface-chat-api",
  "reqwest",
  "serde_json",
@@ -2089,6 +2111,7 @@ dependencies = [
  "orch-core",
  "orch-ports",
  "orch-store-postgres",
+ "orch-surface-agui",
  "orch-surface-chat-api",
  "orch-testsupport",
  "reqwest",

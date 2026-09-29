@@ -69,6 +69,16 @@ fn surface_routes<P: orch_ports::Ports>(
     sse_keepalive: Duration,
 ) -> Result<SurfaceRoutes, ConfigError> {
     match surface {
+        #[cfg(feature = "surface-agui")]
+        Surface::Agui => Ok(orch_surface_agui::routes(Arc::clone(app), sse_keepalive)),
+        #[cfg(not(feature = "surface-agui"))]
+        Surface::Agui => {
+            let _ = (app, sse_keepalive);
+            Err(ConfigError::SurfaceNotCompiled {
+                surface: surface.name(),
+                feature: surface.feature(),
+            })
+        }
         #[cfg(feature = "surface-chat-api")]
         Surface::ChatApi => Ok(orch_surface_chat_api::routes(
             Arc::clone(app),

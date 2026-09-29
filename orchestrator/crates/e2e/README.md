@@ -1,6 +1,6 @@
 # orch-e2e
 
-End-to-end tests only: the chat API, the dispatcher and the A2A adapter
+End-to-end tests only: the AG-UI run route, the chat API, the dispatcher and the A2A adapter
 against an in-process fake A2A agent over real HTTP, on the in-memory store
 and on Postgres. The library is empty; everything is under `tests/`.
 
@@ -26,13 +26,14 @@ No Cargo features.
 |---|---|
 | `ORCH_TEST_DATABASE_URL` | enables the `::postgres` variants and `replicas`; without it they print a notice and pass without running. Each test gets its own schema |
 | `ORCH_TEST_MOCK_AGENT_URL`, `ORCH_TEST_MOCK_AGENT_RELEASES_URL` | base URLs of the WireMock stand-ins (`docker compose up -d --wait mock-agent mock-agent-releases`, ports 8081 and 8082); enable `wiremock_agent` |
-| `UPDATE_GOLDEN` | `1` makes `golden` rewrite `docs/api/examples/*.events.json` instead of failing on a difference |
+| `UPDATE_GOLDEN` | `1` makes `golden` rewrite `docs/api/examples/*.events.json`, and `agui_run` `docs/api/examples/agui/run-*.agui.json`, instead of failing on a difference |
 
 ## Tests
 
 | File | Covers |
 |---|---|
 | `e2e.rs` | the acceptance sequence: chat API, dispatcher, A2A adapter, agent |
+| `agui_run.rs` | the AG-UI run route (`POST /agui/agents/{agentId}`) with the same stack: echo, ask and `resume`, fail, cancel (`RUN_FINISHED` cancelled), a retried POST attaches (also through another replica), refusals as problems, another owner's thread id is 404, release through `forwardedProps`, one log for both surfaces; every event validates against the vendored AG-UI schema; the responses are the goldens `docs/api/examples/agui/run-*.agui.json` |
 | `restart.rs` | the process dies mid-stream, a new one on the same database finishes with no gap and no duplicate |
 | `replicas.rs` | several replicas on one database (Postgres only) |
 | `sse_resume.rs` | SSE resume with `Last-Event-ID` |

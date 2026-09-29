@@ -73,7 +73,10 @@ impl TestInstance {
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             api,
-            vec![orch_surface_chat_api::routes(app, keepalive)],
+            vec![
+                orch_surface_agui::routes(Arc::clone(&app), keepalive),
+                orch_surface_chat_api::routes(app, keepalive),
+            ],
         );
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -274,6 +277,45 @@ impl Chat {
         self.post(&format!("/api/threads/{id}/cancel"), None)
             .await
             .0
+    }
+
+    /// `POST /agui/agents/{agent}` with `body` as JSON: the raw answer, for a test that looks at
+    /// the status, the headers or the problem.
+    pub async fn agui_post(&self, agent: &str, body: &Value) -> reqwest::Response {
+        self.request(reqwest::Method::POST, &format!("/agui/agents/{agent}"))
+            .header("Accept", "text/event-stream")
+            .json(body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Starts an AG-UI run and returns its stream; panics unless the answer is 200.
+    pub async fn agui_run(&self, agent: &str, body: &Value) -> SseClient {
+        let resp = self.agui_post(agent, body).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "the run was refused: {}",
+            resp.text().await.unwrap()
+        );
+        SseClient::from_response(resp)
+    }
+
+    /// A `RunAgentInput` for `thread`: `run` is the run id, `messages` the transcript the
+    /// consumer holds, `extra` merged over the top (`resume`, `forwardedProps`, …).
+    pub fn agui_input(thread: &str, run: &str, messages: &[(&str, &str)], extra: Value) -> Value {
+        let messages: Vec<Value> = messages
+            .iter()
+            .map(|(id, text)| json!({"id": id, "role": "user", "content": text}))
+            .collect();
+        let mut body = json!({"threadId": thread, "runId": run, "messages": messages});
+        if let Some(extra) = extra.as_object() {
+            for (k, v) in extra {
+                body[k] = v.clone();
+            }
+        }
+        body
     }
 
     /// Opens the SSE stream, optionally resuming after `Last-Event-ID`.

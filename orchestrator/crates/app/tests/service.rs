@@ -493,3 +493,199 @@ async fn a_store_outage_is_transient_and_keeps_its_source() {
     assert_eq!(err.to_string(), "store unavailable");
     assert_eq!(orch_core::report(&err), "store unavailable: pool timed out");
 }
+
+// ---- consumer-chosen thread ids (a surface where the consumer mints them) -----------------
+
+fn free_id() -> ThreadId {
+    ThreadId(Uuid::now_v7())
+}
+
+fn inbound(message: &str, run: &str) -> orch_app::Inbound {
+    orch_app::Inbound {
+        message_id: Some(message.to_owned()),
+        run_id: Some(run.to_owned()),
+        key: Some(format!("k:{message}")),
+    }
+}
+
+#[tokio::test]
+async fn find_thread_tells_mine_from_free_from_someone_elses() {
+    let w = World::new();
+    let app = w.app();
+    let mine = create(&app, &alice(), "plain", "echo mine").await;
+    assert_eq!(
+        app.find_thread(&alice(), mine.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        mine.id
+    );
+    assert!(
+        app.find_thread(&alice(), free_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Someone else's thread is the same refusal as a thread that is not there for the caller.
+    assert!(matches!(
+        app.find_thread(&bob(), mine.id).await,
+        Err(AppError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn create_thread_as_uses_the_callers_id_and_records_what_the_surface_says() {
+    let w = World::new();
+    let app = w.app();
+    let id = free_id();
+    let created = app
+        .create_thread_as(
+            &alice(),
+            id,
+            new_thread("plain", None, "echo hi"),
+            inbound("m-1", "r-1"),
+        )
+        .await
+        .unwrap();
+    let orch_app::Creation::Created { thread, events } = created else {
+        panic!("not created");
+    };
+    assert_eq!(thread.id, id);
+    assert_eq!(thread.owner, alice());
+    assert_eq!(events.len(), 1);
+    let v = serde_json::to_value(&events[0]).unwrap();
+    assert_eq!(v["data"]["messageId"], "m-1");
+    assert_eq!(v["data"]["runId"], "r-1");
+    assert_eq!(
+        w.store.get_binding(id).await.unwrap().unwrap().context_id,
+        id.to_string()
+    );
+    assert_eq!(w.store.list_open_outbox(id).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn create_thread_as_on_a_taken_id_is_not_found_for_a_stranger_and_exists_for_the_owner() {
+    let w = World::new();
+    let app = w.app();
+    let mine = create(&app, &alice(), "plain", "echo mine").await;
+    let before = events(&app, &alice(), mine.id).await;
+    // A collision with someone else's thread does not reveal it.
+    let stranger = app
+        .create_thread_as(
+            &bob(),
+            mine.id,
+            new_thread("plain", None, "echo yours"),
+            orch_app::Inbound::default(),
+        )
+        .await;
+    assert!(matches!(stranger, Err(AppError::NotFound)), "{stranger:?}");
+    // The owner racing with itself learns the thread is there.
+    let again = app
+        .create_thread_as(
+            &alice(),
+            mine.id,
+            new_thread("plain", None, "echo mine"),
+            orch_app::Inbound::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again, orch_app::Creation::Exists);
+    assert_eq!(
+        events(&app, &alice(), mine.id).await,
+        before,
+        "nothing written"
+    );
+}
+
+#[tokio::test]
+async fn create_thread_as_still_reports_a_real_store_failure() {
+    let w = World::new();
+    let app = w.app();
+    w.store
+        .fail_next_creates(1, || StoreError::unavailable(std::io::Error::other("down")));
+    let err = app
+        .create_thread_as(
+            &alice(),
+            free_id(),
+            new_thread("plain", None, "echo hi"),
+            orch_app::Inbound::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Transient, "{err:?}");
+}
+
+#[tokio::test]
+async fn submit_applies_under_a_key_and_a_replay_is_a_duplicate() {
+    let w = World::new();
+    let app = w.app();
+    let t = create(&app, &alice(), "plain", "ask me").await;
+    let answer = || Input::UserMessage {
+        user: alice(),
+        text: "main".to_owned(),
+        message_id: Some("m-2".to_owned()),
+        run_id: Some("r-2".to_owned()),
+    };
+    // Not yet blocked, but a user message is valid while working, so it is applied.
+    let first = app
+        .submit(&alice(), t.id, answer(), Some("k:m-2".to_owned()))
+        .await
+        .unwrap();
+    let ApplyOutcome::Applied { events, .. } = first else {
+        panic!("not applied");
+    };
+    assert_eq!(events[0].kind(), EventKind::UserMessage);
+    let again = app
+        .submit(&alice(), t.id, answer(), Some("k:m-2".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(again, ApplyOutcome::Duplicate);
+    assert_eq!(
+        kinds(&events_of(&app, t.id).await),
+        [EventKind::UserMessage; 2]
+    );
+}
+
+async fn events_of(app: &TestApp, id: ThreadId) -> Vec<orch_core::Event> {
+    events(app, &alice(), id).await
+}
+
+#[tokio::test]
+async fn submit_validates_the_text_and_checks_the_owner() {
+    let w = World::new();
+    let app = w.app();
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    let message = |text: &str| Input::UserMessage {
+        user: alice(),
+        text: text.to_owned(),
+        message_id: None,
+        run_id: None,
+    };
+    assert!(
+        invalid(
+            app.submit(&alice(), t.id, message("  "), None)
+                .await
+                .unwrap_err()
+        )
+        .contains("empty")
+    );
+    let long = "x".repeat(100_001);
+    assert!(
+        invalid(
+            app.submit(&alice(), t.id, message(&long), None)
+                .await
+                .unwrap_err()
+        )
+        .contains("at most")
+    );
+    assert!(matches!(
+        app.submit(&bob(), t.id, message("hi"), None).await,
+        Err(AppError::NotFound)
+    ));
+    assert!(matches!(
+        app.submit(&alice(), free_id(), message("hi"), None).await,
+        Err(AppError::NotFound)
+    ));
+    assert_eq!(events_of(&app, t.id).await.len(), 1, "nothing was written");
+}

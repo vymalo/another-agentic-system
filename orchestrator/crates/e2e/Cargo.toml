@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 license.workspace = true
-description = "End-to-end tests: the chat API, the dispatcher and the A2A adapter against an in-process fake A2A agent over real HTTP."
+description = "End-to-end tests: the AG-UI run route, the chat API, the dispatcher and the A2A adapter against an in-process fake A2A agent over real HTTP."
 readme = "README.md"
 
 [dependencies]
@@ -15,6 +15,7 @@ orch-core.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-app.workspace = true
 orch-api.workspace = true
+orch-agui-proto = { workspace = true, features = ["testkit"] }
 orch-agent-a2a.workspace = true
 orch-testsupport.workspace = true
 orch-store-postgres.workspace = true

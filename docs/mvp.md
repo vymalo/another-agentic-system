@@ -38,7 +38,8 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 | Configuration with clap; surfaces mounted by `ORCH_SURFACES` (the chat API moved into `orch-surface-chat-api`) | Built |
 | The pure projection, both directions (`orch-agui-projection`) | Built |
 | Goldens read through the reference client in CI (`tools/agui-conformance`) | Built |
-| The AG-UI HTTP surface (`orch-surface-agui`): run, connect, capabilities | Planned |
+| The AG-UI run route (`orch-surface-agui`): `POST /agui/agents/{agentId}` | Built |
+| The AG-UI connect stream and capabilities (`GET /agui/threads/{id}/connect`, `GET /agui/agents/{agentId}/capabilities`) | Planned |
 | The web on `@assistant-ui/react-ag-ui`; deprecation markers on the chat API | Planned |
 | A2UI generative UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Planned |
 

@@ -10,7 +10,7 @@ A dev-dependency of [`orch-agent-a2a`](../agent-a2a/README.md),
 [`orch-e2e`](../e2e/README.md) and the
 [`orchestrator`](../../bin/orchestrator/README.md) binary's tests. It depends on
 [`orch-app`](../app/README.md), [`orch-api`](../api/README.md),
-[`orch-surface-chat-api`](../surface-chat-api/README.md) (mounted by `TestInstance`) and
+[`orch-surface-agui`](../surface-agui/README.md) and [`orch-surface-chat-api`](../surface-chat-api/README.md) (both mounted by `TestInstance`, like the default `ORCH_SURFACES`) and
 [`orch-ports`](../ports/README.md), and on `a2a-server-lf` for the fake agent.
 Its helpers panic on failure, by design.
 
@@ -20,8 +20,8 @@ Its helpers panic on failure, by design.
 |---|---|
 | `FakeAgent`, `FakeAgentOptions`, `FakeReleases`, `Call`, `CallKind` | an in-process A2A 1.0 agent on `a2a-server-lf`, optional bearer auth and release-channels card; `spawn`, `card_url`, `endpoint(id, bearer)`, `calls`, `executions`, `cancels`, `release_gate`, `rpc_count`, `unauthorized_requests`, `stop` |
 | `TestInstance` | the router and a dispatcher on a real TCP port: `spawn`, `spawn_with` (API only with `None`), `kill` (a crash: no lease release), `shutdown`; `fast_dispatcher()` gives millisecond timings |
-| `Chat` | chat API client: `create_thread`, `thread`, `wait_state`, `wait_events`, `events`, `post_message`, `cancel`, `stream`, `as_user`, `anonymous` |
-| `SseClient`, `Item` | reads the SSE stream |
+| `Chat` | chat API client: `create_thread`, `thread`, `wait_state`, `wait_events`, `events`, `post_message`, `cancel`, `stream`, `as_user`, `anonymous`; for the AG-UI run route `agui_post` (the raw answer), `agui_run` (the stream of an accepted run) and `agui_input` (builds a `RunAgentInput`) |
+| `SseClient`, `Item`, `Frame` | reads the SSE stream: chat events (`next_event`), or AG-UI frames, `data:` plus an optional `id:` (`next_frame`, `collect_frames` to the end of the response) |
 | `eventually`, `eventually_within`, `DEFAULT_TIMEOUT`, `shape` | wait-until with a deadline instead of sleeping; `shape` lists the kind (and status or state) of each event |
 
 The fake agent's behaviour is chosen by the first word of the user's message

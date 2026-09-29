@@ -237,7 +237,7 @@ fn every_setting_is_read_from_its_variable() {
     for (var, bad) in [
         ("LISTEN_ADDR", "nowhere"),
         ("ORCH_ROLE", "controlplane"),
-        ("ORCH_SURFACES", "agui"),
+        ("ORCH_SURFACES", "a2a"),
         ("ORCH_SURFACES", ","),
         ("AUTH_DEV_USER", "not-an-email"),
         ("DATABASE_MAX_CONNECTIONS", "1"),
@@ -277,7 +277,7 @@ fn a_flag_wins_over_its_variable() {
     let mut run = spawn_with_args(
         &scratch,
         "flag.log",
-        &["--surfaces", "agui"],
+        &["--surfaces", "a2a"],
         &[
             ("ORCH_SURFACES", "chat-api"),
             ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
@@ -289,7 +289,7 @@ fn a_flag_wins_over_its_variable() {
     assert_eq!(status.code(), Some(78), "{}", run.log());
     let log = run.log();
     assert!(
-        log.contains("unknown surface") && log.contains("agui"),
+        log.contains("unknown surface") && log.contains("a2a"),
         "{log}"
     );
 }
@@ -379,10 +379,76 @@ async fn the_chat_api_surface_is_mounted_by_the_flag() {
         .await
         .unwrap();
     assert_eq!(agents_resp.status().as_u16(), 200);
+    // A surface that is not listed is not there: the AG-UI route is a 404, not a 400.
+    let agui = client
+        .post(format!("{base}/agui/agents/plain"))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(agui.status().as_u16(), 404);
     let status = run.borrow_mut().terminate(Duration::from_secs(20));
     let log = run.borrow().log();
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
     assert!(log.contains("\"surfaces\":\"chat-api\""), "{log}");
+}
+
+#[tokio::test]
+async fn by_default_the_agui_and_chat_api_surfaces_are_both_mounted() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let addr = format!("127.0.0.1:{}", free_port());
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn_with_args(
+        &scratch,
+        "default-surfaces.log",
+        &["--listen-addr", &addr],
+        &[
+            ("DATABASE_URL", &database_url),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{addr}");
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+    // Both interaction routes answer (an empty body is a 400, not a 404/405) ...
+    for path in ["/api/threads", "/agui/agents/plain"] {
+        let post = client
+            .post(format!("{base}{path}"))
+            .header("X-Auth-Request-Email", "alice@example.com")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(post.status().as_u16(), 400, "{path}");
+    }
+    // ... and the AG-UI one is behind the identity layer like the rest.
+    let anonymous = client
+        .post(format!("{base}/agui/agents/plain"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status().as_u16(), 401);
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("\"surfaces\":\"agui,chat-api\""), "{log}");
 }
 
 #[test]

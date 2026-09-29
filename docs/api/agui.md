@@ -6,21 +6,22 @@ How the orchestrator speaks [AG-UI 1.0](https://docs.ag-ui.com/spec/1.0/index.md
 every frame below is a function of the log. The resource API (agents, threads, cancel, health)
 stays in [`chat-api.yaml`](chat-api.yaml).
 
-> Status: **partly built** (2026-09-29). The wire types (`orch-agui-proto`) and both directions of
-> the mapping below, as pure code (`orch-agui-projection`), are built and tested against the
-> vendored schema and the reference client. The HTTP surface that serves them (`orch-surface-agui`:
-> the run, connect and capabilities routes), the inbox key, the web on AG-UI and A2UI are not: for
-> those this page is the contract the next slices implement. What is built and what is planned,
-> as a diagram: [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were
-> *verified 2026-09-29* against the pages linked.
+> Status: **partly built** (2026-09-29). Built: the wire types (`orch-agui-proto`), both directions
+> of the mapping below as pure code (`orch-agui-projection`), tested against the vendored schema
+> and the reference client, and the **run route** (`orch-surface-agui`: `POST /agui/agents/{agentId}`,
+> see [Run binding](#run-binding)), tested end to end. Not built: the connect and capabilities
+> routes, the web on AG-UI and A2UI: for those this page is the contract the next slices
+> implement. What is built and what is planned, as a diagram:
+> [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were *verified
+> 2026-09-29* against the pages linked.
 
 ## Endpoints
 
-| Operation | Route | Standard? |
-|---|---|---|
-| Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding |
-| Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) |
-| Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours |
+| Operation | Route | Standard? | Status |
+|---|---|---|---|
+| Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built (an A2UI action is not yet) |
+| Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Planned |
+| Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Planned |
 | Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
 | Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated; mounted only with `ORCH_SURFACES` including `chat-api` |
 
@@ -103,6 +104,7 @@ gets everything.
 
 | `RunAgentInput` / request | Core effect |
 |---|---|
+| Unknown `agentId` in the URL | 404 before the stream |
 | Unknown `threadId` (a UUID), one new user message | Create the thread, owned by the edge identity, targeting the URL's `agentId` and the release in `forwardedProps["https://agents.vymalo.com/a2a/extensions/release-channels/v1"].release` (validated against the live card, fail closed, ADR 0008); then `Input::UserMessage{text}` with `messageId` and `runId` recorded |
 | `threadId` owned by someone else, or colliding with another owner's thread | 404 before the stream |
 | Known `threadId`, URL `agentId` is not the thread's target | 409 before the stream |
@@ -117,6 +119,7 @@ gets everything.
 | `resume` on a thread that is not blocked, or naming an unknown id | Entries ignored with a warning |
 | Nothing new, no resume, `runId` already recorded | Attach: stream that run from its start (an idempotent retry) |
 | Nothing new, no resume, unknown `runId` | 422 (nothing to run) |
+| A new message or answer under a `runId` the thread already used | 422: a run id is never reused |
 | A run already open on the thread | 409 before the stream |
 | Thread terminal (`done`, `failed`, `cancelled`) | 409, "start a new thread" |
 | `protocolVersion` of another major | 400 before the stream; a newer 1.x is served with a warning |
@@ -124,7 +127,7 @@ gets everything.
 | `state` | Ignored (producer-owned) |
 | `parentRunId` | Recorded in metadata, no effect |
 | Non-text content parts | Skipped with a warning; the run does not fail |
-| Idempotency | Inbox key `(agui, <threadId>:<messageId>)`; a retried POST attaches instead of duplicating |
+| Idempotency | The event the input writes carries the key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with no message id of its own); a retried POST, even a concurrent one, attaches instead of duplicating. There is no inbox table yet: the key is the log's per-thread `idempotency_key` |
 | Cancel | `POST /api/threads/{id}/cancel`; the outcome arrives as `RUN_FINISHED{outcome:{type:"cancelled"}}` |
 
 ## Run binding
@@ -135,6 +138,36 @@ from `RUN_STARTED` of the requested run to its terminal event, then EOF, as the
 [HTTP + SSE binding](https://docs.ag-ui.com/spec/1.0/basic/transports/http-sse.md) says. It is the
 requester-audience projection starting at the run's first log event. Frames also carry `id: <seq>`,
 which standard consumers ignore. Closing the response never cancels the run.
+
+**Where the response starts.** At the first log event the request's input caused (a `resume`
+that cancels writes none: the response then starts at the next event, the cancellation); if a run
+is open by then (an event opened one between the read and the write), the run's opening frames
+come first (`RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`), so the response always
+starts with `RUN_STARTED`. **An attach** (nothing new, the `runId` is recorded) starts at that
+run's `RUN_STARTED`, wherever it is in the log, and follows it to its terminal event, live if it
+is still open; a run that is finished is replayed and the response ends. The response ends after
+the first terminal event (`RUN_FINISHED` or `RUN_ERROR`), or early, without one, when the process
+is shutting down: a truncated run, which the client attaches to again with the same `runId`.
+
+**The request** is `Content-Type: application/json` (a body that needs no CORS preflight is
+refused), read up to 8 MiB; `Accept` must admit `text/event-stream` or say nothing. `runId` and the
+message ids are recorded in the log and must be at most 256 bytes. Members the schema does not
+declare are dropped with a warning; a member of the wrong type is a 400.
+
+**Refusals before the stream.** Each is an RFC 9457 `application/problem+json` response; nothing
+was streamed and nothing was written.
+
+| Status | When |
+|---|---|
+| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008) |
+| 401 | No edge identity |
+| 404 | The `agentId` is not configured; the thread belongs to someone else (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
+| 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
+| 409 | The thread targets another agent; a run is open on it; it is finished (`done`, `failed`, `cancelled`) |
+| 413 | The body is larger than 8 MiB |
+| 415 | `Content-Type` is not `application/json` |
+| 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId` |
+| 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`) |
 
 ## Connect binding
 

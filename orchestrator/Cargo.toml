@@ -25,6 +25,7 @@ orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-surface-chat-api = { path = "crates/surface-chat-api" }
+orch-surface-agui = { path = "crates/surface-agui" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }

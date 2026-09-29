@@ -1,6 +1,9 @@
 # ADR 0012 — AG-UI as the user-facing protocol
 
-- **Status:** accepted (2026-09-29)
+- **Status:** accepted (2026-09-29). Status note (2026-09-29): the run route is built. The "inbox
+  key" `(agui, <threadId>:<messageId>)` of this ADR is realised, while there is no inbox table, as the
+  event's per-thread idempotency key `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with
+  no message id of its own); the decision stands. Details: [`api/agui.md`](../api/agui.md#run-binding).
 
 ## Context
 
