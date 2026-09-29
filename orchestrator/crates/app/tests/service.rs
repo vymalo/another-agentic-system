@@ -191,6 +191,34 @@ async fn list_agents_reads_live_cards_and_fails_closed() {
 }
 
 #[tokio::test]
+async fn describe_agent_is_one_agent_with_its_live_card() {
+    let w = World::new();
+    let app = w.app();
+    let coder = app.describe_agent(&AgentId::new("coder")).await.unwrap();
+    assert_eq!(coder.name, "Coder");
+    let card = coder.card.unwrap();
+    assert_eq!(card.version.as_deref(), Some("1.0.0"));
+    assert_eq!(card.releases.unwrap().default_channel, "stable");
+    assert!(
+        app.describe_agent(&AgentId::new("nobody")).await.is_none(),
+        "not configured"
+    );
+    // Fail closed, live, never cached.
+    w.agent.set_card_down("coder", true);
+    let down = app.describe_agent(&AgentId::new("coder")).await.unwrap();
+    assert_eq!(down.name, "Coder");
+    assert!(down.card.is_none());
+    w.agent.set_card_down("coder", false);
+    assert!(
+        app.describe_agent(&AgentId::new("coder"))
+            .await
+            .unwrap()
+            .card
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn other_users_threads_are_not_found() {
     let w = World::new();
     let app = w.app();

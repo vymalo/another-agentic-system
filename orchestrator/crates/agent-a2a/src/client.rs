@@ -350,6 +350,7 @@ impl AgentClient for A2aAgentClient {
         let card = self.fetch_card(ep).await?;
         Ok(AgentCardInfo {
             description: Some(card.description.clone()).filter(|d| !d.trim().is_empty()),
+            version: Some(card.version.clone()).filter(|v| !v.trim().is_empty()),
             releases: releases_from_card(&card),
         })
     }

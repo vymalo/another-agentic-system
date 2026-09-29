@@ -39,6 +39,7 @@ pub fn uuid_like(salt: u64) -> String {
 pub struct Resp {
     pub status: u16,
     pub content_type: String,
+    pub headers: reqwest::header::HeaderMap,
     pub body: Vec<u8>,
 }
 
@@ -146,6 +147,36 @@ impl Stream {
     /// Whether the server closed the stream.
     pub fn ended(&self) -> bool {
         self.ended
+    }
+
+    /// Frames up to and including the first one `stop` accepts; panics if the stream ends or
+    /// stays silent for `T` first. The stream stays usable.
+    pub async fn until(&mut self, stop: impl Fn(&Frame) -> bool) -> Vec<Frame> {
+        let mut out = Vec::new();
+        loop {
+            let Some(frame) = self.next(T).await else {
+                panic!(
+                    "the stream ended or stalled (ended: {}); got {out:?}",
+                    self.ended
+                );
+            };
+            let done = stop(&frame);
+            out.push(frame);
+            if done {
+                return out;
+            }
+        }
+    }
+
+    /// Frames up to and including the next terminal event of a run.
+    pub async fn through_run(&mut self) -> Vec<Frame> {
+        self.until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+            .await
+    }
+
+    /// Whether nothing arrives for `quiet` (comments do not count).
+    pub async fn is_quiet_for(&mut self, quiet: Duration) -> bool {
+        self.next(quiet).await.is_none() && !self.ended
     }
 
     /// Everything up to the end of the stream (a run's response ends after its terminal event).
@@ -304,6 +335,71 @@ impl Harness {
         resp_of(req.send().await.unwrap()).await
     }
 
+    /// `GET /agui/threads/{thread}/connect`, unchecked.
+    pub async fn connect_raw(
+        &self,
+        thread: &str,
+        user: Option<&str>,
+        last_event_id: Option<&str>,
+        query: Option<&str>,
+    ) -> reqwest::Response {
+        let path = match query {
+            Some(q) => format!("/agui/threads/{thread}/connect?{q}"),
+            None => format!("/agui/threads/{thread}/connect"),
+        };
+        let mut req = self
+            .client
+            .get(self.url(&path))
+            .header("Accept", "text/event-stream");
+        if let Some(u) = user {
+            req = req.header("X-Auth-Request-Email", u);
+        }
+        if let Some(id) = last_event_id {
+            req = req.header("Last-Event-ID", id);
+        }
+        req.send().await.unwrap()
+    }
+
+    /// A connect that must be accepted: its stream.
+    pub async fn connect(&self, thread: &str, user: &str, last_event_id: Option<i64>) -> Stream {
+        self.connect_with(thread, user, last_event_id, None).await
+    }
+
+    /// `?mode=run`.
+    pub async fn connect_run(
+        &self,
+        thread: &str,
+        user: &str,
+        last_event_id: Option<i64>,
+    ) -> Stream {
+        self.connect_with(thread, user, last_event_id, Some("mode=run"))
+            .await
+    }
+
+    async fn connect_with(
+        &self,
+        thread: &str,
+        user: &str,
+        last_event_id: Option<i64>,
+        query: Option<&str>,
+    ) -> Stream {
+        let resp = self
+            .connect_raw(
+                thread,
+                Some(user),
+                last_event_id.map(|n| n.to_string()).as_deref(),
+                query,
+            )
+            .await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "refused: {}",
+            resp.text().await.unwrap()
+        );
+        Stream::new(resp)
+    }
+
     pub async fn post_empty(&self, path: &str, user: &str) -> Resp {
         resp_of(
             self.client
@@ -365,9 +461,11 @@ pub async fn resp_of(resp: reqwest::Response) -> Resp {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
+    let headers = resp.headers().clone();
     Resp {
         status,
         content_type,
+        headers,
         body: resp.bytes().await.unwrap().to_vec(),
     }
 }

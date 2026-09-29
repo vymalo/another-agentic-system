@@ -100,7 +100,7 @@ fn is_terminal(event: &agui::Event) -> bool {
 
 /// One frame as an SSE message: `data:` is the event as JSON, and `id:` (the log's `seq`) is
 /// there when the frame is a resume point. There is no `event:` name; consumers ignore it.
-fn sse(frame: &Frame) -> SseEvent {
+pub(crate) fn sse(frame: &Frame) -> SseEvent {
     let event = match SseEvent::default().json_data(&frame.event) {
         Ok(event) => event,
         Err(e) => {

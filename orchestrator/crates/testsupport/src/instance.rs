@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use orch_api::ApiConfig;
 use orch_app::{App, Dispatcher, DispatcherConfig};
 use orch_ports::Ports;
@@ -34,7 +35,8 @@ pub fn fast_dispatcher() -> DispatcherConfig {
 /// One orchestrator process: the HTTP API and a dispatcher over a shared [`App`].
 ///
 /// Dropping it, or [`TestInstance::kill`], aborts both tasks without any cleanup: that is what
-/// a crashed process looks like (leases are not released).
+/// a crashed process looks like (leases are not released), and the responses still streaming
+/// are cut mid-body, so a client sees the connection break instead of a clean end.
 pub struct TestInstance {
     /// `http://127.0.0.1:<port>`.
     pub base_url: String,
@@ -42,6 +44,40 @@ pub struct TestInstance {
     /// `None` for an instance that only serves the API.
     dispatcher: Option<JoinHandle<()>>,
     shutdown: CancellationToken,
+    /// Cancelled when the process "dies": streaming bodies break.
+    crash: CancellationToken,
+}
+
+/// Breaks a response body when `crash` is cancelled: the body ends with an I/O error, which
+/// hyper turns into an aborted connection (no terminating chunk), as a dead process would.
+async fn break_on_crash(
+    crash: CancellationToken,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let (parts, body) = next.run(request).await.into_parts();
+    let data = body.into_data_stream();
+    let stream = futures::stream::unfold((data, false), move |(mut data, dead)| {
+        let crash = crash.clone();
+        async move {
+            if dead {
+                return None;
+            }
+            tokio::select! {
+                () = crash.cancelled() => Some((
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        "the process died",
+                    )),
+                    (data, true),
+                )),
+                next = data.next() => {
+                    next.map(|chunk| (chunk.map_err(std::io::Error::other), (data, false)))
+                }
+            }
+        }
+    });
+    axum::response::Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
 impl TestInstance {
@@ -70,6 +106,7 @@ impl TestInstance {
             tokio::spawn(Dispatcher::new(Arc::clone(&app), config, owner).run(shutdown.clone()))
         });
         let keepalive = api.sse_keepalive;
+        let crash = CancellationToken::new();
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             api,
@@ -77,7 +114,11 @@ impl TestInstance {
                 orch_surface_agui::routes(Arc::clone(&app), keepalive),
                 orch_surface_chat_api::routes(app, keepalive),
             ],
-        );
+        )
+        .layer(axum::middleware::from_fn({
+            let crash = crash.clone();
+            move |request, next| break_on_crash(crash.clone(), request, next)
+        }));
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
@@ -86,11 +127,14 @@ impl TestInstance {
             server,
             dispatcher,
             shutdown,
+            crash,
         }
     }
 
-    /// Simulates a crash: no graceful shutdown, no lease release.
+    /// Simulates a crash: no graceful shutdown, no lease release, and the streams that were open
+    /// break.
     pub fn kill(&self) {
+        self.crash.cancel();
         self.server.abort();
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.abort();
@@ -100,6 +144,7 @@ impl TestInstance {
     /// Stops the dispatcher gracefully (it releases its leases) and the server.
     pub async fn shutdown(mut self) {
         self.shutdown.cancel();
+        self.crash.cancel();
         self.server.abort();
         if let Some(dispatcher) = &mut self.dispatcher {
             let _ = tokio::time::timeout(Duration::from_secs(10), dispatcher).await;
@@ -316,6 +361,58 @@ impl Chat {
             }
         }
         body
+    }
+
+    /// `GET /agui/threads/{id}/connect`: the raw answer, for a test that looks at the status, the
+    /// headers or the problem. `last_event_id` is sent verbatim; `query` is appended to the URL
+    /// (`"mode=run"`).
+    pub async fn agui_connect_raw(
+        &self,
+        id: &str,
+        last_event_id: Option<&str>,
+        query: Option<&str>,
+    ) -> reqwest::Response {
+        let path = match query {
+            Some(q) => format!("/agui/threads/{id}/connect?{q}"),
+            None => format!("/agui/threads/{id}/connect"),
+        };
+        let mut req = self
+            .request(reqwest::Method::GET, &path)
+            .header("Accept", "text/event-stream");
+        if let Some(n) = last_event_id {
+            req = req.header("Last-Event-ID", n);
+        }
+        req.send().await.unwrap()
+    }
+
+    /// Connects to a thread's AG-UI stream (replaying after `last_event_id`, and only the active
+    /// run's remainder with `mode_run`); panics unless the answer is 200.
+    pub async fn agui_connect(
+        &self,
+        id: &str,
+        last_event_id: Option<i64>,
+        mode_run: bool,
+    ) -> SseClient {
+        let resp = self
+            .agui_connect_raw(
+                id,
+                last_event_id.map(|n| n.to_string()).as_deref(),
+                mode_run.then_some("mode=run"),
+            )
+            .await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "the connect was refused: {}",
+            resp.text().await.unwrap()
+        );
+        SseClient::from_response(resp)
+    }
+
+    /// `GET /agui/agents/{agent}/capabilities` as `(status, body)`.
+    pub async fn agui_capabilities(&self, agent: &str) -> (u16, Value) {
+        self.get(&format!("/agui/agents/{agent}/capabilities"))
+            .await
     }
 
     /// Opens the SSE stream, optionally resuming after `Last-Event-ID`.

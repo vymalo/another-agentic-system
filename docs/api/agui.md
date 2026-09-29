@@ -8,10 +8,13 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 
 > Status: **partly built** (2026-09-29). Built: the wire types (`orch-agui-proto`), both directions
 > of the mapping below as pure code (`orch-agui-projection`), tested against the vendored schema
-> and the reference client, and the **run route** (`orch-surface-agui`: `POST /agui/agents/{agentId}`,
-> see [Run binding](#run-binding)), tested end to end. Not built: the connect and capabilities
-> routes, the web on AG-UI and A2UI: for those this page is the contract the next slices
-> implement. What is built and what is planned, as a diagram:
+> and the reference client, and the three routes of `orch-surface-agui`: the **run route**
+> (`POST /agui/agents/{agentId}`, see [Run binding](#run-binding)), the **connect stream**
+> (`GET /agui/threads/{threadId}/connect`, see [Connect binding](#connect-binding)) and the
+> **capabilities document** (`GET /agui/agents/{agentId}/capabilities`, see
+> [Capabilities document](#capabilities-document)), all tested end to end, the connect stream also
+> with a replica killed under it. Not built: the web on AG-UI and A2UI: for those this page is the
+> contract the next slices implement. What is built and what is planned, as a diagram:
 > [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were *verified
 > 2026-09-29* against the pages linked.
 
@@ -20,8 +23,8 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 | Operation | Route | Standard? | Status |
 |---|---|---|---|
 | Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built (an A2UI action is not yet) |
-| Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Planned |
-| Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Planned |
+| Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
+| Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built (the A2UI key is not yet declared) |
 | Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
 | Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated; mounted only with `ORCH_SURFACES` including `chat-api` |
 
@@ -176,47 +179,112 @@ Our extension, a custom transport in the sense of the
 model, the patterns and the processing rules, and frames JSON exactly as the SSE binding does. The
 sequence and state diagrams are in [ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md#the-connect-stream-our-extension).
 
-**Request.** `GET /agui/threads/{threadId}/connect`, `Accept: text/event-stream`.
+**Request.** `GET /agui/threads/{threadId}/connect`, `Accept: text/event-stream` (or none, `*/*`,
+`text/*`).
 
 | Input | Meaning |
 |---|---|
-| `Last-Event-ID` header | Resume after this seq. Absent: replay the whole thread. |
-| `?mode=run` | Close after the active run's terminal event, or right after the replay when no run is open. Default: stay open. |
+| `Last-Event-ID` header | Resume after this seq: the `id:` of the last frame the client holds. Absent or empty: replay the whole thread. |
+| `?mode=run` | Close after the active run's terminal event, or right after the replay when no run is open. Default: stay open. Any other value of `mode` is a 400. |
 
-**Errors before the stream.** 401 without an identity; 404 when the thread does not exist or
-belongs to someone else; 400 for a cursor that is not a non-negative integer. A cursor beyond the
-thread's last seq waits for new events.
+**Errors before the stream.** Each is an RFC 9457 problem and nothing was streamed.
+
+| Status | When |
+|---|---|
+| 400 | `Last-Event-ID` is not a non-negative integer; `mode` is not `run` |
+| 401 | No edge identity |
+| 404 | The thread does not exist for the caller: it is missing, its id is not a UUID, or it belongs to someone else. One answer for all three; nothing in it names the thread or its owner. |
+| 406 | `Accept` excludes `text/event-stream` |
+
+A cursor beyond the thread's last seq (stale or forged) counts as the last seq: the client waits
+for new events.
 
 **Response.** `200 text/event-stream`:
 
 1. **Replay.** The viewer-audience projection of every event after the cursor, as a sequence of
    runs. With a cursor inside an open run, it starts with a **preamble**: that run's
-   `RUN_STARTED` (same `runId`), `SUBAGENT_STARTED` for each open invocation and a
-   `STATE_SNAPSHOT`. Every stream thus begins with `RUN_STARTED`, as the spec requires.
+   `RUN_STARTED` (same `runId`), `SUBAGENT_STARTED` for the open invocation and a
+   `STATE_SNAPSHOT`, and, for a cursor that is not a resume point, the text message that was open,
+   opened again with what it had said. None of the preamble frames has an `id:`. When the thread is
+   idle at the cursor there is no preamble, and the stream begins with the `RUN_STARTED` of the
+   next run. Every stream thus begins with `RUN_STARTED`, as the spec requires.
 2. **Tail.** New log events, projected the same way, across runs, until the client closes (or the
-   active run closes, with `mode=run`). Between runs the stream is idle, not closed.
+   active run closes, with `mode=run`). Between runs the stream is idle, not closed. It also
+   carries runs nobody asked for (an event the orchestrator wrote itself).
 3. **Keepalive.** A comment line (`: keepalive`) at least every 15 s.
+
+`?mode=run` ends the stream at the first point at which the thread's log, as it stood when the
+client connected, has been replayed and no run is open: right after the replay of an idle thread
+(a thread with no events after the cursor gets an empty stream), and at the terminal event of the
+open run otherwise.
 
 **Resume points.** `id: <seq>` is written only on the last frame of a log event and only when no
 text message is open, so resuming never splits a message. Reconnecting with that id yields exactly
-the remaining frames (a property test).
+the remaining frames (property tests in `orch-agui-projection`; the replica-kill test in `orch-e2e`).
+A client that lost frames after its last `id:` gets them again in the replay: it dedupes by seq, or
+discards what it read after its last `id:`.
 
-**Announcement.** `GET /agui/agents/{agentId}/capabilities` returns `transport:{streaming:true,
-resumable:true}`. A standard client that ignores it still gets conforming runs from the run
-endpoint.
+**How a request is served.** Nothing about a connection lives in the process. The replica reads the
+thread's events from the first (`App::event_stream`: a log read, then wakeups, with a poll under
+them) and folds all of them into the projector; the events up to the cursor are folded and not
+written, which is what makes the preamble the same on every replica. So a client whose replica
+dies reconnects to any other with its last `id:`, and a hundred viewers of one thread are a hundred
+independent folds of the same log. Cost: a connect reads the thread's log from the start, even for
+a cursor at its end. When the process shuts down and the stream has caught up, it ends without a
+terminal event: a truncated stream, which the client resumes with its cursor. **Closing a connect
+stream never cancels a run.**
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant A as Replica A
+  participant B as Replica B
+  participant L as Postgres event log
+  C->>A: GET connect (no cursor)
+  A->>L: thread (404 before any byte), events from 1
+  A-->>C: replay, then live: frames, id: seq on resume points
+  Note over A: replica A dies, the connection breaks
+  C->>B: GET connect, Last-Event-ID: c
+  B->>L: thread, events from 1: fold up to c without writing
+  B-->>C: preamble (RUN_STARTED, SUBAGENT_STARTED, STATE_SNAPSHOT)
+  B-->>C: frames of the events after c, live from there
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Folding: connect (cursor c, 0 = none)
+  Folding --> Writing: the event at c is folded (preamble if a run is open)
+  Writing --> Writing: next event, frames with id seq
+  Writing --> Over: mode=run, replay done, no run open
+  Writing --> Truncated: the process shuts down, or the connection is lost
+  Truncated --> Folding: reconnect with the last id
+  Over --> [*]
+```
 
 ## Capabilities document
 
-`GET /agui/agents/{agentId}/capabilities` → `AgentCapabilities`:
+`GET /agui/agents/{agentId}/capabilities` → `200 application/json`, an `AgentCapabilities`
+(validated against the vendored schema in tests), `Cache-Control: no-store`. The spec fixes the
+shape and leaves retrieval open. Errors: 401 without an identity, 404 for an `agentId` that is not
+configured.
 
-- `identity` from the live A2A card (name, description, version);
-- `transport{streaming:true, resumable:true}`;
-- `humanInTheLoop{interrupts:true}`;
-- `multiAgent{subagents:true}`;
+- `identity`: `name` is the configured display name; `description` and `version` come from the live
+  A2A card, and are absent when the card has none or cannot be read;
+- `transport{streaming:true, resumable:true}`: `resumable` speaks of the connect stream above, a
+  transport of our own (the spec: "a consumer MUST NOT expect either of the standard bindings to
+  honour" it);
+- `humanInTheLoop{supported:true, interrupts:true}`;
+- `multiAgent{supported:true, delegation:true, subagents:[{name:<agentId>, description}]}`: the agent
+  runs as a subagent of the run, and `name` is the `name` of its `SUBAGENT_STARTED` (`subagents` is
+  a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
-  channels, revisions}` only when the card advertises the extension (ADR 0008), read live;
+  channels, revisions}` only when the card advertises the extension (ADR 0008);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}` only when the card
-  advertises A2UI (ADR 0013).
+  advertises A2UI (ADR 0013): **not built yet**, the key is never declared today.
+
+The card is read on every request and never cached (ADR 0008). A card that cannot be read in time
+(3 s) gives the smaller document (fail closed): identity with the name only, and no `custom`. The
+document is [the golden](examples/README.md#connect-streams) `capabilities-<agent>.json`.
 
 ## `vymalo.*` schemas
 

@@ -4,6 +4,13 @@
   key" `(agui, <threadId>:<messageId>)` of this ADR is realised, while there is no inbox table, as the
   event's per-thread idempotency key `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with
   no message id of its own); the decision stands. Details: [`api/agui.md`](../api/agui.md#run-binding).
+  Status note (2026-09-29): the connect stream and the capabilities document are built. The stream is
+  the viewer projection of the log folded from the first event on every connect, written from the
+  cursor (no state in the process, so any replica serves any viewer); `?mode=run` closes at the first
+  point where the replay is done and no run is open; a killed replica is covered by an end-to-end
+  test that reconnects to another one with `Last-Event-ID`. The document declares `multiAgent.subagents`
+  as a list, as the 1.0 schema types it (the flag of the plan was wrong). Details:
+  [`api/agui.md`](../api/agui.md#connect-binding).
 
 ## Context
 

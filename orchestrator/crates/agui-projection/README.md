@@ -26,13 +26,15 @@ orchestrator: no `orch-app`, no store, no HTTP. The AG-UI surface ([`orch-surfac
 | `Frame { event, resume_id }` | an AG-UI event and, on the last frame of a log event with no text message open, the SSE `id:` (`Some(seq)`) a client may resume from |
 | `Audience::{Viewer, Requester { held_message_ids }}` | the connect stream gets everything; the POST that sent the input skips the user messages it already holds (`held_message_ids(&input)`) |
 | `Projector::resume_preamble() -> Vec<Frame>` | re-opens the current run (same `RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`) for a client that reconnects mid-run; empty between runs |
+| `Connect::new(ThreadMeta, cursor, head, Follow)`, `feed(&Event) -> Vec<Frame>`, `finished()` | the connect stream as a fold: the events up to the cursor are folded and not written, the preamble comes at the cursor, every later event is written; `Follow::ThroughRun` (`?mode=run`) is `finished()` once the log as it stood at `head` is replayed and no run is open. A cursor beyond `head` is clamped to it |
+| `agent_capabilities(&AgentId, name, Option<&CardFacts>) -> AgentCapabilities` | the capabilities document from what the live card says; `None` (an unreadable card) gives the smaller one |
 | `Projector::view(&UserId) -> ThreadView` | what the thread holds, for `translate` |
 | `translate(&RunAgentInput, &ThreadView) -> Result<Vec<Input>, InputError>` | new user message, `resume` answer or cancel, or attach; `translate_with_warnings` also returns what was ignored |
 | `InputError::http_status()` | the status (400, 409, 422) of a request refused before the stream (including a `runId` reused for new input) |
 | `thread_id_of`, `release_selector`, `held_message_ids` | the request members a surface reads itself |
 
 ```rust
-use orch_agui_projection::{Audience, Projector, ThreadMeta};
+use orch_agui_projection::{Audience, Connect, Follow, Projector, ThreadMeta};
 
 let mut projector = Projector::new(meta);
 for event in log {
@@ -41,7 +43,12 @@ for event in log {
     }
 }
 // A client reconnects with Last-Event-ID = c: fold the events up to c, discard their frames,
-// send `resume_preamble()`, then keep applying the events after c.
+// send `resume_preamble()`, then keep applying the events after c. `Connect` is that, packaged:
+let mut connect = Connect::new(meta, cursor, head, Follow::Forever);
+for event in log {
+    for frame in connect.feed(&event) { /* write it */ }
+    if connect.finished() { break; } // only with Follow::ThroughRun
+}
 ```
 
 ## Rules the fold keeps
@@ -75,6 +82,14 @@ Offline, no database. `cargo test -p orch-agui-projection`:
   is open at a terminal event; resuming from any resume point gives exactly the suffix, and the
   preamble plus the suffix is a well-formed stream; the requester differs from the viewer only in
   the messages it holds.
+- `tests/connect.rs`: `Connect` over the same random logs. From every cursor the stream is the preamble of
+  the state at the cursor followed by the frames of every later event, which is what an uninterrupted
+  stream wrote after that `id:` (the frames a client held plus the reconnect are the stream once); the
+  result is well formed; `?mode=run` writes what the default writes and ends at the first idle point at
+  or after the end of the log as it stood at connect time, for every head and cursor; the edges by hand
+  (a cursor beyond the head, the preamble at the cursor before the next event, an idle thread, a gap).
+- `tests/capabilities.rs`: the document with and without release channels, and for an unreadable card,
+  validated against the schema.
 - `tests/translate.rs`: every row of the inbound table, and that re-sending the whole transcript
   never duplicates input.
 - `tests/golden.rs`: [`docs/api/examples/agui/*.agui.json`](../../../docs/api/examples/README.md) are

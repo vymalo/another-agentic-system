@@ -135,6 +135,7 @@ impl ScriptedAgent {
             AgentId::new(agent),
             AgentCardInfo {
                 description: Some("scripted agent with releases".to_owned()),
+                version: Some("1.0.0".to_owned()),
                 releases: Some(releases),
             },
         );
@@ -349,6 +350,7 @@ impl AgentClient for ScriptedAgent {
         }
         Ok(st.cards.get(&ep.id).cloned().unwrap_or(AgentCardInfo {
             description: Some("scripted agent".to_owned()),
+            version: Some("1.0.0".to_owned()),
             releases: None,
         }))
     }

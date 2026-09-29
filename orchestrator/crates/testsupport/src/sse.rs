@@ -155,6 +155,30 @@ impl SseClient {
         }
     }
 
+    /// Collects AG-UI frames until one satisfies `stop` (inclusive); panics on timeout or end.
+    /// The stream stays usable: this is for a stream that goes on (a connect stream).
+    pub async fn frames_until(
+        &mut self,
+        within: Duration,
+        stop: impl Fn(&Frame) -> bool,
+    ) -> Vec<Frame> {
+        let deadline = tokio::time::Instant::now() + within;
+        let mut out = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let frame = self.next_frame(left).await.unwrap_or_else(|| {
+                panic!(
+                    "the stream ended or timed out before the awaited frame; got so far: {out:?}"
+                )
+            });
+            let done = stop(&frame);
+            out.push(frame);
+            if done {
+                return out;
+            }
+        }
+    }
+
     /// The next *event* as `(seq, kind, data)`, skipping comments; `None` on timeout or end.
     pub async fn next_event(
         &mut self,

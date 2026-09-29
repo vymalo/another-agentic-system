@@ -83,7 +83,7 @@ flowchart LR
   subgraph REPLICA["Orchestrator process: stateless, any number, one binary (ORCH_ROLE: all, control-plane, worker)"]
     direction TB
     api["<b>orch-api</b><br/>identity layer, resource API, health"]
-    surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run route), chat-api: built, the default<br/>agui connect, a2a: planned"]
+    surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities), chat-api: built, the default<br/>a2a: planned"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event streams"]
     disp["<b>Dispatcher</b><br/>claims outbox rows, delegates, applies replies"]
     adapters["adapters chosen in bin/orchestrator<br/>PgStore, PgWakeup, A2aAgentClient"]
@@ -293,8 +293,9 @@ turns one chat message into a pull request (how: [`dev/README.md`](../dev/README
 The user-facing protocol is decided to be **AG-UI 1.0**, with the event log as the only source of
 truth ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md); the mapping tables, endpoints and
 `vymalo.*` schemas are [`api/agui.md`](api/agui.md)). The chat turn above is what runs. The
-projection is built as pure code, and the run route that serves it is built; the connect stream and
-the capabilities document are not.
+projection is built as pure code, and the routes that serve it are built: the run route, the connect
+stream (replay, cursor, following across runs) and the capabilities document. The web still follows
+the chat API's stream.
 
 ```mermaid
 flowchart LR
@@ -310,7 +311,7 @@ flowchart LR
     es["orch-app<br/>App::event_stream(user, thread, after)<br/>replay, then live"]
     pj["orch-agui-projection<br/>Projector::apply(event, Audience)<br/>resume_preamble()"]
     fr["Frame: AG-UI event + resume_id"]
-    sse["orch-surface-agui<br/>SSE: data: frame, id: seq<br/>run route (connect: planned)"]
+    sse["orch-surface-agui<br/>SSE: data: frame, id: seq<br/>run route and connect stream"]
     cli["AG-UI client"]
     log --> es --> pj --> fr --> sse --> cli
   end
@@ -324,7 +325,7 @@ flowchart LR
 | Log → frames | `orch-agui-projection`: `Projector` (audiences, runs, subagents, interrupts, `resume_preamble`); a function of the log, with no async and no I/O | |
 | `RunAgentInput` → input | `orch-agui-projection::translate` (new message, `resume`, cancel, attach, refusals with their HTTP status) | |
 | Conformance | Schema validation of every frame; well-formedness properties; resume-from-any-point property; goldens read through `@ag-ui/client` 1.0.0 by `tools/agui-conformance` in CI | |
-| HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature | `GET /agui/threads/{id}/connect`, `GET /agui/agents/{agentId}/capabilities` |
+| HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, follows across runs and replicas); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature | |
 | Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (there is no inbox table yet) | |
 | The web | Follows the chat API's SSE stream | `@assistant-ui/react-ag-ui` with the connect stream ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) |
 | Generative UI | | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)): `ui_surface` and `ui_action` events; `forwardedProps.a2uiAction` is ignored with a warning today |
