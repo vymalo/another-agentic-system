@@ -26,6 +26,10 @@ pub enum Input {
         user: UserId,
         /// Text.
         text: String,
+        /// The id the surface gave the message (an AG-UI message id), recorded in the log.
+        message_id: Option<String>,
+        /// The id of the run the surface started or continued with it, recorded in the log.
+        run_id: Option<String>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -161,11 +165,20 @@ fn prefixed(prefix: &str, detail: &Option<String>) -> String {
     }
 }
 
-fn user_message(user: &UserId, text: &str) -> Vec<Command> {
+fn user_message(
+    user: &UserId,
+    text: &str,
+    message_id: &Option<String>,
+    run_id: &Option<String>,
+) -> Vec<Command> {
     vec![
         append(
             Actor::user(user),
-            EventBody::UserMessage(UserMessageData::new(text)),
+            EventBody::UserMessage(UserMessageData {
+                text: text.to_owned(),
+                message_id: message_id.clone(),
+                run_id: run_id.clone(),
+            }),
         ),
         Command::Delegate {
             text: text.to_owned(),
@@ -180,9 +193,19 @@ pub fn transition(
 ) -> Result<(ThreadState, Vec<Command>), TransitionError> {
     let state = *state;
     match input {
-        Input::UserMessage { user, text } => match state {
-            ThreadState::Queued | ThreadState::Working => Ok((state, user_message(user, text))),
-            ThreadState::Blocked => Ok((ThreadState::Queued, user_message(user, text))),
+        Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+        } => match state {
+            ThreadState::Queued | ThreadState::Working => {
+                Ok((state, user_message(user, text, message_id, run_id)))
+            }
+            ThreadState::Blocked => Ok((
+                ThreadState::Queued,
+                user_message(user, text, message_id, run_id),
+            )),
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::Finished { state })
             }
