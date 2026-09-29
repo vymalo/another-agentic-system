@@ -15,12 +15,14 @@
 //! | `slow` | `working`, then runs until cancelled |
 //! | `chunks` | `working`, one artifact sent as three appended chunks, `completed` |
 //! | `fail` | `working`, `failed("scripted failure")` |
+//! | `talk` | `working`, `working("Reading the repository")`, an agent `Message` "Plan: add a test", artifact `echo: <text>`, `completed` |
 //!
 //! With [`FakeAgentOptions::releases`] the card declares the release-channels extension, a new
 //! task starts with a `Task` frame whose metadata records `{requested, revision}`, every event
 //! echoes that metadata, and an unknown release fails the task (never the default).
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -121,6 +123,8 @@ pub struct FakeAgentOptions {
     pub releases: Option<FakeReleases>,
     /// `false` makes `SubscribeToTask` answer `UNSUPPORTED_OPERATION`, forcing `GetTask` polling.
     pub resubscribe: bool,
+    /// Where to listen. `None` (the default) binds `127.0.0.1:0`, a free port.
+    pub bind: Option<SocketAddr>,
 }
 
 impl Default for FakeAgentOptions {
@@ -129,6 +133,7 @@ impl Default for FakeAgentOptions {
             bearer: None,
             releases: None,
             resubscribe: true,
+            bind: None,
         }
     }
 }
@@ -205,9 +210,12 @@ impl Drop for FakeAgent {
 }
 
 impl FakeAgent {
-    /// Starts an agent on `127.0.0.1:0`.
+    /// Starts an agent on [`FakeAgentOptions::bind`] (default `127.0.0.1:0`).
     pub async fn spawn(opts: FakeAgentOptions) -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bind = opts
+            .bind
+            .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
+        let listener = tokio::net::TcpListener::bind(bind).await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let shared = Arc::new(Shared {
             calls: Mutex::new(Vec::new()),
@@ -533,6 +541,15 @@ impl TaskCtx {
         })
     }
 
+    /// A standalone agent `Message` frame (not a status message).
+    fn agent_message(&self, text: &str) -> StreamResponse {
+        let mut m = Message::new(Role::Agent, vec![Part::text(text)]);
+        m.task_id = Some(self.task_id.clone());
+        m.context_id = Some(self.context_id.clone());
+        m.metadata = self.metadata.clone();
+        StreamResponse::Message(m)
+    }
+
     fn artifact(
         &self,
         artifact_id: &str,
@@ -666,6 +683,17 @@ async fn script(
         }
         "ask" => {
             let (a, done) = finish(shared.next_artifact_id(), format!("answered: {text}"));
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
+        "talk" => {
+            emit(
+                &tx,
+                ctx.status(TaskState::Working, Some("Reading the repository")),
+            )
+            .await?;
+            emit(&tx, ctx.agent_message("Plan: add a test")).await?;
+            let (a, done) = finish(shared.next_artifact_id(), format!("echo: {text}"));
             emit(&tx, a).await?;
             emit(&tx, done).await?;
         }
