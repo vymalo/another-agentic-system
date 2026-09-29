@@ -2,7 +2,9 @@
 
 The orchestrator service: the composition root that wires the Postgres store,
 the A2A adapter, the dispatcher, the resource API and the interaction surfaces
-chosen by `ORCH_SURFACES` into one stateless process.
+chosen by `ORCH_SURFACES` into one stateless process. `ORCH_ROLE` says which
+halves the process runs: the control plane, a worker, or both
+([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)).
 
 ## Where it sits
 
@@ -17,6 +19,11 @@ what the service does lives in [`orch-app`](../../crates/app/README.md) and
 ([`orch-surface-chat-api`](../../crates/surface-chat-api/README.md)). Processes are stateless; the only
 persistence is Postgres
 ([ADR 0001](../../../docs/decisions/0001-rust-state-machine-on-postgres.md)).
+The role enum (`Role`) and the supervisor (`Host`) are not ours: they come from
+the `adam-host` crate of [adam-rs](https://github.com/vymalo/another-adam-rs),
+a git dependency pinned to a full commit sha in `orchestrator/Cargo.toml`
+(ADR 0015, decision 4); a PR bumps it. It brings two crates into the lock file,
+`adam-host` and `adam-error`, and nothing else new.
 Running it, the container image, configuration and shutdown are documented in
 [`orchestrator/README.md`](../../README.md); the design is in
 [`docs/orchestrator.md`](../../../docs/orchestrator.md).
@@ -25,9 +32,9 @@ Running it, the container image, configuration and shutdown are documented in
 
 | File | What |
 |---|---|
-| `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` half of the service stopped, `1` otherwise) |
+| `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
 | `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
-| `src/boot.rs` | `run(cfg, shutdown)`, in three parts: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`); `control_plane` (the HTTP server: health, the resource API, the configured surfaces; a future that ends when its `CancellationToken` is cancelled); `worker` (the dispatcher, same contract). `supervise` drives any list of such halves: the first to end on its own is fatal (exit `70`), then readiness flips, every half is cancelled and they are awaited in order, each for `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher releases its leases as it stops). `run` starts both; there is no role flag yet, so a later change can run one half by building only its future (a worker-only process can serve probes with [`orch_api::health_router`](../../crates/api/README.md)) |
+| `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher as a worker component, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher releases its leases as it stops). Readiness flips first, so probes answer 503 for the whole drain |
 
 ## Environment
 
@@ -37,7 +44,8 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string, never logged |
 | `AGENTS_FILE` | required | YAML list of `{id, name, cardUrl, tokenEnv?}` ([`agents.example.yaml`](../../agents.example.yaml)) |
-| `LISTEN_ADDR` | `0.0.0.0:8080` | |
+| `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
+| `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
 | `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning |
 | `DATABASE_MAX_CONNECTIONS` | `10` | at least 2 |
 | `DISPATCHER_CONCURRENCY` | `32` | |
@@ -46,6 +54,25 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `ORCH_SURFACES` | `chat-api` | comma-separated surfaces to mount (`--surfaces`); unknown, empty, repeated or not compiled in is a startup error |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
+
+### Roles
+
+`ORCH_ROLE` is `adam_host::Role`, a closed enum owned by adam-rs, so the names are the same for every
+host (adam-coder reads its own `ROLE`). Every role runs the migrations, needs `DATABASE_URL` and
+`AGENTS_FILE`, and binds `LISTEN_ADDR`.
+
+| Role | Starts | Serves on `LISTEN_ADDR` | Ready when |
+|---|---|---|---|
+| `all` (default) | HTTP server and dispatcher, as before the role existed | health, resource API, surfaces | the database is migrated and answers |
+| `control-plane` | HTTP server; **no dispatcher**, so nothing is delivered to an agent from this process | health, resource API, surfaces | the database is migrated and answers |
+| `worker` | dispatcher, and a router with only `/healthz` and `/readyz` | health only: every other path is 404, with or without an identity | the database answers and the dispatcher has started |
+
+The two halves share nothing but Postgres (outbox, thread version compare-and-swap, `LISTEN/NOTIFY`;
+[ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)), so a control plane
+and its workers may be any number of processes on any machines. A thread created through a control
+plane stays `queued` until some worker runs; a worker that dies mid-task hands it over through the
+outbox lease, as before. On shutdown the server drains before the dispatcher stops; a worker's probe
+router outlives its dispatcher, so a draining worker answers 503, not connection refused.
 
 The authoritative table, with the meaning of each variable, is in
 [`orchestrator/README.md`](../../README.md#configuration). Keep the two in step.
@@ -67,7 +94,9 @@ binary is `orchestrator` (`cargo run -p orchestrator`).
 
 * Unit tests in `src/config.rs`: no database, no environment (defaults, the
   environment/flag mapping, unknown, empty and repeated surfaces, a surface not
-  compiled in, `--help` naming every variable).
+  compiled in, `--help` naming every variable, the role: default `all`, each
+  value, blank, unknown, the flag collected raw). `src/main.rs` maps every
+  `HostError` to exit 70.
 * `tests/smoke.rs`: the built executable as a process. Configuration-error
   tests always run (the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
@@ -75,7 +104,14 @@ binary is `orchestrator` (`cargo run -p orchestrator`).
   `--surfaces chat-api` serving the legacy routes. With a database: `/healthz`, `/readyz`, 401 without
   identity, a thread completed through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
-  database with a SIGKILL mid-task.
+  database with a SIGKILL mid-task. The roles: `--role worker` (over a
+  nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` and answers 404 on
+  `/api/...`; a `control-plane` process serves the API but the thread stays
+  `queued` and the agent is never called until a worker process starts, then
+  it completes; one control plane and two workers, where the worker that holds
+  the delegation is SIGKILLed and the other finishes it (message delivered once,
+  events once each); a worker stopped on SIGTERM within its grace hands a running
+  task over at once.
 
 | Variable | Meaning |
 |---|---|

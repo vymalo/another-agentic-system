@@ -80,7 +80,7 @@ flowchart LR
     edge["oauth2-proxy in production<br/>Caddy stand-in in compose: authenticates nobody<br/>sets X-Auth-Request-Email"]
   end
   web["<b>web</b>: Next.js + assistant-ui<br/>serves the UI only<br/>no API routes, no server-side calls"]
-  subgraph REPLICA["Orchestrator replica: stateless, any number, all identical"]
+  subgraph REPLICA["Orchestrator process: stateless, any number, one binary (ORCH_ROLE: all, control-plane, worker)"]
     direction TB
     api["<b>orch-api</b><br/>identity layer, resource API, health"]
     surfaces["surfaces mounted by ORCH_SURFACES<br/>chat-api: built, the default<br/>agui, a2a: planned"]
@@ -124,9 +124,11 @@ flowchart LR
   without it (fail closed), so it must only run behind a proxy that strips client-supplied copies.
   Locally, `edge` is Caddy and replaces the header with `dev@example.com`
   ([`dev/README.md`](../dev/README.md)).
-- **Every replica runs both halves**: the HTTP server (`orch-api` plus the mounted surfaces) and the
-  dispatcher. A replica that dies loses nothing: its outbox leases lapse and another replica
-  resumes the agent's task. Any replica can serve any thread's stream, because streams read the log.
+- **A process runs the halves its role asks for** (`ORCH_ROLE`, ADR 0015): the HTTP server
+  (`orch-api` plus the mounted surfaces) as the **control plane**, the dispatcher as a **worker**, or
+  both (`all`, the default). A worker serves only `/healthz` and `/readyz`. The two halves meet only in
+  Postgres, so control planes and workers scale apart. A process that dies loses nothing: its
+  outbox leases lapse and another replica resumes the agent's task. Any replica can serve any thread's stream, because streams read the log.
 - **Agents are A2A agent-card URLs from a static `AGENTS_FILE`**, read once at boot; the cards
   themselves are read live and never cached. A release selection is offered only when the live card
   advertises the release-channels extension (ADR 0008).
@@ -406,5 +408,8 @@ silent "done".
 - **netcup** (`kubectl --context admin@netcup`) is the natural home: CNPG runs
   there and `*.sls.servers.segning.pro` resolves to its Traefik.
 - Deployed via ArgoCD from `WhyThatFunction/home-os` like everything else.
+- The orchestrator is one image with a role per Deployment: `control-plane` pods for users and
+  `worker` pods for agent work, or `all` in one pod for development and small installs
+  ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
 - The system's own footprint is small: stateless orchestrator replicas, the
   Next.js web chat surface, and a Postgres database. Agents run on their hosts.

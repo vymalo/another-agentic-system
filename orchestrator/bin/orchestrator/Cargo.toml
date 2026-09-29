@@ -18,6 +18,7 @@ default = ["surface-chat-api"]
 surface-chat-api = ["dep:orch-surface-chat-api"]
 
 [dependencies]
+adam-host.workspace = true
 orch-core.workspace = true
 orch-ports.workspace = true
 orch-app.workspace = true

@@ -47,7 +47,8 @@ An empty value counts as unset.
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string. Never logged. |
 | `AGENTS_FILE` | required | YAML list of `{id, name, cardUrl, tokenEnv?}`, see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. The first entry is the default agent the chat UI preselects ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)). |
-| `LISTEN_ADDR` | `0.0.0.0:8080` | |
+| `LISTEN_ADDR` | `0.0.0.0:8080` | Control plane: the API. Worker: the probes only. |
+| `ORCH_ROLE` | `all` | What this process runs: `all`, `control-plane` (server, API and surfaces; no dispatcher) or `worker` (dispatcher, and a router with only `/healthz` and `/readyz`). Flag `--role`; the enum is `adam_host::Role` ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)). The role table is in [`bin/orchestrator`](bin/orchestrator/README.md#roles). An unknown value is a startup error. |
 | `ORCH_SURFACES` | `chat-api` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `chat-api`, the legacy interaction routes, deprecated in favour of AG-UI ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md)); `agui` arrives with its own slice. An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-chat-api`) is not in the build is a startup error. The resource API and health are always mounted. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |
@@ -68,6 +69,8 @@ docker run --rm -p 8080:8080 -e DATABASE_URL=... -e AGENTS_FILE=/agents.yaml \
   -v "$PWD/orchestrator/agents.yaml:/agents.yaml:ro" orchestrator
 ```
 
+The build fetches one git dependency, `adam-host`, from `github.com/vymalo/another-adam-rs` (a public
+repository, pinned by commit sha), so the builder needs network access to github.com as well as crates.io.
 Multi-stage (cargo-chef for the dependency layer), running as uid 65532 on
 `gcr.io/distroless/cc-debian12:nonroot` with the same Debian 12 glibc as the
 builder. CI builds it on every pull request, runs it against a Postgres service
@@ -81,7 +84,10 @@ database to answer).
 ### Shutdown
 
 On SIGTERM or SIGINT the process drains instead of dying, so a rolling update
-neither drops requests nor waits for leases to expire.
+neither drops requests nor waits for leases to expire. The order is that of
+`adam_host::Host`: the control plane first, then the workers. A process that
+does not run a half skips its step (a `worker` has no server to drain, and a
+`control-plane` no dispatcher).
 
 ```mermaid
 sequenceDiagram
@@ -106,7 +112,7 @@ stateDiagram-v2
   Starting --> Ready: migrated, listener attached, server bound
   Starting --> [*]: bad config (exit 78), unreachable database (exit 69), listen address taken (exit 71)
   Ready --> Draining: SIGTERM / SIGINT
-  Ready --> [*]: server or dispatcher died or panicked (exit 70)
+  Ready --> [*]: a component (server or dispatcher) died or panicked (exit 70)
   Draining --> [*]: drained (exit 0)
 ```
 
@@ -131,7 +137,7 @@ change of the composition root, never a runtime plugin.
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
 | [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
 | [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: chat API + dispatcher + A2A adapter + fake agent over real HTTP, on either store. |
-| [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: flags, environment (clap) and `AGENTS_FILE` parsing (`config.rs`, unit-tested), and the surfaces to mount and the wiring, startup and graceful shutdown (`boot.rs`). No logic of its own. |
+| [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: flags, environment (clap) and `AGENTS_FILE` parsing (`config.rs`, unit-tested), the role (`ORCH_ROLE`, `adam_host::Role`), and the surfaces to mount and the wiring, startup and graceful shutdown on `adam_host::Host` (`boot.rs`). No logic of its own. |
 
 Every crate has its own README (role, public API, environment, tests); update it
 in the same change as the crate's API, environment variables or tests. The docs
@@ -207,8 +213,8 @@ about the request; transport text (URLs, proxy bodies) stays in the log.
 | corrupt data, a rejected statement, a bug | `Corrupt`, `Internal` | 500 |
 
 Exit codes (sysexits.h) are found by walking the error chain: 78 configuration,
-69 Postgres unreachable at boot, 71 listen address unavailable, 70 a half of the
-service stopped or panicked, 1 anything else.
+69 Postgres unreachable at boot, 71 listen address unavailable, 70 a component of
+the service stopped or panicked, 1 anything else.
 
 ## MVP simplifications
 

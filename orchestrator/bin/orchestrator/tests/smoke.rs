@@ -210,6 +210,7 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--database-url", "DATABASE_URL"),
         ("--agents-file", "AGENTS_FILE"),
         ("--listen-addr", "LISTEN_ADDR"),
+        ("--role", "ORCH_ROLE"),
         ("--surfaces", "ORCH_SURFACES"),
         ("--auth-dev-user", "AUTH_DEV_USER"),
         ("--database-max-connections", "DATABASE_MAX_CONNECTIONS"),
@@ -222,6 +223,9 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         assert!(help.contains(flag), "--help lacks {flag}:\n{help}");
         assert!(help.contains(var), "--help lacks {var}:\n{help}");
     }
+    for role in ["all", "control-plane", "worker"] {
+        assert!(help.contains(role), "--help does not name the role {role}");
+    }
 }
 
 #[test]
@@ -232,6 +236,7 @@ fn every_setting_is_read_from_its_variable() {
     let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
     for (var, bad) in [
         ("LISTEN_ADDR", "nowhere"),
+        ("ORCH_ROLE", "controlplane"),
         ("ORCH_SURFACES", "agui"),
         ("ORCH_SURFACES", ","),
         ("AUTH_DEV_USER", "not-an-email"),
@@ -285,6 +290,33 @@ fn a_flag_wins_over_its_variable() {
     let log = run.log();
     assert!(
         log.contains("unknown surface") && log.contains("agui"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_role_flag_wins_over_its_variable_and_a_bad_role_is_a_config_error() {
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    // The variable is valid; the flag is not, and the flag decides.
+    let mut run = spawn_with_args(
+        &scratch,
+        "role.log",
+        &["--role", "nowhere"],
+        &[
+            ("ORCH_ROLE", "worker"),
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    let status = run.wait(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(78), "EX_CONFIG: {}", run.log());
+    let log = run.log();
+    assert!(
+        log.contains("ORCH_ROLE is invalid")
+            && log.contains("nowhere")
+            && log.contains("control-plane"),
         "{log}"
     );
 }
@@ -511,6 +543,18 @@ impl Replica {
         agents: &Path,
         extra: &[(&str, &str)],
     ) -> Self {
+        Self::start_with(scratch, log_name, database_url, agents, &[], extra)
+    }
+
+    /// [`Replica::start`] with command-line `args` as well (`--role worker`).
+    fn start_with(
+        scratch: &Scratch,
+        log_name: &str,
+        database_url: &str,
+        agents: &Path,
+        args: &[&str],
+        extra: &[(&str, &str)],
+    ) -> Self {
         let addr = format!("127.0.0.1:{}", free_port());
         let mut env = vec![
             ("DATABASE_URL", database_url),
@@ -521,7 +565,7 @@ impl Replica {
         ];
         env.extend_from_slice(extra);
         Replica {
-            run: std::cell::RefCell::new(spawn_logging_to(scratch, log_name, &env)),
+            run: std::cell::RefCell::new(spawn_with_args(scratch, log_name, args, &env)),
             base: format!("http://{addr}"),
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
         }
@@ -754,4 +798,355 @@ async fn sigterm_with_a_running_task_exits_within_the_grace() {
     assert_eq!(agent.cancels().len(), 1);
     let status = second.run.borrow_mut().terminate(Duration::from_secs(20));
     assert!(status.success(), "log:\n{}", second.run.borrow().log());
+}
+
+/// `GET url` with the identity header, as a status code.
+async fn status_as_alice(client: &reqwest::Client, url: &str) -> u16 {
+    client
+        .get(url)
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn a_worker_serves_probes_and_no_api() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (_agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    // The flag says worker, the variable says nonsense: the flag wins, so this starts at all.
+    let worker = Replica::start_with(
+        &scratch,
+        "worker.log",
+        &url,
+        &agents,
+        &["--role", "worker"],
+        &[("ORCH_ROLE", "nonsense")],
+    );
+    worker.wait_ready().await;
+    let base = &worker.base;
+    for path in ["/healthz", "/readyz"] {
+        assert_eq!(
+            http_status(&worker.client, &format!("{base}{path}")).await,
+            Some(200),
+            "{path}"
+        );
+    }
+    // No resource API and no surface: not even a 401, because no route matches (fail closed
+    // twice: nothing is served, and what is not served needs no identity to say so).
+    for path in ["/api/agents", "/api/threads", "/api/threads/x/events"] {
+        assert_eq!(
+            http_status(&worker.client, &format!("{base}{path}")).await,
+            Some(404),
+            "{path} without identity"
+        );
+        assert_eq!(
+            status_as_alice(&worker.client, &format!("{base}{path}")).await,
+            404,
+            "{path} with identity"
+        );
+    }
+    let post = worker
+        .client
+        .post(format!("{base}/api/threads"))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .json(&serde_json::json!({ "agentId": "fake", "text": "hi" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(post.status().as_u16(), 404, "a worker creates no thread");
+
+    let log = worker.run.borrow().log();
+    assert!(log.contains("\"role\":\"worker\""), "{log}");
+    assert!(
+        log.contains("\"surfaces\":\"\""),
+        "no surface is mounted: {log}"
+    );
+    let status = worker.run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = worker.run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("shutting down"), "{log}");
+}
+
+#[tokio::test]
+async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    let cp = Replica::start_with(
+        &scratch,
+        "cp.log",
+        &url,
+        &agents,
+        &["--role", "control-plane"],
+        &[("ORCH_INSTANCE_ID", "cp")],
+    );
+    cp.wait_ready().await;
+    let chat = cp.chat();
+    // The control plane serves the whole API ...
+    let (status, agents_body) = chat.get("/api/agents").await;
+    assert_eq!(status, 200);
+    assert_eq!(agents_body[0]["id"], "fake");
+    let id = chat.create_thread("fake", "gate role split", None).await;
+
+    // ... but nothing delivers the delegation: with a dispatcher in the process this thread
+    // is `working` within milliseconds (the other smoke tests), so a few seconds of `queued`
+    // and an agent that never heard of it is the absence of one.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(chat.state(&id).await, "queued");
+    assert!(
+        agent.calls().is_empty(),
+        "no worker, so no call to the agent"
+    );
+    assert_eq!(agent.rpc_count("send_streaming_message"), 0);
+
+    // A worker process appears; the control plane and the worker share only the database.
+    let worker = Replica::start_with(
+        &scratch,
+        "worker.log",
+        &url,
+        &agents,
+        &[],
+        &[("ORCH_ROLE", "worker"), ("ORCH_INSTANCE_ID", "w1")],
+    );
+    worker.wait_ready().await;
+    chat.wait_state(&id, "working").await;
+    // The stream a user holds open on the control plane carries what the worker committed.
+    let mut sse = chat.stream(&id, None).await;
+    assert_eq!(sse.status, 200);
+    eventually("the agent executes the task", || async {
+        (agent.executions().len() == 1).then_some(())
+    })
+    .await;
+    agent.release_gate();
+    let frames = sse
+        .collect_until(Duration::from_secs(20), |kind, data| {
+            kind == "thread_state" && data["data"]["state"] == "done"
+        })
+        .await;
+    let seqs: Vec<i64> = frames.iter().map(|(s, _, _)| *s).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5]);
+    chat.wait_state(&id, "done").await;
+    assert_eq!(
+        shape(&chat.events(&id).await),
+        [
+            "user_message",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    assert_eq!(agent.rpc_count("send_streaming_message"), 1);
+
+    // Each role exits cleanly on SIGTERM. The worker drains its dispatcher; the control plane
+    // has none.
+    for (name, replica) in [("worker", &worker), ("control plane", &cp)] {
+        let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+        let log = replica.run.borrow().log();
+        assert!(
+            status.success(),
+            "{name}: unclean exit {status:?}; log:\n{log}"
+        );
+        assert!(log.contains("shutting down"), "{name}: {log}");
+    }
+}
+
+#[tokio::test]
+async fn one_control_plane_and_two_workers_survive_a_killed_worker() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+    let lease = ("OUTBOX_LEASE_SECS", "3");
+
+    let cp = Replica::start_with(
+        &scratch,
+        "cp.log",
+        &url,
+        &agents,
+        &["--role", "control-plane"],
+        &[("ORCH_INSTANCE_ID", "cp"), lease],
+    );
+    let w1 = Replica::start_with(
+        &scratch,
+        "w1.log",
+        &url,
+        &agents,
+        &["--role", "worker"],
+        &[("ORCH_INSTANCE_ID", "w1"), lease],
+    );
+    let w2 = Replica::start_with(
+        &scratch,
+        "w2.log",
+        &url,
+        &agents,
+        &[],
+        &[("ORCH_ROLE", "worker"), ("ORCH_INSTANCE_ID", "w2"), lease],
+    );
+    for replica in [&cp, &w1, &w2] {
+        replica.wait_ready().await;
+    }
+    let chat = cp.chat();
+    let id = chat.create_thread("fake", "gate two workers", None).await;
+    chat.wait_state(&id, "working").await;
+    eventually("the agent executes the task", || async {
+        (agent.executions().len() == 1).then_some(())
+    })
+    .await;
+
+    // Which worker holds the delegation? Its lease names it.
+    let pool = db.pool("smoke-lease", 1).await;
+    let owner: String = eventually("a worker leases the delegation", || async {
+        sqlx::query_scalar(
+            "SELECT lease_owner FROM outbox WHERE kind = 'delegate' AND status = 'inflight'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+        .flatten()
+    })
+    .await;
+    let (victim, survivor) = match owner.as_str() {
+        "w1" => (&w1, &w2),
+        "w2" => (&w2, &w1),
+        other => panic!("the delegation is leased by {other:?}, not a worker"),
+    };
+
+    // The worker dies without a word: no shutdown, no lease release. The control plane and the
+    // other worker are untouched.
+    victim.run.borrow_mut().kill_hard();
+    assert!(cp.run.borrow_mut().exited().is_none());
+
+    // Once the lease has expired the surviving worker re-attaches to the running task; only
+    // then does the agent finish, so the rest of the run is really the survivor's.
+    eventually("the surviving worker re-attaches to the task", || async {
+        assert!(
+            survivor.run.borrow_mut().exited().is_none(),
+            "the surviving worker died; log:\n{}",
+            survivor.run.borrow().log()
+        );
+        (agent.rpc_count("subscribe_to_task") >= 1).then_some(())
+    })
+    .await;
+    agent.release_gate();
+    chat.wait_state(&id, "done").await;
+
+    assert_eq!(
+        agent.rpc_count("send_streaming_message"),
+        1,
+        "the message must reach the agent exactly once"
+    );
+    assert_eq!(agent.executions().len(), 1);
+    let events = chat.events(&id).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done"
+        ],
+        "each update exactly once"
+    );
+    let seqs: Vec<i64> = events.iter().map(|e| e["seq"].as_i64().unwrap()).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5], "seq stays contiguous");
+    for replica in [survivor, &cp] {
+        let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+        assert!(status.success(), "log:\n{}", replica.run.borrow().log());
+    }
+}
+
+#[tokio::test]
+async fn a_worker_stopped_with_a_running_task_hands_it_over_at_once() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    let cp = Replica::start_with(
+        &scratch,
+        "cp.log",
+        &url,
+        &agents,
+        &["--role", "control-plane"],
+        &[],
+    );
+    // The default lease (30 s) is left alone on purpose: only a graceful hand-over, not lease
+    // expiry, can make the second worker pick the task up within this test.
+    let first = Replica::start_with(
+        &scratch,
+        "w1.log",
+        &url,
+        &agents,
+        &["--role", "worker"],
+        &[("SHUTDOWN_GRACE_SECS", "3")],
+    );
+    cp.wait_ready().await;
+    first.wait_ready().await;
+    let chat = cp.chat();
+    let id = chat
+        .create_thread("fake", "slow worker sigterm", None)
+        .await;
+    chat.wait_state(&id, "working").await;
+    eventually("the agent executes the task", || async {
+        (agent.executions().len() == 1).then_some(())
+    })
+    .await;
+
+    let started = Instant::now();
+    let status = first.run.borrow_mut().terminate(Duration::from_secs(10));
+    let took = started.elapsed();
+    let log = first.run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(
+        took < Duration::from_secs(3) + Duration::from_secs(2),
+        "SHUTDOWN_GRACE_SECS=3 must bound the shutdown, it took {took:?}; log:\n{log}"
+    );
+
+    // The task was neither failed nor lost: a second worker takes it over at once and
+    // re-attaches, without sending the message again; a cancel through the control plane
+    // reaches the agent through it.
+    let second = Replica::start_with(
+        &scratch,
+        "w2.log",
+        &url,
+        &agents,
+        &["--role", "worker"],
+        &[],
+    );
+    second.wait_ready().await;
+    assert_eq!(chat.state(&id).await, "working");
+    eventually("the second worker resubscribes to the task", || async {
+        (agent.rpc_count("subscribe_to_task") >= 1).then_some(())
+    })
+    .await;
+    assert_eq!(agent.rpc_count("send_streaming_message"), 1);
+    assert_eq!(chat.cancel(&id).await, 202);
+    chat.wait_state(&id, "cancelled").await;
+    assert_eq!(agent.cancels().len(), 1);
+    for replica in [&second, &cp] {
+        let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+        assert!(status.success(), "log:\n{}", replica.run.borrow().log());
+    }
 }

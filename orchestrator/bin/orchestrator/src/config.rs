@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use adam_host::Role;
 use clap::Parser;
 use orch_app::AgentEntry;
 use orch_core::{AgentId, UserId};
@@ -275,6 +276,12 @@ pub struct Args {
     #[arg(long, env = "LISTEN_ADDR", value_name = "ADDR")]
     pub listen_addr: Option<String>,
 
+    /// What this process runs: `all` (the default), `control-plane` (the HTTP server, the
+    /// resource API and the surfaces; no dispatcher) or `worker` (the dispatcher, and a router
+    /// with only /healthz and /readyz on LISTEN_ADDR). Migrations run in every role.
+    #[arg(long, env = "ORCH_ROLE", value_name = "ROLE")]
+    pub role: Option<String>,
+
     /// Interaction surfaces to mount, comma separated (default chat-api, when the
     /// build has it). Known: chat-api (deprecated). The resource API and health are always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
@@ -321,6 +328,8 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// `AGENTS_FILE`, resolved: bearer tokens already read from their environment variables.
     pub agents: Vec<AgentEntry>,
+    /// `ORCH_ROLE`: which halves this process runs (`adam-host`'s closed enum; default `all`).
+    pub role: Role,
     /// `ORCH_SURFACES`: the interaction surfaces to mount, no repeats. Empty only when the
     /// variable is unset in a build that contains no default surface.
     pub surfaces: Vec<Surface>,
@@ -344,6 +353,7 @@ impl fmt::Debug for Config {
             .field("database_url", &"<redacted>")
             .field("listen_addr", &self.listen_addr)
             .field("agents", &self.agents)
+            .field("role", &self.role)
             .field("surfaces", &self.surfaces)
             .field("auth_dev_user", &self.auth_dev_user)
             .field("database_max_connections", &self.database_max_connections)
@@ -392,6 +402,14 @@ impl Config {
             source,
         })?;
         let agents = parse_agents(&text, &agents_file, get_env)?;
+
+        // Blank is unset, so `all`. The enum and its names belong to adam-host; a name it does
+        // not know is refused here, so the error is the usual one, naming the variable (78).
+        let role =
+            Role::from_optional(clean(args.role).as_deref()).map_err(|e| ConfigError::Invalid {
+                var: "ORCH_ROLE",
+                reason: e.to_string(),
+            })?;
 
         // A value that is set but names no surface (`,`) is refused, so a typo cannot silently
         // fall back to the default. Blank (`""`) is unset, like every other variable.
@@ -447,6 +465,7 @@ impl Config {
             database_url,
             listen_addr,
             agents,
+            role,
             surfaces,
             auth_dev_user,
             database_max_connections,
@@ -589,6 +608,7 @@ mod tests {
                 "DATABASE_URL" => &mut args.database_url,
                 "AGENTS_FILE" => &mut args.agents_file,
                 "LISTEN_ADDR" => &mut args.listen_addr,
+                "ORCH_ROLE" => &mut args.role,
                 "ORCH_SURFACES" => &mut args.surfaces,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
@@ -974,6 +994,73 @@ mod tests {
     }
 
     #[test]
+    fn the_role_defaults_to_all() {
+        assert_eq!(load(&base(), AGENTS).unwrap().role, Role::All);
+        // Blank is unset, like every other variable.
+        for blank in ["", "  "] {
+            let mut pairs = base();
+            pairs.push(("ORCH_ROLE", blank));
+            assert_eq!(load(&pairs, AGENTS).unwrap().role, Role::All, "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn every_role_is_accepted_by_its_name() {
+        for (name, role) in [
+            ("all", Role::All),
+            ("control-plane", Role::ControlPlane),
+            ("worker", Role::Worker),
+            (" Worker ", Role::Worker),
+            ("CONTROL-PLANE", Role::ControlPlane),
+        ] {
+            let mut pairs = base();
+            pairs.push(("ORCH_ROLE", name));
+            assert_eq!(load(&pairs, AGENTS).unwrap().role, role, "{name:?}");
+        }
+        // The names are adam-host's: every one of its roles is one this binary can run.
+        assert_eq!(Role::VALUES.len(), 3);
+    }
+
+    #[test]
+    fn an_unknown_role_is_a_config_error_naming_the_variable_and_the_choices() {
+        for bad in ["controlplane", "control_plane", "workers", "cp", "x"] {
+            let mut pairs = base();
+            pairs.push(("ORCH_ROLE", bad));
+            let err = load(&pairs, AGENTS).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        var: "ORCH_ROLE",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
+            let msg = err.to_string();
+            assert!(msg.starts_with("ORCH_ROLE is invalid"), "{msg}");
+            assert!(
+                msg.contains("all") && msg.contains("control-plane") && msg.contains("worker"),
+                "the message lists the accepted values: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_role_flag_is_collected_raw_and_validated_by_load() {
+        // Clap only collects the string, so a bad value is the same error from any source
+        // (the smoke tests cover the flag beating its variable in the real binary).
+        let args = Args::try_parse_from(["orchestrator", "--role", "worker"]).unwrap();
+        assert_eq!(args.role.as_deref(), Some("worker"));
+        let args = Args::try_parse_from(["orchestrator", "--role", "nowhere"]).unwrap();
+        assert_eq!(args.role.as_deref(), Some("nowhere"));
+        let mut args = args_of(&base());
+        args.role = Some("control-plane".to_owned());
+        let cfg = Config::load(args, env_of(&base()), |_| Ok(AGENTS.to_owned())).unwrap();
+        assert_eq!(cfg.role, Role::ControlPlane);
+    }
+
+    #[test]
     fn flags_are_parsed_by_clap_and_win_over_the_environment() {
         let args = Args::try_parse_from([
             "orchestrator",
@@ -1007,6 +1094,7 @@ mod tests {
             "DATABASE_URL",
             "AGENTS_FILE",
             "LISTEN_ADDR",
+            "ORCH_ROLE",
             "ORCH_SURFACES",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
@@ -1019,5 +1107,12 @@ mod tests {
             assert!(help.contains(var), "--help does not mention {var}:\n{help}");
         }
         assert!(help.contains("--surfaces"), "{help}");
+        assert!(help.contains("--role"), "{help}");
+        for name in ["all", "control-plane", "worker"] {
+            assert!(
+                help.contains(name),
+                "--help does not name the role {name}:\n{help}"
+            );
+        }
     }
 }

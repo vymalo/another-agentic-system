@@ -1,32 +1,33 @@
 //! The composition root: builds the concrete adapters, wires them into the application and
-//! runs the HTTP server and the dispatcher until told to stop (ADR 0009).
+//! runs the components the role asks for until told to stop (ADR 0009, ADR 0015).
 //!
 //! No logic lives here. What the service does is in `orch-app` and `orch-api`, written against
 //! the ports; this file only chooses the implementations (Postgres, A2A over HTTP, the system
 //! clock) and sequences start and stop.
 //!
-//! It is built from three parts, so that the two halves of the service can be composed
-//! separately:
+//! It is built from shared setup plus the components that the role (`ORCH_ROLE`) selects:
 //!
 //! * **shared setup** ([`setup`]): the pool, migrations, wakeup, the A2A client, the agent
-//!   directory and the [`App`], everything both halves need;
-//! * **the control plane** ([`control_plane`]): the HTTP server (health, the resource API and
-//!   the configured surfaces), which serves user inputs and event streams;
-//! * **the worker** ([`worker`]): the dispatcher, which delivers the outbox to agents.
+//!   directory and the [`App`], everything every role needs;
+//! * **the control plane** ([`control_plane_router`], [`serve`]): the HTTP server (health, the
+//!   resource API and the configured surfaces), which serves user inputs and event streams;
+//! * **the worker** ([`dispatcher`], and for a worker-only process [`serve`] over the
+//!   health-only router): the dispatcher, which delivers the outbox to agents.
 //!
-//! Each half is a future that ends when its `CancellationToken` is cancelled. [`run`] starts
-//! both and hands them to one supervisor ([`supervise`]) that knows nothing about either: it
-//! treats the first half to end on its own as fatal, then drains the halves in order.
+//! Every component is a future that ends when its `CancellationToken` is cancelled. [`run`]
+//! registers them with [`adam_host::Host`], the supervisor every adam-rs host shares: it starts
+//! only what the role asks for, treats the first component to end on its own as fatal, and stops
+//! the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS`.
 
-use std::future::{self, Future};
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
 
+use adam_host::Host;
 use anyhow::Context;
+use axum::Router;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, AppConfig, Dispatcher, DispatcherConfig};
@@ -34,7 +35,6 @@ use orch_core::BoxError;
 use orch_ports::{PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
-use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ConfigError, Surface};
@@ -43,7 +43,9 @@ use crate::config::{Config, ConfigError, Surface};
 /// retrying in the background, and consumers poll in the meantime.
 const LISTEN_ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Failures of a running service that the exit code tells apart (see `main::exit_code`).
+/// Failures of a running service that the exit code tells apart (see `main::exit_code`). A
+/// component that stops, ends early or panics is an [`adam_host::HostError`] instead, which the
+/// exit code maps too.
 #[derive(Debug, thiserror::Error)]
 pub enum Fatal {
     /// The listen address could not be bound.
@@ -54,16 +56,6 @@ pub enum Fatal {
         /// Why the bind failed.
         #[source]
         source: io::Error,
-    },
-    /// One half of the service (the HTTP server or the dispatcher) ended, failed or panicked
-    /// while the other was still running.
-    #[error("{half} stopped unexpectedly")]
-    Stopped {
-        /// Which half.
-        half: &'static str,
-        /// The error or panic that ended it, if it reported one.
-        #[source]
-        source: Option<BoxError>,
     },
 }
 
@@ -95,43 +87,14 @@ fn surface_routes<P: orch_ports::Ports>(
 
 type Stack = PortSet<PgStore, PgWakeup, A2aAgentClient, SystemClock, UuidV7Ids>;
 
-/// What every half needs, built once by [`setup`].
+/// What every role needs, built once by [`setup`].
 struct Shared {
     /// Kept to close the pool at the very end.
     store: PgStore,
     app: Arc<App<Stack>>,
 }
 
-/// The future of one half: it ends when its token is cancelled, or on its own if it fails.
-type HalfFuture = Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send + 'static>>;
-
-/// One half of the service, running as a task the supervisor can stop and wait for.
-struct Half {
-    /// Names the half in [`Fatal::Stopped`].
-    name: &'static str,
-    /// Logged when the half does not stop within the grace period and is aborted.
-    on_timeout: &'static str,
-    stop: CancellationToken,
-    task: JoinHandle<Result<(), BoxError>>,
-}
-
-impl Half {
-    fn spawn(
-        name: &'static str,
-        on_timeout: &'static str,
-        stop: CancellationToken,
-        future: HalfFuture,
-    ) -> Self {
-        Half {
-            name,
-            on_timeout,
-            stop,
-            task: tokio::spawn(future),
-        }
-    }
-}
-
-/// Connects, migrates and builds the [`App`] both halves run on.
+/// Connects, migrates and builds the [`App`] every role runs on.
 async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     let store = PgStore::connect_with(&cfg.database_url, cfg.database_max_connections)
         .await
@@ -157,7 +120,9 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
             tracing::warn!(agent = %e.id, "a bearer token is sent to this agent over plain http");
         }
     }
-    if let Some(user) = &cfg.auth_dev_user {
+    if cfg.role.runs_control_plane()
+        && let Some(user) = &cfg.auth_dev_user
+    {
         tracing::warn!(
             %user,
             "AUTH_DEV_USER is set: requests without X-Auth-Request-Email are served as this user. \
@@ -180,7 +145,8 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     Ok(Shared { store, app })
 }
 
-/// Binds the listen address; only a process that runs the control plane needs it.
+/// Binds the listen address. Every role needs it: a control plane serves its API there, a worker
+/// serves its probes.
 async fn listen(cfg: &Config) -> anyhow::Result<TcpListener> {
     let listener = TcpListener::bind(cfg.listen_addr)
         .await
@@ -188,24 +154,28 @@ async fn listen(cfg: &Config) -> anyhow::Result<TcpListener> {
             addr: cfg.listen_addr,
             source,
         })?;
+    let surfaces = if cfg.role.runs_control_plane() {
+        cfg.surfaces
+            .iter()
+            .map(|s| s.name())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        String::new()
+    };
     tracing::info!(
         addr = %listener.local_addr().context("listener address")?,
         instance = %cfg.instance_id,
+        role = %cfg.role,
         agents = cfg.agents.len(),
-        surfaces = %cfg.surfaces.iter().map(|s| s.name()).collect::<Vec<_>>().join(","),
+        surfaces = %surfaces,
         "orchestrator listening"
     );
     Ok(listener)
 }
 
-/// The control plane: the HTTP server over `app` (health, the resource API and the configured
-/// surfaces), serving until `stop` is cancelled and then draining its connections.
-fn control_plane(
-    cfg: &Config,
-    app: &Arc<App<Stack>>,
-    listener: TcpListener,
-    stop: CancellationToken,
-) -> Result<HalfFuture, ConfigError> {
+/// The control plane's router over `app`: health, the resource API and the configured surfaces.
+fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, ConfigError> {
     let api = ApiConfig {
         auth: AuthConfig {
             dev_user: cfg.auth_dev_user.clone(),
@@ -222,123 +192,134 @@ fn control_plane(
         .iter()
         .map(|&surface| surface_routes(surface, app, api.sse_keepalive))
         .collect::<Result<Vec<_>, _>>()?;
-    let router = orch_api::router_with_surfaces(Arc::clone(app), api, surfaces);
-    Ok(Box::pin(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(stop.cancelled_owned())
-            .await
-            .map_err(|e| Box::new(e) as BoxError)
-    }))
+    Ok(orch_api::router_with_surfaces(
+        Arc::clone(app),
+        api,
+        surfaces,
+    ))
 }
 
-/// The worker: the dispatcher over `app`, running until `stop` is cancelled. It then stops its
+/// Serves `router` on `listener` until `stop` is cancelled, then drains its connections.
+async fn serve(
+    listener: TcpListener,
+    router: Router,
+    stop: CancellationToken,
+) -> Result<(), BoxError> {
+    axum::serve(listener, router)
+        .with_graceful_shutdown(stop.cancelled_owned())
+        .await
+        .map_err(|e| Box::new(e) as BoxError)
+}
+
+/// The worker's dispatcher over `app`. It runs until its token is cancelled, then stops its
 /// workers and releases their leases.
-fn worker(cfg: &Config, app: &Arc<App<Stack>>, stop: CancellationToken) -> HalfFuture {
+fn dispatcher(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<Dispatcher<Stack>> {
     let dispatcher_cfg = DispatcherConfig {
         concurrency: cfg.dispatcher_concurrency,
         lease: cfg.outbox_lease,
         heartbeat: cfg.outbox_lease / 3,
         ..DispatcherConfig::default()
     };
-    let dispatcher = Dispatcher::new(Arc::clone(app), dispatcher_cfg, cfg.instance_id.clone());
-    Box::pin(async move {
-        dispatcher.run(stop).await;
-        Ok(())
-    })
+    Dispatcher::new(Arc::clone(app), dispatcher_cfg, cfg.instance_id.clone())
 }
 
-/// Resolves with the name and outcome of the first half whose task ends. Pending forever when
-/// there are no halves, so that only the shutdown signal can end a supervisor with none.
-async fn first_to_end(
-    halves: &mut [Half],
-) -> (&'static str, Result<Result<(), BoxError>, JoinError>) {
-    future::poll_fn(|cx| {
-        for half in halves.iter_mut() {
-            if let Poll::Ready(outcome) = Pin::new(&mut half.task).poll(cx) {
-                return Poll::Ready((half.name, outcome));
-            }
-        }
-        Poll::Pending
-    })
-    .await
-}
-
-/// Runs the halves until `shutdown` resolves or one of them ends on its own (then the result
-/// is an error, so the process exits non-zero and is restarted), then stops gracefully:
-///
-/// 1. `/healthz` and `/readyz` turn 503 and open event streams end once caught up, so clients
-///    reconnect elsewhere;
-/// 2. every half is told to stop;
-/// 3. the halves are awaited in the order given, each for at most `grace` and aborted after
-///    that. Order them so that the one that must drain first comes first (the server before the
-///    dispatcher, which releases its leases as it stops).
-async fn supervise(
-    app: &App<Stack>,
-    mut halves: Vec<Half>,
-    shutdown: impl Future<Output = ()>,
-    grace: Duration,
-) -> Result<(), Fatal> {
-    let failure = tokio::select! {
-        () = shutdown => None,
-        (name, outcome) = first_to_end(&mut halves) => Some(Fatal::Stopped {
-            half: name,
-            source: match outcome {
-                Ok(Ok(())) => None,
-                Ok(Err(e)) => Some(e),
-                Err(join) => Some(Box::new(join) as BoxError),
-            },
-        }),
-    };
-    tracing::info!("shutting down");
-
+/// Marks the process as stopping: `/healthz` and `/readyz` turn 503 and open event streams end
+/// once caught up, so clients reconnect elsewhere. Idempotent.
+fn mark_stopping(app: &App<Stack>) {
     app.set_shutting_down();
     app.set_ready(false);
-    for half in &halves {
-        half.stop.cancel();
-    }
-    for half in &mut halves {
-        if !half.task.is_finished() && tokio::time::timeout(grace, &mut half.task).await.is_err() {
-            tracing::warn!("{}", half.on_timeout);
-            half.task.abort();
-        }
-    }
-    match failure {
-        Some(fatal) => Err(fatal),
-        None => Ok(()),
+}
+
+/// Calls [`mark_stopping`] when dropped. A component holds one, so a component that ends or
+/// fails on its own (and is dropped, aborted or unwound) marks the process as stopping before
+/// the supervisor begins to stop the others.
+struct MarkStopping(Arc<App<Stack>>);
+
+impl Drop for MarkStopping {
+    fn drop(&mut self) {
+        mark_stopping(&self.0);
     }
 }
 
-/// Connects, migrates and serves until `shutdown` resolves, then stops gracefully (see
-/// [`supervise`]); the pool closes last. Each step is bounded by `cfg.shutdown_grace`.
+/// Connects, migrates and runs the components of `cfg.role` until `shutdown` resolves or one of
+/// them ends on its own (then the result is an error, so the process exits non-zero and is
+/// restarted), then stops gracefully:
 ///
-/// Runs both halves. A later change can run only one of them by building only its future.
+/// 1. `/healthz` and `/readyz` turn 503 (see [`mark_stopping`]);
+/// 2. the control plane is drained, then the workers are stopped, each for at most
+///    `cfg.shutdown_grace` and aborted after that (the dispatcher releases its leases as it
+///    stops); this is the `Host` stop order, and the server always goes first;
+/// 3. the pool closes last.
+///
+/// | role | components |
+/// |---|---|
+/// | `all` | the HTTP server (control plane), the dispatcher (worker) |
+/// | `control-plane` | the HTTP server; no dispatcher |
+/// | `worker` | the dispatcher, and the health-only router on `LISTEN_ADDR` |
 pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     install_crypto_provider();
 
     let Shared { store, app } = setup(&cfg).await?;
 
-    // Bind and build everything that can fail before any half starts.
+    // Bind and build everything that can fail before any component starts.
     let listener = listen(&cfg).await?;
-    let stop_server = CancellationToken::new();
-    let stop_dispatcher = CancellationToken::new();
-    let server = control_plane(&cfg, &app, listener, stop_server.clone())?;
-    let dispatcher = worker(&cfg, &app, stop_dispatcher.clone());
+    let grace = Some(cfg.shutdown_grace);
+    let host = Host::new(cfg.role)
+        .control_plane_drain(grace)
+        .worker_grace(grace);
 
-    let halves = vec![
-        Half::spawn(
-            "the HTTP server",
-            "connections did not drain in time; closing them",
-            stop_server,
-            server,
-        ),
-        Half::spawn(
-            "the dispatcher",
-            "the dispatcher did not stop in time; its leases will lapse on their own",
-            stop_dispatcher,
-            dispatcher,
-        ),
-    ];
-    let outcome = supervise(&app, halves, shutdown, cfg.shutdown_grace).await;
+    // Only a worker-only process runs the probes-only server; it is ended by the dispatcher
+    // (see below), through this token.
+    let probes_stop = CancellationToken::new();
+    let host = if cfg.role.runs_control_plane() {
+        let router = control_plane_router(&cfg, &app)?;
+        let mark = MarkStopping(Arc::clone(&app));
+        host.control_plane("the HTTP server", move |stop| async move {
+            let _mark = mark;
+            serve(listener, router, stop).await
+        })
+    } else {
+        // The health router is a worker-tier component, so the host would cancel it together
+        // with the dispatcher. It ignores that token and outlives the dispatcher instead: the
+        // dispatcher cancels `probes_stop` as it ends, so probes answer (503) for the whole
+        // drain and a liveness probe cannot kill a worker that is draining.
+        let router = orch_api::health_router(Arc::clone(&app));
+        let mark = MarkStopping(Arc::clone(&app));
+        let stop = probes_stop.clone();
+        host.worker("the health router", move |_host_stop| async move {
+            let _mark = mark;
+            serve(listener, router, stop).await
+        })
+    };
+
+    let dispatcher = dispatcher(&cfg, &app);
+    let mark = MarkStopping(Arc::clone(&app));
+    let ready_when_started = (!cfg.role.runs_control_plane()).then(|| Arc::clone(&app));
+    if ready_when_started.is_some() {
+        // A worker is ready once the store is reachable (`/readyz` pings it) and its dispatcher
+        // has started. The other roles start ready: the database is migrated and reachable.
+        app.set_ready(false);
+    }
+    let probes_open = probes_stop.drop_guard();
+    let host = host.worker("the dispatcher", move |stop| async move {
+        let _mark = mark;
+        // Dropped when the dispatcher ends, fails or is aborted: that ends the probes server.
+        let _probes_open = probes_open;
+        if let Some(app) = ready_when_started {
+            app.set_ready(true);
+        }
+        dispatcher.run(stop).await;
+        Ok(())
+    });
+
+    let stopping = Arc::clone(&app);
+    let outcome = host
+        .run(async move {
+            shutdown.await;
+            tracing::info!("shutting down");
+            mark_stopping(&stopping);
+        })
+        .await;
     store.pool().close().await;
     tracing::info!("stopped");
     outcome.map_err(Into::into)
