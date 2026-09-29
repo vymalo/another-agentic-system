@@ -1,0 +1,8 @@
+# Where the files under dev/coder/ come from. `dev/coder/check-vendored.sh` reads this file.
+#
+# Every file under dev/coder/wiremock/ and dev/coder/git-server/ is a byte-for-byte copy of the file
+# at the same path below dev/ in the repository and at the commit named here, for example
+# dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream. Never edit them here: change
+# them upstream, then update this commit, the copies and the coder image pin in compose.yaml together.
+repo=vymalo/another-adam-rs
+commit=22d7c6e126b8faec7fd2eca84259903ff25b02f0

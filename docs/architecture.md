@@ -55,6 +55,7 @@ This system does not care where an agent runs. Known hosts:
 
 | Host | What it adds |
 |---|---|
+| **adam-coder** (default agent) | An A2A 1.0 agent that clones a repository, works on a branch, runs the checks, pushes and opens a pull request. It is the default because it is the first entry of `AGENTS_FILE`; the orchestrator has no code path of its own for it. Published as an image (about 2.9 GB, `linux/amd64`). ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md), [The default agent](#the-default-agent)) |
 | **another-agentic-platform** (first-class) | Versioned agent services, release channels, scale-to-zero runtimes, per-run worktrees, credential broker. Its coding harness is ADK-Rust driving `opencode acp`. When a target comes from the platform, this system offers **release selection** through the platform's A2A extension. ([ADR 0008](decisions/0008-platform-integration-via-a2a-extension.md)) |
 | **kagent** | Declarative agents on Kubernetes, reached over A2A. |
 | **Anything else** | Any A2A server. |
@@ -229,6 +230,61 @@ and artifacts and agent messages keep the state. On a finished thread a user mes
 (409, start a new thread) and a late agent update is dropped. A `thread_state` event is appended
 only when a thread *enters* `blocked`, `done`, `failed` or `cancelled`. The full table, row by row,
 is in [Orchestrator: thread state and transitions](orchestrator.md#thread-state-and-transitions).
+
+### The default agent
+
+The default agent is the first entry of `AGENTS_FILE`, and in the dev stack that is
+[adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md)).
+`GET /api/agents` keeps the file's order, the chat UI preselects the first agent, and if its card
+cannot be read it stays first, listed without live details, instead of giving way to the next agent.
+The orchestrator reads the coder like any other agent (a card URL and a bearer token from `tokenEnv`)
+and sends the chat text unchanged, so the first message has to name the repository and the base branch.
+
+```mermaid
+sequenceDiagram
+  participant D as Orchestrator dispatcher
+  participant C as adam-coder
+  participant G as git remote
+  participant H as GitHub API
+  D->>C: GET /.well-known/agent-card.json (no token)
+  C-->>D: card (streaming, JSON-RPC URL = PUBLIC_URL)
+  D->>C: SendStreamingMessage, bearer token, text = repository + base branch
+  C-->>D: task submitted, then status working
+  C->>G: clone, work on a branch, run the checks, push
+  C-->>D: artifact branch (JSON data part)
+  C->>H: open the pull request
+  C-->>D: artifact pull_request (JSON data part)
+  C-->>D: status completed
+  Note over D,C: A dropped stream resumes with SubscribeToTask, or GetTask when the task is unknown. ListTasks is unsupported.
+```
+
+A2A task states become thread states through the pure transition function, exactly as for every
+other agent; the coder adds no state of its own. `submitted` changes nothing, and `rejected` is a
+failure whose detail starts with `rejected:`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued: thread created, the task is submitted
+  Queued --> Working: task working
+  Queued --> Blocked: task input-required or auth-required
+  Working --> Blocked: task input-required or auth-required
+  Blocked --> Working: task working again
+  Blocked --> Queued: the user answers, a new message
+  Queued --> Done: task completed
+  Working --> Done: task completed
+  Queued --> Failed: task failed or rejected
+  Working --> Failed: task failed or rejected
+  Queued --> Cancelled: task canceled
+  Working --> Cancelled: task canceled
+  Done --> [*]
+  Failed --> [*]
+  Cancelled --> [*]
+```
+
+The `branch` and `pull_request` artifacts arrive as JSON data parts, so the chat shows their JSON
+(`data.text` of the artifact event) and not a link until the coder also sends a URL part. The dev
+stack runs the published image against scripted mocks, and [`dev/coder-e2e.sh`](../dev/coder-e2e.sh)
+turns one chat message into a pull request (how: [`dev/README.md`](../dev/README.md#the-default-agent)).
 
 ### AG-UI: planned against built
 

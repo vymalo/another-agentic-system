@@ -1,10 +1,16 @@
 # Local development stack: Postgres, WireMock stand-ins for the A2A agents the orchestrator
-# drives, and (profile `app`) the orchestrator, the web UI and an edge proxy on one origin.
-# Everything binds to 127.0.0.1 and nothing here is a real secret. See README.md,
-# "Local development", and dev/README.md for the scenario switches.
+# drives, and (profile `app`) the orchestrator, the web UI, an edge proxy on one origin and the
+# default agent, adam-coder (ADR 0014), with its own mocks. Everything binds to 127.0.0.1 and
+# nothing here is a real secret. See README.md, "Local development", and dev/README.md for the
+# scenario switches.
 #
 #   docker compose up -d --wait                  # infrastructure + mocks (fast, nothing is built)
 #   docker compose --profile app up -d --build --wait   # ... plus orchestrator, web, edge -> http://127.0.0.1:8080
+#
+# The `app` profile also pulls the coder image (about 2.9 GB, linux/amd64 only) and builds the
+# git-server; `dev/coder-e2e.sh` then turns one chat message into a pull request. The coder is the
+# first entry of dev/agents.yaml, so it is the default agent. The other agents need only the
+# default profile: `docker compose up -d --wait` starts no coder.
 name: another-agentic-system
 
 x-wiremock: &wiremock
@@ -64,6 +70,7 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/orch
       AGENTS_FILE: /etc/orchestrator/agents.yaml
       MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
+      CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
       LOG_FORMAT: text
       # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
     volumes:
@@ -75,6 +82,8 @@ services:
         condition: service_healthy
       mock-agent-releases:
         condition: service_healthy
+    # No `depends_on` for `coder`: the agent card is read when a thread is delegated, never at boot, and a
+    # coder that is down leaves it first in the list and fails the thread like any agent that is down.
     # No healthcheck of its own: the distroless image has no shell or curl. `edge` probes /readyz through the proxy.
 
   web:
@@ -111,5 +120,111 @@ services:
       retries: 12
       start_period: 3s
 
+  # ---------------------------------------------------------------- the default agent --
+  # adam-coder (vymalo/another-adam-rs), the first entry of dev/agents.yaml (ADR 0014), wired to
+  # mocks vendored byte for byte from the same adam-rs commit (dev/coder/UPSTREAM, checked by
+  # dev/coder/check-vendored.sh): the model is a script that ends in a pull request. Every
+  # credential below is a dummy and every host is inside the compose network.
+
+  coder-postgres:
+    profiles: [app]
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # local development only
+      POSTGRES_DB: coder
+    volumes:
+      - coder-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d coder"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # OpenAI-compatible model endpoint with two scripts, chosen by the request's model: `mock-coder`
+  # (the coder) and `mock-opencode` (the OpenCode the coder starts). An off-script request is a 404.
+  # Journal: http://127.0.0.1:8091/__admin/requests (and /unmatched).
+  mock-openai:
+    <<: *wiremock
+    profiles: [app]
+    ports:
+      - "127.0.0.1:${MOCK_OPENAI_PORT:-8091}:8080"
+    volumes:
+      - ./dev/coder/wiremock/mock-openai/mappings:/home/wiremock/mappings:ro
+      - ./dev/coder/wiremock/mock-openai/__files:/home/wiremock/__files:ro
+
+  # The GitHub REST subset the coder uses (list and open pull requests).
+  # Journal: http://127.0.0.1:8092/__admin/requests
+  mock-github:
+    <<: *wiremock
+    profiles: [app]
+    ports:
+      - "127.0.0.1:${MOCK_GITHUB_PORT:-8092}:8080"
+    volumes:
+      - ./dev/coder/wiremock/mock-github/mappings:/home/wiremock/mappings:ro
+      - ./dev/coder/wiremock/mock-github/__files:/home/wiremock/__files:ro
+
+  # A git remote over smart HTTP, seeded with local/sandbox.git. It accepts any credentials, or none.
+  # From the host: http://127.0.0.1:8093/local/sandbox.git. From the coder: http://git-server:8080/local/sandbox.git.
+  git-server:
+    profiles: [app]
+    build:
+      context: ./dev/coder/git-server
+    image: another-agentic-system/git-server:dev
+    ports:
+      - "127.0.0.1:${GIT_SERVER_PORT:-8093}:8080"
+    volumes:
+      - git-data:/srv/git
+
+  # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag should be
+  # the adam-rs commit in dev/coder/UPSTREAM (sha-22d7c6e), which dev/coder/check-vendored.sh asserts.
+  # Verified 2026-09-29 (ghcr API, anonymous token): sha-22d7c6e is NOT published, because the coder
+  # workflow of adam-rs failed on that commit in its kubeconform step (HTTP 500 from the CRD catalog)
+  # and skipped the image job. sha-7f607d0 is the newest tag; from there to 22d7c6e adam-rs changed no
+  # crate or Docker file (only tests, mocks, compose, docs and workflows), so it is the same coder.
+  # Re-run that workflow, then replace this line with coder:sha-22d7c6e@sha256:<digest>.
+  coder:
+    profiles: [app]
+    image: ghcr.io/vymalo/another-adam-rs/coder:sha-7f607d0@sha256:8533d570eddf99a1e72af32644649af8bbaf3bb1d192735036ca9e7e9f73244e
+    depends_on:
+      coder-postgres:
+        condition: service_healthy
+      mock-openai:
+        condition: service_healthy
+      mock-github:
+        condition: service_healthy
+      git-server:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@coder-postgres:5432/coder
+      MODEL_BASE_URL: http://mock-openai:8080/v1
+      MODEL_API_KEY: mock-api-key # dummy: the mock accepts anything
+      MODEL: mock-coder # the coder's script
+      OPENCODE_MODEL: mock-opencode # OpenCode's script
+      GITHUB_API_URL: http://mock-github:8080
+      GITHUB_TOKEN: dev-github-token # dummy
+      A2A_BEARER_TOKENS: dev-coder-token # the orchestrator sends it as CODER_A2A_TOKEN
+      # The card advertises this URL and the orchestrator posts to it, so it is the compose name,
+      # not 127.0.0.1: an orchestrator on the host cannot use this coder.
+      PUBLIC_URL: http://coder:8080/
+      WORKSPACE_ROOT: /work
+      # Development only: repositories on git-server, over plain http. Never set these in production.
+      ALLOWED_REPO_HOSTS: git-server
+      ALLOW_LOCAL_REPOS: "true"
+    ports:
+      - "127.0.0.1:${CODER_PORT:-8090}:8080"
+    volumes:
+      - coder-work:/work
+    healthcheck:
+      # Plain TCP connect: the image is not guaranteed to ship curl.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
 volumes:
   postgres-data:
+  coder-postgres-data:
+  git-data:
+  coder-work:

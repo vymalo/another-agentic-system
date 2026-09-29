@@ -1,14 +1,15 @@
 #!/usr/bin/env sh
 # Drive one chat thread against a running orchestrator and print its event log.
 #
-#   dev/try-thread.sh "add a health endpoint"                 # default agent: mock-coder
+#   dev/try-thread.sh "add a health endpoint"                 # mock-coder (see AGENT_ID below)
 #   AGENT_ID=mock-coder-releases RELEASE=staging dev/try-thread.sh "do it"
 #   dev/try-thread.sh "ask which branch"                      # ends `blocked` ...
 #   THREAD_ID=<id> dev/try-thread.sh "main"                   # ... answer it (a follow-up message)
 #
 # Environment (all optional):
 #   BASE_URL    where the API is served     (default http://127.0.0.1:8080, the compose `edge`)
-#   AGENT_ID    target agent id             (default mock-coder; see dev/agents.yaml)
+#   AGENT_ID    target agent id             (default mock-coder, NOT the default agent of dev/agents.yaml,
+#               which is the real `coder`: use dev/coder-e2e.sh for that one; see dev/agents.yaml)
 #   RELEASE     channel or revision         (only for mock-coder-releases)
 #   THREAD_ID   post TEXT as a follow-up to this thread instead of creating one
 #   AUTH_EMAIL  X-Auth-Request-Email to send (default dev@example.com). Behind the compose
