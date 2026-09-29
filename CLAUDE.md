@@ -105,6 +105,12 @@ Not for direct use: `core-actionbook`, `core-agent-browser`, `core-dynamic-skill
 
 ## Code (when it starts)
 
+Every crate under `orchestrator/crates/` and `orchestrator/bin/` has a
+`README.md` next to its `Cargo.toml` (and `readme = "README.md"` in the
+manifest). Update it in the same PR as any change to the crate's public API,
+environment variables or tests. `tools/docs-check` fails when a crate has no
+README and checks its relative links; it cannot check accuracy, so review does.
+
 Rust: `thiserror` in library crates, `anyhow` in binaries, no `f64` for time or
 money, `jiff` for time, `sqlx` + `axum`. The `core` crate stays free of async
 and I/O so the compiler enforces purity.

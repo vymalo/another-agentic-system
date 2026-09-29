@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 description = "Postgres implementation of the orchestrator's ThreadStore and Wakeup ports (sqlx, LISTEN/NOTIFY, embedded migrations)."
+readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true

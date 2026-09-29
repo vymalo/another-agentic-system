@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 description = "Ports (traits) for every infrastructure boundary of the orchestrator, plus a conformance testkit and in-memory implementations."
+readme = "README.md"
 
 [features]
 default = []
