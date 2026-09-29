@@ -1,6 +1,6 @@
 # ADR 0004 — Protocols as closed enums, not a dynamic adapter registry
 
-- **Status:** accepted (2026-09-28). Amended (2026-09-28) by ADR 0009: the set of `Event`/`Command` variants stays closed; the implementations behind each port are swappable at build time.
+- **Status:** accepted (2026-09-28). Amended (2026-09-28) by ADR 0009: the set of `Event`/`Command` variants stays closed; the implementations behind each port are swappable at build time. Status note (2026-09-29): the decision stands. As built, the canonical inbound enum is named `Input` (in `orch-core`) and `Event` is the entry of the append-only log; `Command` is as described.
 
 ## Context
 
