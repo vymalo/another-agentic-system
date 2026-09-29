@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
-use orch_api::{ApiConfig, AuthConfig};
+use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, AppConfig, Dispatcher, DispatcherConfig};
 use orch_core::BoxError;
 use orch_ports::{PortSet, SystemClock, UuidV7Ids};
@@ -21,7 +21,7 @@ use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
+use crate::config::{Config, ConfigError, Surface};
 
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
 /// retrying in the background, and consumers poll in the meantime.
@@ -49,6 +49,32 @@ pub enum Fatal {
         #[source]
         source: Option<BoxError>,
     },
+}
+
+/// The routes of one surface, built from its adapter crate.
+///
+/// The configuration refuses a surface that is not compiled in, so the error arm below is a
+/// second line of defence, not a path a running service takes.
+fn surface_routes<P: orch_ports::Ports>(
+    surface: Surface,
+    app: &Arc<App<P>>,
+    sse_keepalive: Duration,
+) -> Result<SurfaceRoutes, ConfigError> {
+    match surface {
+        #[cfg(feature = "surface-chat-api")]
+        Surface::ChatApi => Ok(orch_surface_chat_api::routes(
+            Arc::clone(app),
+            sse_keepalive,
+        )),
+        #[cfg(not(feature = "surface-chat-api"))]
+        Surface::ChatApi => {
+            let _ = (app, sse_keepalive);
+            Err(ConfigError::SurfaceNotCompiled {
+                surface: surface.name(),
+                feature: surface.feature(),
+            })
+        }
+    }
 }
 
 type Stack = PortSet<PgStore, PgWakeup, A2aAgentClient, SystemClock, UuidV7Ids>;
@@ -127,6 +153,7 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
         addr = %listener.local_addr().context("listener address")?,
         instance = %cfg.instance_id,
         agents = cfg.agents.len(),
+        surfaces = %cfg.surfaces.iter().map(|s| s.name()).collect::<Vec<_>>().join(","),
         "orchestrator listening"
     );
 
@@ -136,15 +163,23 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
         Dispatcher::new(Arc::clone(&app), dispatcher_cfg, cfg.instance_id.clone())
             .run(stop_dispatcher.clone()),
     );
-    let router = orch_api::router(
-        Arc::clone(&app),
-        ApiConfig {
-            auth: AuthConfig {
-                dev_user: cfg.auth_dev_user.clone(),
-            },
-            ..ApiConfig::default()
+    let api = ApiConfig {
+        auth: AuthConfig {
+            dev_user: cfg.auth_dev_user.clone(),
         },
-    );
+        ..ApiConfig::default()
+    };
+    if cfg.surfaces.is_empty() {
+        tracing::warn!(
+            "no interaction surface is mounted: only the resource API and health are served"
+        );
+    }
+    let surfaces = cfg
+        .surfaces
+        .iter()
+        .map(|&surface| surface_routes(surface, &app, api.sse_keepalive))
+        .collect::<Result<Vec<_>, _>>()?;
+    let router = orch_api::router_with_surfaces(Arc::clone(&app), api, surfaces);
     let mut server = tokio::spawn({
         let stop = stop_server.clone();
         async move {

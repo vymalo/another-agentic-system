@@ -1,9 +1,14 @@
-//! Configuration: environment variables and the `AGENTS_FILE`.
+//! Configuration: command-line flags with environment fallback, and the `AGENTS_FILE`.
 //!
-//! Everything here is pure. The environment and the file system are read through closures
-//! ([`Config::load`]), so the tests never touch the process environment. Every problem is a
-//! [`ConfigError`] that names the variable, file or agent at fault, and none of them carries a
-//! secret value: startup fails fast and fails closed.
+//! [`Args`] is the clap layer: every setting is a flag whose value falls back to the
+//! environment variable the service has always read (`--listen-addr` / `LISTEN_ADDR`, and so
+//! on), so deployments do not change. Clap only *collects* the raw strings. Everything is then
+//! validated by [`Config::load`], which is pure: the file system and the variables named by an
+//! agent's `tokenEnv` are read through closures, and the tests build [`Args`] by hand, so they
+//! never touch the process environment. Keeping the validation out of clap keeps one error
+//! type: every problem is a [`ConfigError`] that names the variable, file or agent at fault,
+//! carries no secret value, and exits with the configuration code (78) rather than clap's
+//! usage code (2). Startup fails fast and fails closed.
 
 use std::fmt;
 use std::io;
@@ -11,6 +16,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use clap::Parser;
 use orch_app::AgentEntry;
 use orch_core::{AgentId, UserId};
 use orch_ports::AgentEndpoint;
@@ -37,6 +43,25 @@ pub enum ConfigError {
         var: &'static str,
         /// What is wrong with it.
         reason: String,
+    },
+    /// `ORCH_SURFACES` names a surface this binary does not know.
+    #[error("ORCH_SURFACES is invalid: unknown surface {name:?} (known: {known})")]
+    UnknownSurface {
+        /// The name as written.
+        name: String,
+        /// The known names, comma separated.
+        known: String,
+    },
+    /// `ORCH_SURFACES` names a surface whose Cargo feature was not compiled in.
+    #[error(
+        "ORCH_SURFACES is invalid: surface {surface:?} is not in this build \
+         (enable the Cargo feature {feature:?})"
+    )]
+    SurfaceNotCompiled {
+        /// The surface's name.
+        surface: &'static str,
+        /// The Cargo feature of the `orchestrator` package that provides it.
+        feature: &'static str,
     },
     /// `AGENTS_FILE` could not be read.
     #[error("cannot read AGENTS_FILE {}", path.display())]
@@ -113,6 +138,181 @@ impl LogFormat {
     }
 }
 
+/// An interaction surface: a set of HTTP routes over `App` that `ORCH_SURFACES` mounts.
+///
+/// A closed enum (ADR 0004). The resource API and health are not surfaces: they are always
+/// mounted. Each surface is an adapter crate behind a Cargo feature of this binary (ADR 0009):
+/// the feature decides what *can* be mounted, `ORCH_SURFACES` what *is*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Surface {
+    /// The legacy chat API interaction routes (`orch-surface-chat-api`). Deprecated.
+    ChatApi,
+}
+
+impl Surface {
+    /// Every surface this source tree knows, compiled in or not.
+    pub const ALL: &'static [Surface] = &[Surface::ChatApi];
+
+    /// The name used in `ORCH_SURFACES`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Surface::ChatApi => "chat-api",
+        }
+    }
+
+    /// The Cargo feature of the `orchestrator` package that compiles the surface in.
+    pub const fn feature(self) -> &'static str {
+        match self {
+            Surface::ChatApi => "surface-chat-api",
+        }
+    }
+
+    /// Whether this build contains the surface.
+    pub const fn compiled_in(self) -> bool {
+        match self {
+            Surface::ChatApi => cfg!(feature = "surface-chat-api"),
+        }
+    }
+
+    fn known() -> String {
+        Self::ALL
+            .iter()
+            .map(|s| s.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn parse(name: &str) -> Result<Self, ConfigError> {
+        let surface = Self::ALL
+            .iter()
+            .copied()
+            .find(|s| s.name() == name)
+            .ok_or_else(|| ConfigError::UnknownSurface {
+                name: name.to_owned(),
+                known: Self::known(),
+            })?;
+        if surface.compiled_in() {
+            Ok(surface)
+        } else {
+            Err(ConfigError::SurfaceNotCompiled {
+                surface: surface.name(),
+                feature: surface.feature(),
+            })
+        }
+    }
+}
+
+impl fmt::Display for Surface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The surfaces mounted when `ORCH_SURFACES` is not set, as far as this build contains them
+/// (a build without a surface's feature simply does not serve it by default, whereas *asking*
+/// for it by name is an error). The list moves with the AG-UI migration (ADR 0012): `chat-api`
+/// while it is the only surface.
+fn default_surfaces() -> Vec<Surface> {
+    [Surface::ChatApi]
+        .into_iter()
+        .filter(|s| s.compiled_in())
+        .collect()
+}
+
+/// Parses `ORCH_SURFACES`: a comma-separated list of surface names, at least one, no repeats,
+/// each known and compiled in. Whitespace around a name is ignored.
+fn parse_surfaces(raw: &str) -> Result<Vec<Surface>, ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        var: "ORCH_SURFACES",
+        reason,
+    };
+    let names: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Err(invalid(format!(
+            "the list is empty; name at least one of {}",
+            Surface::known()
+        )));
+    }
+    let mut surfaces: Vec<Surface> = Vec::with_capacity(names.len());
+    for name in names {
+        let surface = Surface::parse(name)?;
+        if surfaces.contains(&surface) {
+            return Err(invalid(format!("{name:?} is listed more than once")));
+        }
+        surfaces.push(surface);
+    }
+    Ok(surfaces)
+}
+
+/// The command line. Every flag falls back to the environment variable shown in `--help`.
+///
+/// The values are raw strings on purpose: [`Config::load`] validates them, so a bad value is
+/// one [`ConfigError`] naming the variable, whichever way it was supplied.
+#[derive(Debug, Default, Parser)]
+#[command(
+    name = "orchestrator",
+    version,
+    about = "The orchestration layer: chat surfaces over a Postgres event log and durable A2A delegation.",
+    after_help = "Every option can also be set through the environment variable shown as \
+[env: NAME]. A flag wins over its variable. An empty value counts as unset. The bearer token \
+of an agent is read from the variable its `tokenEnv` names in AGENTS_FILE, never from a flag. \
+Logging is filtered by RUST_LOG (default: info)."
+)]
+pub struct Args {
+    /// Postgres connection string (required). Never logged.
+    #[arg(long, env = "DATABASE_URL", value_name = "URL", hide_env_values = true)]
+    pub database_url: Option<String>,
+
+    /// YAML list of `{id, name, cardUrl, tokenEnv?}` (required).
+    #[arg(long, env = "AGENTS_FILE", value_name = "PATH")]
+    pub agents_file: Option<String>,
+
+    /// Address to listen on (default 0.0.0.0:8080).
+    #[arg(long, env = "LISTEN_ADDR", value_name = "ADDR")]
+    pub listen_addr: Option<String>,
+
+    /// Interaction surfaces to mount, comma separated (default chat-api, when the
+    /// build has it). Known: chat-api (deprecated). The resource API and health are always mounted.
+    #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
+    pub surfaces: Option<String>,
+
+    /// E-mail served for requests without X-Auth-Request-Email. Development only.
+    #[arg(long, env = "AUTH_DEV_USER", value_name = "EMAIL")]
+    pub auth_dev_user: Option<String>,
+
+    /// Pool size, at least 2 (default 10).
+    #[arg(long, env = "DATABASE_MAX_CONNECTIONS", value_name = "N")]
+    pub database_max_connections: Option<String>,
+
+    /// Outbox rows processed at once, at least 1 (default 32).
+    #[arg(long, env = "DISPATCHER_CONCURRENCY", value_name = "N")]
+    pub dispatcher_concurrency: Option<String>,
+
+    /// Seconds a crashed replica's claim blocks others, at least 3 (default 30).
+    #[arg(long, env = "OUTBOX_LEASE_SECS", value_name = "SECS")]
+    pub outbox_lease_secs: Option<String>,
+
+    /// Seconds a graceful shutdown may take, at least 1 (default 15).
+    #[arg(long, env = "SHUTDOWN_GRACE_SECS", value_name = "SECS")]
+    pub shutdown_grace_secs: Option<String>,
+
+    /// Names this replica in outbox leases (default $HOSTNAME-<uuid>).
+    #[arg(long, env = "ORCH_INSTANCE_ID", value_name = "ID")]
+    pub instance_id: Option<String>,
+
+    /// Log format, `json` or `text` (default json).
+    #[arg(long, env = "LOG_FORMAT", value_name = "FORMAT")]
+    pub log_format: Option<String>,
+
+    /// The host name, the prefix of the default instance id.
+    #[arg(long, env = "HOSTNAME", value_name = "NAME", hide = true)]
+    pub hostname: Option<String>,
+}
+
 /// The complete, validated configuration.
 pub struct Config {
     /// `DATABASE_URL`. May contain a password: never logged.
@@ -121,6 +321,9 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// `AGENTS_FILE`, resolved: bearer tokens already read from their environment variables.
     pub agents: Vec<AgentEntry>,
+    /// `ORCH_SURFACES`: the interaction surfaces to mount, no repeats. Empty only when the
+    /// variable is unset in a build that contains no default surface.
+    pub surfaces: Vec<Surface>,
     /// `AUTH_DEV_USER`: an identity for requests without `X-Auth-Request-Email`. Dev only.
     pub auth_dev_user: Option<UserId>,
     /// `DATABASE_MAX_CONNECTIONS` (at least 2: the wakeup listener holds one).
@@ -141,6 +344,7 @@ impl fmt::Debug for Config {
             .field("database_url", &"<redacted>")
             .field("listen_addr", &self.listen_addr)
             .field("agents", &self.agents)
+            .field("surfaces", &self.surfaces)
             .field("auth_dev_user", &self.auth_dev_user)
             .field("database_max_connections", &self.database_max_connections)
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
@@ -152,28 +356,28 @@ impl fmt::Debug for Config {
 }
 
 impl Config {
-    /// Loads the configuration from the process environment and the real file system.
-    pub fn from_process_env() -> Result<Self, ConfigError> {
+    /// Validates `args` against the process environment (for `tokenEnv`) and the real file
+    /// system.
+    pub fn from_args(args: Args) -> Result<Self, ConfigError> {
         Self::load(
+            args,
             |name| std::env::var(name).ok(),
             |path| std::fs::read_to_string(path),
         )
     }
 
-    /// Loads the configuration through `env` (variable lookup) and `read` (file contents).
-    /// An empty (or all-whitespace) variable counts as unset.
+    /// Validates `args`. `env` looks up the variables named by agents' `tokenEnv`, and `read`
+    /// returns the contents of `AGENTS_FILE`. An empty (or all-whitespace) value counts as unset.
     pub fn load(
+        args: Args,
         env: impl Fn(&str) -> Option<String>,
         read: impl Fn(&Path) -> io::Result<String>,
     ) -> Result<Self, ConfigError> {
-        let get = |name: &str| {
-            env(name)
-                .map(|v| v.trim().to_owned())
-                .filter(|v| !v.is_empty())
-        };
+        let clean = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let get_env = |name: &str| clean(env(name));
 
-        let database_url = get("DATABASE_URL").ok_or(ConfigError::Missing("DATABASE_URL"))?;
-        let listen_addr = get("LISTEN_ADDR").unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
+        let database_url = clean(args.database_url).ok_or(ConfigError::Missing("DATABASE_URL"))?;
+        let listen_addr = clean(args.listen_addr).unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
         let listen_addr = listen_addr
             .parse::<SocketAddr>()
             .map_err(|e| ConfigError::Invalid {
@@ -182,14 +386,21 @@ impl Config {
             })?;
 
         let agents_file =
-            PathBuf::from(get("AGENTS_FILE").ok_or(ConfigError::Missing("AGENTS_FILE"))?);
+            PathBuf::from(clean(args.agents_file).ok_or(ConfigError::Missing("AGENTS_FILE"))?);
         let text = read(&agents_file).map_err(|source| ConfigError::AgentsFileRead {
             path: agents_file.clone(),
             source,
         })?;
-        let agents = parse_agents(&text, &agents_file, |name| get(name))?;
+        let agents = parse_agents(&text, &agents_file, get_env)?;
 
-        let auth_dev_user = match get("AUTH_DEV_USER") {
+        // A value that is set but names no surface (`,`) is refused, so a typo cannot silently
+        // fall back to the default. Blank (`""`) is unset, like every other variable.
+        let surfaces = match clean(args.surfaces) {
+            None => default_surfaces(),
+            Some(raw) => parse_surfaces(&raw)?,
+        };
+
+        let auth_dev_user = match clean(args.auth_dev_user) {
             None => None,
             Some(email) if email.contains('@') => Some(UserId::new(&email)),
             Some(_) => {
@@ -201,33 +412,33 @@ impl Config {
         };
 
         let database_max_connections = number(
-            get("DATABASE_MAX_CONNECTIONS"),
+            clean(args.database_max_connections),
             "DATABASE_MAX_CONNECTIONS",
             DEFAULT_DATABASE_MAX_CONNECTIONS,
             2,
         )?;
         let dispatcher_concurrency = number(
-            get("DISPATCHER_CONCURRENCY"),
+            clean(args.dispatcher_concurrency),
             "DISPATCHER_CONCURRENCY",
             DEFAULT_DISPATCHER_CONCURRENCY,
             1,
         )?;
         let outbox_lease_secs = number(
-            get("OUTBOX_LEASE_SECS"),
+            clean(args.outbox_lease_secs),
             "OUTBOX_LEASE_SECS",
             DEFAULT_OUTBOX_LEASE_SECS,
             3,
         )?;
         let shutdown_grace_secs = number(
-            get("SHUTDOWN_GRACE_SECS"),
+            clean(args.shutdown_grace_secs),
             "SHUTDOWN_GRACE_SECS",
             DEFAULT_SHUTDOWN_GRACE_SECS,
             1,
         )?;
-        let instance_id = get("ORCH_INSTANCE_ID").unwrap_or_else(|| {
+        let instance_id = clean(args.instance_id).unwrap_or_else(|| {
             format!(
                 "{}-{}",
-                get("HOSTNAME").unwrap_or_else(|| "orchestrator".to_owned()),
+                clean(args.hostname).unwrap_or_else(|| "orchestrator".to_owned()),
                 uuid::Uuid::now_v7().simple()
             )
         });
@@ -236,6 +447,7 @@ impl Config {
             database_url,
             listen_addr,
             agents,
+            surfaces,
             auth_dev_user,
             database_max_connections,
             dispatcher_concurrency,
@@ -367,9 +579,35 @@ mod tests {
         move |name| map.get(name).cloned()
     }
 
+    /// The `Args` the process environment `pairs` would produce, built by hand so no test
+    /// depends on (or changes) the real environment. Variables that are not settings of the
+    /// service (the `tokenEnv` ones) stay in `pairs` and are read through `env_of`.
+    fn args_of(pairs: &[(&str, &str)]) -> Args {
+        let mut args = Args::default();
+        for (name, value) in pairs {
+            let slot = match *name {
+                "DATABASE_URL" => &mut args.database_url,
+                "AGENTS_FILE" => &mut args.agents_file,
+                "LISTEN_ADDR" => &mut args.listen_addr,
+                "ORCH_SURFACES" => &mut args.surfaces,
+                "AUTH_DEV_USER" => &mut args.auth_dev_user,
+                "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
+                "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
+                "OUTBOX_LEASE_SECS" => &mut args.outbox_lease_secs,
+                "SHUTDOWN_GRACE_SECS" => &mut args.shutdown_grace_secs,
+                "ORCH_INSTANCE_ID" => &mut args.instance_id,
+                "LOG_FORMAT" => &mut args.log_format,
+                "HOSTNAME" => &mut args.hostname,
+                _ => continue,
+            };
+            *slot = Some((*value).to_owned());
+        }
+        args
+    }
+
     fn load(pairs: &[(&str, &str)], agents_yaml: &str) -> Result<Config, ConfigError> {
         let yaml = agents_yaml.to_owned();
-        Config::load(env_of(pairs), move |_| Ok(yaml.clone()))
+        Config::load(args_of(pairs), env_of(pairs), move |_| Ok(yaml.clone()))
     }
 
     fn base<'a>() -> Vec<(&'a str, &'a str)> {
@@ -543,7 +781,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_agents_file_is_an_error_naming_the_path() {
-        let err = Config::load(env_of(&base()), |_| {
+        let err = Config::load(args_of(&base()), env_of(&base()), |_| {
             Err(io::Error::new(io::ErrorKind::NotFound, "no such file"))
         })
         .unwrap_err();
@@ -632,5 +870,154 @@ mod tests {
         assert_eq!(LogFormat::parse(Some("json")), LogFormat::Json);
         assert_eq!(LogFormat::parse(Some("weird")), LogFormat::Json);
         assert_eq!(LogFormat::parse(Some(" Text ")), LogFormat::Text);
+    }
+
+    #[cfg(feature = "surface-chat-api")]
+    #[test]
+    fn the_default_surface_is_the_chat_api() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert_eq!(cfg.surfaces, vec![Surface::ChatApi]);
+        // A blank value is unset, as for every variable.
+        let mut env = base();
+        env.push(("ORCH_SURFACES", "  "));
+        assert_eq!(load(&env, AGENTS).unwrap().surfaces, vec![Surface::ChatApi]);
+    }
+
+    #[cfg(feature = "surface-chat-api")]
+    #[test]
+    fn surfaces_are_a_comma_list_of_known_names() {
+        let with = |value: &'static str| {
+            let mut env = base();
+            env.push(("ORCH_SURFACES", value));
+            load(&env, AGENTS)
+        };
+        assert_eq!(with("chat-api").unwrap().surfaces, vec![Surface::ChatApi]);
+        assert_eq!(
+            with(" chat-api ,").unwrap().surfaces,
+            vec![Surface::ChatApi],
+            "whitespace and a trailing comma are tolerated"
+        );
+        assert!(matches!(
+            with("chat-api,chat-api").unwrap_err(),
+            ConfigError::Invalid {
+                var: "ORCH_SURFACES",
+                ..
+            }
+        ));
+        // The first bad name is the one reported.
+        let err = with("chat-api,agui").unwrap_err();
+        assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "agui"));
+    }
+
+    #[test]
+    fn an_unknown_surface_is_refused_naming_the_variable_and_the_known_ones() {
+        let mut env = base();
+        env.push(("ORCH_SURFACES", "agui"));
+        let err = load(&env, AGENTS).unwrap_err();
+        assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "agui"));
+        let shown = err.to_string();
+        assert!(shown.contains("ORCH_SURFACES"), "{shown}");
+        assert!(shown.contains("chat-api"), "names what is known: {shown}");
+        // Names are exact: no case folding.
+        env.pop();
+        env.push(("ORCH_SURFACES", "CHAT-API"));
+        assert!(matches!(
+            load(&env, AGENTS).unwrap_err(),
+            ConfigError::UnknownSurface { .. }
+        ));
+    }
+
+    #[test]
+    fn an_empty_surface_list_is_refused() {
+        for value in [",", " , ,"] {
+            let mut env = base();
+            env.push(("ORCH_SURFACES", value));
+            let err = load(&env, AGENTS).unwrap_err();
+            assert!(
+                matches!(&err, ConfigError::Invalid { var: "ORCH_SURFACES", reason }
+                    if reason.contains("empty")),
+                "{value:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_known_surface_names_its_feature() {
+        for surface in Surface::ALL {
+            assert!(surface.feature().starts_with("surface-"), "{surface}");
+            assert_eq!(surface.to_string(), surface.name());
+        }
+    }
+
+    #[cfg(feature = "surface-chat-api")]
+    #[test]
+    fn a_compiled_in_surface_is_accepted() {
+        assert!(Surface::ChatApi.compiled_in());
+    }
+
+    #[cfg(not(feature = "surface-chat-api"))]
+    #[test]
+    fn a_surface_that_is_not_compiled_in_is_refused_naming_its_feature() {
+        let mut env = base();
+        env.push(("ORCH_SURFACES", "chat-api"));
+        let err = load(&env, AGENTS).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::SurfaceNotCompiled {
+                surface: "chat-api",
+                feature: "surface-chat-api"
+            }
+        ));
+        assert!(err.to_string().contains("surface-chat-api"), "{err}");
+        // Not asking for it is fine: the default is what the build contains.
+        assert!(load(&base(), AGENTS).unwrap().surfaces.is_empty());
+    }
+
+    #[test]
+    fn flags_are_parsed_by_clap_and_win_over_the_environment() {
+        let args = Args::try_parse_from([
+            "orchestrator",
+            "--database-url",
+            "postgres://flag/db",
+            "--agents-file",
+            "/etc/agents.yaml",
+            "--listen-addr",
+            "127.0.0.1:9000",
+            "--surfaces",
+            "chat-api",
+            "--database-max-connections",
+            "4",
+        ])
+        .unwrap();
+        assert_eq!(args.database_url.as_deref(), Some("postgres://flag/db"));
+        assert_eq!(args.listen_addr.as_deref(), Some("127.0.0.1:9000"));
+        assert_eq!(args.surfaces.as_deref(), Some("chat-api"));
+        assert_eq!(args.database_max_connections.as_deref(), Some("4"));
+        // Nothing here is validated by clap: a bad value is a ConfigError, exit code 78.
+        let args = Args::try_parse_from(["orchestrator", "--listen-addr", "nowhere"]).unwrap();
+        assert_eq!(args.listen_addr.as_deref(), Some("nowhere"));
+        assert!(Args::try_parse_from(["orchestrator", "--no-such-flag"]).is_err());
+    }
+
+    #[test]
+    fn help_lists_every_variable_the_service_has_always_read() {
+        use clap::CommandFactory;
+        let help = Args::command().render_long_help().to_string();
+        for var in [
+            "DATABASE_URL",
+            "AGENTS_FILE",
+            "LISTEN_ADDR",
+            "ORCH_SURFACES",
+            "AUTH_DEV_USER",
+            "DATABASE_MAX_CONNECTIONS",
+            "DISPATCHER_CONCURRENCY",
+            "OUTBOX_LEASE_SECS",
+            "SHUTDOWN_GRACE_SECS",
+            "ORCH_INSTANCE_ID",
+            "LOG_FORMAT",
+        ] {
+            assert!(help.contains(var), "--help does not mention {var}:\n{help}");
+        }
+        assert!(help.contains("--surfaces"), "{help}");
     }
 }

@@ -104,9 +104,20 @@ fn spawn(scratch: &Scratch, env: &[(&str, &str)]) -> Running {
 
 /// [`spawn`], with the output in `log_name` (one per process when a test starts several).
 fn spawn_logging_to(scratch: &Scratch, log_name: &str, env: &[(&str, &str)]) -> Running {
+    spawn_with_args(scratch, log_name, &[], env)
+}
+
+/// [`spawn_logging_to`] with command-line `args` as well.
+fn spawn_with_args(
+    scratch: &Scratch,
+    log_name: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Running {
     let log = scratch.file(log_name);
     let out = fs::File::create(&log).unwrap();
     let child = Command::new(BIN)
+        .args(args)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .envs(env.iter().copied())
@@ -186,6 +197,160 @@ fn a_missing_agent_token_is_fatal_before_anything_connects() {
     let log = run.log();
     assert!(log.contains("SMOKE_AGENT_TOKEN"), "{log}");
     assert!(log.contains("unset or empty"), "{log}");
+}
+
+#[test]
+fn help_lists_every_flag_and_variable_and_exits_zero() {
+    let scratch = Scratch::new();
+    let mut run = spawn_with_args(&scratch, "help.log", &["--help"], &[]);
+    let status = run.wait(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(0), "{}", run.log());
+    let help = run.log();
+    for (flag, var) in [
+        ("--database-url", "DATABASE_URL"),
+        ("--agents-file", "AGENTS_FILE"),
+        ("--listen-addr", "LISTEN_ADDR"),
+        ("--surfaces", "ORCH_SURFACES"),
+        ("--auth-dev-user", "AUTH_DEV_USER"),
+        ("--database-max-connections", "DATABASE_MAX_CONNECTIONS"),
+        ("--dispatcher-concurrency", "DISPATCHER_CONCURRENCY"),
+        ("--outbox-lease-secs", "OUTBOX_LEASE_SECS"),
+        ("--shutdown-grace-secs", "SHUTDOWN_GRACE_SECS"),
+        ("--instance-id", "ORCH_INSTANCE_ID"),
+        ("--log-format", "LOG_FORMAT"),
+    ] {
+        assert!(help.contains(flag), "--help lacks {flag}:\n{help}");
+        assert!(help.contains(var), "--help lacks {var}:\n{help}");
+    }
+}
+
+#[test]
+fn every_setting_is_read_from_its_variable() {
+    // A bad value in the environment alone must be refused by name: the fallback is wired for
+    // each variable, not only for the ones the other tests happen to set.
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    for (var, bad) in [
+        ("LISTEN_ADDR", "nowhere"),
+        ("ORCH_SURFACES", "agui"),
+        ("ORCH_SURFACES", ","),
+        ("AUTH_DEV_USER", "not-an-email"),
+        ("DATABASE_MAX_CONNECTIONS", "1"),
+        ("DISPATCHER_CONCURRENCY", "0"),
+        ("OUTBOX_LEASE_SECS", "2"),
+        ("SHUTDOWN_GRACE_SECS", "0"),
+    ] {
+        let mut run = spawn(
+            &scratch,
+            &[
+                ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+                ("AGENTS_FILE", path_str(&agents)),
+                ("SMOKE_AGENT_TOKEN", TOKEN),
+                (var, bad),
+            ],
+        );
+        let status = run.wait(Duration::from_secs(10));
+        assert_eq!(
+            status.code(),
+            Some(78),
+            "{var}={bad}: EX_CONFIG; {}",
+            run.log()
+        );
+        let log = run.log();
+        assert!(
+            log.contains(&format!("{var} is invalid")),
+            "{var}={bad}: {log}"
+        );
+    }
+}
+
+#[test]
+fn a_flag_wins_over_its_variable() {
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    // The variable is valid; the flag is not, and the flag decides.
+    let mut run = spawn_with_args(
+        &scratch,
+        "flag.log",
+        &["--surfaces", "agui"],
+        &[
+            ("ORCH_SURFACES", "chat-api"),
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    let status = run.wait(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(78), "{}", run.log());
+    let log = run.log();
+    assert!(
+        log.contains("unknown surface") && log.contains("agui"),
+        "{log}"
+    );
+}
+
+#[test]
+fn an_unknown_flag_is_a_usage_error() {
+    let scratch = Scratch::new();
+    let mut run = spawn_with_args(&scratch, "usage.log", &["--no-such-flag"], &[]);
+    let status = run.wait(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(2), "clap's usage error: {}", run.log());
+    assert!(run.log().contains("--no-such-flag"), "{}", run.log());
+}
+
+#[tokio::test]
+async fn the_chat_api_surface_is_mounted_by_the_flag() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let addr = format!("127.0.0.1:{}", free_port());
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn_with_args(
+        &scratch,
+        "surfaces.log",
+        &["--surfaces", "chat-api", "--listen-addr", &addr],
+        &[
+            ("DATABASE_URL", &database_url),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{addr}");
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+    // `createThread` is served (an empty body is a 400, not a 404/405), and so is the
+    // resource API beside it.
+    let post = client
+        .post(format!("{base}/api/threads"))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(post.status().as_u16(), 400);
+    let agents_resp = client
+        .get(format!("{base}/api/agents"))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(agents_resp.status().as_u16(), 200);
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("\"surfaces\":\"chat-api\""), "{log}");
 }
 
 #[test]

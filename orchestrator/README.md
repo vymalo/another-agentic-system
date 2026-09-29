@@ -37,14 +37,18 @@ curl -s -X POST localhost:8080/api/threads -H 'content-type: application/json' \
 
 ### Configuration
 
-All configuration is environment variables; the process refuses to start, with
-a message naming the culprit, when it is wrong.
+Every setting is a command-line flag with an environment fallback (`orchestrator
+--help` lists both); the variables below are what deployments set, and a flag
+wins over its variable. The process refuses to start, with a message naming the
+culprit, when a value is wrong (exit code 78; a malformed command line exits 2).
+An empty value counts as unset.
 
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string. Never logged. |
 | `AGENTS_FILE` | required | YAML list of `{id, name, cardUrl, tokenEnv?}`, see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | |
+| `ORCH_SURFACES` | `chat-api` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `chat-api`, the legacy interaction routes, deprecated in favour of AG-UI ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md)); `agui` arrives with its own slice. An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-chat-api`) is not in the build is a startup error. The resource API and health are always mounted. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |
 | `DISPATCHER_CONCURRENCY` | `32` | Delegations processed at the same time by this replica. |
@@ -120,18 +124,19 @@ change of the composition root, never a runtime plugin.
 | [`crates/ports`](crates/ports/README.md) | `orch-ports` | Traits `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`; feature `testkit` adds in-memory implementations, a scripted fake agent and the conformance testkit. |
 | [`crates/agui-proto`](crates/agui-proto/README.md) | `orch-agui-proto` | AG-UI 1.0 wire types as closed serde enums (all 31 events, `RunAgentInput`), the vendored official JSON Schema, and a `testkit` that validates against it. No `orch-*` dependencies. |
 | [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams) and the durable outbox `Dispatcher`, written against the ports. |
-| [`crates/api`](crates/api/README.md) | `orch-api` | axum 0.8 routes for every operation of the contract, proxy-identity auth (fail closed), RFC 9457 problems, SSE. |
+| [`crates/api`](crates/api/README.md) | `orch-api` | The always-mounted HTTP edge: proxy-identity auth (fail closed), RFC 9457 problems, the resource API (agents, threads, cancel), health, and `SurfaceRoutes`, the mounting point of interaction surfaces. |
+| [`crates/surface-chat-api`](crates/surface-chat-api/README.md) | `orch-surface-chat-api` | The legacy interaction surface (`createThread`, `postMessage`, `listEvents`, `streamEvents`), mounted by `ORCH_SURFACES=chat-api` (Cargo feature `surface-chat-api`). Deprecated. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
 | [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
 | [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: chat API + dispatcher + A2A adapter + fake agent over real HTTP, on either store. |
-| [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: environment and `AGENTS_FILE` parsing (`config.rs`, unit-tested) and the wiring, startup and graceful shutdown (`boot.rs`). No logic of its own. |
+| [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: flags, environment (clap) and `AGENTS_FILE` parsing (`config.rs`, unit-tested), and the surfaces to mount and the wiring, startup and graceful shutdown (`boot.rs`). No logic of its own. |
 
 Every crate has its own README (role, public API, environment, tests); update it
 in the same change as the crate's API, environment variables or tests. The docs
 check fails when one is missing.
 
-Dependency direction: `core` ← `ports` ← `app` ← `api`; adapters
+Dependency direction: `core` ← `ports` ← `app` ← `api` ← the surface crates; adapters
 (`store-postgres`, `agent-a2a`) implement the ports; only `bin/orchestrator`
 depends on all of them.
 
@@ -282,7 +287,10 @@ that edits, renames or deletes an already applied migration. With it set:
   and a clean exit on SIGTERM; and, as two real processes on one database, a
   SIGKILL mid-task that the second process finishes (the message reaches the
   agent once), threads served by either process, and a SIGTERM with a running
-  task that exits within `SHUTDOWN_GRACE_SECS`. Its configuration-error tests (and the unit tests
+  task that exits within `SHUTDOWN_GRACE_SECS`. It also runs the CLI: `--help` lists every flag
+  and variable, each variable is read from the environment alone, a flag wins
+  over its variable, an unknown flag is a usage error, and `--surfaces chat-api`
+  serves the legacy routes. Its configuration-error tests (and the unit tests
   in `config.rs`) need no database; the unreachable-database one waits out sqlx's
   30 s connect timeout.
 
@@ -290,6 +298,6 @@ that edits, renames or deletes an already applied migration. With it set:
   each scripted agent behaviour to [`docs/api/examples`](../docs/api/examples/README.md) and
   fails when they differ (`UPDATE_GOLDEN=1` rewrites them). The web replays them.
 
-The contract conformance test (`crates/api/tests/conformance.rs`) starts the
-real router on a TCP port over the in-memory stack, drives every operation and
+The contract conformance test (`crates/surface-chat-api/tests/conformance.rs`)
+starts the real router (resource API plus the chat-api surface) on a TCP port over the in-memory stack, drives every operation and
 validates each response body against the schemas of the contract.
