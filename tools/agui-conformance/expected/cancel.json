@@ -1,0 +1,54 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "cancelled"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success",
+      "result": {
+        "status": "canceled"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "slow work"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "canceled",
+        "status": "canceled"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "cancelled",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "slow work"
+    }
+  },
+  "pendingInterrupts": []
+}

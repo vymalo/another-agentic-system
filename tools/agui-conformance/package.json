@@ -1,0 +1,16 @@
+{
+  "name": "agui-conformance",
+  "private": true,
+  "description": "Feeds the AG-UI goldens of docs/api/examples/agui through the reference client (@ag-ui/client 1.0.0) and fails on any error or warning.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "node check.mjs",
+    "update": "UPDATE_EXPECTED=1 node check.mjs"
+  },
+  "dependencies": {
+    "@ag-ui/client": "1.0.0"
+  }
+}

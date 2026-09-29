@@ -19,6 +19,7 @@ webhooks, and can be driven the same way. **Status: MVP steps 1–2 are built**
 | `docs/decisions/NNNN-*.md` | ADRs |
 | `docs/mvp.md`, `docs/open-questions.md`, `docs/lessons-from-agent-canvas.md` | Build order, open/closed questions, lessons as requirements |
 | `tools/docs-check/` | Diagram + link checker (also run in CI) |
+| `tools/agui-conformance/` | Reads the AG-UI goldens through the reference client, `@ag-ui/client` 1.0.0 (also run in CI) |
 | `compose.yaml`, `dev/` | Local stack: Postgres, WireMock A2A mock agents, and the `app` profile (orchestrator, web, edge proxy standing in for oauth2-proxy); `dev/README.md` documents the mock scenarios |
 | `.agents/skills/` | Repo skills; `.claude/skills/*` are symlinks to them |
 
@@ -120,6 +121,8 @@ and I/O so the compiler enforces purity.
 ```sh
 npm --prefix tools/docs-check ci          # once per clone
 node tools/docs-check/check-docs.mjs      # every diagram parses, every relative link resolves
+npm --prefix tools/agui-conformance ci    # once per clone, for the next line
+node tools/agui-conformance/check.mjs     # every AG-UI golden reads cleanly through the reference client
 git config core.hooksPath .githooks       # once per clone: local Conventional Commits hook
 ```
 
