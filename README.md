@@ -85,22 +85,25 @@ orchestrator through the edge. Component, request and state diagrams:
 
 `compose.yaml` runs everything except the agents' real work: Postgres, two
 [WireMock](https://wiremock.org/) stand-ins for an A2A 1.0 coding agent, and, with the `app`
-profile, the real orchestrator and chat UI behind one origin. Docker with Compose v2 is all it needs;
-the mocks need no agent host, model or GitHub token. Reference and scenarios:
-[`dev/README.md`](dev/README.md).
+profile, the real orchestrator and chat UI behind one origin, plus the default agent, adam-coder
+([ADR 0014](docs/decisions/0014-adam-coder-default-agent-over-a2a.md)), on scripted mocks of its
+model, GitHub and git remote. Docker with Compose v2 is all it needs; the mocks need no agent host,
+model or GitHub token. Reference and scenarios: [`dev/README.md`](dev/README.md).
 
 ```sh
 docker compose up -d --wait                          # postgres + mocks: nothing is built, seconds
-docker compose --profile app up -d --build --wait    # + orchestrator, web, edge proxy (first build takes minutes)
-open http://127.0.0.1:8080                           # the chat UI; pick "Mock coder" and say something
-dev/try-thread.sh "add a health endpoint"            # or drive a thread from the terminal (curl, jq)
+docker compose --profile app up -d --build --wait    # + orchestrator, web, edge, coder (first build takes minutes, the coder image is 2.9 GB)
+open http://127.0.0.1:8080                           # the chat UI; the coder is preselected, "Mock coder" is one click away
+dev/coder-e2e.sh                                     # a chat message becomes a pull request (curl, jq, git)
+dev/try-thread.sh "add a health endpoint"            # or drive a mock thread from the terminal (curl, jq)
 docker compose --profile app down -v                 # stop and forget the database
 ```
 
 | Profile | Services | Ports on 127.0.0.1 |
 |---|---|---|
 | default | `postgres`, `mock-agent`, `mock-agent-releases` | 5432, 8081, 8082 |
-| `app` | + `orchestrator`, `web`, `edge` | 8080 (the only one: `/api/*` to the orchestrator, the rest to the UI) |
+| `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
+| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
 
 The `edge` proxy replaces oauth2-proxy locally by injecting `X-Auth-Request-Email: dev@example.com`.
 It authenticates nobody; it is for a laptop, never for production.
@@ -127,9 +130,15 @@ The mock agent picks its script from a word in your message:
 
 `mock-agent-releases` declares the release-channels extension, so only it shows the release
 dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
-`POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT` and `EDGE_PORT`. CI keeps the mocks
+`POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `EDGE_PORT`, `CODER_PORT`,
+`MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT` and `GIT_SERVER_PORT`. CI keeps the mocks
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
-[`dev/check-mocks.sh`](dev/check-mocks.sh) and the real orchestrator client against them.
+[`dev/check-mocks.sh`](dev/check-mocks.sh) and the real orchestrator client against them, and
+[`coder-e2e.yml`](.github/workflows/coder-e2e.yml) runs the whole `app` profile, coder included, and
+checks that the mocks vendored under `dev/coder` still equal upstream.
+
+The coder is not reachable from an orchestrator running on the host (its card advertises
+`http://coder:8080/`), so `dev/agents.local.yaml` leaves it out.
 
 ## Related
 
