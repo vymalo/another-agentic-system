@@ -42,6 +42,16 @@
   drive the orchestrator over AG-UI. This is step 2 of "The legacy interaction endpoints are
   deprecated by the flag"; step 3 (removal) is not done. The decision stands. A breaking change for
   operators: `feat(orchestrator)!`.
+  Status note (2026-09-29): the plan's slices are built, and the documentation describes them. What
+  runs: the wire types and the pure projection, the run route, the connect stream and the capabilities
+  document, the contract with its deprecation markers, the web on `@assistant-ui/react-ag-ui`, the legacy
+  surface off by default, and A2UI on both sides ([ADR 0013](0013-a2ui-generative-ui.md)). The user-facing
+  leg of the job flow and the crate layout are in [`architecture.md`](../architecture.md#a-chat-turn) and
+  [`orchestrator.md`](../orchestrator.md#live-updates). Open questions 13 (implicit answers), 14
+  (non-extending partial messages) and 19 (body limit) are closed; 12, 15 to 18 and 20 to 22 stay open.
+  What remains of this decision is step 3 of "The legacy interaction endpoints are deprecated by the
+  flag", the removal of the crate, the feature and the operations, which waits for the owner. The
+  decision stands.
 
 ## Context
 

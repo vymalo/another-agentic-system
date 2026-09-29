@@ -1,7 +1,7 @@
 # Architecture
 
-> Status: **MVP steps 1–2 built** (one thread, one A2A agent, durable delegation); the rest is
-> design. [As built](#as-built) is what the code does today, with diagrams; the sections after
+> Status: **MVP steps 1–2 built** (one thread, one A2A agent, durable delegation, spoken to people
+> over AG-UI and A2UI); the rest is design. [As built](#as-built) is what the code does today, with diagrams; the sections after
 > it, [How a job flows](#how-a-job-flows) and [Job lifecycle](#job-lifecycle), are the target
 > design. Facts about third-party components are marked **verified** (checked against source,
 > docs or a live system on 2026-09-28) or **unverified**; statements about this repository's
@@ -44,7 +44,7 @@ state is the job ledger and event log (the chat) in Postgres.
 |---|---|---|
 | **Orchestrator** (Rust, this repo) | Durable thread state machine; decides what happens next | Stateless replicas over Postgres, run as a **control plane** (API, surfaces) and **workers** (dispatcher, in-process agents), or both in one process. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md), [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)) |
 | **Postgres (CNPG)** | Threads, the event log (= the chat), the A2A binding, the outbox | Also the work queue (`SKIP LOCKED`) and the wake-up bus (`LISTEN/NOTIFY`). The inbox and timers are planned. |
-| **Web chat surface** (Next.js + assistant-ui, this repo) | Chat surface and thread list | Renders the event log the orchestrator serves. Built: it follows the chat API's SSE stream ([ADR 0006](decisions/0006-assistant-ui-external-store.md)). Planned: AG-UI 1.0 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md)); generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)), rendered behind the web's own validator. It has no server-side code: the browser talks to the orchestrator through the edge. |
+| **Web chat surface** (Next.js + assistant-ui, this repo) | Chat surface and thread list | Renders the AG-UI 1.0 projection of the event log the orchestrator serves: it follows a thread's connect stream, starts runs with `POST /agui/agents/{agentId}` and answers interrupts by `resume` ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md), `@assistant-ui/react-ag-ui` per [ADR 0006](decisions/0006-assistant-ui-external-store.md)). Generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)), rendered behind the web's own validator. The agent and thread lists and Cancel use the resource API. It has no server-side code: the browser talks to the orchestrator through the edge. |
 | **Agents** (external) | Planner, coding workers, reviewers, specialists | Anything reachable by an A2A agent-card URL. |
 | **Tools** (external) | GitHub, docs, search, … | MCP servers. Planned. |
 | **Model endpoint** (external) | The orchestrator's own model calls | Any OpenAI-compatible endpoint — EAIG / Agent Router, AISIX, … ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)). Planned: nothing calls a model yet. |
@@ -67,8 +67,8 @@ first — see [lessons](lessons-from-agent-canvas.md)).
 
 ## As built
 
-What runs today (MVP steps 1–2, plus the AG-UI wire types and projection), read from the code on
-2026-09-29. Solid boxes exist; dashed boxes are planned. The design that goes beyond it is
+What runs today (MVP steps 1–2, spoken to people over AG-UI: the run route, the connect stream, the
+capabilities document and A2UI surfaces), read from the code on 2026-09-29. Solid boxes exist; dashed boxes are planned. The design that goes beyond it is
 [further down](#how-a-job-flows); the crate map is in [Orchestrator: crate layout](orchestrator.md#crate-layout).
 
 ### Components
@@ -101,9 +101,9 @@ flowchart LR
     a2a["A2A 1.0 JSON-RPC + SSE<br/>bearer token from AGENTS_FILE tokenEnv"]
   end
   browser -- "GET / : the UI" --> edge
-  browser -- "/api/* incl. SSE" --> edge
+  browser -- "/api/* and /agui/*, incl. SSE" --> edge
   edge -- "everything else" --> web
-  edge -- "/api/*, /healthz, /readyz" --> api
+  edge -- "/api/*, /agui/*, /healthz, /readyz" --> api
   adapters -- "sqlx: one txn per commit" --> tables
   tables --> notify
   notify -. "wake every replica" .-> adapters
@@ -117,8 +117,8 @@ flowchart LR
 ```
 
 - **The web never talks to the orchestrator server to server.** It serves the UI; the browser calls
-  `/api/*` on its own origin, and the edge routes that path to the orchestrator and everything else
-  to the web. There are no Next.js API routes, no server-side fetches and no secrets in the web
+  `/api/*` and `/agui/*` on its own origin, and the edge routes those paths to the orchestrator and
+  everything else to the web. There are no Next.js API routes, no server-side fetches and no secrets in the web
   (`web/README.md`). SSE goes browser → edge → orchestrator, unbuffered.
 - **The edge owns identity.** The orchestrator trusts `X-Auth-Request-Email` and answers 401
   without it (fail closed), so it must only run behind a proxy that strips client-supplied copies.
@@ -135,35 +135,41 @@ flowchart LR
 
 ### A chat turn
 
-One user message, from the browser to the agent and back, over the **legacy chat API**, which is served only with
-`ORCH_SURFACES=agui,chat-api`. The web no
-longer takes this path: it sends `POST /agui/agents/{agentId}` and follows
-`GET /agui/threads/{id}/connect` (below); the sequence from the orchestrator inward is the same.
-The dispatcher may run on a different replica than the one that took the request.
+One user message, from the browser to the agent and back, over **AG-UI**, the default user-facing
+protocol ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md); every route, status and mapping
+is in [`api/agui.md`](api/agui.md)). The browser holds one **connect stream** per open thread and
+sends **runs** beside it. The dispatcher may run on a different replica than the one that took the
+request, and the connect stream may be served by a third.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  actor B as Browser (web UI)
+  actor B as Browser (web UI, ThreadAgent)
   participant E as Edge proxy
-  participant A as Replica A<br/>orch-api + chat-api + App
+  participant A as Replica A<br/>orch-api + orch-surface-agui + App
   participant DB as Postgres
   participant D as Dispatcher<br/>(any replica)
   participant G as A2A agent
-  alt first message
-    B->>E: POST /api/threads {target, text}
-  else follow-up or answer to a question
-    B->>E: POST /api/threads/{id}/messages {text}
+  B->>E: GET /agui/threads/{id}/connect, Last-Event-ID: n (none on a new thread page: from the start)
+  E->>A: the request plus X-Auth-Request-Email, unbuffered
+  A->>DB: App::event_stream: events from seq 1 (fold up to n without writing), then wait for NOTIFY, poll every 5 s
+  A-->>B: SSE: the preamble when a run is open at n, then frames, id: seq on resume points
+  alt a new message
+    B->>E: POST /agui/agents/{agentId}: RunAgentInput {threadId (a UUID the browser minted), runId, one new user message}
+  else the answer to an interrupt
+    B->>E: POST /agui/agents/{agentId}: RunAgentInput {resume: [{interruptId, status: resolved, payload: {text}}]}
+  else a button on an A2UI surface
+    B->>E: POST /agui/agents/{agentId}: forwardedProps.a2uiAction.userAction, no message, no resume
   end
   E->>A: the request plus X-Auth-Request-Email
-  A->>A: validate (with a release: read the live agent card, fail closed)
-  A->>A: transition(state, UserMessage) → (state, [Append user_message, Delegate])
-  A->>DB: ONE txn: (thread and A2A binding, first message only), state + version, event user_message, outbox row (pending), NOTIFY
-  A-->>B: 201 Thread (first message) or 202 user_message event
-  B->>E: GET /api/threads/{id}/stream (EventSource)
-  E->>A: same, unbuffered
-  A->>DB: events after Last-Event-ID (none: from seq 1), then wait for NOTIFY, poll every 5 s
-  A-->>B: SSE: id: seq, event: user_message
+  A->>A: checks before any stream byte: body, thread owner (404), agent, release (read the live card, fail closed)
+  A->>A: translate(RunAgentInput, thread view) → one core Input
+  A->>A: transition(state, Input) → (state, [Append user_message, Delegate])
+  A->>DB: ONE txn: (thread and A2A binding, new thread only), state + version, event user_message (key agui:threadId:msg:messageId), outbox row (pending), NOTIFY
+  A-->>B: POST response, SSE: RUN_STARTED, STATE_SNAPSHOT (the requester's projection of the log)
+  Note over B,A: a standard AG-UI client reads this response to the run's terminal event, the web stops at RUN_STARTED and reads the run from the connect stream
+  DB-->>A: NOTIFY orch_thread (every replica with an open stream)
+  A-->>B: connect stream: user message, SUBAGENT_STARTED, ACTIVITY_SNAPSHOT vymalo.status (id: seq)
   DB-->>D: NOTIFY orch_outbox (or the 2 s poll)
   D->>DB: claim_outbox: SKIP LOCKED, 30 s lease, status inflight
   D->>G: read the agent card, then SendStreamingMessage<br/>messageId = outbox row id, contextId = thread id, bearer token
@@ -171,16 +177,17 @@ sequenceDiagram
   D->>DB: first frame: mark_sent (sent_at, task id)
   loop each frame the agent sends
     D->>DB: App.apply(Input::Agent, idempotency key): read the thread, transition, commit at the expected version (events, thread_state, NOTIFY)
-    DB-->>A: NOTIFY orch_thread (every replica with an open stream)
+    DB-->>A: NOTIFY orch_thread
     A->>DB: events after the stream's cursor
-    A-->>B: SSE: id: seq, event: agent_status, artifact or thread_state
+    A-->>B: TEXT_MESSAGE_*, ACTIVITY_SNAPSHOT (vymalo.status, vymalo.artifact, a2ui-surface), id: seq
   end
   D->>DB: the turn ended: outbox row delivered
+  A-->>B: STATE_SNAPSHOT, then RUN_FINISHED: success, cancelled or (the agent needs input) interrupt, RUN_ERROR on failure
   Note over B,A: the connection drops, or replica A is killed
-  B->>E: GET /api/threads/{id}/stream, Last-Event-ID: n
+  B->>E: GET /agui/threads/{id}/connect, Last-Event-ID: n
   E->>A: served by any replica
-  A->>DB: events after n
-  A-->>B: seq n+1 …, then live (the client dedupes by seq)
+  A->>DB: events from seq 1: fold up to n, write the rest
+  A-->>B: preamble (RUN_STARTED, SUBAGENT_STARTED, STATE_SNAPSHOT), then seq n+1 … live (the client dedupes by seq)
 ```
 
 Prose for what the diagram compresses:
@@ -188,22 +195,57 @@ Prose for what the diagram compresses:
 - **One transaction is the whole decision** (the `ONE txn` message). `App::apply` reads the thread, runs the pure
   `transition`, and asks the store to commit the new state, the events and the outbox rows at the
   version it read. A lost race is a `VersionConflict`; `apply` re-reads and retries up to 8 times,
-  then answers 503. A replayed input carries an idempotency key and is a no-op (`Duplicate`).
+  then answers 503. A replayed input carries an idempotency key and is a no-op (`Duplicate`); on
+  the run route the key is `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with no
+  message id of its own), so a retried POST attaches to the run instead of duplicating it.
 - **A crash cannot lose or repeat the delegation.** The outbox row exists exactly when the message
   is in the log. If the dispatcher's replica dies, the lease (30 s by default) expires and another
   replica re-claims the row; because `sent_at` is set it resumes the agent's task
   (`SubscribeToTask`, else polling `GetTask`) instead of sending again, and the agent's own ids
   make each stored update idempotent.
-- **An `input-required` turn ends the delegation, not the thread.** The thread becomes `blocked`;
-  the user's answer is a new `user_message`, which re-queues it and sends a new outbox row that
-  continues the *same* A2A task. A2A method names are those of A2A 1.0 (`SendStreamingMessage`;
-  the 0.3 spelling is `message/stream`); recorded in `orch-agent-a2a`, *verified* against the SDK
-  sources 2026-09-29 by that crate's author, not re-checked for this page.
+- **An `input-required` turn ends the run and the delegation, not the thread.** The thread becomes
+  `blocked` and the run ends `RUN_FINISHED{outcome: interrupt}`, carrying an interrupt id and the
+  agent's question. The user's answer is the next run: `resume` (or, as accepted today, a plain user
+  message) is a `user_message`, which re-queues the thread and sends a new outbox row that continues
+  the *same* A2A task. A2A method names are those of A2A 1.0 (`SendStreamingMessage`; the 0.3
+  spelling is `message/stream`); recorded in `orch-agent-a2a`, *verified* against the SDK sources
+  2026-09-29 by that crate's author, not re-checked for this page.
+- **A surface is an activity, an action is a run.** An agent's A2UI part becomes a `ui_surface`
+  event and, on the wire, the whole surface as an `a2ui-surface` activity; a click on it comes back
+  as `forwardedProps.a2uiAction`, becomes a `ui_action` event and is delivered to the same A2A task
+  ([ADR 0013](decisions/0013-a2ui-generative-ui.md), [`api/agui.md`](api/agui.md#a2ui-generative-ui)).
 - **The stream is the log.** `App::event_stream` replays every event with `seq >` the cursor, then
   follows; a clamped cursor, a poll under the `NOTIFY`, and a subscribe-before-read order mean no
-  gap and no duplicate. When the process shuts down and the stream has caught up, it ends, so the
-  client reconnects to another replica with `Last-Event-ID`. The web falls back to replaying from
-  seq 1 and deduplicating when the browser gives up on its own retry.
+  gap and no duplicate. The projection is a function of the log prefix, so frames are identical on
+  every replica and on every replay. When the process shuts down and the stream has caught up, it
+  ends without a terminal event, so the client reconnects to another replica with `Last-Event-ID`.
+  The web hands frames to its runtime in whole groups (an `id:` closes one) and drops groups it has
+  delivered, so a cut connection never leaves half a message.
+- **Closing a stream never cancels a run.** Truncation is not cancellation (the AG-UI rule). Cancel is
+  `POST /api/threads/{id}/cancel` of the resource API, and its outcome arrives as
+  `RUN_FINISHED{outcome: cancelled}`.
+- **The legacy chat API is the same turn over other routes.** With `ORCH_SURFACES=agui,chat-api`
+  the deprecated `POST /api/threads`, `POST /api/threads/{id}/messages` and
+  `GET /api/threads/{id}/stream` (our own `Event` JSON over SSE, `Last-Event-ID`) drive `App` the same
+  way from the orchestrator inward; the web no longer calls them. By default they answer 404, but
+  `POST /api/threads` answers 405, because its path is shared with the resource API's `GET /api/threads`.
+
+The run as a state machine, as the projection shows it (a run is open exactly while the thread is
+`queued` or `working`; the thread's own states are in the next section):
+
+```mermaid
+stateDiagram-v2
+  [*] --> RunActive: user_message, ui_action or a producer event (RUN_STARTED)
+  RunActive --> Interrupted: input or auth required (RUN_FINISHED interrupt)
+  RunActive --> Succeeded: agent completed (RUN_FINISHED success)
+  RunActive --> Cancelled: cancel endpoint (RUN_FINISHED cancelled)
+  RunActive --> Errored: agent or delivery failed (RUN_ERROR)
+  Interrupted --> RunActive: next run with resume, or a new user message
+  Errored --> RunActive: next run (thread still open after a retryable failure)
+  Succeeded --> [*]
+  Cancelled --> [*]
+  Errored --> [*]: thread failed
+```
 
 ### Thread state
 
@@ -291,14 +333,22 @@ The `branch` and `pull_request` artifacts arrive as JSON data parts, so the chat
 stack runs the published image against scripted mocks, and [`dev/coder-e2e.sh`](../dev/coder-e2e.sh)
 turns one chat message into a pull request (how: [`dev/README.md`](../dev/README.md#the-default-agent)).
 
-### AG-UI: planned against built
+### AG-UI: how it is served
 
-The user-facing protocol is decided to be **AG-UI 1.0**, with the event log as the only source of
-truth ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md); the mapping tables, endpoints and
-`vymalo.*` schemas are [`api/agui.md`](api/agui.md)). The chat turn above is what runs. The
-projection is built as pure code, and the routes that serve it are built: the run route, the connect
-stream (replay, cursor, following across runs) and the capabilities document. The web runs on them
-([`web/README.md`](../web/README.md#the-chat-layer)).
+The user-facing protocol is **AG-UI 1.0**, with the event log as the only source of truth
+([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md); the mapping tables, endpoints and
+`vymalo.*` schemas are [`api/agui.md`](api/agui.md)). Everything in
+[A chat turn](#a-chat-turn) runs on it: the projection, the run route, the connect stream (replay,
+cursor, following across runs) and the capabilities document are built, and the web runs on them
+([`web/README.md`](../web/README.md#the-chat-layer)). The facts about the protocol itself were
+*verified 2026-09-29* against the AG-UI 1.0 specification, <https://docs.ag-ui.com/spec/1.0/index.md>
+(ADR 0012, section "Verified", lists each page). Two of them carry the design: the standard HTTP + SSE
+binding has no stream resumption (`Last-Event-ID` is not used), so **the connect stream is our own
+documented extension**, announced as `transport.resumable` and ignorable by a plain client; and a
+consumer that abandons a stream has a *truncated* run, not a cancelled one, so cancel is a resource
+call.
+
+The two directions, both through the same pure crates:
 
 ```mermaid
 flowchart LR
@@ -322,17 +372,34 @@ flowchart LR
   classDef planned stroke-dasharray: 5 5,fill:none
 ```
 
-| | Built | Planned |
-|---|---|---|
-| Wire types | `orch-agui-proto`: all 31 AG-UI 1.0 events and `RunAgentInput` as closed enums, checked against the vendored official schema | |
-| Log → frames | `orch-agui-projection`: `Projector` (audiences, runs, subagents, interrupts, `resume_preamble`); a function of the log, with no async and no I/O | |
-| `RunAgentInput` → input | `orch-agui-projection::translate` (new message, `resume`, cancel, attach, refusals with their HTTP status) | |
-| Conformance | Schema validation of every frame; well-formedness properties; resume-from-any-point property; goldens read through `@ag-ui/client` 1.0.0 by `tools/agui-conformance` in CI | |
-| HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, follows across runs and replicas); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature | |
-| Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (there is no inbox table yet) | |
-| The web | `@assistant-ui/react-ag-ui` (pinned, one patch) over a `ThreadAgent`: the connect stream with `Last-Event-ID`, runs by `POST /agui/agents/{agentId}`, interrupts by `resume`, Cancel by the resource API ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) | |
-| Generative UI | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) on the orchestrator side: `ui_surface` and `ui_action` events, the A2A adapter's `application/a2ui+json` parts (envelope check, size caps), capability detection of both extension URIs, `a2ui-surface` snapshots of the whole surface, `forwardedProps.a2uiAction` validated and delivered to the same A2A task, the capabilities document ([`api/agui.md`](api/agui.md#a2ui-generative-ui)); in the web, the validator, the shadcn vocabulary and actions on a user gesture only ([`web/README.md`](../web/README.md#a2ui-surfaces)) | |
-| Deprecating the chat API's interaction routes | The crate is separate and mounted by flag | The `deprecated` markers in `chat-api.yaml` and the `Deprecation` header of ADR 0012 |
+The log-to-frames direction, as a state machine: what one connect request does.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Folding: connect (cursor c, 0 = none)
+  Folding --> Writing: the event at c is folded (preamble if a run is open)
+  Writing --> Writing: next event, frames with id seq
+  Writing --> Over: mode=run, replay done, no run open
+  Writing --> Truncated: the process shuts down, or the connection is lost
+  Truncated --> Folding: reconnect with the last id
+  Over --> [*]
+```
+
+The run's own lifecycle is the state diagram under [A chat turn](#a-chat-turn); how the streams are
+produced from the log, and why no replica remembers a connection, is
+[Orchestrator: live updates](orchestrator.md#live-updates).
+
+| Part | What is built |
+|---|---|
+| Wire types | `orch-agui-proto`: all 31 AG-UI 1.0 events and `RunAgentInput` as closed enums, checked against the vendored official schema |
+| Log → frames | `orch-agui-projection`: `Projector` (audiences, runs, subagents, interrupts, `resume_preamble`); a function of the log, with no async and no I/O |
+| `RunAgentInput` → input | `orch-agui-projection::translate` (new message, `resume`, cancel, attach, refusals with their HTTP status) |
+| Conformance | Schema validation of every frame; well-formedness properties; resume-from-any-point property; goldens read through `@ag-ui/client` 1.0.0 by `tools/agui-conformance` in CI |
+| HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, follows across runs and replicas); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature |
+| Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (there is no inbox table yet) |
+| The web | `@assistant-ui/react-ag-ui` (pinned, one patch) over a `ThreadAgent`: the connect stream with `Last-Event-ID`, runs by `POST /agui/agents/{agentId}`, interrupts by `resume`, Cancel by the resource API ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) |
+| Generative UI | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) on the orchestrator side: `ui_surface` and `ui_action` events, the A2A adapter's `application/a2ui+json` parts (envelope check, size caps), capability detection of both extension URIs, `a2ui-surface` snapshots of the whole surface, `forwardedProps.a2uiAction` validated and delivered to the same A2A task, the capabilities document ([`api/agui.md`](api/agui.md#a2ui-generative-ui)); in the web, the validator, the shadcn vocabulary and actions on a user gesture only ([`web/README.md`](../web/README.md#a2ui-surfaces)) |
+| The legacy chat API | The crate is separate and mounted by flag; its four interaction operations are marked `deprecated: true` in `chat-api.yaml` and answer with a `Deprecation` header (RFC 9745), and it is off by default. Removing the crate, the feature and the operations is planned as a separate change ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag), step 3) |
 
 `ORCH_SURFACES` accepts `agui` and `chat-api` and defaults to `agui` (2026-09-29: the web no longer
 uses `chat-api`, so it is off unless listed; `ORCH_SURFACES=agui,chat-api` keeps the legacy routes). The
@@ -355,7 +422,7 @@ sequenceDiagram
   participant V as Verifier (CI via webhook, or a verifier agent)
   participant R as Reviewers (A2A agents)
   U->>CP: start job "…" (target agent, optional release)
-  CP->>O: POST /api/threads (through the edge)
+  CP->>O: POST /agui/agents/{agentId}, RunAgentInput (through the edge)
   O->>DB: thread + first event + outbox row, one txn
   DB-->>O: NOTIFY → dispatcher claims it
   O->>P: A2A task: plan
@@ -372,7 +439,7 @@ sequenceDiagram
   R-->>O: approve / change requests
   O->>DB: every step appended to the event log
   DB-->>O: NOTIFY (every replica)
-  O-->>CP: SSE from the orchestrator → chat renders live
+  O-->>CP: AG-UI frames on the connect stream → chat renders live
   O-->>U: PR + summary in chat
 ```
 
