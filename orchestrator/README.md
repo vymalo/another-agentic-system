@@ -48,7 +48,8 @@ curl -s localhost:8080/api/threads/$ID     # the thread's state, from the resour
 
 `dev/try-thread.sh` does the same with `jq` ([`dev/README.md`](../dev/README.md)). The legacy
 `POST /api/threads` (and `…/messages`, `…/events`, `…/stream`) is served only with
-`ORCH_SURFACES=agui,chat-api`; without it that path answers 405.
+`ORCH_SURFACES=agui,chat-api`. Without it they answer 404, but `POST /api/threads` answers 405,
+because its path is shared with the resource API's `GET /api/threads`.
 
 ### Configuration
 

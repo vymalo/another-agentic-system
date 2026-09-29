@@ -227,7 +227,8 @@ Prose for what the diagram compresses:
 - **The legacy chat API is the same turn over other routes.** With `ORCH_SURFACES=agui,chat-api`
   the deprecated `POST /api/threads`, `POST /api/threads/{id}/messages` and
   `GET /api/threads/{id}/stream` (our own `Event` JSON over SSE, `Last-Event-ID`) drive `App` the same
-  way from the orchestrator inward; the web no longer calls them, and they answer 404 by default.
+  way from the orchestrator inward; the web no longer calls them. By default they answer 404, but
+  `POST /api/threads` answers 405, because its path is shared with the resource API's `GET /api/threads`.
 
 The run as a state machine, as the projection shows it (a run is open exactly while the thread is
 `queued` or `working`; the thread's own states are in the next section):
