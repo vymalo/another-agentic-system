@@ -163,18 +163,15 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const evts = await getEvents(t.id);
     expect(evts.map((e) => e.seq)).toEqual(evts.map((_, i) => i + 1));
     expect(done.lastSeq).toBe(evts.length);
+    // the orchestrator's five events of a plain successful run (golden: docs/api/examples)
     expect(evts.map((e) => e.kind)).toEqual([
       "user_message",
       "agent_status",
-      "agent_message",
-      "agent_message",
       "artifact",
       "agent_status",
       "thread_state",
     ]);
-    const [partial, final] = evts.filter((e) => e.kind === "agent_message");
-    expect(partial?.data.messageId).toBe(final?.data.messageId);
-    expect([partial?.data.final, final?.data.final]).toEqual([false, true]);
+    expect(evts[2]?.data).toMatchObject({ name: "result", text: "echo: Implement the thing" });
     expect(evts[1]?.actor).toEqual({ type: "agent", name: "coder", revision: "coder-r47" });
 
     const all = await readStream(t.id, evts.length);
@@ -188,8 +185,8 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
 
   it("streams live events after the replay", async () => {
     const t = await create("Another one");
-    const frames = await readStream(t.id, 7);
-    expect(frames.map((f) => f.data.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    const frames = await readStream(t.id, 5);
+    expect(frames.map((f) => f.data.seq)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it("uses the selected release for the actor revision", async () => {
@@ -237,11 +234,11 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
   });
 
   it("blocked thread: an answer resumes it; a finished thread answers 409", async () => {
-    const t = await create("A question for you");
+    const t = await create("ask which branch");
     const blocked = await waitForState(t.id, ["blocked"]);
     const evts = await getEvents(t.id);
     expect(evts.at(-1)).toMatchObject({ kind: "thread_state", data: { state: "blocked" } });
-    expect(evts.find((e) => e.data.status === "input_required")?.data.detail).toMatch(/branch/);
+    expect(evts.find((e) => e.data.status === "input_required")?.data.detail).toBe("Which branch?");
     expect(blocked.lastSeq).toBe(evts.length);
 
     const res = await post(`/api/threads/${t.id}/messages`, { text: "main" });
@@ -257,6 +254,9 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       actor: { type: "user" },
     });
     await waitForState(t.id, ["done"]);
+    expect((await getEvents(t.id)).find((e) => e.kind === "artifact")?.data.text).toBe(
+      "answered: main",
+    );
 
     const late = await post(`/api/threads/${t.id}/messages`, { text: "more" });
     expect(late.status).toBe(409);
@@ -264,7 +264,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
   });
 
   it("cancel: 202, then agent_status canceled and thread_state cancelled", async () => {
-    const t = await create("a slow task");
+    const t = await create("slow task");
     await waitForState(t.id, ["working"]);
     const res = await post(`/api/threads/${t.id}/cancel`);
     expect(res.status).toBe(202);
@@ -275,14 +275,51 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(evts.at(-2)?.data.status).toBe("canceled");
   });
 
-  it("failure: error event, failed status, thread_state failed", async () => {
-    const t = await create("please fail");
+  it("agent failure: failed status with the agent's detail and no error event", async () => {
+    const t = await create("fail please");
     await waitForState(t.id, ["failed"]);
     const evts = await getEvents(t.id);
-    expect(evts.find((e) => e.kind === "error")?.data).toEqual({
-      message: "Agent crashed",
-      retryable: false,
-    });
+    expect(evts.map((e) => e.kind)).toEqual([
+      "user_message",
+      "agent_status",
+      "agent_status",
+      "thread_state",
+    ]);
+    expect(evts[2]?.data).toEqual({ status: "failed", detail: "scripted failure" });
+    expect(evts.some((e) => e.kind === "error")).toBe(false);
+  });
+
+  it("talk: a status with text, one final agent message, the result", async () => {
+    const t = await create("talk to me");
+    await waitForState(t.id, ["done"]);
+    const evts = await getEvents(t.id);
+    expect(evts.map((e) => e.kind)).toEqual([
+      "user_message",
+      "agent_status",
+      "agent_status",
+      "agent_message",
+      "artifact",
+      "agent_status",
+      "thread_state",
+    ]);
+    expect(evts[2]?.data.detail).toBe("Reading the repository");
+    expect(evts[3]?.data).toMatchObject({ final: true, text: "Plan: add a test" });
+  });
+
+  it("partial (mock only): a partial agent message is followed by its final version", async () => {
+    const t = await create("partial please");
+    await waitForState(t.id, ["done"]);
+    const messages = (await getEvents(t.id)).filter((e) => e.kind === "agent_message");
+    expect(messages.map((e) => e.data.final)).toEqual([false, true]);
+    expect(messages[0]?.data.messageId).toBe(messages[1]?.data.messageId);
+  });
+
+  it("unreachable (mock only): a system error event, then blocked", async () => {
+    const t = await create("unreachable agent");
+    await waitForState(t.id, ["blocked"]);
+    const evts = await getEvents(t.id);
+    expect(evts.map((e) => e.kind)).toEqual(["user_message", "error", "thread_state"]);
+    expect(evts[1]).toMatchObject({ actor: { type: "system" }, data: { retryable: true } });
   });
 
   it("lists threads newest first, with limit and before", async () => {

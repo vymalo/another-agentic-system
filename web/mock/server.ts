@@ -3,7 +3,8 @@
  *
  * It is typed from the generated contract types and checked against the contract's schemas by
  * server.contract.test.ts. Authentication is not enforced (oauth2-proxy's job in production).
- * See web/README.md for the keywords that pick a scripted agent behaviour.
+ * The first word of the first message picks a scripted agent behaviour: see scripts.ts and
+ * web/README.md. The scripts follow what the real orchestrator emits (docs/api/examples).
  */
 import { randomUUID } from "node:crypto";
 import http from "node:http";
@@ -17,7 +18,11 @@ type Event = components["schemas"]["Event"];
 type Actor = components["schemas"]["Actor"];
 type ThreadState = components["schemas"]["ThreadState"];
 
-type Run = { timer: NodeJS.Timeout | undefined; pending: Step[]; resume: Step[] | undefined };
+type Run = {
+  timer: NodeJS.Timeout | undefined;
+  pending: Step[];
+  resume: ((answer: string) => Step[]) | undefined;
+};
 
 export type MockOptions = { stepMs?: number; keepaliveMs?: number };
 
@@ -282,7 +287,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (thread.state === "blocked") {
       setState(thread, "queued");
       const resume = runs.get(thread.id)?.resume;
-      if (resume) play(thread, resume);
+      if (resume) play(thread, resume(text));
     }
     sendJson(res, 202, event);
   }
