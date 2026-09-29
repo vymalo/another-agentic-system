@@ -165,9 +165,7 @@ fn user_message(user: &UserId, text: &str) -> Vec<Command> {
     vec![
         append(
             Actor::user(user),
-            EventBody::UserMessage(UserMessageData {
-                text: text.to_owned(),
-            }),
+            EventBody::UserMessage(UserMessageData::new(text)),
         ),
         Command::Delegate {
             text: text.to_owned(),
@@ -294,6 +292,26 @@ fn agent_input(
     }
 }
 
+/// The agent waits for the user (input or authentication): the thread blocks, and a repeat of
+/// the same wait only shows again when it has something new to say.
+fn blocked(
+    state: ThreadState,
+    status: Command,
+    detail: &Option<String>,
+) -> (ThreadState, Vec<Command>) {
+    match state {
+        ThreadState::Queued | ThreadState::Working => (
+            ThreadState::Blocked,
+            vec![status, entered(ThreadState::Blocked)],
+        ),
+        ThreadState::Blocked => match detail {
+            Some(_) => (ThreadState::Blocked, vec![status]),
+            None => (ThreadState::Blocked, vec![]),
+        },
+        ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => (state, vec![]),
+    }
+}
+
 fn status_input(
     state: ThreadState,
     actor: Actor,
@@ -315,32 +333,16 @@ fn status_input(
                 }
             }
         }
-        AgentTaskState::InputRequired | AgentTaskState::AuthRequired => {
-            let detail = match task {
-                AgentTaskState::AuthRequired => Some(prefixed("authentication required", detail)),
-                AgentTaskState::Submitted
-                | AgentTaskState::Working
-                | AgentTaskState::InputRequired
-                | AgentTaskState::Completed
-                | AgentTaskState::Failed
-                | AgentTaskState::Canceled
-                | AgentTaskState::Rejected => detail.clone(),
-            };
-            let cmd = agent_status(actor, AgentStatus::InputRequired, detail.clone());
-            match state {
-                ThreadState::Queued | ThreadState::Working => Ok((
-                    ThreadState::Blocked,
-                    vec![cmd, entered(ThreadState::Blocked)],
-                )),
-                ThreadState::Blocked => match detail {
-                    Some(_) => Ok((ThreadState::Blocked, vec![cmd])),
-                    None => Ok((ThreadState::Blocked, vec![])),
-                },
-                ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
-                    Ok((state, vec![]))
-                }
-            }
-        }
+        AgentTaskState::InputRequired => Ok(blocked(
+            state,
+            agent_status(actor, AgentStatus::InputRequired, detail.clone()),
+            detail,
+        )),
+        AgentTaskState::AuthRequired => Ok(blocked(
+            state,
+            agent_status(actor, AgentStatus::AuthRequired, detail.clone()),
+            detail,
+        )),
         AgentTaskState::Completed => Ok((
             ThreadState::Done,
             vec![

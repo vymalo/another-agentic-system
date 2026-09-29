@@ -51,7 +51,13 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
   const lastQuestion = useMemo(() => {
     for (let i = view.log.ordered.length - 1; i >= 0; i--) {
       const e = view.log.ordered[i];
-      if (e?.kind === "agent_status" && e.data.status === "input_required") return e.data.detail;
+      if (e?.kind !== "agent_status") continue;
+      if (e.data.status === "input_required") return e.data.detail;
+      if (e.data.status === "auth_required") {
+        return e.data.detail
+          ? `Authentication required: ${e.data.detail}`
+          : "Authentication required";
+      }
     }
     return undefined;
   }, [view.log]);

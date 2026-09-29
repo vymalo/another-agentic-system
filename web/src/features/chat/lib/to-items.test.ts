@@ -97,4 +97,24 @@ describe("toItems / convertMessage", () => {
       },
     ]);
   });
+
+  it("keeps auth_required as a status of its own, with the agent's detail", () => {
+    const items = toItems(
+      visibleEvents(
+        applyEvents(emptyLog(THREAD_ID), [
+          userMessage(1, "Push it"),
+          status(2, "auth_required", "github"),
+          threadState(3, "blocked"),
+        ]),
+      ),
+    );
+    expect(items.map((i) => i.kind)).toEqual(["user", "status"]);
+    expect(items[1]).toMatchObject({ kind: "status", status: "auth_required", detail: "github" });
+    expect(convertMessage(items[1] as (typeof items)[number], 1).content).toEqual([
+      {
+        type: "data-status",
+        data: expect.objectContaining({ status: "auth_required", detail: "github" }),
+      },
+    ]);
+  });
 });

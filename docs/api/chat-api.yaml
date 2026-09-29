@@ -250,9 +250,9 @@ components:
     EventKind:
       type: string
       enum:
-        - user_message        # data: { text }
+        - user_message        # data: { text, messageId?, runId? }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise)
         - agent_message       # data: { text, final: bool }  (final=false: streamed partial, replaced by the next agent_message with the same messageId)
-        - agent_status        # data: { status: submitted|working|input_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState)
+        - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to)
         - artifact            # data: { name, mimeType?, uri?, text? }  e.g. a branch, a PR URL, a patch
         - thread_state        # data: { state: ThreadState }
         - error               # data: { message, retryable: bool }
@@ -268,9 +268,16 @@ components:
       additionalProperties: true
       properties:
         text: { type: string }
-        messageId: { type: string }
+        messageId:
+          type: string
+          description: "agent_message: the agent's stable message id. user_message: the id the surface gave the message, when it did (optional, absent otherwise)."
+        runId:
+          type: string
+          description: "user_message only: the id of the run the message started or continued, when the surface names runs (optional, absent otherwise)."
         final: { type: boolean }
-        status: { type: string }
+        status:
+          type: string
+          description: "agent_status: submitted, working, input_required, auth_required, completed, failed or canceled."
         detail: { type: string }
         name: { type: string }
         mimeType: { type: string }

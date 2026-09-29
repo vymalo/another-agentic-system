@@ -49,7 +49,7 @@ fn event_json_is_exactly_the_contract_shape() {
 #[test]
 fn every_kind_roundtrips_and_never_emits_null() {
     let bodies = vec![
-        EventBody::UserMessage(UserMessageData { text: "hi".into() }),
+        EventBody::UserMessage(UserMessageData::new("hi")),
         EventBody::AgentMessage(AgentMessageData {
             text: "t".into(),
             message_id: "m".into(),
@@ -187,4 +187,60 @@ fn thread_state_spelling() {
 #[test]
 fn user_id_is_normalised() {
     assert_eq!(UserId::new("  A@B.Com ").as_str(), "a@b.com");
+}
+
+#[test]
+fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
+    let plain = event(
+        EventBody::UserMessage(UserMessageData::new("hi")),
+        Actor::system(),
+    );
+    assert_eq!(
+        serde_json::to_value(&plain).unwrap()["data"],
+        json!({"text": "hi"}),
+        "no null, no empty member"
+    );
+
+    let named = event(
+        EventBody::UserMessage(UserMessageData {
+            text: "hi".into(),
+            message_id: Some("msg-1".into()),
+            run_id: Some("run-1".into()),
+        }),
+        Actor::system(),
+    );
+    let v = serde_json::to_value(&named).unwrap();
+    assert_eq!(
+        v["data"],
+        json!({"text": "hi", "messageId": "msg-1", "runId": "run-1"})
+    );
+    assert_eq!(serde_json::from_value::<Event>(v).unwrap(), named);
+
+    // Only one of the two, and a log written before these fields existed, both read back.
+    let only_run = json!({"text": "hi", "runId": "run-1"});
+    let d: UserMessageData = serde_json::from_value(only_run.clone()).unwrap();
+    assert_eq!(
+        (d.message_id.as_deref(), d.run_id.as_deref()),
+        (None, Some("run-1"))
+    );
+    assert_eq!(serde_json::to_value(&d).unwrap(), only_run);
+    let old: UserMessageData = serde_json::from_value(json!({"text": "hi"})).unwrap();
+    assert_eq!(old, UserMessageData::new("hi"));
+}
+
+#[test]
+fn auth_required_is_its_own_status_spelling() {
+    let e = event(
+        EventBody::AgentStatus(AgentStatusData {
+            status: AgentStatus::AuthRequired,
+            detail: Some("github".into()),
+        }),
+        Actor::agent(&AgentId::new("coder"), None),
+    );
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        v["data"],
+        json!({"status": "auth_required", "detail": "github"})
+    );
+    assert_eq!(serde_json::from_value::<Event>(v).unwrap(), e);
 }

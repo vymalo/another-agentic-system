@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    Actor, AgentId, AgentTarget, AgentTaskState, Classify, ErrorClass, EventBody, ThreadId,
-    ThreadState, UserId, UserMessageData,
+    Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, Classify,
+    ErrorClass, EventBody, ThreadId, ThreadState, UserId, UserMessageData,
 };
 use uuid::Uuid;
 
@@ -69,7 +69,7 @@ fn user_event(text: &str, key: Option<&str>) -> NewEvent {
     NewEvent {
         at: t0(),
         actor: Actor::user(&alice()),
-        body: EventBody::UserMessage(UserMessageData { text: text.into() }),
+        body: EventBody::UserMessage(UserMessageData::new(text)),
         idempotency_key: key.map(str::to_owned),
     }
 }
@@ -179,6 +179,76 @@ pub async fn create_get_roundtrip<S: ThreadStore>(store: S) {
     );
     assert!(store.get_binding(thread_id(999)).await.unwrap().is_none());
     assert_eq!(store.list_open_outbox(thread_id(1)).await.unwrap().len(), 1);
+}
+
+/// The event codec: optional `data` members and every status spelling come back as written.
+/// A message id or run id that was never set stays absent (`None`), not an empty string.
+pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
+    let named = NewEvent {
+        at: t0(),
+        actor: Actor::user(&alice()),
+        body: EventBody::UserMessage(UserMessageData {
+            text: "with ids".into(),
+            message_id: Some("msg-1".into()),
+            run_id: Some("run-1".into()),
+        }),
+        idempotency_key: None,
+    };
+    let only_run = NewEvent {
+        body: EventBody::UserMessage(UserMessageData {
+            text: "run only".into(),
+            message_id: None,
+            run_id: Some("run-2".into()),
+        }),
+        ..user_event("unused", None)
+    };
+    let auth = NewEvent {
+        at: t0(),
+        actor: Actor::agent(&AgentId::new("coder"), Some("rev-1".into())),
+        body: EventBody::AgentStatus(AgentStatusData {
+            status: AgentStatus::AuthRequired,
+            detail: Some("github".into()),
+        }),
+        idempotency_key: None,
+    };
+    let auth_bare = NewEvent {
+        body: EventBody::AgentStatus(AgentStatusData {
+            status: AgentStatus::AuthRequired,
+            detail: None,
+        }),
+        ..auth.clone()
+    };
+    let wanted: Vec<NewEvent> = vec![named, user_event("no ids", None), only_run, auth, auth_bare];
+    let bodies: Vec<EventBody> = wanted.iter().map(|e| e.body.clone()).collect();
+    store
+        .create_thread(
+            new_thread(&alice(), 1),
+            commit(ThreadState::Queued, wanted, vec![delegate(1)]),
+        )
+        .await
+        .unwrap();
+
+    let read = store.list_events(thread_id(1), 0, 10).await.unwrap();
+    assert_eq!(
+        read.iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
+        bodies
+    );
+    assert_eq!(
+        read.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5]
+    );
+    // The wire form the API serves is what the store returned: no null, camelCase ids.
+    let data: Vec<serde_json::Value> = read.iter().map(|e| e.body.data_value()).collect();
+    assert_eq!(
+        data[0],
+        serde_json::json!({"text": "with ids", "messageId": "msg-1", "runId": "run-1"})
+    );
+    assert_eq!(data[1], serde_json::json!({"text": "no ids"}));
+    assert_eq!(
+        data[3],
+        serde_json::json!({"status": "auth_required", "detail": "github"})
+    );
+    assert_eq!(data[4], serde_json::json!({"status": "auth_required"}));
 }
 
 pub async fn owner_isolation<S: ThreadStore>(store: S) {
