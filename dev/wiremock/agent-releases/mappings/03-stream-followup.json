@@ -1,0 +1,32 @@
+{
+  "name": "SendStreamingMessage: follow-up on a task -> working, artifact, completed",
+  "priority": 2,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": "$.params.message.taskId"
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-followup-completed.sse"
+  }
+}

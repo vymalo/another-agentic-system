@@ -1,0 +1,39 @@
+{
+  "name": "SendStreamingMessage: keyword slow -> the default script, dribbled over 8 s in small chunks",
+  "priority": 8,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "(?is).*\\bslow\\b.*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-completed.sse",
+    "chunkedDribbleDelay": {
+      "numberOfChunks": 16,
+      "totalDuration": 8000
+    }
+  }
+}

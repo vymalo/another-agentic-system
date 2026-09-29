@@ -1,0 +1,115 @@
+# Local development stack: Postgres, WireMock stand-ins for the A2A agents the orchestrator
+# drives, and (profile `app`) the orchestrator, the web UI and an edge proxy on one origin.
+# Everything binds to 127.0.0.1 and nothing here is a real secret. See README.md,
+# "Local development", and dev/README.md for the scenario switches.
+#
+#   docker compose up -d --wait                  # infrastructure + mocks (fast, nothing is built)
+#   docker compose --profile app up -d --build --wait   # ... plus orchestrator, web, edge -> http://127.0.0.1:8080
+name: another-agentic-system
+
+x-wiremock: &wiremock
+  image: wiremock/wiremock:3.13.2 # verified 2026-09-29 (Docker Hub registry API); newest 3.x stable
+  # Every stub of these mocks fills its answer in from the request (JSON-RPC id, task id, host).
+  command: ["--global-response-templating", "--disable-banner"]
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/__admin/health"]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 5s
+
+services:
+  postgres:
+    image: postgres:16.15-alpine # CI uses postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # local development only
+      POSTGRES_DB: orch
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Creates `orch_test` on first start, the database `cargo test` expects (see orchestrator/README.md).
+      - ./dev/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orch"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # A fake A2A 1.0 coding agent. The script is chosen by a keyword in the message text.
+  mock-agent:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_AGENT_PORT:-8081}:8080"
+    volumes:
+      - ./dev/wiremock/agent/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/agent/__files:/home/wiremock/__files:ro
+
+  # The same agent, declaring the release-channels extension: the UI's release picker.
+  mock-agent-releases:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_AGENT_RELEASES_PORT:-8082}:8080"
+    volumes:
+      - ./dev/wiremock/agent-releases/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/agent-releases/__files:/home/wiremock/__files:ro
+
+  orchestrator:
+    profiles: [app]
+    build:
+      context: ./orchestrator
+    image: another-agentic-system/orchestrator:dev
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/orch
+      AGENTS_FILE: /etc/orchestrator/agents.yaml
+      MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
+      LOG_FORMAT: text
+      # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
+    volumes:
+      - ./dev/agents.yaml:/etc/orchestrator/agents.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-agent:
+        condition: service_healthy
+      mock-agent-releases:
+        condition: service_healthy
+    # No healthcheck of its own: the distroless image has no shell or curl. `edge` probes /readyz through the proxy.
+
+  web:
+    profiles: [app]
+    build:
+      context: . # the API types are generated from docs/api/chat-api.yaml
+      dockerfile: web/Dockerfile
+    image: another-agentic-system/web:dev
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # Stands in for oauth2-proxy: one origin, /api/* to the orchestrator, everything else to the web UI,
+  # and a fixed X-Auth-Request-Email. It authenticates nobody: never expose it, never use it in production.
+  edge:
+    profiles: [app]
+    image: caddy:2.11.4-alpine # verified 2026-09-29 (Docker Hub registry API)
+    ports:
+      - "127.0.0.1:${EDGE_PORT:-8080}:8080"
+    volumes:
+      - ./dev/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      orchestrator:
+        condition: service_started
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+volumes:
+  postgres-data:

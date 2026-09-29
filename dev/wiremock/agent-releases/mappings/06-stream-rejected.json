@@ -1,0 +1,35 @@
+{
+  "name": "SendStreamingMessage: keyword reject -> submitted, rejected",
+  "priority": 5,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "(?is).*\\breject\\b.*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-rejected.sse"
+  }
+}

@@ -1,0 +1,6 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{{#assign 'msgId'}}{{jsonPath request.body '$.params.message.messageId' default='msg-local'}}{{/assign}}{{#assign 'ctxId'}}{{jsonPath request.body '$.params.message.contextId' default='ctx-local'}}{{/assign}}{{#assign 'taskId'}}{{jsonPath request.body '$.params.message.taskId'}}{{/assign}}id: 1
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{msgId}}-working","role":"ROLE_AGENT","parts":[{"text":"Continuing with your answer."}]}}}}}
+
+id: 2
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_INPUT_REQUIRED","timestamp":"{{now}}","message":{"messageId":"{{msgId}}-ask","role":"ROLE_AGENT","parts":[{"text":"One more question: should I add tests?"}]}}}}}
+

@@ -1,0 +1,50 @@
+{
+  "name": "mock-coder",
+  "description": "WireMock stand-in for an A2A 1.0 coding agent (local development only).",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "code",
+      "name": "Code",
+      "description": "Pretends to make a change and open a pull request.",
+      "tags": [
+        "mock",
+        "code"
+      ],
+      "examples": [
+        "add a health endpoint",
+        "ask which branch",
+        "fail please"
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{"jsonrpc":"2.0","id":"{{rpcId}}","error":{"code":-32602,"message":"invalid params: the mock agent refuses this request on purpose (keyword: error)","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INVALID_PARAMS","domain":"a2a-protocol.org"}]}}

@@ -1,0 +1,10 @@
+# AGENTS_FILE of the compose `orchestrator` service (format: orchestrator/agents.example.yaml).
+# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN is a dummy set in compose.yaml.
+- id: mock-coder
+  name: Mock coder
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-coder-releases
+  name: Mock coder (releases)
+  cardUrl: http://mock-agent-releases:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN

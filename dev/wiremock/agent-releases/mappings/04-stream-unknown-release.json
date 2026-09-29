@@ -1,0 +1,35 @@
+{
+  "name": "SendStreamingMessage: unknown release -> submitted, failed (fail closed, never the default)",
+  "priority": 3,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.metadata['https://agents.vymalo.com/a2a/extensions/release-channels/v1'].release",
+          "matches": "(?!(production|staging|latest|coder-r53|coder-r51|coder-r47)$).+"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "unknown-release.sse"
+  }
+}

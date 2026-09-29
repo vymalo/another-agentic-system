@@ -65,6 +65,56 @@ flowchart LR
 | [0008](docs/decisions/0008-platform-integration-via-a2a-extension.md) | Optional another-agentic-platform integration via an A2A extension |
 | [0009](docs/decisions/0009-swappable-implementations-at-build-time.md) | Swappable implementations, selected at build time |
 
+## Local development
+
+`compose.yaml` runs everything except the agents' real work: Postgres, two
+[WireMock](https://wiremock.org/) stand-ins for an A2A 1.0 coding agent, and, with the `app`
+profile, the real orchestrator and chat UI behind one origin. Docker with Compose v2 is all it needs;
+the mocks need no agent host, model or GitHub token. Reference and scenarios:
+[`dev/README.md`](dev/README.md).
+
+```sh
+docker compose up -d --wait                          # postgres + mocks: nothing is built, seconds
+docker compose --profile app up -d --build --wait    # + orchestrator, web, edge proxy (first build takes minutes)
+open http://127.0.0.1:8080                           # the chat UI; pick "Mock coder" and say something
+dev/try-thread.sh "add a health endpoint"            # or drive a thread from the terminal (curl, jq)
+docker compose --profile app down -v                 # stop and forget the database
+```
+
+| Profile | Services | Ports on 127.0.0.1 |
+|---|---|---|
+| default | `postgres`, `mock-agent`, `mock-agent-releases` | 5432, 8081, 8082 |
+| `app` | + `orchestrator`, `web`, `edge` | 8080 (the only one: `/api/*` to the orchestrator, the rest to the UI) |
+
+The `edge` proxy replaces oauth2-proxy locally by injecting `X-Auth-Request-Email: dev@example.com`.
+It authenticates nobody; it is for a laptop, never for production.
+
+To run the code you are changing against the mocks (compose supplies only the infrastructure):
+
+| Variable | Value | For |
+|---|---|---|
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/orch` | the orchestrator |
+| `AGENTS_FILE` | `dev/agents.local.yaml` (agents on `127.0.0.1:8081`/`8082`) | the orchestrator |
+| `MOCK_AGENT_TOKEN` | `dev-mock-token` (any non-empty value; the mocks only require a bearer) | the orchestrator, named by `tokenEnv` |
+| `AUTH_DEV_USER` | `dev@example.com` | the orchestrator without the edge proxy |
+| `ORCH_TEST_DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/orch_test` | `cargo test --workspace` |
+| `ORCH_TEST_MOCK_AGENT_URL`, `ORCH_TEST_MOCK_AGENT_RELEASES_URL` | `http://127.0.0.1:8081`, `http://127.0.0.1:8082` | `cargo test -p orch-e2e --test wiremock_agent` |
+
+The mock agent picks its script from a word in your message:
+
+| Say | The thread |
+|---|---|
+| anything else | works, opens a "pull request" artifact, ends `done` |
+| `ask` | asks a question and ends `blocked`; answer it in the same thread |
+| `fail` / `reject` / `error` | ends `failed` (agent failure / agent rejection / JSON-RPC error) |
+| `slow` | like the default, over 8 seconds |
+
+`mock-agent-releases` declares the release-channels extension, so only it shows the release
+dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
+`POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT` and `EDGE_PORT`. CI keeps the mocks
+honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
+[`dev/check-mocks.sh`](dev/check-mocks.sh) and the real orchestrator client against them.
+
 ## Related
 
 - **another-agentic-platform** — the agent platform: versioned agent services,

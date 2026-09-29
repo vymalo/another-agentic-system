@@ -1,0 +1,35 @@
+{
+  "name": "SendStreamingMessage: keyword ask -> submitted, working, input-required",
+  "priority": 7,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "(?is).*\\bask\\b.*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-ask.sse"
+  }
+}

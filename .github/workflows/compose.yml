@@ -1,0 +1,71 @@
+name: Compose
+
+# The local development stack (compose.yaml, dev/): both compose profiles must parse, the WireMock
+# stand-in agents must answer as documented, and the REAL orchestrator client must still work against
+# them, so the mocks cannot drift from the protocol code they exist to test.
+# The `app` profile builds the orchestrator and web images, which the Orchestrator and Web workflows
+# already build; here it is only validated with `docker compose config`.
+#
+# Path filters mean this check must not be made "required" for unrelated PRs.
+
+on:
+  pull_request:
+    paths:
+      - "compose.yaml"
+      - "dev/**"
+      - "orchestrator/crates/agent-a2a/**"
+      - "orchestrator/crates/e2e/tests/wiremock_agent.rs"
+      - ".github/workflows/compose.yml"
+  push:
+    branches: [main]
+    paths:
+      - "compose.yaml"
+      - "dev/**"
+      - "orchestrator/crates/agent-a2a/**"
+      - "orchestrator/crates/e2e/tests/wiremock_agent.rs"
+      - ".github/workflows/compose.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compose-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mocks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+      - name: Both profiles parse
+        run: |
+          docker compose config -q
+          docker compose --profile app config -q
+      - name: Start the infrastructure and the mocks
+        run: docker compose up -d --wait postgres mock-agent mock-agent-releases
+      - name: Every mock scenario answers as documented
+        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082
+      - name: The real orchestrator client against the mocks
+        run: |
+          cd orchestrator
+          ORCH_TEST_MOCK_AGENT_URL=http://127.0.0.1:8081 \
+          ORCH_TEST_MOCK_AGENT_RELEASES_URL=http://127.0.0.1:8082 \
+            cargo test -p orch-e2e --test wiremock_agent --locked
+      - name: Logs
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Shellcheck the dev scripts
+        run: shellcheck dev/check-mocks.sh dev/try-thread.sh
