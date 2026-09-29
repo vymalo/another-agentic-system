@@ -3,7 +3,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use futures::stream::BoxStream;
-use orch_core::{AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases};
+use orch_core::{
+    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases, Timestamp,
+    UiActionData, UiVersion,
+};
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
 /// every `match` a new transport must handle). It lives in the ports, not in the core, because it
@@ -74,6 +77,24 @@ impl AgentEndpoint {
     }
 }
 
+/// The A2UI versions a live card advertises through the A2UI extension (ADR 0013). Only versions
+/// this build knows are listed, so an empty list never exists: no advertisement is
+/// `AgentCardInfo::ui == None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiSupport {
+    /// The advertised versions, once each, in the order of [`UiSupport::preferred`]: the current
+    /// release first.
+    pub versions: Vec<UiVersion>,
+}
+
+impl UiSupport {
+    /// The version to speak when the card lists several: the current release (`v0.9.1`), else
+    /// the candidate (`v1.0`) (open question 22).
+    pub fn preferred(&self) -> Option<UiVersion> {
+        self.versions.first().copied()
+    }
+}
+
 /// What the live agent card says (read fresh every time, never cached: ADR 0008).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentCardInfo {
@@ -83,6 +104,34 @@ pub struct AgentCardInfo {
     pub version: Option<String>,
     /// Present only when the card advertises the release-channels extension.
     pub releases: Option<Releases>,
+    /// Present only when the card advertises the A2UI extension in a version this build knows.
+    pub ui: Option<UiSupport>,
+}
+
+/// What a [`SendRequest`] delivers: a closed enum, so the compiler lists every `match` that a new
+/// kind of input must reach (ADR 0004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendContent {
+    /// What the user wrote.
+    Text(String),
+    /// What the user did on an A2UI surface the agent sent (ADR 0013): the agent receives it as
+    /// an `application/a2ui+json` data part.
+    UiAction {
+        /// The action.
+        action: UiActionData,
+        /// When the user acted (the log's own time).
+        at: Timestamp,
+    },
+}
+
+impl SendContent {
+    /// The user's text, when this is a message.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            SendContent::Text(t) => Some(t),
+            SendContent::UiAction { .. } => None,
+        }
+    }
 }
 
 /// One message to deliver to the agent.
@@ -96,8 +145,8 @@ pub struct SendRequest {
     pub context_id: String,
     /// Continue this task (a follow-up to an `input-required` task).
     pub task_id: Option<String>,
-    /// Message text.
-    pub text: String,
+    /// The message, or the action.
+    pub content: SendContent,
     /// Selected release channel or revision (only sent when the card offers releases).
     pub release: Option<String>,
 }

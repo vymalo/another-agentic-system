@@ -16,6 +16,7 @@ use crate::event::{
 };
 use crate::ids::{AgentId, UserId};
 use crate::thread::ThreadState;
+use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
 
 /// Everything that can happen to a thread, already translated to protocol-neutral terms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,16 @@ pub enum Input {
         message_id: Option<String>,
         /// The id of the run the surface started or continued with it, recorded in the log.
         run_id: Option<String>,
+    },
+    /// The user acted on an A2UI surface (a button with an event action). Like a message, it
+    /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
+    /// The caller has checked that the thread has the surface ([`UiActionData::check`] checks
+    /// the sizes).
+    UiAction {
+        /// Who acted.
+        user: UserId,
+        /// What they did.
+        action: UiActionData,
     },
     /// The user asked to cancel.
     Cancel {
@@ -68,6 +79,7 @@ impl Input {
     pub fn name(&self) -> &'static str {
         match self {
             Input::UserMessage { .. } => "user message",
+            Input::UiAction { .. } => "ui action",
             Input::Cancel { .. } => "cancel",
             Input::Agent { .. } => "agent update",
             Input::DeliveryFailed { .. } => "delivery failure",
@@ -95,6 +107,11 @@ pub enum Command {
     Delegate {
         /// The user's text.
         text: String,
+    },
+    /// Delegate a user's action on an A2UI surface to the target agent (outbox kind `delegate`).
+    DelegateAction {
+        /// The action.
+        action: UiActionData,
     },
     /// Ask the agent to cancel the running task (outbox kind `cancel`).
     RequestCancel,
@@ -128,6 +145,14 @@ impl Classify for TransitionError {
             }
         }
     }
+}
+
+/// The `error` event for an A2UI part that was refused.
+fn refused_ui(reason: &str) -> EventBody {
+    EventBody::Error(ErrorData {
+        message: format!("an A2UI part from the agent was refused: {reason}"),
+        retryable: false,
+    })
 }
 
 fn append(actor: Actor, body: EventBody) -> Command {
@@ -186,6 +211,15 @@ fn user_message(
     ]
 }
 
+fn ui_action(user: &UserId, action: &UiActionData) -> Vec<Command> {
+    vec![
+        append(Actor::user(user), EventBody::UiAction(action.clone())),
+        Command::DelegateAction {
+            action: action.clone(),
+        },
+    ]
+}
+
 /// Decides the next state and the commands for `input` in `state`. Pure: no I/O, no clock.
 pub fn transition(
     state: &ThreadState,
@@ -206,6 +240,13 @@ pub fn transition(
                 ThreadState::Queued,
                 user_message(user, text, message_id, run_id),
             )),
+            ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
+                Err(TransitionError::Finished { state })
+            }
+        },
+        Input::UiAction { user, action } => match state {
+            ThreadState::Queued | ThreadState::Working => Ok((state, ui_action(user, action))),
+            ThreadState::Blocked => Ok((ThreadState::Queued, ui_action(user, action))),
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::Finished { state })
             }
@@ -293,6 +334,21 @@ fn agent_input(
                 }),
             )],
         )),
+        // The adapter has checked the payload; the door is checked again here, so nothing
+        // unchecked reaches the log whatever adapter sent it (ADR 0013).
+        AgentUpdate::Ui { operations } => Ok((
+            state,
+            vec![append(
+                actor,
+                match check_operation_list(operations) {
+                    Ok(()) => EventBody::UiSurface(UiSurfaceData {
+                        operations: operations.clone(),
+                    }),
+                    Err(rejection) => refused_ui(&rejection.to_string()),
+                },
+            )],
+        )),
+        AgentUpdate::UiRejected { reason } => Ok((state, vec![append(actor, refused_ui(reason))])),
         AgentUpdate::Message {
             message_id,
             text,

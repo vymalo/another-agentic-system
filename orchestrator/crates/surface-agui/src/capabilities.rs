@@ -4,7 +4,7 @@
 //! on every request and never cached (ADR 0008), so the response says `Cache-Control: no-store`.
 //! A card that cannot be read gives a smaller document, not an error: the identity, the
 //! transport and the interrupt support are ours to state, and nothing the card would have added
-//! (description, version, release channels) is assumed.
+//! (description, version, release channels, A2UI) is assumed.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -28,6 +28,7 @@ pub(crate) async fn capabilities<P: Ports>(
         description: card.description,
         version: card.version,
         releases: card.releases,
+        ui: card.ui.map(|ui| ui.versions).unwrap_or_default(),
     });
     let document = agent_capabilities(&agent.id, &agent.name, facts.as_ref());
     Ok((

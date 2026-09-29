@@ -37,7 +37,9 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
     cmds.iter()
         .filter_map(|c| match c {
             Command::Append(d) => Some(&d.body),
-            Command::Delegate { .. } | Command::RequestCancel => None,
+            Command::Delegate { .. } | Command::DelegateAction { .. } | Command::RequestCancel => {
+                None
+            }
         })
         .collect()
 }
@@ -567,4 +569,146 @@ fn replay_is_deterministic() {
     let b = fold(&inputs);
     assert_eq!(a, b);
     assert_eq!(a.0, Done);
+}
+
+// ---------------------------------------------------------------- A2UI (ADR 0013)
+
+fn surface_op() -> serde_json::Value {
+    serde_json::json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})
+}
+fn ui(update: AgentUpdate) -> Input {
+    Input::Agent {
+        agent: agent(),
+        revision: Some("rev-1".into()),
+        update,
+    }
+}
+fn act() -> UiActionData {
+    UiActionData {
+        surface_id: "s1".into(),
+        name: "submit".into(),
+        source_component_id: "btn".into(),
+        context: serde_json::Map::new(),
+        version: UiVersion::V0_9_1,
+        run_id: Some("run-2".into()),
+    }
+}
+fn ui_action(action: UiActionData) -> Input {
+    Input::UiAction {
+        user: user(),
+        action,
+    }
+}
+
+#[test]
+fn row_ui1_a_surface_is_recorded_without_moving_the_thread() {
+    let update = AgentUpdate::Ui {
+        operations: vec![surface_op()],
+    };
+    for s in OPEN {
+        let (next, cmds) = run(s, &ui(update.clone()));
+        assert_eq!(next, s);
+        let want = EventBody::UiSurface(UiSurfaceData {
+            operations: vec![surface_op()],
+        });
+        assert_eq!(bodies(&cmds), [&want]);
+        let Command::Append(draft) = &cmds[0] else {
+            panic!("not an append");
+        };
+        assert_eq!(draft.actor, Actor::agent(&agent(), Some("rev-1".into())));
+    }
+}
+
+#[test]
+fn row_ui2_a_surface_for_a_finished_thread_is_a_late_update() {
+    let update = AgentUpdate::Ui {
+        operations: vec![surface_op()],
+    };
+    for s in TERMINAL {
+        assert!(matches!(
+            transition(&s, &ui(update.clone())),
+            Err(TransitionError::InvalidInState { .. })
+        ));
+    }
+}
+
+#[test]
+fn row_ui3_a_refused_part_is_an_error_event_and_nothing_else() {
+    let update = AgentUpdate::UiRejected {
+        reason: "message 0: no version".into(),
+    };
+    for s in OPEN {
+        let (next, cmds) = run(s, &ui(update.clone()));
+        assert_eq!(next, s, "the turn goes on");
+        let [EventBody::Error(e)] = bodies(&cmds)[..] else {
+            panic!("{cmds:?}");
+        };
+        assert!(!e.retryable);
+        assert!(e.message.contains("message 0: no version"), "{}", e.message);
+    }
+}
+
+#[test]
+fn row_ui4_an_action_is_a_user_event_and_a_delegation() {
+    for s in [Queued, Working] {
+        let (next, cmds) = run(s, &ui_action(act()));
+        assert_eq!(next, s);
+        assert_eq!(bodies(&cmds), [&EventBody::UiAction(act())]);
+        let Command::Append(draft) = &cmds[0] else {
+            panic!("not an append");
+        };
+        assert_eq!(draft.actor, Actor::user(&user()));
+        assert_eq!(cmds[1], Command::DelegateAction { action: act() });
+    }
+}
+
+#[test]
+fn row_ui5_an_action_answers_a_blocked_thread_like_a_message() {
+    let (next, cmds) = run(Blocked, &ui_action(act()));
+    assert_eq!(next, Queued);
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::DelegateAction { .. }))
+    );
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Command::Delegate { .. })),
+        "an action carries no text"
+    );
+}
+
+#[test]
+fn row_ui6_an_action_on_a_finished_thread_is_refused() {
+    for s in TERMINAL {
+        assert_eq!(
+            transition(&s, &ui_action(act())),
+            Err(TransitionError::Finished { state: s })
+        );
+    }
+}
+
+#[test]
+fn row_ui7_an_unchecked_payload_never_reaches_the_log() {
+    // An adapter that forgot the envelope check: the core does it again.
+    let junk = [
+        vec![],
+        vec![serde_json::json!({"nonsense": true})],
+        vec![serde_json::json!({"version": "v0.8", "createSurface": {"surfaceId": "s"}})],
+        vec![serde_json::json!("x"); orch_core::MAX_OPERATIONS + 1],
+    ];
+    for operations in junk {
+        for s in OPEN {
+            let (next, cmds) = run(
+                s,
+                &ui(AgentUpdate::Ui {
+                    operations: operations.clone(),
+                }),
+            );
+            assert_eq!(next, s);
+            let [EventBody::Error(e)] = bodies(&cmds)[..] else {
+                panic!("{cmds:?}");
+            };
+            assert!(!e.retryable);
+            assert!(e.message.contains("refused"), "{}", e.message);
+        }
+    }
 }

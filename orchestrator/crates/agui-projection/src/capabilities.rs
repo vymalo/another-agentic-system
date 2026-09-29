@@ -12,7 +12,7 @@ use orch_agui_proto::{
     AgentCapabilities, HumanInTheLoopCapabilities, IdentityCapabilities, MultiAgentCapabilities,
     SubagentInfo, TransportCapabilities,
 };
-use orch_core::{AgentId, Releases};
+use orch_core::{AgentId, Releases, UiVersion};
 
 use crate::vocab::RELEASE_CHANNELS_URI;
 
@@ -25,6 +25,9 @@ pub struct CardFacts {
     pub version: Option<String>,
     /// Present only when the card advertises the release-channels extension (ADR 0008).
     pub releases: Option<Releases>,
+    /// The A2UI extension versions the card advertises (ADR 0013); empty when it advertises none
+    /// this build knows.
+    pub ui: Vec<UiVersion>,
 }
 
 /// The `AgentCapabilities` of the agent `id` (display name `name`); `card` is `None` when the
@@ -35,13 +38,23 @@ pub struct CardFacts {
 ///   transport of our own; the standard bindings do not resume);
 /// - `humanInTheLoop`: interrupts (`RUN_FINISHED` with an interrupt outcome, answered by `resume`);
 /// - `multiAgent`: the agent runs as a subagent of the run, under its own id as the name;
-/// - `custom`: `[RELEASE_CHANNELS_URI]` when the card lists releases.
+/// - `custom`: `[RELEASE_CHANNELS_URI]` when the card lists releases, and one key per A2UI
+///   extension URI the card lists, `{supportedCatalogIds}` being the catalogs the web renders
+///   (ADR 0013). A card that cannot be read declares neither.
 pub fn agent_capabilities(id: &AgentId, name: &str, card: Option<&CardFacts>) -> AgentCapabilities {
     let mut custom = BTreeMap::new();
     if let Some(releases) = card.and_then(|c| c.releases.as_ref())
         && let Ok(value) = serde_json::to_value(releases)
     {
         custom.insert(RELEASE_CHANNELS_URI.to_owned(), value);
+    }
+    for version in card.map(|c| c.ui.as_slice()).unwrap_or_default() {
+        if let Some(uri) = version.extension_uri() {
+            custom.insert(
+                uri.to_owned(),
+                serde_json::json!({ "supportedCatalogIds": version.basic_catalog_ids() }),
+            );
+        }
     }
     let description = card.and_then(|c| c.description.clone());
     AgentCapabilities {

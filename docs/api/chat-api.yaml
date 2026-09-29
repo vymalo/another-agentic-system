@@ -208,8 +208,9 @@ paths:
       description: |
         The standard AG-UI run endpoint ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md),
         [`agui.md`](agui.md#run-binding)). Creates a thread (the consumer mints `threadId`, a UUID),
-        sends a message, answers an interrupt (`resume`) or attaches to a run already in the log
-        (a retry with the same `runId`). The response streams the AG-UI events of that run, from
+        sends a message, answers an interrupt (`resume`), sends the user's action on an A2UI surface
+        (`forwardedProps.a2uiAction.userAction`, [ADR 0013](../decisions/0013-a2ui-generative-ui.md))
+        or attaches to a run already in the log (a retry with the same `runId`). The response streams the AG-UI events of that run, from
         `RUN_STARTED` to `RUN_FINISHED` or `RUN_ERROR`, then ends; closing it never cancels the run.
 
         Every rejection is decided before the first stream byte and is a problem response; nothing
@@ -231,9 +232,9 @@ paths:
         "404": { description: "The agent is not configured, or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
         "409": { description: "The thread targets another agent, a run is already open on it, or it is finished (`done`, `failed`, `cancelled`)", $ref: "#/components/responses/Problem" }
-        "413": { description: "The body is larger than 8 MiB", $ref: "#/components/responses/Problem" }
+        "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
-        "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`", $ref: "#/components/responses/Problem" }
+        "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, the thread is contended, or the target agent is rate limiting; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/threads/{threadId}/connect:
@@ -394,6 +395,8 @@ components:
         - artifact            # data: { name, mimeType?, uri?, text? }  e.g. a branch, a PR URL, a patch
         - thread_state        # data: { state: ThreadState }
         - error               # data: { message, retryable: bool }
+        - ui_surface          # data: { operations: [A2UI message] }  an A2UI payload an agent sent to render (ADR 0013), already through the orchestrator's envelope check; attributed to the agent. Additive.
+        - ui_action           # data: { surfaceId, name, sourceComponentId, context, version, runId? }  what the user did on an A2UI surface of the thread (ADR 0013); attributed to the user. Additive.
     Actor:
       type: object
       required: [type, name]
@@ -411,7 +414,7 @@ components:
           description: "agent_message: the agent's stable message id. user_message: the id the surface gave the message, when it did (optional, absent otherwise)."
         runId:
           type: string
-          description: "user_message only: the id of the run the message started or continued, when the surface names runs (optional, absent otherwise)."
+          description: "user_message, ui_action: the id of the run the message or action started or continued, when the surface names runs (optional, absent otherwise)."
         final: { type: boolean }
         status:
           type: string
@@ -423,6 +426,24 @@ components:
         state: { $ref: "#/components/schemas/ThreadState" }
         message: { type: string }
         retryable: { type: boolean }
+        operations:
+          type: array
+          description: "ui_surface only: the A2UI messages of one payload, as the agent sent them. Each is an object with a `version` (v0.9, v0.9.1 or v1.0) and exactly one of createSurface, updateComponents, updateDataModel, deleteSurface, whose body names a `surfaceId`. At most 256 messages and 64 KiB per payload."
+          items: { type: object, additionalProperties: true }
+        surfaceId:
+          type: string
+          description: "ui_action only: the surface the user acted on (one the thread has), at most 256 bytes."
+        sourceComponentId:
+          type: string
+          description: "ui_action only: the component that triggered the action (A2UI requires it), at most 256 bytes."
+        context:
+          type: object
+          additionalProperties: true
+          description: "ui_action only: the context the component's action declared, resolved by the renderer; at most 16 KiB."
+        version:
+          type: string
+          enum: [v0.9, v0.9.1, v1.0]
+          description: "ui_action only: the A2UI version of the surface, so the agent gets the action in the dialect it spoke."
     AgUiRunAgentInput:
       description: The AG-UI 1.0 `RunAgentInput` (the vendored JSON Schema, `$defs/RunAgentInput`)
       $ref: "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json#/$defs/RunAgentInput"

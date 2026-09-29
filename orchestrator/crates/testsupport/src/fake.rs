@@ -18,6 +18,19 @@
 //! | `talk` | `working`, `working("Reading the repository")`, an agent `Message` "Plan: add a test", artifact `echo: <text>`, `completed` |
 //! | `messages` | `working`, two agent `Message` frames (`message one`, `message two`, ids `<task>-msg-<n>`), artifact `echo: <text>`, `completed`; when the text also contains the word `gate`, it waits for [`FakeAgent::release_gate`] after the messages |
 //! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
+//! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
+//! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
+//! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
+//! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
+//! | `ui-big` | `working`, an artifact whose A2UI part is larger than the cap, then `completed` |
+//! | `ui-delete` | `working`, an A2UI part that creates surface `s2`, then one that deletes it, `completed` |
+//!
+//! An action arrives as a data part of `application/a2ui+json`; its name becomes the text the
+//! script sees (`ui-action <name>`), and [`Call::actions`] records the messages.
+//!
+//! With [`FakeAgentOptions::ui_extensions`] the card lists the A2UI extension under those URIs,
+//! and [`FakeAgent::set_ui_extensions`] changes them while the agent runs (the card is produced
+//! on every request). Each call records the renderer capabilities the message carried.
 //!
 //! With [`FakeAgentOptions::releases`] the card declares the release-channels extension, a new
 //! task starts with a `Task` frame whose metadata records `{requested, revision}`, every event
@@ -39,7 +52,7 @@ use a2a::{
 };
 use a2a_server::{
     AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore, RequestHandler,
-    ServiceParams, StaticAgentCard,
+    ServiceParams,
 };
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -55,6 +68,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 /// The release-channels extension URI (kept literal: test support must not depend on the adapter).
 pub const EXTENSION_URI: &str = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
+
+/// The media type of an A2UI part (kept literal: test support must not depend on the adapter).
+pub const A2UI_MEDIA_TYPE: &str = "application/a2ui+json";
 
 /// The URL every finished script reports as its artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
@@ -127,6 +143,8 @@ pub struct FakeAgentOptions {
     pub resubscribe: bool,
     /// Where to listen. `None` (the default) binds `127.0.0.1:0`, a free port.
     pub bind: Option<SocketAddr>,
+    /// URIs the card lists as A2UI extensions (empty: the card does not mention A2UI).
+    pub ui_extensions: Vec<String>,
 }
 
 impl Default for FakeAgentOptions {
@@ -136,6 +154,7 @@ impl Default for FakeAgentOptions {
             releases: None,
             resubscribe: true,
             bind: None,
+            ui_extensions: Vec::new(),
         }
     }
 }
@@ -170,9 +189,21 @@ pub struct Call {
     pub release: Option<String>,
     /// The `Authorization` request header.
     pub authorization: Option<String>,
+    /// The renderer capabilities of the message: the value of `a2uiClientCapabilities` or
+    /// `a2uiRendererCapabilities` in its metadata, when it carried one.
+    pub a2ui_capabilities: Option<Value>,
+    /// The A2UI action messages the message carried (the array elements of its A2UI data parts).
+    pub actions: Vec<Value>,
 }
 
 impl Call {
+    /// The request activated the A2UI extension under `uri`.
+    pub fn activates(&self, uri: &str) -> bool {
+        self.extensions_header
+            .iter()
+            .any(|h| h.split(',').any(|e| e.trim() == uri))
+    }
+
     /// The request activated the release-channels extension.
     pub fn activates_release_channels(&self) -> bool {
         self.extensions_header
@@ -192,6 +223,8 @@ struct Shared {
     unauthorized: AtomicUsize,
     rpcs: Mutex<HashMap<String, usize>>,
     releases: Option<FakeReleases>,
+    /// The A2UI extension URIs the card lists right now.
+    ui_extensions: Mutex<Vec<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -229,6 +262,7 @@ impl FakeAgent {
             unauthorized: AtomicUsize::new(0),
             rpcs: Mutex::new(HashMap::new()),
             releases: opts.releases.clone(),
+            ui_extensions: Mutex::new(opts.ui_extensions.clone()),
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -257,7 +291,10 @@ impl FakeAgent {
             axum::Router::new()
                 .nest("/a2a", rpc)
                 .merge(a2a_server::agent_card::agent_card_router(Arc::new(
-                    StaticAgentCard::new(card),
+                    LiveCard {
+                        base: card,
+                        shared: Arc::clone(&shared),
+                    },
                 )));
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -305,6 +342,11 @@ impl FakeAgent {
             .collect()
     }
 
+    /// Changes which A2UI extension URIs the card lists, from the next card request on.
+    pub fn set_ui_extensions(&self, uris: &[&str]) {
+        *lock(&self.shared.ui_extensions) = uris.iter().map(|u| (*u).to_owned()).collect();
+    }
+
     /// Lets one waiting `gate` task continue (a permit is kept if none waits yet).
     pub fn release_gate(&self) {
         self.shared.gate.notify_one();
@@ -324,6 +366,38 @@ impl FakeAgent {
     /// Stops the server: the agent becomes unreachable.
     pub fn stop(&self) {
         self.server.abort();
+    }
+}
+
+/// The card, with the A2UI extensions the agent lists at the moment of the request.
+struct LiveCard {
+    base: AgentCard,
+    shared: Arc<Shared>,
+}
+
+impl a2a_server::agent_card::AgentCardProducer for LiveCard {
+    fn card(&self) -> AgentCard {
+        let mut card = self.base.clone();
+        let uris = lock(&self.shared.ui_extensions).clone();
+        let extensions = card.capabilities.extensions.get_or_insert_with(Vec::new);
+        extensions.extend(uris.into_iter().map(|uri| AgentExtension {
+            uri,
+            description: Some("Ability to render A2UI".to_owned()),
+            required: Some(false),
+            params: Some(HashMap::from([(
+                "supportedCatalogIds".to_owned(),
+                json!(["https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"]),
+            )])),
+        }));
+        if card
+            .capabilities
+            .extensions
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            card.capabilities.extensions = None;
+        }
+        card
     }
 }
 
@@ -539,6 +613,25 @@ impl TaskCtx {
         })
     }
 
+    /// A status whose message holds `text` and an A2UI part.
+    fn status_with_ui(&self, state: TaskState, text: &str, ops: Value) -> StreamResponse {
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: self.task_id.clone(),
+            context_id: self.context_id.clone(),
+            status: TaskStatus {
+                state,
+                message: Some({
+                    let mut m = Message::new(Role::Agent, vec![Part::text(text), ui_part(ops)]);
+                    m.task_id = Some(self.task_id.clone());
+                    m.context_id = Some(self.context_id.clone());
+                    m
+                }),
+                timestamp: None,
+            },
+            metadata: self.metadata.clone(),
+        })
+    }
+
     /// A standalone agent `Message` frame (not a status message).
     fn agent_message(&self, text: &str) -> StreamResponse {
         let mut m = Message::new(Role::Agent, vec![Part::text(text)]);
@@ -584,8 +677,34 @@ impl TaskCtx {
     }
 }
 
-fn text_of(message: Option<&Message>) -> String {
+fn is_a2ui(part: &Part) -> bool {
+    part.media_type.as_deref() == Some(A2UI_MEDIA_TYPE)
+        || part
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("mimeType"))
+            .and_then(Value::as_str)
+            == Some(A2UI_MEDIA_TYPE)
+}
+
+/// The messages of the A2UI data parts of `message` (the array elements).
+fn a2ui_messages(message: Option<&Message>) -> Vec<Value> {
     message
+        .into_iter()
+        .flat_map(|m| m.parts.iter())
+        .filter(|p| is_a2ui(p))
+        .filter_map(|p| match &p.content {
+            a2a::PartContent::Data(Value::Array(items)) => Some(items.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// The user's text; for a message that is an A2UI action, `ui-action <name>`, so scripts can
+/// tell what was done.
+fn text_of(message: Option<&Message>) -> String {
+    let text = message
         .map(|m| {
             m.parts
                 .iter()
@@ -593,7 +712,23 @@ fn text_of(message: Option<&Message>) -> String {
                 .collect::<Vec<_>>()
                 .join("\n")
         })
+        .unwrap_or_default();
+    if !text.is_empty() {
+        return text;
+    }
+    a2ui_messages(message)
+        .iter()
+        .find_map(|m| m.get("action")?.get("name")?.as_str())
+        .map(|name| format!("ui-action {name}"))
         .unwrap_or_default()
+}
+
+fn capabilities_of(message: Option<&Message>) -> Option<Value> {
+    let metadata = message?.metadata.as_ref()?;
+    metadata
+        .get("a2uiClientCapabilities")
+        .or_else(|| metadata.get("a2uiRendererCapabilities"))
+        .cloned()
 }
 
 fn requested_release(message: Option<&Message>) -> Option<String> {
@@ -626,6 +761,8 @@ impl Shared {
             extensions_header: header("a2a-extensions"),
             release: requested_release(ctx.message.as_ref()),
             authorization: header("authorization").first().cloned(),
+            a2ui_capabilities: capabilities_of(ctx.message.as_ref()),
+            actions: a2ui_messages(ctx.message.as_ref()),
         });
     }
 
@@ -653,6 +790,32 @@ impl Shared {
             self.artifact_seq.fetch_add(1, Ordering::SeqCst) + 1
         )
     }
+}
+
+/// A data part of A2UI messages, spelled as the A2UI extension does (`metadata.mimeType`) and as
+/// A2A 1.0 does (`mediaType`).
+fn ui_part(ops: Value) -> Part {
+    let mut part = Part::data(ops).with_media_type(A2UI_MEDIA_TYPE);
+    part.metadata = Some(HashMap::from([(
+        "mimeType".to_owned(),
+        json!(A2UI_MEDIA_TYPE),
+    )]));
+    part
+}
+
+fn surface_ops(surface: &str) -> Value {
+    json!([
+        {"version": "v0.9.1", "createSurface": {
+            "surfaceId": surface,
+            "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}},
+        {"version": "v0.9.1", "updateComponents": {"surfaceId": surface, "components": [
+            {"id": "root", "component": "Column", "children": ["title", "go"]},
+            {"id": "title", "component": "Text", "text": "Pick one"},
+            {"id": "go_label", "component": "Text", "text": "Go"},
+            {"id": "go", "component": "Button", "child": "go_label", "variant": "primary",
+             "action": {"event": {"name": "go", "context": {"choice": "a"}}}}
+        ]}}
+    ])
 }
 
 fn echo_parts(text: &str) -> Vec<Part> {
@@ -694,6 +857,76 @@ async fn script(
             let (a, done) = finish(shared.next_artifact_id(), format!("echo: {text}"));
             emit(&tx, a).await?;
             emit(&tx, done).await?;
+        }
+        "ui" if !answering => {
+            lock(&shared.asking).insert(ctx.task_id.clone());
+            let ops = surface_ops("s1");
+            let ops = ops.as_array().cloned().unwrap_or_default();
+            for op in ops {
+                let id = shared.next_artifact_id();
+                emit(
+                    &tx,
+                    ctx.artifact(
+                        &id,
+                        "form",
+                        vec![ui_part(Value::Array(vec![op]))],
+                        false,
+                        Some(true),
+                    ),
+                )
+                .await?;
+            }
+            emit(&tx, ctx.status(TaskState::InputRequired, Some("Pick one"))).await?;
+        }
+        "ui-msg" => {
+            let mut m = Message::new(
+                Role::Agent,
+                vec![Part::text("Here is a form"), ui_part(surface_ops("s1"))],
+            );
+            m.message_id = format!("{}-ui-msg", ctx.task_id);
+            m.task_id = Some(ctx.task_id.clone());
+            m.context_id = Some(ctx.context_id.clone());
+            m.metadata = ctx.metadata.clone();
+            emit(&tx, StreamResponse::Message(m)).await?;
+            let (a, done) = finish(shared.next_artifact_id(), format!("echo: {text}"));
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
+        "ui-status" if !answering => {
+            lock(&shared.asking).insert(ctx.task_id.clone());
+            emit(
+                &tx,
+                ctx.status_with_ui(TaskState::InputRequired, "Which one?", surface_ops("s1")),
+            )
+            .await?;
+        }
+        "ui-bad" | "ui-big" => {
+            let payload = if word == "ui-bad" {
+                json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})
+            } else {
+                json!([{"version": "v0.9.1", "updateDataModel": {
+                    "surfaceId": "s1", "value": "x".repeat(70 * 1024)}}])
+            };
+            let id = shared.next_artifact_id();
+            emit(
+                &tx,
+                ctx.artifact(&id, "form", vec![ui_part(payload)], false, Some(true)),
+            )
+            .await?;
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
+        }
+        "ui-delete" => {
+            let create = json!([{"version": "v0.9.1", "createSurface": {"surfaceId": "s2"}}]);
+            let delete = json!([{"version": "v0.9.1", "deleteSurface": {"surfaceId": "s2"}}]);
+            for ops in [create, delete] {
+                let id = shared.next_artifact_id();
+                emit(
+                    &tx,
+                    ctx.artifact(&id, "form", vec![ui_part(ops)], false, Some(true)),
+                )
+                .await?;
+            }
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "ask" if !answering => {
             lock(&shared.asking).insert(ctx.task_id.clone());

@@ -11,6 +11,7 @@ mod event;
 mod ids;
 mod thread;
 mod transition;
+mod ui;
 
 pub use agent::{AgentTaskState, AgentUpdate};
 pub use error::{BoxError, Classify, ErrorClass, report};
@@ -21,6 +22,12 @@ pub use event::{
 pub use ids::{AgentId, ThreadId, UserId};
 pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
+pub use ui::{
+    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES,
+    MAX_ID_BYTES, MAX_OPERATIONS, MAX_OPERATIONS_BYTES, MAX_SURFACE_BYTES, OperationError,
+    OperationInfo, SurfaceOp, UiActionData, UiActionError, UiRejection, UiSurfaceData, UiVersion,
+    check_operation_list, check_operations, inspect, serialized_len,
+};
 
 /// Timestamps are `jiff` instants everywhere (no `f64` time).
 pub use jiff::Timestamp;

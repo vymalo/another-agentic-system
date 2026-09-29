@@ -108,6 +108,7 @@ serve `tests/contract.rs`.
   threads with one body, 401, 400, 406).
 - `tests/capabilities.rs`: the document conforms and describes the agent, release channels are declared
   only while the live card lists them, 404 and 401.
+- `tests/a2ui.rs`: a surface reaches the requester and a later viewer whole; an action is delivered to the same task and answers the wait; an action for an unknown surface, on a new thread, malformed, oversized (413), beside a message, on someone else's thread, on another agent's thread, on a finished thread, or under a reused run id is refused before the stream with nothing written or sent; the capabilities document declares A2UI only while the live card lists it (each URI, both, card down, card changed).
 - `tests/contract.rs`: `docs/api/chat-api.yaml` against this surface. It drives `runAgent`,
   `connectThread` and `getAgentCapabilities` and fails when the statuses the contract documents differ
   from the ones answered (one named exemption: a store that fails to read, the 503 of `connectThread`),

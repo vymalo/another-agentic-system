@@ -1,0 +1,159 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "interrupt:int-5/input_required"
+    },
+    {
+      "runId": "run-2",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "suspended:int-5"
+    },
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "ui pick one"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "a2ui-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "a2ui-surface",
+      "content": {
+        "a2ui_operations": [
+          {
+            "createSurface": {
+              "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+              "surfaceId": "s1"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "updateComponents": {
+              "components": [
+                {
+                  "children": [
+                    "title",
+                    "go"
+                  ],
+                  "component": "Column",
+                  "id": "root"
+                },
+                {
+                  "component": "Text",
+                  "id": "title",
+                  "text": "Pick one"
+                },
+                {
+                  "component": "Text",
+                  "id": "go_label",
+                  "text": "Go"
+                },
+                {
+                  "action": {
+                    "event": {
+                      "context": {
+                        "choice": "a"
+                      },
+                      "name": "go"
+                    }
+                  },
+                  "child": "go_label",
+                  "component": "Button",
+                  "id": "go",
+                  "variant": "primary"
+                }
+              ],
+              "surfaceId": "s1"
+            },
+            "version": "v0.9.1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "Pick one",
+        "status": "input_required"
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "activityType": "vymalo.action",
+      "content": {
+        "context": {
+          "choice": "a"
+        },
+        "name": "go",
+        "sourceComponentId": "go",
+        "surfaceId": "s1"
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "name": "result",
+        "text": "answered: ui-action go",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "ui pick one"
+    }
+  },
+  "pendingInterrupts": []
+}

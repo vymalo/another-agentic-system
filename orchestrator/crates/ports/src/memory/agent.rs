@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
-use orch_core::{AgentId, AgentTaskState, AgentUpdate, Releases};
+use orch_core::{AgentId, AgentTaskState, AgentUpdate, Releases, UiActionData, UiVersion};
 use tokio::sync::Notify;
 
 use crate::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey,
-    SendRequest, TaskHandle, TaskSnapshot,
+    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 
 /// The URL the scripted agent reports as a produced artifact.
@@ -26,8 +26,10 @@ pub enum Call {
         context_id: String,
         /// Task continued, if any.
         task_id: Option<String>,
-        /// Text.
+        /// Text (for an action: `ui-action <name>`).
         text: String,
+        /// The A2UI action delivered instead of text, if any.
+        action: Option<Box<UiActionData>>,
         /// Selected release.
         release: Option<String>,
     },
@@ -98,6 +100,9 @@ struct Shared {
 /// - `gate`: `working`, then waits for [`ScriptedAgent::release_gate`], then artifact, `completed`;
 /// - `drop`: like `gate`, but the initial stream is cut after two envelopes;
 /// - `slow`: `working`, then runs until cancelled;
+/// - `ui`: `working`, an A2UI surface `s1` (a `createSurface` and an `updateComponents` with a
+///   button), then `input-required("Pick one")`; the follow-up (an action, or a message)
+///   continues the task with `working`, an artifact `answer`, `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
@@ -137,9 +142,23 @@ impl ScriptedAgent {
                 description: Some("scripted agent with releases".to_owned()),
                 version: Some("1.0.0".to_owned()),
                 releases: Some(releases),
+                ui: None,
             },
         );
         self
+    }
+
+    /// Makes `agent`'s card advertise the A2UI extension in these versions (an empty list
+    /// removes the advertisement). Takes effect on the next read: nothing is cached.
+    pub fn set_ui(&self, agent: &str, versions: &[UiVersion]) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.ui = (!versions.is_empty()).then(|| UiSupport {
+            versions: versions.to_vec(),
+        });
     }
 
     /// Makes reading `agent`'s card fail.
@@ -195,6 +214,15 @@ impl ScriptedAgent {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn default_card() -> AgentCardInfo {
+    AgentCardInfo {
+        description: Some("scripted agent".to_owned()),
+        version: Some("1.0.0".to_owned()),
+        releases: None,
+        ui: None,
     }
 }
 
@@ -265,6 +293,17 @@ impl Shared {
         );
     }
 
+    fn push_ui(&self, task: &str, surface: &str, operations: Vec<serde_json::Value>) {
+        let n = self.state().tasks.get(task).map_or(0, |t| t.log.len());
+        self.push(
+            task,
+            None,
+            None,
+            IdemKey::Task(format!("a2a:{task}:ui:{surface}:{n}")),
+            Some(AgentUpdate::Ui { operations }),
+        );
+    }
+
     /// Waits until `f` holds for the task (checked on every change).
     async fn wait_until(&self, task: &str, f: impl Fn(&TaskRec) -> bool) {
         loop {
@@ -313,6 +352,24 @@ impl Shared {
     }
 }
 
+fn ui_create(surface: &str) -> serde_json::Value {
+    serde_json::json!({"version": "v0.9.1", "createSurface": {
+        "surfaceId": surface,
+        "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}})
+}
+
+fn ui_components(surface: &str) -> serde_json::Value {
+    serde_json::json!({"version": "v0.9.1", "updateComponents": {
+    "surfaceId": surface,
+    "components": [
+        {"id": "root", "component": "Column", "children": ["title", "go"]},
+        {"id": "title", "component": "Text", "text": "Pick one"},
+        {"id": "go_label", "component": "Text", "text": "Go"},
+        {"id": "go", "component": "Button", "child": "go_label", "variant": "primary",
+         "action": {"event": {"name": "go", "context": {"choice": "a"}}}}
+    ]}})
+}
+
 async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
     use AgentTaskState::{Completed, Failed, InputRequired, Working};
     let script = text.split_whitespace().next().unwrap_or("").to_owned();
@@ -320,6 +377,14 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
     match script.as_str() {
         "ask" if !resumed => shared.push_status(&task, InputRequired, Some("Which branch?")),
         "ask" => {
+            shared.push_artifact(&task, "answer", format!("answered: {text}"));
+            shared.push_status(&task, Completed, None);
+        }
+        "ui" if !resumed => {
+            shared.push_ui(&task, "s1", vec![ui_create("s1"), ui_components("s1")]);
+            shared.push_status(&task, InputRequired, Some("Pick one"));
+        }
+        "ui" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
@@ -348,15 +413,18 @@ impl AgentClient for ScriptedAgent {
         if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
             return Err(AgentError::unreachable("card unreachable"));
         }
-        Ok(st.cards.get(&ep.id).cloned().unwrap_or(AgentCardInfo {
-            description: Some("scripted agent".to_owned()),
-            version: Some("1.0.0".to_owned()),
-            releases: None,
-        }))
+        Ok(st.cards.get(&ep.id).cloned().unwrap_or_else(default_card))
     }
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
-        let script = req.text.split_whitespace().next().unwrap_or("").to_owned();
+        let (text, action) = match &req.content {
+            SendContent::Text(t) => (t.clone(), None),
+            SendContent::UiAction { action, .. } => (
+                format!("ui-action {}", action.name),
+                Some(Box::new(action.clone())),
+            ),
+        };
+        let script = text.split_whitespace().next().unwrap_or("").to_owned();
         let (task, resumed, from) = {
             let mut st = self.state();
             st.calls.push(Call::Send {
@@ -364,7 +432,8 @@ impl AgentClient for ScriptedAgent {
                 message_id: req.message_id.clone(),
                 context_id: req.context_id.clone(),
                 task_id: req.task_id.clone(),
-                text: req.text.clone(),
+                text: text.clone(),
+                action,
                 release: req.release.clone(),
             });
             if st.unreachable.contains(&req.endpoint.id) {
@@ -419,12 +488,7 @@ impl AgentClient for ScriptedAgent {
                 .push_status(&task, AgentTaskState::Submitted, None);
         }
         // Execution continues even if the client goes away (like a real agent host).
-        tokio::spawn(drive(
-            Arc::clone(&self.shared),
-            task.clone(),
-            req.text,
-            resumed,
-        ));
+        tokio::spawn(drive(Arc::clone(&self.shared), task.clone(), text, resumed));
         let limit = (script == "drop").then_some(2);
         Ok(self.shared.follow(task, from, limit))
     }
@@ -543,7 +607,12 @@ fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {
     let mut envelopes: Vec<AgentEnvelope> = rec
         .log
         .iter()
-        .filter(|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
+        .filter(|e| {
+            matches!(
+                e.update,
+                Some(AgentUpdate::Artifact { .. } | AgentUpdate::Ui { .. })
+            )
+        })
         .cloned()
         .collect();
     envelopes.push(AgentEnvelope {

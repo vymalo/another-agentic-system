@@ -14,6 +14,8 @@ mod common;
 use std::path::PathBuf;
 
 use common::*;
+use orch_core::A2UI_EXTENSION_V0_9_1;
+use orch_testsupport::{Chat, FakeAgentOptions};
 use serde_json::{Value, json};
 
 fn examples_dir() -> PathBuf {
@@ -72,13 +74,60 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
                 .await,
             "done",
         ),
+        // A2UI: the agent sends a surface and asks; the user acts on it through the AG-UI run
+        // route (the only door an action has) and the agent finishes the same task.
+        "a2ui" => {
+            let id = chat.create_thread("plain", "ui pick one", None).await;
+            chat.wait_state(&id, "blocked").await;
+            let body = Chat::agui_input(
+                &id,
+                "run-2",
+                &[],
+                json!({"forwardedProps": {"a2uiAction": {"userAction": {
+                    "name": "go",
+                    "surfaceId": "s1",
+                    "sourceComponentId": "go",
+                    "context": {"choice": "a"},
+                }}}}),
+            );
+            let mut response = chat.agui_run("plain", &body).await;
+            assert_eq!(response.status, 200);
+            let frames = response
+                .collect_frames(std::time::Duration::from_secs(20))
+                .await;
+            assert_eq!(
+                frames.last().map(|f| f.event["outcome"]["type"].clone()),
+                Some(json!("success"))
+            );
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 6] = ["echo", "ask", "cancel", "fail", "talk", "release"];
+const SCENARIOS: [&str; 7] = ["echo", "ask", "cancel", "fail", "talk", "release", "a2ui"];
+
+/// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
+async fn world_for(name: &str) -> World {
+    match name {
+        "a2ui" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    plain: FakeAgentOptions {
+                        ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        _ => World::start(Backend::Memory).await,
+    }
+}
 
 #[tokio::test]
 async fn transcripts_match_docs_api_examples() {
@@ -86,7 +135,7 @@ async fn transcripts_match_docs_api_examples() {
     let dir = examples_dir();
     let mut stale = Vec::new();
     for name in SCENARIOS {
-        let world = World::start(Backend::Memory).await;
+        let world = world_for(name).await;
         let got = normalise(run(&world, name).await);
         let path = dir.join(format!("{name}.events.json"));
         let mut text = serde_json::to_string_pretty(&got).unwrap();

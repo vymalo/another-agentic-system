@@ -235,12 +235,46 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         }),
         ..auth.clone()
     };
-    let wanted: Vec<NewEvent> = vec![named, user_event("no ids", None), only_run, auth, auth_bare];
+    // A2UI (ADR 0013): the two additive kinds, and the delegation of an action.
+    let surface = NewEvent {
+        at: t0(),
+        actor: Actor::agent(&AgentId::new("coder"), None),
+        body: EventBody::UiSurface(orch_core::UiSurfaceData {
+            operations: vec![
+                serde_json::json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}}),
+            ],
+        }),
+        idempotency_key: None,
+    };
+    let action = ui_action();
+    let wanted: Vec<NewEvent> = vec![
+        named,
+        user_event("no ids", None),
+        only_run,
+        auth,
+        auth_bare,
+        surface,
+        NewEvent {
+            at: t0(),
+            actor: Actor::user(&alice()),
+            body: EventBody::UiAction(action.clone()),
+            idempotency_key: None,
+        },
+    ];
     let bodies: Vec<EventBody> = wanted.iter().map(|e| e.body.clone()).collect();
+    let action_row = NewOutbox {
+        id: outbox_id(2),
+        payload: OutboxPayload::Action {
+            action,
+            at: t0(),
+            release: Some("staging".into()),
+        },
+    };
+    let rows = vec![delegate(1), action_row.clone()];
     store
         .create_thread(
             new_thread(&alice(), 1),
-            commit(ThreadState::Queued, wanted, vec![delegate(1)]),
+            commit(ThreadState::Queued, wanted, rows),
         )
         .await
         .unwrap();
@@ -252,7 +286,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     );
     assert_eq!(
         read.iter().map(|e| e.seq).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5]
+        [1, 2, 3, 4, 5, 6, 7]
     );
     // The wire form the API serves is what the store returned: no null, camelCase ids.
     let data: Vec<serde_json::Value> = read.iter().map(|e| e.body.data_value()).collect();
@@ -266,6 +300,34 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         serde_json::json!({"status": "auth_required", "detail": "github"})
     );
     assert_eq!(data[4], serde_json::json!({"status": "auth_required"}));
+    assert_eq!(
+        data[5],
+        serde_json::json!({"operations": [
+            {"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}}]})
+    );
+    assert_eq!(
+        data[6],
+        serde_json::json!({"surfaceId": "s1", "name": "go", "sourceComponentId": "btn",
+                           "context": {"choice": "a"}, "version": "v0.9.1", "runId": "run-3"})
+    );
+    // The delegation of an action keeps its payload, and is a `delegate` row.
+    let open = store.list_open_outbox(thread_id(1)).await.unwrap();
+    let stored = open.iter().find(|r| r.id == outbox_id(2)).unwrap();
+    assert_eq!(stored.payload, action_row.payload);
+    assert_eq!(stored.kind, OutboxKind::Delegate);
+}
+
+fn ui_action() -> orch_core::UiActionData {
+    let mut context = serde_json::Map::new();
+    context.insert("choice".into(), serde_json::json!("a"));
+    orch_core::UiActionData {
+        surface_id: "s1".into(),
+        name: "go".into(),
+        source_component_id: "btn".into(),
+        context,
+        version: orch_core::UiVersion::V0_9_1,
+        run_id: Some("run-3".into()),
+    }
 }
 
 pub async fn owner_isolation<S: ThreadStore>(store: S) {

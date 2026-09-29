@@ -8,11 +8,11 @@
 //! It is a pure function of the request and a [`ThreadView`]. Deciding whether the thread exists
 //! and whether the caller owns it (404) is the surface's job, before it builds the view.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{ContentPart, Message, MessageContent, ResumeStatus, RunAgentInput};
-use orch_core::{AgentId, Input, ThreadId, ThreadState, UserId};
-use serde_json::Value;
+use orch_core::{AgentId, Input, ThreadId, ThreadState, UiActionData, UiVersion, UserId};
+use serde_json::{Map, Value};
 
 use crate::vocab::RELEASE_CHANNELS_URI;
 
@@ -46,6 +46,9 @@ pub struct KnownThread {
     pub message_ids: BTreeSet<String>,
     /// Every run id the log already holds.
     pub run_ids: BTreeSet<String>,
+    /// The A2UI surfaces the thread has now, with the version each one speaks. An action is
+    /// accepted only for one of these.
+    pub surfaces: BTreeMap<String, UiVersion>,
 }
 
 impl ThreadView {
@@ -152,6 +155,32 @@ pub enum InputError {
         /// The terminal state.
         state: ThreadState,
     },
+    /// `forwardedProps.a2uiAction` is not an action: no `userAction` object, or a member of the
+    /// wrong type (422).
+    #[error("forwardedProps.a2uiAction is not a valid action: {why}")]
+    InvalidAction {
+        /// What is wrong.
+        why: String,
+    },
+    /// The action is larger than the limits allow (413).
+    #[error("the action is too large: {why}")]
+    ActionTooLarge {
+        /// Which limit.
+        why: String,
+    },
+    /// The action names a surface the thread does not have (422): it never had it, or the agent
+    /// deleted it. Nothing is sent to the agent.
+    #[error("this thread has no surface {surface_id:?}")]
+    UnknownSurface {
+        /// The surface the action named, cut to a short excerpt.
+        surface_id: String,
+    },
+    /// The request carries an action and also a new message, an answer or a cancellation (422):
+    /// one thing at a time.
+    #[error(
+        "the request carries an A2UI action and also a message, an answer or a cancellation; send one"
+    )]
+    AmbiguousAction,
     /// The URL names another agent than the thread's target (409).
     #[error("the thread targets agent {thread:?}, not {requested:?}")]
     WrongAgent {
@@ -176,7 +205,11 @@ impl InputError {
             | InputError::EmptyMessage { .. }
             | InputError::InvalidResumePayload { .. }
             | InputError::RunIdReused { .. }
+            | InputError::InvalidAction { .. }
+            | InputError::UnknownSurface { .. }
+            | InputError::AmbiguousAction
             | InputError::AmbiguousAnswer => 422,
+            InputError::ActionTooLarge { .. } => 413,
         }
     }
 }
@@ -219,9 +252,6 @@ pub enum Warning {
         /// Why.
         why: &'static str,
     },
-    /// `forwardedProps.a2uiAction` is not handled yet (generative UI arrives with ADR 0013).
-    #[error("forwardedProps.a2uiAction ignored: generative UI actions are not supported yet")]
-    A2uiActionIgnored,
 }
 
 /// The result of translating a request.
@@ -301,13 +331,7 @@ pub fn translate_with_warnings(
             count: input.context().len(),
         });
     }
-    if input
-        .forwarded_props
-        .as_ref()
-        .is_some_and(|p| p.get("a2uiAction").is_some())
-    {
-        warnings.push(Warning::A2uiActionIgnored);
-    }
+    let action = user_action(input)?;
 
     let known = match thread {
         ThreadView::Known(k) => Some(k),
@@ -391,6 +415,25 @@ pub fn translate_with_warnings(
 
     let user = thread.user().clone();
     let run_id = Some(input.run_id.to_string());
+    if let Some(mut action) = action {
+        if answer.is_some() || new_user.is_some() || cancelled {
+            return Err(InputError::AmbiguousAction);
+        }
+        // Only a surface the thread has: nothing an agent did not send can be acted on.
+        let version = known
+            .and_then(|k| k.surfaces.get(&action.surface_id))
+            .ok_or_else(|| InputError::UnknownSurface {
+                surface_id: action.surface_id.chars().take(64).collect(),
+            })?;
+        action.version = *version;
+        action.run_id = run_id;
+        return finish(
+            vec![Input::UiAction { user, action }],
+            input,
+            known,
+            warnings,
+        );
+    }
     let inputs = match (answer, new_user, cancelled) {
         (Some(_), Some(_), _) => return Err(InputError::AmbiguousAnswer),
         (Some(text), None, _) => vec![Input::UserMessage {
@@ -419,11 +462,20 @@ pub fn translate_with_warnings(
         }
     };
 
-    // Something is to be applied: a thread that cannot take it says so before the stream.
+    finish(inputs, input, known, warnings)
+}
+
+/// Something is to be applied: a thread that cannot take it says so before the stream.
+fn finish(
+    inputs: Vec<Input>,
+    input: &RunAgentInput,
+    known: Option<&KnownThread>,
+    warnings: Vec<Warning>,
+) -> Result<Translation, InputError> {
     if let Some(k) = known {
         let starts_a_run = inputs
             .iter()
-            .any(|i| matches!(i, Input::UserMessage { .. }));
+            .any(|i| matches!(i, Input::UserMessage { .. } | Input::UiAction { .. }));
         if starts_a_run && k.run_ids.contains(input.run_id.as_str()) {
             return Err(InputError::RunIdReused {
                 run_id: input.run_id.to_string(),
@@ -437,6 +489,59 @@ pub fn translate_with_warnings(
         }
     }
     Ok(Translation { inputs, warnings })
+}
+
+/// The action a request carries, `forwardedProps.a2uiAction.userAction` (the convention of
+/// `@ag-ui/a2ui-middleware` and `useAgUiSendA2uiAction`, *verified 2026-09-29*), checked for
+/// shape and size. Whether the surface exists is decided by the caller with the thread's log.
+///
+/// `name`, `surfaceId` and `sourceComponentId` are required (A2UI's `action` message requires
+/// them); `context` is an object and defaults to empty; every other member (`timestamp`,
+/// `userMessage`, `type`) is dropped: the agent gets the log's own time, and text the agent wrote
+/// is not ours to forward.
+fn user_action(input: &RunAgentInput) -> Result<Option<UiActionData>, InputError> {
+    let Some(props) = input.forwarded_props.as_ref() else {
+        return Ok(None);
+    };
+    let Some(envelope) = props.get("a2uiAction") else {
+        return Ok(None);
+    };
+    let invalid = |why: &str| InputError::InvalidAction {
+        why: why.to_owned(),
+    };
+    let user_action = envelope
+        .get("userAction")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("expected {\"userAction\": {...}}"))?;
+    let text = |key: &str| -> Result<String, InputError> {
+        user_action
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| invalid(&format!("{key} must be a string")))
+    };
+    let context = match user_action.get("context") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(m)) => m.clone(),
+        Some(_) => return Err(invalid("context must be an object")),
+    };
+    let action = UiActionData {
+        surface_id: text("surfaceId")?,
+        name: text("name")?,
+        source_component_id: text("sourceComponentId")?,
+        context,
+        // Set from the surface, and the run id from the request, once the surface is known.
+        version: UiVersion::V0_9_1,
+        run_id: None,
+    };
+    action.check().map_err(|e| {
+        if e.is_oversized() {
+            InputError::ActionTooLarge { why: e.to_string() }
+        } else {
+            InputError::InvalidAction { why: e.to_string() }
+        }
+    })?;
+    Ok(Some(action))
 }
 
 /// The protocol version check: another major is refused, a newer minor is served with a warning.

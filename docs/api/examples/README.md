@@ -12,17 +12,19 @@ of the events (kinds, `agent_status` spellings, failure shape, message finality)
 | `fail.events.json` | `fail`: `agent_status: failed` with `detail`, no `error` event | `failed` |
 | `talk.events.json` | `talk`: status text, one final `agent_message`, the artifact | `done` |
 | `release.events.json` | `echo` with release `staging`: the revision on every agent actor | `done` |
+| `a2ui.events.json` | `ui`, on an agent whose card lists the A2UI extension: a surface in two artifacts (`ui_surface` twice), the question, then the user's action through the AG-UI run route (`ui_action`) and the answer | `done` |
 
 Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>` and an agent
 message's `messageId` is `<message-id>`.
 
 - **Producer:** `orchestrator/crates/e2e/tests/golden.rs` (`transcripts_match_docs_api_examples`)
-  runs each script through the real chat API, dispatcher and A2A adapter, and fails when a file
+  runs each script through the real chat API (the action of `a2ui`: the AG-UI run route), dispatcher and A2A adapter, and fails when a file
   differs. After an intended change, regenerate and review the diff:
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden`.
 - **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
   and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the
-  same story. (The web renders the AG-UI goldens, not these event logs: see the next section.)
+  same story. (The web renders the AG-UI goldens, not these event logs: see the next section. The mock
+  does not play `a2ui` yet: the web renderer is a later slice, and `golden.test.ts` lists the exception.)
 
 ## AG-UI streams
 
@@ -43,6 +45,11 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
   server to produce them, and `web/src/features/chat/lib/agui/runtime-goldens.dom.test.tsx` runs them
   (and the `connect-*` ones) through the runtime the chat surface uses, `@assistant-ui/react-ag-ui`
   with `web/patches` applied, and checks the transcript.
+
+The `a2ui.agui.json` golden is the A2UI story a viewer reads: the surface as **two snapshots of one
+activity** (`a2ui-3`, `replace: true`, the second carrying both payloads), the question, then the run of the
+user's action (`vymalo.action`, no text message) and the answer. It goes through the reference client
+like the others; the client's `expected/a2ui.json` shows the surface holding the operations of both.
 
 ### Run responses
 

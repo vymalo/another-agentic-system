@@ -17,18 +17,19 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > ([The contract](#the-contract)), and the four legacy operations it deprecates answer with
 > `Deprecation`. The **web runs on it** (2026-09-29): `@assistant-ui/react-ag-ui` over a `ThreadAgent`
 > that follows the connect stream and sends runs to the run route, see
-> [`web/README.md`](../../web/README.md#the-chat-layer). Not built: A2UI: for it this page is the
-> contract the next slices implement. What is built and what is planned, as a diagram:
-> [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were *verified
-> 2026-09-29* against the pages linked.
+> [`web/README.md`](../../web/README.md#the-chat-layer). **A2UI is relayed by the orchestrator**
+> (2026-09-29): surfaces from agents, actions from users, capability detection, see
+> [A2UI](#a2ui-generative-ui). Not built: the web renders none of it yet (a later slice). What is built
+> and what is planned, as a diagram: [architecture](../architecture.md#ag-ui-planned-against-built).
+> Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
 
 | Operation | Route | Standard? | Status |
 |---|---|---|---|
-| Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built (an A2UI action is not yet) |
+| Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built |
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
-| Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built (the A2UI key is not yet declared) |
+| Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built |
 | Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
 | Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated (`deprecated: true`, `Deprecation` header); **off by default**, mounted only with `ORCH_SURFACES` including `chat-api` (`ORCH_SURFACES=agui,chat-api` keeps them) |
 
@@ -89,7 +90,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id). |
-| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface. |
+| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface). |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message is open. |
@@ -117,10 +118,10 @@ gets everything.
 | `thread_state{cancelled}` alone | Cancelled before the agent started | `RUN_FINISHED{outcome:{type:"cancelled"}}` |
 | `error{retryable:true}` + `thread_state{blocked}` | Retryable delivery failure | `ACTIVITY_SNAPSHOT{activityType:"vymalo.error"}` → `SUBAGENT_ERROR{code:"delivery_failed"}` if open → `STATE_SNAPSHOT` → `RUN_ERROR{code:"delivery_failed"}`. The thread stays open; the next input is a new run, not a resume. |
 | `error{retryable:false}` + `thread_state{failed}` | Permanent delivery failure | Error activity → `SUBAGENT_ERROR` if open → `RUN_ERROR{code:"delivery_failed"}` |
-| `error{…}` | Mid-run, no state change | Error activity only; the run continues |
+| `error{…}` | Mid-run, no state change | Error activity only; the run continues. An A2UI part the orchestrator refused ([envelope rules](#the-envelope-check)) is such an error, `retryable:false`, attributed to the agent |
 | `artifact{name, mimeType?, uri?, text?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.artifact", content:{name, mimeType?, uri?, text?}, subagentRunId}` |
-| `ui_surface{operations}` (ADR 0013) | — | `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of createSurface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far]}, subagentRunId}` |
-| `ui_action{surfaceId, name, context}` (ADR 0013) | — | Open a run if none is open; `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, context}, metadata:{"vymalo.actor"}}` |
+| `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
+| `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
 
 - **When a run closes.** The core appends `thread_state` when the thread *enters* `blocked`,
@@ -165,7 +166,10 @@ gets everything.
 | `resume` `cancelled` plus a new user message | `Input::UserMessage` with the new text |
 | `resume` `cancelled`, nothing new | `Input::Cancel` |
 | A new user message on a blocked thread without `resume` | Accepted as the answer (open question 13) |
-| `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId?, context}`; on a blocked thread it answers the interrupt |
+| `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
+| `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
+| `a2uiAction` that is not an action, or names a surface the thread does not have (never had, or deleted), or is sent for a new thread | 422 before the stream; nothing is written or sent |
+| `a2uiAction` with a `name`, `surfaceId` or `sourceComponentId` over 256 bytes, or a `context` over 16 KiB | 413 before the stream |
 | `resume` on a thread that is not blocked, or naming an unknown id | Entries ignored with a warning |
 | Nothing new, no resume, `runId` already recorded | Attach: stream that run from its start (an idempotent retry) |
 | Nothing new, no resume, unknown `runId` | 422 (nothing to run) |
@@ -214,9 +218,9 @@ was streamed and nothing was written.
 | 404 | The `agentId` is not configured; the thread belongs to someone else (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
 | 409 | The thread targets another agent; a run is open on it; it is finished (`done`, `failed`, `cancelled`) |
-| 413 | The body is larger than 8 MiB |
+| 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB) |
 | 415 | `Content-Type` is not `application/json` |
-| 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId` |
+| 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`) |
 
 ## Connect binding
@@ -327,12 +331,190 @@ configured.
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}` only when the card
-  advertises A2UI (ADR 0013): **not built yet**, the key is never declared today.
+- `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
+  `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
+  open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
 
 The card is read on every request and never cached (ADR 0008). A card that cannot be read in time
 (3 s) gives the smaller document (fail closed): identity with the name only, and no `custom`. The
 document is [the golden](examples/README.md#connect-streams) `capabilities-<agent>.json`.
+
+## A2UI (generative UI)
+
+An agent's result is sometimes an interface: a form that answers its question, a card, a button that
+opens the pull request. [ADR 0013](../decisions/0013-a2ui-generative-ui.md) chose
+[A2UI](https://a2ui.org/) for it, end to end over standards: **agent → A2A (A2UI extension) →
+orchestrator → AG-UI `a2ui-surface` activity → web**, and the user's action the other way. This section
+is what the orchestrator does with it. The renderer, and the rules that only a renderer can enforce
+(vocabulary, expansion, links), are the web's ([ADR 0013](../decisions/0013-a2ui-generative-ui.md#the-web-renderer)).
+
+### Facts this rests on
+
+*Verified 2026-09-29* unless it says otherwise. Sources: the A2A extension pages
+[v0.9.1](https://a2ui.org/specification/v0.9.1-a2ui-extension-specification/) and
+[v1.0](https://a2ui.org/specification/v1.0-a2ui-extension-specification/), the protocol pages
+[v0.9.1](https://a2ui.org/specification/v0.9.1-a2ui/) and
+[v1.0](https://a2ui.org/specification/v1.0-a2ui/), the
+[assistant-ui A2UI page](https://www.assistant-ui.com/docs/tools/a2ui.md) and the npm package
+`@ag-ui/a2ui-middleware` 0.0.10 (its `dist/index.d.ts` and `dist/index.js`, read from the registry tarball).
+
+| Claim | v0.9.1 (current) | v1.0 (candidate) |
+|---|---|---|
+| Media type of a part that carries A2UI | `application/a2ui+json`, in `DataPart.metadata["mimeType"]` | the same |
+| The part's `data` | "MUST be an array of messages", processed in order, a failing message not stopping the rest | the same |
+| A2A extension URI | `https://a2ui.org/a2a-extension/a2ui/v0.9.1` | `https://a2ui.org/a2a-extension/a2ui/v1.0` |
+| Advertising it in the card, activating it | both optional ("encouraged" for the card); activation is by the `X-A2A-Extensions` header | the same |
+| What the client sends with a message | `message.metadata["a2uiClientCapabilities"] = {"v0.9.1": {"supportedCatalogIds": [...]}}` | `message.metadata["a2uiRendererCapabilities"] = {"v1.0": {"supportedCatalogIds": [...]}}` (renamed) |
+| Card extension `params` | `supportedCatalogIds?`, `acceptsInlineCatalogs?` | the same |
+| `version` member of every message | `"v0.9.1"` | `"v1.0"` |
+| Operations, one per message | `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface` | those, and `callRendererFunction`, `agentFunctionResponse` |
+| Component shape | `{"id", "component": "Text", …}` in the protocol page (the extension page's example still uses the nested `{"Text": {…}}` form) | `{"id", "component", …}` |
+| An action, back to the agent | `{"version", "action": {"name", "surfaceId", "sourceComponentId", "timestamp", "context"}}`, all five required, in a data part of the same media type | the same |
+| Basic catalog id | `https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json` (protocol page); the extension page writes `…/v0_9/…` | `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json` |
+| Orchestrators and attribution | "the orchestrator is responsible for setting or validating" the `iconUrl` and `agentDisplayName` of a `createSurface` theme, so a sub-agent cannot pose as another (v0.9.1 protocol page) | not re-checked |
+
+The AG-UI side (*verified 2026-09-29*): the ecosystem carries A2UI as `ACTIVITY_SNAPSHOT` with
+`activityType: "a2ui-surface"`, `content.a2ui_operations` and `replace: true` (`@ag-ui/a2ui-middleware`);
+a surface is keyed by the `surfaceId` inside the operations, not by `messageId`; an action returns as
+`forwardedProps.a2uiAction.userAction`, whose members are all optional in the middleware's type
+(`name`, `surfaceId`, `sourceComponentId`, `context`, `timestamp`); the middleware itself emits `version: "v0.9"`.
+
+*Unverified:* whether an A2A 1.0 agent puts the media type in `Part.mediaType` or in
+`metadata.mimeType`. The A2UI pages predate A2A 1.0 and show `metadata`; so both are read and both
+are written. Whether every agent that activates by header also needs `message.extensions` is unknown; both
+are sent. The v1.0 pages are a candidate and will move.
+
+### Capability detection
+
+ADR 0008: read live, never cached, fail closed. The A2A adapter reads the live card for every call
+that sends a message and for every capabilities request.
+
+- The card **lists** A2UI when `capabilities.extensions` has an entry whose `uri` is exactly one of
+  the two URIs above. Any other URI, a different scheme, a trailing slash or another case is not A2UI.
+  Both may be listed; then `v0.9.1` is spoken (open question 22).
+- **Listed:** the message carries `a2uiClientCapabilities` (or `a2uiRendererCapabilities` for v1.0) with
+  the basic catalog the web renders, the URI is added to `A2A-Extensions` and to `message.extensions`
+  (with the release-channels URI when a release is selected), and the capabilities document declares
+  `custom[<uri>] = {supportedCatalogIds}`.
+- **Not listed** (or the card unreadable): nothing A2UI-specific is sent or declared. The next message
+  after a card changes follows the new card.
+- A surface is **relayed whether or not the card lists the extension**: activation is optional in
+  A2UI and a part is recognised by its media type. An **action** goes to the agent that sent the surface
+  whatever the card says now, in the version its surface spoke.
+
+```mermaid
+sequenceDiagram
+  participant W as Web
+  participant O as Orchestrator
+  participant DB as Postgres event log
+  participant Ag as A2A agent
+  W->>O: POST run "pick one"
+  O->>Ag: GET agent card (live)
+  Ag-->>O: card lists the A2UI extension
+  O->>Ag: message + a2uiClientCapabilities, A2A-Extensions: a2ui
+  Ag-->>O: artifact / message / status with a data part, application/a2ui+json
+  O->>O: envelope check per part (array, cap, version, one operation, surfaceId)
+  O->>DB: ui_surface {operations}, or error (part refused)
+  Ag-->>O: input-required
+  O->>DB: agent_status, thread_state blocked
+  DB-->>W: ACTIVITY_SNAPSHOT a2ui-surface (whole surface, replace), then RUN_FINISHED interrupt
+  W->>O: POST run, forwardedProps.a2uiAction.userAction
+  O->>O: shape, size, the thread has this surface, thread blocked
+  O->>DB: ui_action (user), outbox row
+  O->>Ag: message with a data part [action] on the same task
+  DB-->>W: vymalo.action activity, then the agent's answer
+```
+
+### The envelope check
+
+Every A2UI part passes it before anything is stored or shown; there is no path around it
+(`orch_core::check_operations`, run by the A2A adapter on each part and again by `transition` on every
+`AgentUpdate::Ui`, so an adapter that forgot cannot put an unchecked payload in the log). A part that fails becomes an `error` event (`retryable:false`, the rule
+that broke, attributed to the agent) and **nothing of it is passed on**; the rest of the message, and
+the turn, go on.
+
+| Rule | Limit |
+|---|---|
+| The part is a data part whose `data` is a JSON array | not text, raw or a URL, even with the media type |
+| Not empty; at most | 256 messages |
+| Serialised size at most | 64 KiB (the renderer's per-surface limit, so a payload it would refuse is never stored) |
+| Every message is an object with a string `version` | `v0.9`, `v0.9.1` or `v1.0`; anything else is refused |
+| Every message has exactly one operation | `createSurface`, `updateComponents`, `updateDataModel` or `deleteSurface`; the `v1.0` function messages are not relayed |
+| The operation body is an object with a `surfaceId` | 1 to 256 bytes |
+
+Components are **not** validated against a catalog here: that is the renderer's job and it refuses what
+it does not know. The error text names the rule and repeats at most a 32-character excerpt of what the
+agent sent. Replays are safe: a part's idempotency key is its place in the message, artifact or
+status (`a2a:<task>:artifact:<id>:ui:<part>`, `a2a:msg:<id>:ui:<part>`,
+`a2a:<task>:status-msg:<id>:ui:<part>`), so a poll after a crash and the stream it replaces collapse
+into one event. A surface that accompanies `input-required` is recorded **before** the status, so it is
+inside the run that the question ends.
+
+### Surfaces in the projection
+
+The projector keeps, per surface, the operations received so far. A snapshot carries all of them, so a
+client that holds only the last snapshot of a surface renders it completely, and a viewer that connects
+late or resumes with a cursor gets the same story. A surface's replayed operations are capped at
+256 KiB; past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
+its later updates are not shown. The projector also knows which surfaces the thread has and the version
+each speaks; the inbound side uses that.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Live: first operation for a surfaceId (a2ui-seq is its message id)
+  Live --> Live: operation, snapshot of the whole surface
+  Live --> Capped: more than 256 KiB of operations
+  Capped --> Capped: later operations are not shown
+  Live --> Deleted: deleteSurface (its snapshot ends in the delete)
+  Capped --> Deleted: deleteSurface
+  Deleted --> Live: a later operation, a new surface under a new message id
+  Deleted --> [*]
+```
+
+### Actions
+
+A click on an A2UI `Button` with an `event` action reaches `POST /agui/agents/{agentId}` as a run whose
+`forwardedProps.a2uiAction.userAction` holds the action and whose `messages` hold nothing new. The
+orchestrator:
+
+1. reads the action (`name`, `surfaceId`, `sourceComponentId` strings, `context` an object): otherwise
+   **422**;
+2. checks the sizes (256 bytes for the three strings, 16 KiB for `context`): otherwise **413**;
+3. checks that the thread **has the surface now**, with the version it speaks: otherwise **422**. An
+   action for a surface that was never sent, that was deleted, or on a thread that does not exist yet,
+   reaches nothing;
+4. applies the usual rules of an input: not someone else's thread (404), the URL's agent is the
+   thread's (409), no run is open (409), the thread is not finished (409), the `runId` is new (422),
+   and no message, `resume` or cancel comes with it (422). Since a run is open exactly while the thread
+   is `queued` or `working`, an action can only be sent while the thread **waits** (`blocked`);
+5. writes `ui_action` (attributed to the user; the log's own time is the action's time) and one outbox
+   row, under the idempotency key `agui:<threadId>:run:<runId>`;
+6. delivers it as a message with one data part (`application/a2ui+json`, the media type on the part and
+   in `metadata.mimeType`) holding `[{"version": <the surface's>, "action": {"name", "surfaceId",
+   "sourceComponentId", "timestamp": <RFC 3339>, "context"}}]`. On a thread blocked by the agent it
+   continues the **same A2A task**, as a message does. `userMessage` (text the agent wrote for the
+   click) is dropped; `a2uiClientDataModel` is not sent (ADR 0013).
+
+### Threat model
+
+The surface is **untrusted input from an agent**, and the click is untrusted input from a browser.
+The orchestrator's part:
+
+| Threat | Defence |
+|---|---|
+| A malformed or huge payload fills the log, or crashes a viewer | Envelope check and the 64 KiB and 256-message caps before anything is stored; a replay cap per surface |
+| Unvalidated agent JSON reaches a viewer | It cannot: the projection relays only what `ui_surface` holds, and an operation in the log that fails the check is skipped, not relayed |
+| An agent poses as another agent, or as the system | The activity is attributed by the event's actor (`vymalo.actor`), set by the orchestrator from the configured agent, never from the payload. The `iconUrl` and `agentDisplayName` an agent may put in a `createSurface` theme are relayed as sent, like everything else in the payload (the A2UI spec makes an orchestrator responsible for them). The requirement is on the renderer: label a surface by `vymalo.actor`, never by the payload's own name or icon. A renderer that draws them would let one agent pose as another |
+| A user, or a forged request, acts on a surface the thread never had | The action is accepted only for a surface the log shows the thread has (and not deleted), from the thread's owner |
+| A forged action carries a huge or hostile `context` | 16 KiB and the string caps, refused before storage; the context is data for the agent, never executed here |
+| The orchestrator is made to fetch a URL | It never does: URLs in a surface are the renderer's to show or refuse (http(s) only, ADR 0013). The only URLs the orchestrator reads are the configured agent cards |
+| A card that stops advertising A2UI keeps receiving capabilities | Nothing is cached; the card is read for every message, and A2UI-specific parts go out only if it lists the extension |
+| An agent floods the log with surfaces | Each part is at most 64 KiB and a surface is replayed at most 256 KiB, but the log itself is as unbounded as an agent's text messages are: a per-turn budget is not built (open) |
+| A surface arrives late, after the run | It opens a run of its own and closes it, like any late event (open question 17); it is never dropped silently |
+
+What only the renderer can do (vocabulary, template expansion, depth, actions that never auto-send) is in
+ADR 0013 and is the next slice's; nothing here relies on it for storage safety, but a viewer must not
+trust the log to be catalog-valid.
 
 ## `vymalo.*` schemas
 
@@ -376,7 +558,7 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
     },
     "vymalo.action": {
       "type": "object",
-      "required": ["surfaceId", "name"],
+      "required": ["surfaceId", "name", "sourceComponentId", "context"],
       "additionalProperties": false,
       "properties": {
         "surfaceId": { "type": "string" },
@@ -390,7 +572,8 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
 ```
 
 `a2ui-surface` is the ecosystem's type, not ours: `content` is `{a2ui_operations: [A2UI message]}`
-as sent by the agent (ADR 0013).
+as sent by the agent, all the operations of one surface so far, and the snapshot says `replace: true`
+(ADR 0013, [A2UI](#a2ui-generative-ui)).
 
 ### Metadata and state
 

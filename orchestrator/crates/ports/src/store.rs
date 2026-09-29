@@ -71,6 +71,16 @@ pub enum OutboxPayload {
         /// Selected release channel or revision.
         release: Option<String>,
     },
+    /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
+    /// a `delegate` row like a message: the same claim, resume and retry rules apply.
+    Action {
+        /// The action.
+        action: orch_core::UiActionData,
+        /// When the user acted.
+        at: Timestamp,
+        /// Selected release channel or revision.
+        release: Option<String>,
+    },
     /// Cancel.
     Cancel,
 }
@@ -79,7 +89,7 @@ impl OutboxPayload {
     /// The kind matching this payload.
     pub fn kind(&self) -> OutboxKind {
         match self {
-            OutboxPayload::Delegate { .. } => OutboxKind::Delegate,
+            OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
             OutboxPayload::Cancel => OutboxKind::Cancel,
         }
     }

@@ -27,10 +27,11 @@ orchestrator: no `orch-app`, no store, no HTTP. The AG-UI surface ([`orch-surfac
 | `Audience::{Viewer, Requester { held_message_ids }}` | the connect stream gets everything; the POST that sent the input skips the user messages it already holds (`held_message_ids(&input)`) |
 | `Projector::resume_preamble() -> Vec<Frame>` | re-opens the current run (same `RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`) for a client that reconnects mid-run; empty between runs |
 | `Connect::new(ThreadMeta, cursor, head, Follow)`, `feed(&Event) -> Vec<Frame>`, `finished()` | the connect stream as a fold: the events up to the cursor are folded and not written, the preamble comes at the cursor, every later event is written; `Follow::ThroughRun` (`?mode=run`) is `finished()` once the log as it stood at `head` is replayed and no run is open. A cursor beyond `head` is clamped to it |
-| `agent_capabilities(&AgentId, name, Option<&CardFacts>) -> AgentCapabilities` | the capabilities document from what the live card says; `None` (an unreadable card) gives the smaller one |
+| `agent_capabilities(&AgentId, name, Option<&CardFacts>) -> AgentCapabilities` | the capabilities document from what the live card says (`CardFacts.ui`: the A2UI versions it lists, declared under each extension URI with `supportedCatalogIds`); `None` (an unreadable card) gives the smaller one |
+| `ui_surface` / `ui_action` | A2UI ([ADR 0013](../../../docs/decisions/0013-a2ui-generative-ui.md)): the projector keeps the operations of every live surface and sends each touched surface **whole** as `ACTIVITY_SNAPSHOT{activityType:"a2ui-surface", replace:true, content:{a2ui_operations}}` under the message id `a2ui-<seq>` of its first event (capped at 256 KiB of operations; a delete ends the surface; an operation that fails the envelope check is skipped, never relayed); a `ui_action` is a `vymalo.action` activity that opens a run under the action's `runId`. `ACTIVITY_A2UI_SURFACE`, `ACTIVITY_ACTION`, `A2UI_OPERATIONS_KEY` |
 | `Projector::view(&UserId) -> ThreadView` | what the thread holds, for `translate` |
-| `translate(&RunAgentInput, &ThreadView) -> Result<Vec<Input>, InputError>` | new user message, `resume` answer or cancel, or attach; `translate_with_warnings` also returns what was ignored |
-| `InputError::http_status()` | the status (400, 409, 422) of a request refused before the stream (including a `runId` reused for new input) |
+| `translate(&RunAgentInput, &ThreadView) -> Result<Vec<Input>, InputError>` | new user message, `resume` answer or cancel, `forwardedProps.a2uiAction.userAction` (shape, size, and that `ThreadView`'s surfaces include the one named: `Input::UiAction` with the surface's version and the request's run id), or attach; `translate_with_warnings` also returns what was ignored |
+| `InputError::http_status()` | the status (400, 409, 413, 422) of a request refused before the stream (including a `runId` reused for new input; 413 is an A2UI action over the limits) |
 | `thread_id_of`, `release_selector`, `held_message_ids` | the request members a surface reads itself |
 
 ```rust
@@ -88,10 +89,11 @@ Offline, no database. `cargo test -p orch-agui-projection`:
   result is well formed; `?mode=run` writes what the default writes and ends at the first idle point at
   or after the end of the log as it stood at connect time, for every head and cursor; the edges by hand
   (a cursor beyond the head, the preamble at the cursor before the next event, an idle thread, a gap).
-- `tests/capabilities.rs`: the document with and without release channels, and for an unreadable card,
+- `tests/capabilities.rs`: the document with and without release channels, with each A2UI extension URI and both, and for an unreadable card,
   validated against the schema.
+- `tests/a2ui.rs`: surfaces and actions on hand-written logs: whole-surface snapshots under one message id, two surfaces in one payload, delete and recreate, the replay cap, foreign operations skipped, a late surface, an action's run and activity, resuming from a cursor. `tests/props.rs` and `tests/connect.rs` include surfaces, refused parts and actions in their random logs.
 - `tests/translate.rs`: every row of the inbound table, and that re-sending the whole transcript
-  never duplicates input.
+  never duplicates input; the A2UI action rows (the surface the thread has and its version, unknown or deleted surface, malformed, oversized, ambiguous, the rules of any input).
 - `tests/golden.rs`: [`docs/api/examples/agui/*.agui.json`](../../../docs/api/examples/README.md) are
   produced from the `*.events.json` goldens; every frame conforms to the schema and the streams are
   well formed. `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test golden` rewrites them.

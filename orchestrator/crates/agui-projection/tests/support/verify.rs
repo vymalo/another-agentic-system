@@ -22,6 +22,10 @@ pub struct Checker {
     closed_subagents: BTreeSet<String>,
     suspended_ids: Vec<String>,
     message_ids: BTreeSet<String>,
+    /// Ids that name activity messages: an `ACTIVITY_SNAPSHOT` may say the same id again, and
+    /// replaces what it said (`replace` defaults to true), which is how an A2UI surface is
+    /// re-sent whole. Only a `replace: false` snapshot of an id that exists would be ignored.
+    activity_ids: BTreeSet<String>,
     run_ids: BTreeSet<String>,
     interrupt_ids: BTreeSet<String>,
     last_resume_id: i64,
@@ -112,9 +116,18 @@ impl Checker {
                 }
             }
             Event::ActivitySnapshot(e) => {
-                if !self.message_ids.insert(e.message_id.to_string()) {
-                    return Err(format!("activity id {} reused", e.message_id));
+                let id = e.message_id.to_string();
+                let known_activity = self.activity_ids.contains(&id);
+                if self.message_ids.contains(&id) && !known_activity {
+                    return Err(format!("activity id {id} is the id of another message"));
                 }
+                if known_activity && e.replace == Some(false) {
+                    return Err(format!(
+                        "activity {id} said again with replace: false is ignored"
+                    ));
+                }
+                self.message_ids.insert(id.clone());
+                self.activity_ids.insert(id);
             }
             Event::SubagentStarted(e) => {
                 let id = e.subagent_run_id.to_string();

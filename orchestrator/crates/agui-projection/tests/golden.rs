@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 6] = ["echo", "ask", "cancel", "fail", "talk", "release"];
+const SCENARIOS: [&str; 7] = ["echo", "ask", "cancel", "fail", "talk", "release", "a2ui"];
 
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")

@@ -459,7 +459,7 @@ impl<P: Ports> App<P> {
     }
 
     /// Applies an input a surface already translated (a user message with the ids the consumer
-    /// gave it, or a cancel) to one of the user's threads, under the idempotency `key`.
+    /// gave it, an A2UI action, or a cancel) to one of the user's threads, under the idempotency `key`.
     ///
     /// The text of a user message is validated as for [`post_message`](Self::post_message).
     /// [`ApplyOutcome::Duplicate`] means the key was recorded already: an earlier request did
@@ -471,8 +471,20 @@ impl<P: Ports> App<P> {
         input: Input,
         key: Option<String>,
     ) -> Result<ApplyOutcome, AppError> {
-        if let Input::UserMessage { text, .. } = &input {
-            validate_text(text)?;
+        match &input {
+            Input::UserMessage { text, .. } => validate_text(text)?,
+            // The surface has checked that the thread has the surface; the sizes are checked
+            // here as well, so no surface can store an oversized action.
+            Input::UiAction { action, .. } => {
+                action
+                    .check()
+                    .map_err(|e| AppError::Invalid(format!("invalid action: {e}")))?;
+            }
+            Input::Cancel { .. }
+            | Input::Agent { .. }
+            | Input::DeliveryFailed { .. }
+            | Input::CancelledBeforeStart
+            | Input::CancelRejected { .. } => {}
         }
         self.get_thread(user, id).await?;
         self.apply(id, input, key, None, None).await
@@ -517,6 +529,14 @@ impl<P: Ports> App<P> {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
                         text,
+                        release: target.release.clone(),
+                    },
+                }),
+                Command::DelegateAction { action } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Action {
+                        action,
+                        at: now,
                         release: target.release.clone(),
                     },
                 }),
