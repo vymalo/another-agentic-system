@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectPullRequest } from "./artifact";
+import { detectPullRequest, safeLinkHref } from "./artifact";
 
 describe("detectPullRequest", () => {
   it("recognises GitHub pull requests", () => {
@@ -18,5 +18,20 @@ describe("detectPullRequest", () => {
     expect(detectPullRequest("https://github.com/o/r/issues/3")).toBeUndefined();
     expect(detectPullRequest("http://github.com/o/r/pull/3")).toBeUndefined();
     expect(detectPullRequest(undefined)).toBeUndefined();
+  });
+});
+
+describe("safeLinkHref", () => {
+  it("keeps absolute http and https URLs", () => {
+    expect(safeLinkHref("https://example.com/report.html")).toBe("https://example.com/report.html");
+    expect(safeLinkHref("http://example.com/a b")).toBe("http://example.com/a%20b");
+  });
+  it("rejects script, data and relative URIs", () => {
+    expect(safeLinkHref("javascript:alert(document.cookie)")).toBeUndefined();
+    expect(safeLinkHref(" JavaScript:alert(1)")).toBeUndefined();
+    expect(safeLinkHref("data:text/html,<script>alert(1)</script>")).toBeUndefined();
+    expect(safeLinkHref("/api/threads")).toBeUndefined();
+    expect(safeLinkHref("not a url")).toBeUndefined();
+    expect(safeLinkHref(undefined)).toBeUndefined();
   });
 });

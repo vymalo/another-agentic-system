@@ -12,3 +12,19 @@ export function detectPullRequest(uri: string | undefined): PullRequestLink | un
   if (gl) return { label: `${gl[2]}!${gl[3]}`, href: uri };
   return undefined;
 }
+
+/**
+ * The URI as a link target, only when it is an absolute `http:` or `https:` URL.
+ * Artifact URIs come from agents, so anything else (`javascript:`, `data:`, relative
+ * paths) must never become a clickable `href`.
+ */
+export function safeLinkHref(uri: string | undefined): string | undefined {
+  if (!uri) return undefined;
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return undefined;
+  }
+  return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
+}
