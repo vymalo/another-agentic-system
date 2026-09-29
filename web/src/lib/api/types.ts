@@ -38,6 +38,7 @@ export const AGENT_STATUSES = [
   "submitted",
   "working",
   "input_required",
+  "auth_required",
   "completed",
   "failed",
   "canceled",
