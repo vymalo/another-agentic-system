@@ -25,6 +25,11 @@ async fn agent() -> FakeAgent {
     FakeAgent::spawn(FakeAgentOptions::default()).await
 }
 
+/// `ep` moved to another card URL (no bearer).
+fn at(ep: &AgentEndpoint, card_url: impl Into<String>) -> AgentEndpoint {
+    AgentEndpoint::a2a(ep.id.clone(), card_url, None)
+}
+
 fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
     SendRequest {
         endpoint: ep.clone(),
@@ -118,7 +123,7 @@ async fn card_is_read_live_every_time() {
     );
     let mut ep = without.endpoint("a", None);
     assert!(c.read_card(&ep).await.unwrap().releases.is_none());
-    ep.card_url = with.card_url();
+    ep = at(&ep, with.card_url());
     assert!(c.read_card(&ep).await.unwrap().releases.is_some());
 }
 
@@ -126,9 +131,9 @@ async fn card_is_read_live_every_time() {
 async fn card_url_may_be_a_base_url() {
     let fake = agent().await;
     let mut ep = fake.endpoint("plain", None);
-    ep.card_url = fake.base_url().to_owned();
+    ep = at(&ep, fake.base_url().to_owned());
     assert!(client().read_card(&ep).await.is_ok());
-    ep.card_url = format!("{}/", fake.base_url());
+    ep = at(&ep, format!("{}/", fake.base_url()));
     assert!(client().read_card(&ep).await.is_ok());
 }
 
@@ -136,7 +141,7 @@ async fn card_url_may_be_a_base_url() {
 async fn card_errors_are_classified() {
     let fake = agent().await;
     let mut ep = fake.endpoint("plain", None);
-    ep.card_url = format!("{}/nope.json", fake.base_url());
+    ep = at(&ep, format!("{}/nope.json", fake.base_url()));
     assert!(matches!(
         client().read_card(&ep).await,
         Err(AgentError::Rejected(_))
@@ -147,7 +152,7 @@ async fn card_errors_are_classified() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap()
     };
-    ep.card_url = format!("http://{closed}/.well-known/agent-card.json");
+    ep = at(&ep, format!("http://{closed}/.well-known/agent-card.json"));
     let err = client().read_card(&ep).await.unwrap_err();
     assert!(matches!(err, AgentError::Unreachable { .. }), "{err:?}");
     assert!(err.is_retryable());
@@ -171,11 +176,11 @@ async fn serve_raw(response: &'static str) -> AgentEndpoint {
             });
         }
     });
-    AgentEndpoint {
-        id: orch_core::AgentId::new("raw"),
-        card_url: format!("http://{addr}/.well-known/agent-card.json"),
-        bearer: None,
-    }
+    AgentEndpoint::a2a(
+        orch_core::AgentId::new("raw"),
+        format!("http://{addr}/.well-known/agent-card.json"),
+        None,
+    )
 }
 
 #[tokio::test]
@@ -247,11 +252,11 @@ async fn an_unreachable_card_keeps_the_transport_error_as_source_and_out_of_the_
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap()
     };
-    let ep = AgentEndpoint {
-        id: orch_core::AgentId::new("gone"),
-        card_url: format!("http://{closed}/.well-known/agent-card.json"),
-        bearer: None,
-    };
+    let ep = AgentEndpoint::a2a(
+        orch_core::AgentId::new("gone"),
+        format!("http://{closed}/.well-known/agent-card.json"),
+        None,
+    );
     let err = client().read_card(&ep).await.unwrap_err();
     let source = std::error::Error::source(&err).expect("the transport error is kept");
     assert!(

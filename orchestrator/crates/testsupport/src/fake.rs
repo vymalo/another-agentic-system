@@ -281,11 +281,7 @@ impl FakeAgent {
 
     /// An orchestrator endpoint pointing at this agent.
     pub fn endpoint(&self, id: &str, bearer: Option<&str>) -> AgentEndpoint {
-        AgentEndpoint {
-            id: AgentId::new(id),
-            card_url: self.card_url(),
-            bearer: bearer.map(str::to_owned),
-        }
+        AgentEndpoint::a2a(AgentId::new(id), self.card_url(), bearer.map(str::to_owned))
     }
 
     /// Everything the executor saw, in order.

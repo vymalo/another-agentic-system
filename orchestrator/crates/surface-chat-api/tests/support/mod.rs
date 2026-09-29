@@ -88,11 +88,11 @@ impl Harness {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
         let entry = |id: &str, name: &str| AgentEntry {
-            endpoint: AgentEndpoint {
-                id: AgentId::new(id),
-                card_url: format!("https://{id}.example.com/.well-known/agent-card.json"),
-                bearer: None,
-            },
+            endpoint: AgentEndpoint::a2a(
+                AgentId::new(id),
+                format!("https://{id}.example.com/.well-known/agent-card.json"),
+                None,
+            ),
             name: name.to_owned(),
         };
         let app = Arc::new(App::new(

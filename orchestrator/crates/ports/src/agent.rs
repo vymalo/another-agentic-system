@@ -5,24 +5,55 @@ use std::time::Duration;
 use futures::stream::BoxStream;
 use orch_core::{AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases};
 
-/// Where an agent lives. `Debug` never prints the bearer token.
+/// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
+/// every `match` a new transport must handle). It lives in the ports, not in the core, because it
+/// carries a secret that `transition` never sees. `Debug` never prints the bearer token.
+///
+/// There is one variant today. The in-process adam agents of ADR 0015 arrive with their
+/// implementation as a second variant, not before.
 #[derive(Clone, PartialEq, Eq)]
+pub enum AgentTransport {
+    /// A remote A2A agent, read from its agent card.
+    A2a {
+        /// URL of the agent card (or of the agent's base URL).
+        card_url: String,
+        /// Bearer token for the agent, if configured (already resolved from the environment).
+        bearer: Option<String>,
+    },
+}
+
+impl fmt::Debug for AgentTransport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentTransport::A2a { card_url, bearer } => f
+                .debug_struct("A2a")
+                .field("card_url", card_url)
+                .field("bearer", &bearer.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
+}
+
+/// Where an agent lives: its configuration key and how to reach it. `Debug` never prints a
+/// secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentEndpoint {
     /// Configuration key.
     pub id: AgentId,
-    /// URL of the agent card.
-    pub card_url: String,
-    /// Bearer token for the agent, if configured.
-    pub bearer: Option<String>,
+    /// How to reach it.
+    pub transport: AgentTransport,
 }
 
-impl fmt::Debug for AgentEndpoint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AgentEndpoint")
-            .field("id", &self.id)
-            .field("card_url", &self.card_url)
-            .field("bearer", &self.bearer.as_ref().map(|_| "<redacted>"))
-            .finish()
+impl AgentEndpoint {
+    /// A remote A2A agent.
+    pub fn a2a(id: AgentId, card_url: impl Into<String>, bearer: Option<String>) -> Self {
+        AgentEndpoint {
+            id,
+            transport: AgentTransport::A2a {
+                card_url: card_url.into(),
+                bearer,
+            },
+        }
     }
 }
 
@@ -298,6 +329,21 @@ mod tests {
             AgentError::unauthenticated("401"),
             AgentError::RateLimited { retry_after: None },
         ]
+    }
+
+    #[test]
+    fn debug_never_prints_the_bearer() {
+        let ep = AgentEndpoint::a2a(
+            AgentId::new("coder"),
+            "https://coder.example.com/card.json",
+            Some("s3cret".into()),
+        );
+        let text = format!("{ep:?} {:?}", ep.transport);
+        assert!(!text.contains("s3cret"), "{text}");
+        assert!(text.contains("<redacted>") && text.contains("coder.example.com"));
+        assert!(
+            !format!("{:?}", AgentEndpoint::a2a(AgentId::new("a"), "u", None)).contains("redacted")
+        );
     }
 
     #[test]

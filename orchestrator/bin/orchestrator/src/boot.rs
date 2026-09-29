@@ -32,7 +32,7 @@ use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, AppConfig, Dispatcher, DispatcherConfig};
 use orch_core::BoxError;
-use orch_ports::{PortSet, SystemClock, UuidV7Ids};
+use orch_ports::{AgentTransport, PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -116,7 +116,8 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         A2aAgentClient::new(A2aConfig::default()).context("cannot build the A2A client")?;
     for agent in &cfg.agents {
         let e = &agent.endpoint;
-        if e.bearer.is_some() && e.card_url.starts_with("http://") {
+        let AgentTransport::A2a { card_url, bearer } = &e.transport;
+        if bearer.is_some() && card_url.starts_with("http://") {
             tracing::warn!(agent = %e.id, "a bearer token is sent to this agent over plain http");
         }
     }

@@ -35,11 +35,11 @@ impl Drop for Edge {
 
 fn new_app() -> Arc<App<Stack>> {
     let entry = AgentEntry {
-        endpoint: AgentEndpoint {
-            id: AgentId::new("plain"),
-            card_url: "https://plain.example.com/.well-known/agent-card.json".to_owned(),
-            bearer: None,
-        },
+        endpoint: AgentEndpoint::a2a(
+            AgentId::new("plain"),
+            "https://plain.example.com/.well-known/agent-card.json".to_owned(),
+            None,
+        ),
         name: "Plain".to_owned(),
     };
     Arc::new(App::new(

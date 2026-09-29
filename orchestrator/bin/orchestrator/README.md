@@ -43,7 +43,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string, never logged |
-| `AGENTS_FILE` | required | YAML list of `{id, name, cardUrl, tokenEnv?}` ([`agents.example.yaml`](../../agents.example.yaml)) |
+| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl, tokenEnv?}` ([`agents.example.yaml`](../../agents.example.yaml)); `transport` is `a2a` (the default when absent), any other value is a startup error |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
 | `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
 | `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning |

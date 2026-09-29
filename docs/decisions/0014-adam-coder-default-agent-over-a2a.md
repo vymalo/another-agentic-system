@@ -147,3 +147,15 @@ stateDiagram-v2
   10001; the image has no `latest` tag.
 - *Unverified:* that a compose stack with this image passes end to end; that is what the later PR
   proves.
+
+### Status note, 2026-09-29: the entry shape gains an optional `transport`
+
+An `AGENTS_FILE` entry is now `{id, name, transport?, cardUrl, tokenEnv?}`. `transport` names how the
+orchestrator reaches the agent; the only value is `a2a`, and it is the default when the key is absent, so every
+file written for this decision stays valid. Any other value, `local` included, is a startup error that names the
+choices. The default-agent rule is unchanged: the first entry, in file order, whatever its transport. This is
+migration step 11 of [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md), which adds the closed
+`AgentTransport` enum behind the key.
+
+- *Verified 2026-09-29* (`orchestrator/bin/orchestrator/src/config.rs`, its unit tests): an absent key and
+  `transport: a2a` give the same endpoint; `transport: local` is refused with a message that names `a2a`.
