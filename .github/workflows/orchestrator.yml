@@ -1,7 +1,9 @@
 name: Orchestrator
 
-# fmt, clippy and tests of the orchestrator workspace. The container image job
-# is added together with the Dockerfile.
+# check: fmt, clippy and the tests of the orchestrator workspace, with a Postgres service so
+#        the store, end-to-end and binary tests all run against a real database.
+# image: builds the container image (pull requests: build only, to validate the Dockerfile;
+#        main: build and push to ghcr.io).
 #
 # Path filters mean this check must not be made "required" for unrelated PRs.
 
@@ -56,3 +58,42 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+
+  image:
+    needs: check
+    runs-on: ubuntu-latest
+    # The only job that may write packages; it gets the token only through docker/login-action.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/vymalo/another-agentic-system/orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build (and push on main)
+        uses: docker/build-push-action@v7
+        with:
+          context: orchestrator
+          file: orchestrator/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=orchestrator
+          cache-to: type=gha,mode=max,scope=orchestrator

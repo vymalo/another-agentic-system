@@ -1,0 +1,8 @@
+# Build outputs and local state never belong in the build context.
+target/
+.git/
+.gitignore
+# The builder image tag pins the toolchain; rustup would try to fetch the components listed here.
+rust-toolchain.toml
+Dockerfile
+.dockerignore
