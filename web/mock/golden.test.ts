@@ -18,13 +18,6 @@ import { createMockServer } from "./server";
 type Thread = components["schemas"]["Thread"];
 
 const DIR = path.resolve(import.meta.dirname, "../../docs/api/examples/agui");
-/**
- * Goldens the mock does not play yet: `a2ui` is the orchestrator's A2UI story (a surface, an
- * action back through `forwardedProps.a2uiAction`); the renderer that needs it, and the mock's
- * part in it, come with the web's A2UI slice.
- */
-const NOT_PLAYED = ["a2ui"];
-
 const server = createMockServer({ stepMs: 2, keepaliveMs: 1000 });
 let base = "";
 beforeAll(async () => {
@@ -112,6 +105,33 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // a surface, the question, and the owner's action on the surface (not a message, not a resume)
+    a2ui: async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "ui pick one" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "blocked");
+      const action = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-2",
+        messages: [],
+        forwardedProps: {
+          a2uiAction: {
+            userAction: {
+              name: "go",
+              surfaceId: "s1",
+              sourceComponentId: "go",
+              context: { choice: "a" },
+            },
+          },
+        },
+      });
+      expect(action.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,
@@ -148,8 +168,7 @@ describe("the mock server against the AG-UI goldens", () => {
   it("has a scenario for every golden event log", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
-      .map((f) => f.replace(/\.events\.json$/, ""))
-      .filter((name) => !NOT_PLAYED.includes(name));
+      .map((f) => f.replace(/\.events\.json$/, ""));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

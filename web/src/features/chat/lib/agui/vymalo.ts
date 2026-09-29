@@ -9,7 +9,15 @@ export const ACTIVITY = {
   artifact: "vymalo.artifact",
   error: "vymalo.error",
   action: "vymalo.action",
+  /**
+   * An A2UI surface, as `ThreadAgent` hands it to the runtime. On the wire it is
+   * `a2ui-surface` ({@link A2UI_SURFACE}); see `thread-agent.ts` for why it is renamed.
+   */
+  surface: "vymalo.a2ui-surface",
 } as const;
+
+/** The ecosystem's activity type of an A2UI surface (ADR 0013), the one the orchestrator sends. */
+export const A2UI_SURFACE = "a2ui-surface";
 
 /** `metadata["vymalo.actor"]` of an attributed event: `{type, name, revision?}`. */
 export const ACTOR_KEY = "vymalo.actor";
@@ -51,6 +59,12 @@ export type ActionContent = WithActor<{
   sourceComponentId?: string;
   context?: Record<string, unknown>;
 }>;
+/**
+ * A surface: the operations exactly as the orchestrator sent them (untrusted, read by
+ * `lib/a2ui/prepare.ts` and nothing else) and `surface`, the activity message id that identifies
+ * the surface across updates. `actor` is the only label a surface gets.
+ */
+export type SurfaceContent = WithActor<{ a2ui_operations?: unknown; surface: string }>;
 
 // ---- reading the contents -------------------------------------------------------------------
 //
@@ -115,6 +129,24 @@ export function parseAction(v: unknown): ActionContent | null {
   const surfaceId = str(v.surfaceId);
   const name = str(v.name);
   if (surfaceId === undefined || name === undefined) return null;
+  const sourceComponentId = str(v.sourceComponentId);
   const actor = readActor(v.actor);
-  return { surfaceId, name, ...(actor ? { actor } : {}) };
+  return {
+    surfaceId,
+    name,
+    ...(sourceComponentId !== undefined ? { sourceComponentId } : {}),
+    ...(actor ? { actor } : {}),
+  };
+}
+
+export function parseSurface(v: unknown): SurfaceContent | null {
+  if (!isRecord(v)) return null;
+  const surface = str(v.surface);
+  if (surface === undefined) return null;
+  const actor = readActor(v.actor);
+  return {
+    surface,
+    ...("a2ui_operations" in v ? { a2ui_operations: v.a2ui_operations } : {}),
+    ...(actor ? { actor } : {}),
+  };
 }

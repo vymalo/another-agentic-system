@@ -19,7 +19,8 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > that follows the connect stream and sends runs to the run route, see
 > [`web/README.md`](../../web/README.md#the-chat-layer). **A2UI is relayed by the orchestrator**
 > (2026-09-29): surfaces from agents, actions from users, capability detection, see
-> [A2UI](#a2ui-generative-ui). Not built: the web renders none of it yet (a later slice). What is built
+> [A2UI](#a2ui-generative-ui). **The web renders it** (2026-09-29): a validator, a shadcn vocabulary and
+> actions on a user gesture only, see [`web/README.md`](../../web/README.md#a2ui-surfaces). What is built
 > and what is planned, as a diagram: [architecture](../architecture.md#ag-ui-planned-against-built).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
@@ -513,8 +514,8 @@ The orchestrator's part:
 | A surface arrives late, after the run | It opens a run of its own and closes it, like any late event (open question 17); it is never dropped silently |
 
 What only the renderer can do (vocabulary, template expansion, depth, actions that never auto-send) is in
-ADR 0013 and is the next slice's; nothing here relies on it for storage safety, but a viewer must not
-trust the log to be catalog-valid.
+ADR 0013 and is the web's, built (2026-09-29: [`web/README.md`](../../web/README.md#a2ui-surfaces));
+nothing here relies on it for storage safety, and a viewer must not trust the log to be catalog-valid.
 
 ## `vymalo.*` schemas
 

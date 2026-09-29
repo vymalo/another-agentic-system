@@ -2,7 +2,7 @@
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { InlineStatus } from "@/components/inline-status";
 import { NewThreadPanel } from "@/features/agents/components/new-thread-panel";
@@ -15,6 +15,7 @@ import { problemMessage } from "@/lib/api/client";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
 import { LiveRuns } from "./live-runs";
+import { SurfaceHostProvider } from "./surface/surface-host";
 import { ThreadHeader } from "./thread-header";
 
 /** `null` is the new-thread page. Every navigation remounts, so no state leaks between threads. */
@@ -82,54 +83,72 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
     agent.cancel().catch((e: unknown) => setSendError(problemMessage(e)));
   }, [agent]);
 
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composer = (
-    <Composer state={state} isNew={threadId === null} sendError={sendError} onCancel={cancel} />
+    <Composer
+      state={state}
+      isNew={threadId === null}
+      sendError={sendError}
+      onCancel={cancel}
+      inputRef={composerRef}
+    />
   );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <DataUIs />
-      <LiveRuns agent={agent} runtime={runtime} />
-      <div className="grid h-dvh grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
-        <ThreadSidebar threads={threads} />
-        <main className="flex min-h-0 min-w-0 flex-col px-3 md:px-4">
-          <div className="pt-2 md:hidden">
-            <ThreadsSheet threads={threads} />
-          </div>
-          {threadId === null ? (
-            <>
-              <div className="mx-auto w-full max-w-3xl">
-                <NewThreadPanel agents={agents} selection={effective} onSelect={setSelection} />
-              </div>
-              <div className="mx-auto mt-auto w-full max-w-3xl">{composer}</div>
-            </>
-          ) : meta.notFound || snapshot.notFound ? (
-            <div className="mx-auto w-full max-w-3xl pt-8">
-              <InlineStatus role="status">
-                Thread not found. <Link href="/">Start a new thread</Link>.
-              </InlineStatus>
+      <SurfaceHostProvider
+        agent={agent}
+        state={state}
+        composerRef={composerRef}
+        onRejected={onSendFailed}
+      >
+        <DataUIs />
+        <LiveRuns agent={agent} runtime={runtime} />
+        <div className="grid h-dvh grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
+          <ThreadSidebar threads={threads} />
+          <main className="flex min-h-0 min-w-0 flex-col px-3 md:px-4">
+            <div className="pt-2 md:hidden">
+              <ThreadsSheet threads={threads} />
             </div>
-          ) : (
-            <>
-              <div className="mx-auto w-full max-w-3xl">
-                <ThreadHeader thread={meta.thread} state={state} connection={snapshot.connection} />
-                {meta.error ? (
-                  <InlineStatus
-                    tone="error"
-                    role="alert"
-                    action={{ label: "Retry", onClick: meta.reload }}
-                  >
-                    Could not load the thread: {meta.error}
-                  </InlineStatus>
-                ) : null}
+            {threadId === null ? (
+              <>
+                <div className="mx-auto w-full max-w-3xl">
+                  <NewThreadPanel agents={agents} selection={effective} onSelect={setSelection} />
+                </div>
+                <div className="mx-auto mt-auto w-full max-w-3xl">{composer}</div>
+              </>
+            ) : meta.notFound || snapshot.notFound ? (
+              <div className="mx-auto w-full max-w-3xl pt-8">
+                <InlineStatus role="status">
+                  Thread not found. <Link href="/">Start a new thread</Link>.
+                </InlineStatus>
               </div>
-              <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
-                {composer}
-              </Thread>
-            </>
-          )}
-        </main>
-      </div>
+            ) : (
+              <>
+                <div className="mx-auto w-full max-w-3xl">
+                  <ThreadHeader
+                    thread={meta.thread}
+                    state={state}
+                    connection={snapshot.connection}
+                  />
+                  {meta.error ? (
+                    <InlineStatus
+                      tone="error"
+                      role="alert"
+                      action={{ label: "Retry", onClick: meta.reload }}
+                    >
+                      Could not load the thread: {meta.error}
+                    </InlineStatus>
+                  ) : null}
+                </div>
+                <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                  {composer}
+                </Thread>
+              </>
+            )}
+          </main>
+        </div>
+      </SurfaceHostProvider>
     </AssistantRuntimeProvider>
   );
 }

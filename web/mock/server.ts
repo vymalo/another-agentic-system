@@ -13,7 +13,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import type { components } from "../src/lib/api/schema";
 import { AGENTS, DEV_USER } from "./fixtures";
-import { type Audience, type Frame, Projector } from "./projection";
+import { type Audience, type Frame, Projector, surfacesOf } from "./projection";
 import { cancelSteps, type Step, scriptFor } from "./scripts";
 
 type Thread = components["schemas"]["Thread"];
@@ -23,6 +23,9 @@ type ThreadState = components["schemas"]["ThreadState"];
 
 const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
 
 type Run = {
   timer: NodeJS.Timeout | undefined;
@@ -399,6 +402,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 422, "Unprocessable", "a new message that is not from the user");
     }
 
+    if (!thread && isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
+      // the thread has no surface: an action on it reaches nothing
+      return problem(res, 422, "Unprocessable", "the thread has no such surface");
+    }
     if (!thread) {
       const first = fresh[0];
       const text = first ? messageText(first) : undefined;
@@ -448,6 +455,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 
     if (thread.target.agentId !== agentId) {
       return problem(res, 409, "Conflict", `the thread targets ${thread.target.agentId}`);
+    }
+    if (isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
+      return runAction(res, thread, runId, body, fresh.length + resume.length > 0);
     }
     // A retry of a run the log holds attaches to it.
     const recorded = log.find((e) => e.kind === "user_message" && e.data.runId === runId);
@@ -507,6 +517,81 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     return startViewer(res, thread, {
       fromSeq: event.seq - 1,
       audience: { skipUserMessageIds: new Set(messageId ? [messageId] : []) },
+      end: "first-close",
+    });
+  }
+
+  /**
+   * A user's action on an A2UI surface (`forwardedProps.a2uiAction.userAction`, docs/api/agui.md
+   * "Actions"): a run with no message and no `resume`, accepted only while the thread waits for the
+   * owner and only for a surface the thread has now. The scripted agent answers `ui-action <name>`.
+   */
+  function runAction(
+    res: http.ServerResponse,
+    thread: Thread,
+    runId: string,
+    body: Record<string, unknown>,
+    withInput: boolean,
+  ) {
+    const envelope = (body.forwardedProps as Record<string, unknown>).a2uiAction;
+    const action = isRecord(envelope) ? envelope.userAction : undefined;
+    if (!isRecord(action)) {
+      return problem(res, 422, "Unprocessable", 'expected {"userAction": {...}}');
+    }
+    const strings: Record<string, string> = {};
+    for (const key of ["surfaceId", "name", "sourceComponentId"]) {
+      const value = action[key];
+      if (typeof value !== "string") {
+        return problem(res, 422, "Unprocessable", `${key} must be a string`);
+      }
+      if (Buffer.byteLength(value) > 256) {
+        return problem(res, 413, "Payload too large", `${key} is over 256 bytes`);
+      }
+      strings[key] = value;
+    }
+    const context = action.context ?? {};
+    if (!isRecord(context)) return problem(res, 422, "Unprocessable", "context must be an object");
+    if (Buffer.byteLength(JSON.stringify(context)) > 16 * 1024) {
+      return problem(res, 413, "Payload too large", "context is over 16 KiB");
+    }
+    if (withInput) {
+      return problem(res, 422, "Unprocessable", "an action with a message, an answer or a cancel");
+    }
+    const log = events.get(thread.id) ?? [];
+    const version = surfacesOf(log).get(strings.surfaceId as string);
+    if (version === undefined) {
+      return problem(res, 422, "Unprocessable", "the thread has no such surface");
+    }
+    if (log.some((e) => e.data.runId === runId)) {
+      return problem(res, 422, "Unprocessable", "the run id was used before");
+    }
+    if (thread.state === "done" || thread.state === "failed" || thread.state === "cancelled") {
+      return problem(
+        res,
+        409,
+        "Conflict",
+        `the thread is finished (${thread.state}); start a new thread`,
+      );
+    }
+    if (thread.state !== "blocked") {
+      return problem(
+        res,
+        409,
+        "Conflict",
+        "a run is already open on this thread; wait for it to finish",
+      );
+    }
+    const event = append(
+      thread.id,
+      "ui_action",
+      { type: "user", name: DEV_USER },
+      { ...strings, context, version: version as "v0.9" | "v0.9.1" | "v1.0", runId },
+    );
+    setState(thread, "queued");
+    const resumeScript = runs.get(thread.id)?.resume;
+    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}`));
+    return startViewer(res, thread, {
+      fromSeq: event.seq - 1,
       end: "first-close",
     });
   }

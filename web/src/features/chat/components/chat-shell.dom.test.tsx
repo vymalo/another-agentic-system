@@ -216,6 +216,86 @@ describe("ChatShell over AG-UI", () => {
     expect(within(log()).queryByText("late")).toBeNull();
   });
 
+  it("an A2UI surface is drawn; its button sends the action (no message, no resume) and the scenario goes on", async () => {
+    const id = await makeThread("ui pick one", "reviewer");
+    shell(id);
+    const ui = await screen.findByRole("region", { name: "Interface from reviewer" });
+    await waitFor(() => expect(stateBadge().textContent).toBe("Waiting for you"));
+    expect(within(ui).getByText("Pick one")).toBeTruthy();
+    const goButton = await within(ui).findByRole("button", { name: "Go" });
+    await waitFor(() => expect((goButton as HTMLButtonElement).disabled).toBe(false));
+    // opening the thread sent nothing but the connect
+    expect(calls.filter((c) => c.startsWith("POST"))).toEqual([]);
+    fireEvent.click(goButton);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const transcript = within(log());
+    await waitFor(() => expect(transcript.getAllByText("answered: ui-action go")).toHaveLength(1));
+    expect(transcript.getByText("Chose")).toBeTruthy();
+    // one POST, the action; the surface is still there, and its button is off now
+    expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
+      "POST /agui/agents/reviewer 200",
+    ]);
+    expect(transcript.getAllByText("ui pick one")).toHaveLength(1);
+    expect(
+      (
+        within(transcript.getByRole("region", { name: /^Interface from/ })).getByRole("button", {
+          name: "Go",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(screen.getByText(/This thread is finished/)).toBeTruthy();
+  });
+
+  it("a finished thread shows its surface read-only, and the button says why", async () => {
+    const id = await makeThread("ui pick one", "reviewer");
+    // answer it from outside, as another tab would
+    const res = await realFetch(`${base}/agui/agents/reviewer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({
+        threadId: id,
+        runId: "run-2",
+        messages: [],
+        forwardedProps: {
+          a2uiAction: {
+            userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+          },
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const ui = await screen.findByRole("region", { name: "Interface from reviewer" });
+    expect((within(ui).getByRole("button", { name: "Go" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(within(ui).getByText(/This thread is finished/)).toBeTruthy();
+    expect(calls.filter((c) => c.startsWith("POST"))).toEqual([]);
+  });
+
+  it("a refused action shows the problem, keeps the transcript, and the button works again", async () => {
+    const id = await makeThread("ui pick one", "reviewer");
+    shell(id);
+    const goButton = await screen.findByRole("button", { name: "Go" });
+    await waitFor(() => expect((goButton as HTMLButtonElement).disabled).toBe(false));
+    failing = {
+      key: "POST /agui/agents/reviewer",
+      status: 409,
+      detail: "a run is already open on this thread; wait for it to finish",
+    };
+    fireEvent.click(goButton);
+    await screen.findByText("a run is already open on this thread; wait for it to finish");
+    // the message before the action is still there: an action carries none, so none was taken back
+    expect(within(log()).getByText("ui pick one")).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Go" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+  });
+
   it("Cancel asks the orchestrator; the run ends cancelled and the runtime shows it", async () => {
     const id = await makeThread("slow work", "reviewer", true);
     shell(id);

@@ -23,8 +23,8 @@ message's `messageId` is `<message-id>`.
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden`.
 - **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
   and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the
-  same story. (The web renders the AG-UI goldens, not these event logs: see the next section. The mock
-  does not play `a2ui` yet: the web renderer is a later slice, and `golden.test.ts` lists the exception.)
+  same story, `a2ui` included (a surface, the question, and the action that answers it through
+  `forwardedProps.a2uiAction`). The web renders the AG-UI goldens, not these event logs: see the next section.
 
 ## AG-UI streams
 

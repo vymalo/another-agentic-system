@@ -80,8 +80,9 @@ copies of the client, or overrides the range.
 
 ## Observed, not patched
 
-Two things the plan expected to patch turned out not to need it in this web; both are real in the
-package and are drafted here in case the owner wants them upstream.
+Two things the plan expected to patch turned out not to need it in this web, and three more were met
+by the A2UI renderer (slice 13); all are real in the package and are drafted here in case the owner
+wants them upstream. **None is filed.**
 
 ### Activities before any assistant message are dropped from a restored history
 
@@ -127,3 +128,57 @@ currently renders as assistant text). We solve it outside the package with its p
 (`thread.startRun`, or `steerAway` when an interrupt is open) and makes the agent's `run()` serve
 the external run's events. That is a workable pattern, not a substitute for the runtime knowing
 about `connect()`.
+
+### A2UI: `v0.9.1` operations are dropped, and the built-in path converts before any host check
+
+**Title:** `applyA2uiOperations` rejects `version: "v0.9.1"`, which the A2UI docs say is read as `v0.9`
+
+**Problem.** *Verified 2026-09-29* against `@assistant-ui/react-generative-ui@0.0.21` (`src/a2ui/reducer.ts`,
+`isVersion`): only `"v0.9"` and `"v1.0"` are accepted. The A2UI page on assistant-ui.com says
+"v0.9.1 (read as v0.9)". An agent that says `v0.9.1`, as the current A2UI release does (and as our
+orchestrator relays it, `docs/api/examples/agui/a2ui.agui.json`), gets `Operation at index n has an
+unsupported version.` for every operation, and `@assistant-ui/react-ag-ui` draws nothing.
+
+**Repro.**
+
+```ts
+applyA2uiOperations(new Map(), [{ version: "v0.9.1", createSurface: { surfaceId: "s1" } }]);
+// state.size === 0, warnings: ["Operation at index 0 has an unsupported version."]
+```
+
+**Proposed change.** Accept `"v0.9.1"` (as `"v0.9"`). We do not patch it: the web hands surfaces to its
+own validator, which maps `v0.9.1` to `v0.9` before the reducer sees them
+([`../README.md`](../README.md#a2ui-surfaces)).
+
+A second observation belongs with it: the runtime converts an `a2ui-surface` snapshot in the run
+aggregator, the moment it arrives, so a host has no place to validate before conversion (the
+conversion is bounded, at depth 32 and 5000 nodes, but not by the host's rules). We rename the activity
+in `ThreadAgent` so the runtime never converts, and convert after our checks.
+
+### A2UI: `sendA2uiAction` throws while an interrupt is open
+
+**Title:** `useAgUiSendA2uiAction` cannot answer a thread that is waiting on an interrupt
+
+**Problem.** `AgUiThreadRuntimeCore.sendA2uiAction` starts with `assertNoPendingInterrupts()`, which
+throws `cannot start a new run while interrupts are pending`. A surface that comes with the agent's
+question (`input-required`, so the run ended in an interrupt) is exactly when its button is used.
+
+**Proposed change.** Let `sendA2uiAction` close the open interrupts as cancelled and start the run,
+as `steerAway` does for a message. We do not patch it: the app closes the interrupt through
+`unstable_submitInterruptResponses` and stages the action on its agent, which sends it instead of
+the `resume` (`ThreadAgent.stageA2uiAction`).
+
+### A2UI: the pinned converter has no `openUrl`, `userMessage` or input values
+
+**Title:** The A2UI docs describe converter features that `0.0.21` does not have
+
+**Problem.** *Verified 2026-09-29.* The A2UI page on assistant-ui.com describes `a2ui:functionCall`
+(`openUrl`), the event's `userMessage`, `$field` references for bound inputs and template children
+written `{componentId, path}`. `@assistant-ui/react-generative-ui@0.0.21` (the latest on npm, published
+2026-09-24; `src/a2ui/convert.ts`) has none of them: `mappedAction` drops a `functionCall` action,
+ignores `userMessage`, and `children` must be `{template: {componentId, path}}`. The docs appear to
+describe the repository head.
+
+**Proposed change.** None for the package; a note on the docs page, or a release that matches it. The
+web lowers what it needs before conversion (an `openUrl` call, a `userMessage`, the current value of
+an input) so that the pinned converter can carry it.

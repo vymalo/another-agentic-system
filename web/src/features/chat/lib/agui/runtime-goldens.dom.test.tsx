@@ -61,6 +61,20 @@ const EXPECTED: Record<string, Summary> = {
       parts: [ACTOR, "status:working", "artifact", "status:completed"],
     },
   ],
+  // a surface (one part, its two snapshots replaced in place), the question, then the owner's action
+  a2ui: [
+    USER("ui pick one"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [ACTOR, "status:working", "a2ui-surface", "status:input_required"],
+    },
+    {
+      role: "assistant",
+      status: DONE,
+      parts: ["action", ACTOR, "status:working", "artifact", "status:completed"],
+    },
+  ],
   // the outcome of a run stopped on purpose: neither success nor failure (patch: cancelled outcome)
   cancel: [
     USER("slow work"),
