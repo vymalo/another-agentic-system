@@ -1,15 +1,17 @@
 //! Release channels (ADR 0008): discovery from the live card, and selection on the wire.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+#[macro_use]
 mod common;
 
 use common::*;
 use orch_agent_a2a::RELEASE_CHANNELS_URI;
 use serde_json::json;
 
-#[tokio::test]
-async fn agents_list_shows_releases_only_for_the_agent_whose_card_declares_the_extension() {
-    let world = World::start().await;
+async fn agents_list_shows_releases_only_for_the_agent_whose_card_declares_the_extension(
+    backend: Backend,
+) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let (status, body) = chat.get("/api/agents").await;
@@ -32,9 +34,10 @@ async fn agents_list_shows_releases_only_for_the_agent_whose_card_declares_the_e
     assert_eq!(plain["description"], "in-process fake A2A agent");
 }
 
-#[tokio::test]
-async fn the_selected_release_reaches_the_agent_and_its_revision_is_echoed_into_the_events() {
-    let world = World::start().await;
+async fn the_selected_release_reaches_the_agent_and_its_revision_is_echoed_into_the_events(
+    backend: Backend,
+) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
 
@@ -60,9 +63,8 @@ async fn the_selected_release_reaches_the_agent_and_its_revision_is_echoed_into_
     assert_eq!(thread["target"]["release"], "staging");
 }
 
-#[tokio::test]
-async fn an_exact_revision_can_be_selected_too() {
-    let world = World::start().await;
+async fn an_exact_revision_can_be_selected_too(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat
@@ -77,9 +79,8 @@ async fn an_exact_revision_can_be_selected_too() {
     assert_eq!(events[1]["actor"]["revision"], "coder-r47");
 }
 
-#[tokio::test]
-async fn without_a_selection_no_extension_is_activated_and_the_default_runs() {
-    let world = World::start().await;
+async fn without_a_selection_no_extension_is_activated_and_the_default_runs(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("coder", "echo default", None).await;
@@ -90,9 +91,10 @@ async fn without_a_selection_no_extension_is_activated_and_the_default_runs() {
     assert_eq!(chat.events(&id).await[1]["actor"]["revision"], "coder-r47");
 }
 
-#[tokio::test]
-async fn unknown_releases_and_releases_on_plain_agents_are_refused_before_anything_is_sent() {
-    let world = World::start().await;
+async fn unknown_releases_and_releases_on_plain_agents_are_refused_before_anything_is_sent(
+    backend: Backend,
+) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
 
@@ -108,9 +110,10 @@ async fn unknown_releases_and_releases_on_plain_agents_are_refused_before_anythi
     assert!(world.plain.executions().is_empty());
 }
 
-#[tokio::test]
-async fn an_unreachable_card_makes_a_release_unselectable_but_plain_runs_still_work() {
-    let world = World::start().await;
+async fn an_unreachable_card_makes_a_release_unselectable_but_plain_runs_still_work(
+    backend: Backend,
+) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     world.coder.stop();
@@ -133,3 +136,12 @@ async fn an_unreachable_card_makes_a_release_unselectable_but_plain_runs_still_w
         .await;
     assert_eq!(status, 400, "release cannot be validated without the card");
 }
+
+backends!(
+    agents_list_shows_releases_only_for_the_agent_whose_card_declares_the_extension,
+    the_selected_release_reaches_the_agent_and_its_revision_is_echoed_into_the_events,
+    an_exact_revision_can_be_selected_too,
+    without_a_selection_no_extension_is_activated_and_the_default_runs,
+    unknown_releases_and_releases_on_plain_agents_are_refused_before_anything_is_sent,
+    an_unreachable_card_makes_a_release_unselectable_but_plain_runs_still_work,
+);

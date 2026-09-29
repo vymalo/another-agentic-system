@@ -1,14 +1,14 @@
 //! Cancelling sends `CancelTask` to the agent.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+#[macro_use]
 mod common;
 
 use common::*;
 use orch_testsupport::CallKind;
 
-#[tokio::test]
-async fn cancel_sends_cancel_task_and_cancels_the_thread() {
-    let world = World::start().await;
+async fn cancel_sends_cancel_task_and_cancels_the_thread(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "slow work", None).await;
@@ -34,9 +34,8 @@ async fn cancel_sends_cancel_task_and_cancels_the_thread() {
     assert_eq!(cancels[0].task_id, world.plain.executions()[0].task_id);
 }
 
-#[tokio::test]
-async fn cancelling_a_finished_thread_is_accepted_and_changes_nothing() {
-    let world = World::start().await;
+async fn cancelling_a_finished_thread_is_accepted_and_changes_nothing(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "echo done", None).await;
@@ -52,9 +51,8 @@ async fn cancelling_a_finished_thread_is_accepted_and_changes_nothing() {
     assert_eq!(chat.state(&id).await, "done");
 }
 
-#[tokio::test]
-async fn a_blocked_thread_can_be_cancelled() {
-    let world = World::start().await;
+async fn a_blocked_thread_can_be_cancelled(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "ask me", None).await;
@@ -63,3 +61,9 @@ async fn a_blocked_thread_can_be_cancelled() {
     chat.wait_state(&id, "cancelled").await;
     assert_eq!(world.plain.cancels().len(), 1);
 }
+
+backends!(
+    cancel_sends_cancel_task_and_cancels_the_thread,
+    cancelling_a_finished_thread_is_accepted_and_changes_nothing,
+    a_blocked_thread_can_be_cancelled,
+);

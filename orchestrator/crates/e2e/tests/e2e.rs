@@ -1,6 +1,7 @@
 //! The acceptance sequence over real HTTP: chat API -> dispatcher -> A2A adapter -> agent.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+#[macro_use]
 mod common;
 
 use std::time::Duration;
@@ -10,9 +11,8 @@ use orch_testsupport::fake::PR_URL;
 
 const WAIT: Duration = Duration::from_secs(20);
 
-#[tokio::test]
-async fn create_thread_streams_expected_sequence_and_events_endpoint_agrees() {
-    let world = World::start().await;
+async fn create_thread_streams_expected_sequence_and_events_endpoint_agrees(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
 
@@ -67,9 +67,8 @@ async fn create_thread_streams_expected_sequence_and_events_endpoint_agrees() {
     assert_eq!(world.coder.executions().len(), 0);
 }
 
-#[tokio::test]
-async fn an_agent_that_fails_the_task_fails_the_thread_with_its_message() {
-    let world = World::start().await;
+async fn an_agent_that_fails_the_task_fails_the_thread_with_its_message(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "fail please", None).await;
@@ -88,9 +87,8 @@ async fn an_agent_that_fails_the_task_fails_the_thread_with_its_message() {
     assert_contiguous(&events);
 }
 
-#[tokio::test]
-async fn a_chunked_artifact_becomes_one_artifact_event() {
-    let world = World::start().await;
+async fn a_chunked_artifact_becomes_one_artifact_event(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "chunks", None).await;
@@ -101,9 +99,8 @@ async fn a_chunked_artifact_becomes_one_artifact_event() {
     assert_eq!(events[2]["data"]["text"], "one\ntwo\nthree");
 }
 
-#[tokio::test]
-async fn two_threads_run_side_by_side_without_mixing_events() {
-    let world = World::start().await;
+async fn two_threads_run_side_by_side_without_mixing_events(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let a = chat.create_thread("plain", "echo first", None).await;
@@ -118,3 +115,10 @@ async fn two_threads_run_side_by_side_without_mixing_events() {
     assert_eq!(world.plain.executions().len(), 1);
     assert_eq!(world.coder.executions().len(), 1);
 }
+
+backends!(
+    create_thread_streams_expected_sequence_and_events_endpoint_agrees,
+    an_agent_that_fails_the_task_fails_the_thread_with_its_message,
+    a_chunked_artifact_becomes_one_artifact_event,
+    two_threads_run_side_by_side_without_mixing_events,
+);

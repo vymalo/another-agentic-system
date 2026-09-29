@@ -2,6 +2,7 @@
 //! finishes the thread with no gap and no duplicate.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+#[macro_use]
 mod common;
 
 use common::*;
@@ -12,14 +13,17 @@ use orch_testsupport::FakeAgentOptions;
 /// `release_before_restart`: the agent completes while no orchestrator is alive, so the new
 /// instance finds a finished task (`SubscribeToTask` says TASK_NOT_FOUND; it polls `GetTask`).
 /// Otherwise the new instance re-attaches to the live task and the gate opens afterwards.
-async fn crash_scenario(release_before_restart: bool, resubscribe: bool) {
-    let world = World::with(Setup {
-        plain: FakeAgentOptions {
-            resubscribe,
-            ..FakeAgentOptions::default()
+async fn crash_scenario(backend: Backend, release_before_restart: bool, resubscribe: bool) {
+    let world = World::with(
+        backend,
+        Setup {
+            plain: FakeAgentOptions {
+                resubscribe,
+                ..FakeAgentOptions::default()
+            },
+            ..Setup::default()
         },
-        ..Setup::default()
-    })
+    )
     .await;
     let first = world.instance("orch-1").await;
     let chat = world.chat(&first);
@@ -78,29 +82,24 @@ async fn crash_scenario(release_before_restart: bool, resubscribe: bool) {
     second.shutdown().await;
 }
 
-#[tokio::test]
-async fn kill_mid_stream_and_finish_while_down_polls_the_result() {
-    crash_scenario(true, true).await;
+async fn kill_mid_stream_and_finish_while_down_polls_the_result(backend: Backend) {
+    crash_scenario(backend, true, true).await;
 }
 
-#[tokio::test]
-async fn kill_mid_stream_then_resubscribe_finishes_live() {
-    crash_scenario(false, true).await;
+async fn kill_mid_stream_then_resubscribe_finishes_live(backend: Backend) {
+    crash_scenario(backend, false, true).await;
 }
 
-#[tokio::test]
-async fn kill_mid_stream_without_resubscribe_falls_back_to_polling() {
-    crash_scenario(false, false).await;
+async fn kill_mid_stream_without_resubscribe_falls_back_to_polling(backend: Backend) {
+    crash_scenario(backend, false, false).await;
 }
 
-#[tokio::test]
-async fn kill_mid_stream_and_finish_while_down_without_resubscribe() {
-    crash_scenario(true, false).await;
+async fn kill_mid_stream_and_finish_while_down_without_resubscribe(backend: Backend) {
+    crash_scenario(backend, true, false).await;
 }
 
-#[tokio::test]
-async fn a_graceful_shutdown_hands_the_thread_over_immediately() {
-    let world = World::start().await;
+async fn a_graceful_shutdown_hands_the_thread_over_immediately(backend: Backend) {
+    let world = World::start(backend).await;
     let first = world.instance("orch-1").await;
     let chat = world.chat(&first);
     let id = chat.create_thread("plain", "gate handover", None).await;
@@ -116,3 +115,11 @@ async fn a_graceful_shutdown_hands_the_thread_over_immediately() {
     assert_contiguous(&events);
     assert_eq!(world.plain.executions().len(), 1);
 }
+
+backends!(
+    kill_mid_stream_and_finish_while_down_polls_the_result,
+    kill_mid_stream_then_resubscribe_finishes_live,
+    kill_mid_stream_without_resubscribe_falls_back_to_polling,
+    kill_mid_stream_and_finish_while_down_without_resubscribe,
+    a_graceful_shutdown_hands_the_thread_over_immediately,
+);

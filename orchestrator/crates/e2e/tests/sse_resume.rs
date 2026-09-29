@@ -1,6 +1,7 @@
 //! SSE resume with `Last-Event-ID`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+#[macro_use]
 mod common;
 
 use std::time::Duration;
@@ -9,9 +10,8 @@ use common::*;
 
 const WAIT: Duration = Duration::from_secs(20);
 
-#[tokio::test]
-async fn last_event_id_n_replays_exactly_n_plus_one_onwards() {
-    let world = World::start().await;
+async fn last_event_id_n_replays_exactly_n_plus_one_onwards(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "echo resume", None).await;
@@ -31,9 +31,8 @@ async fn last_event_id_n_replays_exactly_n_plus_one_onwards() {
     }
 }
 
-#[tokio::test]
-async fn a_live_stream_resumed_mid_run_delivers_each_later_event_once() {
-    let world = World::start().await;
+async fn a_live_stream_resumed_mid_run_delivers_each_later_event_once(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "gate live", None).await;
@@ -55,9 +54,8 @@ async fn a_live_stream_resumed_mid_run_delivers_each_later_event_once() {
     );
 }
 
-#[tokio::test]
-async fn a_client_that_reconnects_keeps_a_gapless_view() {
-    let world = World::start().await;
+async fn a_client_that_reconnects_keeps_a_gapless_view(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "gate flaky", None).await;
@@ -79,3 +77,9 @@ async fn a_client_that_reconnects_keeps_a_gapless_view() {
     }
     assert_eq!(seen, [1, 2, 3, 4, 5]);
 }
+
+backends!(
+    last_event_id_n_replays_exactly_n_plus_one_onwards,
+    a_live_stream_resumed_mid_run_delivers_each_later_event_once,
+    a_client_that_reconnects_keeps_a_gapless_view,
+);

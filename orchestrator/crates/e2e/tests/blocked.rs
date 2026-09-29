@@ -1,13 +1,13 @@
 //! `input-required` blocks the thread; a follow-up continues the SAME A2A task.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+#[macro_use]
 mod common;
 
 use common::*;
 
-#[tokio::test]
-async fn input_required_blocks_and_the_follow_up_resumes_the_same_task() {
-    let world = World::start().await;
+async fn input_required_blocks_and_the_follow_up_resumes_the_same_task(backend: Backend) {
+    let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
 
@@ -61,9 +61,8 @@ async fn input_required_blocks_and_the_follow_up_resumes_the_same_task() {
     assert_eq!(calls[1].text, "main");
 }
 
-#[tokio::test]
-async fn a_follow_up_survives_an_orchestrator_restart_between_the_turns() {
-    let world = World::start().await;
+async fn a_follow_up_survives_an_orchestrator_restart_between_the_turns(backend: Backend) {
+    let world = World::start(backend).await;
     let first = world.instance("orch-1").await;
     let chat = world.chat(&first);
     let id = chat.create_thread("plain", "ask again", None).await;
@@ -81,3 +80,8 @@ async fn a_follow_up_survives_an_orchestrator_restart_between_the_turns() {
     assert!(calls[1].resuming);
     assert_contiguous(&chat.events(&id).await);
 }
+
+backends!(
+    input_required_blocks_and_the_follow_up_resumes_the_same_task,
+    a_follow_up_survives_an_orchestrator_restart_between_the_turns,
+);
