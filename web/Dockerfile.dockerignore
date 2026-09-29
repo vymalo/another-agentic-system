@@ -7,6 +7,7 @@ web/node_modules
 web/.next
 web/test-results
 web/playwright-report
+web/e2e-system/.run
 web/src/api/schema.d.ts
 web/next-env.d.ts
 web/*.tsbuildinfo
