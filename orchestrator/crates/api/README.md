@@ -12,7 +12,7 @@ orchestrator. It depends on [`orch-app`](../app/README.md),
 [`orch-ports`](../ports/README.md) (generic over `Ports`) and
 [`orch-core`](../core/README.md); it names no adapter and no surface. The
 interaction routes live in surface crates that depend on this one
-([`orch-surface-chat-api`](../surface-chat-api/README.md), later AG-UI); the
+([`orch-surface-agui`](../surface-agui/README.md), [`orch-surface-chat-api`](../surface-chat-api/README.md)); the
 binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 `ORCH_SURFACES` names
 ([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)).

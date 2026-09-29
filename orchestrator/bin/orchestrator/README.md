@@ -16,7 +16,8 @@ implementations
 for `AgentClient`, the system clock and UUIDv7 ids. It has no logic of its own:
 what the service does lives in [`orch-app`](../../crates/app/README.md) and
 [`orch-api`](../../crates/api/README.md) and the surface crates
-([`orch-surface-chat-api`](../../crates/surface-chat-api/README.md)). Processes are stateless; the only
+([`orch-surface-agui`](../../crates/surface-agui/README.md),
+[`orch-surface-chat-api`](../../crates/surface-chat-api/README.md)). Processes are stateless; the only
 persistence is Postgres
 ([ADR 0001](../../../docs/decisions/0001-rust-state-machine-on-postgres.md)).
 The role enum (`Role`) and the supervisor (`Host`) are not ours: they come from
@@ -51,7 +52,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
-| `ORCH_SURFACES` | `chat-api` | comma-separated surfaces to mount (`--surfaces`); unknown, empty, repeated or not compiled in is a startup error |
+| `ORCH_SURFACES` | `agui,chat-api` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
 
@@ -101,6 +102,7 @@ noted in `src/main.rs`.
 
 | Feature | Default | Compiles in |
 |---|---|---|
+| `surface-agui` | yes | [`orch-surface-agui`](../../crates/surface-agui/README.md), the surface name `agui` |
 | `surface-chat-api` | yes | [`orch-surface-chat-api`](../../crates/surface-chat-api/README.md), the surface name `chat-api` |
 
 The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
@@ -119,7 +121,8 @@ binary is `orchestrator` (`cargo run -p orchestrator`).
   tests always run (the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, and
-  `--surfaces chat-api` serving the legacy routes. With a database: `/healthz`, `/readyz`, 401 without
+  `--surfaces chat-api` serving the legacy routes and not the AG-UI one, and the default mounting both
+  (the AG-UI route answers 400 to `{}` and 401 without identity). With a database: `/healthz`, `/readyz`, 401 without
   identity, a thread completed through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
   database with a SIGKILL mid-task. The roles: `--role worker` (over a

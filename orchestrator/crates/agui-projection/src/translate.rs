@@ -136,6 +136,13 @@ pub enum InputError {
         "the request answers an interrupt with `resume` and also sends a new message; send one"
     )]
     AmbiguousAnswer,
+    /// The request starts a new run under a `runId` the thread already used (422): a run id is
+    /// never reused on a thread.
+    #[error("runId {run_id:?} was already used on this thread; a run id is never reused")]
+    RunIdReused {
+        /// The request's `runId`.
+        run_id: String,
+    },
     /// A run is already open on the thread (409).
     #[error("a run is already open on this thread; wait for it to finish")]
     RunInProgress,
@@ -168,6 +175,7 @@ impl InputError {
             | InputError::NewNonUserMessage { .. }
             | InputError::EmptyMessage { .. }
             | InputError::InvalidResumePayload { .. }
+            | InputError::RunIdReused { .. }
             | InputError::AmbiguousAnswer => 422,
         }
     }
@@ -413,6 +421,14 @@ pub fn translate_with_warnings(
 
     // Something is to be applied: a thread that cannot take it says so before the stream.
     if let Some(k) = known {
+        let starts_a_run = inputs
+            .iter()
+            .any(|i| matches!(i, Input::UserMessage { .. }));
+        if starts_a_run && k.run_ids.contains(input.run_id.as_str()) {
+            return Err(InputError::RunIdReused {
+                run_id: input.run_id.to_string(),
+            });
+        }
         if k.state.is_terminal() {
             return Err(InputError::ThreadFinished { state: k.state });
         }

@@ -418,6 +418,31 @@ fn a_run_already_open_refuses_new_input() {
 }
 
 #[test]
+fn a_run_id_is_never_reused_for_new_input() {
+    // `r-1` is a run of this thread: a new message (or an answer) cannot start another run
+    // under it. Sending nothing new under it is the attach, which is fine.
+    let message = request(json!({"runId": "r-1", "messages": [user_msg("client-9", "again")]}));
+    let e = err(&message, blocked());
+    assert_eq!(
+        e,
+        InputError::RunIdReused {
+            run_id: "r-1".into()
+        }
+    );
+    assert_eq!(e.http_status(), 422);
+    let answer = request(json!({
+        "runId": "r-1",
+        "resume": [{"interruptId": "int-3", "status": "resolved", "payload": {"text": "main"}}]
+    }));
+    assert!(matches!(
+        err(&answer, blocked()),
+        InputError::RunIdReused { .. }
+    ));
+    let attach = request(json!({"runId": "r-1"}));
+    assert!(ok(&attach, blocked()).is_empty());
+}
+
+#[test]
 fn a_finished_thread_refuses_new_input() {
     for state in [
         ThreadState::Done,
@@ -531,7 +556,7 @@ fn the_held_message_ids_are_the_ids_of_the_requests_messages() {
 
 #[test]
 fn every_refusal_says_which_status_it_is() {
-    let table: [(InputError, u16); 11] = [
+    let table: [(InputError, u16); 12] = [
         (InputError::ThreadIdNotUuid { got: "x".into() }, 400),
         (InputError::ProtocolVersion { got: "2.0".into() }, 400),
         (InputError::NothingToRun { run_id: "r".into() }, 422),
@@ -551,6 +576,7 @@ fn every_refusal_says_which_status_it_is() {
             422,
         ),
         (InputError::AmbiguousAnswer, 422),
+        (InputError::RunIdReused { run_id: "r".into() }, 422),
         (InputError::RunInProgress, 409),
         (
             InputError::ThreadFinished {

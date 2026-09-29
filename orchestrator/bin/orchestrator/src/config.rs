@@ -241,17 +241,20 @@ impl LogFormat {
 /// the feature decides what *can* be mounted, `ORCH_SURFACES` what *is*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Surface {
+    /// The AG-UI run route (`orch-surface-agui`): the default user-facing protocol (ADR 0012).
+    Agui,
     /// The legacy chat API interaction routes (`orch-surface-chat-api`). Deprecated.
     ChatApi,
 }
 
 impl Surface {
     /// Every surface this source tree knows, compiled in or not.
-    pub const ALL: &'static [Surface] = &[Surface::ChatApi];
+    pub const ALL: &'static [Surface] = &[Surface::Agui, Surface::ChatApi];
 
     /// The name used in `ORCH_SURFACES`.
     pub const fn name(self) -> &'static str {
         match self {
+            Surface::Agui => "agui",
             Surface::ChatApi => "chat-api",
         }
     }
@@ -259,6 +262,7 @@ impl Surface {
     /// The Cargo feature of the `orchestrator` package that compiles the surface in.
     pub const fn feature(self) -> &'static str {
         match self {
+            Surface::Agui => "surface-agui",
             Surface::ChatApi => "surface-chat-api",
         }
     }
@@ -266,6 +270,7 @@ impl Surface {
     /// Whether this build contains the surface.
     pub const fn compiled_in(self) -> bool {
         match self {
+            Surface::Agui => cfg!(feature = "surface-agui"),
             Surface::ChatApi => cfg!(feature = "surface-chat-api"),
         }
     }
@@ -306,10 +311,10 @@ impl fmt::Display for Surface {
 
 /// The surfaces mounted when `ORCH_SURFACES` is not set, as far as this build contains them
 /// (a build without a surface's feature simply does not serve it by default, whereas *asking*
-/// for it by name is an error). The list moves with the AG-UI migration (ADR 0012): `chat-api`
-/// while it is the only surface.
+/// for it by name is an error). The list moves with the AG-UI migration (ADR 0012): `agui` beside
+/// `chat-api` while the web still uses the legacy routes, then `agui` alone.
 fn default_surfaces() -> Vec<Surface> {
-    [Surface::ChatApi]
+    [Surface::Agui, Surface::ChatApi]
         .into_iter()
         .filter(|s| s.compiled_in())
         .collect()
@@ -377,8 +382,9 @@ pub struct Args {
     #[arg(long, env = "ORCH_ROLE", value_name = "ROLE")]
     pub role: Option<String>,
 
-    /// Interaction surfaces to mount, comma separated (default chat-api, when the
-    /// build has it). Known: chat-api (deprecated). The resource API and health are always mounted.
+    /// Interaction surfaces to mount, comma separated (default agui,chat-api, as far as the
+    /// build has them). Known: agui, chat-api (deprecated). The resource API and health are
+    /// always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
     pub surfaces: Option<String>,
 
@@ -1197,18 +1203,19 @@ mod tests {
         assert_eq!(LogFormat::parse(Some(" Text ")), LogFormat::Text);
     }
 
-    #[cfg(feature = "surface-chat-api")]
+    #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
     #[test]
-    fn the_default_surface_is_the_chat_api() {
+    fn the_default_surfaces_are_agui_and_the_chat_api() {
+        let both = vec![Surface::Agui, Surface::ChatApi];
         let cfg = load(&base(), AGENTS).unwrap();
-        assert_eq!(cfg.surfaces, vec![Surface::ChatApi]);
+        assert_eq!(cfg.surfaces, both);
         // A blank value is unset, as for every variable.
         let mut env = base();
         env.push(("ORCH_SURFACES", "  "));
-        assert_eq!(load(&env, AGENTS).unwrap().surfaces, vec![Surface::ChatApi]);
+        assert_eq!(load(&env, AGENTS).unwrap().surfaces, both);
     }
 
-    #[cfg(feature = "surface-chat-api")]
+    #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
     #[test]
     fn surfaces_are_a_comma_list_of_known_names() {
         let with = |value: &'static str| {
@@ -1217,10 +1224,11 @@ mod tests {
             load(&env, AGENTS)
         };
         assert_eq!(with("chat-api").unwrap().surfaces, vec![Surface::ChatApi]);
+        assert_eq!(with("agui").unwrap().surfaces, vec![Surface::Agui]);
         assert_eq!(
-            with(" chat-api ,").unwrap().surfaces,
-            vec![Surface::ChatApi],
-            "whitespace and a trailing comma are tolerated"
+            with(" chat-api , agui,").unwrap().surfaces,
+            vec![Surface::ChatApi, Surface::Agui],
+            "whitespace and a trailing comma are tolerated, and the order is kept"
         );
         assert!(matches!(
             with("chat-api,chat-api").unwrap_err(),
@@ -1230,19 +1238,20 @@ mod tests {
             }
         ));
         // The first bad name is the one reported.
-        let err = with("chat-api,agui").unwrap_err();
-        assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "agui"));
+        let err = with("agui,a2a,chat-api").unwrap_err();
+        assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "a2a"));
     }
 
     #[test]
     fn an_unknown_surface_is_refused_naming_the_variable_and_the_known_ones() {
         let mut env = base();
-        env.push(("ORCH_SURFACES", "agui"));
+        env.push(("ORCH_SURFACES", "a2a"));
         let err = load(&env, AGENTS).unwrap_err();
-        assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "agui"));
+        assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "a2a"));
         let shown = err.to_string();
         assert!(shown.contains("ORCH_SURFACES"), "{shown}");
         assert!(shown.contains("chat-api"), "names what is known: {shown}");
+        assert!(shown.contains("agui"), "names what is known: {shown}");
         // Names are exact: no case folding.
         env.pop();
         env.push(("ORCH_SURFACES", "CHAT-API"));
@@ -1280,6 +1289,29 @@ mod tests {
         assert!(Surface::ChatApi.compiled_in());
     }
 
+    #[cfg(feature = "surface-agui")]
+    #[test]
+    fn the_agui_surface_is_compiled_in_by_its_feature() {
+        assert!(Surface::Agui.compiled_in());
+        assert_eq!(Surface::Agui.feature(), "surface-agui");
+    }
+
+    #[cfg(not(feature = "surface-agui"))]
+    #[test]
+    fn agui_that_is_not_compiled_in_is_refused_naming_its_feature() {
+        let mut env = base();
+        env.push(("ORCH_SURFACES", "agui"));
+        let err = load(&env, AGENTS).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::SurfaceNotCompiled {
+                surface: "agui",
+                feature: "surface-agui"
+            }
+        ));
+        assert!(err.to_string().contains("surface-agui"), "{err}");
+    }
+
     #[cfg(not(feature = "surface-chat-api"))]
     #[test]
     fn a_surface_that_is_not_compiled_in_is_refused_naming_its_feature() {
@@ -1295,7 +1327,12 @@ mod tests {
         ));
         assert!(err.to_string().contains("surface-chat-api"), "{err}");
         // Not asking for it is fine: the default is what the build contains.
-        assert!(load(&base(), AGENTS).unwrap().surfaces.is_empty());
+        assert!(
+            !load(&base(), AGENTS)
+                .unwrap()
+                .surfaces
+                .contains(&Surface::ChatApi)
+        );
     }
 
     #[test]

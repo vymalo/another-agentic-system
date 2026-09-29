@@ -39,3 +39,24 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
 - **Consumers:** the same test checks every event against the vendored AG-UI schema and every
   stream against the well-formedness rules; `tools/agui-conformance` feeds the frames, as SSE, through
   the reference client (`@ag-ui/client` 1.0.0) in CI.
+
+### Run responses
+
+[`agui/run-<name>.agui.json`](agui/) is what the **run route** (`POST /agui/agents/{agentId}`, see
+[`../agui.md`](../agui.md#run-binding)) answered for each scripted behaviour, over real HTTP, in the same
+frame format: the **requester's** projection, so the user messages the request itself carried are not
+sent back. A scenario with two POSTs (`run-ask`: the question, then the answer as a `resume`) is the
+responses in order, one run each. The consumer's thread id is `<thread-id>`; its message and run ids
+(`msg-1`, `run-1`, `run-2`) are as it sent them.
+
+| File | POSTs | Ends in |
+|---|---|---|
+| `run-echo.agui.json` | `echo hi` | success |
+| `run-ask.agui.json` | `ask about branches`, then a `resume` answering `main` | interrupt, then success |
+| `run-fail.agui.json` | `fail please` | `RUN_ERROR` `agent_failed` |
+| `run-cancel.agui.json` | `slow work`, cancelled through `POST /api/threads/{id}/cancel` | cancelled |
+| `run-release.agui.json` | `echo ship it` on `coder`, release `staging` in `forwardedProps` | success |
+
+- **Producer:** `orchestrator/crates/e2e/tests/agui_run.rs` (`run_responses_match_docs_api_examples`);
+  `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_run` regenerates them; review the diff.
+- **Consumers:** `tools/agui-conformance` reads them like the others.

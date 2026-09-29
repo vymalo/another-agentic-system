@@ -1,0 +1,126 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "fail please"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "fail please"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "scripted failure",
+        "status": "failed"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "code": "agent_failed",
+      "message": "scripted failure",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_ERROR"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "failed",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "fail please"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "code": "agent_failed",
+      "message": "scripted failure",
+      "metadata": {
+        "vymalo.problem": {
+          "detail": "scripted failure",
+          "title": "Agent failed",
+          "type": "about:blank"
+        }
+      },
+      "type": "RUN_ERROR"
+    },
+    "id": 4
+  }
+]

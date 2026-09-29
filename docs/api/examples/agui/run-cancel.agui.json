@@ -1,0 +1,123 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "canceled",
+        "status": "canceled"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "status": "canceled"
+      },
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "cancelled",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "cancelled"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 4
+  }
+]

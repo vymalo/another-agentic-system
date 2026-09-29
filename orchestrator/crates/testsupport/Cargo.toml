@@ -13,6 +13,7 @@ orch-core.workspace = true
 orch-ports.workspace = true
 orch-app.workspace = true
 orch-api.workspace = true
+orch-surface-agui.workspace = true
 orch-surface-chat-api.workspace = true
 a2a-lf.workspace = true
 a2a-server-lf.workspace = true

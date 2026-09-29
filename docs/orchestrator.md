@@ -31,7 +31,7 @@ protocol:
 |---|---|---|---|
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
 | MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `answer` | Calls tools: GitHub, docs, search, … | **Planned** |
-| Chat | The web posts user messages | Appends messages and cards to the thread | The chat API is **built** (`orch-surface-chat-api`, deprecated); AG-UI wire types and projection **built**, its HTTP surface **planned** |
+| Chat | The web posts user messages | Appends messages and cards to the thread | The chat API is **built** (`orch-surface-chat-api`, deprecated); AG-UI wire types, projection and run route **built** (`orch-surface-agui`), its connect stream and capabilities **planned** |
 | Webhooks | GitHub, CI, Slack events | Slack posts, outgoing webhooks | **Planned** |
 | Timers | Scheduled events (timeouts, reminders, cron) | Schedules new timers | **Planned** |
 
@@ -39,8 +39,8 @@ The chat row's user-facing protocol is **AG-UI 1.0**, a pure projection of the e
 small REST resource API beside it ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
 binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, the legacy chat API, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
-(`ORCH_SURFACES`). **Built:** the mechanism and the `chat-api` surface (the default and the only
-name the binary accepts today). **Planned:** `agui` and `a2a`.
+(`ORCH_SURFACES`). **Built:** the mechanism, the `agui` surface (the run route) and the `chat-api`
+surface, both mounted by default. **Planned:** the connect stream and capabilities of `agui`, and `a2a`.
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
@@ -78,14 +78,14 @@ flowchart TB
   end
   subgraph G_SURF["Interaction surfaces: mounted by ORCH_SURFACES"]
     chat["<b>orch-surface-chat-api</b><br/>legacy createThread, postMessage,<br/>listEvents, streamEvents"]
-    surfagui["<b>orch-surface-agui</b><br/>planned: run, connect, capabilities"]:::planned
+    surfagui["<b>orch-surface-agui</b><br/>run route: POST /agui/agents/{agentId}"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-chat-api (default)<br/>planned: surface-agui"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-chat-api (default)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -109,13 +109,14 @@ flowchart TB
   bin --> pg
   bin --> a2a
   bin -. "feature surface-chat-api" .-> chat
-  bin -. "feature surface-agui, planned" .-> surfagui
-  surfagui -.-> api
-  surfagui -.-> app
-  surfagui -.-> proj
+  bin -. "feature surface-agui" .-> surfagui
+  surfagui --> api
+  surfagui --> app
+  surfagui --> proj
   ts --> api
   ts --> app
   ts --> chat
+  ts --> surfagui
   e2e -.-> ts
   e2e -.-> pg
   e2e -.-> a2a
@@ -160,7 +161,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-chat-api` (`crates/surface-chat-api`) | Legacy interaction routes; deprecated | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
 | `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate` | **Built** |
-| `orch-surface-agui` | Run, connect and capabilities routes over the projection | **Planned** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
+| `orch-surface-agui` (`crates/surface-agui`) | The run route over the projection: `POST /agui/agents/{agentId}` | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)); the connect and capabilities routes are **planned** |
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | MCP client and server, webhook, timer, GitHub and Slack adapters | The other rows of the table above | **Planned** |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
@@ -170,6 +171,7 @@ Rules the graph enforces, each checkable in the manifests:
 
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
+| `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI run route |
 | `orchestrator` | `surface-chat-api` | yes | Compiles in `orch-surface-chat-api`; it decides what *can* be mounted, `ORCH_SURFACES` what *is* |
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
@@ -587,8 +589,10 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
   `A2A-Extensions` header plus namespaced message metadata (ADR 0008).
 - **Idempotency. Built, and different from the design.** Redeliveries are absorbed by the
   per-thread `events.idempotency_key` (unique index) and, towards the agent, by the A2A `messageId`,
-  which is the outbox row id. The inbox table with `UNIQUE (source, idempotency_key)` is *planned*
-  with webhooks.
+  which is the outbox row id. The AG-UI run route keys the event it writes
+  `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with no message id of its own), so a
+  retried POST is a no-op and attaches to the run instead. The inbox table with
+  `UNIQUE (source, idempotency_key)` is *planned* with webhooks.
 - **Optimistic concurrency on threads. Built.** `threads.version`; `ThreadStore::commit` takes the
   expected version, and `App::apply` re-reads and retries a lost race up to `max_commit_attempts`
   (8), then answers 503 (`Conflict`).

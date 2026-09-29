@@ -17,9 +17,9 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise. |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,chat-api` (the AG-UI run route beside the legacy chat API the web still uses). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
-| `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI and the API. |
+| `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`) and the AG-UI run route (`/agui/*`). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
@@ -54,8 +54,8 @@ sequenceDiagram
 
 ### The edge is not oauth2-proxy
 
-`edge` puts the chat UI and the chat API on one origin, as the production ingress does, and sets
-`X-Auth-Request-Email: dev@example.com` on every API request, replacing whatever the client sent.
+`edge` puts the chat UI, the chat API and the AG-UI route on one origin, as the production ingress does, and sets
+`X-Auth-Request-Email: dev@example.com` on every API and AG-UI request, replacing whatever the client sent.
 It authenticates nobody. It exists so the UI works locally without an identity provider; it must
 never be exposed beyond `127.0.0.1` (the compose file binds it there) and never used in production,
 where oauth2-proxy authenticates the user and the orchestrator trusts the header only because the
