@@ -233,6 +233,8 @@ impl<P: Ports> App<P> {
             &Input::UserMessage {
                 user: user.clone(),
                 text: req.text.clone(),
+                message_id: None,
+                run_id: None,
             },
         )?;
         let title = req
@@ -300,6 +302,8 @@ impl<P: Ports> App<P> {
                 Input::UserMessage {
                     user: user.clone(),
                     text,
+                    message_id: None,
+                    run_id: None,
                 },
                 None,
                 None,

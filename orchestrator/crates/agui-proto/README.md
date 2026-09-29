@@ -2,7 +2,7 @@
 
 The AG-UI 1.0 wire protocol as Rust types, and nothing else: no orchestrator
 crate, no agent host, no AG-UI SDK. It is the vocabulary that the AG-UI
-projection of the event log (`orch-surface-agui`, next slice) speaks, kept
+projection of the event log (`orch-agui-projection`, and `orch-surface-agui` after it) speaks, kept
 apart so it can be checked against the protocol's own schema, and published or
 moved later. See [ADR 0004](../../../docs/decisions/0004-closed-enums-over-dyn-registry.md)
 (protocols are closed enums) and

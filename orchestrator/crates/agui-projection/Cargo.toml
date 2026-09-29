@@ -1,0 +1,24 @@
+[package]
+name = "orch-agui-projection"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The pure AG-UI projection of the event log: a fold from orchestrator events to AG-UI frames, and the translation of a RunAgentInput to core inputs. No async, no I/O."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-agui-proto.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orch-agui-proto = { workspace = true, features = ["testkit"] }
+jiff.workspace = true
+proptest.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

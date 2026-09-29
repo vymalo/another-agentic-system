@@ -21,7 +21,7 @@ protocols are closed enums). The JSON shapes match
 |---|---|
 | `transition(&ThreadState, &Input) -> Result<(ThreadState, Vec<Command>), TransitionError>` | the pure decision function |
 | `ThreadState` | `Queued`, `Working`, `Blocked`, `Done`, `Failed`, `Cancelled` |
-| `Input` | `UserMessage`, `Cancel`, `Agent { agent, revision, update }`, `DeliveryFailed { reason, retryable }`, `CancelledBeforeStart` |
+| `Input` | `UserMessage { user, text, message_id?, run_id? }` (the ids a surface such as AG-UI names are recorded in the log), `Cancel`, `Agent { agent, revision, update }`, `DeliveryFailed { reason, retryable }`, `CancelledBeforeStart` |
 | `Command` | `Append(EventDraft)`, `Delegate { text }`, `RequestCancel` |
 | `Event`, `EventKind`, `EventBody`, `Actor`, `ActorType` and the `*Data` payloads | the append-only event log the chat renders |
 | `AgentUpdate`, `AgentTaskState` | the protocol-neutral update an agent adapter produces |
@@ -35,7 +35,12 @@ use orch_core::{transition, Input, ThreadState, UserId};
 // A follow-up in a blocked thread re-queues it and appends the user's message.
 let (next, commands) = transition(
     &ThreadState::Blocked,
-    &Input::UserMessage { user: UserId::new("me@example.com"), text: "main".into() },
+    &Input::UserMessage {
+        user: UserId::new("me@example.com"),
+        text: "main".into(),
+        message_id: None,
+        run_id: None,
+    },
 )?;
 assert_eq!(next, ThreadState::Queued);
 ```

@@ -22,7 +22,9 @@ fn arb_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
             user: UserId::new("u@x.io"),
-            text
+            text,
+            message_id: None,
+            run_id: None,
         }),
         Just(Input::Cancel {
             user: UserId::new("u@x.io")

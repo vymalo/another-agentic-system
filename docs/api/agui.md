@@ -52,7 +52,7 @@ gets everything.
 | `user_message` | Run open (a follow-up mid-run) | The user triad inside the current run |
 | `agent_message{messageId, text, final:true}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId}` → `CONTENT` → `END` |
 | `agent_message{final:false}` (cumulative partial) | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: open question 14. |
-| `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`; a `STATE_SNAPSHOT` if the thread moved to `working` |
+| `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
 | `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The status activity, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
 | `thread_state{blocked}` | After input or auth required | `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[{id:"int-n", reason:"input_required" \| "auth_required", message:detail, subagentRunId, responseSchema}]}}` |
 | `agent_status{completed}` + `thread_state{done}` | — | Status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}` |
@@ -67,6 +67,24 @@ gets everything.
 | `ui_action{surfaceId, name, context}` (ADR 0013) | — | Open a run if none is open; `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, context}, metadata:{"vymalo.actor"}}` |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
 
+- **When a run closes.** The core appends `thread_state` when the thread *enters* `blocked`,
+  `done`, `failed` or `cancelled`, right after its cause, so a run closes at that `thread_state`
+  event: the cause (`agent_status`, `error`) only prepares it. A delivery `error` and a refused
+  cancel look alike in the log; the projection lets the `thread_state` that follows an `error`
+  (or not) decide, and a refused cancel leaves the run open. An event that arrives when **no run
+  is open** (the thread is blocked or finished) opens a producer-initiated run and closes it in
+  the same step, by the state the thread stands in: blocked on a question, `RUN_FINISHED`
+  interrupt (the pending interrupt is raised again under its own id); blocked or finished by an
+  error, `RUN_ERROR`; `done`, success; `cancelled`, cancelled. A wait repeated while blocked
+  (`input_required` with a new detail) is such a run, and mints a new interrupt. The invariant
+  between transactions: a run is open exactly when the thread is `queued` or `working`.
+- **Invocations.** A run closes its open invocation first: `SUBAGENT_FINISHED{}` on success,
+  `{result:{status:"canceled"}}` on cancel, `suspended` on an interrupt, `SUBAGENT_ERROR` on an
+  error. A suspended invocation reappears under its own `subagentRunId` when the thread
+  continues; after an error the next one is new.
+- **Partial agent messages** (open question 14). A text that does not extend what was said
+  closes the open message and starts a new one, `messageId` `<id>~<seq>`. The same final message
+  twice is said once.
 - **Why activities, not `CUSTOM`.** Activity messages are part of the message sequence and of
   `MESSAGES_SNAPSHOT`, so they survive history restore; the spec forbids standard semantics in
   `CUSTOM`. `STEP_*` events are not used.
@@ -231,29 +249,33 @@ as sent by the agent (ADR 0013).
 
 ## Worked example
 
-`ask.events.json` for a viewer (the golden `docs/api/examples/agui/ask.agui.json` is generated from
-it in a later slice):
+`ask.events.json` for a viewer. The golden
+[`examples/agui/ask.agui.json`](examples/agui/ask.agui.json) is generated from it by
+`orch-agui-projection`, and a test pins this listing to that projection (frame types, ids, resume
+points and the members shown; the rest, such as the `vymalo.actor` metadata, is in the file):
 
 ```text
 RUN_STARTED          {threadId, runId:"run-1", protocolVersion:"1.0"}
-STATE_SNAPSHOT       {snapshot:{thread:{state:"queued", target:{agentId:"plain"}}}}
+STATE_SNAPSHOT       {snapshot:{thread:{state:"queued", title, target:{agentId:"plain"}}}}
 TEXT_MESSAGE_START   {messageId:"evt-1", role:"user", metadata:{"vymalo.actor":{type:"user", name:"alice@example.com"}}}
 TEXT_MESSAGE_CONTENT {messageId:"evt-1", delta:"ask about branches"}
 TEXT_MESSAGE_END     {messageId:"evt-1"}                                                      id: 1
 SUBAGENT_STARTED     {subagentRunId:"sub-2", name:"plain"}
-ACTIVITY_SNAPSHOT    {messageId:"evt-2", activityType:"vymalo.status", content:{status:"working"}, subagentRunId:"sub-2"}   id: 2
-ACTIVITY_SNAPSHOT    {messageId:"evt-3", activityType:"vymalo.status", content:{status:"input_required", detail:"Which branch?"}}
+ACTIVITY_SNAPSHOT    {messageId:"evt-2", activityType:"vymalo.status", content:{status:"working"}, subagentRunId:"sub-2"}
+STATE_SNAPSHOT       {snapshot:{thread:{state:"working", …}}}                                 id: 2
+ACTIVITY_SNAPSHOT    {messageId:"evt-3", activityType:"vymalo.status", content:{status:"input_required", detail:"Which branch?"}, subagentRunId:"sub-2"}
 SUBAGENT_FINISHED    {subagentRunId:"sub-2", outcome:{type:"suspended", interruptIds:["int-3"]}}  id: 3
-STATE_SNAPSHOT       {snapshot:{thread:{state:"blocked"}}}
-RUN_FINISHED         {runId:"run-1", outcome:{type:"interrupt", interrupts:[{id:"int-3", reason:"input_required", message:"Which branch?"}]}}   id: 4
+STATE_SNAPSHOT       {snapshot:{thread:{state:"blocked", …}}}
+RUN_FINISHED         {runId:"run-1", outcome:{type:"interrupt", interrupts:[{id:"int-3", reason:"input_required", message:"Which branch?", subagentRunId:"sub-2", responseSchema:{…}}]}}   id: 4
 RUN_STARTED          {threadId, runId:"run-5", protocolVersion:"1.0"}
-STATE_SNAPSHOT       {snapshot:{thread:{state:"queued"}}}
+STATE_SNAPSHOT       {snapshot:{thread:{state:"queued", …}}}
 TEXT_MESSAGE_START/CONTENT/END {messageId:"evt-5", role:"user", delta:"main"}              id: 5
 SUBAGENT_STARTED     {subagentRunId:"sub-2", name:"plain"}          (the same A2A task continues)
-ACTIVITY_SNAPSHOT    {messageId:"evt-6", activityType:"vymalo.status", content:{status:"working"}}         id: 6
-ACTIVITY_SNAPSHOT    {messageId:"evt-7", activityType:"vymalo.artifact", content:{name:"result", text:"answered: main", uri:"https://github.com/acme/demo/pull/1"}}   id: 7
-ACTIVITY_SNAPSHOT    {messageId:"evt-8", activityType:"vymalo.status", content:{status:"completed"}}
+ACTIVITY_SNAPSHOT    {messageId:"evt-6", activityType:"vymalo.status", content:{status:"working"}, subagentRunId:"sub-2"}
+STATE_SNAPSHOT       {snapshot:{thread:{state:"working", …}}}                                 id: 6
+ACTIVITY_SNAPSHOT    {messageId:"evt-7", activityType:"vymalo.artifact", content:{name:"result", text:"answered: main", uri:"https://github.com/acme/demo/pull/1"}, subagentRunId:"sub-2"}   id: 7
+ACTIVITY_SNAPSHOT    {messageId:"evt-8", activityType:"vymalo.status", content:{status:"completed"}, subagentRunId:"sub-2"}
 SUBAGENT_FINISHED    {subagentRunId:"sub-2"}                                                   id: 8
-STATE_SNAPSHOT       {snapshot:{thread:{state:"done"}}}
+STATE_SNAPSHOT       {snapshot:{thread:{state:"done", …}}}
 RUN_FINISHED         {runId:"run-5", outcome:{type:"success"}}                                 id: 9
 ```

@@ -1881,6 +1881,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-agui-projection"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "orch-agui-proto",
+ "orch-core",
+ "proptest",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "orch-agui-proto"
 version = "0.1.0"
 dependencies = [

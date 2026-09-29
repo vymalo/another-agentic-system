@@ -19,6 +19,8 @@ fn um(text: &str) -> Input {
     Input::UserMessage {
         user: user(),
         text: text.into(),
+        message_id: None,
+        run_id: None,
     }
 }
 fn status(state: AgentTaskState, detail: Option<&str>) -> Input {
@@ -66,6 +68,32 @@ fn row1_user_message_in_queued_or_working() {
             }
             other => panic!("unexpected {other:?}"),
         }
+        assert_eq!(cmds[1], Command::Delegate { text: "hi".into() });
+    }
+}
+
+#[test]
+fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
+    let input = Input::UserMessage {
+        user: user(),
+        text: "hi".into(),
+        message_id: Some("m-1".into()),
+        run_id: Some("r-1".into()),
+    };
+    for s in [Queued, Working, Blocked] {
+        let (_, cmds) = run(s, &input);
+        match &cmds[0] {
+            Command::Append(d) => assert_eq!(
+                d.body,
+                EventBody::UserMessage(UserMessageData {
+                    text: "hi".into(),
+                    message_id: Some("m-1".into()),
+                    run_id: Some("r-1".into()),
+                })
+            ),
+            other => panic!("unexpected {other:?}"),
+        }
+        // The delegation carries the text only: the agent never sees surface ids.
         assert_eq!(cmds[1], Command::Delegate { text: "hi".into() });
     }
 }

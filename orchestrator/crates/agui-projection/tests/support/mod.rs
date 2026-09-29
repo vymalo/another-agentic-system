@@ -1,0 +1,118 @@
+//! Shared test helpers: a model of the reference consumer's rules, legal log generation.
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
+pub mod log;
+pub mod verify;
+
+use orch_agui_projection::{Audience, Frame, Projector};
+use orch_core::Event;
+
+/// Projects every event for a viewer, keeping the frames of each event apart.
+pub fn project_each(events: &[Event]) -> Vec<Vec<Frame>> {
+    let mut projector = Projector::new(log::meta());
+    events
+        .iter()
+        .map(|e| projector.apply(e, Audience::Viewer))
+        .collect()
+}
+
+pub fn flatten(frames: &[Vec<Frame>]) -> Vec<Frame> {
+    frames.iter().flatten().cloned().collect()
+}
+
+/// A one-line rendering of a frame for readable assertions: the type, the ids that name it, the
+/// attribution, and (for the frames that carry one) the payload.
+pub fn line(frame: &Frame) -> String {
+    use orch_agui_proto::Event as E;
+    let id = frame
+        .resume_id
+        .map(|n| format!("  id:{n}"))
+        .unwrap_or_default();
+    let subagent = |s: Option<&orch_agui_proto::SubagentRunId>| {
+        s.map(|s| format!(" @{s}")).unwrap_or_default()
+    };
+    let body = match &frame.event {
+        E::RunStarted(e) => format!("RUN_STARTED {}", e.run_id),
+        E::RunFinished(e) => {
+            use orch_agui_proto::RunFinishedOutcome as O;
+            let outcome = match &e.outcome {
+                None | Some(O::Success { .. }) => "success".to_owned(),
+                Some(O::Cancelled) => "cancelled".to_owned(),
+                Some(O::Interrupt { interrupts }) => format!(
+                    "interrupt[{}]",
+                    interrupts
+                        .iter()
+                        .map(|i| format!(
+                            "{}:{}{}",
+                            i.id,
+                            i.reason,
+                            subagent(i.subagent_run_id.as_ref())
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            };
+            format!("RUN_FINISHED {} {outcome}", e.run_id)
+        }
+        E::RunError(e) => format!(
+            "RUN_ERROR {} {:?}",
+            e.code.as_deref().unwrap_or("-"),
+            e.message
+        ),
+        E::StateSnapshot(e) => format!(
+            "STATE_SNAPSHOT {}",
+            e.snapshot["thread"]["state"].as_str().unwrap_or("?")
+        ),
+        E::TextMessageStart(e) => format!(
+            "TEXT_MESSAGE_START {} {}{}",
+            e.message_id,
+            serde_json::to_string(&e.role).unwrap().trim_matches('"'),
+            subagent(e.subagent_run_id.as_ref())
+        ),
+        E::TextMessageContent(e) => format!("TEXT_MESSAGE_CONTENT {} {:?}", e.message_id, e.delta),
+        E::TextMessageEnd(e) => format!("TEXT_MESSAGE_END {}", e.message_id),
+        E::ActivitySnapshot(e) => format!(
+            "ACTIVITY_SNAPSHOT {} {} {}{}",
+            e.message_id,
+            e.activity_type,
+            serde_json::to_string(&e.content).unwrap(),
+            subagent(e.subagent_run_id.as_ref())
+        ),
+        E::SubagentStarted(e) => format!("SUBAGENT_STARTED {} {}", e.subagent_run_id, e.name),
+        E::SubagentFinished(e) => {
+            use orch_agui_proto::SubagentFinishedOutcome as O;
+            let outcome = match &e.outcome {
+                None | Some(O::Success) => "success".to_owned(),
+                Some(O::Suspended { interrupt_ids }) => format!(
+                    "suspended[{}]",
+                    interrupt_ids
+                        .iter()
+                        .flatten()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            };
+            format!(
+                "SUBAGENT_FINISHED {} {outcome}{}",
+                e.subagent_run_id,
+                e.result
+                    .as_ref()
+                    .map(|r| format!(" result={r}"))
+                    .unwrap_or_default()
+            )
+        }
+        E::SubagentError(e) => format!(
+            "SUBAGENT_ERROR {} {} {:?}",
+            e.subagent_run_id,
+            e.code.as_deref().unwrap_or("-"),
+            e.message
+        ),
+        other => other.event_type().as_str().to_owned(),
+    };
+    format!("{body}{id}")
+}
+
+pub fn lines(frames: &[Frame]) -> Vec<String> {
+    frames.iter().map(line).collect()
+}
