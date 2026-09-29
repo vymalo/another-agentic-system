@@ -267,6 +267,7 @@ async fn post_message_validates_and_rejects_finished_threads() {
         },
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -300,6 +301,7 @@ async fn apply_is_idempotent_per_key_and_persists_the_binding() {
             status(AgentTaskState::Working),
             Some("k".into()),
             Some(binding()),
+            None,
         )
         .await
         .unwrap();
@@ -310,6 +312,7 @@ async fn apply_is_idempotent_per_key_and_persists_the_binding() {
             status(AgentTaskState::Working),
             Some("k".into()),
             Some(binding()),
+            None,
         )
         .await
         .unwrap();
@@ -317,12 +320,14 @@ async fn apply_is_idempotent_per_key_and_persists_the_binding() {
     match replay {
         ApplyOutcome::Applied { events, .. } => assert!(events.is_empty()),
         ApplyOutcome::Duplicate => {}
+        ApplyOutcome::Fenced => panic!("no lease was given"),
     }
     let done = app
         .apply(
             t.id,
             status(AgentTaskState::Completed),
             Some("c".into()),
+            None,
             None,
         )
         .await
@@ -338,6 +343,7 @@ async fn apply_is_idempotent_per_key_and_persists_the_binding() {
             t.id,
             status(AgentTaskState::Completed),
             Some("c".into()),
+            None,
             None,
         )
         .await;
@@ -430,6 +436,7 @@ async fn the_event_stream_survives_a_missing_wakeup_via_the_safety_poll() {
                 outbox: vec![],
                 binding: None,
                 now: jiff::Timestamp::now(),
+                lease: None,
             },
         )
         .await

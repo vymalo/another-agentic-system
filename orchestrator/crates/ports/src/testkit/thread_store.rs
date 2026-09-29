@@ -11,7 +11,7 @@ use orch_core::{
 use uuid::Uuid;
 
 use crate::{
-    BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal,
+    BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal,
     OutboxId, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, StoreError, ThreadStore,
 };
 
@@ -98,7 +98,23 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         outbox,
         binding: None,
         now: t0(),
+        lease: None,
     }
+}
+
+/// The claim of outbox row `n` that `owner` got at its `attempt`-th claim.
+fn lease(n: u128, owner: &str, attempt: u32) -> Lease {
+    Lease {
+        id: outbox_id(n),
+        owner: owner.to_owned(),
+        attempt,
+    }
+}
+
+/// `c` made under `lease`.
+fn under(mut c: Commit, lease: Lease) -> Commit {
+    c.lease = Some(lease);
+    c
 }
 
 /// Creates a thread with one user event and one delegate row (outbox id = thread number).
@@ -124,6 +140,7 @@ fn applied(outcome: CommitOutcome) -> (orch_core::ThreadRecord, Vec<orch_core::E
     match outcome {
         CommitOutcome::Applied { thread, events } => (thread, events),
         CommitOutcome::Duplicate => panic!("unexpected Duplicate"),
+        CommitOutcome::Fenced => panic!("unexpected Fenced"),
     }
 }
 
@@ -501,6 +518,7 @@ pub async fn concurrent_writers_keep_seq_contiguous<S: ThreadStore>(store: S) {
                 match store.commit(thread_id(1), t.version, c).await {
                     Ok(CommitOutcome::Applied { .. }) => return,
                     Ok(CommitOutcome::Duplicate) => panic!("distinct keys must not collide"),
+                    Ok(CommitOutcome::Fenced) => panic!("no lease was given"),
                     Err(e) if e.class() == ErrorClass::Conflict => tokio::task::yield_now().await,
                     Err(e) => panic!("{e}"),
                 }
@@ -643,29 +661,205 @@ pub async fn lease_expiry_reclaim<S: ThreadStore>(store: S) {
     assert_eq!(again[0].attempts, 2);
     assert_eq!(again[0].lease_owner.as_deref(), Some("b"));
     // The old owner lost the row.
-    assert!(!store.renew_lease(outbox_id(1), "a", at(120)).await.unwrap());
+    assert!(!store.renew_lease(&lease(1, "a", 1), at(120)).await.unwrap());
     assert!(
         !store
-            .mark_sent(outbox_id(1), "a", BindingUpdate::default(), at(32))
+            .mark_sent(&lease(1, "a", 1), BindingUpdate::default(), at(32))
             .await
             .unwrap()
     );
     assert!(
         !store
-            .retry_outbox(outbox_id(1), "a", at(40), "x".into())
+            .retry_outbox(&lease(1, "a", 1), at(40), "x".into())
             .await
             .unwrap()
     );
     assert!(
         !store
-            .complete_outbox(outbox_id(1), "a", OutboxFinal::Delivered, at(32))
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, at(32))
             .await
             .unwrap()
     );
+    assert_fenced(&store, 1, lease(1, "a", 1)).await;
     // The new owner can renew, which keeps others out.
-    assert!(store.renew_lease(outbox_id(1), "b", at(100)).await.unwrap());
+    assert!(store.renew_lease(&lease(1, "b", 2), at(100)).await.unwrap());
     assert!(claim(&store, "c", at(90)).await.is_empty());
     assert_eq!(claim(&store, "c", at(101)).await.len(), 1);
+}
+
+/// Asserts that a commit under `stale` is refused and writes nothing to thread `n`.
+async fn assert_fenced<S: ThreadStore>(store: &S, n: u128, stale: Lease) {
+    let before = store.get_thread(None, thread_id(n)).await.unwrap().unwrap();
+    let events = store.list_events(thread_id(n), 0, 100).await.unwrap();
+    let binding = store.get_binding(thread_id(n)).await.unwrap().unwrap();
+    let open = store.list_open_outbox(thread_id(n)).await.unwrap();
+    let mut late = under(
+        commit(
+            ThreadState::Done,
+            vec![user_event("late", Some("late-key"))],
+            vec![delegate(900 + u128::from(stale.attempt))],
+        ),
+        stale,
+    );
+    late.binding = Some(BindingUpdate {
+        task_id: Some("late-task".into()),
+        ..BindingUpdate::default()
+    });
+    assert_eq!(
+        store
+            .commit(thread_id(n), before.version, late)
+            .await
+            .unwrap(),
+        CommitOutcome::Fenced
+    );
+    assert_eq!(
+        store.get_thread(None, thread_id(n)).await.unwrap().unwrap(),
+        before,
+        "a fenced commit changes nothing"
+    );
+    assert_eq!(
+        store.list_events(thread_id(n), 0, 100).await.unwrap(),
+        events
+    );
+    assert_eq!(
+        store.get_binding(thread_id(n)).await.unwrap().unwrap(),
+        binding
+    );
+    assert_eq!(store.list_open_outbox(thread_id(n)).await.unwrap(), open);
+}
+
+pub async fn stale_attempt_is_fenced<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    // "a" claims, the lease lapses, and the same name claims again: only the attempt differs.
+    let first = claim(&store, "a", t0()).await;
+    assert_eq!(first[0].lease(), Some(lease(1, "a", 1)));
+    let second = claim(&store, "a", at(31)).await;
+    assert_eq!(second[0].lease(), Some(lease(1, "a", 2)));
+    let stale = lease(1, "a", 1);
+    assert!(!store.renew_lease(&stale, at(200)).await.unwrap());
+    assert!(
+        !store
+            .mark_sent(&stale, BindingUpdate::default(), at(32))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .retry_outbox(&stale, at(40), "x".into())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .complete_outbox(&stale, OutboxFinal::Delivered, at(32))
+            .await
+            .unwrap()
+    );
+    assert_fenced(&store, 1, stale.clone()).await;
+    // The row is still the second claim's, untouched by the stale calls.
+    let row = store.get_outbox(outbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, OutboxStatus::Inflight);
+    assert_eq!(row.attempts, 2);
+    assert_eq!(row.lease_until, Some(at(61)));
+    assert!(row.sent_at.is_none() && row.last_error.is_none());
+    // A lease is only good for the thread its row belongs to.
+    assert_fenced(&store, 2, lease(1, "a", 2)).await;
+    // The current claim works.
+    let current = lease(1, "a", 2);
+    assert!(store.renew_lease(&current, at(100)).await.unwrap());
+    let c = under(
+        commit(
+            ThreadState::Working,
+            vec![user_event("now", Some("now-key"))],
+            vec![],
+        ),
+        current,
+    );
+    let (record, events) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!((record.version, events.len()), (2, 1));
+}
+
+pub async fn commit_after_another_owner_reclaims_is_fenced<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    assert_eq!(claim(&store, "a", t0()).await.len(), 1);
+    assert_eq!(claim(&store, "b", at(31)).await.len(), 1);
+    assert_fenced(&store, 1, lease(1, "a", 1)).await;
+    // The new owner commits, and stays the owner afterwards.
+    let c = under(
+        commit(ThreadState::Working, vec![user_event("b", None)], vec![]),
+        lease(1, "b", 2),
+    );
+    applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    let row = store.get_outbox(outbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.lease(), Some(lease(1, "b", 2)));
+    // An owner name is not enough: "b" at the wrong attempt is fenced too.
+    assert_fenced(&store, 1, lease(1, "b", 1)).await;
+}
+
+pub async fn commit_after_complete_is_fenced<S: ThreadStore>(store: S) {
+    // Finished: delivered, dead or skipped rows hold no claim.
+    for (n, outcome) in [
+        (1, OutboxFinal::Delivered),
+        (
+            2,
+            OutboxFinal::Dead {
+                error: "gave up".into(),
+            },
+        ),
+        (3, OutboxFinal::Skipped),
+    ] {
+        seed(&store, &alice(), n).await;
+        let held = claim(&store, "a", at(0)).await;
+        assert_eq!(held.len(), 1, "row {n}");
+        let l = held[0].lease().unwrap();
+        assert!(store.complete_outbox(&l, outcome, t0()).await.unwrap());
+        assert_fenced(&store, n, l).await;
+    }
+    // Sent back to pending for a retry: the claim is over as well.
+    seed(&store, &alice(), 4).await;
+    let held = claim(&store, "a", t0()).await;
+    let l = held[0].lease().unwrap();
+    assert!(
+        store
+            .retry_outbox(&l, at(1000), "later".into())
+            .await
+            .unwrap()
+    );
+    assert_fenced(&store, 4, l).await;
+    // Skipped by a cancel while nobody renewed the claim.
+    seed(&store, &alice(), 5).await;
+    let held = claim(&store, "a", t0()).await;
+    let l = held[0].lease().unwrap();
+    assert_eq!(
+        store
+            .skip_unsent_delegates(thread_id(5), at(60))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_fenced(&store, 5, l).await;
+}
+
+pub async fn expired_unclaimed_lease_still_commits<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let held = claim(&store, "a", t0()).await;
+    let l = held[0].lease().unwrap();
+    // The lease lapsed at 30 s, but nobody took the row over: the claim is still the current
+    // one, and its work is not thrown away.
+    let mut c = under(
+        commit(ThreadState::Working, vec![user_event("late", None)], vec![]),
+        l.clone(),
+    );
+    c.now = at(10_000);
+    let (record, events) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!((record.version, events.len()), (2, 1));
+    assert!(
+        store
+            .mark_sent(&l, BindingUpdate::default(), at(10_001))
+            .await
+            .unwrap()
+    );
 }
 
 pub async fn delegate_ordering_per_thread<S: ThreadStore>(store: S) {
@@ -707,7 +901,7 @@ pub async fn delegate_ordering_per_thread<S: ThreadStore>(store: S) {
     // Completing the first delegate releases the second.
     assert!(
         store
-            .complete_outbox(outbox_id(1), "a", OutboxFinal::Delivered, t0())
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
             .await
             .unwrap()
     );
@@ -723,13 +917,13 @@ pub async fn retry_not_claimable_before_due<S: ThreadStore>(store: S) {
     claim(&store, "a", t0()).await;
     assert!(
         !store
-            .retry_outbox(outbox_id(1), "wrong", at(10), "e".into())
+            .retry_outbox(&lease(1, "wrong", 1), at(10), "e".into())
             .await
             .unwrap()
     );
     assert!(
         store
-            .retry_outbox(outbox_id(1), "a", at(10), "boom".into())
+            .retry_outbox(&lease(1, "a", 1), at(10), "boom".into())
             .await
             .unwrap()
     );
@@ -751,21 +945,20 @@ pub async fn complete_outcomes<S: ThreadStore>(store: S) {
     claim(&store, "a", t0()).await;
     assert!(
         !store
-            .complete_outbox(outbox_id(1), "other", OutboxFinal::Delivered, t0())
+            .complete_outbox(&lease(1, "other", 1), OutboxFinal::Delivered, t0())
             .await
             .unwrap()
     );
     assert!(
         store
-            .complete_outbox(outbox_id(1), "a", OutboxFinal::Delivered, t0())
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
             .await
             .unwrap()
     );
     assert!(
         store
             .complete_outbox(
-                outbox_id(2),
-                "a",
+                &lease(2, "a", 1),
                 OutboxFinal::Dead {
                     error: "gave up".into()
                 },
@@ -776,13 +969,13 @@ pub async fn complete_outcomes<S: ThreadStore>(store: S) {
     );
     assert!(
         store
-            .complete_outbox(outbox_id(3), "a", OutboxFinal::Skipped, t0())
+            .complete_outbox(&lease(3, "a", 1), OutboxFinal::Skipped, t0())
             .await
             .unwrap()
     );
     assert!(
         !store
-            .complete_outbox(outbox_id(1), "a", OutboxFinal::Delivered, t0())
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
             .await
             .unwrap(),
         "already final"
@@ -819,7 +1012,7 @@ pub async fn mark_sent_is_atomic<S: ThreadStore>(store: S) {
     };
     assert!(
         !store
-            .mark_sent(outbox_id(1), "other", update.clone(), at(1))
+            .mark_sent(&lease(1, "other", 1), update.clone(), at(1))
             .await
             .unwrap()
     );
@@ -843,7 +1036,7 @@ pub async fn mark_sent_is_atomic<S: ThreadStore>(store: S) {
     );
     assert!(
         store
-            .mark_sent(outbox_id(1), "a", update, at(1))
+            .mark_sent(&lease(1, "a", 1), update, at(1))
             .await
             .unwrap()
     );
@@ -932,7 +1125,7 @@ pub async fn skip_unsent_delegates<S: ThreadStore>(store: S) {
     assert!(rows.iter().any(|r| r.id == outbox_id(3)));
     assert!(
         store
-            .mark_sent(outbox_id(3), "b", BindingUpdate::default(), at(100))
+            .mark_sent(&lease(3, "b", 1), BindingUpdate::default(), at(100))
             .await
             .unwrap()
     );
@@ -1016,7 +1209,7 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
     assert_eq!(second[0].id, outbox_id(2));
     assert!(
         store
-            .retry_outbox(outbox_id(2), "a", at(1000), "later".into())
+            .retry_outbox(&lease(2, "a", 1), at(1000), "later".into())
             .await
             .unwrap()
     );
@@ -1052,10 +1245,10 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
         store.outbox_stats(at(37)).await.unwrap(),
         stats(0, 1, 2, None)
     );
-    for id in [outbox_id(1), outbox_id(3)] {
+    for n in [1, 3] {
         assert!(
             store
-                .complete_outbox(id, "b", OutboxFinal::Delivered, at(37))
+                .complete_outbox(&lease(n, "b", 2), OutboxFinal::Delivered, at(37))
                 .await
                 .unwrap()
         );
@@ -1073,7 +1266,7 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
     assert_eq!(claim(&store, "b", at(1000)).await.len(), 1);
     assert!(
         store
-            .complete_outbox(outbox_id(2), "b", OutboxFinal::Delivered, at(1001))
+            .complete_outbox(&lease(2, "b", 2), OutboxFinal::Delivered, at(1001))
             .await
             .unwrap()
     );

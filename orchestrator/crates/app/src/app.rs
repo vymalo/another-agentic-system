@@ -10,7 +10,7 @@ use orch_core::{
     ThreadState, Timestamp, UserId, report, transition,
 };
 use orch_ports::{
-    AgentClient, AgentError, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, NewEvent,
+    AgentClient, AgentError, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, Lease, NewEvent,
     NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats, Ports, StoreError, ThreadStore, Topic,
     Wakeup,
 };
@@ -66,6 +66,10 @@ pub enum ApplyOutcome {
     },
     /// An idempotency key was already recorded: a replay, nothing written.
     Duplicate,
+    /// The [`Lease`] the input was applied under is no longer the current claim of its outbox
+    /// row: another worker owns the delegation now, and nothing was written. The caller stops
+    /// working on the row.
+    Fenced,
 }
 
 /// The thread service: validation, the transition + commit loop, and live event streams.
@@ -317,6 +321,7 @@ impl<P: Ports> App<P> {
                 },
                 None,
                 None,
+                None,
             )
             .await?;
         match outcome {
@@ -327,13 +332,16 @@ impl<P: Ports> App<P> {
             ApplyOutcome::Duplicate => Err(AppError::internal(
                 "a message without an idempotency key was reported as a duplicate",
             )),
+            ApplyOutcome::Fenced => Err(AppError::internal(
+                "a commit without a lease was reported as fenced",
+            )),
         }
     }
 
     /// Requests cancellation of the thread's running work. A finished thread is a no-op.
     pub async fn cancel(&self, user: &UserId, id: ThreadId) -> Result<(), AppError> {
         self.get_thread(user, id).await?;
-        self.apply(id, Input::Cancel { user: user.clone() }, None, None)
+        self.apply(id, Input::Cancel { user: user.clone() }, None, None, None)
             .await?;
         Ok(())
     }
@@ -384,18 +392,22 @@ impl<P: Ports> App<P> {
             outbox,
             binding,
             now,
+            lease: None,
         }
     }
 
     /// Applies `input` to the thread: `transition`, then one store commit, retried on version
     /// conflicts. `key` makes a replayed input idempotent; `binding` is persisted in the same
-    /// transaction. Used by the API and by the dispatcher.
+    /// transaction. Used by the API (`lease: None`) and by the dispatcher, which passes the
+    /// claim of the outbox row it works for: once another worker has claimed the row, the
+    /// commit is refused and the result is [`ApplyOutcome::Fenced`] (not retried).
     pub async fn apply(
         &self,
         thread: ThreadId,
         input: Input,
         key: Option<String>,
         binding: Option<BindingUpdate>,
+        lease: Option<&Lease>,
     ) -> Result<ApplyOutcome, AppError> {
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
@@ -406,7 +418,7 @@ impl<P: Ports> App<P> {
                 .ok_or(AppError::NotFound)?;
             let (next, cmds) = transition(&record.state, &input)?;
             let now = self.ports.clock().now();
-            let commit = self.build_commit(
+            let mut commit = self.build_commit(
                 &record.target,
                 next,
                 cmds,
@@ -414,6 +426,7 @@ impl<P: Ports> App<P> {
                 binding.clone(),
                 now,
             );
+            commit.lease = lease.cloned();
             if commit.events.is_empty()
                 && commit.outbox.is_empty()
                 && commit.binding.is_none()
@@ -441,6 +454,7 @@ impl<P: Ports> App<P> {
                     return Ok(ApplyOutcome::Applied { thread: t, events });
                 }
                 Ok(CommitOutcome::Duplicate) => return Ok(ApplyOutcome::Duplicate),
+                Ok(CommitOutcome::Fenced) => return Ok(ApplyOutcome::Fenced),
                 Err(StoreError::VersionConflict) => {}
                 Err(e) => return Err(e.into()),
             }
@@ -448,12 +462,14 @@ impl<P: Ports> App<P> {
         Err(AppError::Contended)
     }
 
-    /// Persists binding fields (task id, state, revision) without changing the thread.
+    /// Persists binding fields (task id, state, revision) without changing the thread. `lease`
+    /// as in [`apply`](Self::apply): [`ApplyOutcome::Fenced`] when it is no longer current.
     pub async fn record_binding(
         &self,
         thread: ThreadId,
         binding: BindingUpdate,
-    ) -> Result<(), AppError> {
+        lease: Option<&Lease>,
+    ) -> Result<ApplyOutcome, AppError> {
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
                 .ports
@@ -467,6 +483,7 @@ impl<P: Ports> App<P> {
                 outbox: Vec::new(),
                 binding: Some(binding.clone()),
                 now: self.ports.clock().now(),
+                lease: lease.cloned(),
             };
             match self
                 .ports
@@ -474,7 +491,11 @@ impl<P: Ports> App<P> {
                 .commit(thread, record.version, commit)
                 .await
             {
-                Ok(_) => return Ok(()),
+                Ok(CommitOutcome::Applied { thread, events }) => {
+                    return Ok(ApplyOutcome::Applied { thread, events });
+                }
+                Ok(CommitOutcome::Duplicate) => return Ok(ApplyOutcome::Duplicate),
+                Ok(CommitOutcome::Fenced) => return Ok(ApplyOutcome::Fenced),
                 Err(StoreError::VersionConflict) => {}
                 Err(e) => return Err(e.into()),
             }

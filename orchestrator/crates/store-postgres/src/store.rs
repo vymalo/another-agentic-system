@@ -5,8 +5,8 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{Event, ThreadId, ThreadRecord, UserId};
 use orch_ports::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord,
-    OutboxFinal, OutboxId, OutboxItem, OutboxStats, StoreError, ThreadStore,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,
+    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxStats, StoreError, ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -86,6 +86,11 @@ fn plus(t: Timestamp, d: Duration) -> Timestamp {
         .ok()
         .and_then(|d| t.checked_add(d).ok())
         .unwrap_or(t)
+}
+
+/// `outbox.attempts` is an `integer`; a lease past `i32::MAX` matches no row.
+fn attempt(lease: &Lease) -> i32 {
+    i32::try_from(lease.attempt).unwrap_or(i32::MAX)
 }
 
 type Tx = Transaction<'static, Postgres>;
@@ -350,6 +355,29 @@ impl ThreadStore for PgStore {
             rollback(tx).await;
             return Err(StoreError::NotFound);
         };
+        if let Some(lease) = &commit.lease {
+            // Lock order is thread, then outbox row, then binding; nothing takes a thread lock
+            // while holding an outbox row lock (outbox statements only touch outbox and
+            // binding rows, and change no foreign key), so this cannot deadlock. FOR SHARE
+            // keeps the claim in place until this transaction ends: a claimer's UPDATE waits
+            // (or, with SKIP LOCKED, passes the row by), so the check cannot go stale before
+            // the write below.
+            let held = sqlx::query(
+                "SELECT 1 FROM outbox WHERE id = $1 AND thread_id = $2 AND lease_owner = $3 \
+                 AND attempts = $4 AND status = 'inflight' FOR SHARE",
+            )
+            .bind(lease.id.0)
+            .bind(thread.0)
+            .bind(&lease.owner)
+            .bind(attempt(lease))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            if held.is_none() {
+                rollback(tx).await;
+                return Ok(CommitOutcome::Fenced);
+            }
+        }
         let version: i64 = locked.try_get("version").map_err(store_err)?;
         let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
         if version != expected_version {
@@ -482,18 +510,14 @@ impl ThreadStore for PgStore {
         rows.iter().map(|(_, row)| outbox_from_row(row)).collect()
     }
 
-    async fn renew_lease(
-        &self,
-        id: OutboxId,
-        owner: &str,
-        until: Timestamp,
-    ) -> Result<bool, StoreError> {
+    async fn renew_lease(&self, lease: &Lease, until: Timestamp) -> Result<bool, StoreError> {
         sqlx::query(
-            "UPDATE outbox SET lease_until = $3 \
-             WHERE id = $1 AND lease_owner = $2 AND status = 'inflight'",
+            "UPDATE outbox SET lease_until = $4 \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
         )
-        .bind(id.0)
-        .bind(owner)
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
         .bind(to_db(until))
         .execute(&self.pool)
         .await
@@ -503,18 +527,19 @@ impl ThreadStore for PgStore {
 
     async fn mark_sent(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         binding: BindingUpdate,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         let sent = sqlx::query(
-            "UPDATE outbox SET sent_at = $3, updated_at = $3 \
-             WHERE id = $1 AND lease_owner = $2 AND status = 'inflight' RETURNING thread_id",
+            "UPDATE outbox SET sent_at = $4, updated_at = $4 \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight' \
+             RETURNING thread_id",
         )
-        .bind(id.0)
-        .bind(owner)
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
         .bind(to_db(now))
         .fetch_optional(&mut *tx)
         .await
@@ -531,18 +556,18 @@ impl ThreadStore for PgStore {
 
     async fn retry_outbox(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         next_attempt_at: Timestamp,
         error: String,
     ) -> Result<bool, StoreError> {
         sqlx::query(
-            "UPDATE outbox SET status = 'pending', next_attempt_at = $3, lease_owner = NULL, \
-             lease_until = NULL, last_error = $4, updated_at = clock_timestamp() \
-             WHERE id = $1 AND lease_owner = $2 AND status = 'inflight'",
+            "UPDATE outbox SET status = 'pending', next_attempt_at = $4, lease_owner = NULL, \
+             lease_until = NULL, last_error = $5, updated_at = clock_timestamp() \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
         )
-        .bind(id.0)
-        .bind(owner)
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
         .bind(to_db(next_attempt_at))
         .bind(error)
         .execute(&self.pool)
@@ -553,8 +578,7 @@ impl ThreadStore for PgStore {
 
     async fn complete_outbox(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         outcome: OutboxFinal,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
@@ -564,12 +588,13 @@ impl ThreadStore for PgStore {
             OutboxFinal::Skipped => ("skipped", None),
         };
         let done = sqlx::query(
-            "UPDATE outbox SET status = $3, last_error = COALESCE($4, last_error), \
-             lease_owner = NULL, lease_until = NULL, updated_at = $5 \
-             WHERE id = $1 AND lease_owner = $2 AND status = 'inflight'",
+            "UPDATE outbox SET status = $4, last_error = COALESCE($5, last_error), \
+             lease_owner = NULL, lease_until = NULL, updated_at = $6 \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
         )
-        .bind(id.0)
-        .bind(owner)
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
         .bind(status)
         .bind(error)
         .bind(to_db(now))

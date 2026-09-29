@@ -14,8 +14,8 @@ use orch_core::{
     UserMessageData,
 };
 use orch_ports::{
-    Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxId, OutboxPayload,
-    StoreError, ThreadStore, Topic, Wakeup,
+    BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxId,
+    OutboxPayload, StoreError, ThreadStore, Topic, Wakeup,
 };
 use orch_store_postgres::{PgStore, PgWakeup};
 use support::TestDb;
@@ -59,6 +59,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         outbox,
         binding: None,
         now: t0(),
+        lease: None,
     }
 }
 
@@ -149,6 +150,7 @@ async fn sixteen_concurrent_appenders_get_contiguous_seq() {
                             break;
                         }
                         Ok(CommitOutcome::Duplicate) => panic!("distinct keys collided"),
+                        Ok(CommitOutcome::Fenced) => panic!("no lease was given"),
                         Err(StoreError::VersionConflict) => tokio::task::yield_now().await,
                         Err(e) => panic!("{e}"),
                     }
@@ -483,4 +485,75 @@ async fn an_unreachable_database_is_unavailable_without_a_database() {
     let err = store.ping().await.unwrap_err();
     assert_eq!(err.class(), ErrorClass::Transient, "{err:?}");
     assert!(std::error::Error::source(&err).is_some());
+}
+
+/// The fence takes a share lock on the outbox row after the thread lock. Racing it against a
+/// re-claim and a `mark_sent` (which lock the outbox row first) must neither deadlock nor
+/// leave a half-written commit: every round ends with exactly the events of the commits that
+/// were `Applied`.
+#[tokio::test]
+async fn commits_racing_a_reclaim_neither_deadlock_nor_half_write() {
+    let db = db_or_skip!();
+    let store = Arc::new(db.store().await);
+    let lease_for = Duration::from_secs(30);
+    let later = t0() + Duration::from_secs(31);
+    for _ in 0..25 {
+        let id = create(&store, vec![delegate()]).await;
+        let held = store
+            .claim_outbox("a", t0(), lease_for, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.thread_id == id)
+            .unwrap();
+        let lease = held.lease().unwrap();
+        let committer = {
+            let (store, lease) = (Arc::clone(&store), lease.clone());
+            tokio::spawn(async move {
+                let mut c = commit(ThreadState::Working, vec![event("late", None)], vec![]);
+                c.lease = Some(lease);
+                c.binding = Some(BindingUpdate {
+                    task_id: Some("t".into()),
+                    ..BindingUpdate::default()
+                });
+                store.commit(id, 1, c).await
+            })
+        };
+        let marker = {
+            let (store, lease) = (Arc::clone(&store), lease.clone());
+            tokio::spawn(async move {
+                store
+                    .mark_sent(&lease, BindingUpdate::default(), t0())
+                    .await
+            })
+        };
+        let claimer = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move { store.claim_outbox("b", later, lease_for, 100).await })
+        };
+        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+            (
+                committer.await.unwrap().unwrap(),
+                marker.await.unwrap().unwrap(),
+                claimer.await.unwrap().unwrap(),
+            )
+        })
+        .await
+        .expect("a deadlock");
+        let (committed, _, _) = outcome;
+        let applied = matches!(committed, CommitOutcome::Applied { .. });
+        assert!(applied || committed == CommitOutcome::Fenced);
+        let events = store.list_events(id, 0, 10).await.unwrap();
+        assert_eq!(events.len(), 1 + usize::from(applied));
+        let thread = store.get_thread(None, id).await.unwrap().unwrap();
+        assert_eq!(thread.version, 1 + i64::from(applied));
+        // Whatever the interleaving, the row ends up claimable by its next owner.
+        store
+            .claim_outbox("b", later, lease_for, 100)
+            .await
+            .unwrap();
+        let row = store.get_outbox(held.id).await.unwrap().unwrap();
+        assert_eq!(row.lease_owner.as_deref(), Some("b"));
+        assert_eq!(row.attempts, 2);
+    }
 }

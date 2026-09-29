@@ -6,8 +6,8 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{Event, ThreadId, ThreadRecord, UserId};
 
 use crate::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, NewThreadRecord, OutboxFinal, OutboxId,
-    OutboxItem, OutboxKind, OutboxStats, OutboxStatus, StoreError, ThreadStore,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewThreadRecord, OutboxFinal,
+    OutboxId, OutboxItem, OutboxKind, OutboxStats, OutboxStatus, StoreError, ThreadStore,
 };
 
 struct StoredEvent {
@@ -145,10 +145,16 @@ fn write_commit(
     Some((record, stored))
 }
 
-fn leased<'a>(inner: &'a mut Inner, id: OutboxId, owner: &str) -> Option<&'a mut OutboxItem> {
-    inner.outbox.iter_mut().find(|r| {
-        r.id == id && r.status == OutboxStatus::Inflight && r.lease_owner.as_deref() == Some(owner)
-    })
+/// Whether `lease` is the current claim of `row`.
+fn holds(row: &OutboxItem, lease: &Lease) -> bool {
+    row.id == lease.id
+        && row.status == OutboxStatus::Inflight
+        && row.lease_owner.as_deref() == Some(lease.owner.as_str())
+        && row.attempts == lease.attempt
+}
+
+fn leased<'a>(inner: &'a mut Inner, lease: &Lease) -> Option<&'a mut OutboxItem> {
+    inner.outbox.iter_mut().find(|r| holds(r, lease))
 }
 
 impl ThreadStore for MemoryStore {
@@ -255,6 +261,14 @@ impl ThreadStore for MemoryStore {
             return Err(fault);
         }
         let entry = inner.threads.get(&thread).ok_or(StoreError::NotFound)?;
+        if let Some(lease) = &commit.lease
+            && !inner
+                .outbox
+                .iter()
+                .any(|r| r.thread_id == thread && holds(r, lease))
+        {
+            return Ok(CommitOutcome::Fenced);
+        }
         if entry.record.version != expected_version {
             return Err(StoreError::VersionConflict);
         }
@@ -339,27 +353,21 @@ impl ThreadStore for MemoryStore {
         Ok(claimed)
     }
 
-    async fn renew_lease(
-        &self,
-        id: OutboxId,
-        owner: &str,
-        until: Timestamp,
-    ) -> Result<bool, StoreError> {
+    async fn renew_lease(&self, lease: &Lease, until: Timestamp) -> Result<bool, StoreError> {
         let mut inner = self.lock();
-        Ok(leased(&mut inner, id, owner)
+        Ok(leased(&mut inner, lease)
             .map(|r| r.lease_until = Some(until))
             .is_some())
     }
 
     async fn mark_sent(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         binding: BindingUpdate,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
         let mut inner = self.lock();
-        let Some(row) = leased(&mut inner, id, owner) else {
+        let Some(row) = leased(&mut inner, lease) else {
             return Ok(false);
         };
         row.sent_at = Some(now);
@@ -372,13 +380,12 @@ impl ThreadStore for MemoryStore {
 
     async fn retry_outbox(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         next_attempt_at: Timestamp,
         error: String,
     ) -> Result<bool, StoreError> {
         let mut inner = self.lock();
-        Ok(leased(&mut inner, id, owner)
+        Ok(leased(&mut inner, lease)
             .map(|r| {
                 r.status = OutboxStatus::Pending;
                 r.next_attempt_at = next_attempt_at;
@@ -391,13 +398,12 @@ impl ThreadStore for MemoryStore {
 
     async fn complete_outbox(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         outcome: OutboxFinal,
         _now: Timestamp,
     ) -> Result<bool, StoreError> {
         let mut inner = self.lock();
-        Ok(leased(&mut inner, id, owner)
+        Ok(leased(&mut inner, lease)
             .map(|r| {
                 match outcome {
                     OutboxFinal::Delivered => r.status = OutboxStatus::Delivered,

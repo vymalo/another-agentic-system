@@ -380,6 +380,75 @@ async fn a_worker_that_lost_its_lease_stops_writing() {
     run.kill();
 }
 
+/// A dispatcher whose heartbeat never fires within the test, so that only the store's fence,
+/// not a lost-lease notice from the heartbeat, can stop a worker whose row was claimed again.
+fn no_heartbeat() -> orch_app::DispatcherConfig {
+    orch_app::DispatcherConfig {
+        heartbeat: Duration::from_secs(3600),
+        ..fast()
+    }
+}
+
+/// Another claimer takes the row over once its lease lapsed (by the clock it is handed), and
+/// the old worker's agent then finishes: nothing the old worker learned may be written.
+async fn a_late_result_is_dropped_after_a_reclaim_by(owner: &str, first_owner: &str) {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, no_heartbeat(), first_owner);
+    let t = create(&app, &alice(), "plain", "gate fence").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    let before = events(&app, &alice(), t.id).await;
+    let row = w.store.list_open_outbox(t.id).await.unwrap().remove(0);
+    assert_eq!(
+        (row.attempts, row.lease_owner.as_deref()),
+        (1, Some(first_owner))
+    );
+    // The lease is 400 ms; a claimer whose clock is a second ahead sees it lapsed.
+    let claimed = w
+        .store
+        .claim_outbox(
+            owner,
+            SystemClock.now() + Duration::from_secs(1),
+            Duration::from_secs(3600),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].attempts, 2);
+    w.agent.release_gate();
+    // Give the old worker time to receive the rest of the turn and try to write it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after = events(&app, &alice(), t.id).await;
+    assert_eq!(
+        shape(&after),
+        shape(&before),
+        "the old worker must not write"
+    );
+    assert_eq!(state_of(&w, t.id).await, ThreadState::Working);
+    let row = w.store.get_outbox(row.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.status,
+        OutboxStatus::Inflight,
+        "and must not finish the row"
+    );
+    assert_eq!((row.attempts, row.lease_owner.as_deref()), (2, Some(owner)));
+    assert!(row.sent_at.is_some());
+    run.kill();
+}
+
+#[tokio::test]
+async fn a_stale_worker_s_late_result_is_fenced() {
+    a_late_result_is_dropped_after_a_reclaim_by("thief", "d1").await;
+}
+
+#[tokio::test]
+async fn a_row_reclaimed_by_its_own_owner_fences_the_older_task() {
+    // The owner name is per process, so a restarted or re-claiming instance is "d1" again:
+    // only the attempt tells the two claims apart.
+    a_late_result_is_dropped_after_a_reclaim_by("d1", "d1").await;
+}
+
 #[tokio::test]
 async fn a_dropped_stream_is_resumed_with_resubscribe() {
     let w = World::new();
