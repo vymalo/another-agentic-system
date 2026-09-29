@@ -355,3 +355,38 @@ is **deferred**.
   workers, that a worker Deployment scales to zero on it while the control plane is scraped, and that the
   `postgresql` scaler with the count in `docs/orchestrator.md` does the same without Prometheus. These are from
   memory of the KEDA and Prometheus documentation; no cluster was involved.
+
+### Status note, 2026-09-29: migration step 11 built
+
+An `AgentClient` conformance testkit, a closed `AgentTransport` enum, and a fence on commit. Three commits.
+
+- **Fence.** Every claim of an outbox row hands out a fencing token: `Lease { id, owner, attempt }`, where `attempt` is
+  the row's `attempts` counter. The four outbox writes and `Commit.lease` match it, so a worker paused past its lease
+  can no longer commit what its agent reported after another worker (or the same process, under the same owner name)
+  claimed the row again: the store answers `CommitOutcome::Fenced`, `App::apply` reports `ApplyOutcome::Fenced`
+  without retrying, and the worker logs that the late result was dropped. Expiry alone does not fence: a lapsed lease
+  that nobody re-claimed still commits. No migration. The design, with its two diagrams, is in
+  `docs/orchestrator.md`, "Fenced commits". The bug it closes was that the thread commit never looked at the
+  lease, `give_up` committed `DeliveryFailed` before finishing the row, and the old test of a lost lease passed only
+  because the heartbeat stopped the worker first.
+- **Transport.** `AgentEndpoint { id, transport }` with `AgentTransport::A2a { card_url, bearer }`, in `orch-ports`.
+  There is no `Local` variant yet: step 12 adds it with its implementation, and the compiler then lists the `match`
+  sites. `AGENTS_FILE` takes an optional `transport: a2a` (ADR 0014 has the note). `AgentInfo.cardUrl` in the chat
+  API stays required; step 12 makes it optional.
+- **Testkit.** `agent_client_conformance!` with an `AgentFixture` trait, twelve cases, run against the A2A adapter
+  (over real HTTP) and against `ScriptedAgent`. The scripted agent gained a `failed` script and `set_unreachable`.
+- *Verified 2026-09-29* (this repository, `cargo test --workspace` against Postgres 16): the four fence cases
+  (`stale_attempt_is_fenced`, `commit_after_another_owner_reclaims_is_fenced`, `commit_after_complete_is_fenced`,
+  `expired_unclaimed_lease_still_commits`) pass on the memory and Postgres stores; two dispatcher tests, with a
+  heartbeat that never fires, fail when the memory store's fence is removed and pass with it; a Postgres test that races
+  commits against re-claims and `mark_sent` for 25 rounds neither deadlocks nor half-writes; the twelve testkit
+  cases pass on both agents, three runs in a row for the A2A adapter.
+- *Verified 2026-09-29* (the code): no statement takes a thread lock while holding an outbox row lock; the outbox
+  statements touch only outbox and binding rows, and change no foreign key, so `thread, outbox row, binding` is the
+  only lock order.
+- *Unverified:* deadlock freedom under production load and on other Postgres versions: it rests on the lock-order
+  argument above and the 25-round race test on one server, not on a proof. Also unverified: a process test that stops
+  a worker with SIGSTOP past its lease and resumes it. It was not written, because `select!` in the worker polls the
+  heartbeat and the stream in a random order, so the "late result was dropped" log line would only appear about
+  half of the time, and the outcome without the fence is the same as with it (the replayed keys are duplicates).
+  `skip_unsent_delegates` and `release_leases` are not fenced.

@@ -55,7 +55,9 @@ only one so far.
 ## Tests
 
 `tests/against_fake_agent.rs`: the adapter against an in-process A2A 1.0 agent
-(`orch-testsupport`'s `FakeAgent`) over real HTTP. Offline, no environment
+(`orch-testsupport`'s `FakeAgent`) over real HTTP. `tests/conformance.rs`: the
+`AgentClient` conformance testkit of `orch-ports` (`agent_client_conformance!`)
+run against the same fake agent. Offline, no environment
 variables. The WireMock stand-ins of `compose.yaml` are exercised by
 `orch-e2e`'s `wiremock_agent` test (see [`orch-e2e`](../e2e/README.md)).
 
