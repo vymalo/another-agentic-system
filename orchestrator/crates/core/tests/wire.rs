@@ -170,6 +170,31 @@ fn releases_and_target_wire() {
 }
 
 #[test]
+fn agent_info_card_url_is_optional_and_absent_when_none() {
+    let mut info = AgentInfo {
+        id: AgentId::new("coder"),
+        name: "Coder".into(),
+        description: None,
+        card_url: Some("https://coder.example.com/.well-known/agent-card.json".into()),
+        releases: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&info).unwrap(),
+        json!({
+            "id": "coder",
+            "name": "Coder",
+            "cardUrl": "https://coder.example.com/.well-known/agent-card.json"
+        })
+    );
+    info.card_url = None;
+    let wire = serde_json::to_value(&info).unwrap();
+    assert_eq!(wire, json!({"id": "coder", "name": "Coder"}));
+    // And a client that never learned the key reads it back.
+    let back: AgentInfo = serde_json::from_value(wire).unwrap();
+    assert_eq!(back, info);
+}
+
+#[test]
 fn thread_state_spelling() {
     for (s, w) in [
         (ThreadState::Queued, "queued"),

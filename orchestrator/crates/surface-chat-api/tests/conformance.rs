@@ -80,6 +80,20 @@ async fn every_operation_conforms_to_the_contract() {
         .find(|a| a["id"] == "plain")
         .unwrap();
     assert!(plain.get("releases").is_none());
+    // `cardUrl` is optional in the contract: an in-process agent has none, and the key is absent
+    // (not null); every A2A agent keeps it.
+    let helper = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "helper")
+        .unwrap();
+    assert!(helper.get("cardUrl").is_none(), "{helper}");
+    assert_eq!(helper["name"], "Helper");
+    assert_eq!(
+        plain["cardUrl"],
+        "https://plain.example.com/.well-known/agent-card.json"
+    );
 
     // createThread: 201 and the 400s
     let r = h

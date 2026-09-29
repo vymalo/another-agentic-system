@@ -9,8 +9,9 @@ use orch_core::{AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorC
 /// every `match` a new transport must handle). It lives in the ports, not in the core, because it
 /// carries a secret that `transition` never sees. `Debug` never prints the bearer token.
 ///
-/// There is one variant today. The in-process adam agents of ADR 0015 arrive with their
-/// implementation as a second variant, not before.
+/// The variants are always compiled, whatever Cargo features a binary is built with: what a
+/// build can *serve* is the composition root's business (an adapter answers
+/// [`AgentError::Unsupported`] for an endpoint that is not its own), not the shape of this type.
 #[derive(Clone, PartialEq, Eq)]
 pub enum AgentTransport {
     /// A remote A2A agent, read from its agent card.
@@ -19,6 +20,13 @@ pub enum AgentTransport {
         card_url: String,
         /// Bearer token for the agent, if configured (already resolved from the environment).
         bearer: Option<String>,
+    },
+    /// An agent hosted in the orchestrator's own process (ADR 0015): no card URL, no network hop,
+    /// no bearer token. `name` is the kind of local agent, as the composition root names it (for
+    /// example `echo`); which kinds a build contains is decided there, never here.
+    Local {
+        /// The kind of local agent.
+        name: String,
     },
 }
 
@@ -30,6 +38,7 @@ impl fmt::Debug for AgentTransport {
                 .field("card_url", card_url)
                 .field("bearer", &bearer.as_ref().map(|_| "<redacted>"))
                 .finish(),
+            AgentTransport::Local { name } => f.debug_struct("Local").field("name", name).finish(),
         }
     }
 }
@@ -53,6 +62,14 @@ impl AgentEndpoint {
                 card_url: card_url.into(),
                 bearer,
             },
+        }
+    }
+
+    /// An agent hosted in this process; `name` is the kind of local agent.
+    pub fn local(id: AgentId, name: impl Into<String>) -> Self {
+        AgentEndpoint {
+            id,
+            transport: AgentTransport::Local { name: name.into() },
         }
     }
 }
@@ -344,6 +361,20 @@ mod tests {
         assert!(
             !format!("{:?}", AgentEndpoint::a2a(AgentId::new("a"), "u", None)).contains("redacted")
         );
+    }
+
+    #[test]
+    fn a_local_endpoint_names_its_kind_and_carries_no_secret() {
+        let ep = AgentEndpoint::local(AgentId::new("helper"), "echo");
+        assert_eq!(
+            ep.transport,
+            AgentTransport::Local {
+                name: "echo".into()
+            }
+        );
+        assert_ne!(ep, AgentEndpoint::a2a(AgentId::new("helper"), "echo", None));
+        let text = format!("{ep:?}");
+        assert!(text.contains("Local") && text.contains("echo"), "{text}");
     }
 
     #[test]

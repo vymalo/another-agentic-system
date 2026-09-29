@@ -33,7 +33,7 @@ Running it, the container image, configuration and shutdown are documented in
 | File | What |
 |---|---|
 | `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
-| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
+| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far, none compiled in yet), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
 | `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher as a worker component, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher releases its leases as it stops). Readiness flips first, so probes answer 503 for the whole drain |
 
 ## Environment
@@ -43,7 +43,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string, never logged |
-| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl, tokenEnv?}` ([`agents.example.yaml`](../../agents.example.yaml)); `transport` is `a2a` (the default when absent), any other value is a startup error |
+| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` ([`agents.example.yaml`](../../agents.example.yaml)); `transport` is `a2a` (the default when absent; `cardUrl` required) or `local` (`agent` required, names a `LocalAgentKind`; `cardUrl` and `tokenEnv` refused). `local` is refused with `LocalAgentsNotCompiled` (78) until a build has local agents (Cargo feature `agent-local`, not available yet); any other `transport` is a startup error |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
 | `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
 | `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning |

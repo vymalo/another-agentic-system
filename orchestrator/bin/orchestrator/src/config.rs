@@ -64,6 +64,20 @@ pub enum ConfigError {
         /// The Cargo feature of the `orchestrator` package that provides it.
         feature: &'static str,
     },
+    /// An `AGENTS_FILE` entry asks for `transport: local`, and this build has no in-process
+    /// agents. Fail closed, like a surface that is not compiled in: the entry is never quietly
+    /// dropped or served by the A2A client.
+    #[error(
+        "agent {agent:?}: transport \"local\" is not in this build (it needs the Cargo feature \
+         {feature:?}, which is not available yet: in-process agents arrive with orch-agent-adam, \
+         ADR 0015 step 12)"
+    )]
+    LocalAgentsNotCompiled {
+        /// The agent entry's id.
+        agent: String,
+        /// The Cargo feature of the `orchestrator` package that would compile local agents in.
+        feature: &'static str,
+    },
     /// `AGENTS_FILE` could not be read.
     #[error("cannot read AGENTS_FILE {}", path.display())]
     AgentsFileRead {
@@ -111,14 +125,17 @@ pub enum ConfigError {
 }
 
 /// The `transport` key of an `AGENTS_FILE` entry: how the orchestrator reaches the agent.
-/// Absent means `a2a`, so every existing file stays valid. A value that is not listed here
-/// (`local`, say, until in-process agents exist) is a parse error naming the choices.
+/// Absent means `a2a`, so every existing file stays valid. A value that is not listed here is a
+/// parse error naming the choices.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum TransportKind {
-    /// A remote A2A agent: `cardUrl`, optional `tokenEnv`.
+    /// A remote A2A agent: `cardUrl` (required), optional `tokenEnv`.
     #[default]
     A2a,
+    /// An agent hosted in this process: `agent` (required, a [`LocalAgentKind`]). It has no card
+    /// URL and no token, so `cardUrl` and `tokenEnv` are refused rather than ignored.
+    Local,
 }
 
 /// One entry of `AGENTS_FILE`, as written.
@@ -129,8 +146,73 @@ struct AgentSpec {
     name: String,
     #[serde(default)]
     transport: TransportKind,
-    card_url: String,
+    /// Required for `a2a`, refused for `local`.
+    card_url: Option<String>,
+    /// `a2a` only.
     token_env: Option<String>,
+    /// Required for `local` (the kind of agent), refused for `a2a`.
+    agent: Option<String>,
+}
+
+/// A kind of agent hosted in the orchestrator's own process (`transport: local`, ADR 0015).
+///
+/// A closed enum (ADR 0004), defined here so the configuration can name and validate the kinds
+/// without depending on any agent implementation crate; the composition root maps a kind to its
+/// implementation. The endpoint carries only the kind's [`name`](Self::name)
+/// (`AgentTransport::Local`), so the ports know no kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LocalAgentKind {
+    /// Repeats the user's message back. For tests and demos; needs no model.
+    Echo,
+}
+
+impl LocalAgentKind {
+    /// Every kind this source tree knows, compiled in or not.
+    pub const ALL: &'static [LocalAgentKind] = &[LocalAgentKind::Echo];
+
+    /// The name used as `agent:` in `AGENTS_FILE`, and as the endpoint's `AgentTransport::Local`
+    /// name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            LocalAgentKind::Echo => "echo",
+        }
+    }
+
+    /// The Cargo feature of the `orchestrator` package that compiles local agents in.
+    pub const fn feature(self) -> &'static str {
+        match self {
+            LocalAgentKind::Echo => "agent-local",
+        }
+    }
+
+    /// Whether this build contains the kind. Always `false` for now: the feature and the crate
+    /// that implements local agents (`orch-agent-adam`) do not exist yet, and a feature that
+    /// enabled nothing would only move the failure from startup to the first message. The PR
+    /// that adds them turns this into `cfg!(feature = "agent-local")`.
+    pub const fn compiled_in(self) -> bool {
+        match self {
+            LocalAgentKind::Echo => false,
+        }
+    }
+
+    /// One line for humans, shown when a name is not recognised.
+    pub const fn description(self) -> &'static str {
+        match self {
+            LocalAgentKind::Echo => "repeats the user's message back (tests and demos)",
+        }
+    }
+
+    fn known() -> String {
+        Self::ALL
+            .iter()
+            .map(|k| format!("{} ({})", k.name(), k.description()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|k| k.name() == name)
+    }
 }
 
 /// Log output format (`LOG_FORMAT`).
@@ -281,7 +363,7 @@ pub struct Args {
     #[arg(long, env = "DATABASE_URL", value_name = "URL", hide_env_values = true)]
     pub database_url: Option<String>,
 
-    /// YAML list of `{id, name, cardUrl, tokenEnv?}` (required).
+    /// YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` (required).
     #[arg(long, env = "AGENTS_FILE", value_name = "PATH")]
     pub agents_file: Option<String>,
 
@@ -521,11 +603,29 @@ fn valid_agent_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+fn invalid(id: &str, reason: impl Into<String>) -> ConfigError {
+    ConfigError::InvalidAgent {
+        id: id.to_owned(),
+        reason: reason.into(),
+    }
+}
+
 /// Parses the YAML list and resolves each `tokenEnv` through `env`.
 fn parse_agents(
     yaml: &str,
     path: &Path,
     env: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<AgentEntry>, ConfigError> {
+    parse_agents_with(yaml, path, env, LocalAgentKind::compiled_in)
+}
+
+/// [`parse_agents`] with the build's set of local agent kinds as a parameter, so the tests can
+/// exercise a build that has them.
+fn parse_agents_with(
+    yaml: &str,
+    path: &Path,
+    env: impl Fn(&str) -> Option<String>,
+    local_compiled_in: impl Fn(LocalAgentKind) -> bool,
 ) -> Result<Vec<AgentEntry>, ConfigError> {
     let specs: Option<Vec<AgentSpec>> =
         serde_norway::from_str(yaml).map_err(|e| ConfigError::AgentsFileParse {
@@ -541,12 +641,9 @@ fn parse_agents(
 
     let mut entries: Vec<AgentEntry> = Vec::with_capacity(specs.len());
     for spec in specs {
-        let invalid = |reason: &str| ConfigError::InvalidAgent {
-            id: spec.id.clone(),
-            reason: reason.to_owned(),
-        };
         if !valid_agent_id(&spec.id) {
             return Err(invalid(
+                &spec.id,
                 "id must match ^[a-z0-9][a-z0-9-]{0,62}$ (lower-case letters, digits, dashes)",
             ));
         }
@@ -554,30 +651,13 @@ fn parse_agents(
             return Err(ConfigError::DuplicateAgent(spec.id));
         }
         if spec.name.trim().is_empty() {
-            return Err(invalid("name must not be empty"));
+            return Err(invalid(&spec.id, "name must not be empty"));
         }
-        match Url::parse(&spec.card_url) {
-            Ok(url) if matches!(url.scheme(), "http" | "https") && url.has_host() => {}
-            Ok(_) => return Err(invalid("cardUrl must be an http(s) URL with a host")),
-            Err(e) => return Err(invalid(&format!("cardUrl is not a URL ({e})"))),
-        }
-        let bearer = match spec.token_env.as_deref().map(str::trim) {
-            None => None,
-            Some("") => return Err(invalid("tokenEnv must not be empty when present")),
-            Some(var) => match env(var) {
-                Some(token) => Some(token),
-                None => {
-                    return Err(ConfigError::TokenEnvMissing {
-                        agent: spec.id,
-                        var: var.to_owned(),
-                    });
-                }
-            },
-        };
-        // A new `TransportKind` makes this `match` fail to compile: the checks above (a card
-        // URL, a token variable) are those of an A2A agent and move inside its arm.
+        // A new `TransportKind` makes this `match` fail to compile: each transport validates
+        // the keys that belong to it, and refuses the keys that belong to another.
         let endpoint = match spec.transport {
-            TransportKind::A2a => AgentEndpoint::a2a(AgentId::new(spec.id), spec.card_url, bearer),
+            TransportKind::A2a => a2a_endpoint(&spec, &env)?,
+            TransportKind::Local => local_endpoint(&spec, &local_compiled_in)?,
         };
         entries.push(AgentEntry {
             endpoint,
@@ -585,6 +665,95 @@ fn parse_agents(
         });
     }
     Ok(entries)
+}
+
+/// `transport: a2a`: a card URL and an optional token variable.
+fn a2a_endpoint(
+    spec: &AgentSpec,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<AgentEndpoint, ConfigError> {
+    if spec.agent.is_some() {
+        return Err(invalid(
+            &spec.id,
+            "agent applies to transport local only (an a2a agent is named by its cardUrl)",
+        ));
+    }
+    let Some(card_url) = spec.card_url.as_deref() else {
+        return Err(invalid(&spec.id, "cardUrl is required for transport a2a"));
+    };
+    match Url::parse(card_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") && url.has_host() => {}
+        Ok(_) => {
+            return Err(invalid(
+                &spec.id,
+                "cardUrl must be an http(s) URL with a host",
+            ));
+        }
+        Err(e) => return Err(invalid(&spec.id, format!("cardUrl is not a URL ({e})"))),
+    }
+    let bearer = match spec.token_env.as_deref().map(str::trim) {
+        None => None,
+        Some("") => {
+            return Err(invalid(&spec.id, "tokenEnv must not be empty when present"));
+        }
+        Some(var) => match env(var) {
+            Some(token) => Some(token),
+            None => {
+                return Err(ConfigError::TokenEnvMissing {
+                    agent: spec.id.clone(),
+                    var: var.to_owned(),
+                });
+            }
+        },
+    };
+    Ok(AgentEndpoint::a2a(
+        AgentId::new(spec.id.clone()),
+        card_url,
+        bearer,
+    ))
+}
+
+/// `transport: local`: the kind of agent, and nothing that belongs to a remote one. The keys of
+/// an A2A agent are refused, not ignored: a `cardUrl` next to `transport: local` is a mistake
+/// (probably a lost `transport: a2a`), and the operator should hear about it at startup.
+fn local_endpoint(
+    spec: &AgentSpec,
+    compiled_in: &impl Fn(LocalAgentKind) -> bool,
+) -> Result<AgentEndpoint, ConfigError> {
+    if spec.card_url.is_some() || spec.token_env.is_some() {
+        return Err(invalid(
+            &spec.id,
+            "cardUrl and tokenEnv apply to transport a2a only (a local agent has no card and no token)",
+        ));
+    }
+    let Some(name) = spec.agent.as_deref().map(str::trim) else {
+        return Err(invalid(
+            &spec.id,
+            format!(
+                "agent is required for transport local (one of: {})",
+                LocalAgentKind::known()
+            ),
+        ));
+    };
+    let Some(kind) = LocalAgentKind::parse(name) else {
+        return Err(invalid(
+            &spec.id,
+            format!(
+                "unknown local agent {name:?} (one of: {})",
+                LocalAgentKind::known()
+            ),
+        ));
+    };
+    if !compiled_in(kind) {
+        return Err(ConfigError::LocalAgentsNotCompiled {
+            agent: spec.id.clone(),
+            feature: kind.feature(),
+        });
+    }
+    Ok(AgentEndpoint::local(
+        AgentId::new(spec.id.clone()),
+        kind.name(),
+    ))
 }
 
 #[cfg(test)]
@@ -656,7 +825,9 @@ mod tests {
 
     /// The card URL and bearer of an A2A endpoint.
     fn a2a(endpoint: &AgentEndpoint) -> (&str, Option<&str>) {
-        let AgentTransport::A2a { card_url, bearer } = &endpoint.transport;
+        let AgentTransport::A2a { card_url, bearer } = &endpoint.transport else {
+            panic!("expected an A2A endpoint, got {endpoint:?}");
+        };
         (card_url, bearer.as_deref())
     }
 
@@ -791,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn the_transport_defaults_to_a2a_and_only_a2a_is_known() {
+    fn the_transport_defaults_to_a2a_and_unknown_transports_are_refused() {
         let plain = "- id: a\n  name: A\n  cardUrl: https://a.example.com/card.json\n";
         let explicit = format!("{plain}  transport: a2a\n");
         let want = |yaml: &str| {
@@ -803,15 +974,100 @@ mod tests {
             want(plain),
             AgentEndpoint::a2a(AgentId::new("a"), "https://a.example.com/card.json", None)
         );
-        // `local` arrives with in-process agents; until then it is refused, naming the choice.
-        let local = format!("{plain}  transport: local\n");
-        let ConfigError::AgentsFileParse { message, .. } = agents_err(&local, &[]) else {
+        let ConfigError::AgentsFileParse { message, .. } =
+            agents_err(&format!("{plain}  transport: grpc\n"), &[])
+        else {
             panic!("expected a parse error");
         };
         assert!(
             message.contains("local") && message.contains("a2a"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn a_card_url_is_required_for_a2a_and_agent_is_refused() {
+        let ConfigError::InvalidAgent { id, reason } = agents_err("- id: a\n  name: A\n", &[])
+        else {
+            panic!("expected InvalidAgent");
+        };
+        assert_eq!(id, "a");
+        assert!(reason.contains("cardUrl is required"), "{reason}");
+        let mixed = "- id: a\n  name: A\n  cardUrl: https://a.example.com/card\n  agent: echo\n";
+        let ConfigError::InvalidAgent { reason, .. } = agents_err(mixed, &[]) else {
+            panic!("expected InvalidAgent");
+        };
+        assert!(reason.contains("transport local only"), "{reason}");
+    }
+
+    const LOCAL: &str = "- id: helper\n  name: Helper\n  transport: local\n  agent: echo\n";
+
+    #[test]
+    fn a_local_agent_is_refused_naming_the_feature_while_no_build_has_it() {
+        let err = agents_err(LOCAL, &[]);
+        assert!(
+            matches!(
+                &err,
+                ConfigError::LocalAgentsNotCompiled { agent, feature }
+                    if agent == "helper" && *feature == "agent-local"
+            ),
+            "{err:?}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("agent-local") && text.contains("helper"),
+            "{text}"
+        );
+        // The day the feature exists, this test is replaced by one per build flavour.
+        assert!(
+            LocalAgentKind::ALL.iter().all(|k| !k.compiled_in()),
+            "flip this test with the feature"
+        );
+    }
+
+    #[test]
+    fn a_local_agent_becomes_a_local_endpoint_in_a_build_that_has_its_kind() {
+        let entries =
+            parse_agents_with(LOCAL, Path::new("agents.yaml"), env_of(&[]), |_| true).unwrap();
+        assert_eq!(entries[0].name, "Helper");
+        assert_eq!(
+            entries[0].endpoint,
+            AgentEndpoint::local(AgentId::new("helper"), "echo")
+        );
+        // It sits in file order beside a remote agent, and both are kept.
+        let both =
+            format!("- id: coder\n  name: Coder\n  cardUrl: https://c.example.com/card\n{LOCAL}");
+        let entries =
+            parse_agents_with(&both, Path::new("agents.yaml"), env_of(&[]), |_| true).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.endpoint.id.as_str()).collect();
+        assert_eq!(ids, ["coder", "helper"]);
+    }
+
+    #[test]
+    fn a_local_agent_needs_a_known_kind_and_takes_no_card_or_token() {
+        let reason_of = |yaml: &str| {
+            let err = parse_agents_with(yaml, Path::new("agents.yaml"), env_of(&[]), |_| true)
+                .unwrap_err();
+            let ConfigError::InvalidAgent { reason, .. } = err else {
+                panic!("expected InvalidAgent, got {err:?}");
+            };
+            reason
+        };
+        let head = "- id: h\n  name: H\n  transport: local\n";
+        let no_kind = reason_of(head);
+        assert!(
+            no_kind.contains("agent is required") && no_kind.contains("echo"),
+            "{no_kind}"
+        );
+        let unknown = reason_of(&format!("{head}  agent: gpt\n"));
+        assert!(
+            unknown.contains("unknown local agent") && unknown.contains("echo"),
+            "{unknown}"
+        );
+        for extra in ["  cardUrl: https://h.example.com/card\n", "  tokenEnv: T\n"] {
+            let reason = reason_of(&format!("{head}  agent: echo\n{extra}"));
+            assert!(reason.contains("transport a2a only"), "{reason}");
+        }
     }
 
     #[test]

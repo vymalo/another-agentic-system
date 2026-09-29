@@ -103,7 +103,15 @@ impl Harness {
                 clock: SystemClock,
                 ids: SeqIds::default(),
             },
-            AgentDirectory::new(vec![entry("coder", "Coder"), entry("plain", "Plain")]),
+            AgentDirectory::new(vec![
+                entry("coder", "Coder"),
+                entry("plain", "Plain"),
+                // Hosted in-process (ADR 0015): the only agent without a card URL.
+                AgentEntry {
+                    endpoint: AgentEndpoint::local(AgentId::new("helper"), "echo"),
+                    name: "Helper".to_owned(),
+                },
+            ]),
             AppConfig {
                 stream_poll: Duration::from_millis(100),
                 ..AppConfig::default()

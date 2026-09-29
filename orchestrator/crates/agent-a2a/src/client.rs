@@ -110,6 +110,18 @@ fn card_status_error(
     }
 }
 
+/// The card URL and bearer of an A2A endpoint. This adapter serves the `A2a` transport only: any
+/// other is answered with `Unsupported` (the one place that decides it), never dereferenced.
+fn a2a_parts(ep: &AgentEndpoint) -> Result<(&str, Option<&str>), AgentError> {
+    match &ep.transport {
+        AgentTransport::A2a { card_url, bearer } => Ok((card_url, bearer.as_deref())),
+        AgentTransport::Local { .. } => Err(AgentError::Unsupported(format!(
+            "agent {} is hosted in-process; the A2A client only serves A2A endpoints",
+            ep.id
+        ))),
+    }
+}
+
 /// Adds the `A2A-Extensions` header that activates the release-channels extension.
 struct ActivateReleaseChannels;
 
@@ -175,21 +187,19 @@ impl A2aAgentClient {
 
     /// The card document URL: a URL ending in `.json` is used as is, anything else is treated
     /// as the agent's base URL.
-    fn card_url(ep: &AgentEndpoint) -> String {
-        // Irrefutable while `A2a` is the only transport: adding one makes the compiler list
-        // this adapter, which must then refuse the endpoints that are not its own.
-        let AgentTransport::A2a { card_url, .. } = &ep.transport;
+    fn card_url(ep: &AgentEndpoint) -> Result<String, AgentError> {
+        let (card_url, _) = a2a_parts(ep)?;
         let url = card_url.trim();
-        if url.trim_end_matches('/').ends_with(".json") {
+        Ok(if url.trim_end_matches('/').ends_with(".json") {
             url.to_owned()
         } else {
             format!("{}/.well-known/agent-card.json", url.trim_end_matches('/'))
-        }
+        })
     }
 
     async fn fetch_card(&self, ep: &AgentEndpoint) -> Result<AgentCard, AgentError> {
-        let mut req = self.card_http.get(Self::card_url(ep));
-        let AgentTransport::A2a { bearer, .. } = &ep.transport;
+        let (_, bearer) = a2a_parts(ep)?;
+        let mut req = self.card_http.get(Self::card_url(ep)?);
         if let Some(token) = bearer {
             req = req.bearer_auth(token);
         }
@@ -227,9 +237,9 @@ impl A2aAgentClient {
             .register(Arc::new(RestTransportFactory::new(Some(
                 self.rpc_http.clone(),
             ))));
-        let AgentTransport::A2a { bearer, .. } = &ep.transport;
+        let (_, bearer) = a2a_parts(ep)?;
         if let Some(token) = bearer {
-            builder = builder.with_interceptor(Arc::new(AuthInterceptor::bearer(token.clone())));
+            builder = builder.with_interceptor(Arc::new(AuthInterceptor::bearer(token.to_owned())));
         }
         if activate_releases {
             builder = builder.with_interceptor(Arc::new(ActivateReleaseChannels));

@@ -125,6 +125,13 @@ mod tests {
             .context("reading the configuration");
         assert_eq!(exit_code(&config), 78);
 
+        let no_local = anyhow::Error::from(ConfigError::LocalAgentsNotCompiled {
+            agent: "helper".to_owned(),
+            feature: "agent-local",
+        })
+        .context("reading the configuration");
+        assert_eq!(exit_code(&no_local), 78);
+
         let db_down = anyhow::Error::from(StoreError::unavailable(io::Error::other("refused")))
             .context("cannot connect to Postgres");
         assert_eq!(exit_code(&db_down), 69);

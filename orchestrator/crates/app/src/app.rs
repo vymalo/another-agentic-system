@@ -176,14 +176,16 @@ impl<P: Ports> App<P> {
                     (None, None)
                 }
             };
-            // The contract's `cardUrl` is required while every agent is an A2A agent; the day
-            // an agent has no card, it becomes optional there.
-            let AgentTransport::A2a { card_url, .. } = &entry.endpoint.transport;
+            // Only an A2A agent has a card URL; the contract's `cardUrl` is optional for that.
+            let card_url = match &entry.endpoint.transport {
+                AgentTransport::A2a { card_url, .. } => Some(card_url.clone()),
+                AgentTransport::Local { .. } => None,
+            };
             AgentInfo {
                 id: entry.endpoint.id.clone(),
                 name: entry.name.clone(),
                 description,
-                card_url: card_url.clone(),
+                card_url,
                 releases,
             }
         });

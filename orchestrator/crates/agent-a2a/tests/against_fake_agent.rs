@@ -693,3 +693,28 @@ async fn wrong_or_missing_token_is_an_error_not_a_hang() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_local_endpoint_is_unsupported_on_every_operation() {
+    let client = client();
+    let ep = AgentEndpoint::local(orch_core::AgentId::new("helper"), "echo");
+    let task = TaskHandle {
+        endpoint: ep.clone(),
+        task_id: "t1".to_owned(),
+    };
+    let is_unsupported = |e: AgentError| {
+        assert!(matches!(e, AgentError::Unsupported(_)), "{e:?}");
+        assert_eq!(e.class(), ErrorClass::Unsupported);
+    };
+    is_unsupported(client.read_card(&ep).await.unwrap_err());
+    is_unsupported(client.send_stream(request(&ep, "hi")).await.err().unwrap());
+    is_unsupported(client.resubscribe(&task).await.err().unwrap());
+    is_unsupported(client.get_task(&task).await.unwrap_err());
+    is_unsupported(client.cancel(&task).await.unwrap_err());
+    is_unsupported(
+        client
+            .find_task_by_message(&ep, "ctx-1", "m1")
+            .await
+            .unwrap_err(),
+    );
+}
