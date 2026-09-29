@@ -49,7 +49,8 @@ flowchart LR
 | [Architecture](docs/architecture.md) | Components, agent hosts, job flow and lifecycle, where it runs |
 | [Orchestrator](docs/orchestrator.md) | Ports & adapters, event/command model, inbox/outbox, core types, data model, crate layout, testing |
 | [MVP](docs/mvp.md) | Build order, smallest working loop first |
-| [Chat API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the only interface between the chat UI and the orchestrator (threads, messages, event log, SSE stream) |
+| [Chat API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health) and the deprecated REST interaction endpoints |
+| [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
 | [Lessons from Agent Canvas](docs/lessons-from-agent-canvas.md) | What running OpenHands Agent Canvas taught us, as requirements |
 
@@ -67,6 +68,8 @@ flowchart LR
 | [0008](docs/decisions/0008-platform-integration-via-a2a-extension.md) | Optional another-agentic-platform integration via an A2A extension |
 | [0009](docs/decisions/0009-swappable-implementations-at-build-time.md) | Swappable implementations, selected at build time |
 | [0011](docs/decisions/0011-web-shadcn-tailwind-feature-layout.md) | Chat surface: shadcn/ui on Tailwind v4, kebab-case feature layout |
+| [0012](docs/decisions/0012-ag-ui-user-facing-protocol.md) | AG-UI 1.0 as the user-facing protocol; REST kept for resources; surfaces mounted by configuration |
+| [0013](docs/decisions/0013-a2ui-generative-ui.md) | A2UI for generative UI, end to end over A2A and AG-UI |
 
 ## Local development
 

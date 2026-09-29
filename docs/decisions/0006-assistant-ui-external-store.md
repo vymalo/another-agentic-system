@@ -2,7 +2,12 @@
 
 - **Status:** accepted (2026-09-28). Amended (2026-09-29): the UI is built with shadcn/ui and
   the pruned assistant-ui registry components, in a feature layout; see
-  [ADR 0011](0011-web-shadcn-tailwind-feature-layout.md).
+  [ADR 0011](0011-web-shadcn-tailwind-feature-layout.md). Amended (2026-09-29) by
+  [ADR 0012](0012-ag-ui-user-facing-protocol.md): the runtime becomes `@assistant-ui/react-ag-ui`
+  (pinned, patched where needed) instead of `useExternalStoreRuntime`; messages arrive as AG-UI
+  events projected from the event log, and live updates come from the orchestrator's AG-UI connect
+  stream, not a Next.js `LISTEN`. Next.js, assistant-ui, the `data-*` renderers, the event log as
+  the single source and "no Assistant Cloud" stand.
 
 ## Context
 
