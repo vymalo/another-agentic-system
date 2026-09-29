@@ -13,8 +13,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > (`GET /agui/threads/{threadId}/connect`, see [Connect binding](#connect-binding)) and the
 > **capabilities document** (`GET /agui/agents/{agentId}/capabilities`, see
 > [Capabilities document](#capabilities-document)), all tested end to end, the connect stream also
-> with a replica killed under it. Not built: the web on AG-UI and A2UI: for those this page is the
-> contract the next slices implement. What is built and what is planned, as a diagram:
+> with a replica killed under it. The three routes are operations of [`chat-api.yaml`](chat-api.yaml)
+> ([The contract](#the-contract)), and the four legacy operations it deprecates answer with
+> `Deprecation`. Not built: the web on AG-UI and A2UI: for those this page is the contract the next
+> slices implement. What is built and what is planned, as a diagram:
 > [architecture](../architecture.md#ag-ui-planned-against-built). Spec facts were *verified
 > 2026-09-29* against the pages linked.
 
@@ -26,11 +28,49 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built (the A2UI key is not yet declared) |
 | Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
-| Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated; mounted only with `ORCH_SURFACES` including `chat-api` |
+| Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated (`deprecated: true`, `Deprecation` header); mounted only with `ORCH_SURFACES` including `chat-api` |
 
 All `/agui/*` routes sit behind the edge identity (`X-Auth-Request-Email`, fail closed). Every
 pre-stream rejection is an RFC 9457 `application/problem+json` response; nothing is streamed
 before the checks pass.
+
+## The contract
+
+[`chat-api.yaml`](chat-api.yaml) (OpenAPI 3.1.0) describes these routes as `runAgent`, `connectThread`
+and `getAgentCapabilities`, beside the resource API.
+
+- **Schemas by reference.** `AgUiRunAgentInput`, `AgUiEvent` and `AgUiAgentCapabilities` are
+  `$ref`s to `$defs/RunAgentInput`, `$defs/Event` and `$defs/AgentCapabilities` of the vendored
+  schema, `orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json`, by relative file path. The
+  schema is not copied. *Verified 2026-09-29* against the
+  [OpenAPI 3.1.0 specification](https://spec.openapis.org/oas/v3.1.0.html) (section 4.4: the Schema
+  Object is a superset of JSON Schema 2020-12; section 4.7: relative references resolve against the
+  document's URI), and by generating the web types from it with openapi-typescript 7.13.0.
+- **Streams.** OpenAPI 3.1 cannot say what one server-sent message holds: `itemSchema` arrived in
+  [3.2](https://spec.openapis.org/oas/v3.2.0.html) (*verified 2026-09-29*). The `text/event-stream`
+  media type is `type: string`, and the item is `x-itemSchema` (`AgUiSseFrame`: `data` is one
+  `AgUiEvent` as JSON text, `id` the resume `seq`), which a move to 3.2 renames.
+- **Problems.** Every status in the table of each route above is documented with the `Problem`
+  response, and only those: `orch-surface-agui`'s `tests/contract.rs` drives each operation over
+  HTTP and fails when the statuses documented and the statuses answered differ, and validates every
+  body and every frame against the contract's schemas (through the reference to the vendored one).
+  One status is documented and not driven: a store that fails to read a thread, the 503 of
+  `connectThread` (the in-memory store fails commits and creates only).
+- **Deprecation.** `createThread`, `postMessage`, `listEvents` and `streamEvents` are
+  `deprecated: true`. Every response those operations produce, errors included, carries
+  `Deprecation: @1790640000`, and no other response does (a 401 comes from the identity layer that
+  every route shares and does not carry it). The value is an sf-date: `@` and the unix time in seconds
+  of 2026-09-29T00:00:00Z. *Verified 2026-09-29* against
+  [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) section 2.1 (an Item Structured Field whose value
+  MUST be a Date per RFC 9651; the date may be in the past, meaning "deprecated at that date"). There
+  is no `Sunset` (removal follows the web's migration, not a date) and no `Link`: RFC 9745 makes it
+  optional, and the successor of `createThread` is `POST /agui/agents/{agentId}`, a URI template that
+  `Link` cannot carry. The replacements are named in each operation's description.
+  `orch-surface-chat-api`'s `tests/conformance.rs` and `tests/deprecation.rs` check the header against
+  the contract's `deprecated` flags, and `orch-e2e`'s `tests/deprecation.rs` does so on the composed
+  router.
+- **The web.** `pnpm gen:api` types the operations, and `src/lib/api/contract.typecheck.ts` holds
+  deliberate mismatches for them.
 
 ## Ids
 
@@ -195,6 +235,7 @@ sequence and state diagrams are in [ADR 0012](../decisions/0012-ag-ui-user-facin
 | 401 | No edge identity |
 | 404 | The thread does not exist for the caller: it is missing, its id is not a UUID, or it belongs to someone else. One answer for all three; nothing in it names the thread or its owner. |
 | 406 | `Accept` excludes `text/event-stream` |
+| 503 | The store is unavailable (`Retry-After`) |
 
 A cursor beyond the thread's last seq (stale or forged) counts as the last seq: the client waits
 for new events.

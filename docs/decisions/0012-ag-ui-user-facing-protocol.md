@@ -11,6 +11,12 @@
   test that reconnects to another one with `Last-Event-ID`. The document declares `multiAgent.subagents`
   as a list, as the 1.0 schema types it (the flag of the plan was wrong). Details:
   [`api/agui.md`](../api/agui.md#connect-binding).
+  Status note (2026-09-29): the contract carries the AG-UI operations and the deprecation. `chat-api.yaml`
+  gains `runAgent`, `connectThread` and `getAgentCapabilities`, whose bodies reference the vendored
+  schema by file, and marks the four legacy operations `deprecated: true`; the `chat-api` surface answers
+  them with `Deprecation: @1790640000` (RFC 9745; the day of this note), on those operations only. No
+  `Sunset` (removal follows the web, not a date) and no `Link` (optional in the RFC, and the successor is
+  a URI template). The decision stands. Details: [`api/agui.md`](../api/agui.md#the-contract).
 
 ## Context
 
@@ -200,7 +206,7 @@ The four REST interaction operations are deprecated **by configuration, not by a
 
 1. **Until the web migrates:** mounted by default (`agui,chat-api`), and the compose stack sets it
    explicitly. The operations are marked `deprecated: true` in the contract and answer with a
-   `Deprecation` header (RFC 9745).
+   `Deprecation` header (RFC 9745; built, see the status note above).
 2. **When the web runs on AG-UI:** not mounted by default. An operator who still needs them sets
    `ORCH_SURFACES=agui,chat-api`.
 3. **Later:** the crate, the feature and the operations are removed in their own PR.

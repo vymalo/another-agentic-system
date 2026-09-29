@@ -87,7 +87,8 @@ No Cargo features, no environment variables.
 Offline: the in-memory stack from `orch-ports` (feature `testkit`) and the scripted agent, over real
 HTTP; the harness in `tests/support` mounts this surface on `orch_api::router_with_surfaces`. Every
 event the route emits is validated against the vendored AG-UI schema
-(`orch_agui_proto::testkit::assert_json_conforms`).
+(`orch_agui_proto::testkit::assert_json_conforms`). The dev-dependencies `jsonschema` and `serde_norway`
+serve `tests/contract.rs`.
 
 - `src/stream.rs` (unit): where a response starts (a run that opened meanwhile is opened again for the
   reader; frames before the start are folded and not written; an attach) and where it ends.
@@ -107,6 +108,12 @@ event the route emits is validated against the vendored AG-UI schema
   threads with one body, 401, 400, 406).
 - `tests/capabilities.rs`: the document conforms and describes the agent, release channels are declared
   only while the live card lists them, 404 and 401.
+- `tests/contract.rs`: `docs/api/chat-api.yaml` against this surface. It drives `runAgent`,
+  `connectThread` and `getAgentCapabilities` and fails when the statuses the contract documents differ
+  from the ones answered (one named exemption: a store that fails to read, the 503 of `connectThread`),
+  validates every problem, capabilities document and stream frame against the contract's schemas (which
+  reference the vendored AG-UI schema by file; the test checks the reference resolves to it), checks
+  that none of these responses carries `Deprecation`, and that its validator bites.
 
 Against the fake A2A agent and Postgres, see [`orch-e2e`](../e2e/README.md) (`agui_run.rs`, which also
 writes the run goldens `docs/api/examples/agui/run-*.agui.json`; `agui_connect.rs`, with the

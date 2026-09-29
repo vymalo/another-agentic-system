@@ -311,4 +311,6 @@ that edits, renames or deletes an already applied migration. With it set:
 
 The contract conformance test (`crates/surface-chat-api/tests/conformance.rs`)
 starts the real router (resource API plus the chat-api surface) on a TCP port over the in-memory stack, drives every operation and
-validates each response body against the schemas of the contract.
+validates each response body against the schemas of the contract, and checks the `Deprecation` header
+against the contract's `deprecated` flags. `crates/surface-agui/tests/contract.rs` does the same for the
+`/agui/*` operations, whose documented statuses must be the answered ones.

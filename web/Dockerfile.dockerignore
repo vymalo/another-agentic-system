@@ -2,6 +2,7 @@
 # send only what the build needs.
 **
 !docs/api/chat-api.yaml
+!orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json
 !web/**
 web/node_modules
 web/.next
