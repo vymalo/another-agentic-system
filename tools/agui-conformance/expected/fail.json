@@ -1,0 +1,51 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "error:agent_failed"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "error:agent_failed"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "fail please"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "scripted failure",
+        "status": "failed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "failed",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "fail please"
+    }
+  },
+  "pendingInterrupts": []
+}
