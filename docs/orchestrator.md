@@ -252,6 +252,68 @@ What the diagrams cannot say:
 - **Shutdown.** The dispatcher stops its workers and sets `lease_until = now` on its rows, so another
   replica takes them at once ([`orchestrator/README.md`](../orchestrator/README.md#shutdown)).
 
+### Fenced commits
+
+A lease is a promise that lapses, not a lock: a worker paused past its lease (a stopped process, a
+long GC or network stall) resumes believing it still owns the row, while another worker has claimed
+it and is streaming the same task. Renewing the lease cannot help, because the paused worker cannot
+renew. So the store, not the worker, decides. Every claim hands out a **fencing token**, the row's
+`attempts` counter, which grows on each claim. A `Lease { id, owner, attempt }` is good only while
+the row is `inflight`, held by `owner`, at exactly `attempt`. Every write a worker makes on behalf
+of its row carries the lease: `renew_lease`, `mark_sent`, `retry_outbox`, `complete_outbox`, and the
+thread `commit` that records what the agent reported (`Commit.lease`). A commit under a stale lease
+writes nothing and answers `CommitOutcome::Fenced`; `App::apply` reports it as
+`ApplyOutcome::Fenced` without retrying, and the worker logs `lease lost; the late agent result was
+dropped` and stops.
+
+```mermaid
+sequenceDiagram
+  participant A as Worker A (paused)
+  participant S as Store (Postgres)
+  participant B as Worker B
+  A->>S: claim_outbox: row inflight, attempts = 1
+  Note over A: paused past the lease
+  B->>S: claim_outbox: lease expired, attempts = 2
+  B->>S: commit(events, lease attempt 2)
+  S-->>B: Applied
+  Note over A: resumes, the agent finished its turn
+  A->>S: commit(events, lease attempt 1)
+  S->>S: lock thread, then row: attempts is 2, not 1
+  S-->>A: Fenced (nothing written)
+  A->>A: log "lease lost" and stop, no complete_outbox
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Held: claim_outbox, attempts = n
+  Held --> Held: heartbeat renews
+  Held --> Expired: no renewal before lease_until
+  Expired --> Held: same worker renews or commits (nobody re-claimed)
+  Expired --> Superseded: another claim, attempts = n + 1
+  Held --> Superseded: skipped by a cancel, or finished by its own worker
+  Superseded --> Fenced: any write under the old lease
+  Fenced --> [*]: refused, nothing written
+```
+
+What the diagrams cannot say:
+
+- **Expiry alone does not fence.** A lapsed lease that nobody claimed again is still the current
+  claim, so the worker's late result is kept: throwing it away would only redo work. What revokes a
+  lease is a later claim, and a row that left `inflight` (delivered, dead, retried, skipped).
+- **The same owner name is not enough.** The owner is one name per process, and a process that
+  re-claims its own expired row is "the same owner" again. Only `attempt` tells the two claims apart.
+- **Postgres.** `commit` locks the thread row, then checks the claim with
+  `SELECT 1 FROM outbox WHERE id = $1 AND thread_id = $2 AND lease_owner = $3 AND attempts = $4 AND
+  status = 'inflight' FOR SHARE`, before the version and idempotency checks. The share lock keeps a
+  claimer out until the commit ends (`claim_outbox` skips locked rows), so the check cannot go stale.
+  Lock order is thread, then outbox row, then binding; no statement takes a thread lock while
+  holding an outbox row lock, so the two cannot deadlock. No migration: `attempts` and
+  `lease_owner` were already there.
+- **API commits carry no lease** (`None`): a user's message or a cancel is not a claim, and
+  `create_thread` ignores the field.
+- **What is not fenced.** `skip_unsent_delegates` and `release_leases` take no lease; they act on
+  the thread's rows by status and time.
+
 ## Thread state and transitions
 
 **Built.** The states, the events they append and the pure function that decides both are in

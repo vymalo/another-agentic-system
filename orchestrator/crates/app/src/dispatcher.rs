@@ -19,14 +19,14 @@ use orch_core::{
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
-    IdemKey, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendRequest, StoreError,
-    TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
+    IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendRequest,
+    StoreError, TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
-use crate::{App, AppError};
+use crate::{App, AppError, ApplyOutcome};
 
 /// Tunables of the dispatcher.
 #[derive(Debug, Clone)]
@@ -82,6 +82,9 @@ enum DispatchError {
     Store(#[from] StoreError),
     #[error(transparent)]
     App(#[from] AppError),
+    /// A write was refused because the row was claimed again: the late result is dropped.
+    #[error("lease lost")]
+    Fenced,
 }
 
 type Done = Result<(), DispatchError>;
@@ -108,6 +111,8 @@ struct Loaded {
 /// Everything the workers need to know about the delegation they serve.
 struct Ctx {
     row: OutboxItem,
+    /// The claim every write of this delegation is fenced with.
+    lease: Lease,
     thread: ThreadId,
     agent: AgentId,
     endpoint: AgentEndpoint,
@@ -209,13 +214,26 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
+    /// The claim under which `row` was handed to this dispatcher.
+    fn lease(&self, row: &OutboxItem) -> Lease {
+        Lease {
+            id: row.id,
+            owner: self.owner.clone(),
+            attempt: row.attempts,
+        }
+    }
+
     async fn worker(self: Arc<Self>, row: OutboxItem, token: CancellationToken) {
         let id = row.id;
+        let attempt = row.attempts;
+        let lease = self.lease(&row);
         tokio::select! {
             () = token.cancelled() => tracing::debug!(%id, "worker stopped by shutdown"),
-            () = self.heartbeat(id) => tracing::warn!(%id, "lost the lease; worker stopped"),
-            result = self.process(row) => if let Err(e) = result {
-                tracing::error!(%id, error = %report(&e), "outbox row failed; its lease will lapse and it will be retried");
+            () = self.heartbeat(&lease) => tracing::warn!(%id, "lost the lease; worker stopped"),
+            result = self.process(row) => match result {
+                Ok(()) => {}
+                Err(DispatchError::Fenced) => tracing::warn!(%id, attempt, "lease lost; the late agent result was dropped"),
+                Err(e) => tracing::error!(%id, error = %report(&e), "outbox row failed; its lease will lapse and it will be retried"),
             },
         }
         if let Err(e) = self.app.ports().wakeup().notify(Topic::Outbox).await {
@@ -224,14 +242,16 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     /// Renews the lease until it is lost; returns only then.
-    async fn heartbeat(&self, id: orch_ports::OutboxId) {
+    async fn heartbeat(&self, lease: &Lease) {
         loop {
             tokio::time::sleep(self.cfg.heartbeat).await;
             let until = add(self.now(), self.cfg.lease);
-            match self.store().renew_lease(id, &self.owner, until).await {
+            match self.store().renew_lease(lease, until).await {
                 Ok(true) => {}
                 Ok(false) => return,
-                Err(e) => tracing::warn!(%id, error = %report(&e), "lease renewal failed"),
+                Err(e) => {
+                    tracing::warn!(id = %lease.id, error = %report(&e), "lease renewal failed")
+                }
             }
         }
     }
@@ -257,7 +277,7 @@ impl<P: Ports> Dispatcher<P> {
     async fn finish(&self, row: &OutboxItem, outcome: OutboxFinal) -> Done {
         if !self
             .store()
-            .complete_outbox(row.id, &self.owner, outcome, self.now())
+            .complete_outbox(&self.lease(row), outcome, self.now())
             .await?
         {
             tracing::warn!(id = %row.id, "row was no longer leased to us when finishing");
@@ -269,7 +289,7 @@ impl<P: Ports> Dispatcher<P> {
         let next = add(self.now(), after);
         if !self
             .store()
-            .retry_outbox(row.id, &self.owner, next, error)
+            .retry_outbox(&self.lease(row), next, error)
             .await?
         {
             tracing::warn!(id = %row.id, "row was no longer leased to us when scheduling a retry");
@@ -277,10 +297,17 @@ impl<P: Ports> Dispatcher<P> {
         Ok(())
     }
 
-    /// Applies an input, treating a late/replayed update for a finished thread as a no-op.
-    async fn apply_quiet(&self, thread: ThreadId, input: Input, key: String) -> Done {
-        match self.app.apply(thread, input, Some(key), None).await {
-            Ok(_) => Ok(()),
+    /// Applies an input under the row's lease, treating a late/replayed update for a finished
+    /// thread as a no-op. A lost lease is [`DispatchError::Fenced`].
+    async fn apply_quiet(&self, row: &OutboxItem, input: Input, key: String) -> Done {
+        let lease = self.lease(row);
+        match self
+            .app
+            .apply(row.thread_id, input, Some(key), None, Some(&lease))
+            .await
+        {
+            Ok(ApplyOutcome::Fenced) => Err(DispatchError::Fenced),
+            Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => Ok(()),
             Err(AppError::Transition(TransitionError::InvalidInState { state, input })) => {
                 tracing::debug!(?state, input, "dropped late input");
                 Ok(())
@@ -303,7 +330,7 @@ impl<P: Ports> Dispatcher<P> {
             .ok_or_else(|| StoreError::corrupt("binding missing"))?;
         let Some(entry) = self.app.directory().get(&binding.agent_id) else {
             self.apply_quiet(
-                row.thread_id,
+                row,
                 Input::DeliveryFailed {
                     reason: format!("agent '{}' is no longer configured", binding.agent_id),
                     retryable: false,
@@ -322,6 +349,7 @@ impl<P: Ports> Dispatcher<P> {
         };
         let ctx = Ctx {
             row: row.clone(),
+            lease: self.lease(row),
             thread: row.thread_id,
             agent: binding.agent_id.clone(),
             endpoint: entry.endpoint.clone(),
@@ -359,7 +387,7 @@ impl<P: Ports> Dispatcher<P> {
                 return self.finish(&row, OutboxFinal::Delivered).await;
             }
             self.apply_quiet(
-                row.thread_id,
+                &row,
                 Input::DeliveryFailed {
                     reason: "message not delivered: thread already finished".to_owned(),
                     retryable: false,
@@ -392,7 +420,7 @@ impl<P: Ports> Dispatcher<P> {
             };
             if !self
                 .store()
-                .mark_sent(row.id, &self.owner, update, self.now())
+                .mark_sent(&ctx.lease, update, self.now())
                 .await?
             {
                 return Ok(());
@@ -527,7 +555,7 @@ impl<P: Ports> Dispatcher<P> {
         retryable: bool,
     ) -> Done {
         self.apply_quiet(
-            row.thread_id,
+            row,
             Input::DeliveryFailed { reason, retryable },
             format!("dead:{}", row.id),
         )
@@ -561,7 +589,7 @@ impl<P: Ports> Dispatcher<P> {
                         };
                         if !self
                             .store()
-                            .mark_sent(ctx.row.id, &self.owner, update, self.now())
+                            .mark_sent(&ctx.lease, update, self.now())
                             .await?
                         {
                             return Ok(Flow::Lost);
@@ -617,10 +645,17 @@ impl<P: Ports> Dispatcher<P> {
                 };
                 match self
                     .app
-                    .apply(ctx.thread, input, Some(key), Some(binding))
+                    .apply(
+                        ctx.thread,
+                        input,
+                        Some(key),
+                        Some(binding),
+                        Some(&ctx.lease),
+                    )
                     .await
                 {
-                    Ok(_) => Ok(()),
+                    Ok(ApplyOutcome::Fenced) => Err(DispatchError::Fenced),
+                    Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => Ok(()),
                     Err(AppError::Transition(TransitionError::InvalidInState { state, input })) => {
                         tracing::debug!(?state, input, "dropped late agent update");
                         Ok(())
@@ -628,7 +663,14 @@ impl<P: Ports> Dispatcher<P> {
                     Err(e) => Err(e.into()),
                 }
             }
-            None => Ok(self.app.record_binding(ctx.thread, binding).await?),
+            None => match self
+                .app
+                .record_binding(ctx.thread, binding, Some(&ctx.lease))
+                .await?
+            {
+                ApplyOutcome::Fenced => Err(DispatchError::Fenced),
+                ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate => Ok(()),
+            },
         }
     }
 
@@ -719,7 +761,7 @@ impl<P: Ports> Dispatcher<P> {
             .count();
         if skipped > 0 || in_flight == 0 {
             self.apply_quiet(
-                row.thread_id,
+                &row,
                 Input::CancelledBeforeStart,
                 format!("cancelstart:{}", row.id),
             )
@@ -755,7 +797,7 @@ impl<P: Ports> Dispatcher<P> {
         outcome: OutboxFinal,
     ) -> Done {
         self.apply_quiet(
-            row.thread_id,
+            row,
             Input::CancelRejected { reason, retryable },
             format!("cancelrej:{}", row.id),
         )

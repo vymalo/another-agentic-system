@@ -118,6 +118,13 @@ pub struct Commit {
     pub binding: Option<BindingUpdate>,
     /// Time of the commit (`updated_at`, outbox timestamps).
     pub now: Timestamp,
+    /// The claim this commit is made under, for a commit that reports what a dispatcher
+    /// worker learned from an agent; `None` for API commits. When set, the store applies the
+    /// commit only while the row is still `inflight` under exactly this claim (see [`Lease`]),
+    /// otherwise it writes nothing and answers [`CommitOutcome::Fenced`].
+    /// [`ThreadStore::create_thread`] ignores it: a thread that does not exist yet has no
+    /// outbox row to be claimed.
+    pub lease: Option<Lease>,
 }
 
 /// Result of [`ThreadStore::commit`].
@@ -132,6 +139,9 @@ pub enum CommitOutcome {
     },
     /// An idempotency key was already present: nothing was written.
     Duplicate,
+    /// The commit's [`Lease`] is no longer the row's current claim (another worker claimed the
+    /// row since, or it finished, or it was skipped): nothing was written.
+    Fenced,
 }
 
 /// The A2A side of a thread.
@@ -177,6 +187,25 @@ impl OutboxStatus {
     }
 }
 
+/// A worker's claim on an outbox row, and the fencing token of everything it writes.
+///
+/// `attempt` is the row's `attempts` counter as [`ThreadStore::claim_outbox`] left it: it grows
+/// by one on every claim, so of two claims of the same row the later one has the larger
+/// number. A store acts on behalf of a lease only while the row is `inflight`, held by
+/// `owner`, at exactly `attempt`. A worker that was paused past its lease and resumes after
+/// the row was claimed again (even by the same `owner` name) therefore has a token that no
+/// longer matches, and every write it tries is refused. Expiry alone does not revoke a
+/// lease: an expired claim nobody took over is still the current one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    /// The row.
+    pub id: OutboxId,
+    /// The claimer's name.
+    pub owner: String,
+    /// The row's `attempts` at claim time.
+    pub attempt: u32,
+}
+
 /// An outbox row as seen by the dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxItem {
@@ -204,6 +233,18 @@ pub struct OutboxItem {
     pub last_error: Option<String>,
     /// Creation time.
     pub created_at: Timestamp,
+}
+
+impl OutboxItem {
+    /// The claim this row was handed out under: `None` while nobody holds it (`lease_owner`
+    /// is unset).
+    pub fn lease(&self) -> Option<Lease> {
+        self.lease_owner.as_ref().map(|owner| Lease {
+            id: self.id,
+            owner: owner.clone(),
+            attempt: self.attempts,
+        })
+    }
 }
 
 /// A count of the open outbox rows at one instant, for metrics and autoscaling
@@ -322,8 +363,10 @@ impl Classify for StoreError {
 
 /// Threads, their append-only event logs, the agent binding and the outbox.
 ///
-/// Every mutating method is atomic. Outbox methods that take an `owner` only act on a row
-/// that is `inflight` and leased to that owner, and return `false` otherwise (a lost lease).
+/// Every mutating method is atomic. Outbox methods that take a [`Lease`] only act on a row
+/// that is `inflight`, held by the lease's owner at the lease's attempt, and return `false`
+/// otherwise (a lost lease); [`commit`](Self::commit) does the same for its `lease` field and
+/// answers [`CommitOutcome::Fenced`].
 pub trait ThreadStore: Send + Sync + 'static {
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
@@ -353,7 +396,10 @@ pub trait ThreadStore: Send + Sync + 'static {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<ThreadRecord>, StoreError>> + Send;
 
-    /// One transaction. Locks the thread; `version != expected_version` gives
+    /// One transaction. Locks the thread; if `commit.lease` is set and is not the current
+    /// claim of its outbox row (see [`Lease`]; the row must belong to this thread) the result
+    /// is [`CommitOutcome::Fenced`] (nothing written; the lease is checked before the
+    /// version, so a fenced worker never retries); `version != expected_version` gives
     /// [`StoreError::VersionConflict`] (nothing written); an idempotency key already present
     /// in the thread's log gives [`CommitOutcome::Duplicate`] (nothing written); otherwise
     /// appends the events with `seq = last_seq + 1..`, sets state, bumps version, `last_seq`
@@ -393,11 +439,10 @@ pub trait ThreadStore: Send + Sync + 'static {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<OutboxItem>, StoreError>> + Send;
 
-    /// Extends the lease. `false` if the row is no longer leased to `owner`.
+    /// Extends the lease. `false` if `lease` is no longer the row's current claim.
     fn renew_lease(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         until: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
@@ -405,8 +450,7 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// binding update, in one transaction.
     fn mark_sent(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         binding: BindingUpdate,
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
@@ -414,8 +458,7 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Puts the row back to `pending`, due at `next_attempt_at`, and records the error.
     fn retry_outbox(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         next_attempt_at: Timestamp,
         error: String,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
@@ -423,8 +466,7 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Finishes the row.
     fn complete_outbox(
         &self,
-        id: OutboxId,
-        owner: &str,
+        lease: &Lease,
         outcome: OutboxFinal,
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;

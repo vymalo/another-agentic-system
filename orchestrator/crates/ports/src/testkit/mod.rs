@@ -23,6 +23,8 @@ macro_rules! thread_store_conformance {
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
             skip_unsent_delegates release_leases outbox_stats binding_applied_with_commit
+            stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
+            commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
         );
     };
     (@cases $make:path; $($case:ident)*) => {
