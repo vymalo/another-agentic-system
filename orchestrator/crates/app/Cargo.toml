@@ -1,0 +1,26 @@
+[package]
+name = "orch-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Orchestrator application service: thread service (transition + commit loop) and the durable outbox dispatcher, written against the ports only."
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

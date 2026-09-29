@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]  # slice 3 adds "bin/*" with the composition root
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.94"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.dependencies]
+orch-core = { path = "crates/core" }
+orch-ports = { path = "crates/ports" }
+orch-store-postgres = { path = "crates/store-postgres" }
+orch-agent-a2a = { path = "crates/agent-a2a" }
+orch-app = { path = "crates/app" }
+orch-api = { path = "crates/api" }
+orch-testsupport = { path = "crates/testsupport" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+uuid = { version = "1.26", features = ["v7", "serde"] }
+jiff = { version = "0.2.37", features = ["serde"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+futures = "0.3.34"
+axum = "0.8.9"
+tower = "0.5.3"
+tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "json", "uuid", "migrate", "macros"] }
+jiff-sqlx = { version = "0.2", features = ["postgres"] }
+a2a-lf = "0.3.1"
+a2a-client-lf = "0.2.5"
+a2a-server-lf = "0.4.4"
+async-trait = "0.1.92"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt"] }
+serde_norway = "0.9.42"
+jsonschema = { version = "0.58", default-features = false }
+eventsource-stream = "0.2.3"
+proptest = "1"
+chrono = { version = "0.4", default-features = false }
