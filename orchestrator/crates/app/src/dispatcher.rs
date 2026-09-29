@@ -14,7 +14,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, Input, ThreadId, ThreadState, TransitionError,
+    AgentId, AgentTaskState, AgentUpdate, Classify, Input, ThreadId, ThreadState, TransitionError,
+    report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
@@ -175,7 +176,7 @@ impl<P: Ports> Dispatcher<P> {
                             workers.spawn(async move { this.worker(row, token).await });
                         }
                     }
-                    Err(e) => tracing::warn!(error = %e, "claiming outbox rows failed"),
+                    Err(e) => tracing::warn!(error = %report(&e), "claiming outbox rows failed"),
                 }
             }
             tokio::select! {
@@ -191,7 +192,7 @@ impl<P: Ports> Dispatcher<P> {
         }
         while workers.join_next().await.is_some() {}
         if let Err(e) = self.store().release_leases(&self.owner, self.now()).await {
-            tracing::warn!(error = %e, "releasing leases failed");
+            tracing::warn!(error = %report(&e), "releasing leases failed");
         }
     }
 
@@ -201,11 +202,11 @@ impl<P: Ports> Dispatcher<P> {
             () = token.cancelled() => tracing::debug!(%id, "worker stopped by shutdown"),
             () = self.heartbeat(id) => tracing::warn!(%id, "lost the lease; worker stopped"),
             result = self.process(row) => if let Err(e) = result {
-                tracing::error!(%id, error = %e, "outbox row failed; its lease will lapse and it will be retried");
+                tracing::error!(%id, error = %report(&e), "outbox row failed; its lease will lapse and it will be retried");
             },
         }
         if let Err(e) = self.app.ports().wakeup().notify(Topic::Outbox).await {
-            tracing::debug!(error = %e, "wakeup notify failed");
+            tracing::debug!(error = %report(&e), "wakeup notify failed");
         }
     }
 
@@ -217,7 +218,7 @@ impl<P: Ports> Dispatcher<P> {
             match self.store().renew_lease(id, &self.owner, until).await {
                 Ok(true) => {}
                 Ok(false) => return,
-                Err(e) => tracing::warn!(%id, error = %e, "lease renewal failed"),
+                Err(e) => tracing::warn!(%id, error = %report(&e), "lease renewal failed"),
             }
         }
     }
@@ -286,7 +287,7 @@ impl<P: Ports> Dispatcher<P> {
             .store()
             .get_binding(row.thread_id)
             .await?
-            .ok_or_else(|| StoreError::Corrupt("binding missing".to_owned()))?;
+            .ok_or_else(|| StoreError::corrupt("binding missing"))?;
         let Some(entry) = self.app.directory().get(&binding.agent_id) else {
             self.apply_quiet(
                 row.thread_id,
@@ -360,7 +361,7 @@ impl<P: Ports> Dispatcher<P> {
             return self.follow_task(&ctx, task_id).await;
         }
         if row.sent_at.is_some() {
-            return Err(StoreError::Corrupt("sent delegation without a task id".to_owned()).into());
+            return Err(StoreError::corrupt("sent delegation without a task id").into());
         }
 
         // A previous attempt may have reached the agent before we crashed or lost the lease.
@@ -412,9 +413,7 @@ impl<P: Ports> Dispatcher<P> {
                             .get_binding(row.thread_id)
                             .await?
                             .and_then(|b| b.task_id)
-                            .ok_or_else(|| {
-                                StoreError::Corrupt("task id missing after send".to_owned())
-                            })?;
+                            .ok_or_else(|| AppError::internal("task id missing after send"))?;
                         self.follow_task(&ctx, task).await
                     }
                     Flow::Failed(e) => self.send_failed(&ctx.row, e).await,
@@ -424,31 +423,28 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
+    /// How long to wait before the next attempt: the backoff curve, or what the agent asked
+    /// for when that is longer.
+    fn delay(&self, attempts: u32, err: &AgentError) -> Duration {
+        self.backoff(attempts)
+            .max(err.retry_after().unwrap_or_default())
+    }
+
+    /// A delegation failed. The operator-facing texts (outbox `last_error`, the dead row) get
+    /// the whole chain; the chat log gets only what the agent said about the request or fixed
+    /// text for the class, never transport text.
     async fn send_failed(&self, row: &OutboxItem, err: AgentError) -> Done {
         let retryable = err.is_retryable();
+        let operator = report(&err);
         if retryable && row.attempts < self.cfg.max_attempts {
-            tracing::warn!(id = %row.id, attempt = row.attempts, error = %err, "delegation failed; will retry");
+            tracing::warn!(id = %row.id, attempt = row.attempts, error = %operator, class = ?err.class(), "delegation failed; will retry");
             return self
-                .retry(row, self.backoff(row.attempts), err.to_string())
+                .retry(row, self.delay(row.attempts, &err), operator)
                 .await;
         }
-        tracing::warn!(id = %row.id, error = %err, retryable, "delegation dead-lettered");
-        self.apply_quiet(
-            row.thread_id,
-            Input::DeliveryFailed {
-                reason: err.to_string(),
-                retryable,
-            },
-            format!("dead:{}", row.id),
-        )
-        .await?;
-        self.finish(
-            row,
-            OutboxFinal::Dead {
-                error: err.to_string(),
-            },
-        )
-        .await
+        tracing::warn!(id = %row.id, error = %operator, class = ?err.class(), retryable, "delegation dead-lettered");
+        self.give_up(row, err.public_detail(), operator, retryable)
+            .await
     }
 
     /// Resumes a task whose message was already sent: resubscribe, else poll `get_task`.
@@ -464,7 +460,7 @@ impl<P: Ports> Dispatcher<P> {
                 Flow::Disconnected | Flow::Failed(_) => {}
             },
             Err(e) => {
-                tracing::debug!(id = %ctx.row.id, error = %e, "resubscribe unavailable; polling")
+                tracing::debug!(id = %ctx.row.id, error = %report(&e), "resubscribe unavailable; polling")
             }
         }
         self.poll_task(ctx, &handle).await
@@ -485,35 +481,46 @@ impl<P: Ports> Dispatcher<P> {
                     }
                 }
                 Err(AgentError::TaskNotFound(m)) => {
-                    return self
-                        .give_up(&ctx.row, format!("agent lost the task: {m}"), false)
-                        .await;
+                    let reason = format!("agent lost the task: {m}");
+                    return self.give_up(&ctx.row, reason.clone(), reason, false).await;
                 }
                 Err(e) if e.is_retryable() => {
                     failures += 1;
-                    tracing::warn!(id = %ctx.row.id, failures, error = %e, "polling the task failed");
+                    tracing::warn!(id = %ctx.row.id, failures, error = %report(&e), "polling the task failed");
                     if failures >= self.cfg.max_poll_failures {
-                        return self.give_up(&ctx.row, e.to_string(), true).await;
+                        return self
+                            .give_up(&ctx.row, e.public_detail(), report(&e), true)
+                            .await;
                     }
                 }
-                Err(e) => return self.give_up(&ctx.row, e.to_string(), false).await,
+                Err(e) => {
+                    return self
+                        .give_up(&ctx.row, e.public_detail(), report(&e), false)
+                        .await;
+                }
             }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(self.cfg.poll_max);
         }
     }
 
-    async fn give_up(&self, row: &OutboxItem, reason: String, retryable: bool) -> Done {
+    /// Dead-letters the row: `reason` is what the thread's users see, `operator` (the whole
+    /// error chain) is what the outbox row keeps.
+    async fn give_up(
+        &self,
+        row: &OutboxItem,
+        reason: String,
+        operator: String,
+        retryable: bool,
+    ) -> Done {
         self.apply_quiet(
             row.thread_id,
-            Input::DeliveryFailed {
-                reason: reason.clone(),
-                retryable,
-            },
+            Input::DeliveryFailed { reason, retryable },
             format!("dead:{}", row.id),
         )
         .await?;
-        self.finish(row, OutboxFinal::Dead { error: reason }).await
+        self.finish(row, OutboxFinal::Dead { error: operator })
+            .await
     }
 
     /// Consumes envelopes until the turn ends. With `mark_first`, the first envelope records
@@ -571,9 +578,7 @@ impl<P: Ports> Dispatcher<P> {
                     return Ok(if marked {
                         Flow::Disconnected
                     } else {
-                        Flow::Failed(AgentError::Protocol(
-                            "stream ended before the first update".to_owned(),
-                        ))
+                        Flow::Failed(AgentError::protocol("stream ended before the first update"))
                     });
                 }
             }
@@ -671,18 +676,16 @@ impl<P: Ports> Dispatcher<P> {
                         .await
                 }
                 Err(e) if e.is_retryable() && row.attempts < self.cfg.max_cancel_attempts => {
-                    self.retry(&row, self.backoff(row.attempts), e.to_string())
+                    self.retry(&row, self.delay(row.attempts, &e), report(&e))
                         .await
                 }
                 Err(e) => {
                     let retryable = e.is_retryable();
                     self.reject_cancel(
                         &row,
-                        e.to_string(),
+                        e.public_detail(),
                         retryable,
-                        OutboxFinal::Dead {
-                            error: e.to_string(),
-                        },
+                        OutboxFinal::Dead { error: report(&e) },
                     )
                     .await
                 }

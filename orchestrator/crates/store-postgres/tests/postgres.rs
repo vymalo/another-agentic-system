@@ -10,7 +10,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::Timestamp;
 use orch_core::{
-    Actor, AgentId, AgentTarget, EventBody, ThreadId, ThreadState, UserId, UserMessageData,
+    Actor, AgentId, AgentTarget, Classify, ErrorClass, EventBody, ThreadId, ThreadState, UserId,
+    UserMessageData,
 };
 use orch_ports::{
     Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxId, OutboxPayload,
@@ -410,7 +411,76 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
             ),
         )
         .await;
-    assert!(matches!(again, Err(StoreError::Corrupt(_))), "{again:?}");
+    assert!(
+        matches!(again, Err(StoreError::Corrupt { .. })),
+        "{again:?}"
+    );
     assert_eq!(store.list_events(id, 0, 10).await.unwrap().len(), 1);
     assert!(store.list_open_outbox(id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_rejected_statement_is_internal_and_never_retried() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let id = create(&store, vec![]).await;
+    // The deployment lost a table: SQLSTATE 42P01, which waiting does not cure.
+    sqlx::query("DROP TABLE events CASCADE")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let err = store.list_events(id, 0, 10).await.unwrap_err();
+    assert!(matches!(err, StoreError::Internal { .. }), "{err:?}");
+    assert_eq!(err.class(), ErrorClass::Internal);
+    assert!(!err.is_retryable());
+    let source = std::error::Error::source(&err).unwrap();
+    assert!(source.downcast_ref::<sqlx::Error>().is_some());
+}
+
+#[tokio::test]
+async fn a_closed_pool_is_unavailable_and_keeps_the_driver_error() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    store.pool().close().await;
+    let err = store.ping().await.unwrap_err();
+    assert!(matches!(err, StoreError::Unavailable { .. }), "{err:?}");
+    assert!(err.is_retryable());
+    let source = std::error::Error::source(&err).unwrap();
+    assert!(source.downcast_ref::<sqlx::Error>().is_some());
+}
+
+#[tokio::test]
+async fn a_row_that_does_not_parse_is_corrupt() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let id = create(&store, vec![]).await;
+    // A poisoned row: written by hand, valid for the schema and not for this code (a user
+    // message without its text).
+    sqlx::query(
+        "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+         VALUES ($1, 2, now(), 'user_message', '{}', '{\"unexpected\": true}')",
+    )
+    .bind(id.0)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let err = store.list_events(id, 0, 10).await.unwrap_err();
+    assert!(matches!(err, StoreError::Corrupt { .. }), "{err:?}");
+    assert_eq!(err.class(), ErrorClass::Corrupt);
+    assert!(!err.is_retryable(), "a poisoned row is not retried forever");
+    assert!(std::error::Error::source(&err).is_some());
+}
+
+#[tokio::test]
+async fn an_unreachable_database_is_unavailable_without_a_database() {
+    // Nothing listens on port 1; the pool gives up quickly and the store reports it as a
+    // transient failure whose source is the driver's error.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(300))
+        .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+        .unwrap();
+    let store = PgStore::from_pool(pool);
+    let err = store.ping().await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Transient, "{err:?}");
+    assert!(std::error::Error::source(&err).is_some());
 }

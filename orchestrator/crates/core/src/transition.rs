@@ -9,6 +9,7 @@
 //! by `user_message` / `agent_status` and visible through `Thread.state`.
 
 use crate::agent::{AgentTaskState, AgentUpdate};
+use crate::error::{Classify, ErrorClass};
 use crate::event::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
     ThreadStateData, UserMessageData,
@@ -97,6 +98,7 @@ pub enum Command {
 
 /// An input that is not valid in the current state.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum TransitionError {
     /// The thread is finished; the user must start a new one.
     #[error("thread is finished ({state:?})")]
@@ -112,6 +114,16 @@ pub enum TransitionError {
         /// The input's name.
         input: &'static str,
     },
+}
+
+impl Classify for TransitionError {
+    fn class(&self) -> ErrorClass {
+        match self {
+            TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
+                ErrorClass::Rejected
+            }
+        }
+    }
 }
 
 fn append(actor: Actor, body: EventBody) -> Command {
@@ -362,5 +374,34 @@ fn status_input(
                 entered(ThreadState::Cancelled),
             ],
         )),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn class_table() {
+        let errors = [
+            TransitionError::Finished {
+                state: ThreadState::Done,
+            },
+            TransitionError::InvalidInState {
+                state: ThreadState::Queued,
+                input: "cancel",
+            },
+        ];
+        for e in errors {
+            // Exhaustive: a new variant forces a class decision.
+            let expected = match e {
+                TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
+                    ErrorClass::Rejected
+                }
+            };
+            assert_eq!(e.class(), expected);
+            assert!(!e.is_retryable());
+        }
     }
 }

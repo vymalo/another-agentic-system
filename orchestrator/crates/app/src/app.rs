@@ -6,12 +6,12 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentInfo, AgentTarget, Command, Event, EventKind, Input, ThreadId, ThreadRecord, ThreadState,
-    Timestamp, UserId, transition,
+    AgentInfo, AgentTarget, Classify, Command, Event, EventKind, Input, ThreadId, ThreadRecord,
+    ThreadState, Timestamp, UserId, report, transition,
 };
 use orch_ports::{
-    AgentClient, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, NewEvent, NewOutbox,
-    NewThreadRecord, OutboxPayload, Ports, StoreError, ThreadStore, Topic, Wakeup,
+    AgentClient, AgentError, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, NewEvent,
+    NewOutbox, NewThreadRecord, OutboxPayload, Ports, StoreError, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
@@ -138,7 +138,7 @@ impl<P: Ports> App<P> {
 
     async fn notify(&self, topic: Topic) {
         if let Err(e) = self.ports.wakeup().notify(topic).await {
-            tracing::warn!(error = %e, "wakeup notify failed; consumers fall back to polling");
+            tracing::warn!(error = %report(&e), "wakeup notify failed; consumers fall back to polling");
         }
     }
 
@@ -154,7 +154,7 @@ impl<P: Ports> App<P> {
             let (description, releases) = match card {
                 Ok(Ok(card)) => (card.description, card.releases),
                 Ok(Err(e)) => {
-                    tracing::warn!(agent = %entry.endpoint.id, error = %e, "agent card unreadable");
+                    tracing::warn!(agent = %entry.endpoint.id, error = %report(&e), class = ?e.class(), "agent card unreadable");
                     (None, None)
                 }
                 Err(_) => {
@@ -186,11 +186,18 @@ impl<P: Ports> App<P> {
             self.ports.agents().read_card(&entry.endpoint),
         )
         .await;
+        // Fail closed: a release cannot be validated without the live card. That is the
+        // agent's failure, not the caller's mistake.
         let releases = match card {
             Ok(Ok(card)) => card.releases,
-            Ok(Err(_)) | Err(_) => {
-                return Err(AppError::Invalid(
-                    "agent card unreachable; cannot validate release".to_owned(),
+            Ok(Err(e)) => return Err(AppError::upstream(&target.agent_id, e)),
+            Err(_) => {
+                return Err(AppError::upstream(
+                    &target.agent_id,
+                    AgentError::unreachable(format!(
+                        "the agent card did not arrive within {:?}",
+                        self.cfg.card_timeout
+                    )),
                 ));
             }
         };
@@ -302,12 +309,10 @@ impl<P: Ports> App<P> {
             ApplyOutcome::Applied { events, .. } => events
                 .into_iter()
                 .find(|e| e.kind() == EventKind::UserMessage)
-                .ok_or_else(|| {
-                    AppError::Store(StoreError::Corrupt("user_message missing".to_owned()))
-                }),
-            ApplyOutcome::Duplicate => Err(AppError::Store(StoreError::Corrupt(
-                "unexpected duplicate".to_owned(),
-            ))),
+                .ok_or_else(|| AppError::internal("the user message is missing from its commit")),
+            ApplyOutcome::Duplicate => Err(AppError::internal(
+                "a message without an idempotency key was reported as a duplicate",
+            )),
         }
     }
 
@@ -426,7 +431,7 @@ impl<P: Ports> App<P> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(AppError::Store(StoreError::VersionConflict))
+        Err(AppError::Contended)
     }
 
     /// Persists binding fields (task id, state, revision) without changing the thread.
@@ -460,7 +465,7 @@ impl<P: Ports> App<P> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(AppError::Store(StoreError::VersionConflict))
+        Err(AppError::Contended)
     }
 
     /// Replays every event with `seq > after` (`after` beyond the end of the log counts as the
@@ -514,7 +519,9 @@ impl<P: Ports> App<P> {
                         continue;
                     }
                     Ok(_) => {}
-                    Err(e) => tracing::warn!(error = %e, "event stream read failed; retrying"),
+                    Err(e) => {
+                        tracing::warn!(error = %report(&e), "event stream read failed; retrying")
+                    }
                 }
                 // Caught up and the process is going away: end the stream so the client
                 // reconnects (with `Last-Event-ID`) to another replica and shutdown can drain.

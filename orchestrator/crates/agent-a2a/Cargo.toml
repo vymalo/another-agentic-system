@@ -14,6 +14,7 @@ a2a-lf.workspace = true
 a2a-client-lf.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
+jiff.workspace = true
 rustls.workspace = true
 futures.workspace = true
 tokio.workspace = true
@@ -23,7 +24,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 orch-testsupport.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "io-util"] }
 
 [lints]
 workspace = true

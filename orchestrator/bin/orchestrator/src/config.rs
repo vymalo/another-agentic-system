@@ -39,7 +39,7 @@ pub enum ConfigError {
         reason: String,
     },
     /// `AGENTS_FILE` could not be read.
-    #[error("cannot read AGENTS_FILE {}: {source}", path.display())]
+    #[error("cannot read AGENTS_FILE {}", path.display())]
     AgentsFileRead {
         /// The path from `AGENTS_FILE`.
         path: PathBuf,
@@ -549,6 +549,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ConfigError::AgentsFileRead { .. }));
         assert!(err.to_string().contains("/etc/orch/agents.yaml"));
+        // The cause is the source, printed once by the chain and not by the message.
+        assert!(!err.to_string().contains("no such file"));
+        let chain = orch_core::report(&err);
+        assert_eq!(chain.matches("no such file").count(), 1, "{chain}");
     }
 
     #[test]

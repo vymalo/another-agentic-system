@@ -40,16 +40,16 @@ pub(crate) fn to_db(t: Timestamp) -> jiff_sqlx::Timestamp {
 pub(crate) fn enum_str<T: Serialize>(value: &T) -> Result<String, StoreError> {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(s)) => Ok(s),
-        Ok(other) => Err(StoreError::Corrupt(format!(
+        Ok(other) => Err(StoreError::corrupt(format!(
             "enum did not serialise to a string: {other}"
         ))),
-        Err(e) => Err(StoreError::Corrupt(e.to_string())),
+        Err(e) => Err(StoreError::corrupt_with("enum does not serialise", e)),
     }
 }
 
 pub(crate) fn parse_enum<T: DeserializeOwned>(what: &str, s: &str) -> Result<T, StoreError> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
-        .map_err(|_| StoreError::Corrupt(format!("unknown {what} {s:?}")))
+        .map_err(|e| StoreError::corrupt_with(format!("unknown {what} {s:?}"), e))
 }
 
 fn get_ts(row: &PgRow, col: &str) -> Result<Timestamp, StoreError> {
@@ -94,9 +94,9 @@ pub(crate) fn event_from_row(thread: ThreadId, row: &PgRow) -> Result<Event, Sto
     let actor: serde_json::Value = get(row, "actor")?;
     let data: serde_json::Value = get(row, "data")?;
     let body = EventBody::from_parts(parse_enum("event kind", &kind)?, data)
-        .map_err(|e| StoreError::Corrupt(format!("event data: {e}")))?;
-    let actor: Actor = serde_json::from_value(actor)
-        .map_err(|e| StoreError::Corrupt(format!("event actor: {e}")))?;
+        .map_err(|e| StoreError::corrupt_with("event data", e))?;
+    let actor: Actor =
+        serde_json::from_value(actor).map_err(|e| StoreError::corrupt_with("event actor", e))?;
     Ok(Event {
         seq: get(row, "seq")?,
         thread_id: thread,
@@ -125,7 +125,7 @@ pub(crate) fn outbox_from_row(row: &PgRow) -> Result<OutboxItem, StoreError> {
     let status: String = get(row, "status")?;
     let payload: serde_json::Value = get(row, "payload")?;
     let payload: OutboxPayload = serde_json::from_value(payload)
-        .map_err(|e| StoreError::Corrupt(format!("outbox payload: {e}")))?;
+        .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
     let attempts: i32 = get(row, "attempts")?;
     Ok(OutboxItem {
         id: OutboxId(get(row, "id")?),

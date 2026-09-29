@@ -212,7 +212,7 @@ pub(crate) fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
 /// A polled view of a task. An unspecified state is a protocol violation.
 pub(crate) fn snapshot(task: &Task) -> Result<TaskSnapshot, AgentError> {
     let state = state_of(&task.status.state).ok_or_else(|| {
-        AgentError::Protocol(format!("task {} reports an unspecified state", task.id))
+        AgentError::protocol(format!("task {} reports an unspecified state", task.id))
     })?;
     Ok(TaskSnapshot {
         task_id: task.id.clone(),
@@ -748,7 +748,7 @@ mod tests {
         );
 
         let bad = task(TaskState::Unspecified, vec![], None);
-        assert!(matches!(snapshot(&bad), Err(AgentError::Protocol(_))));
+        assert!(matches!(snapshot(&bad), Err(AgentError::Protocol { .. })));
     }
 
     #[test]

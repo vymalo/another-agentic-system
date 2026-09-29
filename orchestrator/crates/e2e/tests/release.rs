@@ -134,7 +134,10 @@ async fn an_unreachable_card_makes_a_release_unselectable_but_plain_runs_still_w
     let (status, _) = chat
         .try_create_thread("coder", "echo x", Some("staging"))
         .await;
-    assert_eq!(status, 400, "release cannot be validated without the card");
+    assert_eq!(
+        status, 502,
+        "release cannot be validated without the card: the agent's failure, not the caller's"
+    );
 }
 
 backends!(

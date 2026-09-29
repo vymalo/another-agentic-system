@@ -100,9 +100,9 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> Starting
   Starting --> Ready: migrated, listener attached, server bound
-  Starting --> [*]: bad config or unreachable database (exit 1)
+  Starting --> [*]: bad config (exit 78), unreachable database (exit 69), listen address taken (exit 71)
   Ready --> Draining: SIGTERM / SIGINT
-  Ready --> [*]: server or dispatcher died (exit 1)
+  Ready --> [*]: server or dispatcher died or panicked (exit 70)
   Draining --> [*]: drained (exit 0)
 ```
 
@@ -158,16 +158,46 @@ depends on all of them.
   declares the release-channels extension with well-formed parameters, and a
   selected release is refused (never run as the default) when the live card no
   longer offers the extension.
-- **Errors.** The SDK drops HTTP statuses, so failures are classified by
+- **Errors.** The card request keeps its HTTP status: 401/403 are
+  `Unauthenticated`, 429 is `RateLimited` (with its `Retry-After`, capped at
+  an hour), 408 and 5xx are `Unreachable`, other 4xx are `Rejected`. The SDK
+  drops the status of a JSON-RPC call, so those failures are classified by
   JSON-RPC code and by the SDK's message prefixes: connection failures are
-  retryable `Unreachable`, an answer that is not JSON-RPC (a proxy's 401) is a
-  retryable-but-bounded `Protocol`, invalid requests and missing extensions are
-  permanent `Rejected`.
+  retryable `Unreachable`, an answer that is not JSON-RPC (a proxy's 401 page)
+  is a retryable-but-bounded `Protocol`, invalid requests and missing
+  extensions are permanent `Rejected`. The transport error is kept as the
+  error's `source` and never reaches the chat.
 - **Limits worth knowing.** `SubscribeToTask` only works for tasks executing in
   the answering process, hence the dispatcher's `GetTask` polling fallback.
   `Task.history` is not replayed. An artifact that is not marked `lastChunk` is
   emitted when the agent's next event arrives. `find_task_by_message` only
   finds messages the agent records in the task history.
+
+## Errors
+
+Every error enum implements `orch_core::Classify`: a variant says what
+happened, its `ErrorClass` says what to do. The dispatcher's retry decision,
+the HTTP status and the exit code all match on the class, never on a variant.
+A message describes its own layer only; `orch_core::report` prints the whole
+chain (`a: b: c`) and is used where an error is flattened: logs and the outbox
+row's `last_error`. What the chat's users see is fixed text per class
+(`AgentError::public_detail`), plus the agent's own message where it gave one
+about the request; transport text (URLs, proxy bodies) stays in the log.
+
+| Error | Class | HTTP (RFC 9457) |
+|---|---|---|
+| thread not found | `NotFound` | 404 |
+| invalid request | `Invalid` | 400 |
+| thread finished, input invalid in the state | `Rejected` | 409 |
+| the optimistic commit loop lost every race | `Conflict` | 503, `Retry-After: 1` |
+| store unreachable | `Transient` | 503, `Retry-After: 5` |
+| an agent is rate limiting (card check) | `RateLimited` | 503, the agent's `Retry-After` |
+| an agent failed (card unreachable, refused) | any | 502 |
+| corrupt data, a rejected statement, a bug | `Corrupt`, `Internal` | 500 |
+
+Exit codes (sysexits.h) are found by walking the error chain: 78 configuration,
+69 Postgres unreachable at boot, 71 listen address unavailable, 70 a half of the
+service stopped or panicked, 1 anything else.
 
 ## MVP simplifications
 

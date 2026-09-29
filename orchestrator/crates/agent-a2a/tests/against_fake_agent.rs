@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, RELEASE_CHANNELS_URI};
-use orch_core::AgentTaskState;
 use orch_core::AgentUpdate;
+use orch_core::{AgentTaskState, Classify, ErrorClass};
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, SendRequest,
     TaskHandle,
@@ -149,8 +149,120 @@ async fn card_errors_are_classified() {
     };
     ep.card_url = format!("http://{closed}/.well-known/agent-card.json");
     let err = client().read_card(&ep).await.unwrap_err();
-    assert!(matches!(err, AgentError::Unreachable(_)), "{err:?}");
+    assert!(matches!(err, AgentError::Unreachable { .. }), "{err:?}");
     assert!(err.is_retryable());
+}
+
+/// A server that answers every request with the given raw HTTP response.
+async fn serve_raw(response: &'static str) -> AgentEndpoint {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0_u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    AgentEndpoint {
+        id: orch_core::AgentId::new("raw"),
+        card_url: format!("http://{addr}/.well-known/agent-card.json"),
+        bearer: None,
+    }
+}
+
+#[tokio::test]
+async fn card_statuses_are_classified_by_what_the_caller_can_do() {
+    let c = client();
+
+    // 429 asks to slow down, and says for how long.
+    let ep = serve_raw(
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let err = c.read_card(&ep).await.unwrap_err();
+    assert!(matches!(err, AgentError::RateLimited { .. }), "{err:?}");
+    assert_eq!(err.class(), ErrorClass::RateLimited);
+    assert_eq!(err.retry_after(), Some(Duration::from_secs(7)));
+    assert!(err.is_retryable());
+
+    // Without the header there is no hint.
+    let ep = serve_raw(
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let err = c.read_card(&ep).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RateLimited);
+    assert_eq!(err.retry_after(), None);
+
+    // A peer cannot park the delivery for a day.
+    let ep = serve_raw(
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let err = c.read_card(&ep).await.unwrap_err();
+    assert_eq!(err.retry_after(), Some(Duration::from_secs(3600)));
+
+    // 401 and 403: other credentials are needed, retrying does not help.
+    for status in ["401 Unauthorized", "403 Forbidden"] {
+        let raw: &'static str = Box::leak(
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .into_boxed_str(),
+        );
+        let err = c.read_card(&serve_raw(raw).await).await.unwrap_err();
+        assert!(matches!(err, AgentError::Unauthenticated { .. }), "{err:?}");
+        assert_eq!(err.class(), ErrorClass::Unauthenticated);
+        assert!(!err.is_retryable());
+    }
+
+    // 503 and 408: the agent (or its proxy) is in trouble, try again later.
+    for status in ["503 Service Unavailable", "408 Request Timeout"] {
+        let raw: &'static str = Box::leak(
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .into_boxed_str(),
+        );
+        let err = c.read_card(&serve_raw(raw).await).await.unwrap_err();
+        assert!(matches!(err, AgentError::Unreachable { .. }), "{err:?}");
+        assert!(err.is_retryable());
+    }
+
+    // Any other 4xx refuses the request for good.
+    let ep =
+        serve_raw("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+    let err = c.read_card(&ep).await.unwrap_err();
+    assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
+    assert!(!err.is_retryable());
+}
+
+#[tokio::test]
+async fn an_unreachable_card_keeps_the_transport_error_as_source_and_out_of_the_message() {
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let ep = AgentEndpoint {
+        id: orch_core::AgentId::new("gone"),
+        card_url: format!("http://{closed}/.well-known/agent-card.json"),
+        bearer: None,
+    };
+    let err = client().read_card(&ep).await.unwrap_err();
+    let source = std::error::Error::source(&err).expect("the transport error is kept");
+    assert!(
+        source.downcast_ref::<reqwest::Error>().is_some(),
+        "{source:?}"
+    );
+    // The public text and the message never carry the address; the operator's report does not
+    // carry the URL either (`without_url`), only the reason.
+    assert!(!err.public_detail().contains("127.0.0.1"));
+    assert!(!err.to_string().contains("127.0.0.1"));
+    assert!(!orch_core::report(&err).contains("127.0.0.1"));
 }
 
 // ---------------------------------------------------------------- streaming
@@ -567,7 +679,7 @@ async fn wrong_or_missing_token_is_an_error_not_a_hang() {
         .await
         .expect("must not hang");
         let err = outcome.unwrap_err();
-        assert!(matches!(err, AgentError::Protocol(_)), "{err:?}");
+        assert!(matches!(err, AgentError::Protocol { .. }), "{err:?}");
         assert!(err.is_retryable());
     }
     assert!(fake.executions().is_empty());

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    Actor, AgentId, AgentTarget, AgentTaskState, EventBody, ThreadId, ThreadState, UserId,
-    UserMessageData,
+    Actor, AgentId, AgentTarget, AgentTaskState, Classify, ErrorClass, EventBody, ThreadId,
+    ThreadState, UserId, UserMessageData,
 };
 use uuid::Uuid;
 
@@ -14,6 +14,11 @@ use crate::{
     BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal,
     OutboxId, OutboxKind, OutboxPayload, OutboxStatus, StoreError, ThreadStore,
 };
+
+/// The class of the error, if any: cases assert classes, never concrete variants or sources.
+fn class_of<T>(res: &Result<T, StoreError>) -> Option<ErrorClass> {
+    res.as_ref().err().map(Classify::class)
+}
 
 const LEASE: Duration = Duration::from_secs(30);
 
@@ -303,16 +308,14 @@ pub async fn commit_contiguous_seq<S: ThreadStore>(store: S) {
         (record.version, record.last_seq, record.state),
         (4, 4, ThreadState::Blocked)
     );
-    assert!(matches!(
-        store
-            .commit(
-                thread_id(404),
-                1,
-                commit(ThreadState::Working, vec![], vec![])
-            )
-            .await,
-        Err(StoreError::NotFound)
-    ));
+    let res = store
+        .commit(
+            thread_id(404),
+            1,
+            commit(ThreadState::Working, vec![], vec![]),
+        )
+        .await;
+    assert_eq!(class_of(&res), Some(ErrorClass::NotFound), "{res:?}");
 }
 
 pub async fn version_conflict_writes_nothing<S: ThreadStore>(store: S) {
@@ -328,7 +331,7 @@ pub async fn version_conflict_writes_nothing<S: ThreadStore>(store: S) {
         ..BindingUpdate::default()
     });
     let res = store.commit(thread_id(1), 99, c).await;
-    assert!(matches!(res, Err(StoreError::VersionConflict)), "{res:?}");
+    assert_eq!(class_of(&res), Some(ErrorClass::Conflict), "{res:?}");
     assert_eq!(
         store.get_thread(None, thread_id(1)).await.unwrap().unwrap(),
         before
@@ -428,7 +431,7 @@ pub async fn concurrent_writers_keep_seq_contiguous<S: ThreadStore>(store: S) {
                 match store.commit(thread_id(1), t.version, c).await {
                     Ok(CommitOutcome::Applied { .. }) => return,
                     Ok(CommitOutcome::Duplicate) => panic!("distinct keys must not collide"),
-                    Err(StoreError::VersionConflict) => tokio::task::yield_now().await,
+                    Err(e) if e.class() == ErrorClass::Conflict => tokio::task::yield_now().await,
                     Err(e) => panic!("{e}"),
                 }
             }

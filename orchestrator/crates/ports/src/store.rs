@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use orch_core::{
-    Actor, AgentId, AgentTarget, AgentTaskState, Event, EventBody, ThreadId, ThreadRecord,
-    ThreadState, UserId,
+    Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
+    ThreadId, ThreadRecord, ThreadState, UserId,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -221,7 +221,11 @@ pub enum OutboxFinal {
 }
 
 /// Store failure.
+///
+/// Adapters box their driver's error as the `source` (ADR 0009: no driver type in a port). A
+/// message describes this layer only; [`report`](orch_core::report) prints the chain.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// The thread does not exist.
     #[error("not found")]
@@ -229,20 +233,73 @@ pub enum StoreError {
     /// The thread changed since it was read; re-read and retry.
     #[error("version conflict")]
     VersionConflict,
-    /// The backing store could not be reached.
-    #[error("store unavailable: {0}")]
-    Unavailable(String),
-    /// Stored data could not be decoded.
-    #[error("corrupt data: {0}")]
-    Corrupt(String),
+    /// The backing store could not be reached, or gave up on a transient condition
+    /// (connection loss, pool timeout, deadlock, serialization failure).
+    #[error("store unavailable")]
+    Unavailable {
+        /// The driver's error.
+        #[source]
+        source: BoxError,
+    },
+    /// Stored data could not be decoded, or breaks an invariant.
+    #[error("corrupt data: {detail}")]
+    Corrupt {
+        /// What is wrong, without secrets.
+        detail: String,
+        /// The decoding error, when there is one.
+        #[source]
+        source: Option<BoxError>,
+    },
+    /// The store failed in a way retrying cannot fix (a rejected statement, a missing table):
+    /// a bug or a broken deployment.
+    #[error("store failed")]
+    Internal {
+        /// The driver's error.
+        #[source]
+        source: BoxError,
+    },
 }
 
 impl StoreError {
-    /// Whether the same operation may succeed later.
-    pub fn is_retryable(&self) -> bool {
+    /// A transient store failure.
+    pub fn unavailable(source: impl Into<BoxError>) -> Self {
+        StoreError::Unavailable {
+            source: source.into(),
+        }
+    }
+
+    /// Bad stored data with no lower error.
+    pub fn corrupt(detail: impl Into<String>) -> Self {
+        StoreError::Corrupt {
+            detail: detail.into(),
+            source: None,
+        }
+    }
+
+    /// Bad stored data caused by `source`.
+    pub fn corrupt_with(detail: impl Into<String>, source: impl Into<BoxError>) -> Self {
+        StoreError::Corrupt {
+            detail: detail.into(),
+            source: Some(source.into()),
+        }
+    }
+
+    /// A failure retrying cannot fix.
+    pub fn internal(source: impl Into<BoxError>) -> Self {
+        StoreError::Internal {
+            source: source.into(),
+        }
+    }
+}
+
+impl Classify for StoreError {
+    fn class(&self) -> ErrorClass {
         match self {
-            StoreError::Unavailable(_) | StoreError::VersionConflict => true,
-            StoreError::NotFound | StoreError::Corrupt(_) => false,
+            StoreError::NotFound => ErrorClass::NotFound,
+            StoreError::VersionConflict => ErrorClass::Conflict,
+            StoreError::Unavailable { .. } => ErrorClass::Transient,
+            StoreError::Corrupt { .. } => ErrorClass::Corrupt,
+            StoreError::Internal { .. } => ErrorClass::Internal,
         }
     }
 }
@@ -383,4 +440,46 @@ pub trait ThreadStore: Send + Sync + 'static {
         &self,
         thread: ThreadId,
     ) -> impl Future<Output = Result<Vec<OutboxItem>, StoreError>> + Send;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn class_table() {
+        let all = [
+            StoreError::NotFound,
+            StoreError::VersionConflict,
+            StoreError::unavailable(std::io::Error::other("down")),
+            StoreError::corrupt("bad row"),
+            StoreError::corrupt_with("bad row", std::io::Error::other("json")),
+            StoreError::internal(std::io::Error::other("syntax")),
+        ];
+        for e in all {
+            // Exhaustive: a new variant forces a class decision.
+            let expected = match &e {
+                StoreError::NotFound => ErrorClass::NotFound,
+                StoreError::VersionConflict => ErrorClass::Conflict,
+                StoreError::Unavailable { .. } => ErrorClass::Transient,
+                StoreError::Corrupt { .. } => ErrorClass::Corrupt,
+                StoreError::Internal { .. } => ErrorClass::Internal,
+            };
+            assert_eq!(e.class(), expected, "{e}");
+        }
+    }
+
+    #[test]
+    fn a_display_never_repeats_its_source() {
+        for e in [
+            StoreError::unavailable(std::io::Error::other("pool timed out")),
+            StoreError::corrupt_with("bad row", std::io::Error::other("bad json")),
+            StoreError::internal(std::io::Error::other("syntax error")),
+        ] {
+            let source = std::error::Error::source(&e).expect("a source").to_string();
+            assert!(!e.to_string().contains(&source), "{e}");
+            assert!(orch_core::report(&e).ends_with(&source));
+        }
+    }
 }

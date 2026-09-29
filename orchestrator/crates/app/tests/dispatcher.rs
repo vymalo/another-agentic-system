@@ -116,13 +116,96 @@ async fn blocked_then_follow_up_continues_the_same_task() {
 async fn transient_send_failures_are_retried_with_backoff() {
     let w = World::new();
     w.agent
-        .fail_next_sends(2, AgentError::Unreachable("boom".into()));
+        .fail_next_sends(2, || AgentError::unreachable("boom"));
     let app = w.app();
     let run = spawn_dispatcher(&app, fast(), "d1");
     let t = create(&app, &alice(), "plain", "echo retry").await;
     wait_state(&app, &alice(), t.id, ThreadState::Done).await;
     assert_eq!(w.agent.sends().len(), 3);
     assert_eq!(shape(&events(&app, &alice(), t.id).await), FIVE);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_rate_limited_agent_is_retried_no_sooner_than_it_asked() {
+    let w = World::new();
+    // The backoff curve of `fast()` starts at 20 ms; the agent asks for 400 ms.
+    w.agent.fail_next_sends(1, || AgentError::RateLimited {
+        retry_after: Some(Duration::from_millis(400)),
+    });
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let started = std::time::Instant::now();
+    let t = create(&app, &alice(), "plain", "echo later").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "retried after {:?}",
+        started.elapsed()
+    );
+    assert_eq!(w.agent.sends().len(), 2);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn transport_text_reaches_the_outbox_and_never_the_chat() {
+    let w = World::new();
+    w.agent.fail_next_sends(10, || {
+        AgentError::unreachable("delivery failed").with_source(std::io::Error::other(
+            "connect to http://10.0.0.7:9000/a2a?token=abc refused",
+        ))
+    });
+    let app = w.app();
+    let mut cfg = fast();
+    cfg.max_attempts = 2;
+    let run = spawn_dispatcher(&app, cfg, "d1");
+    let t = create(&app, &alice(), "plain", "echo nobody").await;
+    let row = w.store.list_open_outbox(t.id).await.unwrap()[0].id;
+    wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
+    let ev = events(&app, &alice(), t.id).await;
+    let chat = serde_json::to_string(&ev).unwrap();
+    assert!(chat.contains("the agent could not be reached"), "{chat}");
+    assert!(
+        !chat.contains("10.0.0.7") && !chat.contains("token=abc"),
+        "{chat}"
+    );
+    let dead = eventually("the row is dead", || async {
+        let r = w.store.get_outbox(row).await.unwrap().unwrap();
+        (r.status == OutboxStatus::Dead).then_some(r)
+    })
+    .await;
+    assert_eq!(
+        dead.last_error.as_deref(),
+        Some(
+            "agent unreachable: delivery failed: connect to http://10.0.0.7:9000/a2a?token=abc refused"
+        )
+    );
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_that_refuses_the_credentials_is_not_retried_and_the_chat_says_so_plainly() {
+    let w = World::new();
+    w.agent.fail_next_sends(10, || {
+        AgentError::unauthenticated("HTTP 401 from https://plain.example.com")
+    });
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "echo denied").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Failed).await;
+    assert_eq!(w.agent.sends().len(), 1, "a refusal is permanent");
+    let ev = events(&app, &alice(), t.id).await;
+    match &ev[1].body {
+        EventBody::Error(e) => {
+            assert!(!e.retryable);
+            assert_eq!(
+                e.message,
+                "the agent did not accept the orchestrator's credentials"
+            );
+            assert!(!e.message.contains("https://"), "{}", e.message);
+        }
+        other => panic!("{other:?}"),
+    }
     run.shutdown().await;
 }
 
@@ -134,6 +217,7 @@ async fn exhausted_retries_dead_letter_into_blocked_and_a_follow_up_recovers() {
     cfg.max_attempts = 3;
     let run = spawn_dispatcher(&app, cfg, "d1");
     let t = create(&app, &alice(), "plain", "down please").await;
+    let row = w.store.list_open_outbox(t.id).await.unwrap()[0].id;
     wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
     let ev = events(&app, &alice(), t.id).await;
     assert_eq!(
@@ -143,10 +227,16 @@ async fn exhausted_retries_dead_letter_into_blocked_and_a_follow_up_recovers() {
     match &ev[1].body {
         EventBody::Error(e) => {
             assert!(e.retryable);
-            assert!(e.message.contains("scripted outage"), "{}", e.message);
+            // The chat gets fixed text for the class, never the transport's own words.
+            assert_eq!(e.message, "the agent could not be reached");
         }
         other => panic!("{other:?}"),
     }
+    // The operator gets the whole chain.
+    let dead = w.store.get_outbox(row).await.unwrap().unwrap();
+    assert_eq!(dead.status, OutboxStatus::Dead);
+    let last_error = dead.last_error.unwrap();
+    assert!(last_error.contains("scripted outage"), "{last_error}");
     assert_eq!(w.agent.sends().len(), 3);
     eventually("dead row", || async {
         let open = w.store.list_open_outbox(t.id).await.unwrap();
@@ -189,7 +279,7 @@ async fn permanent_rejection_fails_the_thread_without_retrying() {
 async fn cancel_before_the_message_reached_the_agent() {
     let w = World::new();
     w.agent
-        .fail_next_sends(1, AgentError::Unreachable("first try fails".into()));
+        .fail_next_sends(1, || AgentError::unreachable("first try fails"));
     let app = w.app();
     let mut cfg = fast();
     cfg.backoff_base = Duration::from_secs(3600);

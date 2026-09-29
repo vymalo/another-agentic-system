@@ -15,7 +15,7 @@ use crate::codec::{
     binding_from_row, enum_str, event_from_row, outbox_cols, outbox_from_row, thread_cols,
     thread_from_row, to_db, ts,
 };
-use crate::error::{is_unique_violation, store_err};
+use crate::error::{is_unique_violation, migrate_err, store_err};
 use crate::wakeup::{CHANNEL_OUTBOX, CHANNEL_THREAD};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -73,13 +73,11 @@ impl PgStore {
     /// it applied in `_sqlx_migrations`, so a second runner finds nothing left to do.
     ///
     /// # Errors
-    /// [`StoreError::Unavailable`] if the database rejects a migration or is unreachable;
-    /// [`StoreError::Corrupt`] if an applied migration was edited afterwards.
+    /// [`StoreError::Unavailable`] if the database is unreachable; [`StoreError::Internal`] if
+    /// it rejects a migration's statements; [`StoreError::Corrupt`] if an applied migration was
+    /// edited afterwards.
     pub async fn migrate(&self) -> Result<(), StoreError> {
-        MIGRATOR.run(&self.pool).await.map_err(|e| match e {
-            sqlx::migrate::MigrateError::Execute(e) => store_err(e),
-            other => StoreError::Corrupt(format!("migration: {other}")),
-        })
+        MIGRATOR.run(&self.pool).await.map_err(migrate_err)
     }
 }
 
@@ -121,8 +119,8 @@ async fn insert_events(
     let mut stored = Vec::with_capacity(events.len());
     for (offset, new) in (0_i64..).zip(events) {
         let seq = first_seq + offset;
-        let actor =
-            serde_json::to_value(&new.actor).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let actor = serde_json::to_value(&new.actor)
+            .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
         sqlx::query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -138,7 +136,7 @@ async fn insert_events(
         .await
         .map_err(|e| {
             if is_unique_violation(&e, Some("events_idempotency")) {
-                StoreError::Corrupt("the same idempotency key twice in one commit".to_owned())
+                StoreError::corrupt("the same idempotency key twice in one commit")
             } else {
                 store_err(e)
             }
@@ -161,8 +159,8 @@ async fn insert_outbox(
     now: Timestamp,
 ) -> Result<(), StoreError> {
     for row in rows {
-        let payload =
-            serde_json::to_value(&row.payload).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let payload = serde_json::to_value(&row.payload)
+            .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
         sqlx::query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, \
              created_at, updated_at) VALUES ($1, $2, $3, $4, 'pending', $5, $5, $5)",
@@ -238,7 +236,7 @@ impl ThreadStore for PgStore {
         .await;
         if let Err(e) = inserted {
             return Err(if is_unique_violation(&e, None) {
-                StoreError::Corrupt("thread id already exists".to_owned())
+                StoreError::corrupt("thread id already exists")
             } else {
                 store_err(e)
             });

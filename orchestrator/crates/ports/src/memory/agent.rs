@@ -149,11 +149,11 @@ impl ScriptedAgent {
         }
     }
 
-    /// The next `n` sends fail with `error`.
-    pub fn fail_next_sends(&self, n: usize, error: AgentError) {
+    /// The next `n` sends fail with what `error` builds (an `AgentError` is not `Clone`).
+    pub fn fail_next_sends(&self, n: usize, error: impl Fn() -> AgentError) {
         let mut st = self.state();
         for _ in 0..n {
-            st.fail_sends.push_back(error.clone());
+            st.fail_sends.push_back(error());
         }
     }
 
@@ -335,7 +335,7 @@ impl AgentClient for ScriptedAgent {
             agent: ep.id.clone(),
         });
         if st.cards_down.contains(&ep.id) {
-            return Err(AgentError::Unreachable("card unreachable".to_owned()));
+            return Err(AgentError::unreachable("card unreachable"));
         }
         Ok(st.cards.get(&ep.id).cloned().unwrap_or(AgentCardInfo {
             description: Some("scripted agent".to_owned()),
@@ -360,7 +360,7 @@ impl AgentClient for ScriptedAgent {
             }
             match script.as_str() {
                 "fail" => return Err(AgentError::Rejected("scripted failure".to_owned())),
-                "down" => return Err(AgentError::Unreachable("scripted outage".to_owned())),
+                "down" => return Err(AgentError::unreachable("scripted outage")),
                 _ => {}
             }
             let existing = req

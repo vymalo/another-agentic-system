@@ -163,7 +163,7 @@ fn a_missing_database_url_is_fatal_and_named() {
         ],
     );
     let status = run.wait(Duration::from_secs(10));
-    assert!(!status.success());
+    assert_eq!(status.code(), Some(78), "EX_CONFIG");
     let log = run.log();
     assert!(log.contains("DATABASE_URL is required"), "{log}");
     assert!(!log.contains(TOKEN), "a secret leaked into the log");
@@ -182,7 +182,7 @@ fn a_missing_agent_token_is_fatal_before_anything_connects() {
         ],
     );
     let status = run.wait(Duration::from_secs(10));
-    assert!(!status.success());
+    assert_eq!(status.code(), Some(78), "EX_CONFIG");
     let log = run.log();
     assert!(log.contains("SMOKE_AGENT_TOKEN"), "{log}");
     assert!(log.contains("unset or empty"), "{log}");
@@ -202,10 +202,37 @@ fn an_unreachable_database_is_fatal() {
     );
     // sqlx gives up on an unreachable database after its 30 s acquire timeout.
     let status = run.wait(Duration::from_secs(90));
-    assert!(!status.success());
+    assert_eq!(status.code(), Some(69), "EX_UNAVAILABLE");
     let log = run.log();
     assert!(log.contains("cannot connect to Postgres"), "{log}");
     assert!(!log.contains("nobody:pw"), "the database URL leaked: {log}");
+}
+
+#[tokio::test]
+async fn a_taken_listen_address_is_fatal_with_its_own_exit_code() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = taken.local_addr().unwrap().to_string();
+    let database_url = database_url_of(&db);
+    let mut run = spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", &database_url),
+            ("LISTEN_ADDR", &addr),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    let status = run.wait(Duration::from_secs(30));
+    assert_eq!(status.code(), Some(71), "EX_OSERR: {}", run.log());
+    let log = run.log();
+    assert!(log.contains("cannot listen on"), "{log}");
+    drop(taken);
 }
 
 #[tokio::test]

@@ -113,6 +113,7 @@ proptest! {
                     let is_agent = matches!(input, Input::Agent { .. });
                     prop_assert!(is_agent);
                 }
+                Err(other) => prop_assert!(false, "unexpected transition error: {other}"),
             }
         }
         // (d) from every non-terminal state, `Completed` reaches Done.
