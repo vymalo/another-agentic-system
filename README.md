@@ -7,6 +7,7 @@ and hand back a pull request. You read the chat surface.
 
 > **Status: MVP steps 1–2 are built** — the orchestrator (`orchestrator/`) and
 > the chat surface (`web/`); later steps are still design ([MVP](docs/mvp.md)).
+> What exists, with diagrams: [Architecture: as built](docs/architecture.md#as-built).
 > Decisions are recorded as ADRs; what is not yet verified is listed in
 > [open questions](docs/open-questions.md).
 
@@ -19,15 +20,21 @@ in Postgres.
 
 ```mermaid
 flowchart LR
-  you((You)) -- chat --> cp[Control plane<br/>Next.js + assistant-ui]
-  cp <-- events --> db[(Postgres / CNPG<br/>chat · job ledger · inbox/outbox)]
-  db <--> orch[Orchestrator<br/>stateless Rust replicas]
-  ext[Other systems · MCP clients · webhooks · timers] -- A2A / MCP / HTTP --> orch
+  you((You)) -- browser --> edge[Edge proxy<br/>oauth2-proxy]
+  edge -- UI --> cp[Control plane<br/>Next.js + assistant-ui]
+  edge -- "/api/*" --> orch[Orchestrator<br/>stateless Rust replicas]
+  orch <--> db[(Postgres / CNPG<br/>chat · threads · outbox)]
   orch -- A2A --> agents[Agents — any A2A host<br/>another-agentic-platform · kagent · …]
-  orch -- MCP --> tools[Tools: GitHub, docs, search…]
-  orch -- OpenAI-compatible --> gw[Model endpoint<br/>EAIG / Agent Router · AISIX · …]
   agents -- push branch --> git[(git → PR)]
+  ext[Other systems · MCP clients · webhooks · timers]:::planned -. A2A / MCP / HTTP .-> orch
+  orch -. MCP .-> tools[Tools: GitHub, docs, search…]:::planned
+  orch -. OpenAI-compatible .-> gw[Model endpoint<br/>EAIG / Agent Router · AISIX · …]:::planned
+  classDef planned stroke-dasharray: 5 5,fill:none
 ```
+
+Solid is built, dashed is planned. The web serves the UI only; the browser talks to the
+orchestrator through the edge. Component, request and state diagrams:
+[Architecture](docs/architecture.md#as-built).
 
 ## Principles
 
@@ -46,9 +53,10 @@ flowchart LR
 
 | Document | What it covers |
 |---|---|
-| [Architecture](docs/architecture.md) | Components, agent hosts, job flow and lifecycle, where it runs |
-| [Orchestrator](docs/orchestrator.md) | Ports & adapters, event/command model, inbox/outbox, core types, data model, crate layout, testing |
-| [MVP](docs/mvp.md) | Build order, smallest working loop first |
+| [Architecture](docs/architecture.md) | Components, agent hosts, **as built** (component diagram, a chat turn, thread state, AG-UI planned against built), the target job flow and lifecycle, where it runs |
+| [Orchestrator](docs/orchestrator.md) | Ports & adapters, the crate dependency graph, event flow (design against built), outbox lifecycle, transition table, core types, data model, testing |
+| [Orchestrator workspace](orchestrator/README.md) | Running it, configuration, shutdown, error classes; each crate has its own README (role, API, environment, tests) |
+| [MVP](docs/mvp.md) | Build order, smallest working loop first, with what is built |
 | [Chat API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health) and the deprecated REST interaction endpoints |
 | [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
