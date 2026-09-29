@@ -78,6 +78,10 @@ jobs:
           workspaces: "orchestrator -> target"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The binary without its surfaces (each is a Cargo feature): it must still build and its
+      # configuration must still be valid.
+      - run: cargo clippy -p orchestrator --no-default-features --bins --locked -- -D warnings
+      - run: cargo test -p orchestrator --no-default-features --bins --locked
       - run: cargo test --workspace --locked
 
   image:

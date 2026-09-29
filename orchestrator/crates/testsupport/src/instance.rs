@@ -69,7 +69,12 @@ impl TestInstance {
         let dispatcher = dispatcher.map(|config| {
             tokio::spawn(Dispatcher::new(Arc::clone(&app), config, owner).run(shutdown.clone()))
         });
-        let router = orch_api::router(app, api);
+        let keepalive = api.sse_keepalive;
+        let router = orch_api::router_with_surfaces(
+            Arc::clone(&app),
+            api,
+            vec![orch_surface_chat_api::routes(app, keepalive)],
+        );
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });

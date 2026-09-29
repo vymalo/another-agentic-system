@@ -1,4 +1,10 @@
-//! The chat HTTP API, implementing `docs/api/chat-api.yaml` over [`orch_app::App`].
+//! The HTTP edge of the orchestrator over [`orch_app::App`]: proxy-identity auth, RFC 9457
+//! problems, the resource API (agents, thread list and details, cancel) and health, in
+//! `docs/api/chat-api.yaml`.
+//!
+//! Interaction surfaces (the legacy chat API, later AG-UI) are separate crates. Each builds
+//! [`SurfaceRoutes`], and [`router_with_surfaces`] mounts them behind the same identity layer,
+//! so a surface cannot forget authentication.
 //!
 //! Identity comes from `X-Auth-Request-Email` (set by oauth2-proxy). Requests without it are
 //! refused with 401 everywhere except `/healthz` and `/readyz` (fail closed); the optional
@@ -9,7 +15,7 @@ mod auth;
 mod extract;
 mod problem;
 mod routes;
-mod sse;
+pub mod sse;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +30,10 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-pub use auth::AuthConfig;
-pub use problem::Problem;
+pub use auth::{AuthConfig, IDENTITY_HEADER};
+pub use extract::{ApiJson, ApiQuery};
+pub use problem::{ApiError, Problem};
+pub use routes::parse_thread_id;
 
 /// Everything configurable about the router.
 #[derive(Debug, Clone)]
@@ -33,6 +41,7 @@ pub struct ApiConfig {
     /// Identity handling.
     pub auth: AuthConfig,
     /// Interval of the SSE `: keepalive` comment (15 s per the contract; shorter in tests).
+    /// Not used by the resource API itself: surfaces read it and pass it to their streams.
     pub sse_keepalive: Duration,
     /// Request timeout for everything except the SSE stream.
     pub request_timeout: Duration,
@@ -50,54 +59,88 @@ impl Default for ApiConfig {
 
 pub(crate) struct ApiState<P: Ports> {
     pub(crate) app: Arc<App<P>>,
-    pub(crate) keepalive: Duration,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
     fn clone(&self) -> Self {
         ApiState {
             app: Arc::clone(&self.app),
-            keepalive: self.keepalive,
         }
     }
 }
 
-/// Builds the router for every operation of the contract.
+/// The routes an interaction surface contributes, already bound to their own state.
+///
+/// `plain` routes get the request timeout; `streaming` routes (SSE) do not. Both sit behind
+/// the identity layer once mounted by [`router_with_surfaces`], and a handler can take
+/// `Extension<orch_core::UserId>`.
+#[derive(Debug, Default)]
+pub struct SurfaceRoutes {
+    plain: Router,
+    streaming: Router,
+}
+
+impl SurfaceRoutes {
+    /// No routes.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds request/response routes (subject to the request timeout).
+    #[must_use]
+    pub fn plain(mut self, routes: Router) -> Self {
+        self.plain = self.plain.merge(routes);
+        self
+    }
+
+    /// Adds streaming routes (no timeout).
+    #[must_use]
+    pub fn streaming(mut self, routes: Router) -> Self {
+        self.streaming = self.streaming.merge(routes);
+        self
+    }
+}
+
+/// Builds the router for the resource API and health, with no interaction surface mounted.
 pub fn router<P: Ports>(app: Arc<App<P>>, cfg: ApiConfig) -> Router {
-    let state = ApiState {
-        app,
-        keepalive: cfg.sse_keepalive,
-    };
+    router_with_surfaces(app, cfg, Vec::new())
+}
+
+/// Builds the router for the resource API and health, plus the routes of `surfaces`.
+///
+/// # Panics
+///
+/// Like axum's `Router::merge`, when two surfaces (or a surface and the resource API) route
+/// the same method and path.
+pub fn router_with_surfaces<P: Ports>(
+    app: Arc<App<P>>,
+    cfg: ApiConfig,
+    surfaces: Vec<SurfaceRoutes>,
+) -> Router {
+    let state = ApiState { app };
     let health = Router::new()
         .route("/healthz", get(routes::healthz::<P>))
-        .route("/readyz", get(routes::readyz::<P>));
-    let plain = Router::new()
+        .route("/readyz", get(routes::readyz::<P>))
+        .with_state(state.clone());
+    let resource = Router::new()
         .route("/api/agents", get(routes::list_agents::<P>))
-        .route(
-            "/api/threads",
-            get(routes::list_threads::<P>).post(routes::create_thread::<P>),
-        )
+        .route("/api/threads", get(routes::list_threads::<P>))
         .route("/api/threads/{thread_id}", get(routes::get_thread::<P>))
-        .route(
-            "/api/threads/{thread_id}/events",
-            get(routes::list_events::<P>),
-        )
-        .route(
-            "/api/threads/{thread_id}/messages",
-            post(routes::post_message::<P>),
-        )
         .route(
             "/api/threads/{thread_id}/cancel",
             post(routes::cancel_thread::<P>),
         )
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            cfg.request_timeout,
-        ));
-    let streaming = Router::new().route(
-        "/api/threads/{thread_id}/stream",
-        get(sse::stream_events::<P>),
-    );
+        .with_state(state);
+    let mut plain = resource;
+    let mut streaming = Router::new();
+    for surface in surfaces {
+        plain = plain.merge(surface.plain);
+        streaming = streaming.merge(surface.streaming);
+    }
+    let plain = plain.layer(TimeoutLayer::with_status_code(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        cfg.request_timeout,
+    ));
     // The identity layer wraps every non-health path, unknown ones included.
     let api = plain
         .merge(streaming)
@@ -110,7 +153,6 @@ pub fn router<P: Ports>(app: Arc<App<P>>, cfg: ApiConfig) -> Router {
     Router::new()
         .merge(health)
         .merge(api)
-        .with_state(state)
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::x_request_id())

@@ -116,7 +116,12 @@ impl Harness {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let router = orch_api::router(Arc::clone(&app), api);
+        let keepalive = api.sse_keepalive;
+        let router = orch_api::router_with_surfaces(
+            Arc::clone(&app),
+            api,
+            vec![orch_surface_chat_api::routes(Arc::clone(&app), keepalive)],
+        );
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });

@@ -68,7 +68,7 @@ const RETRY_AFTER_UNAVAILABLE: u64 = 5;
 
 /// What a handler can `?`: an application failure, or a problem already shaped by the API
 /// layer (a malformed query, an unknown route) that must keep its own status.
-pub(crate) enum ApiError {
+pub enum ApiError {
     /// Mapped by [`Classify::class`] (RFC 9457, see [`problem_for`]).
     App(AppError),
     /// Already a problem.

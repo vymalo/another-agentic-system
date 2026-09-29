@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use crate::problem::Problem;
 
 /// `Json<T>` whose rejections are 400 problems (bad JSON, missing fields, wrong content type).
-pub(crate) struct ApiJson<T>(pub T);
+pub struct ApiJson<T>(pub T);
 
 impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
     type Rejection = Problem;
@@ -24,7 +24,7 @@ fn json_problem(rejection: &JsonRejection) -> Problem {
 }
 
 /// `Query<T>` whose rejections are 400 problems.
-pub(crate) struct ApiQuery<T>(pub T);
+pub struct ApiQuery<T>(pub T);
 
 impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for ApiQuery<T> {
     type Rejection = Problem;

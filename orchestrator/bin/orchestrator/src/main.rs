@@ -1,5 +1,6 @@
-//! The orchestrator service. Configuration is read from the environment (see the README);
-//! `boot` composes the adapters and `config` parses the environment and the agent list.
+//! The orchestrator service. Configuration is read from flags with environment fallback (see
+//! the README and `--help`); `boot` composes the adapters and `config` parses and validates the
+//! flags, the environment and the agent list.
 
 mod boot;
 mod config;
@@ -8,7 +9,8 @@ use std::process::ExitCode;
 
 use anyhow::Context as _;
 use boot::Fatal;
-use config::{Config, ConfigError, LogFormat};
+use clap::Parser as _;
+use config::{Args, Config, ConfigError, LogFormat};
 use orch_core::{Classify as _, ErrorClass};
 use orch_ports::StoreError;
 use tracing_subscriber::EnvFilter;
@@ -80,17 +82,18 @@ fn exit_code(err: &anyhow::Error) -> u8 {
     1
 }
 
-async fn run() -> anyhow::Result<()> {
-    let cfg = Config::from_process_env().context("reading the configuration")?;
+async fn run(args: Args) -> anyhow::Result<()> {
+    let cfg = Config::from_args(args).context("reading the configuration")?;
     boot::run(cfg, termination()).await
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    init_tracing(LogFormat::parse(
-        std::env::var("LOG_FORMAT").ok().as_deref(),
-    ));
-    match run().await {
+    // `--help` and `--version` exit 0 here, and a malformed command line exits 2 (clap's usage
+    // error); every problem with a *value* is a `ConfigError`, exit 78, after tracing is up.
+    let args = Args::parse();
+    init_tracing(LogFormat::parse(args.log_format.as_deref()));
+    match run(args).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             // One structured line, so a log collector sees why the process died: every layer

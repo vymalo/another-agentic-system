@@ -1,7 +1,8 @@
 # orchestrator (binary)
 
 The orchestrator service: the composition root that wires the Postgres store,
-the A2A adapter, the dispatcher and the chat API into one stateless process.
+the A2A adapter, the dispatcher, the resource API and the interaction surfaces
+chosen by `ORCH_SURFACES` into one stateless process.
 
 ## Where it sits
 
@@ -12,7 +13,8 @@ implementations
 `ThreadStore` and `Wakeup`, [`orch-agent-a2a`](../../crates/agent-a2a/README.md)
 for `AgentClient`, the system clock and UUIDv7 ids. It has no logic of its own:
 what the service does lives in [`orch-app`](../../crates/app/README.md) and
-[`orch-api`](../../crates/api/README.md). Processes are stateless; the only
+[`orch-api`](../../crates/api/README.md) and the surface crates
+([`orch-surface-chat-api`](../../crates/surface-chat-api/README.md)). Processes are stateless; the only
 persistence is Postgres
 ([ADR 0001](../../../docs/decisions/0001-rust-state-machine-on-postgres.md)).
 Running it, the container image, configuration and shutdown are documented in
@@ -24,10 +26,12 @@ Running it, the container image, configuration and shutdown are documented in
 | File | What |
 |---|---|
 | `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` half of the service stopped, `1` otherwise) |
-| `src/config.rs` | `Config`, `LogFormat`, `ConfigError`: the environment and `AGENTS_FILE`, parsed through closures so tests never touch the process environment; every problem names the variable, file or agent at fault and carries no secret |
-| `src/boot.rs` | `run(cfg, shutdown)`: builds the adapters, migrates, serves HTTP and the dispatcher until told to stop, drains gracefully |
+| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
+| `src/boot.rs` | `run(cfg, shutdown)`: builds the adapters, migrates, mounts the configured surfaces on the resource API, serves HTTP and the dispatcher until told to stop, drains gracefully |
 
 ## Environment
+
+Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on; `orchestrator --help`), and a flag wins over its variable.
 
 | Variable | Default | |
 |---|---|---|
@@ -39,6 +43,7 @@ Running it, the container image, configuration and shutdown are documented in
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
+| `ORCH_SURFACES` | `chat-api` | comma-separated surfaces to mount (`--surfaces`); unknown, empty, repeated or not compiled in is a startup error |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
 
@@ -50,14 +55,24 @@ noted in `src/main.rs`.
 
 ## Features
 
-None. The binary is `orchestrator` (`cargo run -p orchestrator`).
+| Feature | Default | Compiles in |
+|---|---|---|
+| `surface-chat-api` | yes | [`orch-surface-chat-api`](../../crates/surface-chat-api/README.md), the surface name `chat-api` |
+
+The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
+named but not compiled in stops startup with an error naming its feature. The
+binary is `orchestrator` (`cargo run -p orchestrator`).
 
 ## Tests
 
-* Unit tests in `src/config.rs`: no database, no environment.
+* Unit tests in `src/config.rs`: no database, no environment (defaults, the
+  environment/flag mapping, unknown, empty and repeated surfaces, a surface not
+  compiled in, `--help` naming every variable).
 * `tests/smoke.rs`: the built executable as a process. Configuration-error
   tests always run (the unreachable-database one waits out sqlx's 30 s
-  connect timeout). With a database: `/healthz`, `/readyz`, 401 without
+  connect timeout). The CLI tests spawn the executable: `--help`, each variable
+  read from the environment alone, a flag over its variable, a usage error, and
+  `--surfaces chat-api` serving the legacy routes. With a database: `/healthz`, `/readyz`, 401 without
   identity, a thread completed through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
   database with a SIGKILL mid-task.

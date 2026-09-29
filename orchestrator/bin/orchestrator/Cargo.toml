@@ -5,21 +5,28 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The orchestrator service: the composition root that wires the Postgres store, the A2A adapter, the dispatcher and the chat API."
+description = "The orchestrator service: the composition root that wires the Postgres store, the A2A adapter, the dispatcher, the resource API and the interaction surfaces chosen by ORCH_SURFACES."
 readme = "README.md"
 
 [[bin]]
 name = "orchestrator"
 path = "src/main.rs"
 
+[features]
+default = ["surface-chat-api"]
+# The legacy chat API interaction routes (createThread, postMessage, listEvents, streamEvents).
+surface-chat-api = ["dep:orch-surface-chat-api"]
+
 [dependencies]
 orch-core.workspace = true
 orch-ports.workspace = true
 orch-app.workspace = true
 orch-api.workspace = true
+orch-surface-chat-api = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-store-postgres.workspace = true
 anyhow.workspace = true
+clap.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_norway.workspace = true
