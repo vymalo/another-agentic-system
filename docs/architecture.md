@@ -41,7 +41,7 @@ state is the job ledger and event log (the chat) in Postgres.
 |---|---|---|
 | **Orchestrator** (Rust, this repo) | Durable job state machine; decides what happens next | Stateless replicas over Postgres. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md)) |
 | **Postgres (CNPG)** | Job ledger, inbox/outbox, event log (= the chat), timers | Also the work queue (`SKIP LOCKED`) and live-update bus (`LISTEN/NOTIFY`). |
-| **Control plane** (Next.js + assistant-ui, this repo) | Chat surface and job list | `useExternalStoreRuntime`: messages come from the event log. ([ADR 0006](decisions/0006-assistant-ui-external-store.md)) |
+| **Control plane** (Next.js + assistant-ui, this repo) | Chat surface and job list | Messages come from the event log, projected to AG-UI 1.0 ([ADR 0006](decisions/0006-assistant-ui-external-store.md), [ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md)); generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)). |
 | **Agents** (external) | Planner, coding workers, reviewers, specialists | Anything reachable by an A2A agent-card URL. |
 | **Tools** (external) | GitHub, docs, search, … | MCP servers. |
 | **Model endpoint** (external) | The orchestrator's own model calls | Any OpenAI-compatible endpoint — EAIG / Agent Router, AISIX, … ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)) |

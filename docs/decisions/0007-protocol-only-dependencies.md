@@ -1,6 +1,10 @@
 # ADR 0007 — Protocol-only dependencies: an agnostic orchestration layer
 
-- **Status:** accepted (2026-09-28)
+- **Status:** accepted (2026-09-28). Amended (2026-09-29) by
+  [ADR 0012](0012-ag-ui-user-facing-protocol.md): the *In* row gains AG-UI (server), the
+  user-facing protocol; the chat API keeps its resource operations and its interaction
+  operations are deprecated. Generative UI is A2UI, a standard A2A extension
+  ([ADR 0013](0013-a2ui-generative-ui.md)).
 
 ## Context
 
@@ -15,7 +19,7 @@ This system depends on **protocols only**:
 
 | Direction | Protocols |
 |---|---|
-| In | A2A (server), MCP (server), webhooks, chat API, timers |
+| In | A2A (server), MCP (server), AG-UI (server, ADR 0012), webhooks, chat API (resources; interaction deprecated), timers |
 | Out | A2A (client), MCP (client), webhooks, chat, OpenAI-compatible model endpoint (ADR 0005) |
 
 It has **no dependency on any agent host**: no Kubernetes API access, no

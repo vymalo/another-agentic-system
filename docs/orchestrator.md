@@ -26,6 +26,12 @@ The orchestrator is simultaneously:
 | Webhooks | GitHub, CI, Slack events | Slack posts, outgoing webhooks |
 | Timers | Scheduled events (timeouts, reminders, cron) | Schedules new timers |
 
+The chat row's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
+small REST resource API beside it ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
+binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, the legacy chat API, later
+A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
+(`ORCH_SURFACES`).
+
 Every event records its **origin**. A `Reply` command goes back to wherever
 the request came from: a job started over A2A gets A2A task updates; one
 started over MCP gets MCP progress notifications; one started in the chat gets
