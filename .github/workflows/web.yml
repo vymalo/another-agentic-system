@@ -6,10 +6,10 @@ name: Web
 
 on:
   pull_request:
-    paths: ["web/**", "docs/api/chat-api.yaml", ".github/workflows/web.yml"]
+    paths: ["web/**", "docs/api/chat-api.yaml", "docs/api/examples/**", ".github/workflows/web.yml"]
   push:
     branches: [main]
-    paths: ["web/**", "docs/api/chat-api.yaml", ".github/workflows/web.yml"]
+    paths: ["web/**", "docs/api/chat-api.yaml", "docs/api/examples/**", ".github/workflows/web.yml"]
 
 permissions:
   contents: read
