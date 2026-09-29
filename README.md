@@ -21,7 +21,7 @@ in Postgres.
 ```mermaid
 flowchart LR
   you((You)) -- browser --> edge[Edge proxy<br/>oauth2-proxy]
-  edge -- UI --> cp[Control plane<br/>Next.js + assistant-ui]
+  edge -- UI --> cp[Web chat surface<br/>Next.js + assistant-ui]
   edge -- "/api/*" --> orch[Orchestrator<br/>stateless Rust replicas]
   orch <--> db[(Postgres / CNPG<br/>chat · threads · outbox)]
   orch -- A2A --> agents[Agents — any A2A host<br/>another-agentic-platform · kagent · …]

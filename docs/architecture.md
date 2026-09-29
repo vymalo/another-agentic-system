@@ -282,7 +282,7 @@ delegates a whole thread to one agent; this is the multi-agent flow it grows int
 ```mermaid
 sequenceDiagram
   actor U as You
-  participant CP as Control plane (Next.js + assistant-ui)
+  participant CP as Web chat surface (Next.js + assistant-ui)
   participant O as Orchestrator (Rust, stateless)
   participant DB as Postgres (CNPG)
   participant P as Planner (any A2A agent)
@@ -351,4 +351,4 @@ silent "done".
   there and `*.sls.servers.segning.pro` resolves to its Traefik.
 - Deployed via ArgoCD from `WhyThatFunction/home-os` like everything else.
 - The system's own footprint is small: stateless orchestrator replicas, the
-  Next.js control plane, and a Postgres database. Agents run on their hosts.
+  Next.js web chat surface, and a Postgres database. Agents run on their hosts.
