@@ -383,6 +383,110 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(JSON.stringify(body)).toContain('"activityType":"vymalo.error"');
   });
 
+  it("ui (mock only, the orchestrator's a2ui story): a surface, then an action that continues the scenario", async () => {
+    const { threadId, body } = await startThread("ui pick one", "reviewer");
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "interrupt" },
+    });
+    const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");
+    // two snapshots of ONE surface (one message id); the second holds both payloads
+    expect(new Set(surfaces.map((f) => f.event.messageId)).size).toBe(1);
+    expect(surfaces).toHaveLength(2);
+    expect(
+      surfaces.map(
+        (f) => (f.event.content as { a2ui_operations: unknown[] }).a2ui_operations.length,
+      ),
+    ).toEqual([1, 2]);
+    await waitForState(threadId, ["blocked"]);
+
+    const action = (over: Record<string, unknown> = {}, id = newId()) => ({
+      threadId,
+      runId: id,
+      messages: [],
+      forwardedProps: {
+        a2uiAction: {
+          userAction: {
+            name: "go",
+            surfaceId: "s1",
+            sourceComponentId: "go",
+            context: { choice: "a" },
+            ...over,
+          },
+        },
+      },
+    });
+    // refused before anything is written: shape, size, a surface the thread does not have
+    const refusals: [number, Record<string, unknown>][] = [
+      [422, { name: 3 }],
+      [422, { sourceComponentId: undefined }],
+      [422, { surfaceId: "other" }],
+      [422, { context: [] }],
+      [413, { name: "x".repeat(257) }],
+      [413, { context: { big: "x".repeat(17 * 1024) } }],
+    ];
+    for (const [status, over] of refusals) {
+      const res = await postRun(base, "reviewer", action(over) as Parameters<typeof postRun>[2]);
+      expect(res.status, JSON.stringify(over).slice(0, 80)).toBe(status);
+      await expectDocumented("/agui/agents/{agentId}", "post", res);
+    }
+    // an action together with a message is refused; the thread still waits
+    const together = {
+      ...action(),
+      messages: [{ id: "m-x", role: "user" as const, content: "hi" }],
+    };
+    expect((await postRun(base, "reviewer", together)).status).toBe(422);
+    expect((await fetch(`${base}/api/threads/${threadId}`).then((r) => r.json())).state).toBe(
+      "blocked",
+    );
+
+    const ok = await postRun(base, "reviewer", action() as Parameters<typeof postRun>[2]);
+    expect(ok.status).toBe(200);
+    const run = await validated(await frames(ok), "action run frames");
+    expect(run.at(-1)?.event).toMatchObject({ type: "RUN_FINISHED", outcome: { type: "success" } });
+    expect(JSON.stringify(run)).toContain("answered: ui-action go");
+    await waitForState(threadId, ["done"]);
+    // a finished thread takes no action
+    const late = await postRun(base, "reviewer", action() as Parameters<typeof postRun>[2]);
+    expect(late.status).toBe(409);
+    await expectDocumented("/agui/agents/{agentId}", "post", late);
+    // and neither does a thread that does not exist
+    const none = await postRun(base, "reviewer", {
+      ...action(),
+      threadId: newId(),
+    } as Parameters<typeof postRun>[2]);
+    expect(none.status).toBe(422);
+  });
+
+  it("an action is refused while a run is open", async () => {
+    const { threadId } = await startThread("ui pick one", "reviewer");
+    await waitForState(threadId, ["blocked"]);
+    const first = await postRun(base, "reviewer", {
+      threadId,
+      runId: newId(),
+      messages: [],
+      forwardedProps: {
+        a2uiAction: {
+          userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+        },
+      },
+    });
+    expect(first.status).toBe(200);
+    // the run of the first action is open now (the response is still streaming): a second is 409
+    const second = await postRun(base, "reviewer", {
+      threadId,
+      runId: newId(),
+      messages: [],
+      forwardedProps: {
+        a2uiAction: {
+          userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+        },
+      },
+    });
+    expect(second.status).toBe(409);
+    await first.text();
+  });
+
   it("lists threads newest first, with limit and before", async () => {
     const res = await fetch(`${base}/api/threads?limit=100`);
     const all = (await expectDocumented("/api/threads", "get", res)) as Thread[];

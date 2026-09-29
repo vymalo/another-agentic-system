@@ -55,6 +55,28 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(badge(page)).toHaveText("Waiting for you");
       expect(await axeViolations(page)).toEqual([]);
     });
+
+    test("axe: a refused A2UI surface has no serious violations", async ({ page }) => {
+      await startThread(page, "ui-bad now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await page.getByText("Raw operations").click();
+      await expect(page.getByText(/Interface not shown:/)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a thread with an A2UI surface has no serious violations (waiting, then finished)", async ({
+      page,
+    }) => {
+      await startThread(page, "ui pick one", "Reviewer");
+      await expect(badge(page)).toHaveText("Waiting for you");
+      const ui = page.getByRole("region", { name: "Interface from reviewer" });
+      await expect(ui.getByRole("button", { name: "Go" })).toBeEnabled();
+      expect(await axeViolations(page)).toEqual([]);
+      await ui.getByRole("button", { name: "Go" }).click();
+      await expect(badge(page)).toHaveText("Done");
+      await expect(ui.getByRole("button", { name: "Go" })).toBeDisabled();
+      expect(await axeViolations(page)).toEqual([]);
+    });
   });
 }
 

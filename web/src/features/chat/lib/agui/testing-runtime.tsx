@@ -1,6 +1,7 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { type AgUiAssistantRuntime, useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 import { render } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { LiveRuns } from "@/features/chat/components/live-runs";
 import { type Call, fakeFetch, THREAD_ID } from "./testing";
 import { ThreadAgent, type ThreadAgentOptions } from "./thread-agent";
@@ -12,6 +13,8 @@ import { ThreadAgent, type ThreadAgentOptions } from "./thread-agent";
 export function mountRuntime(
   handler: (call: Call) => Response | Promise<Response>,
   options: Partial<ThreadAgentOptions> = {},
+  /** Rendered inside the provider, beside the live-run driver: the transcript, say. */
+  ui?: ReactNode | ((agent: ThreadAgent) => ReactNode),
 ) {
   const { fetch, calls } = fakeFetch(handler);
   const agent = new ThreadAgent({
@@ -33,6 +36,7 @@ export function mountRuntime(
     return (
       <AssistantRuntimeProvider runtime={runtime}>
         <LiveRuns agent={agent} runtime={runtime} />
+        {typeof ui === "function" ? ui(agent) : ui}
       </AssistantRuntimeProvider>
     );
   }

@@ -1,7 +1,7 @@
 import { ComposerPrimitive, isMessageNotSentError, useAui, useAuiState } from "@assistant-ui/react";
 import { useAgUiInterrupts, useAgUiSteerAway } from "@assistant-ui/react-ag-ui";
 import Link from "next/link";
-import type { FormEvent } from "react";
+import type { FormEvent, RefObject } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ type Props = {
   sendError: string | null;
   /** Ask the orchestrator to cancel (`POST /api/threads/{id}/cancel`). */
   onCancel: () => void;
+  /** The textarea, so an A2UI `userMessage` can focus it. */
+  inputRef?: RefObject<HTMLTextAreaElement | null>;
 };
 
 /**
@@ -24,7 +26,7 @@ type Props = {
  * `resume`s it), and Cancel asks the orchestrator, because the runtime's own cancel only detaches
  * (AG-UI: a consumer that leaves has a truncated run, not a cancelled one).
  */
-export function Composer({ state, isNew, sendError, onCancel }: Props) {
+export function Composer({ state, isNew, sendError, onCancel, inputRef }: Props) {
   const aui = useAui();
   const interrupts = useAgUiInterrupts();
   const steerAway = useAgUiSteerAway();
@@ -96,6 +98,7 @@ export function Composer({ state, isNew, sendError, onCancel }: Props) {
         className="flex items-end gap-2 rounded-xl border border-input bg-background p-2 transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
       >
         <ComposerPrimitive.Input
+          ref={inputRef}
           className="max-h-48 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           aria-label="Message"
           placeholder={placeholder}

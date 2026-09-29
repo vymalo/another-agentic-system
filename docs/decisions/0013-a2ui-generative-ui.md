@@ -1,7 +1,7 @@
 # ADR 0013 — A2UI for generative UI
 
 - **Status:** accepted (2026-09-29). Status note (2026-09-29): the orchestrator side is built (surfaces
-  from agents, actions from users, capability detection; the web renderer is not). The decision
+  from agents, actions from users, capability detection; the web renderer followed, see the next note). The decision
   stands, with these refinements, all verified against the specification the same day (details in
   [`api/agui.md`](../api/agui.md#a2ui-generative-ui)):
   - `a2uiClientCapabilities` is keyed by the version, `{"v0.9.1": {"supportedCatalogIds": […]}}`, and the
@@ -21,6 +21,45 @@
     renderer's reply (`callRendererFunction`, `agentFunctionResponse`) are refused as unknown operations.
   - Limits on the orchestrator side: 256 messages and 64 KiB per payload, 256 KiB of replayed operations
     per surface.
+
+  Status note (2026-09-29, the web slice): **the web renderer is built** (`web/`, see
+  [`web/README.md`](../../web/README.md#a2ui-surfaces)). The decision stands, with these refinements.
+  Facts were *verified 2026-09-29* by reading and running the installed
+  `@assistant-ui/react-generative-ui` 0.0.21 and `@assistant-ui/react-ag-ui` 0.0.62, which differ from what
+  the assistant-ui A2UI page describes (that page appears to describe the repository head):
+  - **The validator runs before anything converts, so the app does not use the runtime's own A2UI path.**
+    The runtime converts an `a2ui-surface` in its run aggregator the moment it arrives, rejects operations
+    that say `v0.9.1` (`isVersion` accepts `v0.9` and `v1.0` only) and has no `openUrl`. `ThreadAgent` hands
+    the surface over as the activity `vymalo.a2ui-surface`, untouched; the validator
+    (`web/src/features/chat/lib/a2ui/prepare.ts`) reads `v0.9.1` as `v0.9`, checks, lowers and only then calls
+    the library's reducer, converter and `renderGenerativeUI`.
+  - **Limits, as built.** 64 KiB is measured in UTF-8 bytes of the serialised operations; 400 components are
+    all of the surface's (referenced or not); 2000 nodes count every component drawn and one wrapper per
+    template item, after references and templates are expanded, with the walk stopping at the limit; 100
+    items per template, and a longer list is refused rather than cut off (the converter would cut it
+    silently); 24 levels with the root as level 1. Each is tested at the limit and one over, and an expansion
+    bomb is refused in milliseconds.
+  - **Vocabulary of ten:** `Text`, `Image`, `Row`, `Column`, `List`, `Card`, `Divider`, `Button`,
+    `TextField`, `CheckBox`; anything else, including `Icon`, `Tabs`, `Modal`, `Slider`, `DateTimeInput`
+    and `ChoicePicker`, refuses the surface. A function value (`formatString`, ...) refuses it too: the
+    converter cannot run one.
+  - **Rule 5 refined:** `Text` is drawn as plain text, not markdown (no HTML, and no link or image can come
+    from text); an `Image` is a placeholder with its alt text and is never fetched; a `url`, `href`, `src`,
+    `uri`, `link`, `iconUrl` or `imageUrl` that is not an absolute http(s) URL refuses the surface. A
+    theme's name and icon are never drawn: a surface is labelled by `vymalo.actor` only.
+  - **Rule 6 refined:** `openUrl` must carry a literal URL; it is drawn as a plain link with
+    `rel="noopener noreferrer"` and stays usable on a finished thread, because it is not an action on the
+    agent. The other function calls are ignored (a button that does nothing).
+  - **Rule 7 refined:** an event action is sent only by the click on its own button, as a run with no
+    message and no `resume`, and only while the thread is `blocked` (otherwise the button is disabled and
+    the surface says why). A `userMessage` goes to the message box unsent and **no action is sent with it**.
+    Inputs (`TextField`, `CheckBox`) keep their values in the surface, and a binding to one in an action's
+    context is replaced by the value at the click; an action over 16 KiB of context is not sent. Only the
+    newest copy of a surface (an update in a later run leaves the earlier message with a note) has live
+    buttons.
+  - **`sendA2uiAction` cannot answer an open interrupt** (it throws), which is the usual case for a surface
+    that comes with the agent's question. The app closes the interrupt through the runtime and stages the
+    action on `ThreadAgent`, which sends it in place of the `resume`.
 
 ## Context
 

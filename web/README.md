@@ -116,8 +116,9 @@ stateDiagram-v2
   `MessageNotSentError`: the composer takes its text back, the failed message is removed from the
   transcript (`dropFailedSend`) and the problem's `detail` is shown.
 - **Renderers** are `agui-activity/vymalo.status`, `.artifact` and `.error` (`data-uis.tsx`, reusing
-  the status line, artifact card and error line), and a `vymalo.action` renderer that draws nothing
-  until A2UI surfaces are rendered. A shape a renderer does not know renders nothing.
+  the status line, artifact card and error line), `.action` (a quiet "Chose <name>" line for what the
+  owner did on a surface) and `.a2ui-surface` (the A2UI renderer, see [A2UI surfaces](#a2ui-surfaces)).
+  A shape a renderer does not know renders nothing.
 - **Thread ids** are UUIDv7 (`src/lib/uuid.ts`): the consumer mints them, and the orchestrator lists
   threads by id, newest first.
 
@@ -128,7 +129,7 @@ Pinned exactly. *Verified 2026-09-29* on the npm registry (`npm view`):
 | Package | Version | Note |
 |---|---|---|
 | `@assistant-ui/react-ag-ui` | 0.0.62 (2026-09-24, latest) | depends on `@ag-ui/client` `^0.0.59`, `@assistant-ui/core` `^0.3.21`, `@assistant-ui/react-generative-ui` `^0.0.21` |
-| `@assistant-ui/react-generative-ui` | 0.0.21 (2026-09-24, latest) | peer of the runtime (it renders A2UI surfaces, ADR 0013: not rendered yet) |
+| `@assistant-ui/react-generative-ui` | 0.0.21 (2026-09-24, latest) | a direct dependency and a peer of the runtime: the app uses its reducer, its converter and `renderGenerativeUI` behind its own validator ([A2UI surfaces](#a2ui-surfaces)); the runtime's own A2UI path is bypassed |
 | `@ag-ui/client` | 1.0.0 (published 2026-09-17) | a direct dependency, and the `overrides` entry below; 1.0.1 was published 2026-09-29 and is not adopted (`tools/agui-conformance` reads the goldens with 1.0.0) |
 | `rxjs` | 7.8.1 | the version `@ag-ui/client` pins; `ThreadAgent.run` returns an `Observable` |
 
@@ -161,6 +162,175 @@ more gaps (activities dropped on reload; no live subscription). Neither is neede
 start through the runtime's public API; both are drafted as upstream issues anyway
 ([Observed, not patched](patches/UPSTREAM.md#observed-not-patched)).
 
+## A2UI surfaces
+
+An agent's interface (ADR 0013: A2UI end to end) reaches the page as an `a2ui-surface` activity whose
+`content.a2ui_operations` are the operations of ONE surface, the whole surface in every snapshot
+(`replace: true`, message id `a2ui-<seq>`). The surface is **untrusted input from an agent**: the
+validator is the only thing between its JSON and the DOM, and it refuses the whole surface or draws it
+whole.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Owner
+  participant T as ThreadAgent
+  participant R as Runtime (react-ag-ui)
+  participant V as prepareSurface (validator)
+  participant S as SurfaceView (shadcn vocabulary)
+  participant H as SurfaceHostProvider
+  participant O as Orchestrator
+  O-->>T: ACTIVITY_SNAPSHOT a2ui-surface (whole surface, replace)
+  T->>R: the same, as activity vymalo.a2ui-surface (content untouched, actor and surface id added)
+  Note over R: a data part: the runtime converts nothing
+  R->>V: a2ui_operations
+  alt refused
+    V-->>S: rule and reason
+    S->>U: one error line, the reason, the raw operations as text
+  else accepted
+    V-->>S: spec (converted after the checks)
+    S->>U: the surface, labelled by vymalo.actor only
+    U->>S: click on a Button (a user gesture)
+    S->>H: send(action) (canSend: thread blocked, none in flight)
+    alt the agent's question (an interrupt) is open
+      H->>T: stageA2uiAction(action)
+      H->>R: submit the interrupt as cancelled (starts the run)
+    else no interrupt
+      H->>R: sendA2uiAction(action) (the runtime's own hook)
+    end
+    R->>T: run(input)
+    T->>O: POST /agui/agents/{id}: no message, no resume, forwardedProps.a2uiAction.userAction
+    O-->>T: RUN_STARTED, then the run on the connect stream
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Received: a2ui-surface activity
+  Received --> Pending: no root yet, or a component not sent yet
+  Received --> Refused: a limit, the vocabulary, a URL, an action or a function value
+  Received --> Deleted: deleteSurface
+  Received --> Drawn: every rule holds
+  Pending --> Received: the next snapshot
+  Drawn --> Received: the next snapshot replaces it in place
+  Drawn --> Refused: a component throws (error boundary)
+  Drawn --> Superseded: a later run holds a newer copy
+  Drawn --> Inert: the thread is not blocked, or is finished
+  Inert --> Drawn: the thread blocks again
+  Refused --> [*]
+  Deleted --> [*]
+  Superseded --> [*]
+```
+
+**Why the app renames the activity.** `@assistant-ui/react-ag-ui` has an A2UI path of its own (an
+`a2ui-surface` becomes a `present` tool part). It converts the surface in the run aggregator the moment
+it arrives, so no host check can come first; it drops operations that say `v0.9.1`, the version our
+orchestrator relays; and it has no `openUrl`. `ThreadAgent` therefore hands every `a2ui-surface` to the
+runtime as the activity `vymalo.a2ui-surface` (an ordinary data part, drawn by `data-uis.tsx`), with the
+content untouched plus the actor and the surface id. Nothing converts before the validator has run.
+The library's own pure pieces are used after it: `applyA2uiOperations` (reducer),
+`convertSurfaceToUISpec` and `renderGenerativeUI`.
+
+*Verified 2026-09-29* (read from the installed `@assistant-ui/react-generative-ui` 0.0.21 and
+`@assistant-ui/react-ag-ui` 0.0.62 sources, and run): the reducer accepts `v0.9` and `v1.0` only
+(`isVersion`), so `v0.9.1` is rejected with a warning; the converter maps 13 basic-catalog components
+to the library's IR, bounds itself at depth 32, 100 template items and 5000 nodes, reads template
+children only as `{template: {componentId, path}}`, drops a `functionCall` action and an event's
+`userMessage`, and evaluates no function value; `sendA2uiAction` throws while an interrupt is open
+(`assertNoPendingInterrupts`) and otherwise runs `startResumeRun` with `forwardedProps.a2uiAction.userAction`
+(`type` stripped, `timestamp` added). The A2UI page on assistant-ui.com describes more than that
+(`openUrl` as `a2ui:functionCall`, `$field` references, `userMessage`, `{componentId, path}`
+templates) and appears to describe the repository head, not 0.0.21. Drafts for upstream, none filed:
+[`patches/UPSTREAM.md`](patches/UPSTREAM.md#a2ui-v091-operations-are-dropped-and-the-built-in-path-converts-before-any-host-check).
+
+### The validator
+
+`src/features/chat/lib/a2ui/prepare.ts`, pure TypeScript (no React, no I/O), unit-tested next to it.
+`prepareSurface(operations)` returns `surface` (what to draw), `pending` (valid so far, nothing to
+draw yet: no `root`, or a child not sent yet), `deleted`, or `refused` with the rule and the reason,
+never part of a surface. The checks run in this order, cheapest first, and the library's reducer and
+converter only ever see operations that passed the ones before them:
+
+| Rule (`refused.rule`) | Limit or requirement |
+|---|---|
+| `size` | at most **64 KiB** (65,536 bytes of UTF-8) of serialised operations; one byte more is refused |
+| `shape`, `version`, `surfaces` | an array of objects, each with a `version` (`v0.9`, `v0.9.1`, `v1.0`; `v0.9.1` is read as `v0.9`) and exactly one operation (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) with a surface id of 1 to 256 bytes; one surface per activity; anything the reducer had to skip (a component without an id, an update of a surface never created) refuses the surface |
+| `components` | at most **400** components once the operations are applied (unreferenced ones count) |
+| `vocabulary` | only the components below; an unknown one refuses the surface wherever it is (never skipped) |
+| `function` | a function value (`{call, ...}`, such as `formatString`) refuses: the pinned converter cannot run it |
+| `action` | a Button needs an action; an event needs a name of 1 to 256 bytes that does not start with `vymalo:` (reserved for what the app lowers) and a context that is an object; a `userMessage` is text of 1 to 4000 characters; a function call other than `openUrl` is ignored (a button that does nothing) |
+| `url` | see the links rule below |
+| `field` | an input is bound to an absolute path, and is not inside a template |
+| `depth` | at most **24** levels (the root is level 1; a template item is one level below its container) |
+| `cycle` | a component that contains itself, directly or not |
+| `template` | a template reads a list, of at most **100** items (more is refused, not cut off) |
+| `expansion` | at most **2000** nodes **after** references and templates are expanded (a node is a component drawn, and one wrapper per template item). The walk stops at the limit, so a bomb costs 2000 steps, not its size |
+
+Both bombs are tested (a 100 x 100 nested template, and a 24-level chain in which each level names the
+next twice: 2^23 nodes), and each is refused in a few milliseconds. The limits are the ones of ADR 0013;
+each is tested exactly at the limit (accepted) and one over (refused). Because the limits are lower than
+the converter's own (5000 nodes, depth 32), the converter never truncates anything silently.
+
+**Vocabulary** (`GenerativeUILibrary`, the format `JSONGenerativeUI({ library })` takes; drawn with
+`renderGenerativeUI`, the function its `present` tool renders with, because no model runs in the browser):
+`Text`, `Image`, `Row`, `Column`, `List`, `Card`, `Divider`, `Button`, `TextField`, `CheckBox`. Not
+drawn, so they refuse the surface: `Icon`, `Tabs`, `Modal`, `Slider`, `DateTimeInput`, `ChoicePicker`
+and the media components.
+
+| Component | Drawn as |
+|---|---|
+| `Text` | a heading (`h1` to `h6`), a caption, or a paragraph of **plain text** (no markdown, no HTML: `<script>` shows as characters, and nothing in text becomes a link or an image) |
+| `Image` | a placeholder with the alt text ("Image not shown: ..."); **never fetched** (no `<img>`, no request) |
+| `Row`, `Column`, `List`, `Divider` | flex rows and columns, a list, a separator |
+| `Card` | the shadcn `Card` |
+| `Button` | the shadcn `Button` (`primary`, `borderless` and default variants) |
+| `TextField`, `CheckBox` | a labelled input; the values stay in the surface until a Button sends them |
+
+**Links.** `safeHttpUrl` (`lib/a2ui/url.ts`): the text must start with `http://` or `https://` (any case:
+the result is the normalised `href`), contain no control character or space anywhere, no backslash, no
+user information, and have a host. So `javascript:`, `data:`, `file:`, `blob:`, `vbscript:`, `mailto:`,
+relative paths, `//host`, `http:host`, `java\tscript:` and a leading space are all refused, in every case.
+It applies to `openUrl`'s URL (which must be a literal) and to every `url`, `href`, `src`, `uri`, `link`,
+`iconUrl` and `imageUrl` prop of a component (read from the data model too, item by item in a template).
+A refused URL refuses the surface. An `openUrl` button is drawn as a plain link
+(`target="_blank" rel="noopener noreferrer"`), and, because it does not talk to the agent, it stays
+usable on a finished thread.
+
+**Labels.** A surface is labelled by the orchestrator's `vymalo.actor` and nothing else: the theme's
+`agentDisplayName` and `iconUrl` are never read (the tests search the DOM for them).
+
+**Actions** (ADR 0013 rule 7):
+
+- A control acts only in its own click handler: rendering, an update, a data-model change, a timer and
+  typing (Enter in a field included) never send anything. The tests advance a minute of fake timers and
+  count the requests.
+- A Button whose action is an `event` sends `forwardedProps.a2uiAction.userAction`
+  (`name`, `surfaceId`, `sourceComponentId`, `context`) as a run with **no message and no `resume`**, only
+  while the thread is `blocked` and no action is in flight (`SurfaceHostProvider` in
+  `components/surface/surface-host.tsx`); otherwise the button is disabled and the surface says once why.
+  A binding to an input in the context is replaced by the input's value at the click. A context over
+  16 KiB is not sent (the orchestrator would answer 413).
+- With the agent's question open (an interrupt, the usual case) the runtime refuses `sendA2uiAction`, so
+  the app closes the interrupt through the runtime and stages the action on `ThreadAgent`, which sends
+  it instead of the `resume` (`stageA2uiAction`). With no interrupt it is the runtime's own
+  `useAgUiSendA2uiAction`. A refused action (`409`, `422`, `413`) is shown in the composer's error line;
+  it carried no message, so nothing is taken back from the transcript, and the button works again.
+- A `userMessage` puts its text in the message box, focused and **unsent**, and sends nothing (it is not
+  posted as the owner's message, and no action goes with it); it needs a message box, so it is off on a
+  finished thread.
+- Only the **newest copy** of a surface is live: an update in a later run leaves the earlier message with
+  "This interface was updated further down.", and its buttons are gone.
+- A surface that fails while it draws is caught by an error boundary and shows the refusal line.
+
+A refusal is one line in the `vymalo.error` style: "Interface not shown: <reason>", the rule
+(`data-rule`), and the raw operations (first 4000 characters) in a disclosure, as text.
+
+The mock plays the orchestrator's `ui` story (`mock/scripts.ts`): `ui pick one` sends a surface (a
+title and a `Go` button, in two payloads, `v0.9.1`), asks "Pick one" and blocks; the action resumes it to
+`answered: ui-action go`. `mock/golden.test.ts` requires its stream to be `a2ui.agui.json`, frame for
+frame, and its action route refuses what the orchestrator refuses (`422` malformed, unknown surface, an
+action with a message; `413` over the sizes; `409` a run open or the thread finished).
+
 ## Layout
 
 Every file name is kebab-case (`pnpm check` fails otherwise). Tests sit next to the code they test.
@@ -170,9 +340,10 @@ src/app/                       routes only: thin pages that compose features
 src/components/ui/             shadcn primitives (generated by the shadcn CLI, then formatted)
 src/components/assistant-ui/   assistant-ui registry items, pruned to what a run's parts need
 src/components/inline-status.tsx   shared empty, loading and error lines
-src/features/chat/             the conversation: components (shell, composer, renderers, LiveRuns),
-                               hooks (runtime, thread details), lib/agui (ThreadAgent, SSE reader,
-                               live runs, the vymalo vocabulary)
+src/features/chat/             the conversation: components (shell, composer, renderers, LiveRuns,
+                               surface/ the A2UI renderer), hooks (runtime, thread details), lib/agui
+                               (ThreadAgent, SSE reader, live runs, the vymalo vocabulary), lib/a2ui
+                               (the validator: limits, URLs, pointers, preparing a surface)
 src/features/threads/          thread list: sidebar (desktop) and sheet (phone), paging hook
 src/features/agents/           new-thread panel: agent and release pickers, agents hook
 src/lib/                       api client and types (schema.d.ts is generated, never committed), uuidv7
@@ -224,6 +395,7 @@ The first word of the first message picks the script, the same words as the orch
 | `slow` | works until cancelled (`RUN_FINISHED` cancelled) |
 | `fail` | a failed status with detail `scripted failure`, `RUN_ERROR` `agent_failed`, no error activity |
 | `talk` | working, a status with text, one final agent message, the result, done |
+| `ui` | working, an A2UI surface (a title and a `Go` button), the question "Pick one", blocked; the action on the surface (`forwardedProps.a2uiAction`, not a message) resumes it to `answered: ui-action go` and done |
 | `partial` | mock only, **not produced by the current orchestrator**: a partial agent message replaced by its final version |
 | `unreachable` | mock only: an error activity, `RUN_ERROR` `delivery_failed`, thread blocked |
 
@@ -240,9 +412,9 @@ Agents: `coder` (has `releases`) and `reviewer` (none).
 
 | Command | What | Count (2026-09-29) |
 |---|---|---|
-| `pnpm test` | vitest: the SSE reader; `ThreadAgent` (groups, reconnect with `Last-Event-ID`, dedupe by seq, acceptance at `RUN_STARTED`, problems, abort is not cancel); the AG-UI goldens through the patched runtime (messages, activities, interrupts, the cancelled outcome); the app in jsdom against the mock (new thread, replay, answer, refused send, cancel, not found); the mock against the contract and the goldens | 83 (11 files) |
-| `pnpm test:e2e` | Playwright on the production build against the mock: axe (no serious or critical issue, light and dark; new, finished and blocked thread) and Lighthouse accessibility >= 95 in both schemes; create, follow-up, cancel, failure, releases, API errors; reconnect (a dropped stream, a cut in the middle of a message); two tabs | 34 pass and 1 is skipped on desktop (28 chromium, 6 mobile) |
-| `pnpm test:e2e:system` | the same UI against the real orchestrator, see below | 15 |
+| `pnpm test` | vitest: the SSE reader; `ThreadAgent` (groups, reconnect with `Last-Event-ID`, dedupe by seq, acceptance at `RUN_STARTED`, problems, abort is not cancel); the AG-UI goldens through the patched runtime (messages, activities, interrupts, the cancelled outcome); the app in jsdom against the mock (new thread, replay, answer, refused send, cancel, not found, a surface and its action); **the A2UI validator and its security tests** (every bad URL scheme and trick, each limit at and one over, an expansion bomb and a reference bomb, the vocabulary, reserved names, function values, inputs), **the renderer** (the golden through the runtime, replace in place, delete, a refusal, a later run, no auto-send under fake timers, a click sends once, disabled states, `openUrl` as a link, `userMessage` in the composer unsent, no image ever) and **the app's side of an action** (what a click puts on the wire, with and without an open interrupt); the mock against the contract and the goldens (`a2ui` included) | 373 (16 files) |
+| `pnpm test:e2e` | Playwright on the production build against the mock: axe (no serious or critical issue, light and dark; new, finished and blocked thread, and a thread with an A2UI surface waiting, finished and refused) and Lighthouse accessibility >= 95 in both schemes; create, follow-up, cancel, failure, releases, API errors; reconnect (a dropped stream, a cut in the middle of a message); two tabs; A2UI (a surface is drawn and only a click sends the action, read-only after the thread finishes and after a reload, a refusal, no remote content) | 42 pass and 1 is skipped on desktop (36 chromium, 6 mobile) |
+| `pnpm test:e2e:system` | the same UI against the real orchestrator, see below | 18 |
 
 ## System tests
 
@@ -274,8 +446,10 @@ pnpm test:e2e:system
 user running into a thread id), the create/echo lifecycle (and the log behind it, read as the
 connect stream), agent text, ask and answer on the same A2A task (a `resume`), cancel reaching the
 agent, the failure shape, the 409 on a finished thread, releases, a dropped stream, a SIGKILLed
-orchestrator, history by URL (the connect stream closes on a finished thread) and paging of the
-thread list. Every test starts on an empty database; the orchestrator log of a run is
+orchestrator, history by URL (the connect stream closes on a finished thread), paging of the
+thread list, and A2UI (the fake agent's `ui` surface drawn, the button answering the agent's open
+question as an action with no message and no `resume`, delivered to the same A2A task; `ui-delete`; a
+payload the orchestrator refuses). Every test starts on an empty database; the orchestrator log of a run is
 `e2e-system/.run/orchestrator.log`. CI runs it as the `system-e2e` job of
 `.github/workflows/system.yml`.
 

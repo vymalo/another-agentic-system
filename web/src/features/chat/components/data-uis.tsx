@@ -5,13 +5,16 @@ import {
   ACTIVITY,
   ACTOR_PART,
   activityPartName,
+  parseAction,
   parseArtifact,
   parseError,
   parseStatus,
 } from "@/features/chat/lib/agui/vymalo";
+import { ActionLine } from "./parts/action-line";
 import { ArtifactCard } from "./parts/artifact-card";
 import { ErrorLine } from "./parts/error-line";
 import { StatusLine } from "./parts/status-line";
+import { SurfaceActivity } from "./surface/surface-activity";
 
 /*
  * One registered renderer per activity the orchestrator sends (docs/api/agui.md, "vymalo.*
@@ -51,10 +54,22 @@ const ActorDataUI = makeAssistantDataUI<unknown>({
   render: () => null,
 });
 
-/** `vymalo.action` (an A2UI action, ADR 0013) has no renderer until surfaces are rendered. */
+/** `vymalo.action`: what the owner did on an A2UI surface (ADR 0013), a quiet line. */
 const ActionDataUI = makeAssistantDataUI<unknown>({
   name: activityPartName(ACTIVITY.action),
-  render: () => null,
+  render: ({ data }) => {
+    const action = parseAction(data);
+    return action ? <ActionLine data={action} /> : null;
+  },
+});
+
+/**
+ * An A2UI surface (ADR 0013). `ThreadAgent` hands it over as this activity type, untouched, so
+ * that it is validated (lib/a2ui/prepare.ts) before anything converts it.
+ */
+const SurfaceDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.surface),
+  render: ({ data }) => <SurfaceActivity data={data} />,
 });
 
 /** Mounted once inside the runtime provider (chat-shell.tsx). */
@@ -66,6 +81,7 @@ export function DataUIs() {
       <ErrorDataUI />
       <ActorDataUI />
       <ActionDataUI />
+      <SurfaceDataUI />
     </>
   );
 }

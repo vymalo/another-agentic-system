@@ -102,8 +102,9 @@ export function useChatRuntime({
       const failure: SendError | null = agent.takeSendError();
       const current = runtimeRef.current;
       if (!failure || !current) return;
-      // the composer takes its text back by itself (the failure is a MessageNotSentError)
-      dropFailedSend(current);
+      // the composer takes its text back by itself (the failure is a MessageNotSentError); an
+      // A2UI action carried no message, so there is nothing to take back
+      if (!failure.action) dropFailedSend(current);
       onSendFailedRef.current(failure.message, failure.status);
     },
     adapters: {

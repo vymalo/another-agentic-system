@@ -44,7 +44,7 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 | The web on `@assistant-ui/react-ag-ui` (`ThreadAgent` over the connect stream, live runs, interrupts by `resume`, patched `cancelled` outcome; the REST interaction path removed) | Built |
 | The legacy chat API surface off by default (`ORCH_SURFACES` defaults to `agui`; `agui,chat-api` keeps the legacy routes; compose and the dev scripts run on AG-UI only) | Built |
 | A2UI on the orchestrator: surfaces from agents, actions from users, capability detection ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Built |
-| A2UI rendering in the web (validator, vocabulary, actions on a gesture) | Planned |
+| A2UI rendering in the web: the validator (64 KiB, 400 components, 2000 nodes after expansion, 100 per template, depth 24, a ten-component vocabulary, http(s) links only), the shadcn vocabulary, actions on a user gesture only, the mock and the system tests ([`web/README.md`](../web/README.md#a2ui-surfaces)) | Built |
 
 ## Out of scope for the MVP
 

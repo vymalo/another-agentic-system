@@ -35,6 +35,44 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 type Invocation = { id: string; event: Event };
 type Open = { runId: string };
 
+const SURFACE_OPS = ["createSurface", "updateComponents", "updateDataModel", "deleteSurface"];
+
+/** The surface an A2UI message is about, and what it does: null for anything that is not a message. */
+export function inspectOperation(
+  op: unknown,
+): { surfaceId: string; op: string; version: string } | null {
+  if (typeof op !== "object" || op === null || Array.isArray(op)) return null;
+  const rec = op as Record<string, unknown>;
+  const keys = Object.keys(rec).filter((k) => k !== "version");
+  const key = keys[0];
+  if (typeof rec.version !== "string" || keys.length !== 1 || !key || !SURFACE_OPS.includes(key)) {
+    return null;
+  }
+  const body = rec[key];
+  const id =
+    typeof body === "object" && body !== null
+      ? (body as Record<string, unknown>).surfaceId
+      : undefined;
+  return typeof id === "string" ? { surfaceId: id, op: key, version: rec.version } : null;
+}
+
+/** The surfaces a log has now, with the version each speaks (deleted ones are gone). */
+export function surfacesOf(log: readonly Event[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const e of log) {
+    if (e.kind !== "ui_surface" || !Array.isArray(e.data.operations)) continue;
+    for (const op of e.data.operations) {
+      const info = inspectOperation(op);
+      if (!info) continue;
+      if (info.op === "deleteSurface") out.delete(info.surfaceId);
+      else if (!out.has(info.surfaceId)) out.set(info.surfaceId, info.version);
+    }
+  }
+  return out;
+}
+
+type Surface = { messageId: string; operations: unknown[] };
+
 export class Projector {
   private state: ThreadState | undefined;
   private run: Open | null = null;
@@ -46,6 +84,8 @@ export class Projector {
   private lastWasError = false;
   private openText: { id: string; said: string } | null = null;
   private readonly said = new Set<string>();
+  /** The operations received so far per live surface: every snapshot carries the whole surface. */
+  private readonly surfaces = new Map<string, Surface>();
 
   constructor(private readonly info: ThreadInfo) {}
 
@@ -272,6 +312,52 @@ export class Projector {
             },
             inv.id,
           ),
+        );
+        break;
+      }
+      case "ui_surface": {
+        const inv = this.ensureInvocation(e, out);
+        const touched: string[] = [];
+        const snapshot = (s: Surface): Ev => ({
+          type: "ACTIVITY_SNAPSHOT",
+          messageId: s.messageId,
+          activityType: "a2ui-surface",
+          content: { a2ui_operations: [...s.operations] },
+          replace: true,
+          subagentRunId: inv.id,
+          metadata: actorMeta(e),
+        });
+        for (const op of Array.isArray(e.data.operations) ? e.data.operations : []) {
+          const info = inspectOperation(op);
+          if (!info) continue;
+          const surface = this.surfaces.get(info.surfaceId) ?? {
+            messageId: `a2ui-${e.seq}`,
+            operations: [],
+          };
+          this.surfaces.set(info.surfaceId, surface);
+          surface.operations.push(op);
+          if (!touched.includes(info.surfaceId)) touched.push(info.surfaceId);
+          if (info.op === "deleteSurface") {
+            touched.splice(touched.indexOf(info.surfaceId), 1);
+            this.surfaces.delete(info.surfaceId);
+            out.push(snapshot(surface));
+          }
+        }
+        for (const id of touched) {
+          const surface = this.surfaces.get(id);
+          if (surface) out.push(snapshot(surface));
+        }
+        break;
+      }
+      case "ui_action": {
+        // like a user message it answers a blocked thread; unlike one it says nothing in the
+        // transcript but a `vymalo.action` activity, and no invocation is open for it
+        if (this.state === "blocked") this.state = "queued";
+        this.interrupt = null;
+        this.failure = null;
+        const { surfaceId, name, sourceComponentId, context } = e.data;
+        out.push(
+          this.activity(e, "vymalo.action", { surfaceId, name, sourceComponentId, context }),
         );
         break;
       }

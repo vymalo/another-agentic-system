@@ -6,7 +6,7 @@ import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import type { ApiActor, ThreadState } from "@/lib/api/types";
 import { readSse } from "./sse";
-import { ACTOR_KEY, ACTOR_PART, RELEASE_CHANNELS_URI } from "./vymalo";
+import { A2UI_SURFACE, ACTIVITY, ACTOR_KEY, ACTOR_PART, RELEASE_CHANNELS_URI } from "./vymalo";
 
 /**
  * The AG-UI side of one thread (docs/api/agui.md, ADR 0012).
@@ -28,6 +28,14 @@ import { ACTOR_KEY, ACTOR_PART, RELEASE_CHANNELS_URI } from "./vymalo";
  *   `ExternalRun`. `live-runs.ts` hands each one to the runtime, in order, through `adopt()`.
  * - `abortRun()` is a truncation, as in the protocol: it detaches this consumer and never cancels
  *   (the runtime calls it on unmount and on thread switches). Cancelling is `cancel()`.
+ * - An A2UI surface (`a2ui-surface`) is handed to the runtime under our own activity type
+ *   (`vymalo.a2ui-surface`), untouched. The runtime's own A2UI path converts a surface the moment
+ *   it arrives, before any validator can run, drops `v0.9.1` operations (the version our
+ *   orchestrator relays) and has no `openUrl`, so the surface stays an activity part that
+ *   `lib/a2ui/prepare.ts` validates and the renderer draws (web/README.md, "A2UI surfaces").
+ * - A user's action on a surface (`forwardedProps.a2uiAction`, from the runtime's
+ *   `sendA2uiAction`, or staged by `stageA2uiAction` when an interrupt is open, which the runtime
+ *   refuses to leave unanswered) goes out as a run with no message and no `resume`.
  */
 
 /** A user message the connect stream shows for an external run. */
@@ -68,6 +76,8 @@ export type ThreadSnapshot = {
   notFound: boolean;
   /** The last connect failure that is not a plain disconnect (401, 5xx). */
   error: string | null;
+  /** How many sends the server refused, or could not be reached for (a counter, never reset). */
+  sendFailures: number;
 };
 
 /**
@@ -79,6 +89,8 @@ export class SendError extends MessageNotSentError {
   constructor(
     message: string,
     readonly status?: number,
+    /** The refused run was an A2UI action: it carried no message, so there is nothing to take back. */
+    readonly action = false,
   ) {
     super(message);
     this.name = "SendError";
@@ -156,6 +168,7 @@ export class ThreadAgent extends AbstractAgent {
     openRun: null,
     notFound: false,
     error: null,
+    sendFailures: 0,
   };
   private readonly listeners = new Set<() => void>();
   private connectAbort: AbortController | undefined;
@@ -171,6 +184,7 @@ export class ThreadAgent extends AbstractAgent {
   private adopted: ExternalRun | null = null;
   private posting: AbortController | undefined;
   private sendError: SendError | null = null;
+  private stagedAction: Record<string, unknown> | undefined;
 
   constructor(options: ThreadAgentOptions) {
     super({ threadId: options.threadId });
@@ -387,6 +401,20 @@ export class ThreadAgent extends AbstractAgent {
     if (event.type === EventType.ACTIVITY_SNAPSHOT) {
       const type = str(event.activityType) ?? "";
       const actor = actorOf(event);
+      if (type === A2UI_SURFACE && isRecord(event.content)) {
+        // the label is the orchestrator's `vymalo.actor`; `surface` ties updates of one surface together
+        return [
+          {
+            ...event,
+            activityType: ACTIVITY.surface,
+            content: {
+              ...event.content,
+              surface: str(event.messageId) ?? "",
+              ...(actor ? { actor } : {}),
+            },
+          } as BaseEvent,
+        ];
+      }
       if (actor && type.startsWith("vymalo.") && isRecord(event.content)) {
         return [{ ...event, content: { ...event.content, actor } } as BaseEvent];
       }
@@ -430,6 +458,7 @@ export class ThreadAgent extends AbstractAgent {
     const adopted = this.adopted;
     this.adopted = null;
     if (adopted) return adopted.frames.asObservable();
+    const action = this.takeAction(input);
     return new Observable<BaseEvent>((subscriber) => {
       const sink = new ReplaySubject<BaseEvent>();
       const abort = new AbortController();
@@ -439,7 +468,7 @@ export class ThreadAgent extends AbstractAgent {
       this.sendError = null;
       let inner: Subscription | undefined;
       let accepted = false;
-      this.post(input, abort.signal).then(
+      this.post(input, action, abort.signal).then(
         (started) => {
           accepted = true;
           if (this.posting === abort) this.posting = undefined;
@@ -450,9 +479,13 @@ export class ThreadAgent extends AbstractAgent {
         (e: unknown) => {
           this.claims.delete(input.runId);
           if (abort.signal.aborted) return subscriber.complete();
-          const error = e instanceof SendError ? e : new SendError(problemMessage(e));
+          const error =
+            e instanceof SendError ? e : new SendError(problemMessage(e), undefined, !!action);
           this.sendError = error;
           subscriber.error(error);
+          // after the runtime has taken the failure (it removes the failed message in `onError`):
+          // an observer that re-renders now must not see the transcript half way
+          this.patch({ sendFailures: this.snapshot.sendFailures + 1 });
         },
       );
       return () => {
@@ -470,14 +503,48 @@ export class ThreadAgent extends AbstractAgent {
     return e;
   }
 
-  private async post(input: RunAgentInput, signal: AbortSignal): Promise<BaseEvent> {
+  /**
+   * The user's action on an A2UI surface that this run carries, once: the runtime's own
+   * (`forwardedProps.a2uiAction.userAction`) or the one the app staged. It rides exactly one run.
+   */
+  private takeAction(input: RunAgentInput): Record<string, unknown> | undefined {
+    const props = input.forwardedProps;
+    const envelope = isRecord(props) ? props.a2uiAction : undefined;
+    const fromRuntime =
+      isRecord(envelope) && isRecord(envelope.userAction) ? envelope.userAction : undefined;
+    const action = fromRuntime ?? this.stagedAction;
+    this.stagedAction = undefined;
+    return action;
+  }
+
+  /**
+   * The next `run()` carries this action instead of a message or a `resume`. The runtime refuses
+   * `sendA2uiAction` while an interrupt is open, so the app answers the interrupt through the
+   * runtime (which starts the run) and stages the action here; the interrupt is answered by the
+   * action on the server side (docs/api/agui.md, "Actions"). `clearStagedAction` is for when the
+   * run never started.
+   */
+  stageA2uiAction(action: Record<string, unknown>) {
+    this.stagedAction = action;
+  }
+
+  clearStagedAction() {
+    this.stagedAction = undefined;
+  }
+
+  private async post(
+    input: RunAgentInput,
+    action: Record<string, unknown> | undefined,
+    signal: AbortSignal,
+  ): Promise<BaseEvent> {
     const { agentId, release } = this.options.target();
-    if (!agentId) throw new SendError("Choose an agent first.");
+    if (!agentId) throw new SendError("Choose an agent first.", undefined, !!action);
     const resume = input.resume?.length ? input.resume : undefined;
     // The orchestrator owns the history: it wants the one new user message, or the `resume`
-    // answering an interrupt, and refuses both together (docs/api/agui.md, "Inbound").
+    // answering an interrupt, and refuses both together (docs/api/agui.md, "Inbound"). An action
+    // comes with neither.
     const last = input.messages.at(-1);
-    const messages = !resume && last?.role === "user" ? [last] : [];
+    const messages = !action && !resume && last?.role === "user" ? [last] : [];
     const { data, error, response } = await this.client.POST("/agui/agents/{agentId}", {
       params: { path: { agentId } },
       body: {
@@ -487,14 +554,18 @@ export class ThreadAgent extends AbstractAgent {
         state: {},
         tools: [],
         context: [],
-        forwardedProps: release ? { [RELEASE_CHANNELS_URI]: { release } } : {},
-        ...(resume ? { resume } : {}),
+        forwardedProps: action
+          ? { a2uiAction: { userAction: action } }
+          : release
+            ? { [RELEASE_CHANNELS_URI]: { release } }
+            : {},
+        ...(resume && !action ? { resume } : {}),
       },
       parseAs: "stream",
       headers: { Accept: "text/event-stream" },
       signal,
     });
-    if (!data) throw new SendError(problemMessage(error), response.status);
+    if (!data) throw new SendError(problemMessage(error), response.status, !!action);
     for await (const frame of readSse(data, signal)) {
       let event: Ev;
       try {
@@ -504,10 +575,10 @@ export class ThreadAgent extends AbstractAgent {
       }
       if (event.type === EventType.RUN_STARTED) return event;
       if (event.type === EventType.RUN_ERROR) {
-        throw new SendError(str(event.message) ?? "The run failed to start.");
+        throw new SendError(str(event.message) ?? "The run failed to start.", undefined, !!action);
       }
     }
-    throw new SendError("The stream ended before the run started.");
+    throw new SendError("The stream ended before the run started.", undefined, !!action);
   }
 
   /** Truncation, never cancellation: the run goes on (AG-UI lifecycle; see the class comment). */
