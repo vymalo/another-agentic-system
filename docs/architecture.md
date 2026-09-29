@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: **design only**. Facts about third-party components are marked
+> Status: **MVP steps 1–2 built**; the rest is design. Facts about third-party components are marked
 > **verified** (checked against source, docs or a live system on 2026-09-28)
 > or **unverified**.
 
