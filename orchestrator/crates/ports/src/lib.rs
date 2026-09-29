@@ -22,7 +22,7 @@ pub mod testkit;
 
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
-    AgentTransport, IdemKey, SendRequest, TaskHandle, TaskSnapshot,
+    AgentTransport, IdemKey, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};

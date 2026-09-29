@@ -55,6 +55,31 @@ fn arb_input() -> impl Strategy<Value = Input> {
         }),
         (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::DeliveryFailed { reason, retryable }),
+        Just(Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::Ui {
+                operations: vec![
+                    serde_json::json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "s"}})
+                ]
+            }
+        }),
+        "[a-z]{1,8}".prop_map(|reason| Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::UiRejected { reason }
+        }),
+        "[a-z]{1,8}".prop_map(|name| Input::UiAction {
+            user: UserId::new("u@x.io"),
+            action: UiActionData {
+                surface_id: "s".into(),
+                name,
+                source_component_id: "b".into(),
+                context: serde_json::Map::new(),
+                version: UiVersion::V0_9_1,
+                run_id: None,
+            },
+        }),
         Just(Input::CancelledBeforeStart),
         (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected { reason, retryable }),
@@ -105,9 +130,11 @@ proptest! {
                     state = next;
                 }
                 Err(TransitionError::Finished { state: s }) => {
-                    // (c) only a user message on a finished thread.
+                    // (c) only a user message (or an action, which answers like one) on a
+                    // finished thread.
                     prop_assert!(s.is_terminal() && s == state);
-                    let is_user_message = matches!(input, Input::UserMessage { .. });
+                    let is_user_message =
+                        matches!(input, Input::UserMessage { .. } | Input::UiAction { .. });
                     prop_assert!(is_user_message);
                 }
                 Err(TransitionError::InvalidInState { state: s, .. }) => {

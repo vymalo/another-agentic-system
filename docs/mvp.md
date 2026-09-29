@@ -43,7 +43,8 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 | The AG-UI operations in `chat-api.yaml` (the vendored schema by reference); the four legacy operations `deprecated: true` and answering with `Deprecation` (RFC 9745) | Built |
 | The web on `@assistant-ui/react-ag-ui` (`ThreadAgent` over the connect stream, live runs, interrupts by `resume`, patched `cancelled` outcome; the REST interaction path removed) | Built |
 | The legacy chat API surface off by default (`ORCH_SURFACES` defaults to `agui`; `agui,chat-api` keeps the legacy routes; compose and the dev scripts run on AG-UI only) | Built |
-| A2UI generative UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Planned |
+| A2UI on the orchestrator: surfaces from agents, actions from users, capability detection ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Built |
+| A2UI rendering in the web (validator, vocabulary, actions on a gesture) | Planned |
 
 ## Out of scope for the MVP
 

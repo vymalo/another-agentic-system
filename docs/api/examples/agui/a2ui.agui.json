@@ -1,0 +1,423 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "ui pick one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "ui pick one",
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "ui pick one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "a2ui-surface",
+      "content": {
+        "a2ui_operations": [
+          {
+            "createSurface": {
+              "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+              "surfaceId": "s1"
+            },
+            "version": "v0.9.1"
+          }
+        ]
+      },
+      "messageId": "a2ui-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "a2ui-surface",
+      "content": {
+        "a2ui_operations": [
+          {
+            "createSurface": {
+              "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+              "surfaceId": "s1"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "updateComponents": {
+              "components": [
+                {
+                  "children": [
+                    "title",
+                    "go"
+                  ],
+                  "component": "Column",
+                  "id": "root"
+                },
+                {
+                  "component": "Text",
+                  "id": "title",
+                  "text": "Pick one"
+                },
+                {
+                  "component": "Text",
+                  "id": "go_label",
+                  "text": "Go"
+                },
+                {
+                  "action": {
+                    "event": {
+                      "context": {
+                        "choice": "a"
+                      },
+                      "name": "go"
+                    }
+                  },
+                  "child": "go_label",
+                  "component": "Button",
+                  "id": "go",
+                  "variant": "primary"
+                }
+              ],
+              "surfaceId": "s1"
+            },
+            "version": "v0.9.1"
+          }
+        ]
+      },
+      "messageId": "a2ui-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "Pick one",
+        "status": "input_required"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "interruptIds": [
+          "int-5"
+        ],
+        "type": "suspended"
+      },
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "blocked",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "ui pick one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "interrupts": [
+          {
+            "id": "int-5",
+            "message": "Pick one",
+            "reason": "input_required",
+            "responseSchema": {
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "subagentRunId": "sub-2"
+          }
+        ],
+        "type": "interrupt"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "ui pick one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.action",
+      "content": {
+        "context": {
+          "choice": "a"
+        },
+        "name": "go",
+        "sourceComponentId": "go",
+        "surfaceId": "s1"
+      },
+      "messageId": "evt-7",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-8",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "ui pick one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "name": "result",
+        "text": "answered: ui-action go",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "ui pick one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 11
+  }
+]

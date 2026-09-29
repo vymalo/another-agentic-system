@@ -185,6 +185,11 @@ async fn sixteen_concurrent_appenders_get_contiguous_seq() {
     assert_eq!(texts.len(), total, "no event written twice");
 }
 
+/// How many migrations the crate embeds: each is recorded once, however often `migrate` runs.
+fn embedded_migrations() -> i64 {
+    i64::try_from(sqlx::migrate!("./migrations").iter().count()).unwrap()
+}
+
 #[tokio::test]
 async fn migrate_twice_is_a_no_op() {
     let db = db_or_skip!();
@@ -195,7 +200,7 @@ async fn migrate_twice_is_a_no_op() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(applied, 1);
+    assert_eq!(applied, embedded_migrations());
     // Data survives a re-run.
     let id = create(&store, vec![delegate()]).await;
     store.migrate().await.unwrap();
@@ -221,7 +226,7 @@ async fn migrate_from_many_replicas_at_once() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(applied, 1);
+    assert_eq!(applied, embedded_migrations());
     store.ping().await.unwrap();
     create(&store, vec![]).await;
 }

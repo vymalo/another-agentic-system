@@ -44,15 +44,17 @@ use orch_agui_proto::{
 };
 use orch_core::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData, ErrorData,
-    Event, EventBody, ThreadId, ThreadState, UserId, UserMessageData,
+    Event, EventBody, MAX_SURFACE_BYTES, SurfaceOp, ThreadId, ThreadState, UiActionData,
+    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, serialized_len,
 };
 use serde_json::{Value, json};
 
 use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
-    ACTIVITY_ARTIFACT, ACTIVITY_ERROR, ACTIVITY_STATUS, CODE_AGENT_FAILED, CODE_DELIVERY_FAILED,
-    actor_metadata, problem_metadata, response_schema, status_content,
+    A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ERROR,
+    ACTIVITY_STATUS, CODE_AGENT_FAILED, CODE_DELIVERY_FAILED, actor_metadata, problem_metadata,
+    response_schema, status_content,
 };
 
 /// What the projection knows about the thread besides its log: the parts of the thread record
@@ -90,6 +92,22 @@ struct OpenText {
 #[derive(Debug, Clone)]
 struct TextRecord {
     text: String,
+}
+
+/// An A2UI surface the thread has: every operation the agent sent for it so far, as sent. The
+/// whole surface is what each snapshot carries, so the last snapshot of a surface renders it
+/// completely on the live stream, on replay and in history.
+#[derive(Debug, Clone)]
+struct Surface {
+    /// The `messageId` of its snapshots: `a2ui-<seq of the event that created it>`.
+    message_id: String,
+    /// The version its operations declare (the first one's).
+    version: UiVersion,
+    operations: Vec<Value>,
+    bytes: usize,
+    /// It outgrew [`MAX_SURFACE_BYTES`]: nothing more is replayed for it (the viewer keeps the
+    /// last snapshot it got), and the viewer was told once.
+    overflowed: bool,
 }
 
 /// A wait for the user that no run has answered yet.
@@ -144,6 +162,8 @@ pub struct Projector {
     pending_error: Option<String>,
     message_ids: BTreeSet<String>,
     run_ids: BTreeSet<String>,
+    /// The A2UI surfaces the thread has now (a deleted surface is gone).
+    surfaces: BTreeMap<String, Surface>,
 }
 
 fn is_active(state: ThreadState) -> bool {
@@ -171,6 +191,7 @@ impl Projector {
             pending_error: None,
             message_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
+            surfaces: BTreeMap::new(),
         }
     }
 
@@ -198,6 +219,11 @@ impl Projector {
             },
             message_ids: self.message_ids.clone(),
             run_ids: self.run_ids.clone(),
+            surfaces: self
+                .surfaces
+                .iter()
+                .map(|(id, s)| (id.clone(), s.version))
+                .collect(),
         })
     }
 
@@ -257,6 +283,8 @@ impl Projector {
                 self.on_thread_state(event, d.state, pending_error, &mut out)
             }
             EventBody::Error(d) => self.on_error(event, d, &mut out),
+            EventBody::UiSurface(d) => self.on_ui_surface(event, d, &mut out),
+            EventBody::UiAction(d) => self.on_ui_action(event, d, &mut out),
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -494,6 +522,130 @@ impl Projector {
         if opened {
             self.settle(ev, out);
         }
+    }
+
+    /// An A2UI payload from the agent: each operation joins its surface, and each surface it
+    /// touched is sent again **whole** as `a2ui-surface` with `replace: true`, so any one snapshot
+    /// is enough to render the surface. A `deleteSurface` ends its surface: it is sent with the
+    /// rest, and a later operation for that id starts a new surface under a new message id.
+    ///
+    /// The log holds only payloads that passed the envelope check; an operation that does not
+    /// (an event written by something else) is skipped, never relayed.
+    fn on_ui_surface(&mut self, ev: &Event, d: &UiSurfaceData, out: &mut Vec<agui::Event>) {
+        let opened = self.ensure_run(ev, out);
+        self.ensure_invocation(ev, out);
+        let mut touched: Vec<String> = Vec::new();
+        let mut overflow: Option<String> = None;
+        for op in &d.operations {
+            let Ok(info) = inspect(op) else {
+                continue;
+            };
+            let id = info.surface_id.to_owned();
+            let size = serialized_len(op);
+            let surface = self.surfaces.entry(id.clone()).or_insert_with(|| Surface {
+                message_id: format!("a2ui-{}", ev.seq),
+                version: info.version,
+                operations: Vec::new(),
+                bytes: 0,
+                overflowed: false,
+            });
+            if surface.overflowed {
+                continue;
+            }
+            if surface.bytes.saturating_add(size) > MAX_SURFACE_BYTES {
+                surface.overflowed = true;
+                overflow.get_or_insert(id);
+                continue;
+            }
+            surface.bytes += size;
+            surface.operations.push(op.clone());
+            if !touched.contains(&id) {
+                touched.push(id.clone());
+            }
+            if info.op == SurfaceOp::Delete {
+                touched.retain(|t| t != &id);
+                if let Some(gone) = self.surfaces.remove(&id) {
+                    out.push(self.surface_activity(ev, &gone));
+                }
+            }
+        }
+        if let Some(id) = overflow {
+            let message = format!(
+                "surface {id:?} is larger than {MAX_SURFACE_BYTES} bytes; its later updates are not shown"
+            );
+            out.push(self.error_activity(ev, message));
+        }
+        for id in touched {
+            if let Some(surface) = self.surfaces.get(&id).cloned() {
+                out.push(self.surface_activity(ev, &surface));
+            }
+        }
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The user acted on a surface. Like a user message it answers a blocked thread and opens a
+    /// run when none is open (the run id is the one the surface named, else `run-<seq>`); unlike
+    /// one it says nothing in the transcript but a `vymalo.action` activity.
+    fn on_ui_action(&mut self, ev: &Event, d: &UiActionData, out: &mut Vec<agui::Event>) {
+        if self.state == ThreadState::Blocked {
+            self.state = ThreadState::Queued;
+        }
+        self.interrupt = None;
+        self.failure = None;
+        if self.run.is_none() {
+            let run_id = d
+                .run_id
+                .clone()
+                .unwrap_or_else(|| format!("run-{}", ev.seq));
+            self.open_run(run_id, true, out);
+        }
+        let mut content = Metadata::new();
+        content.insert("surfaceId".to_owned(), Value::from(d.surface_id.clone()));
+        content.insert("name".to_owned(), Value::from(d.name.clone()));
+        content.insert(
+            "sourceComponentId".to_owned(),
+            Value::from(d.source_component_id.clone()),
+        );
+        content.insert("context".to_owned(), Value::Object(d.context.clone()));
+        out.push(self.activity(
+            format!("evt-{}", ev.seq),
+            ACTIVITY_ACTION,
+            content,
+            &ev.actor,
+            false,
+        ));
+    }
+
+    /// The `a2ui-surface` snapshot of a whole surface.
+    fn surface_activity(&mut self, ev: &Event, surface: &Surface) -> agui::Event {
+        let mut content = Metadata::new();
+        content.insert(
+            A2UI_OPERATIONS_KEY.to_owned(),
+            Value::Array(surface.operations.clone()),
+        );
+        self.message_ids.insert(surface.message_id.clone());
+        let mut snapshot =
+            ActivitySnapshotEvent::new(surface.message_id.clone(), ACTIVITY_A2UI_SURFACE, content);
+        snapshot.replace = Some(true);
+        snapshot.subagent_run_id = self.invocation.as_ref().map(|i| i.id.clone());
+        snapshot.base.metadata = Some(actor_metadata(&ev.actor));
+        snapshot.into()
+    }
+
+    /// A `vymalo.error` activity that changes nothing else.
+    fn error_activity(&mut self, ev: &Event, message: String) -> agui::Event {
+        let mut content = Metadata::new();
+        content.insert("message".to_owned(), Value::from(message));
+        content.insert("retryable".to_owned(), Value::from(false));
+        self.activity(
+            format!("evt-{}", ev.seq),
+            ACTIVITY_ERROR,
+            content,
+            &ev.actor,
+            false,
+        )
     }
 
     fn on_error(&mut self, ev: &Event, d: &ErrorData, out: &mut Vec<agui::Event>) {

@@ -362,6 +362,22 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         )
         .await;
     seen.problem("runAgent", 422, &r);
+    // An A2UI action: for a surface the thread does not have, 422; too large, 413.
+    let action = |name: &str| {
+        input_with(
+            &new_thread_id(),
+            "r",
+            &[],
+            json!({"forwardedProps": {"a2uiAction": {"userAction": {
+                "name": name, "surfaceId": "s1", "sourceComponentId": "b"}}}}),
+        )
+    };
+    let r = h.refused("plain", Some(ALICE), &action("go")).await;
+    seen.problem("runAgent", 422, &r);
+    let r = h
+        .refused("plain", Some(ALICE), &action(&"n".repeat(300)))
+        .await;
+    seen.problem("runAgent", 413, &r);
     h.agent.set_card_down("coder", true);
     let r = h
         .refused(

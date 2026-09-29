@@ -28,10 +28,15 @@ The pure mapping from A2A values to envelopes and idempotency keys lives in
 | `A2aAgentClient::new(A2aConfig) -> Result<_, BuildError>` | implements `AgentClient`; installs the `rustls` crypto provider if none is installed |
 | `A2aConfig` | `card_timeout` (5 s), `connect_timeout` (10 s), `read_timeout` (90 s), `call_timeout`, `use_system_proxy` |
 | `releases_from_card(&AgentCard) -> Option<Releases>`, `RELEASE_CHANNELS_URI` | reads the optional release-channels extension from the live card (the URI is defined in [`orch-a2a-mapping`](../a2a-mapping/README.md) and re-exported) |
+| `ui_from_card(&AgentCard) -> Option<UiSupport>` | reads the optional A2UI extension ([ADR 0013](../../../docs/decisions/0013-a2ui-generative-ui.md)) from the live card: an `extensions` entry whose `uri` is exactly `https://a2ui.org/a2a-extension/a2ui/v0.9.1` or `…/v1.0` (both detected, open question 22; `v0.9.1` preferred when both are listed). Anything else is not A2UI |
+| `client_capabilities(UiVersion)`, `action_part(&UiActionData, Timestamp)` | the renderer capabilities a message carries (`a2uiClientCapabilities` `{"v0.9.1": {supportedCatalogIds}}`, or `a2uiRendererCapabilities` `{"v1.0": …}`), and the `application/a2ui+json` data part that carries a user's action back (`[{"version", "action": {name, surfaceId, sourceComponentId, timestamp, context}}]`) |
 | `install_crypto_provider()` | idempotent `rustls` provider setup |
 
 A selected release is sent as the `A2A-Extensions` header plus namespaced
-message metadata. Methods used: `SendStreamingMessage`, `SubscribeToTask`
+message metadata. **A2UI is sent only when the card read for that very call lists it** (capabilities in the
+metadata, the URI in the header and in `message.extensions`); a card that lost it makes the next message plain
+A2A again. A surface from an agent is relayed whether or not its card lists the extension, and an action goes
+back in the version its surface spoke (ADR 0013). Methods used: `SendStreamingMessage`, `SubscribeToTask`
 (the port's `resubscribe`), `GetTask`, `CancelTask`, `ListTasks`.
 `SubscribeToTask` only works while the task executes in the answering
 process; otherwise `TASK_NOT_FOUND`, which the dispatcher answers by polling
@@ -59,7 +64,10 @@ An `AgentTransport::Local` endpoint (an agent hosted in-process) is answered wit
 ## Tests
 
 `tests/against_fake_agent.rs`: the adapter against an in-process A2A 1.0 agent
-(`orch-testsupport`'s `FakeAgent`) over real HTTP. `tests/conformance.rs`: the
+(`orch-testsupport`'s `FakeAgent`) over real HTTP. `tests/a2ui.rs`: capability detection on and off (no extension, each URI, both, near-miss URIs), a card that
+changes between calls, the capabilities and activation per version, surfaces from an artifact, a message and a
+status message, refusal of malformed and oversized parts, a poll keyed like the stream, and an action arriving
+at the agent as a data part of the same task. `tests/conformance.rs`: the
 `AgentClient` conformance testkit of `orch-ports` (`agent_client_conformance!`)
 run against the same fake agent. Offline, no environment
 variables. The WireMock stand-ins of `compose.yaml` are exercised by

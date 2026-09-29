@@ -17,6 +17,22 @@
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
 //!
+//! A2UI (ADR 0013). A `Data` part whose `mediaType` (A2A 1.0) or `metadata.mimeType` (the A2UI
+//! extension's own spelling) is `application/a2ui+json` carries an array of A2UI messages, in an
+//! agent message, a status message or an artifact. It never becomes text: each such part maps to
+//! one envelope, `AgentUpdate::Ui` when its array passes the envelope check
+//! ([`orch_core::check_operations`]: an array, within the size cap, every message a known
+//! version and operation) and `AgentUpdate::UiRejected` when it does not. Nothing unchecked is
+//! passed on. The envelopes of a status message come before the status, so a surface that
+//! accompanies `input-required` is recorded while the run is still open.
+//!
+//! | A2UI part in | key |
+//! |---|---|
+//! | artifact `X` of task `T`, part `i` | `Task("a2a:T:artifact:X:ui:i")` |
+//! | agent message `M`, part `i` | `Task("a2a:msg:M:ui:i")` |
+//! | status message `M` of task `T`, part `i` | `Task("a2a:T:status-msg:M:ui:i")` |
+//! | status message without an id | `Turn("T:status-ui:<state>:i")` |
+//!
 //! Artifacts and chunking. On the wire (ProtoJSON) `append: false` and `lastChunk: false` are
 //! indistinguishable from "unset", so the first chunk of a chunked artifact looks exactly like a
 //! whole artifact. An artifact that is not marked `lastChunk: true` is therefore held back until
@@ -37,7 +53,7 @@ use a2a::{
     Message, Part, PartContent, Role, StreamResponse, Task, TaskArtifactUpdateEvent, TaskState,
     TaskStatus,
 };
-use orch_core::{AgentTaskState, AgentUpdate};
+use orch_core::{A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, check_operations};
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
 
@@ -89,6 +105,78 @@ fn text_of(parts: &[Part]) -> Option<String> {
     (!joined.trim().is_empty()).then_some(joined)
 }
 
+/// Whether `part` says it carries A2UI: the A2A 1.0 `mediaType`, or the extension's
+/// `metadata.mimeType`, is `application/a2ui+json` (parameters and case ignored).
+fn claims_a2ui(part: &Part) -> bool {
+    let is = |s: &str| {
+        s.split(';')
+            .next()
+            .is_some_and(|m| m.trim().eq_ignore_ascii_case(A2UI_MEDIA_TYPE))
+    };
+    part.media_type.as_deref().is_some_and(is)
+        || part
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("mimeType"))
+            .and_then(Value::as_str)
+            .is_some_and(is)
+}
+
+/// The outcome of the envelope check for one A2UI part: its operations, or why it is refused.
+type UiCheck = Result<Vec<Value>, String>;
+
+/// Parts split into what is A2UI (with each part's position) and what is not.
+struct Split {
+    rest: Vec<Part>,
+    ui: Vec<(usize, UiCheck)>,
+}
+
+/// Separates the A2UI parts, checking each one. A part that claims A2UI and is not a data part
+/// is refused too: it is never treated as text.
+fn split_ui(parts: &[Part]) -> Split {
+    let mut split = Split {
+        rest: Vec::new(),
+        ui: Vec::new(),
+    };
+    for (i, part) in parts.iter().enumerate() {
+        if !claims_a2ui(part) {
+            split.rest.push(part.clone());
+            continue;
+        }
+        let check = match &part.content {
+            PartContent::Data(v) => check_operations(v).map_err(|e| e.to_string()),
+            PartContent::Text(_) | PartContent::Raw(_) | PartContent::Url(_) => {
+                Err("an A2UI part must be a data part".to_owned())
+            }
+        };
+        split.ui.push((i, check));
+    }
+    split
+}
+
+/// One envelope per A2UI part, in order. `key` names the part by its position.
+fn ui_envelopes(
+    task_id: &str,
+    context_id: &str,
+    revision: &Option<String>,
+    ui: Vec<(usize, UiCheck)>,
+    key: impl Fn(usize) -> IdemKey,
+) -> Vec<AgentEnvelope> {
+    ui.into_iter()
+        .map(|(index, check)| AgentEnvelope {
+            task_id: task_id.to_owned(),
+            context_id: context_id.to_owned(),
+            task_state: None,
+            revision: revision.clone(),
+            key: key(index),
+            update: Some(match check {
+                Ok(operations) => AgentUpdate::Ui { operations },
+                Err(reason) => AgentUpdate::UiRejected { reason },
+            }),
+        })
+        .collect()
+}
+
 /// The revision the agent echoes under the extension's key (`{requested, revision}`).
 fn revision_of(metadata: &Metadata) -> Option<String> {
     metadata
@@ -98,6 +186,34 @@ fn revision_of(metadata: &Metadata) -> Option<String> {
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+/// The envelopes of a status: the A2UI parts of its message first, then the status itself.
+fn status_envelopes(
+    task_id: &str,
+    context_id: &str,
+    status: &TaskStatus,
+    revision: Option<String>,
+) -> Vec<AgentEnvelope> {
+    let message = status.message.as_ref();
+    let split = message.map(|m| split_ui(&m.parts)).unwrap_or(Split {
+        rest: Vec::new(),
+        ui: Vec::new(),
+    });
+    let state = state_of(&status.state);
+    let mut out = match message.filter(|m| !m.message_id.is_empty()) {
+        Some(m) => ui_envelopes(task_id, context_id, &revision, split.ui, |i| {
+            IdemKey::Task(format!("a2a:{task_id}:status-msg:{}:ui:{i}", m.message_id))
+        }),
+        None => ui_envelopes(task_id, context_id, &revision, split.ui, |i| {
+            IdemKey::Turn(format!(
+                "{task_id}:status-ui:{}:{i}",
+                state.map_or("unspecified", slug)
+            ))
+        }),
+    };
+    out.push(status_envelope(task_id, context_id, status, revision));
+    out
 }
 
 fn status_envelope(
@@ -164,21 +280,36 @@ fn artifact_update(artifact_id: &str, name: Option<&str>, parts: &[Part]) -> Age
     }
 }
 
-fn artifact_envelope(
+/// The envelopes of a whole artifact: the artifact of its ordinary parts (none when every part
+/// is A2UI), then one envelope per A2UI part.
+fn artifact_envelopes(
     task_id: &str,
     context_id: &str,
     artifact_id: &str,
-    update: AgentUpdate,
+    name: Option<&str>,
+    parts: &[Part],
     revision: Option<String>,
-) -> AgentEnvelope {
-    AgentEnvelope {
-        task_id: task_id.to_owned(),
-        context_id: context_id.to_owned(),
-        task_state: None,
-        revision,
-        key: IdemKey::Task(format!("a2a:{task_id}:artifact:{artifact_id}")),
-        update: Some(update),
+) -> Vec<AgentEnvelope> {
+    let split = split_ui(parts);
+    let mut out = Vec::new();
+    if split.ui.is_empty() || !split.rest.is_empty() {
+        out.push(AgentEnvelope {
+            task_id: task_id.to_owned(),
+            context_id: context_id.to_owned(),
+            task_state: None,
+            revision: revision.clone(),
+            key: IdemKey::Task(format!("a2a:{task_id}:artifact:{artifact_id}")),
+            update: Some(artifact_update(artifact_id, name, &split.rest)),
+        });
     }
+    out.extend(ui_envelopes(
+        task_id,
+        context_id,
+        &revision,
+        split.ui,
+        |i| IdemKey::Task(format!("a2a:{task_id}:artifact:{artifact_id}:ui:{i}")),
+    ));
+    out
 }
 
 /// Every artifact of a task, merging entries that share an id (the server appends chunk by
@@ -198,16 +329,18 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
         .into_iter()
         .filter_map(|id| {
             let (name, parts) = merged.get(id)?;
-            Some(artifact_envelope(
+            Some(artifact_envelopes(
                 &task.id,
                 &task.context_id,
                 id,
-                artifact_update(id, *name, parts),
+                *name,
+                parts,
                 revision.clone(),
             ))
         })
+        .flatten()
         .collect();
-    out.push(status_envelope(
+    out.extend(status_envelopes(
         &task.id,
         &task.context_id,
         &task.status,
@@ -241,12 +374,13 @@ struct Pending {
 }
 
 impl Pending {
-    fn into_envelope(self) -> AgentEnvelope {
-        artifact_envelope(
+    fn into_envelopes(self) -> Vec<AgentEnvelope> {
+        artifact_envelopes(
             &self.task_id,
             &self.context_id,
             &self.artifact_id,
-            artifact_update(&self.artifact_id, self.name.as_deref(), &self.parts),
+            self.name.as_deref(),
+            &self.parts,
             self.revision,
         )
     }
@@ -280,9 +414,10 @@ impl StreamMapper {
         let mut out: Vec<Result<AgentEnvelope, AgentError>> = self
             .pending
             .take()
-            .map(Pending::into_envelope)
-            .map(Ok)
+            .map(Pending::into_envelopes)
             .into_iter()
+            .flatten()
+            .map(Ok)
             .collect();
         match item {
             StreamResponse::Task(task) => {
@@ -291,12 +426,16 @@ impl StreamMapper {
             }
             StreamResponse::StatusUpdate(u) => {
                 self.learn(&u.task_id, &u.context_id);
-                out.push(Ok(status_envelope(
-                    &u.task_id,
-                    &u.context_id,
-                    &u.status,
-                    revision_of(&u.metadata),
-                )));
+                out.extend(
+                    status_envelopes(
+                        &u.task_id,
+                        &u.context_id,
+                        &u.status,
+                        revision_of(&u.metadata),
+                    )
+                    .into_iter()
+                    .map(Ok),
+                );
             }
             StreamResponse::Message(m) => out.extend(self.message(&m)),
             StreamResponse::ArtifactUpdate(_) => {}
@@ -313,7 +452,7 @@ impl StreamMapper {
             .as_ref()
             .is_some_and(|p| p.artifact_id == u.artifact.artifact_id);
 
-        let mut out = Vec::new();
+        let mut out: Vec<AgentEnvelope> = Vec::new();
         let held = if same_artifact && append {
             let mut p = self.pending.take();
             if let Some(p) = p.as_mut() {
@@ -324,7 +463,12 @@ impl StreamMapper {
         } else {
             // A different artifact, or the same id sent whole again (which replaces it).
             if !same_artifact {
-                out.extend(self.pending.take().map(Pending::into_envelope));
+                out.extend(
+                    self.pending
+                        .take()
+                        .into_iter()
+                        .flat_map(Pending::into_envelopes),
+                );
             } else {
                 self.pending = None;
             }
@@ -338,7 +482,7 @@ impl StreamMapper {
             })
         };
         match held {
-            Some(p) if last => out.push(p.into_envelope()),
+            Some(p) if last => out.extend(p.into_envelopes()),
             other => self.pending = other,
         }
         out
@@ -349,9 +493,11 @@ impl StreamMapper {
             Role::Agent => {}
             Role::User | Role::Unspecified => return Vec::new(),
         }
-        let Some(text) = text_of(&m.parts) else {
+        let text = text_of(&m.parts);
+        let split = split_ui(&m.parts);
+        if text.is_none() && split.ui.is_empty() {
             return Vec::new();
-        };
+        }
         let task_id = m.task_id.clone().filter(|t| !t.is_empty());
         let Some(task_id) = task_id.or_else(|| self.task_id.clone()) else {
             return vec![Err(AgentError::Unsupported(
@@ -366,18 +512,30 @@ impl StreamMapper {
             .or_else(|| self.context_id.clone())
             .unwrap_or_default();
         self.learn(&task_id, &context_id);
-        vec![Ok(AgentEnvelope {
-            task_id,
-            context_id,
-            task_state: None,
-            revision: revision_of(&m.metadata),
-            key: IdemKey::Task(format!("a2a:msg:{}", m.message_id)),
-            update: Some(AgentUpdate::Message {
-                message_id: m.message_id.clone(),
-                text,
-                is_final: true,
-            }),
-        })]
+        let revision = revision_of(&m.metadata);
+        let mut out: Vec<Result<AgentEnvelope, AgentError>> = Vec::new();
+        if let Some(text) = text {
+            out.push(Ok(AgentEnvelope {
+                task_id: task_id.clone(),
+                context_id: context_id.clone(),
+                task_state: None,
+                revision: revision.clone(),
+                key: IdemKey::Task(format!("a2a:msg:{}", m.message_id)),
+                update: Some(AgentUpdate::Message {
+                    message_id: m.message_id.clone(),
+                    text,
+                    is_final: true,
+                }),
+            }));
+        }
+        out.extend(
+            ui_envelopes(&task_id, &context_id, &revision, split.ui, |i| {
+                IdemKey::Task(format!("a2a:msg:{}:ui:{i}", m.message_id))
+            })
+            .into_iter()
+            .map(Ok),
+        );
+        out
     }
 }
 
@@ -774,5 +932,287 @@ mod tests {
         u.metadata = None;
         let env = only(StreamMapper::default().map(StreamResponse::StatusUpdate(u)));
         assert_eq!(env.revision, None);
+    }
+
+    // ------------------------------------------------------------------ A2UI (ADR 0013)
+
+    fn surface_ops() -> Value {
+        json!([
+            {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "c"}},
+            {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": []}}
+        ])
+    }
+
+    /// A data part the way the A2UI extension spells it: `metadata.mimeType`.
+    fn ui_part(data: Value) -> Part {
+        let mut p = Part::data(data);
+        p.metadata = Some(HashMap::from([(
+            "mimeType".to_owned(),
+            json!("application/a2ui+json"),
+        )]));
+        p
+    }
+
+    fn ui_ops(env: &AgentEnvelope) -> &Vec<Value> {
+        let Some(AgentUpdate::Ui { operations }) = &env.update else {
+            panic!("not a ui update: {env:?}");
+        };
+        operations
+    }
+
+    fn ok(v: Vec<Result<AgentEnvelope, AgentError>>) -> Vec<AgentEnvelope> {
+        v.into_iter().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn an_agent_message_with_text_and_a_surface_maps_to_two_envelopes() {
+        let mut message = Message::new(
+            Role::Agent,
+            vec![Part::text("Here is the form"), ui_part(surface_ops())],
+        );
+        message.message_id = "m-1".into();
+        message.task_id = Some(T.into());
+        message.context_id = Some(C.into());
+        let envs = ok(StreamMapper::default().map(StreamResponse::Message(message)));
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0].key, IdemKey::Task("a2a:msg:m-1".into()));
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Message { .. })));
+        assert_eq!(envs[1].key, IdemKey::Task("a2a:msg:m-1:ui:1".into()));
+        assert_eq!(envs[1].task_id, T);
+        assert_eq!(envs[1].task_state, None);
+        assert_eq!(Value::Array(ui_ops(&envs[1]).clone()), surface_ops());
+    }
+
+    #[test]
+    fn a_message_of_only_a_surface_has_no_text_envelope() {
+        let mut message = Message::new(Role::Agent, vec![ui_part(surface_ops())]);
+        message.message_id = "m-2".into();
+        message.task_id = Some(T.into());
+        let envs = ok(StreamMapper::default().map(StreamResponse::Message(message)));
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].key, IdemKey::Task("a2a:msg:m-2:ui:0".into()));
+    }
+
+    #[test]
+    fn a_surface_message_without_a_task_is_unsupported_like_any_message() {
+        let mut m = StreamMapper::default();
+        let mut message = Message::new(Role::Agent, vec![ui_part(surface_ops())]);
+        message.message_id = "m-3".into();
+        let out = m.map(StreamResponse::Message(message));
+        assert!(matches!(out.as_slice(), [Err(AgentError::Unsupported(_))]));
+    }
+
+    #[test]
+    fn a_user_message_with_a_surface_is_ignored() {
+        let message = Message::new(Role::User, vec![ui_part(surface_ops())]);
+        assert!(
+            StreamMapper::default()
+                .map(StreamResponse::Message(message))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_status_message_surface_comes_before_the_status() {
+        let mut m = msg("sm-1", Role::Agent, "Fill this in");
+        m.parts.push(ui_part(surface_ops()));
+        let envs =
+            ok(StreamMapper::default().map(status_update(TaskState::InputRequired, Some(m))));
+        assert_eq!(envs.len(), 2);
+        assert_eq!(
+            envs[0].key,
+            IdemKey::Task("a2a:task-1:status-msg:sm-1:ui:1".into())
+        );
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Ui { .. })));
+        assert_eq!(envs[0].task_state, None);
+        assert_eq!(envs[1].task_state, Some(AgentTaskState::InputRequired));
+        assert_eq!(
+            envs[1].update,
+            Some(AgentUpdate::Status {
+                state: AgentTaskState::InputRequired,
+                detail: Some("Fill this in".into())
+            }),
+            "the detail is the text only, never the A2UI JSON"
+        );
+    }
+
+    #[test]
+    fn a_status_message_without_an_id_uses_a_turn_key() {
+        let mut m = Message::new(Role::Agent, vec![ui_part(surface_ops())]);
+        m.message_id.clear();
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(
+            envs[0].key,
+            IdemKey::Turn("task-1:status-ui:working:0".into())
+        );
+    }
+
+    #[test]
+    fn an_artifact_of_only_a_surface_maps_to_no_artifact() {
+        let a = art("a-ui", Some("form"), vec![ui_part(surface_ops())]);
+        let envs = ok(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert_eq!(envs.len(), 1, "{envs:?}");
+        assert_eq!(
+            envs[0].key,
+            IdemKey::Task("a2a:task-1:artifact:a-ui:ui:0".into())
+        );
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Ui { .. })));
+    }
+
+    #[test]
+    fn a_mixed_artifact_keeps_its_text_and_never_prints_the_surface_as_json() {
+        let a = art(
+            "a-mix",
+            Some("report"),
+            vec![Part::text("summary"), ui_part(surface_ops())],
+        );
+        let envs = ok(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert_eq!(envs.len(), 2);
+        assert_eq!(
+            envs[0].key,
+            IdemKey::Task("a2a:task-1:artifact:a-mix".into())
+        );
+        assert_eq!(
+            envs[0].update,
+            Some(AgentUpdate::Artifact {
+                name: "report".into(),
+                mime_type: None,
+                uri: None,
+                text: Some("summary".into()),
+            })
+        );
+        assert_eq!(
+            envs[1].key,
+            IdemKey::Task("a2a:task-1:artifact:a-mix:ui:1".into())
+        );
+    }
+
+    #[test]
+    fn a_chunked_surface_is_emitted_once_and_matches_the_snapshot() {
+        let mut m = StreamMapper::default();
+        let first = art("a-c", Some("form"), vec![Part::text("intro")]);
+        assert!(m.map(artifact_update(first, None, None)).is_empty());
+        let more = art("a-c", None, vec![ui_part(surface_ops())]);
+        let live = ok(m.map(artifact_update(more, Some(true), Some(true))));
+        let snap = task_envelopes(&task(
+            TaskState::Working,
+            vec![
+                art("a-c", Some("form"), vec![Part::text("intro")]),
+                art("a-c", None, vec![ui_part(surface_ops())]),
+            ],
+            None,
+        ));
+        let keys = |v: &[AgentEnvelope]| v.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&live),
+            keys(&snap[..2]),
+            "a poll and the stream collapse"
+        );
+    }
+
+    #[test]
+    fn a_task_snapshot_carries_surfaces_of_artifacts_and_of_the_status_message() {
+        let mut sm = msg("sm-9", Role::Agent, "pick");
+        sm.parts.push(ui_part(surface_ops()));
+        let t = task(
+            TaskState::InputRequired,
+            vec![art("a-1", None, vec![ui_part(surface_ops())])],
+            Some(sm),
+        );
+        let envs = task_envelopes(&t);
+        let kinds: Vec<&str> = envs
+            .iter()
+            .map(|e| match &e.update {
+                Some(AgentUpdate::Ui { .. }) => "ui",
+                Some(AgentUpdate::Status { .. }) => "status",
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, ["ui", "ui", "status"]);
+        assert_eq!(snapshot(&t).unwrap().envelopes.len(), 3);
+    }
+
+    #[test]
+    fn a_part_that_fails_the_envelope_check_is_refused_and_never_passed_on() {
+        let big = json!([{"version": "v0.9.1", "updateDataModel": {
+            "surfaceId": "s", "value": "x".repeat(orch_core::MAX_OPERATIONS_BYTES)}}]);
+        let cases: Vec<(Part, &str)> = vec![
+            (ui_part(json!({"version": "v0.9.1"})), "not an array"),
+            (ui_part(json!([])), "no A2UI messages"),
+            (
+                ui_part(json!([{"createSurface": {"surfaceId": "s"}}])),
+                "no version",
+            ),
+            (
+                ui_part(json!([{"version": "v0.8", "createSurface": {"surfaceId": "s"}}])),
+                "unsupported version",
+            ),
+            (
+                ui_part(json!([{"version": "v0.9.1", "explode": {"surfaceId": "s"}}])),
+                "unsupported operation",
+            ),
+            (ui_part(big), "more than the limit"),
+            (
+                {
+                    let mut p = Part::text("[]");
+                    p.metadata = Some(HashMap::from([(
+                        "mimeType".to_owned(),
+                        json!("application/a2ui+json"),
+                    )]));
+                    p
+                },
+                "must be a data part",
+            ),
+        ];
+        for (part, why) in cases {
+            let a = art("a-bad", Some("form"), vec![part]);
+            let envs = ok(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+            assert_eq!(envs.len(), 1, "{why}: {envs:?}");
+            let Some(AgentUpdate::UiRejected { reason }) = &envs[0].update else {
+                panic!("{why}: {envs:?}");
+            };
+            assert!(reason.contains(why), "{why}: {reason}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_in_one_part_does_not_stop_the_next() {
+        let mut m = msg("m-mix", Role::Agent, "two parts");
+        m.task_id = Some(T.into());
+        m.parts.push(ui_part(json!("bad")));
+        m.parts.push(ui_part(surface_ops()));
+        let envs = ok(StreamMapper::default().map(StreamResponse::Message(m)));
+        assert_eq!(envs.len(), 3);
+        assert!(matches!(
+            envs[1].update,
+            Some(AgentUpdate::UiRejected { .. })
+        ));
+        assert!(matches!(envs[2].update, Some(AgentUpdate::Ui { .. })));
+    }
+
+    #[test]
+    fn the_media_type_is_recognised_in_both_spellings_and_only_that() {
+        // A2A 1.0 `mediaType`, with a parameter and other case.
+        let by_media_type =
+            Part::data(surface_ops()).with_media_type("Application/A2UI+JSON; charset=utf-8");
+        assert!(claims_a2ui(&by_media_type));
+        assert!(claims_a2ui(&ui_part(surface_ops())));
+        // Another JSON data part is an ordinary artifact, exactly as before.
+        let other = Part::data(json!({"ok": true})).with_media_type("application/json");
+        assert!(!claims_a2ui(&other));
+        let mut wrong = Part::data(surface_ops());
+        wrong.metadata = Some(HashMap::from([(
+            "mimeType".to_owned(),
+            json!("text/plain"),
+        )]));
+        assert!(!claims_a2ui(&wrong));
+        let a = art("a-json", Some("data"), vec![other]);
+        let envs = ok(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Artifact { .. })));
+        assert_eq!(envs.len(), 1);
+        // A surface in a data part of another type is not relayed as UI.
+        let a = art("a-x", None, vec![wrong]);
+        let envs = ok(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Artifact { .. })));
     }
 }

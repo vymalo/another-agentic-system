@@ -18,13 +18,14 @@ use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
-use orch_core::BoxError;
+use orch_core::{BoxError, UiVersion};
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
-    SendRequest, TaskHandle, TaskSnapshot,
+    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 use serde_json::json;
 
+use crate::a2ui::{action_part, client_capabilities, ui_from_card};
 use crate::errors::classify;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 
@@ -122,16 +123,14 @@ fn a2a_parts(ep: &AgentEndpoint) -> Result<(&str, Option<&str>), AgentError> {
     }
 }
 
-/// Adds the `A2A-Extensions` header that activates the release-channels extension.
-struct ActivateReleaseChannels;
+/// Adds the `A2A-Extensions` header that activates the extensions this call uses (release
+/// channels, A2UI). Only extensions the live card offers are ever listed.
+struct ActivateExtensions(Vec<String>);
 
 #[async_trait::async_trait]
-impl CallInterceptor for ActivateReleaseChannels {
+impl CallInterceptor for ActivateExtensions {
     async fn before(&self, _method: &str, params: &mut ServiceParams) -> Result<(), A2AError> {
-        params.insert(
-            SVC_PARAM_EXTENSIONS.to_owned(),
-            vec![RELEASE_CHANNELS_URI.to_owned()],
-        );
+        params.insert(SVC_PARAM_EXTENSIONS.to_owned(), self.0.clone());
         Ok(())
     }
 }
@@ -223,7 +222,7 @@ impl A2aAgentClient {
         &self,
         ep: &AgentEndpoint,
         card: &AgentCard,
-        activate_releases: bool,
+        activate: Vec<String>,
     ) -> Result<A2AClient<Box<dyn Transport>>, AgentError> {
         let mut builder = A2AClientFactory::builder()
             .no_defaults()
@@ -241,8 +240,8 @@ impl A2aAgentClient {
         if let Some(token) = bearer {
             builder = builder.with_interceptor(Arc::new(AuthInterceptor::bearer(token.to_owned())));
         }
-        if activate_releases {
-            builder = builder.with_interceptor(Arc::new(ActivateReleaseChannels));
+        if !activate.is_empty() {
+            builder = builder.with_interceptor(Arc::new(ActivateExtensions(activate)));
         }
         builder
             .build()
@@ -257,7 +256,7 @@ impl A2aAgentClient {
         ep: &AgentEndpoint,
     ) -> Result<A2AClient<Box<dyn Transport>>, AgentError> {
         let card = self.fetch_card(ep).await?;
-        self.client_for(ep, &card, false).await
+        self.client_for(ep, &card, Vec::new()).await
     }
 
     /// Bounds a call that has no protocol-level timeout of its own.
@@ -330,17 +329,52 @@ fn map_stream(inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>) 
     .boxed()
 }
 
-fn user_message(req: &SendRequest) -> Message {
-    let mut message = Message::new(Role::User, vec![Part::text(req.text.clone())]);
+/// The extensions this message uses, by URI: release channels when a release is selected, A2UI
+/// when the live card lists it (ADR 0008: read for this very call, never remembered).
+fn extensions_of(req: &SendRequest, ui: Option<&UiSupport>) -> Vec<String> {
+    let mut uris = Vec::new();
+    if req.release.is_some() {
+        uris.push(RELEASE_CHANNELS_URI.to_owned());
+    }
+    if let Some(uri) = ui
+        .and_then(UiSupport::preferred)
+        .and_then(UiVersion::extension_uri)
+    {
+        uris.push(uri.to_owned());
+    }
+    uris
+}
+
+fn user_message(req: &SendRequest, ui: Option<&UiSupport>) -> Message {
+    let part = match &req.content {
+        SendContent::Text(text) => Part::text(text.clone()),
+        SendContent::UiAction { action, at } => action_part(action, *at),
+    };
+    let mut message = Message::new(Role::User, vec![part]);
     message.message_id = req.message_id.clone();
     message.context_id = Some(req.context_id.clone());
     message.task_id = req.task_id.clone();
+    let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
     if let Some(release) = &req.release {
-        message.metadata = Some(HashMap::from([(
+        metadata.insert(
             RELEASE_CHANNELS_URI.to_owned(),
             json!({ "release": release }),
-        )]));
-        message.extensions = Some(vec![RELEASE_CHANNELS_URI.to_owned()]);
+        );
+    }
+    // The renderer's capabilities go with every message, and only to an agent whose live card
+    // lists the extension: without it the message is plain A2A.
+    if let Some((key, value)) = ui
+        .and_then(UiSupport::preferred)
+        .and_then(client_capabilities)
+    {
+        metadata.insert(key.to_owned(), value);
+    }
+    let extensions = extensions_of(req, ui);
+    if !metadata.is_empty() {
+        message.metadata = Some(metadata);
+    }
+    if !extensions.is_empty() {
+        message.extensions = Some(extensions);
     }
     message
 }
@@ -352,6 +386,7 @@ impl AgentClient for A2aAgentClient {
             description: Some(card.description.clone()).filter(|d| !d.trim().is_empty()),
             version: Some(card.version.clone()).filter(|v| !v.trim().is_empty()),
             releases: releases_from_card(&card),
+            ui: ui_from_card(&card),
         })
     }
 
@@ -365,11 +400,12 @@ impl AgentClient for A2aAgentClient {
                     .to_owned(),
             ));
         }
+        let ui = ui_from_card(&card);
         let client = self
-            .client_for(&req.endpoint, &card, req.release.is_some())
+            .client_for(&req.endpoint, &card, extensions_of(&req, ui.as_ref()))
             .await?;
         let request = SendMessageRequest {
-            message: user_message(&req),
+            message: user_message(&req, ui.as_ref()),
             configuration: None,
             metadata: None,
             tenant: None,

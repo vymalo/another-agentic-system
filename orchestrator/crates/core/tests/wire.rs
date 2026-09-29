@@ -72,6 +72,17 @@ fn every_kind_roundtrips_and_never_emits_null() {
             message: "m".into(),
             retryable: true,
         }),
+        EventBody::UiSurface(UiSurfaceData {
+            operations: vec![json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "s"}})],
+        }),
+        EventBody::UiAction(UiActionData {
+            surface_id: "s".into(),
+            name: "go".into(),
+            source_component_id: "b".into(),
+            context: serde_json::Map::new(),
+            version: UiVersion::V0_9_1,
+            run_id: None,
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -268,4 +279,55 @@ fn auth_required_is_its_own_status_spelling() {
         json!({"status": "auth_required", "detail": "github"})
     );
     assert_eq!(serde_json::from_value::<Event>(v).unwrap(), e);
+}
+
+#[test]
+fn ui_events_use_the_contract_spelling() {
+    let surface = event(
+        EventBody::UiSurface(UiSurfaceData {
+            operations: vec![json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})],
+        }),
+        Actor::agent(&AgentId::new("coder"), None),
+    );
+    let v = serde_json::to_value(&surface).unwrap();
+    assert_eq!(v["kind"], "ui_surface");
+    assert_eq!(
+        v["data"],
+        json!({"operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}}]})
+    );
+    assert_eq!(serde_json::from_value::<Event>(v).unwrap(), surface);
+
+    let mut context = serde_json::Map::new();
+    context.insert("email".into(), json!("a@b.c"));
+    let action = event(
+        EventBody::UiAction(UiActionData {
+            surface_id: "s1".into(),
+            name: "submit".into(),
+            source_component_id: "btn".into(),
+            context,
+            version: UiVersion::V0_9_1,
+            run_id: Some("run-2".into()),
+        }),
+        Actor::user(&UserId::new("a@b.c")),
+    );
+    let v = serde_json::to_value(&action).unwrap();
+    assert_eq!(v["kind"], "ui_action");
+    assert_eq!(
+        v["data"],
+        json!({"surfaceId": "s1", "name": "submit", "sourceComponentId": "btn",
+               "context": {"email": "a@b.c"}, "version": "v0.9.1", "runId": "run-2"})
+    );
+    assert_eq!(serde_json::from_value::<Event>(v).unwrap(), action);
+}
+
+#[test]
+fn an_event_of_an_unknown_kind_or_a_malformed_ui_body_does_not_read() {
+    let base = |kind: &str, data: serde_json::Value| {
+        json!({"seq": 1, "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+               "at": "2026-09-29T10:00:00Z", "kind": kind,
+               "actor": {"type": "system", "name": "orchestrator"}, "data": data})
+    };
+    assert!(serde_json::from_value::<Event>(base("ui_other", json!({}))).is_err());
+    assert!(serde_json::from_value::<Event>(base("ui_surface", json!({"operations": 1}))).is_err());
+    assert!(serde_json::from_value::<Event>(base("ui_action", json!({"name": "x"}))).is_err());
 }

@@ -3,14 +3,17 @@
 
 mod support;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_projection::{
     Audience, InputError, KnownThread, Projector, ThreadView, Translation, Warning,
     held_message_ids, release_selector, thread_id_of, translate, translate_with_warnings,
 };
 use orch_agui_proto::RunAgentInput;
-use orch_core::{AgentId, Input, ThreadState, UserId};
+use orch_core::{
+    AgentId, Input, MAX_ACTION_CONTEXT_BYTES, MAX_ID_BYTES, ThreadState, UiActionData, UiVersion,
+    UserId,
+};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use support::log::{arb_actions, build, meta};
@@ -47,6 +50,7 @@ fn known(state: ThreadState) -> KnownThread {
         open_interrupts: Vec::new(),
         message_ids: BTreeSet::new(),
         run_ids: BTreeSet::new(),
+        surfaces: BTreeMap::new(),
     }
 }
 
@@ -519,14 +523,201 @@ fn tools_and_context_are_ignored_with_a_warning_and_state_silently() {
     );
 }
 
+// ---- A2UI actions (ADR 0013) ---------------------------------------------------------------
+
+/// A blocked thread that has the surface `s1` (spoken in `v0.9.1`) and, deleted or never seen,
+/// no other.
+fn with_surface() -> KnownThread {
+    KnownThread {
+        surfaces: BTreeMap::from([("s1".to_owned(), UiVersion::V0_9_1)]),
+        ..blocked()
+    }
+}
+
+fn action_request(user_action: Value) -> RunAgentInput {
+    request(json!({
+        "runId": "run-act",
+        "forwardedProps": {"a2uiAction": {"userAction": user_action}}
+    }))
+}
+
+fn go() -> Value {
+    json!({"name": "go", "surfaceId": "s1", "sourceComponentId": "btn",
+           "context": {"choice": "a"}, "timestamp": "2026-09-29T10:00:00Z",
+           "userMessage": "text an agent wrote", "type": "a2ui:action"})
+}
+
+fn expected_action() -> Input {
+    let mut context = serde_json::Map::new();
+    context.insert("choice".into(), json!("a"));
+    Input::UiAction {
+        user: alice(),
+        action: UiActionData {
+            surface_id: "s1".into(),
+            name: "go".into(),
+            source_component_id: "btn".into(),
+            context,
+            version: UiVersion::V0_9_1,
+            run_id: Some("run-act".into()),
+        },
+    }
+}
+
 #[test]
-fn an_a2ui_action_is_ignored_until_generative_ui_arrives() {
-    let input = request(json!({
-        "messages": [user_msg("a", "hi")],
-        "forwardedProps": {"a2uiAction": {"userAction": {"name": "ok"}}}
-    }));
-    let t = translate_with_warnings(&input, &ThreadView::Known(idle_known())).unwrap();
-    assert_eq!(t.warnings, [Warning::A2uiActionIgnored]);
+fn an_action_on_a_surface_of_a_blocked_thread_is_one_ui_action() {
+    let got = ok(&action_request(go()), with_surface());
+    assert_eq!(
+        got,
+        [expected_action()],
+        "timestamp, userMessage and type are dropped; the surface's version and the run id are set"
+    );
+}
+
+#[test]
+fn an_action_speaks_the_version_of_its_surface() {
+    let view = KnownThread {
+        surfaces: BTreeMap::from([("s1".to_owned(), UiVersion::V1_0)]),
+        ..blocked()
+    };
+    let got = ok(&action_request(go()), view);
+    let [Input::UiAction { action, .. }] = &got[..] else {
+        panic!("{got:?}");
+    };
+    assert_eq!(action.version, UiVersion::V1_0);
+}
+
+#[test]
+fn an_action_needs_no_context() {
+    let mut a = go();
+    a.as_object_mut().unwrap().remove("context");
+    let got = ok(&action_request(a), with_surface());
+    let [Input::UiAction { action, .. }] = &got[..] else {
+        panic!("{got:?}");
+    };
+    assert!(action.context.is_empty());
+}
+
+#[test]
+fn an_action_for_a_surface_the_thread_does_not_have_is_refused() {
+    let mut a = go();
+    a["surfaceId"] = json!("elsewhere");
+    let e = err(&action_request(a), with_surface());
+    assert_eq!(
+        e,
+        InputError::UnknownSurface {
+            surface_id: "elsewhere".into()
+        }
+    );
+    assert_eq!(e.http_status(), 422);
+    // A thread with no surface at all, and a thread that does not exist yet.
+    assert_eq!(err(&action_request(go()), blocked()).http_status(), 422);
+    let new = translate(&action_request(go()), &ThreadView::new_thread(alice()));
+    assert!(matches!(new, Err(InputError::UnknownSurface { .. })));
+}
+
+#[test]
+fn a_surface_id_in_an_error_is_cut_short() {
+    let mut a = go();
+    a["surfaceId"] = json!("s".repeat(MAX_ID_BYTES));
+    let InputError::UnknownSurface { surface_id } = err(&action_request(a), with_surface()) else {
+        panic!("not an unknown surface");
+    };
+    assert_eq!(surface_id.len(), 64);
+}
+
+#[test]
+fn a_malformed_action_is_refused_before_anything_is_looked_up() {
+    let cases = [
+        json!("go"),
+        json!({}),
+        json!({"surfaceId": "s1", "sourceComponentId": "btn"}),
+        json!({"name": "go", "sourceComponentId": "btn"}),
+        json!({"name": "go", "surfaceId": "s1"}),
+        json!({"name": 3, "surfaceId": "s1", "sourceComponentId": "btn"}),
+        json!({"name": "", "surfaceId": "s1", "sourceComponentId": "btn"}),
+        json!({"name": "go", "surfaceId": "s1", "sourceComponentId": "btn", "context": [1]}),
+        json!({"name": "go", "surfaceId": "s1", "sourceComponentId": "btn", "context": "x"}),
+    ];
+    for user_action in cases {
+        let e = err(&action_request(user_action.clone()), with_surface());
+        assert!(
+            matches!(e, InputError::InvalidAction { .. }),
+            "{user_action}: {e:?}"
+        );
+        assert_eq!(e.http_status(), 422);
+    }
+    // No `userAction` at all.
+    let no_user_action = request(json!({"forwardedProps": {"a2uiAction": {"name": "go"}}}));
+    let e = err(&no_user_action, with_surface());
+    assert!(matches!(e, InputError::InvalidAction { .. }), "{e:?}");
+}
+
+#[test]
+fn an_oversized_action_is_refused_with_413() {
+    let mut long_name = go();
+    long_name["name"] = json!("n".repeat(MAX_ID_BYTES + 1));
+    let mut big_context = go();
+    big_context["context"] = json!({"k": "v".repeat(MAX_ACTION_CONTEXT_BYTES)});
+    for a in [long_name, big_context] {
+        let e = err(&action_request(a), with_surface());
+        assert!(matches!(e, InputError::ActionTooLarge { .. }), "{e:?}");
+        assert_eq!(e.http_status(), 413);
+    }
+}
+
+#[test]
+fn an_action_beside_a_message_an_answer_or_a_cancel_is_ambiguous() {
+    let with = |extra: Value| {
+        request(json!({
+            "runId": "run-act",
+            "forwardedProps": {"a2uiAction": {"userAction": go()}},
+            "messages": extra.get("messages").cloned().unwrap_or(json!([])),
+            "resume": extra.get("resume").cloned().unwrap_or(json!([])),
+        }))
+    };
+    for extra in [
+        json!({"messages": [user_msg("new", "hi")]}),
+        json!({"resume": [{"interruptId": "int-3", "status": "resolved", "payload": {"text": "x"}}]}),
+        json!({"resume": [{"interruptId": "int-3", "status": "cancelled"}]}),
+    ] {
+        let e = err(&with(extra.clone()), with_surface());
+        assert_eq!(e, InputError::AmbiguousAction, "{extra}");
+        assert_eq!(e.http_status(), 422);
+    }
+}
+
+#[test]
+fn an_action_follows_the_rules_of_any_input() {
+    // A run is open, or the thread is finished: 409, as for a message.
+    let open = KnownThread {
+        run_open: true,
+        state: ThreadState::Working,
+        ..with_surface()
+    };
+    assert_eq!(err(&action_request(go()), open), InputError::RunInProgress);
+    for state in [
+        ThreadState::Done,
+        ThreadState::Failed,
+        ThreadState::Cancelled,
+    ] {
+        let done = KnownThread {
+            state,
+            ..with_surface()
+        };
+        assert_eq!(
+            err(&action_request(go()), done),
+            InputError::ThreadFinished { state }
+        );
+    }
+    // A run id is never reused, and an action starts a run.
+    let mut reused = with_surface();
+    reused.run_ids.insert("run-act".to_owned());
+    assert_eq!(
+        err(&action_request(go()), reused),
+        InputError::RunIdReused {
+            run_id: "run-act".into()
+        }
+    );
 }
 
 #[test]

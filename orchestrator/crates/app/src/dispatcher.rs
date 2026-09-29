@@ -19,8 +19,8 @@ use orch_core::{
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
-    IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendRequest,
-    StoreError, TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
+    IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendContent,
+    SendRequest, StoreError, TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -122,7 +122,13 @@ struct Ctx {
 fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
     env.task_state.or(match &env.update {
         Some(AgentUpdate::Status { state, .. }) => Some(*state),
-        Some(AgentUpdate::Artifact { .. } | AgentUpdate::Message { .. }) | None => None,
+        Some(
+            AgentUpdate::Artifact { .. }
+            | AgentUpdate::Message { .. }
+            | AgentUpdate::Ui { .. }
+            | AgentUpdate::UiRejected { .. },
+        )
+        | None => None,
     })
 }
 
@@ -363,15 +369,23 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let OutboxPayload::Delegate { text, release } = row.payload.clone() else {
-            return self
-                .finish(
-                    &row,
-                    OutboxFinal::Dead {
-                        error: "payload does not match kind".to_owned(),
-                    },
-                )
-                .await;
+        let (content, release) = match row.payload.clone() {
+            OutboxPayload::Delegate { text, release } => (SendContent::Text(text), release),
+            OutboxPayload::Action {
+                action,
+                at,
+                release,
+            } => (SendContent::UiAction { action, at }, release),
+            OutboxPayload::Cancel => {
+                return self
+                    .finish(
+                        &row,
+                        OutboxFinal::Dead {
+                            error: "payload does not match kind".to_owned(),
+                        },
+                    )
+                    .await;
+            }
         };
         let Some(Loaded {
             ctx,
@@ -439,7 +453,7 @@ impl<P: Ports> Dispatcher<P> {
             message_id: row.id.to_string(),
             context_id: binding.context_id.clone(),
             task_id: continues.clone(),
-            text,
+            content,
             release,
         };
         match self.app.ports().agents().send_stream(req).await {

@@ -1,6 +1,26 @@
 # ADR 0013 — A2UI for generative UI
 
-- **Status:** accepted (2026-09-29)
+- **Status:** accepted (2026-09-29). Status note (2026-09-29): the orchestrator side is built (surfaces
+  from agents, actions from users, capability detection; the web renderer is not). The decision
+  stands, with these refinements, all verified against the specification the same day (details in
+  [`api/agui.md`](../api/agui.md#a2ui-generative-ui)):
+  - `a2uiClientCapabilities` is keyed by the version, `{"v0.9.1": {"supportedCatalogIds": […]}}`, and the
+    `v1.0` candidate renames it `a2uiRendererCapabilities` under `{"v1.0": …}`. **Both extension URIs are
+    detected** (open question 22); when a card lists both, `v0.9.1` is spoken.
+  - The extension is also *activated* (`A2A-Extensions` and `message.extensions`), because agents built on
+    the A2UI SDK look there; it is still optional, and a surface is relayed without it.
+  - `sourceComponentId` is **required** in a `ui_action` (A2UI's `action` message requires it), not
+    optional as sketched below. The event also records the `version` of the surface acted on and the `runId`
+    of the run the action started; the agent gets the action in the dialect its surface spoke.
+  - An action is accepted only while the thread **waits** (a run is open exactly while it is `queued` or
+    `working`), only for a surface the thread has now, and is refused with 422 (malformed, unknown surface,
+    together with a message) or 413 (over 256 bytes per name, or 16 KiB of context) before anything is
+    written.
+  - The envelope check refuses a whole **part**, not the whole message: the rest of the message and the
+    turn go on, and the refusal is an `error` event attributed to the agent. The `v1.0` messages that need a
+    renderer's reply (`callRendererFunction`, `agentFunctionResponse`) are refused as unknown operations.
+  - Limits on the orchestrator side: 256 messages and 64 KiB per payload, 256 KiB of replayed operations
+    per surface.
 
 ## Context
 

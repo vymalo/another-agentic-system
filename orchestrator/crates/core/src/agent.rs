@@ -86,4 +86,16 @@ pub enum AgentUpdate {
         /// `false` for a streamed partial.
         is_final: bool,
     },
+    /// An A2UI payload the agent sent, already through the envelope check
+    /// ([`check_operations`](crate::check_operations)).
+    Ui {
+        /// The A2UI messages, as sent.
+        operations: Vec<serde_json::Value>,
+    },
+    /// An A2UI payload the agent sent that failed the envelope check. It is recorded as an
+    /// error and never passed on; the rest of the turn goes on.
+    UiRejected {
+        /// The rule it broke, worded for the people who see the thread.
+        reason: String,
+    },
 }

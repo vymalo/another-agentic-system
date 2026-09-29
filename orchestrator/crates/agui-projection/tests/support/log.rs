@@ -4,9 +4,10 @@
 
 use orch_core::{
     AgentId, AgentTarget, AgentTaskState, AgentUpdate, Command, Event, Input, ThreadId,
-    ThreadState, Timestamp, UserId,
+    ThreadState, Timestamp, UiActionData, UiVersion, UserId,
 };
 use proptest::prelude::*;
+use serde_json::json;
 
 pub const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 
@@ -53,6 +54,30 @@ pub enum Action {
     CancelRejected {
         retryable: bool,
     },
+    /// The agent sends one A2UI operation for surface `s<surface>`: `op` 0 creates, 1 updates
+    /// components, 2 updates data, 3 deletes.
+    Surface {
+        surface: u8,
+        op: u8,
+    },
+    /// The agent's A2UI payload failed the envelope check.
+    SurfaceRefused,
+    /// The user acts on surface `s0`.
+    UiAct {
+        ids: bool,
+    },
+}
+
+/// One operation of surface `s<surface>`, in the shapes of the A2UI spec.
+pub fn surface_op(surface: u8, op: u8) -> serde_json::Value {
+    let id = format!("s{surface}");
+    match op % 4 {
+        0 => json!({"version": "v0.9.1", "createSurface": {"surfaceId": id, "catalogId": "c"}}),
+        1 => json!({"version": "v0.9.1", "updateComponents": {"surfaceId": id, "components": [
+            {"id": "root", "component": "Text", "text": "hi"}]}}),
+        2 => json!({"version": "v0.9.1", "updateDataModel": {"surfaceId": id, "value": {"n": op}}}),
+        _ => json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": id}}),
+    }
 }
 
 pub fn arb_action() -> impl Strategy<Value = Action> {
@@ -78,6 +103,9 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         2 => any::<bool>().prop_map(|retryable| Action::Delivery { retryable }),
         1 => Just(Action::CancelledBeforeStart),
         2 => any::<bool>().prop_map(|retryable| Action::CancelRejected { retryable }),
+        4 => (0u8..2, 0u8..4).prop_map(|(surface, op)| Action::Surface { surface, op }),
+        1 => Just(Action::SurfaceRefused),
+        2 => any::<bool>().prop_map(|ids| Action::UiAct { ids }),
     ]
 }
 
@@ -177,6 +205,26 @@ pub fn build(actions: &[Action]) -> Vec<Event> {
                 reason: "cancel refused".to_owned(),
                 retryable: *retryable,
             },
+            Action::Surface { surface, op } => agent_input(AgentUpdate::Ui {
+                operations: vec![surface_op(*surface, *op)],
+            }),
+            Action::SurfaceRefused => agent_input(AgentUpdate::UiRejected {
+                reason: "message 0: no version".to_owned(),
+            }),
+            Action::UiAct { ids } => {
+                users += 1;
+                Input::UiAction {
+                    user: user.clone(),
+                    action: UiActionData {
+                        surface_id: "s0".to_owned(),
+                        name: "go".to_owned(),
+                        source_component_id: "btn".to_owned(),
+                        context: serde_json::Map::new(),
+                        version: UiVersion::V0_9_1,
+                        run_id: ids.then(|| format!("r-{users}")),
+                    },
+                }
+            }
         };
         let Ok((next, commands)) = orch_core::transition(&state, &input) else {
             continue;

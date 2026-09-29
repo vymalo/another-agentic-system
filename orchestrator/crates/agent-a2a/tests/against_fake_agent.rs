@@ -8,8 +8,8 @@ use orch_agent_a2a::{A2aAgentClient, A2aConfig, RELEASE_CHANNELS_URI};
 use orch_core::AgentUpdate;
 use orch_core::{AgentTaskState, Classify, ErrorClass};
 use orch_ports::{
-    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, SendRequest,
-    TaskHandle,
+    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, SendContent,
+    SendRequest, TaskHandle,
 };
 use orch_testsupport::{CallKind, FakeAgent, FakeAgentOptions, FakeReleases, eventually};
 
@@ -36,7 +36,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         message_id: format!("msg-{}", text.replace(' ', "-")),
         context_id: "ctx-1".to_owned(),
         task_id: None,
-        text: text.to_owned(),
+        content: SendContent::Text(text.to_owned()),
         release: None,
     }
 }

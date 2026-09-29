@@ -341,7 +341,8 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | Agent status `completed` | → `done`; `agent_status`, `thread_state` | → `done` | `Err(InvalidInState)` |
 | Agent status `failed`, `rejected` | → `failed` (`rejected` prefixes the detail); `agent_status`, `thread_state` | → `failed` | `Err(InvalidInState)` |
 | Agent status `canceled` | → `cancelled`; `agent_status`, `thread_state` | → `cancelled` | `Err(InvalidInState)` |
-| Agent artifact, agent message | State kept; append `artifact` or `agent_message` | Same | `Err(InvalidInState)` |
+| Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message`, `ui_surface` or `error` | Same | `Err(InvalidInState)` |
+| User's A2UI action (`UiAction`) | State kept; append `ui_action`, delegate the action | → `queued`; the same | `Err(Finished)` |
 | `DeliveryFailed`, retryable | → `blocked`; append `error`, and `thread_state` on entering | State kept; append `error` | State kept; append `error` |
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
 | `CancelledBeforeStart` | → `cancelled`; `thread_state` | → `cancelled` | No-op |
@@ -421,7 +422,7 @@ extension (ADR 0008).
 webhook, timer), inputs for `Approval`, `CheckCompleted`, `ToolResult` and `TimerFired`, and the
 commands `CallTool`, `Reply`, `Notify` and `Schedule`. They arrive with the MCP, webhook and timer
 steps ([MVP](mvp.md)); the closed enums make the compiler list every `match` that must handle them
-(ADR 0004). The AG-UI design adds `ui_surface` and `ui_action` events ([ADR 0013](decisions/0013-a2ui-generative-ui.md)).
+(ADR 0004). The AG-UI work has added `ui_surface` and `ui_action` events ([ADR 0013](decisions/0013-a2ui-generative-ui.md), built), with the agent update `AgentUpdate::Ui` / `UiRejected`, the input `Input::UiAction` and the command `DelegateAction`.
 
 ## Process roles
 
@@ -625,7 +626,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"

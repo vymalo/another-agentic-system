@@ -18,6 +18,12 @@ import { createMockServer } from "./server";
 type Thread = components["schemas"]["Thread"];
 
 const DIR = path.resolve(import.meta.dirname, "../../docs/api/examples/agui");
+/**
+ * Goldens the mock does not play yet: `a2ui` is the orchestrator's A2UI story (a surface, an
+ * action back through `forwardedProps.a2uiAction`); the renderer that needs it, and the mock's
+ * part in it, come with the web's A2UI slice.
+ */
+const NOT_PLAYED = ["a2ui"];
 
 const server = createMockServer({ stepMs: 2, keepaliveMs: 1000 });
 let base = "";
@@ -142,7 +148,8 @@ describe("the mock server against the AG-UI goldens", () => {
   it("has a scenario for every golden event log", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
-      .map((f) => f.replace(/\.events\.json$/, ""));
+      .map((f) => f.replace(/\.events\.json$/, ""))
+      .filter((name) => !NOT_PLAYED.includes(name));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

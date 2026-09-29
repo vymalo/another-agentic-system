@@ -106,8 +106,8 @@ async fn load_events<P: Ports>(
     }
 }
 
-/// The idempotency key of an input: a retry of the same message (or of the same answer, which
-/// has no message id) is the same input.
+/// The idempotency key of an input: a retry of the same message (or of the same answer or
+/// action, which have no message id) is the same input.
 fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
     match input {
         Input::UserMessage {
@@ -117,6 +117,11 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         Input::UserMessage {
             run_id: Some(id), ..
         } => Some(format!("agui:{thread}:run:{id}")),
+        // An action has no message id: its run id is the key, like an answer's.
+        Input::UiAction { action, .. } => action
+            .run_id
+            .as_ref()
+            .map(|id| format!("agui:{thread}:run:{id}")),
         Input::UserMessage { .. }
         | Input::Cancel { .. }
         | Input::Agent { .. }

@@ -11,6 +11,14 @@ pub const ACTIVITY_ARTIFACT: &str = "vymalo.artifact";
 /// Activity type of an error (`{message, retryable}`).
 pub const ACTIVITY_ERROR: &str = "vymalo.error";
 
+/// Activity type of an A2UI surface: the ecosystem's, not ours (`@ag-ui/a2ui-middleware`,
+/// *verified 2026-09-29*). Its content is `{a2ui_operations: [A2UI message]}`.
+pub const ACTIVITY_A2UI_SURFACE: &str = "a2ui-surface";
+/// The member of an `a2ui-surface` activity's content that holds the operations.
+pub const A2UI_OPERATIONS_KEY: &str = "a2ui_operations";
+/// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context}`).
+pub const ACTIVITY_ACTION: &str = "vymalo.action";
+
 /// Metadata key naming who produced an event (`{type, name, revision?}`).
 pub const ACTOR_KEY: &str = "vymalo.actor";
 /// Metadata key of a `RUN_ERROR` carrying the problem (`{type, title, detail?}`).

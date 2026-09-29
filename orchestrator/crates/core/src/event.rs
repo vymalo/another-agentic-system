@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::thread::ThreadState;
+use crate::ui::{UiActionData, UiSurfaceData};
 
 /// Contract `EventKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -21,6 +22,10 @@ pub enum EventKind {
     ThreadState,
     /// Something went wrong.
     Error,
+    /// An agent sent (part of) an A2UI surface (ADR 0013).
+    UiSurface,
+    /// The user acted on an A2UI surface (ADR 0013).
+    UiAction,
 }
 
 impl EventKind {
@@ -33,6 +38,8 @@ impl EventKind {
             EventKind::Artifact => "artifact",
             EventKind::ThreadState => "thread_state",
             EventKind::Error => "error",
+            EventKind::UiSurface => "ui_surface",
+            EventKind::UiAction => "ui_action",
         }
     }
 }
@@ -213,6 +220,10 @@ pub enum EventBody {
     ThreadState(ThreadStateData),
     /// See [`ErrorData`].
     Error(ErrorData),
+    /// See [`UiSurfaceData`].
+    UiSurface(UiSurfaceData),
+    /// See [`UiActionData`].
+    UiAction(UiActionData),
 }
 
 impl EventBody {
@@ -225,6 +236,8 @@ impl EventBody {
             EventBody::Artifact(_) => EventKind::Artifact,
             EventBody::ThreadState(_) => EventKind::ThreadState,
             EventBody::Error(_) => EventKind::Error,
+            EventBody::UiSurface(_) => EventKind::UiSurface,
+            EventBody::UiAction(_) => EventKind::UiAction,
         }
     }
 
@@ -237,6 +250,8 @@ impl EventBody {
             EventBody::Artifact(d) => serde_json::to_value(d),
             EventBody::ThreadState(d) => serde_json::to_value(d),
             EventBody::Error(d) => serde_json::to_value(d),
+            EventBody::UiSurface(d) => serde_json::to_value(d),
+            EventBody::UiAction(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -251,6 +266,8 @@ impl EventBody {
             EventKind::Artifact => EventBody::Artifact(serde_json::from_value(data)?),
             EventKind::ThreadState => EventBody::ThreadState(serde_json::from_value(data)?),
             EventKind::Error => EventBody::Error(serde_json::from_value(data)?),
+            EventKind::UiSurface => EventBody::UiSurface(serde_json::from_value(data)?),
+            EventKind::UiAction => EventBody::UiAction(serde_json::from_value(data)?),
         })
     }
 }

@@ -95,7 +95,7 @@ fn request(
         message_id: message_id.to_owned(),
         context_id: context_id.to_owned(),
         task_id,
-        text,
+        content: crate::SendContent::Text(text),
         release: None,
     }
 }
@@ -111,7 +111,13 @@ fn handle(ep: &AgentEndpoint, task_id: &str) -> TaskHandle {
 fn state_of(env: &AgentEnvelope) -> Option<AgentTaskState> {
     env.task_state.or(match &env.update {
         Some(AgentUpdate::Status { state, .. }) => Some(*state),
-        Some(AgentUpdate::Artifact { .. } | AgentUpdate::Message { .. }) | None => None,
+        Some(
+            AgentUpdate::Artifact { .. }
+            | AgentUpdate::Message { .. }
+            | AgentUpdate::Ui { .. }
+            | AgentUpdate::UiRejected { .. },
+        )
+        | None => None,
     })
 }
 

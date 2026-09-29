@@ -21,6 +21,7 @@ direction: `core` <- `ports` <- `a2a-mapping` <- `agent-a2a`
 |---|---|
 | `StreamMapper` (`Default`), `StreamMapper::map(StreamResponse) -> Vec<Result<AgentEnvelope, AgentError>>` | stream-local state (the task the stream belongs to, the artifact held back because more chunks may follow) and the mapping of one stream item |
 | `snapshot(&Task) -> Result<TaskSnapshot, AgentError>` | a polled view of a task: every artifact (chunks merged), then the status, under the same keys as the live stream; an unspecified state is a protocol violation |
+| A2UI parts | a `Data` part whose `mediaType` or `metadata.mimeType` is `application/a2ui+json` (in an agent message, a status message or an artifact) maps to one `AgentUpdate::Ui` envelope through `orch_core::check_operations`, or to `AgentUpdate::UiRejected` when it fails (wrong content, not an array, over the cap, unknown version or operation). Never text, never the artifact's JSON. The envelopes of a status message come before the status. Keys: `a2a:<task>:artifact:<id>:ui:<part>`, `a2a:msg:<id>:ui:<part>`, `a2a:<task>:status-msg:<id>:ui:<part>` (`Turn(<task>:status-ui:<state>:<part>)` without a message id) |
 | `RELEASE_CHANNELS_URI` | the release-channels v1 extension URI (ADR 0008), under which an agent echoes the revision it ran; `orch-agent-a2a` re-exports it |
 
 Idempotency keys (the dispatcher stores them so replays never duplicate chat
@@ -52,7 +53,7 @@ No Cargo features; reads no environment variables.
 ## Tests
 
 Unit tests in `src/lib.rs`, offline: every state, keys, chunked and whole
-artifacts, held-back artifacts, messages, snapshots and revisions. They moved
+artifacts, held-back artifacts, messages, snapshots and revisions; and A2UI parts in messages, status messages and artifacts (one envelope per part, the JSON never printed as an artifact, order before the status, keys equal on a poll and on the stream, both spellings of the media type, refusal of malformed, oversized, wrong-content and unsupported-version parts, a refusal not stopping the next part). They moved
 here unchanged from `orch-agent-a2a`; the adapter's behaviour through the
 mapping stays covered by its `tests/against_fake_agent.rs` and
 `tests/conformance.rs`.
