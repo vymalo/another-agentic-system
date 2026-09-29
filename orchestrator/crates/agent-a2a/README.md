@@ -48,8 +48,9 @@ README.
 ## Features and environment
 
 No Cargo features. The crate reads no environment variables; bearer tokens
-arrive in `AgentEndpoint::bearer` (the binary resolves `tokenEnv` from
-`AGENTS_FILE`).
+arrive in the endpoint's `AgentTransport::A2a { card_url, bearer }` (the binary
+resolves `tokenEnv` from `AGENTS_FILE`); the adapter serves that transport, the
+only one so far.
 
 ## Tests
 

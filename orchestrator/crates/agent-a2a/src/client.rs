@@ -19,8 +19,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::BoxError;
 use orch_ports::{
-    AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, SendRequest, TaskHandle,
-    TaskSnapshot,
+    AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
+    SendRequest, TaskHandle, TaskSnapshot,
 };
 use serde_json::json;
 
@@ -176,7 +176,10 @@ impl A2aAgentClient {
     /// The card document URL: a URL ending in `.json` is used as is, anything else is treated
     /// as the agent's base URL.
     fn card_url(ep: &AgentEndpoint) -> String {
-        let url = ep.card_url.trim();
+        // Irrefutable while `A2a` is the only transport: adding one makes the compiler list
+        // this adapter, which must then refuse the endpoints that are not its own.
+        let AgentTransport::A2a { card_url, .. } = &ep.transport;
+        let url = card_url.trim();
         if url.trim_end_matches('/').ends_with(".json") {
             url.to_owned()
         } else {
@@ -186,7 +189,8 @@ impl A2aAgentClient {
 
     async fn fetch_card(&self, ep: &AgentEndpoint) -> Result<AgentCard, AgentError> {
         let mut req = self.card_http.get(Self::card_url(ep));
-        if let Some(token) = &ep.bearer {
+        let AgentTransport::A2a { bearer, .. } = &ep.transport;
+        if let Some(token) = bearer {
             req = req.bearer_auth(token);
         }
         let resp = req.send().await.map_err(|e| {
@@ -223,7 +227,8 @@ impl A2aAgentClient {
             .register(Arc::new(RestTransportFactory::new(Some(
                 self.rpc_http.clone(),
             ))));
-        if let Some(token) = &ep.bearer {
+        let AgentTransport::A2a { bearer, .. } = &ep.transport;
+        if let Some(token) = bearer {
             builder = builder.with_interceptor(Arc::new(AuthInterceptor::bearer(token.clone())));
         }
         if activate_releases {

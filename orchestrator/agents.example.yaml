@@ -5,6 +5,8 @@
 #
 #   id        lower-case letters, digits and dashes (^[a-z0-9][a-z0-9-]{0,62}$); the key in the API
 #   name      shown in the chat
+#   transport optional: how the orchestrator reaches the agent. Only `a2a` exists, and it is
+#             the default when the key is absent.
 #   cardUrl   the agent's A2A agent card (https, or http inside the cluster)
 #   tokenEnv  optional: the NAME of an environment variable holding the bearer token.
 #             The variable must be set and non-empty, or the orchestrator refuses to start.

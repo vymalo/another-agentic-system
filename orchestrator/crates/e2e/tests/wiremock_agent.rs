@@ -50,11 +50,11 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
         .iter()
         .map(|(id, base)| AgentEntry {
             name: (*id).to_owned(),
-            endpoint: AgentEndpoint {
-                id: AgentId::new(*id),
-                card_url: format!("{}/.well-known/agent-card.json", base.trim_end_matches('/')),
-                bearer: Some(DUMMY_TOKEN.to_owned()),
-            },
+            endpoint: AgentEndpoint::a2a(
+                AgentId::new(*id),
+                format!("{}/.well-known/agent-card.json", base.trim_end_matches('/')),
+                Some(DUMMY_TOKEN.to_owned()),
+            ),
         })
         .collect();
     let client = A2aAgentClient::new(A2aConfig {

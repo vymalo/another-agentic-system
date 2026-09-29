@@ -110,12 +110,25 @@ pub enum ConfigError {
     },
 }
 
+/// The `transport` key of an `AGENTS_FILE` entry: how the orchestrator reaches the agent.
+/// Absent means `a2a`, so every existing file stays valid. A value that is not listed here
+/// (`local`, say, until in-process agents exist) is a parse error naming the choices.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TransportKind {
+    /// A remote A2A agent: `cardUrl`, optional `tokenEnv`.
+    #[default]
+    A2a,
+}
+
 /// One entry of `AGENTS_FILE`, as written.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AgentSpec {
     id: String,
     name: String,
+    #[serde(default)]
+    transport: TransportKind,
     card_url: String,
     token_env: Option<String>,
 }
@@ -561,12 +574,13 @@ fn parse_agents(
                 }
             },
         };
+        // A new `TransportKind` makes this `match` fail to compile: the checks above (a card
+        // URL, a token variable) are those of an A2A agent and move inside its arm.
+        let endpoint = match spec.transport {
+            TransportKind::A2a => AgentEndpoint::a2a(AgentId::new(spec.id), spec.card_url, bearer),
+        };
         entries.push(AgentEntry {
-            endpoint: AgentEndpoint {
-                id: AgentId::new(spec.id),
-                card_url: spec.card_url,
-                bearer,
-            },
+            endpoint,
             name: spec.name.trim().to_owned(),
         });
     }
@@ -577,6 +591,8 @@ fn parse_agents(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::collections::HashMap;
+
+    use orch_ports::AgentTransport;
 
     use super::*;
 
@@ -638,6 +654,12 @@ mod tests {
         ]
     }
 
+    /// The card URL and bearer of an A2A endpoint.
+    fn a2a(endpoint: &AgentEndpoint) -> (&str, Option<&str>) {
+        let AgentTransport::A2a { card_url, bearer } = &endpoint.transport;
+        (card_url, bearer.as_deref())
+    }
+
     fn agents_err(yaml: &str, env: &[(&str, &str)]) -> ConfigError {
         match parse_agents(yaml, Path::new("agents.yaml"), env_of(env)) {
             Ok(_) => panic!("expected an error"),
@@ -665,11 +687,14 @@ mod tests {
         assert_eq!(coder.endpoint.id.as_str(), "coder");
         assert_eq!(coder.name, "Coder");
         assert_eq!(
-            coder.endpoint.card_url,
-            "https://coder.example.com/.well-known/agent-card.json"
+            a2a(&coder.endpoint),
+            (
+                "https://coder.example.com/.well-known/agent-card.json",
+                Some("tok-123")
+            )
         );
-        assert_eq!(coder.endpoint.bearer.as_deref(), Some("tok-123"));
-        assert_eq!(cfg.agents[1].endpoint.bearer, None);
+        assert_eq!(a2a(&cfg.agents[1].endpoint).1, None);
+        assert!(!format!("{:?}", coder.endpoint).contains("tok-123"));
     }
 
     #[test]
@@ -679,7 +704,7 @@ mod tests {
         env.push(("CODER_A2A_TOKEN", " tok-123\n"));
         // The load helper trims through the same `get` used for every variable.
         let cfg = load(&env, AGENTS).unwrap();
-        assert_eq!(cfg.agents[0].endpoint.bearer.as_deref(), Some("tok-123"));
+        assert_eq!(a2a(&cfg.agents[0].endpoint).1, Some("tok-123"));
     }
 
     #[test]
@@ -763,6 +788,30 @@ mod tests {
             agents_err("- id: a\n", &[]),
             ConfigError::AgentsFileParse { .. }
         ));
+    }
+
+    #[test]
+    fn the_transport_defaults_to_a2a_and_only_a2a_is_known() {
+        let plain = "- id: a\n  name: A\n  cardUrl: https://a.example.com/card.json\n";
+        let explicit = format!("{plain}  transport: a2a\n");
+        let want = |yaml: &str| {
+            let entries = parse_agents(yaml, Path::new("agents.yaml"), env_of(&[])).unwrap();
+            entries[0].endpoint.clone()
+        };
+        assert_eq!(want(plain), want(&explicit));
+        assert_eq!(
+            want(plain),
+            AgentEndpoint::a2a(AgentId::new("a"), "https://a.example.com/card.json", None)
+        );
+        // `local` arrives with in-process agents; until then it is refused, naming the choice.
+        let local = format!("{plain}  transport: local\n");
+        let ConfigError::AgentsFileParse { message, .. } = agents_err(&local, &[]) else {
+            panic!("expected a parse error");
+        };
+        assert!(
+            message.contains("local") && message.contains("a2a"),
+            "{message}"
+        );
     }
 
     #[test]

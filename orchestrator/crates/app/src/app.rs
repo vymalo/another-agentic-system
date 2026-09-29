@@ -10,9 +10,9 @@ use orch_core::{
     ThreadState, Timestamp, UserId, report, transition,
 };
 use orch_ports::{
-    AgentClient, AgentError, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, Lease, NewEvent,
-    NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats, Ports, StoreError, ThreadStore, Topic,
-    Wakeup,
+    AgentClient, AgentError, AgentTransport, BindingUpdate, Clock, Commit, CommitOutcome, IdGen,
+    Lease, NewEvent, NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats, Ports, StoreError,
+    ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
@@ -176,11 +176,14 @@ impl<P: Ports> App<P> {
                     (None, None)
                 }
             };
+            // The contract's `cardUrl` is required while every agent is an A2A agent; the day
+            // an agent has no card, it becomes optional there.
+            let AgentTransport::A2a { card_url, .. } = &entry.endpoint.transport;
             AgentInfo {
                 id: entry.endpoint.id.clone(),
                 name: entry.name.clone(),
                 description,
-                card_url: entry.endpoint.card_url.clone(),
+                card_url: card_url.clone(),
                 releases,
             }
         });

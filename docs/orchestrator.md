@@ -380,9 +380,18 @@ pub fn transition(state: &ThreadState, input: &Input)
     -> Result<(ThreadState, Vec<Command>), TransitionError>;
 ```
 
-An agent is a configured A2A agent-card URL and nothing host-specific (`AgentEndpoint { id,
-card_url, bearer }` in `orch-ports`); a release selection travels as `AgentTarget.release` and is
-only accepted when the *live* card advertises the release-channels extension (ADR 0008).
+An agent is a configured A2A agent-card URL and nothing host-specific. `AgentEndpoint { id, transport }`
+in `orch-ports` says how to reach it, and `AgentTransport` is a closed enum (ADR 0004) with one
+variant, `A2a { card_url, bearer }`. It lives in the ports, not in the core, because it carries a
+secret (the resolved bearer, redacted in `Debug`) that `transition` never sees. A second variant
+arrives with its implementation, not before: in-process adam agents behind `agent-local` are the
+next one ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md), migration step 12), and
+adding it makes the compiler list every `match` that must handle it. In `AGENTS_FILE` an entry may
+say `transport: a2a`, which is also the default when the key is absent, so existing files are
+unchanged; any other value is a startup error. The chat API's `AgentInfo.cardUrl` stays required for
+now; step 12 makes it optional, since a local agent has no card URL. A release selection travels as
+`AgentTarget.release` and is only accepted when the *live* card advertises the release-channels
+extension (ADR 0008).
 
 **Planned** (in the earlier design, not in the code): an `Origin` on every input (user, A2A, MCP,
 webhook, timer), inputs for `Approval`, `CheckCompleted`, `ToolResult` and `TimerFired`, and the
