@@ -32,7 +32,10 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
 
-[ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: $0 THREAD_ID [OUT_FILE | -]" >&2; exit 2; }
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+  echo "usage: $0 THREAD_ID [OUT_FILE | -]" >&2
+  exit 2
+fi
 id=$1
 out=${2:-thread-$id.json}
 case $id in
