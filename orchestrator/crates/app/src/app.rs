@@ -12,15 +12,20 @@ use orch_core::{
 };
 pub use orch_ports::Received;
 use orch_ports::{
-    AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock, Commit,
-    CommitOutcome, IdGen, InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox,
-    NewOutbox, NewThreadRecord, NewTimer, OutboxPayload, OutboxStats, Ports, StoreError,
+    AgentBinding, AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock,
+    Commit, CommitOutcome, IdGen, InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent,
+    NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxPayload, OutboxStats, Ports, StoreError,
     TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
 use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer};
 
+/// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
+/// log is exported up to here and says so.
+pub const DEFAULT_MAX_EXPORT_EVENTS: usize = 50_000;
+/// Events read from the store per page when exporting.
+const EXPORT_PAGE: u32 = 500;
 const MAX_TEXT_CHARS: usize = 100_000;
 const MAX_SOURCE_CHARS: usize = 64;
 const MAX_INBOX_KEY_CHARS: usize = 256;
@@ -38,6 +43,9 @@ pub struct AppConfig {
     pub stream_poll: Duration,
     /// Attempts of the optimistic commit loop.
     pub max_commit_attempts: u32,
+    /// Most events [`App::export_thread`] reads; a longer log is exported up to here, flagged
+    /// as truncated. Bounds the memory and the time of one export.
+    pub max_export_events: usize,
     /// The verification gate a new thread starts under; it is copied into the thread's job, so
     /// changing it never affects a running job (ADR 0016). The default requires nothing: an
     /// agent finishing is enough, as before the gate existed.
@@ -57,6 +65,7 @@ impl Default for AppConfig {
             card_timeout: Duration::from_secs(3),
             stream_poll: Duration::from_secs(5),
             max_commit_attempts: 8,
+            max_export_events: DEFAULT_MAX_EXPORT_EVENTS,
             gate: GatePolicy::default(),
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
@@ -73,6 +82,24 @@ pub struct AgentDescription {
     pub name: String,
     /// The live card; `None` when it could not be read in time.
     pub card: Option<AgentCardInfo>,
+}
+
+/// Everything the orchestrator holds about one thread, read for [`App::export_thread`].
+///
+/// It is a snapshot: `events` end at `thread.last_seq` (events appended while it was read are
+/// left out), so the job ledger in `thread` and the log agree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadExport {
+    /// The thread, with its full job ledger.
+    pub thread: ThreadRecord,
+    /// The A2A side: agent, context and task; `None` for a thread with none.
+    pub binding: Option<AgentBinding>,
+    /// The event log in order, from `seq` 1, at most [`AppConfig::max_export_events`].
+    pub events: Vec<Event>,
+    /// `true` when the log is longer than `events`.
+    pub truncated: bool,
+    /// When the snapshot was taken, by the application clock.
+    pub exported_at: Timestamp,
 }
 
 /// Contract `NewThread`.
@@ -504,6 +531,41 @@ impl<P: Ports> App<P> {
             .get_thread(Some(user), id)
             .await?
             .ok_or(AppError::NotFound)
+    }
+
+    /// A snapshot of one of the user's threads for sharing: the thread with its job ledger, its
+    /// binding and its whole event log. Someone else's thread is `NotFound`, like every read.
+    ///
+    /// The log is read in pages through [`ThreadStore::list_events`]; nothing new is asked of the
+    /// store. The read is bounded by [`MAX_EXPORT_EVENTS`].
+    pub async fn export_thread(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+    ) -> Result<ThreadExport, AppError> {
+        let thread = self.get_thread(user, id).await?;
+        let store = self.ports.store();
+        let mut events: Vec<Event> = Vec::new();
+        let mut after = 0;
+        let max = self.cfg.max_export_events;
+        while after < thread.last_seq && events.len() < max {
+            let page = store.list_events(id, after, EXPORT_PAGE).await?;
+            let Some(last) = page.last() else { break };
+            after = last.seq;
+            events.extend(page.into_iter().take_while(|e| e.seq <= thread.last_seq));
+        }
+        events.truncate(max);
+        let truncated = events
+            .last()
+            .map_or(thread.last_seq > 0, |e| e.seq < thread.last_seq);
+        let binding = store.get_binding(id).await?;
+        Ok(ThreadExport {
+            thread,
+            binding,
+            events,
+            truncated,
+            exported_at: self.ports.clock().now(),
+        })
     }
 
     /// Events with `seq > after`, oldest first.

@@ -300,7 +300,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return connectThread(req, res, url, decodeURIComponent(connect[1] ?? ""));
     }
 
-    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel))?$/.exec(path);
+    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
       const sub = m[2];
@@ -308,8 +308,30 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (!thread) return problem(res, 404, "Thread not found");
       if (!sub && method === "GET") return sendJson(res, 200, viewOf(thread));
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
+      if (sub === "export" && method === "GET") return exportThread(res, thread);
     }
     return problem(res, 404, "Not found");
+  }
+
+  /** `GET /api/threads/{id}/export`: the thread, its job, its binding and its whole log, as a file. */
+  function exportThread(res: http.ServerResponse, thread: Thread) {
+    const view = viewOf(thread);
+    const document: components["schemas"]["ThreadExport"] = {
+      format: "another-agentic-system/thread-export",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      thread: view,
+      job: { attempt: view.job?.attempt ?? 1 },
+      binding: { agentId: thread.target.agentId, contextId: thread.id },
+      events: events.get(thread.id) ?? [],
+      eventsTruncated: false,
+    };
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Disposition": `attachment; filename="thread-${thread.id}.json"`,
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(document, null, 2));
   }
 
   function listThreads(res: http.ServerResponse, url: URL) {

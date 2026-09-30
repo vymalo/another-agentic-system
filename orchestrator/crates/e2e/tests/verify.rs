@@ -233,6 +233,22 @@ async fn a_failed_check_sends_the_agent_back_and_the_second_attempt_is_green(bac
         "{rework}"
     );
 
+    // The export of the finished thread is the whole story in one document: the full job (the
+    // commit that passed, what each source said) and the log exactly as listed.
+    let (status, export) = chat.get(&format!("/api/threads/{thread}/export")).await;
+    assert_eq!(status, 200, "{export}");
+    assert_eq!(export["format"], "another-agentic-system/thread-export");
+    assert_eq!(export["version"], 1);
+    assert_eq!(export["thread"], record);
+    assert_eq!(export["job"]["attempt"], 2);
+    assert_eq!(export["job"]["gate"]["require"], json!(["agent_checks"]));
+    assert_eq!(export["job"]["pushed"]["commit"], COMMIT_2);
+    assert_eq!(export["job"]["task"], "verify-red-once fix the login");
+    assert_eq!(export["job"]["results"][0]["source"], "agent_checks");
+    assert_eq!(export["job"]["results"][0]["status"], "passed");
+    assert_eq!(export["job"]["results"][0]["commit"], COMMIT_2);
+    assert_eq!(export["events"], json!(events));
+    assert_eq!(export["eventsTruncated"], false);
 }
 
 async fn an_agent_that_never_passes_fails_after_the_last_attempt(backend: Backend) {

@@ -1,5 +1,5 @@
 //! The HTTP edge of the orchestrator over [`orch_app::App`]: proxy-identity auth, RFC 9457
-//! problems, the resource API (agents, thread list and details, cancel) and health, in
+//! problems, the resource API (agents, thread list and details, export, cancel) and health, in
 //! `docs/api/chat-api.yaml`.
 //!
 //! Interaction surfaces (AG-UI, MCP) are separate crates. Each builds [`SurfaceRoutes`], and
@@ -14,6 +14,7 @@
 //! trustworthy behind a proxy that strips client-supplied copies.**
 
 mod auth;
+mod export;
 mod extract;
 mod metrics;
 mod problem;
@@ -39,6 +40,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 pub use auth::{AuthConfig, IDENTITY_HEADER};
+pub use export::{FORMAT as EXPORT_FORMAT, VERSION as EXPORT_VERSION};
 pub use extract::{ApiJson, ApiQuery};
 pub use problem::{ApiError, Problem};
 pub use routes::parse_thread_id;
@@ -185,6 +187,10 @@ pub fn router_with_surfaces<P: Ports>(
         .route("/api/agents", get(routes::list_agents::<P>))
         .route("/api/threads", get(routes::list_threads::<P>))
         .route("/api/threads/{thread_id}", get(routes::get_thread::<P>))
+        .route(
+            "/api/threads/{thread_id}/export",
+            get(routes::export_thread::<P>),
+        )
         .route(
             "/api/threads/{thread_id}/cancel",
             post(routes::cancel_thread::<P>),

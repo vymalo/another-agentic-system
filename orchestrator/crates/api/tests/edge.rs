@@ -11,7 +11,7 @@ use axum::Router;
 use axum::routing::get;
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, NewThread};
-use orch_core::{AgentId, AgentTarget, UserId};
+use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock};
 use tokio::task::JoinHandle;
@@ -33,12 +33,15 @@ impl Drop for Edge {
     }
 }
 
+/// The agent's bearer token: a secret the orchestrator holds, which no response may repeat.
+const AGENT_BEARER: &str = "agent-bearer-0123456789-not-for-export";
+
 fn new_app() -> Arc<App<Stack>> {
     let entry = AgentEntry {
         endpoint: AgentEndpoint::a2a(
             AgentId::new("plain"),
             "https://plain.example.com/.well-known/agent-card.json".to_owned(),
-            None,
+            Some(AGENT_BEARER.to_owned()),
         ),
         name: "Plain".to_owned(),
     };
@@ -422,6 +425,7 @@ async fn no_identity_is_401_everywhere_except_the_probes() {
         (reqwest::Method::GET, "/api/threads".to_owned()),
         (reqwest::Method::GET, format!("/api/threads/{id}")),
         (reqwest::Method::POST, format!("/api/threads/{id}/cancel")),
+        (reqwest::Method::GET, format!("/api/threads/{id}/export")),
         // Unknown paths, wrong methods and a surface's paths are refused the same way: nothing is
         // reachable anonymously. (The removed legacy routes are among the unknown ones.)
         (reqwest::Method::POST, "/api/threads".to_owned()),
@@ -471,6 +475,7 @@ async fn a_user_cannot_see_another_users_thread() {
     let id = e.thread().await;
     for (method, path) in [
         (reqwest::Method::GET, format!("/api/threads/{id}")),
+        (reqwest::Method::GET, format!("/api/threads/{id}/export")),
         (reqwest::Method::POST, format!("/api/threads/{id}/cancel")),
     ] {
         let r = e.call(method.clone(), &path, Some(BOB)).await;
@@ -674,4 +679,141 @@ async fn a_machine_route_needs_its_own_guard_and_not_the_identity() {
     assert_eq!(r.text().await.unwrap(), "dev@example.com");
     let r = e.call(reqwest::Method::GET, "/api/agents", None).await;
     assert_eq!(r.status(), 200);
+}
+
+// ---- the thread export --------------------------------------------------------------------
+
+const BOB: &str = "bob@example.com";
+const RANDOM: &str = "0190aaaa-0000-7000-8000-000000000123";
+
+#[tokio::test]
+async fn the_export_is_one_versioned_attachment_with_the_thread_its_job_and_the_log() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    let r = e
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{id}/export"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    let h = r.headers().clone();
+    assert_eq!(h["content-type"], "application/json");
+    assert_eq!(
+        h["content-disposition"],
+        format!("attachment; filename=\"thread-{id}.json\"").as_str()
+    );
+    assert_eq!(h["cache-control"], "no-store");
+    let body = r.text().await.unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(doc["format"], "another-agentic-system/thread-export");
+    assert_eq!(doc["version"], 1);
+    assert_eq!(doc["format"], orch_api::EXPORT_FORMAT);
+    assert_eq!(doc["version"], orch_api::EXPORT_VERSION);
+    let at: jiff::Timestamp = doc["exportedAt"].as_str().unwrap().parse().unwrap();
+    assert!(at.as_second() > 0);
+    // `thread` is what GET /api/threads/{id} says.
+    let got = e
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(
+        doc["thread"],
+        got.json::<serde_json::Value>().await.unwrap()
+    );
+    // The whole ledger is there even without a gate, which `thread` hides.
+    assert!(doc["thread"].get("job").is_none());
+    assert_eq!(doc["job"]["attempt"], 1);
+    assert!(doc["job"]["gate"]["require"].as_array().unwrap().is_empty());
+    assert_eq!(doc["binding"]["agentId"], "plain");
+    assert_eq!(doc["binding"]["contextId"], id.as_str());
+    assert_eq!(doc["eventsTruncated"], false);
+    let events = doc["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["seq"], 1);
+    assert_eq!(events[0]["threadId"], id.as_str());
+    assert_eq!(events[0]["kind"], "user_message");
+    assert_eq!(events[0]["data"]["text"], "hello");
+    // It is meant to be opened by a person: indented.
+    assert!(body.contains("\n  \"events\""), "{body}");
+}
+
+#[tokio::test]
+async fn the_export_holds_the_log_in_order_and_no_credential_of_the_orchestrator() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    let thread: ThreadId = id.parse().unwrap();
+    for i in 0..600 {
+        e.app
+            .post_message(&UserId::new(ALICE), thread, format!("message {i}"))
+            .await
+            .unwrap();
+    }
+    let r = e
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{id}/export"),
+            Some(ALICE),
+        )
+        .await;
+    let body = r.text().await.unwrap();
+    // The agent's bearer token is configured on the agent this thread targets; it must not be
+    // anywhere in the file, nor the identity header's name.
+    assert!(
+        !body.contains(AGENT_BEARER),
+        "the agent's bearer token leaked"
+    );
+    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let seqs: Vec<i64> = doc["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|ev| ev["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(seqs, (1..=601).collect::<Vec<i64>>());
+    assert_eq!(doc["thread"]["lastSeq"], 601);
+    // The owner's address is in the log, as the actor of their messages, and nowhere else.
+    assert_eq!(doc["events"][0]["actor"]["name"], ALICE);
+    assert!(doc["thread"].get("owner").is_none());
+}
+
+#[tokio::test]
+async fn the_export_is_the_owners_alone_and_unknown_threads_are_404() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    let get = |path: String, user: Option<&'static str>| {
+        let e = &e;
+        async move { e.call(reqwest::Method::GET, &path, user).await }
+    };
+    let foreign = get(format!("/api/threads/{id}/export"), Some(BOB)).await;
+    let ghost = get(format!("/api/threads/{RANDOM}/export"), Some(ALICE)).await;
+    let junk = get("/api/threads/not-a-uuid/export".to_owned(), Some(ALICE)).await;
+    for r in [&foreign, &ghost, &junk] {
+        assert_eq!(r.status(), 404);
+        assert_eq!(r.headers()["content-type"], "application/problem+json");
+        assert!(r.headers().get("content-disposition").is_none());
+    }
+    // Someone else's thread reads exactly like one that does not exist.
+    let (foreign, ghost): (serde_json::Value, serde_json::Value) =
+        (foreign.json().await.unwrap(), ghost.json().await.unwrap());
+    assert_eq!(foreign, ghost);
+    // No identity, and a malformed one, are refused before anything is read.
+    let anonymous = get(format!("/api/threads/{id}/export"), None).await;
+    assert_eq!(anonymous.status(), 401);
+    let malformed = get(format!("/api/threads/{id}/export"), Some("not-an-email")).await;
+    assert_eq!(malformed.status(), 401);
+    // Only GET is served.
+    let r = e
+        .call(
+            reqwest::Method::POST,
+            &format!("/api/threads/{id}/export"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status(), 405);
 }

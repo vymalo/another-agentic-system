@@ -842,6 +842,61 @@ stateDiagram-v2
 - **The chat.** The verifier is a subagent of its own (`sub-verify-<n>`, named after the agent); its verdict is a
   `vymalo.check` card with source `verifier` ([`api/agui.md`](api/agui.md#verification-the-gate)).
 
+### Exporting a thread
+
+**Built** (2026-09-30). `GET /api/threads/{id}/export` ([`api/chat-api.yaml`](api/chat-api.yaml), `exportThread`) returns one
+thread as a versioned JSON file, so its owner can send it to a developer. It is a read of what the orchestrator already holds:
+no new port and no new store query, because `ThreadStore::list_events` pages the log (`after`, `limit`) and `get_thread` and
+`get_binding` return the rest.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser or dev/export-thread.sh
+  participant A as orch-api (identity layer)
+  participant S as App::export_thread
+  participant T as ThreadStore
+  B->>A: GET /api/threads/{id}/export (X-Auth-Request-Email)
+  A->>S: export_thread(user, id)
+  S->>T: get_thread(Some(user), id)
+  T-->>S: the thread with its job, or none (404, also for another owner's thread)
+  loop pages of 500 while seq < thread.last_seq
+    S->>T: list_events(id, after, 500)
+    T-->>S: events in order
+  end
+  S->>T: get_binding(id)
+  S-->>A: ThreadExport { thread, binding, events, truncated, exported_at }
+  A-->>B: 200 application/json, Content-Disposition: attachment, Cache-Control: no-store
+```
+
+The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module):
+
+| Member | What |
+|---|---|
+| `exportedAt` | when the snapshot was taken, by the application clock |
+| `thread` | the contract `Thread`, what `GET /api/threads/{id}` answers |
+| `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task`, `pushed`, every `results` entry of the attempt, any `hold` |
+| `binding` | the A2A `agentId`, `contextId`, `taskId`, `taskState` and `revision`; `null` when none |
+| `events` | the log in order from `seq` 1, each exactly as the contract `Event` and the store serialise it. Every card of the chat is derived from it |
+| `eventsTruncated` | `true` when the log is longer than `AppConfig::max_export_events` (50 000); the events that are there are the first ones |
+
+`events` stop at `thread.last_seq`, read before them, so the ledger and the log agree even on a thread that is moving. The
+AG-UI frames the chat is drawn from are **not** in the file: they are a pure, deterministic fold of `events`
+(`orch-agui-projection`), so a developer who has the events has them, and carrying both would double the file and let them
+disagree. The open outbox rows are not in it either: their last error is the operator's chain, which the log
+deliberately leaves out (`give_up` in the dispatcher keeps it on the row and tells the user a short reason).
+
+**Authorisation** is that of reading the thread, by construction: the route sits behind the same identity layer
+(`X-Auth-Request-Email`, fail closed, 401), and `App::export_thread` starts with `get_thread(Some(user), id)`, so another
+owner's thread, an unknown one and an id that is not a UUID are the same 404, never a 403. **Secrets:** the log holds
+only what the core appends from users, agents, CI reports and its own findings (*verified 2026-09-30 by reading
+`EventBody`, the dispatcher and the A2A adapter*): an agent's bearer token lives only in `AgentTransport::A2a`, whose
+`Debug` redacts it and which no event carries (what the dispatcher tells the thread about a failed delivery is `AgentError::public_detail`, "never transport text (URLs, proxy bodies)", pinned by `public_detail_never_carries_transport_text`; the full chain goes to the outbox row only); webhook secrets and MCP tokens are checked at the edge and
+never stored; the database URL is not in the store. The file does contain what people and agents wrote (a person can paste a
+secret into a chat, and an agent can print one into an artifact or a finding), and the owner's e-mail address as the `actor`
+of their messages (`ThreadRecord.owner` itself is never serialised). The owner is told to read it before sharing; the API test
+`the_export_holds_the_log_in_order_and_no_credential_of_the_orchestrator` fails if the agent's configured token ever appears.
+The web's **Export JSON** button and [`dev/export-thread.sh`](../dev/export-thread.sh) call this route.
+
 ## Core types
 
 **Built.** A separate crate with no async, no sqlx and no HTTP, so purity is enforced by the

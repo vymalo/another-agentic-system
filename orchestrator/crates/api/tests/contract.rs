@@ -1,5 +1,5 @@
 //! The resource API against `docs/api/chat-api.yaml`: every operation of the contract that this
-//! crate serves (health, the agent list, the thread list, one thread, cancel) is driven over real
+//! crate serves (health, the agent list, the thread list, one thread, its export, cancel) is driven over real
 //! HTTP against the in-memory stack, and each response is validated against the schemas of the
 //! contract. The `/agui/*` operations belong to `orch-surface-agui`, whose own contract test
 //! covers them.
@@ -431,13 +431,18 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 4] = [
+    let auth_ops: [(&str, reqwest::Method, String); 5] = [
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
             "getThread",
             reqwest::Method::GET,
             format!("/api/threads/{RANDOM}"),
+        ),
+        (
+            "exportThread",
+            reqwest::Method::GET,
+            format!("/api/threads/{RANDOM}/export"),
         ),
         (
             "cancelThread",
@@ -514,6 +519,32 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     let r = h.get(&format!("/api/threads/{id}"), Some(BOB)).await;
     assert_eq!(r.status, 404);
     c.check("getThread", &r);
+
+    // exportThread: the finished thread, with the whole log and the agent's binding.
+    let r = h
+        .get(&format!("/api/threads/{id}/export"), Some(ALICE))
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("exportThread", &r);
+    let export = r.json();
+    assert_eq!(export["thread"], thread, "`thread` is what getThread says");
+    assert_eq!(export["events"].as_array().unwrap().len(), 5);
+    assert_eq!(export["events"][4]["data"]["state"], "done");
+    assert_eq!(export["binding"]["agentId"], "coder");
+    assert_eq!(export["binding"]["revision"], "rev-2");
+    assert_eq!(export["binding"]["taskState"], "completed");
+    assert!(export["binding"]["taskId"].is_string());
+    for path in [
+        format!("/api/threads/{RANDOM}/export"),
+        "/api/threads/not-a-uuid/export".to_owned(),
+    ] {
+        let r = h.get(&path, Some(ALICE)).await;
+        assert_eq!(r.status, 404);
+        c.check("exportThread", &r);
+    }
+    let r = h.get(&format!("/api/threads/{id}/export"), Some(BOB)).await;
+    assert_eq!(r.status, 404);
+    c.check("exportThread", &r);
 
     // listThreads
     for i in 0..3 {

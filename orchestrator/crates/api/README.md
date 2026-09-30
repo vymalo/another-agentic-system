@@ -1,7 +1,7 @@
 # orch-api
 
 The HTTP edge of the orchestrator: an axum 0.8 router with proxy-identity auth,
-RFC 9457 problems, the resource API (agents, thread list and details, cancel)
+RFC 9457 problems, the resource API (agents, thread list and details, export, cancel)
 and health, over `orch_app::App`. Interaction surfaces plug into it, and
 `health_router` serves health alone.
 
@@ -30,11 +30,12 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `AuthConfig { dev_user }`, `IDENTITY_HEADER` | identity handling; `dev_user: None` fails closed |
 | `Problem`, `ApiError` | RFC 9457 `application/problem+json` errors, and what a handler can `?` (an `AppError` mapped by its class, or a ready problem) |
 | `ApiJson<T>`, `ApiQuery<T>` | extractors whose rejections are 400 problems |
+| `EXPORT_FORMAT`, `EXPORT_VERSION` | the `format` (`another-agentic-system/thread-export`) and `version` (1) members of the export document |
 | `parse_thread_id` | a path `{threadId}` that is not a UUID is a thread that does not exist |
 | `sse::keep_alive`, `sse::stream_headers` | the `: keepalive` comment and the no-buffering headers every stream shares |
 
 Routes served here: `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /api/agents`,
-`GET /api/threads`, `GET /api/threads/{id}`,
+`GET /api/threads`, `GET /api/threads/{id}`, `GET /api/threads/{id}/export`,
 `POST /api/threads/{id}/cancel`. The interaction routes come from a
 surface (`/agui/*`, from `orch-surface-agui`). Bodies are limited to 1 MiB; request ids are set and
 propagated. The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
@@ -54,6 +55,19 @@ Identity comes from `X-Auth-Request-Email`; every path except `/healthz`,
 a present but malformed header is refused even when a dev user is configured.
 **The header is only trustworthy behind a proxy (oauth2-proxy) that strips
 client-supplied copies.**
+
+### `GET /api/threads/{id}/export`
+
+The thread as one downloadable JSON document, for the owner to send to a developer
+([`docs/orchestrator.md`](../../../docs/orchestrator.md#exporting-a-thread), operation `exportThread` of the contract).
+Authorised exactly like `GET /api/threads/{id}`: behind the identity layer (401 without it), and `App::export_thread` reads the
+thread as the caller, so another owner's thread, an unknown one and an id that is not a UUID are the same 404. The answer is
+`200 application/json` with `Content-Disposition: attachment; filename="thread-<id>.json"` and `Cache-Control: no-store`,
+pretty-printed: `{format, version: 1, exportedAt, thread, job, binding, events, eventsTruncated}`. `thread` is the contract `Thread`; `job` is the
+whole ledger (which `Thread.job` only summarises); `events` is the log in order from `seq` 1 exactly as stored, and stops at
+`thread.lastSeq`. No credential of the orchestrator is in a log (the bearer token of an agent is held by
+`AgentTransport::A2a` only); the file does hold what people and agents wrote, and the owner's e-mail as the actor of their
+messages. Built in `src/export.rs`; unit-free (a `serde_json::json!` over the `ThreadExport` the application returns).
 
 ### `GET /metrics`
 
@@ -93,9 +107,13 @@ HTTP. No environment variables.
   behind the identity layer (also with a dev user); streaming routes skip the
   request timeout; several surfaces merge.
 
+* `tests/edge.rs` also holds the export tests: one versioned attachment (headers, `thread` equal to `GET /api/threads/{id}`,
+  the whole job, the binding, the log), more than one page of events in order with no repeat, the agent's configured bearer token
+  nowhere in the file, the owner only (another identity, an unknown id and a non-UUID are the same 404; no or a malformed identity
+  is 401; `POST` is 405).
 * `tests/contract.rs`: the resource API against [`docs/api/chat-api.yaml`](../../../docs/api/chat-api.yaml).
   Every operation this crate serves (health, the agent list, the thread list with its paging and
-  refusals, one thread, cancel) is driven over real HTTP against the in-memory stack with a
+  refusals, one thread, its export, cancel) is driven over real HTTP against the in-memory stack with a
   dispatcher, each response is validated against the contract's schemas, and the test fails when the
   contract has an operation it does not drive (the `/agui/*` ones are `orch-surface-agui`'s). The
   events of a real thread and the golden transcripts (`docs/api/examples/*.events.json`) are

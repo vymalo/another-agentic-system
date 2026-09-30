@@ -92,6 +92,35 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/export:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: exportThread
+      summary: The whole thread as one JSON file, to share with a developer
+      description: |
+        Everything the orchestrator holds about the thread, as a versioned `ThreadExport`
+        document: the thread, its full job ledger (the gate, the attempt, the pushed commit, what
+        each source said), the agent binding and the complete event log. Every card and line of
+        the chat is derived from that log. Authorised exactly like `getThread`: the caller's own
+        thread only, and someone else's is a 404 indistinguishable from one that does not exist.
+
+        The response is an attachment (`Content-Disposition: attachment;
+        filename="thread-<id>.json"`) and is never cached. It contains what the people and the
+        agents wrote in the thread (messages, artifacts, findings, CI summaries) and the owner's
+        e-mail address as the `actor` of the owner's messages; it holds no credential the
+        orchestrator uses (no bearer token, webhook secret or database URL is ever in the log).
+        Read it before sharing it: a person can paste anything into a chat.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The thread export
+          headers:
+            Content-Disposition: { description: "`attachment; filename=\"thread-<id>.json\"`", schema: { type: string } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ThreadExport" }
+        "404": { $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/cancel:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     post:
@@ -255,6 +284,45 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         lastSeq: { type: integer, format: int64 }
+    ThreadExport:
+      type: object
+      description: |
+        The document `exportThread` returns. `version` moves only when a member changes meaning or
+        goes away; adding a member does not move it, so a reader ignores members it does not know.
+      required: [format, version, exportedAt, thread, job, binding, events, eventsTruncated]
+      properties:
+        format: { type: string, const: another-agentic-system/thread-export }
+        version: { type: integer, const: 1 }
+        exportedAt: { type: string, format: date-time, description: "When the snapshot was taken" }
+        thread:
+          description: "The thread as `getThread` answers it"
+          $ref: "#/components/schemas/Thread"
+        job:
+          type: object
+          additionalProperties: true
+          description: |
+            The whole job ledger, which `Thread.job` only summarises (and omits without a gate), as
+            the store keeps it: `gate` (the policy: `require`, `maxAttempts`, `ci`, `verifier`,
+            `verifierTimeout`), `attempt`, `verification`, `task` (the person's request, capped),
+            `summary`, `pushed` (`repository`, `branch`, `commit`), `results` (what each source
+            said in the current attempt) and `hold`. Members that are empty are absent.
+        binding:
+          type: [object, "null"]
+          description: "The A2A side of the thread; null when it has none"
+          required: [agentId, contextId]
+          properties:
+            agentId: { type: string }
+            contextId: { type: string, description: "The A2A context every task of the thread shares" }
+            taskId: { type: [string, "null"], description: "The current or last task" }
+            taskState: { type: [string, "null"], description: "The last known state of that task" }
+            revision: { type: [string, "null"], description: "The agent revision that served it" }
+        events:
+          type: array
+          description: "The thread's append-only event log, in order from `seq` 1, at most 50000; the last `seq` equals `thread.lastSeq` unless `eventsTruncated`"
+          items: { $ref: "#/components/schemas/Event" }
+        eventsTruncated:
+          type: boolean
+          description: "True when the log is longer than `events`"
     ThreadState:
       type: string
       description: |

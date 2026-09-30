@@ -298,6 +298,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const id = "00000000-0000-4000-8000-00000000ffff";
     const cases: [string, string, string][] = [
       ["/api/threads/{threadId}", "get", `/api/threads/${id}`],
+      ["/api/threads/{threadId}/export", "get", `/api/threads/${id}/export`],
       ["/agui/threads/{threadId}/connect", "get", `/agui/threads/${id}/connect`],
     ];
     for (const [tpl, method, p] of cases) {
@@ -308,6 +309,23 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const res = await post(`/api/threads/${id}/cancel`);
     expect(res.status).toBe(404);
     await expectDocumented("/api/threads/{threadId}/cancel", "post", res);
+  });
+
+  it("export: the thread as a ThreadExport attachment, with its whole log", async () => {
+    const { threadId } = await startThread("echo");
+    await waitForState(threadId, ["done"]);
+    const res = await fetch(`${base}/api/threads/${threadId}/export`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toBe(
+      `attachment; filename="thread-${threadId}.json"`,
+    );
+    const doc = (await expectDocumented("/api/threads/{threadId}/export", "get", res)) as {
+      thread: Thread;
+      events: { seq: number }[];
+    };
+    expect(doc.thread.id).toBe(threadId);
+    expect(doc.events.map((e) => e.seq)).toEqual(doc.events.map((_, i) => i + 1));
+    expect(doc.events.length).toBe(doc.thread.lastSeq);
   });
 
   it("connect route rejects a bad cursor and a bad mode with 400", async () => {

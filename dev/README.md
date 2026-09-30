@@ -77,6 +77,26 @@ the rework divider and the verifier subagent, and one CI result card per report 
 name, the short commit and a link to the run), which is also where the scripts assert them. The badge, counter and cards come back after a reload: the page replays
 the log.
 
+### Share a chat with a developer
+
+When something goes wrong in a thread (a card that looks wrong, a job that ended where you did not expect), send the developer
+the whole thread as one file. In the chat, **Export JSON** in the thread's header downloads `thread-<id>.json`. From a
+terminal, with the stack up:
+
+```sh
+dev/export-thread.sh <thread-id>              # writes thread-<thread-id>.json here; the id is in the address bar, /threads/<id>
+dev/export-thread.sh <thread-id> chat.json    # or name the file ("-" writes it to stdout)
+```
+
+The file is `GET /api/threads/{id}/export` ([`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml), operation `exportThread`): a
+versioned document (`format` `another-agentic-system/thread-export`, `version` 1) with the thread, its **full job** (the gate, the
+attempt, the pushed commit, what each check said), the agent binding and **every event of the log in order**: your messages, every agent
+status and artifact, the check, CI and verifier cards, each rework and the state changes. Every card of the chat is drawn from that log.
+**Read it before you send it.** It holds what you and the agents wrote in the thread, and your e-mail address as the author of your
+messages; it never holds a credential of the orchestrator (no bearer token, webhook secret or database URL is ever written to the log), but a
+person can paste anything into a chat. Only the owner of a thread can export it (another identity gets a 404, as when reading it).
+`coder-e2e.sh` and `verify-e2e.sh` export the thread they drive and check what is in the file.
+
 ### Run the scenarios
 
 Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary:

@@ -104,3 +104,33 @@ pub(crate) async fn cancel_thread<P: Ports>(
     state.app.cancel(&user, parse_thread_id(&id)?).await?;
     Ok(StatusCode::ACCEPTED)
 }
+
+/// The thread as one downloadable JSON document (see [`crate::export`]). Authorised exactly like
+/// reading the thread: the same identity layer, the same owner-only read, the same 404 for a
+/// thread that is someone else's or does not exist.
+pub(crate) async fn export_thread<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let id = parse_thread_id(&id)?;
+    let export = state.app.export_thread(&user, id).await?;
+    // Pretty, because a person opens it, and a developer diffs it.
+    let body = serde_json::to_vec_pretty(&crate::export::document(&export))
+        .map_err(|e| orch_app::AppError::internal(format!("export document: {e}")))?;
+    let mut response = (StatusCode::OK, body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    // The id is a UUID, so the file name needs no escaping.
+    if let Ok(disposition) =
+        HeaderValue::from_str(&format!("attachment; filename=\"thread-{id}.json\""))
+    {
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
+    }
+    // The chat, with whatever it holds: never kept by a shared cache or the browser's.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}

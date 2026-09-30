@@ -182,6 +182,74 @@ describe("ChatShell over AG-UI", () => {
     ]);
   });
 
+  it("Export JSON downloads the whole thread as a file, through the API client", async () => {
+    const id = await makeThread("Implement the thing");
+    const blobs: Blob[] = [];
+    const revoked: string[] = [];
+    const downloads: string[] = [];
+    const createObjectURL = vi.fn((b: Blob) => {
+      blobs.push(b);
+      return "blob:export";
+    });
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = (u: string) => void revoked.push(u);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloads.push(`${this.download} ${this.href}`);
+    });
+    try {
+      shell(id);
+      await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+      fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+      await waitFor(() => expect(downloads).toEqual([`thread-${id}.json blob:export`]));
+      expect(calls).toContain(`GET /api/threads/${id}/export 200`);
+      const [file] = blobs;
+      if (!file) throw new Error("nothing was downloaded");
+      const doc = JSON.parse(await file.text());
+      expect(doc.format).toBe("another-agentic-system/thread-export");
+      expect(doc.version).toBe(1);
+      expect(doc.thread.id).toBe(id);
+      expect(doc.events.length).toBe(doc.thread.lastSeq);
+      expect(doc.events[0].kind).toBe("user_message");
+      await waitFor(() => expect(revoked).toEqual(["blob:export"]));
+      // the button is ready for another one, and nothing went wrong
+      expect(
+        (screen.getByRole("button", { name: "Export JSON" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+      expect(screen.queryByText(/Could not export/)).toBeNull();
+    } finally {
+      click.mockRestore();
+    }
+  });
+
+  it("a refused export says why and downloads nothing", async () => {
+    const id = await makeThread("Implement the thing");
+    const createObjectURL = vi.fn(() => "blob:never");
+    URL.createObjectURL = createObjectURL;
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    failing = {
+      key: `GET /api/threads/${id}/export`,
+      status: 503,
+      detail: "storage is unavailable",
+    };
+    fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not export the thread: storage is unavailable");
+    expect(createObjectURL).not.toHaveBeenCalled();
+    // another try works once the server does
+    failing = undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Export JSON" }));
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.queryByText(/Could not export/)).toBeNull());
+    } finally {
+      click.mockRestore();
+    }
+  });
+
   it("a blocked thread offers the question, and the answer is a resume, not a message", async () => {
     const id = await makeThread("ask pick a branch");
     shell(id);

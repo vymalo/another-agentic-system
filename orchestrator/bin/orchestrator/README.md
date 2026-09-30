@@ -197,7 +197,7 @@ runs neither and steps nothing. A transient failure of the local agents' databas
 ## Surfaces
 
 The resource API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`,
-`POST /api/threads/{id}/cancel`) and health are `orch-api`'s and are mounted whatever
+`GET /api/threads/{id}/export`, `POST /api/threads/{id}/cancel`) and health are `orch-api`'s and are mounted whatever
 `ORCH_SURFACES` says. The interaction surfaces are chosen by it:
 
 | `ORCH_SURFACES` | Serves |
