@@ -1,3 +1,4 @@
+import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { AGENT_STATUSES, type AgentStatus, type ApiActor } from "@/lib/api/types";
 
 /**
@@ -13,6 +14,8 @@ export const ACTIVITY = {
   check: "vymalo.check",
   /** The gate failed and the agent is sent back to work (ADR 0018). */
   rework: "vymalo.rework",
+  /** A CI system reported a check on a commit (ADR 0017), whether or not the gate counted it. */
+  ci: "vymalo.ci",
   /**
    * An A2UI surface, as `ThreadAgent` hands it to the runtime. On the wire it is
    * `a2ui-surface` ({@link A2UI_SURFACE}); see `thread-agent.ts` for why it is renamed.
@@ -81,6 +84,25 @@ export type CheckContent = WithActor<{
   /** The answer belongs to a verification that is no longer the current one; it decided nothing. */
   stale: boolean;
   findings: string[];
+}>;
+
+/**
+ * A CI report (ADR 0017). `name`, `branch` and `summary` are written by whoever runs the CI:
+ * untrusted text, drawn as text and nothing else. `conclusion` is a string on purpose: the set is
+ * closed today (`docs/api/webhooks.md#conclusions`, `startup_failure` too), a newer orchestrator may
+ * add one, and `passed` says how it counts. `url` is here only when it is an http(s) link.
+ */
+export type CiContent = WithActor<{
+  name: string;
+  conclusion: string;
+  passed: boolean;
+  sha: string;
+  shortSha: string;
+  provider: string;
+  repository: string;
+  branch?: string;
+  url?: string;
+  summary?: string;
 }>;
 
 /** What one failed source said, as the rework carries it. */
@@ -208,6 +230,40 @@ export function parseCheck(v: unknown): CheckContent | null {
     ...(summary ? { summary } : {}),
     stale: v.stale === true,
     findings: strings(v.findings),
+    ...(actor ? { actor } : {}),
+  };
+}
+
+/**
+ * `vymalo.ci`; a payload without a name, a conclusion, whether it passed, a commit, a provider or a
+ * repository renders nothing. A `url` that is not an absolute http(s) link is dropped here (the
+ * projection checked it already, and the log is data), and the card checks it once more.
+ */
+export function parseCi(v: unknown): CiContent | null {
+  if (!isRecord(v)) return null;
+  const name = str(v.name);
+  const conclusion = str(v.conclusion);
+  const sha = str(v.sha);
+  const shortSha = str(v.shortSha);
+  const provider = str(v.provider);
+  const repository = str(v.repository);
+  if (!name || !conclusion || typeof v.passed !== "boolean") return null;
+  if (!sha || !shortSha || !provider || !repository) return null;
+  const branch = str(v.branch);
+  const url = safeHttpUrl(v.url);
+  const summary = str(v.summary);
+  const actor = readActor(v.actor);
+  return {
+    name,
+    conclusion,
+    passed: v.passed,
+    sha,
+    shortSha,
+    provider,
+    repository,
+    ...(branch ? { branch } : {}),
+    ...(url ? { url } : {}),
+    ...(summary ? { summary } : {}),
     ...(actor ? { actor } : {}),
   };
 }

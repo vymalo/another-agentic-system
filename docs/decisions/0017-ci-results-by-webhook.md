@@ -1,9 +1,10 @@
 # ADR 0017 — CI results by webhook: GitHub and a generic signed shape
 
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 6 (the generic route,
-  `SurfaceRoutes::machine`, the CI source in the gate), slice 7 (the AG-UI card) and slice 9 (the GitHub adapter);
+  `SurfaceRoutes::machine`, the CI source in the gate), slice 7 (the AG-UI card), slice 8 (the web's card, 2026-09-30) and slice 9 (the GitHub adapter);
   see [Built (slice 6)](#built-slice-6), [Built (slice 7)](#built-slice-7) and [Built (slice 9)](#built-slice-9).
-  **Planned, not built:** slice 8 (the web's card) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
+  The web draws the card as [`web/README.md`](../../web/README.md#ci-results-vymalo-ci) says
+  ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
   [`api/webhooks.md`](../api/webhooks.md).
@@ -201,7 +202,7 @@ GitHub route is slice 9 ([below](#built-slice-9)). Where the build differs from,
   `http(s)` (checked again in the projection: the log is data).
 - **Golden `ci`** (`ci.events.json`, `ci.agui.json`, `run-ci`, `connect-ci`, and the reference client's expectations):
   the fake agent's `verify-ci`, a red `ci/build` for the first commit, a green one for the second.
-  The web's mock does not replay it yet (`NOT_MOCKED_YET`); slice 8 renders the card.
+  The web's mock replays it (`verify-ci`), and the web renders the card (slice 8).
 
 ## Built (slice 9)
 

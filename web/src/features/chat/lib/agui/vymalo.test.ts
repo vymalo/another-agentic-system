@@ -4,6 +4,7 @@ import {
   parseActor,
   parseArtifact,
   parseCheck,
+  parseCi,
   parseError,
   parseJob,
   parseRework,
@@ -204,5 +205,107 @@ describe("reading the verification gate's activities (ADR 0018)", () => {
     ]) {
       expect(parseJob(bad)).toBeNull();
     }
+  });
+});
+
+describe("reading a CI report (ADR 0017)", () => {
+  const ci = {
+    name: "ci/build",
+    conclusion: "failure",
+    passed: false,
+    sha: "0000000000000000000000000000000000000001",
+    shortSha: "0000000",
+    provider: "generic",
+    repository: "github.com/acme/demo",
+    branch: "agent/fix",
+    url: "https://ci.example.com/runs/1",
+    summary: "1 test failed: tests::login",
+    actor: { type: "system", name: "orchestrator" },
+  };
+
+  it("keeps what the schema names and ignores the rest", () => {
+    expect(parseCi({ ...ci, futureField: { deep: [1] }, extra: "x" })).toEqual({
+      name: "ci/build",
+      conclusion: "failure",
+      passed: false,
+      sha: "0000000000000000000000000000000000000001",
+      shortSha: "0000000",
+      provider: "generic",
+      repository: "github.com/acme/demo",
+      branch: "agent/fix",
+      url: "https://ci.example.com/runs/1",
+      summary: "1 test failed: tests::login",
+      actor: { type: "system", name: "orchestrator" },
+    });
+  });
+
+  it("branch, url, summary and actor are optional", () => {
+    const { branch, url, summary, actor, ...required } = ci;
+    expect(parseCi(required)).toEqual(required);
+  });
+
+  it("a report that is not one renders nothing: every required member is needed", () => {
+    for (const key of [
+      "name",
+      "conclusion",
+      "passed",
+      "sha",
+      "shortSha",
+      "provider",
+      "repository",
+    ] as const) {
+      const { [key]: _gone, ...rest } = ci;
+      expect(parseCi(rest), `without ${key}`).toBeNull();
+    }
+    expect(parseCi({ ...ci, name: "" })).toBeNull();
+    expect(parseCi({ ...ci, name: 7 })).toBeNull();
+    expect(parseCi({ ...ci, passed: "false" })).toBeNull();
+    expect(parseCi({ ...ci, conclusion: null })).toBeNull();
+    expect(parseCi({})).toBeNull();
+    expect(parseCi(null)).toBeNull();
+    expect(parseCi("ci/build")).toBeNull();
+    expect(parseCi([ci])).toBeNull();
+  });
+
+  it("a conclusion it does not know is kept: `passed` says how it counts", () => {
+    expect(parseCi({ ...ci, conclusion: "future_thing", passed: true })).toMatchObject({
+      conclusion: "future_thing",
+      passed: true,
+    });
+  });
+
+  it("optional strings that are not strings are absent", () => {
+    const read = parseCi({ ...ci, branch: 4, summary: { a: 1 }, url: ["https://x.example"] });
+    expect(read).not.toHaveProperty("branch");
+    expect(read).not.toHaveProperty("summary");
+    expect(read).not.toHaveProperty("url");
+  });
+
+  it("a url that is not http(s) is dropped, whatever it looks like", () => {
+    for (const url of [
+      "javascript:alert(1)",
+      "JaVaScRiPt:alert(1)",
+      " javascript:alert(1)",
+      "java\tscript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "file:///etc/passwd",
+      "blob:https://ci.example.com/x",
+      "vbscript:x",
+      "mailto:a@example.com",
+      "//ci.example.com/runs/1",
+      "/runs/1",
+      "ci.example.com/runs/1",
+      "https://user@evil.example/",
+      "",
+    ]) {
+      expect(parseCi({ ...ci, url }), url).not.toHaveProperty("url");
+      expect(parseCi({ ...ci, url })?.name, url).toBe("ci/build");
+    }
+    expect(parseCi({ ...ci, url: "http://ci.example.com/runs/1" })?.url).toBe(
+      "http://ci.example.com/runs/1",
+    );
+    expect(parseCi({ ...ci, url: "HTTPS://ci.example.com/runs/1" })?.url).toBe(
+      "https://ci.example.com/runs/1",
+    );
   });
 });

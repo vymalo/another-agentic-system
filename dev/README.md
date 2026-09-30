@@ -415,7 +415,15 @@ not pass). Findings are text from a tool: a finding with `<script>` or markdown 
 one is cut with **Show more**. Reload the page mid-verification and the same badge, counter and cards come back
 (the page replays the log). The web's own mock (`pnpm dev:mock`, [`web/README.md`](../web/README.md#mock-server)) plays
 the same story with `verify-red-once` and `verify-red`, and three scenarios for CI and the wait: `verify-ci` (the orchestrator's `ci` golden: a red `ci/build`, a rework, a green one), `verify-ci-stale` (a pending
-card replaced by its answer, and a stale answer shown apart) and `verify-wait` (stays Verifying until cancelled).
+card replaced by its answer, a late report of an older push and a stale answer shown apart) and `verify-wait` (stays Verifying until cancelled).
+
+**A CI report is a card of its own** (`mock-coder-ci` or the coder, once a report has arrived, see [CI](#ci-the-gate-by-webhook)):
+a badge with the conclusion in words and an icon (**Success**, **Failure**, **Cancelled**, **Timed out**, **Neutral**,
+**Skipped**, **Action required**, **Stale**, **Startup failure**), the check's name, the short sha (the whole one on hover),
+the branch, the provider and repository in small type, the summary as text (cut with **Show more** when long) and a
+**View run** link that opens in a new tab, only when the report's URL is `http` or `https`. It comes before the
+**Passed** or **Failed · CI** card that says what the gate made of it. The web's mock plays this with `verify-ci fix the login`:
+a red `ci/build` report for the first commit, the agent sent back, a green report for the second.
 
 `dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts what a user sees: one run across
 both attempts with two subagents; a `vymalo.check` that failed and one that passed; the `vymalo.rework`; the final

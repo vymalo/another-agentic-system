@@ -505,6 +505,59 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     await waitForState(threadId, ["cancelled"]);
   });
 
+  it("verify-ci (the orchestrator's CI story): a red report, a rework, a green report; a vymalo.ci card for each report", async () => {
+    const { threadId, body } = await startThread("verify-ci fix the login", "reviewer");
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    const thread = await waitForState(threadId, ["done"]);
+    expect(thread.job).toMatchObject({ attempt: 2, gate: ["ci"] });
+    const cards = body.filter((f) => f.event.activityType === "vymalo.ci");
+    expect(cards.map((f) => f.event.content)).toMatchObject([
+      {
+        name: "ci/build",
+        conclusion: "failure",
+        passed: false,
+        shortSha: "0000000",
+        provider: "generic",
+        repository: "github.com/acme/demo",
+        url: "https://ci.example.com/runs/1",
+      },
+      { name: "ci/build", conclusion: "success", passed: true, summary: "3 tests passed" },
+    ]);
+    // the orchestrator's own card (no subagent), one per report
+    expect(cards.every((f) => f.event.subagentRunId === undefined)).toBe(true);
+    expect(new Set(cards.map((f) => f.event.messageId)).size).toBe(2);
+    const order = body
+      .filter((f) =>
+        ["vymalo.check", "vymalo.ci", "vymalo.rework"].includes(String(f.event.activityType)),
+      )
+      .map(
+        (f) =>
+          `${String(f.event.activityType)}:${String((f.event.content as { status?: string }).status ?? "")}`,
+      );
+    expect(order).toEqual([
+      "vymalo.check:pending",
+      "vymalo.ci:",
+      "vymalo.check:failed",
+      "vymalo.rework:",
+      "vymalo.check:pending",
+      "vymalo.ci:",
+      "vymalo.check:passed",
+    ]);
+  });
+
+  it("verify-ci-stale (mock only): every report has a card, a late one for an older push included", async () => {
+    const { threadId, body } = await startThread("verify-ci-stale ship it", "reviewer");
+    await waitForState(threadId, ["done"]);
+    const cards = body.filter((f) => f.event.activityType === "vymalo.ci");
+    expect(
+      cards.map((f) => (f.event.content as { sha: string; conclusion: string }).conclusion),
+    ).toEqual(["failure", "success"]);
+    expect(new Set(cards.map((f) => f.event.messageId)).size).toBe(2);
+  });
+
   it("verify-wait (mock only): the thread stays verifying with a pending CI check; Cancel ends it", async () => {
     const { threadId } = await startThread("verify-wait ship it", "reviewer");
     await waitForState(threadId, ["verifying"]);

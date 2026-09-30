@@ -8,6 +8,7 @@ import {
   parseAction,
   parseArtifact,
   parseCheck,
+  parseCi,
   parseError,
   parseRework,
   parseStatus,
@@ -15,6 +16,7 @@ import {
 import { ActionLine } from "./parts/action-line";
 import { ArtifactCard } from "./parts/artifact-card";
 import { CheckCard } from "./parts/check-card";
+import { CiCard } from "./parts/ci-card";
 import { ErrorLine } from "./parts/error-line";
 import { ReworkDivider } from "./parts/rework-divider";
 import { StatusLine } from "./parts/status-line";
@@ -76,6 +78,15 @@ const CheckDataUI = makeAssistantDataUI<unknown>({
   },
 });
 
+/** `vymalo.ci`: a CI system reported a check on a commit (ADR 0017), replaced in place by its id. */
+const CiDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.ci),
+  render: ({ data }) => {
+    const ci = parseCi(data);
+    return ci ? <CiCard data={ci} /> : null;
+  },
+});
+
 /** `vymalo.rework`: the gate failed and the agent is sent back (ADR 0018), a divider. */
 const ReworkDataUI = makeAssistantDataUI<unknown>({
   name: activityPartName(ACTIVITY.rework),
@@ -104,6 +115,7 @@ export function DataUIs() {
       <ActorDataUI />
       <ActionDataUI />
       <CheckDataUI />
+      <CiDataUI />
       <ReworkDataUI />
       <SurfaceDataUI />
     </>

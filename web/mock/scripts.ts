@@ -204,18 +204,22 @@ const GATE_CI: Gate = { require: ["ci"], maxAttempts: 3 };
 const CI_CHECK = "ci/build";
 
 /** The `ci` golden's report of an attempt: the check, the commit of that attempt, the run it links to. */
-function ciReport(attempt: number, passes: boolean): Step {
+function ciReport(
+  attempt: number,
+  passes: boolean,
+  over: { name?: string; summary?: string } = {},
+): Step {
   return {
     kind: "ci_result",
     system: true,
     data: {
       branch: "agent/fix",
       conclusion: passes ? "success" : "failure",
-      name: CI_CHECK,
+      name: over.name ?? CI_CHECK,
       provider: "generic",
       repository: "github.com/acme/demo",
       sha: commitOf(attempt),
-      summary: passes ? "3 tests passed" : "1 test failed: tests::login",
+      summary: over.summary ?? (passes ? "3 tests passed" : "1 test failed: tests::login"),
       url: `https://ci.example.com/runs/${attempt}`,
     },
   };
@@ -328,7 +332,8 @@ const nextMessageId = (() => {
  * Mock-only, not produced by the current orchestrator:
  * - `ui-bad`: an A2UI surface the renderer refuses, then the result and done.
  * - `verify-ci-stale`: a gate on CI and the agent's checks. CI answers pending, then a stale answer of an
- *   older push, then passes (`check_result` cards replaced in place, a stale one of its own).
+ *   older push, then passes (`check_result` cards replaced in place, a stale one of its own), each
+ *   report with its `vymalo.ci` card.
  * - `verify-wait`: the same gate, and CI never answers: the thread stays `verifying` until cancelled.
  * - `verify-reviewed-wait`: the verifier is asked and never answers: its subagent stays open (and is
  *   told to a client that joins) until the thread is cancelled.
@@ -433,6 +438,8 @@ export function scriptFor(text: string): {
         gate,
         start: [
           ...head,
+          // an older push's report comes late: a card of its own, then the stale answer that decided nothing
+          ciReport(0, false, { name: ci.name, summary: "the build of an older push failed" }),
           {
             kind: "check_result",
             system: true,
@@ -445,6 +452,7 @@ export function scriptFor(text: string): {
               summary: "answered for a commit that is no longer the current one",
             },
           },
+          ciReport(1, true, { name: ci.name, summary: "build passed" }),
           {
             kind: "check_result",
             system: true,
