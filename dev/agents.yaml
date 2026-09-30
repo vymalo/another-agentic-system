@@ -10,13 +10,18 @@
   name: Coder
   cardUrl: http://coder:8080/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
-  # Under a CI gate (ADR 0017, ADR 0018): the job is done when CI says the pushed commit is green. In this
-  # stack CI is `mock-ci`, which reports every commit on `agent/*` of git-server (`success`, or `failure`
-  # when the commit message contains CI_FAIL) as the check `mock-ci/build`, and a red report sends the
-  # coder back with the report. A gate that requires `ci` names the checks that count (`ci.required`): a
-  # report of any other name is a card and nothing else, so no first report can pass a red commit.
+  # Under a gate of two sources (ADR 0017, ADR 0018): the job is done when the coder's own checks
+  # passed on the pushed commit (`agent-checks`: since adam-rs ae540e9 the coder reports `run_checks` as a
+  # `checks` artifact, and `commit_and_push` re-reports it bound to the commit it pushed) AND CI says that
+  # commit is green (`ci`). In this stack CI is `mock-ci`, which reports every commit on `agent/*` of
+  # git-server (`success`, or `failure` when the commit message contains CI_FAIL) as the check
+  # `mock-ci/build`, and a red report sends the coder back with the report. A gate that requires `ci`
+  # names the checks that count (`ci.required`): a report of any other name is a card and nothing else,
+  # so no first report can pass a red commit. The scripted model (dev/coder/wiremock) runs the checks in
+  # both variants, so both reach `done`; a real model that skips `run_checks` is sent back, three attempts
+  # in all, with "no checks reported" (dev/agents.live.yaml says how to loosen that).
   gate:
-    require: [ci]
+    require: [agent-checks, ci]
     ci:
       required: [mock-ci/build]
 - id: mock-coder

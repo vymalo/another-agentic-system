@@ -1,26 +1,36 @@
-# Local development stack: Postgres, WireMock stand-ins for the A2A agents the orchestrator
-# drives, and (profile `app`) the orchestrator, the web UI, an edge proxy on one origin and the
-# default agent, adam-coder (ADR 0014), with its own mocks. Everything binds to 127.0.0.1 and
-# nothing here is a real secret. See README.md, "Local development", and dev/README.md for the
-# scenario switches.
+# The local stack of the MVP: Postgres, WireMock stand-ins for the A2A agents the orchestrator drives,
+# and (profile `app`) the whole system: the orchestrator, the web UI, an edge proxy on one origin and
+# the default agent, adam-coder (ADR 0014), with its own mocks, a git server and a CI stand-in. Everything
+# binds to 127.0.0.1 and nothing here is a real secret. Start with dev/README.md, "Test it locally".
 #
-#   docker compose up -d --wait                  # infrastructure + mocks (fast, nothing is built)
-#   docker compose --profile app up -d --build --wait   # ... plus orchestrator, web, edge -> http://127.0.0.1:8080
+#   docker compose --profile app up --build            # the whole system -> http://127.0.0.1:8080
+#   docker compose up -d --wait                        # infrastructure + mocks only (fast, nothing is built)
+#   dev/e2e-all.sh                                     # every scenario against a running `app` stack
 #
-# The `split` profile adds two workers, so the orchestrator can run as a control plane beside them
-# (ADR 0015); `dev/split-e2e.sh` kills the worker that holds a task and checks that the other one
-# finishes it:
+# Needs Docker Compose v2. compose.live.yaml needs v2.24.4 or newer (it uses the `!override` tag). The `app` profile
+# pulls the coder image (about 2.9 GB, linux/amd64 only, run under emulation on an ARM machine) and builds
+# the orchestrator, the web UI, the git server and `mock-ci`; the first build takes several minutes.
 #
-#   ORCHESTRATOR_ROLE=control-plane docker compose --profile app --profile split up -d --build --wait
+# The `app` profile is offline and deterministic: the model, GitHub and CI are scripts. `dev/coder-e2e.sh`
+# turns one chat message into a pull request, and the job ends `done` when the coder's own checks passed on
+# the pushed commit and the mock CI has reported it green (the coder is gated on both). The coder is the
+# first entry of dev/agents.yaml, so it is the default agent. The other agents need only the default
+# profile: `docker compose up -d --wait` starts no coder.
 #
-# `orchestrator` is `all` (its own dispatcher) unless ORCHESTRATOR_ROLE says otherwise; the workers
-# are always `worker`, with a 5 s lease so a killed one is replaced within seconds.
+# Other profiles (each is opt-in, none is part of `app`):
 #
-# The `app` profile also pulls the coder image (about 2.9 GB, linux/amd64 only) and builds the
-# git-server and `mock-ci`; `dev/coder-e2e.sh` then turns one chat message into a pull request, and the
-# job ends `done` when the mock CI has reported the pushed commit (the coder is gated on CI). The coder is the
-# first entry of dev/agents.yaml, so it is the default agent. The other agents need only the
-# default profile: `docker compose up -d --wait` starts no coder.
+#   split        two workers beside the orchestrator as a control plane (ADR 0015); `dev/split-e2e.sh`
+#                kills the worker that holds a task and checks that the other one finishes it:
+#                  ORCHESTRATOR_ROLE=control-plane docker compose --profile app --profile split up -d --build --wait
+#                `orchestrator` is `all` (its own dispatcher) unless ORCHESTRATOR_ROLE says otherwise; the
+#                workers are always `worker`, with a 5 s lease so a killed one is replaced within seconds.
+#   smee         forwards GitHub webhooks from smee.io to the orchestrator, for going live from a laptop.
+#                Needs SMEE_URL (.env.example); smee.io is a third party that sees every payload.
+#   local-agent  a second orchestrator, built with the Cargo feature `agent-local`, that hosts an `echo`
+#                agent in its own process, with a database of its own (ADR 0015): http://127.0.0.1:8095.
+#
+# compose.live.yaml (an override, `-f compose.yaml -f compose.live.yaml`) points the coder at a real model
+# and a real GitHub, reading .env (copy .env.example): dev/README.md, "Going live".
 name: another-agentic-system
 
 x-wiremock: &wiremock
@@ -283,10 +293,13 @@ services:
 
   # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
   # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.
-  # Verified 2026-09-29 (ghcr API, anonymous token): coder:sha-0e08fe0 and its digest below.
+  # Verified 2026-09-30 (ghcr API, anonymous pull): coder:sha-ae540e9 and its digest below; the image adds the `checks` artifact.
   coder:
     profiles: [app]
-    image: ghcr.io/vymalo/another-adam-rs/coder:sha-0e08fe0@sha256:fa1ac3df38a49de3d7678e38c7aeb2a7e1919d8cd30fd005e0f0341d703ac95d
+    image: ghcr.io/vymalo/another-adam-rs/coder:sha-ae540e9@sha256:da22019eeba3a53b01a5124fe560b0bf0bf5df78da270c772977bdd6ec644b2b
+    # The image has no arm64 variant: name the platform so an ARM machine runs it under emulation
+    # instead of refusing to pull.
+    platform: linux/amd64
     depends_on:
       coder-postgres:
         condition: service_healthy
@@ -324,8 +337,89 @@ services:
       retries: 30
       start_period: 10s
 
+  # ------------------------------------------------------------- smee (opt-in) --
+  # GitHub cannot reach a laptop, so `--profile smee` forwards its webhooks from smee.io (a public relay,
+  # a THIRD PARTY that sees every payload, headers included) to the orchestrator. Start it only with a
+  # channel of your own in SMEE_URL (.env, dev/README.md "Going live"); without one the container says so
+  # and exits. It never reaches the `edge`, which injects an identity: `smee-proxy` is a Caddy of its
+  # own that passes `POST /webhooks/github` to the orchestrator, signature-checked there, and nothing else.
+
+  smee-proxy:
+    profiles: [smee]
+    image: caddy:2.11.4-alpine # the `edge` image
+    volumes:
+      - ./dev/Caddyfile.smee:/etc/caddy/Caddyfile:ro
+    depends_on:
+      orchestrator:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  # smee-client 5.0.0 (npm) on the node image, both pinned (dev/smee/Dockerfile): the project publishes no image.
+  smee:
+    profiles: [smee]
+    build:
+      context: ./dev/smee
+    image: another-agentic-system/smee:dev
+    environment:
+      SMEE_URL: ${SMEE_URL:-} # read from .env; never put it on a command line
+      SMEE_TARGET: http://smee-proxy:8081/webhooks/github
+    depends_on:
+      smee-proxy:
+        condition: service_healthy
+    restart: "on-failure:3"
+
+  # ---------------------------------------------------------- local-agent (optional) --
+  # The orchestrator with an agent INSIDE it (ADR 0015): built with the Cargo feature `agent-local`
+  # (the image then links the adam-rs runtime: a long build) and given dev/agents.local-echo.yaml, whose
+  # one agent, `echo`, repeats the message back. It has a Postgres of its own, so it never shares a log or
+  # an outbox with `orchestrator`, and it serves no web UI: drive it with dev/try-thread.sh
+  #   BASE_URL=http://127.0.0.1:8095 AGENT_ID=echo dev/try-thread.sh hello
+  # The identity is AUTH_DEV_USER (development only, the orchestrator logs a warning), because no edge
+  # stands in front of it. The port is published on 127.0.0.1 only.
+
+  local-postgres:
+    profiles: [local-agent]
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # local development only
+      POSTGRES_DB: orch
+    volumes:
+      - local-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orch"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  orchestrator-local:
+    profiles: [local-agent]
+    build:
+      context: ./orchestrator
+      args:
+        ORCH_FEATURES: agent-local
+    image: another-agentic-system/orchestrator:dev-local
+    depends_on:
+      local-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@local-postgres:5432/orch
+      AGENTS_FILE: /etc/orchestrator/agents.yaml
+      AUTH_DEV_USER: dev@example.com
+      LOG_FORMAT: text
+    volumes:
+      - ./dev/agents.local-echo.yaml:/etc/orchestrator/agents.yaml:ro
+    ports:
+      - "127.0.0.1:${ORCH_LOCAL_PORT:-8095}:8080"
+
 volumes:
   postgres-data:
   coder-postgres-data:
   git-data:
   coder-work:
+  local-postgres-data:

@@ -1,0 +1,76 @@
+# Going live: an override of compose.yaml that points the coder at a REAL model endpoint and a REAL
+# GitHub, reading every value from `.env` (copy .env.example). dev/README.md, "Going live", walks through it.
+#
+#   cp .env.example .env            # then edit it: the real values, and secrets of your own
+#   docker compose -f compose.yaml -f compose.live.yaml --profile app up --build
+#   # with GitHub webhooks through smee.io (a third party that sees them), see .env.example and dev/README.md:
+#   docker compose -f compose.yaml -f compose.live.yaml --profile app --profile smee up --build
+#
+# Needs Docker Compose v2.24.4 or newer: `!override` replaces a value instead of merging it, which older
+# versions do not parse. (v2.24.4 is the release that introduced it according to Docker's documentation, read
+# 2026-09-30, *unverified* by a run on that version; the file was checked with Compose v5.1.1.) Validate
+# without starting anything:
+#
+#   docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q
+#
+# What changes, and what does not:
+#   * coder        its whole environment is replaced (nothing of the dummy values or of the development-only
+#                  ALLOW_LOCAL_REPOS / ALLOWED_REPO_HOSTS survives), and it no longer waits for the mocks;
+#   * mock-openai, mock-github, git-server, mock-ci
+#                  move to the profile `offline-mocks`, which is never enabled: a real model, a real GitHub and
+#                  a real CI replace them. Do not enable that profile with this file;
+#   * orchestrator AGENTS_FILE becomes dev/agents.live.yaml (the coder is gated on its own checks; CI is
+#                  opt-in there, because `mock-ci/build` is not the name of a real check), and the
+#                  secrets come from .env instead of the dummies of compose.yaml;
+#   * edge, web, postgres, the WireMock agents: unchanged. The edge still authenticates NOBODY and puts
+#                  dev@example.com on every /api and /agui request: it is for 127.0.0.1 only. Do not publish
+#                  it on a network you do not trust, live or not.
+#
+# The `:?` forms stop `docker compose` with the message after them when a variable is missing or empty.
+
+services:
+  coder:
+    # `!override` replaces the list instead of appending to it: the mocks are no longer dependencies.
+    depends_on: !override
+      coder-postgres:
+        condition: service_healthy
+    environment: !override
+      DATABASE_URL: postgres://postgres:postgres@coder-postgres:5432/coder
+      MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
+      MODEL_API_KEY: "${MODEL_API_KEY:-}"
+      MODEL: "${MODEL:?set MODEL in .env (the coder's model alias)}"
+      OPENCODE_MODEL: "${OPENCODE_MODEL:-${MODEL}}"
+      GITHUB_API_URL: "${GITHUB_API_URL:-https://api.github.com}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN in .env (a token that may push branches and open pull requests)}"
+      ALLOWED_REPO_HOSTS: "${ALLOWED_REPO_HOSTS:-github.com}"
+      A2A_BEARER_TOKENS: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      PUBLIC_URL: http://coder:8080/
+      WORKSPACE_ROOT: /work
+      GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
+      GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
+      PR_DRAFT: "${PR_DRAFT:-false}"
+    # A model served on the host (Ollama, LM Studio, vLLM) is http://host.docker.internal:<port>/v1; Docker
+    # Desktop knows that name, a Linux engine needs this line. Harmless when the model is elsewhere.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mock-openai:
+    profiles: !override [offline-mocks]
+  mock-github:
+    profiles: !override [offline-mocks]
+  git-server:
+    profiles: !override [offline-mocks]
+  mock-ci:
+    profiles: !override [offline-mocks]
+
+  orchestrator:
+    # The anchor's volumes are replaced again: the live agents file, and the MCP tokens.
+    volumes: !override
+      - ./dev/agents.live.yaml:/etc/orchestrator/agents.yaml:ro
+      - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
+    environment:
+      CODER_A2A_TOKEN: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      WEBHOOK_GITHUB_SECRETS: "${WEBHOOK_GITHUB_SECRETS:?set WEBHOOK_GITHUB_SECRETS in .env (at least 32 bytes: openssl rand -hex 32)}"
+      # The generic signed webhook is not used live: a secret of its own that nothing knows.
+      WEBHOOK_GENERIC_SECRETS: "${WEBHOOK_GENERIC_SECRETS:-${WEBHOOK_GITHUB_SECRETS}}"
+      MCP_TOKEN_DEV: "${MCP_TOKEN_DEV:?set MCP_TOKEN_DEV in .env (at least 32 bytes: openssl rand -hex 32)}"

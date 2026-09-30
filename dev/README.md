@@ -1,5 +1,182 @@
 # Local development stack
 
+## Test it locally
+
+One command starts the whole system on your machine, **offline and deterministic**: the chat UI, the
+orchestrator, Postgres, the default agent (adam-coder) and a scripted model, GitHub, git remote and CI for it. No
+account, no API key, no network after the images are built. Every credential in it is a dummy and every port is
+bound to `127.0.0.1`.
+
+### What you need
+
+| | |
+|---|---|
+| Docker Compose | v2 (`docker compose version`); **v2.24.4 or newer** for `compose.live.yaml`, which uses the `!override` tag that older versions do not parse (the version is from Docker's documentation, *not run* on that release; this stack was checked with v5.1.1). |
+| Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
+| CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
+| Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack). |
+| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
+
+### Start it
+
+```sh
+docker compose --profile app up --build
+```
+
+The first run pulls the coder (2.9 GB) and builds the orchestrator (Rust: several minutes), the web UI, the git
+server and the mock CI; a later run takes seconds. The logs stream in this terminal and Ctrl-C stops it. To run it in the
+background and return when everything is healthy: `docker compose --profile app up -d --build --wait`. It is ready
+when `docker compose --profile app ps` shows `edge` and `coder` as `healthy` (the orchestrator has no health check
+of its own: the edge probes it). `docker compose --profile app down -v` stops it and forgets the databases and the
+pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
+
+### Where things are
+
+| What | URL | Notes |
+|---|---|---|
+| The chat UI | http://127.0.0.1:8080 | The coder is preselected. Every request carries the fixed identity `dev@example.com`: the edge stands in for oauth2-proxy and authenticates nobody |
+| The API | http://127.0.0.1:8080/api/agents, `/api/threads` | The resource API. The AG-UI run route is `POST /agui/agents/{agentId}` (what the web and the scripts speak) |
+| MCP | http://127.0.0.1:8080/mcp | Bearer token `dev-mcp-token-0123456789abcdef0123456789`; see [Connect Claude Code](#connect-claude-code-over-mcp) |
+| Webhooks | `POST http://127.0.0.1:8080/webhooks/github` and `/webhooks/ci` | Signed with the dummy secret `dev-webhook-secret-0123456789abcdef0123`, no identity. `mock-ci` posts here on its own; [`ci-webhook.sh`](ci-webhook.sh) plays a CI by hand |
+| Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
+| The mocks' journals | http://127.0.0.1:8091/__admin/requests (model), :8092 (GitHub), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
+| The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded; the branches the coder pushes are here |
+
+### Try it in the chat
+
+Open http://127.0.0.1:8080, keep **Coder** selected and send:
+
+```text
+In http://git-server:8080/local/sandbox.git (base branch main), add hello.txt containing hello.
+```
+
+The scripted model always does the same job (clone `local/sandbox.git`, write `hello.txt`, push a branch, open a
+pull request on the mock GitHub); the text only has to name the seeded repository. What you see, in order:
+
+1. **Working**, with the coder's status lines and its artifacts as cards: the coder's `checks` (twice: the run
+   of the checks, then the same result bound to the commit it pushed), the `branch` it pushed and the `pull_request` it
+   opened (JSON, not a link).
+2. The badge turns to **Verifying** with **Attempt 1/3** beside it: the coder is gated on two things, its own checks and CI
+   ([`agents.yaml`](agents.yaml)). A card **Passed · Agent checks** shows at once, with the short commit and the summary.
+3. A second card **Passed · CI** follows within a few seconds: `mock-ci` saw the pushed branch on `git-server` and reported
+   `mock-ci/build` for that commit through the webhook. The badge ends **Done**.
+
+Which gate, badge and card each agent shows (pick the agent in the chat, send the keyword; the scripts assert all of it):
+
+| Agent | Send | What the chat shows | Script |
+|---|---|---|---|
+| **Coder** | the message above | the steps above: checks, **Verifying**, **Attempt 1/3**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
+| **Mock coder (gated)** | `red-once fix the login` | **Verifying**, a card **Failed · Agent checks** with the finding, a **rework divider** ("Attempt 2 of 3: sent back with 1 finding"), **Attempt 2/3**, a second card **Passed · Agent checks**, **Done** | `verify-e2e.sh` |
+| **Mock coder (gated)** | `red-always fix the login` | three failed cards, two dividers, **Attempt 3/3**, the badge **Failed** and "Checks failed after 3 attempts" | `verify-e2e.sh` |
+| **Mock coder (verified)** | `push-flawed fix the login` | the coder, then the **Verifier** as a subagent of its own (a pending card, then **Failed · Verifier** with its findings), the divider, the coder again, the verifier again, **Passed · Verifier**, **Done** | `verifier-e2e.sh` |
+| **Mock coder (CI gated)** | `red-once fix the login`, then play CI from a terminal ([CI](#ci-the-gate-by-webhook)) | **Verifying** until a signed report arrives; a red one sends the agent back, a green one for the new commit ends the job | `ci-e2e.sh` |
+| **Mock coder** | anything, or `slow` | no gate: **Working**, then **Done** with a pull-request artifact; `slow` takes 8 s | `mcp-e2e.sh` (over MCP) |
+
+The web draws the gate's verdicts (`vymalo.check`: a **CI** card is the gate's verdict on the check it required),
+the rework divider and the verifier subagent, and one CI result card per report (`vymalo.ci`: the conclusion, the check
+name, the short commit and a link to the run), which is also where the scripts assert them. The badge, counter and cards come back after a reload: the page replays
+the log.
+
+### Run the scenarios
+
+Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary:
+
+```sh
+dev/e2e-all.sh                 # every scenario below, one after the other, then a summary
+dev/e2e-all.sh verify mcp      # only these
+VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping it in a log file
+```
+
+| Scenario | Script | It proves |
+|---|---|---|
+| `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
+| `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
+| `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
+| `verifier` | `dev/verifier-e2e.sh` | the verifier finds fault, the agent is sent back, the verifier passes it |
+| `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
+| `ci` | `dev/ci-e2e.sh` | a red signed report sends the agent back, a green one for the new commit ends the job |
+
+Every script prints one `ok` or `FAIL` line per check and exits non-zero on a failure; `e2e-all.sh` exits 1 if any scenario
+failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
+pushed it), so a second run of it is reported as `SKIP`, not as a failure: `docker compose --profile app down -v` and
+`up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the mocks alone and needs only `docker compose up -d --wait`.
+
+### Connect Claude Code over MCP
+
+The stack serves the orchestrator's MCP server at `http://127.0.0.1:8080/mcp` ([ADR 0019](../docs/decisions/0019-mcp-server-over-streamable-http.md)).
+With the stack up:
+
+```sh
+claude mcp add --transport http orchestrator http://127.0.0.1:8080/mcp \
+  --header "Authorization: Bearer dev-mcp-token-0123456789abcdef0123456789"
+```
+
+[`mcp.json.example`](mcp.json.example) is the same for a client that reads a JSON file (Claude Code's `.mcp.json`, opencode
+and most others). Then ask Claude to list the agents and start a job on `mock-coder` ("start a job with mock-coder: add a
+health endpoint"); the tools are `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer` and `cancel_job`, and the answer of
+`start_job` carries a `web_url`: the same job is in the chat, because the token belongs to `dev@example.com`. More in
+[The MCP server](#the-mcp-server). *Claude Code and opencode against this server have not been run; `curl` and rmcp's own client have.*
+
+### Going live
+
+The offline stack never reads `.env`. To point the coder at a real model and a real GitHub, copy [`.env.example`](../.env.example)
+to `.env`, edit it, and add the override file:
+
+```sh
+cp .env.example .env         # then edit it: a model endpoint, a GitHub token, and secrets of your own (openssl rand -hex 32)
+docker compose -f compose.yaml -f compose.live.yaml --profile app up --build
+```
+
+[`compose.live.yaml`](../compose.live.yaml) (Compose v2.24.4 or newer, for `!override`) replaces the coder's whole environment
+with the values of `.env`; stops `mock-openai`, `mock-github`, `git-server` and `mock-ci` (they move to a profile,
+`offline-mocks`, that is never enabled, and the coder no longer waits for them); puts the real secrets on the orchestrator
+(`CODER_A2A_TOKEN`, `WEBHOOK_GITHUB_SECRETS`, `MCP_TOKEN_DEV`, each 32 bytes or more); and gives the orchestrator
+[`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. In the chat, name a repository you can push to
+(`In https://github.com/<you>/<repo>.git (base branch main), ...`; the host must be in `ALLOWED_REPO_HOSTS`). Check the
+files without starting anything: `docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q`.
+
+Notes on going live:
+
+- **The edge still authenticates nobody** and still says `dev@example.com` for every request. Live means a real model and a real
+  GitHub, not a stack you may expose. The MCP token and the webhook secret are the only credentials that mean anything.
+- A variable exported in your shell **wins over `.env`**: an exported `GITHUB_TOKEN` (common when you use `gh`) is the one the coder gets. `docker compose ... config` shows the result.
+- **The CI gate is opt-in live**, because the check name `mock-ci/build` means nothing on GitHub: edit `agents.live.yaml` as its comments say
+  (the exact name of the check run, and the webhook below).
+- **GitHub webhooks need a public URL.** GitHub cannot reach `127.0.0.1`. Either expose port 8080's `/webhooks/github` yourself
+  (a tunnel of your choosing: point it at a route that carries **only** that path, never at the edge, which injects an identity), or
+  use `smee` below.
+- **smee (optional, opt-in).** Set `SMEE_URL` in `.env` to a channel from https://smee.io/new and add `--profile smee` (or
+  `COMPOSE_PROFILES=app,smee` in `.env`). `smee-client` (pinned, [`dev/smee/Dockerfile`](smee/Dockerfile)) then forwards the deliveries to
+  `smee-proxy`, a Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and answers
+  404 to everything else; nothing reaches the identity-injecting edge. In the repository's Settings, Webhooks: Payload URL = your smee URL,
+  Content type `application/json`, Secret = `WEBHOOK_GITHUB_SECRETS`, events "Check runs" and "Workflow runs" (not "Check suites"), and give the
+  orchestrator the check's name in `agents.live.yaml`. **smee.io is a third party: it sees every payload** (repository names, commit
+  messages, check results) and anyone who learns the channel URL can read and post to it; the orchestrator still verifies the
+  signature. *Unverified:* smee re-serialises the JSON body it relays, so a payload GitHub escapes differently (`<`, `>`, `&` are written
+  `<` and so on) may fail the signature check with a 401; a delivery with plain text is fine (tried here with smee-client 5.0.0 against a stand-in relay).
+- The `local-agent` profile is separate: [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local).
+
+### Troubleshooting
+
+| You see | It is | Do |
+|---|---|---|
+| `port is already allocated` or `address already in use` | one of the ports above is taken (a local Postgres on 5432 is the usual one) | stop it, or set the variable of that port (`POSTGRES_PORT=5433 docker compose ...`, or in `.env`); the scripts read `EDGE_PORT` too, or take `BASE_URL` |
+| `docker compose` rejects `compose.live.yaml` at an `!override` tag | Compose older than v2.24.4 | update Docker Compose |
+| MCP answers `403` | **Host validation**: the server accepts `Host` 127.0.0.1 and localhost only (`MCP_ALLOWED_HOSTS`), and you reached the edge by another name (a LAN address, `host.docker.internal`, a tunnel) | use `http://127.0.0.1:8080/mcp`, or add the name to `MCP_ALLOWED_HOSTS` in `compose.yaml` |
+| MCP answers `401` with `WWW-Authenticate: Bearer` | the token is missing or wrong (nothing says which, on purpose) | send `Authorization: Bearer <MCP_TOKEN_DEV>`; the token is the value in the orchestrator's environment, and `dev/mcp-tokens.yaml` names the variable |
+| a webhook delivery gets `401` | **a secret mismatch** (or, for the generic route only, a timestamp more than `WEBHOOK_GENERIC_MAX_SKEW_SECS`, 300 s, from the clock): the signature matches none of `WEBHOOK_GITHUB_SECRETS` / `WEBHOOK_GENERIC_SECRETS` | the same secret on both sides (`docker compose logs orchestrator` says `webhook delivery refused ... status=401`); GitHub's "Recent Deliveries" shows the response; via smee see the note above |
+| a report is `202` but the job stays **Verifying** | the report is **parked** (the inbox keeps it up to a day) until a job watches its key, host/owner/name of the repository and the commit | compare the two log lines that carry the same `watch_key`: `watching for the CI reports of a pushed commit` (the job, from the coder's `branch` artifact) and `a CI report will be matched to the job that watches this key` (the report); `dev/coder-e2e.sh` prints both when the thread does not end done: `docker compose logs --tail 100 orchestrator mock-ci` |
+| the two `watch_key`s differ, and no report ever matches | **repository spelling**: the coder names the repository the way the chat message did (`http://git-server:8080/local/sandbox.git`), CI reports `repository.html_url`; case, `.git` and a trailing slash are ignored, a different host, port or owner is not | name the repository in the chat as the report spells it (`https://github.com/<owner>/<repo>.git`); locally `mock-ci` reports `http://git-server:8080/local/sandbox` |
+| a job ends **Blocked** with `ci_timeout` | no report for the pushed commit arrived within `ORCH_CI_TIMEOUT_SECS` (an hour); no attempt was used | fix the delivery (the rows above) |
+| `dev/ci-e2e.sh` says `SKIP`, or a second run of it times out | it passes once per database (a commit belongs to the first job that pushed it) | `docker compose --profile app down -v` and `up` again |
+| an old scenario behaves oddly, or the coder cannot clone | leftovers: the databases, the pushed branches (`coder-work`, `git-data`) | `docker compose --profile app down -v` forgets all of them |
+| `coder` never becomes healthy | the image is still being pulled or is starting (`start_period` 10 s, then 30 tries), or it exited | `docker compose --profile app logs coder`; on an ARM machine it runs under emulation and is slow |
+| a chat message to the coder fails at once with a delivery error | the coder was not up yet: the orchestrator reads its card when a thread is delegated, not at boot | wait for `coder` to be `healthy`, send it again |
+| `.env` values seem ignored | the offline stack never reads `.env`; and a variable exported in your shell wins over it | add `-f compose.live.yaml`; `docker compose -f compose.yaml -f compose.live.yaml config` shows what is used |
+
+Read on for the details of every service and scenario.
+
 What `compose.yaml` at the repository root starts, and how to steer the mock agents. The quick
 start is in the root [README](../README.md#local-development); this page is the reference.
 
@@ -18,7 +195,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a CI gate), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -28,9 +205,13 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`. No authentication. Vendored. |
 | `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
+| `smee-proxy` | `caddy:2.11.4-alpine` | not published | `smee` | A Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and nothing else (404); never the identity-injecting `edge`. See [Going live](#going-live). |
+| `smee` | built from [`smee/`](smee/Dockerfile) (`node:24-alpine3.23` by tag and digest, `smee-client` 5.0.0) | not published | `smee` | Forwards the deliveries smee.io holds for `SMEE_URL` to `smee-proxy`. Opt-in; exits with a message when `SMEE_URL` is unset. smee.io is a third party that sees the payloads. |
+| `orchestrator-local`, `local-postgres` | the orchestrator built with `--build-arg ORCH_FEATURES=agent-local` (long: it links the adam-rs runtime); `postgres:16.15-alpine` | `8095` (`ORCH_LOCAL_PORT`) | `local-agent` | A second orchestrator that hosts an `echo` agent in its own process ([`agents.local-echo.yaml`](agents.local-echo.yaml)), with a database of its own and `AUTH_DEV_USER` for the identity; no web UI. See [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
-(the Rust build takes a few minutes the first time) and the git server, and pulls the coder image.
+(the Rust build takes a few minutes the first time), the git server and `mock-ci`, and pulls the coder image. `--profile smee` and
+`--profile local-agent` are opt-in and belong to no other profile. [`compose.live.yaml`](../compose.live.yaml) is an override, not a profile.
 
 ```mermaid
 sequenceDiagram
@@ -96,7 +277,9 @@ commit, change the commit in `UPSTREAM`, refresh the copies, and re-pin the imag
 **The scripted run.** The coder's model is `mock-coder`, a script the mock follows by looking at which
 tool-call ids the conversation already holds (it keeps no state). The message names the seeded
 repository, and the coder then calls `prepare_workspace`, `delegate_to_opencode`, `run_checks`,
-`commit_and_push` and `open_pull_request`, and ends with a text. OpenCode (model `mock-opencode`) runs
+`commit_and_push` and `open_pull_request`, and ends with a text. Since adam-rs `ae540e9` the coder also reports its checks: `run_checks` emits a `checks`
+artifact (`passed`, `commit`, `tree`, `summary`, `findings`), and `commit_and_push` emits a second one, bound to the commit it pushed, before the `branch`
+artifact. The orchestrator's gate for the coder (`require: [agent-checks, ci]`) reads the last one: it must have passed on exactly the pushed commit. OpenCode (model `mock-opencode`) runs
 one `bash` call, `echo hello > hello.txt`. With `[mock:no-opencode]` in the message OpenCode is not
 started and `run_checks` makes the file itself. The result is a branch `agent/<run id prefix>` on
 `git-server` with `hello.txt` = `hello`, and one pull request created on `mock-github`.
@@ -145,15 +328,16 @@ stateDiagram-v2
 docker compose --profile app up -d --build --wait     # pulls the coder, builds git-server, mock-ci, orchestrator, web
 dev/coder-e2e.sh                                       # OpenCode makes the change
 NO_OPENCODE=1 dev/coder-e2e.sh                         # the check command makes it
+dev/e2e-all.sh                                         # this and every other scenario, with a summary ("Test it locally")
 docker compose down -v                                 # also forgets the pushed branches
 ```
 
 `dev/coder-e2e.sh` goes through the edge and speaks AG-UI, as the web does (the legacy chat API was removed on
 2026-09-30): it checks the default agent, runs the thread with one
 `POST /agui/agents/coder` (a UUID it mints as `threadId`), waits for the thread to end `done`,
-and prints one `ok` or `FAIL` line for each check: the run stream ends with `RUN_FINISHED`, the two artifacts
-(the JSON the coder sent is in the `content.text` of the `vymalo.artifact` activities of
-`GET /agui/threads/{id}/connect?mode=run`), exactly one `POST /repos/local/sandbox/pulls` on `mock-github`
+and prints one `ok` or `FAIL` line for each check: the run stream ends with `RUN_FINISHED`, the artifacts (`checks` at least twice, the last passed on exactly the pushed commit
+with a 40-hex tree; `branch`; `pull_request`; the JSON the coder sent is in the `content.text` of the `vymalo.artifact` activities of
+`GET /agui/threads/{id}/connect?mode=run`), the job's gate `ci+agent_checks` with an `agent_checks` `vymalo.check` card that passed on the pushed commit and exactly one `vymalo.ci` card for `mock-ci/build`, exactly one `POST /repos/local/sandbox/pulls` on `mock-github`
 with the branch as head and `main` as base, no unmatched request on `mock-openai` and at least one
 `mock-opencode` request (none with `NO_OPENCODE=1`), and the branch with `hello.txt` on `git-server`. It
 resets both journals first, so it can be run repeatedly. To use the chat by hand, open
@@ -164,8 +348,8 @@ in a data part).
 
 **Limits.**
 
-- `linux/amd64` only and about 2.9 GB: the first `--profile app` run pulls it. Compose on an arm64
-  machine needs emulation. The default profile does not start it.
+- `linux/amd64` only and about 2.9 GB: the first `--profile app` run pulls it. `compose.yaml` sets `platform: linux/amd64`, so an arm64
+  machine runs it under emulation instead of failing to pull. The default profile does not start it.
 - The coder's card advertises `PUBLIC_URL`, `http://coder:8080/` in compose, so **an orchestrator on the
   host cannot use it**: [`agents.local.yaml`](agents.local.yaml) leaves it out, and its default is
   `mock-coder`. Run the orchestrator in the compose network to use the coder.
@@ -540,7 +724,7 @@ gate does not name (`docs`) does not decide, even for the new commit; the same r
 another delivery id) is accepted twice and counted once; and that the chat shows a `vymalo.ci` card per report, each with
 an id of its own and none replacing another (the conclusion, the short sha, the link and the summary). The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
 report's summary keeps `red-once`. The mock pushes the same two commits every time and a commit is watched by the first
-job that pushed it, so the script passes once per database (`docker compose down -v` to run it again). CI runs it in
+job that pushed it, so the script passes once per database (`docker compose down -v` to run it again; a second run is recognised and reported as a skip, exit status 77, `CI_E2E_FORCE=1` runs it anyway). CI runs it in
 the `Coder E2E` workflow.
 
 **The GitHub shape and `mock-ci`.** `ci-webhook.sh --shape github [--event check_run|workflow_run] [--fork]` posts what
@@ -552,7 +736,7 @@ branches of `local/sandbox` on `git-server`, and for each commit it has not repo
 (a marker file); the orchestrator's key for the delivery is made of the check run's id and completion time, so a restart that
 forgets what it did posts again with a new completion time, which is a new report. It reports
 the repository as `http://git-server:8080/local/sandbox`, the address the coder's `branch` artifact names, because the orchestrator
-matches a report to a job by `host/owner/name` and the commit. The **coder is gated on CI** (`gate: {require: [ci], ci: {required: [mock-ci/build]}}` in
+matches a report to a job by `host/owner/name` and the commit. The **coder is gated on its own checks and on CI** (`gate: {require: [agent-checks, ci], ci: {required: [mock-ci/build]}}` in
 `agents.yaml`), so `dev/coder-e2e.sh` also asserts the job's gate and one `vymalo.ci` card, `mock-ci/build`, `success`, on the pushed commit
 (when the thread does not end `done`, it prints the tail of the orchestrator's and `mock-ci`'s logs, whose info lines
 `watching for the CI reports of a pushed commit` and `a CI report will be matched to the job that watches this key` carry the same
@@ -665,6 +849,7 @@ dev/verify-e2e.sh                                                          # ass
 AGENT_ID=mock-coder-verified dev/try-thread.sh "push-flawed fix the login" # the verifier finds fault, sent back, done at attempt 2
 dev/verifier-e2e.sh                                                        # asserts that, what the verifier was sent, and the refusals
 dev/ci-e2e.sh                                                              # mock-coder-ci: a signed CI report sends it back, then ends the job
+dev/e2e-all.sh                                                             # all of the scripts above and the coder's, then a summary
 ```
 
 The script runs the thread with `POST /agui/agents/{agentId}` (a UUID it mints as the thread id; `THREAD_ID`
@@ -715,8 +900,15 @@ psql postgres://postgres:postgres@localhost:5432/orch -c 'select id, agent, stat
 ```
 
 Without `--features agent-local` the same file stops the orchestrator at startup with exit code 78 and a message naming the feature.
-To run the image with the feature: `docker build --build-arg ORCH_FEATURES=agent-local -t orchestrator orchestrator`
-(*unverified*: no Docker daemon was available when this was written).
+To run the image with the feature, the compose profile `local-agent` builds it (`ORCH_FEATURES=agent-local`, a long build) beside a Postgres of its own and serves it on
+http://127.0.0.1:8095 with `AUTH_DEV_USER=dev@example.com` and no web UI:
+
+```sh
+docker compose --profile local-agent up -d --build --wait
+BASE_URL=http://127.0.0.1:8095 AGENT_ID=echo dev/try-thread.sh "hello"
+```
+
+(*unverified*: no Docker daemon was available when this was written; the same binary was run on the host as above.) It is not part of `app`: it shares nothing with the `orchestrator` service.
 
 ### The Rust test against the mocks
 
@@ -876,3 +1068,16 @@ the `Coder E2E` workflow.
 - That `mock-openai` matches every request of a real coder and OpenCode without the upstream `models.json`,
   `chat-completions.json` and `errors.json`, which are not vendored: the "nothing unmatched" check will say.
 - That the orchestrator's delegation of a run that takes minutes stays within its own limits on the CI runner.
+
+The complete local stack (slice 13: `compose.live.yaml`, `.env.example`, the `smee` and `local-agent` profiles, `dev/e2e-all.sh`, the coder re-pin):
+
+*Verified 2026-09-30*:
+
+- **The coder pin.** `coder:sha-ae540e9@sha256:da22019e...` is the manifest digest the ghcr API returns for that tag (anonymous token); the image is one manifest (no arm64 variant). The vendored files equal `vymalo/another-adam-rs` at `ae540e929c64` (the only file of `dev/` that changed since `0e08fe07` upstream is its own `coder-e2e.sh`, which is not vendored): `dev/coder/check-vendored.sh` passes.
+- **The coder's new gate.** The real `orchestrator` binary (debug build) on Postgres 16, `dev/agents.yaml` (coder at `127.0.0.1:18090`), WireMock 3.13.2 for the mock agents, Caddy 2.11.4 running `dev/Caddyfile`, and a stand-in coder that streams the artifacts in the order adam-rs `ae540e9` documents (`checks` on the base commit, `checks` on the pushed commit, `branch`, `pull_request`, completed): `dev/coder-e2e.sh` printed `ok` for every check that does not need a Docker mock (two `checks` artifacts, the last passed on the pushed commit with a tree, the gate `ci+agent_checks`, the `agent_checks` card, one `vymalo.ci` card for `mock-ci/build` once a report for the pushed commit was posted with `ci-webhook.sh --shape github`, the thread `done`); the checks on `mock-github`, `mock-openai` and `git-server` failed, as they must without those mocks. This proves the gate and the script's `jq` paths, not the real coder's stream.
+- **`dev/e2e-all.sh`** against that stack: `verify`, `verifier`, `mcp` and `ci` passed; a second `ci` was `SKIP` (exit 77) and the summary said how to reset; `VERBOSE=1` streams; an unknown scenario and a missing stack exit 2 with a message; a failing scenario prints its tail and exits 1. `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh` is clean.
+- **`compose.live.yaml`**: `docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q` passes (Compose v5.1.1, no daemon); the merged model has the coder's environment replaced (no `ALLOW_LOCAL_REPOS`), its `depends_on` reduced to `coder-postgres`, the four mocks in the profile `offline-mocks`, the live agents file and the `.env` secrets on the orchestrator; a missing `.env` value stops `config` with the message of the `:?` form. `docker compose --profile '*' config -q` passes for `compose.yaml`.
+- **smee.** `dev/Caddyfile.smee` validates with Caddy 2.11.4, and run against the real orchestrator it answered `POST /webhooks/github` (401 without a signature, 202 with one made by `ci-webhook.sh`) and 404 to `/api/*`, `/agui/*`, `/mcp`, `/webhooks/ci` and `GET /webhooks/github`. `smee-client` 5.0.0 (npm, installed as the Dockerfile does) started through `dev/smee/entrypoint.sh` against a stand-in relay forwarded a signed `ping` through that Caddy to the orchestrator and got 204; the entrypoint exits 1 with a message for an unset or malformed `SMEE_URL`. `hadolint` is clean on `dev/smee/Dockerfile`. `dev/smee/entrypoint.sh` behaves the same under busybox 1.35 `sh` (the shell of the Alpine image): it refuses an unset or malformed `SMEE_URL` and reaches `exec smee` for a URL.
+- **`dev/agents.live.yaml`** is accepted by the orchestrator binary with the placeholder secrets of `.env.example` (5 agents, startup); so are its two documented variations, `gate: {}` and `require: [agent-checks, ci]` with `ci.required: [build]`. The base image digest and tag come from the Docker Hub registry API; the npm package version from the npm registry.
+
+*Unverified*: `docker compose up` itself (the machine that wrote this has the Compose CLI but no Docker daemon): the builds of `dev/smee/Dockerfile` and of the orchestrator with `agent-local`, the `smee` and `local-agent` profiles running, the coder container with the new image, `mock-ci` and the real `coder-e2e.sh`, and `dev/e2e-all.sh` `coder` scenarios against them (the first run is the `Coder E2E` workflow); that Compose v2.24.4 is the first release that parses `!override` (from Docker's documentation, not run on it); Claude Code against the MCP server; smee.io itself and GitHub deliveries through it (the body re-serialisation caveat above); the disk and memory estimates.

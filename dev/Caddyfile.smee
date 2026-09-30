@@ -1,0 +1,35 @@
+# The `smee-proxy` service of compose.yaml (profile `smee`): the ONLY door smee-client has to the
+# orchestrator. It is deliberately not the `edge` (dev/Caddyfile), which injects an identity
+# (X-Auth-Request-Email) into /api/* and /agui/* and authenticates nobody: what arrives from the
+# internet through smee.io must reach the webhook route and nothing else.
+#
+#   * POST /webhooks/github  ->  the orchestrator, which verifies X-Hub-Signature-256 over the body
+#                                with WEBHOOK_GITHUB_SECRETS (a bad or missing one is 401);
+#   * GET  /healthz          ->  answered here, for the compose healthcheck;
+#   * everything else        ->  404, never proxied.
+#
+# No identity header is set, and a copy the sender supplied is dropped. Nothing is published to the host.
+{
+	admin off
+	auto_https off
+}
+
+:8081 {
+	@github {
+		method POST
+		path /webhooks/github
+	}
+	handle @github {
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+		}
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}

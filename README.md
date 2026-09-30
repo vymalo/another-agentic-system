@@ -92,15 +92,17 @@ orchestrator through the edge. Component, request and state diagrams:
 [WireMock](https://wiremock.org/) stand-ins for an A2A 1.0 coding agent, and, with the `app`
 profile, the real orchestrator and chat UI behind one origin, plus the default agent, adam-coder
 ([ADR 0014](docs/decisions/0014-adam-coder-default-agent-over-a2a.md)), on scripted mocks of its
-model, GitHub and git remote. Docker with Compose v2 is all it needs; the mocks need no agent host,
-model or GitHub token. Reference and scenarios: [`dev/README.md`](dev/README.md).
+model, GitHub and git remote, and a CI stand-in. Docker with Compose v2 is all it needs; the mocks need no agent host,
+model or GitHub token. **Start with [Test it locally](dev/README.md#test-it-locally)** (prerequisites, URLs, what the chat shows, MCP,
+going live, troubleshooting); the rest of [`dev/README.md`](dev/README.md) is the reference and the scenarios.
 
 ```sh
 docker compose up -d --wait                          # postgres + mocks: nothing is built, seconds
-docker compose --profile app up -d --build --wait    # + orchestrator, web, edge, coder (first build takes minutes, the coder image is 2.9 GB)
+docker compose --profile app up --build              # the whole system (first build takes minutes, the coder image is 2.9 GB); add -d --wait to return when healthy
 open http://127.0.0.1:8080                           # the chat UI; the coder is preselected, "Mock coder" is one click away
-dev/coder-e2e.sh                                     # a chat message becomes a pull request, CI-gated (curl, jq, git)
-dev/ci-e2e.sh                                        # a gated mock agent: a signed CI report sends it back, then ends the job (curl, jq, openssl)
+dev/e2e-all.sh                                       # every scenario against the running stack, then a summary (curl, jq, git, openssl)
+dev/coder-e2e.sh                                     # or one of them: a chat message becomes a pull request, gated on the coder's checks and CI
+dev/ci-e2e.sh                                        # a gated mock agent: a signed CI report sends it back, then ends the job
 dev/try-thread.sh "add a health endpoint"            # or drive a mock thread from the terminal (curl, jq)
 dev/mcp-e2e.sh                                       # or start a job as an MCP client would, with a bearer token (curl, jq)
 docker compose --profile app down -v                 # stop and forget the database
@@ -119,7 +121,13 @@ dev/split-e2e.sh                                     # kills the worker that hol
 | default | `postgres`, `mock-agent`, `mock-agent-releases`, `mock-verifier` | 5432, 8081, 8082, 8083 |
 | `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
 | `split` | + `orchestrator-worker-1`, `orchestrator-worker-2` (dispatcher only; beside `app`, with `ORCHESTRATOR_ROLE=control-plane`) | none published |
-| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on CI and ends `done` when it has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
+| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
+| `smee` | + `smee`, `smee-proxy` (opt-in: forwards GitHub webhooks from smee.io, a third party that sees them; needs `SMEE_URL`) | none published |
+| `local-agent` | `orchestrator-local`, `local-postgres` (opt-in: the orchestrator built with `agent-local`, hosting an `echo` agent) | 8095 |
+
+To point the coder at a real model and GitHub, copy [`.env.example`](.env.example) to `.env` and add the override:
+`docker compose -f compose.yaml -f compose.live.yaml --profile app up --build` (Compose v2.24.4 or newer;
+[`dev/README.md`](dev/README.md#going-live)).
 
 The `edge` proxy replaces oauth2-proxy locally by injecting `X-Auth-Request-Email: dev@example.com`.
 It authenticates nobody; it is for a laptop, never for production.

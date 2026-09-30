@@ -1,1 +1,4 @@
 node_modules/
+
+# Local settings and secrets for compose.live.yaml (copy .env.example): never commit.
+.env

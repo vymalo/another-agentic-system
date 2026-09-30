@@ -9,10 +9,10 @@ name: Coder E2E
 # journals and the pushed branch.
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
-#   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run the script twice
-#              (with OpenCode, then NO_OPENCODE=1), run dev/mcp-e2e.sh (an MCP client through the edge), then restart the orchestrator as a control plane
-#              beside two workers (profile `split`) and run dev/split-e2e.sh, which SIGKILLs the
-#              worker that holds a task (ADR 0015)
+#   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run dev/e2e-all.sh (every scenario: the coder
+#              twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through the edge, the
+#              CI webhook), then restart the orchestrator as a control plane beside two workers (profile `split`) and run
+#              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
 #
 # The path filters are broad on purpose: a change to the orchestrator, the web UI, the API contract
 # or the dev stack must meet the coder. Path filters mean this check must not be made "required"
@@ -22,6 +22,8 @@ on:
   pull_request:
     paths:
       - "compose.yaml"
+      - "compose.live.yaml"
+      - ".env.example"
       - "dev/**"
       - "orchestrator/**"
       - "web/**"
@@ -31,6 +33,8 @@ on:
     branches: [main]
     paths:
       - "compose.yaml"
+      - "compose.live.yaml"
+      - ".env.example"
       - "dev/**"
       - "orchestrator/**"
       - "web/**"
@@ -100,25 +104,17 @@ jobs:
           docker compose build git-server mock-ci
       - name: Start the stack
         run: docker compose up -d --no-build --wait --wait-timeout 600
-      - name: A chat message becomes a pull request (OpenCode makes the change)
-        run: dev/coder-e2e.sh
-      - name: The same without OpenCode (the check command makes the change)
-        run: NO_OPENCODE=1 dev/coder-e2e.sh
-      - name: The verification gate (a failing check sends the agent back, then it passes; a run may not weaken the gate)
-        # The mock agent behind `mock-coder-gated` (dev/agents.yaml), not the coder: the gate is the
-        # orchestrator's, so a scripted agent that reports failing and then passing checks is enough.
-        run: dev/verify-e2e.sh
-      - name: An MCP client starts a job and follows it to done (bearer token, no identity header)
-        run: dev/mcp-e2e.sh
-      - name: The verifier agent of the gate (findings send the agent back, then the verifier passes it; a run may not choose or drop the verifier)
-        # The mock agent behind `mock-coder-verified` and the WireMock `verifier` (dev/agents.yaml), not the
-        # coder: the gate and the verification are the orchestrator's, so scripted agents are enough. The
-        # script also reads the mock verifier's request journal, to see what the orchestrator really sent it.
-        run: dev/verifier-e2e.sh
-      - name: The CI gate (a signed webhook report sends the agent back, then ends the job)
-        # `mock-coder-ci` (dev/agents.yaml) under `gate: {require: [ci]}`; dev/ci-webhook.sh plays the CI
-        # system through the edge's /webhooks/* (no identity) to POST /webhooks/ci (ADR 0017).
-        run: dev/ci-e2e.sh
+      - name: Every scenario of the local stack (dev/e2e-all.sh)
+        # The command the README gives an owner, so it is what CI runs: chat -> coder -> branch -> mock-ci -> green -> pull
+        # request (OpenCode, then the check command alone), red once -> sent back -> green and red always -> failed (the mock
+        # agent behind `mock-coder-gated`, which a run may not weaken), the verifier's findings -> rework -> pass
+        # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
+        # agent back and then ends the job (`mock-coder-ci`, dev/ci-webhook.sh through the edge's /webhooks/*).
+        # The gates are the orchestrator's, so scripted agents are enough for all but the first two; the script also reads the mock
+        # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
+        env:
+          VERBOSE: "1"
+        run: dev/e2e-all.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.

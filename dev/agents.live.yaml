@@ -1,0 +1,53 @@
+# AGENTS_FILE of the `orchestrator` service when compose.live.yaml is in use (dev/README.md, "Going live"):
+# the coder, pointed at a real model and a real GitHub, and the scripted agents beside it, which still
+# run on the WireMock mocks of the default profile.
+#
+# It differs from dev/agents.yaml in one thing, the coder's gate. There the coder waits for `mock-ci/build`,
+# a check only the local `mock-ci` reports, and with no `mock-ci` running a live job would wait for it until
+# the CI deadline and end blocked. Here the coder is gated on its own checks only:
+#
+#   * `agent-checks`: the coder runs the checks of the repository (`run_checks`) and reports them as a `checks`
+#     artifact bound to the commit it pushed. A job is done when they passed on that commit. A model that
+#     skips `run_checks` is sent back with "no checks reported", three attempts in all; to accept such a
+#     coder, empty the gate (`gate: {}`; an agent with no gate is done when it says so).
+#   * `ci`, opt-in: add it once the repository's GitHub webhook reaches the orchestrator (smee, dev/README.md)
+#     AND you know the exact NAME of the check run that counts (GitHub shows it on the pull request, for
+#     example `build` or `ci / test`). A gate that requires `ci` must name it, or the orchestrator refuses
+#     to start:
+#
+#       gate:
+#         require: [agent-checks, ci]
+#         ci:
+#           required: [build]     # the name of the check run, exactly as GitHub spells it
+#
+#     The repository in the agent's `branch` artifact must be the repository the webhook reports, as
+#     `owner/name` (the orchestrator compares them spelling-insensitively; docs/api/webhooks.md).
+#
+# The token is CODER_A2A_TOKEN from .env.
+- id: coder
+  name: Coder
+  cardUrl: http://coder:8080/.well-known/agent-card.json
+  tokenEnv: CODER_A2A_TOKEN
+  gate:
+    require: [agent-checks]
+- id: mock-coder
+  name: Mock coder
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-coder-gated
+  name: Mock coder (gated)
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  gate:
+    require: [agent-checks]
+- id: verifier
+  name: Mock verifier
+  cardUrl: http://mock-verifier:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-coder-verified
+  name: Mock coder (verified)
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  gate:
+    require: [verifier]
+    verifier: verifier

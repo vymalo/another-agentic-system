@@ -30,6 +30,7 @@
 #      short sha, link, summary).
 #
 # Environment (all optional):
+#   CI_E2E_FORCE  1 = run even when this database has run the script before
 #   BASE_URL    where the API and the webhook are served  (default http://127.0.0.1:8080, the compose `edge`)
 #   AGENT_ID    the CI-gated agent                        (default mock-coder-ci)
 #   AUTH_EMAIL  X-Auth-Request-Email to send              (default dev@example.com; the edge sets it anyway)
@@ -37,9 +38,12 @@
 #
 # The mock pushes the same two commits every time, and a commit is watched by the first job that pushed
 # it, so the script passes once per database: start from a fresh stack (`docker compose down -v`) to run
-# it again. (Real agents push new commits; ADR 0016, open question 30.)
+# it again. (Real agents push new commits; ADR 0016, open question 30.) A second run is recognised at the
+# start, by a thread of the user, on this agent, that already pushed one of the two commits, and is SKIPPED (exit status 77,
+# with the command that resets the stack) instead of failing on a report that goes to the first job;
+# CI_E2E_FORCE=1 runs anyway.
 #
-# Exit status: 0 when every assertion holds, 1 otherwise. Needs: curl, jq, openssl (and /proc or
+# Exit status: 0 when every assertion holds, 1 otherwise, 77 when it was skipped for the reason above. Needs: curl, jq, openssl (and /proc or
 # uuidgen for a UUID).
 set -eu
 
@@ -99,6 +103,16 @@ wait_for() {
 echo "== the agent is there, gated on ci"
 agents=$(api /api/agents | jq -r --arg id "$AGENT_ID" '[.[].id] | index($id) != null')
 expect "GET /api/agents lists $AGENT_ID" "$agents" "true"
+
+echo "== this database has not run the script before"
+used=$(api "/api/threads?limit=100" | jq -r --arg agent "$AGENT_ID" --arg a "$FIRST" --arg b "$SECOND" '[.[] | select(.target.agentId == $agent and (.job.sha == $a or .job.sha == $b))] | length' 2>/dev/null || echo 0)
+if [ "${used:-0}" != 0 ] && [ "${CI_E2E_FORCE:-}" != 1 ]; then
+  echo "SKIP  a thread of $AGENT_ID in this database already pushed one of the two commits this script reports on, and a commit belongs to the first job that pushed it." >&2
+  echo "      Reset the stack to run it again: docker compose --profile app down -v && docker compose --profile app up -d --build --wait" >&2
+  echo "      (CI_E2E_FORCE=1 runs it anyway; expect the first wait to time out.)" >&2
+  exit 77
+fi
+echo "ok    no earlier thread pushed those commits"
 
 echo "== a delivery that is not signed by the secret is refused"
 expect "a wrong secret is 401" "$(ci --sha "$FIRST" --secret not-the-secret --expect 401 | cut -d' ' -f1-2)" "HTTP 401"
