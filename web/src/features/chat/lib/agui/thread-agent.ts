@@ -220,11 +220,16 @@ export class ThreadAgent extends AbstractAgent {
     void this.connectLoop(this.connectAbort.signal);
   }
 
-  /** Stop following (unmount, or nothing left to follow). A later `start()` resumes from the cursor. */
+  /**
+   * Stop following (unmount, or nothing left to follow). A later `start()` resumes from the cursor.
+   *
+   * A send in flight is left alone: it is the runtime's run, which only `abortRun()` truncates.
+   * The connect stream can deliver a run whole, and the page pause on its `Done`, before the
+   * POST's own `RUN_STARTED` arrives; aborting the POST then would drop the reply it already holds.
+   */
   stop() {
     this.started = false;
     this.connectAbort?.abort();
-    this.posting?.abort();
   }
 
   private async connectLoop(signal: AbortSignal) {

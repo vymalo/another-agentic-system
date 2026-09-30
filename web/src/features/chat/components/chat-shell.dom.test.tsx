@@ -29,6 +29,8 @@ const RealRequest = globalThis.Request;
 let calls: string[] = [];
 /** Answer this request (by `METHOD path`) with a problem instead of asking the mock. */
 let failing: { key: string; status: number; detail: string } | undefined;
+/** Hand the app this request's response (by `METHOD path`) only once `until` resolves. */
+let holding: { key: string; until: Promise<void> } | undefined;
 
 beforeAll(async () => {
   configure({ asyncUtilTimeout: 10_000 }); // the app and a mock server share the cores with other suites
@@ -65,6 +67,7 @@ beforeAll(async () => {
     }
     const res = await realFetch(abs(input) as RequestInfo, init);
     calls.push(`${key} ${res.status}`);
+    if (holding && key === holding.key) await holding.until;
     return res;
   }) as typeof fetch;
   // the API client binds fetch and Request when it is created: import the app after the patch
@@ -79,6 +82,7 @@ afterAll(async () => {
 beforeEach(() => {
   calls = [];
   failing = undefined;
+  holding = undefined;
   push.mockClear();
 });
 afterEach(cleanup);
@@ -195,6 +199,31 @@ describe("ChatShell over AG-UI", () => {
     expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
       "POST /agui/agents/coder 200",
     ]);
+  });
+
+  it("an answer whose run the connect stream finishes before the POST answers still shows its reply", async () => {
+    // The orchestrator's order: the run happens (and the connect stream shows it, to Done) while
+    // the POST's own RUN_STARTED is still on its way. The finished thread pauses the connect
+    // stream; that pause must not take the send, whose events are already here, with it.
+    const id = await makeThread("ask pick a branch");
+    shell(id);
+    await screen.findByText("Which branch?");
+    let release = () => {};
+    holding = {
+      key: "POST /agui/agents/coder",
+      until: new Promise<void>((r) => {
+        release = r;
+      }),
+    };
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "main" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    await new Promise((r) => setTimeout(r, 50)); // the paused stream has let go
+    release();
+    const transcript = within(log());
+    await waitFor(() => expect(transcript.getAllByText("answered: main")).toHaveLength(1));
+    expect(transcript.getAllByText("main")).toHaveLength(1);
   });
 
   it("a refused send shows the problem, keeps the text and leaves no message behind", async () => {

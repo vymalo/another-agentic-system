@@ -96,7 +96,9 @@ stateDiagram-v2
   goes to that `run()`, any other becomes an `ExternalRun`. `run(input)` is the POST, accepted at
   `RUN_STARTED`. `abortRun()` only detaches (the runtime calls it on unmount and on thread switches,
   and a consumer that leaves has a truncated run, not a cancelled one); `cancel()` is the cancel
-  endpoint. The runtime drops an event's `metadata`, so the agent moves `vymalo.actor` into the
+  endpoint. `stop()` (unmount, or the pause once the thread is finished) ends the connect stream
+  only, never a send in flight: the connect stream can deliver a run to its end, and the page pause,
+  before the POST's own `RUN_STARTED` arrives, and that run's reply is already in the agent. The runtime drops an event's `metadata`, so the agent moves `vymalo.actor` into the
   activity content and a marker part.
 - **`LiveRuns`** (`live-runs.ts`, mounted in the shell) applies each external run through the
   runtime's public API only: it appends the run's user message, starts a run, and `ThreadAgent.adopt`
