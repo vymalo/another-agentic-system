@@ -2,7 +2,7 @@
 //! Everything here is a function of the thread record and its event log.
 
 use orch_app::{App, AppError};
-use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadId, ThreadRecord, UserId};
+use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadRecord, UserId};
 use orch_ports::Ports;
 use serde::Serialize;
 
@@ -261,7 +261,7 @@ pub fn summary_of(thread: &ThreadRecord, pull_request: Option<PullRequest>) -> J
 #[allow(clippy::unwrap_used)]
 mod tests {
     use orch_core::{
-        AgentId, AgentTarget, CheckResult, GatePolicy, Hold, Job, PushedRef, ThreadState,
+        AgentId, AgentTarget, CheckResult, GatePolicy, Hold, Job, PushedRef, ThreadId, ThreadState,
     };
 
     use super::*;
