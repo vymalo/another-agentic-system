@@ -1,4 +1,4 @@
-//! The generic CI webhook end to end, on both stores, with a clock the test holds: a signed
+//! The CI webhooks end to end, on both stores, with a clock the test holds: a signed
 //! report goes through the real HTTP route, the inbox and the worker to the pure core, and the
 //! job ends where the gate says.
 //!
@@ -7,7 +7,9 @@
 //! * a red report sends the agent back to work (attempt 2, with the findings), and the green one
 //!   for the new commit finishes the job;
 //! * with no report the deadline comes due, the thread is blocked with `ci_timeout`, and no
-//!   attempt is spent.
+//!   attempt is spent;
+//! * GitHub's own deliveries (`POST /webhooks/github`, the synthetic payloads of
+//!   `orch-surface-webhook`'s `testdata`) do the same through the same inbox.
 //!
 //! The agent is played through `App::apply` (the fake agent would only get in the way) and the
 //! inbox worker is driven one `tick` at a time, so nothing here waits or races: time is the
@@ -30,7 +32,8 @@ use orch_ports::memory::{FixedClock, MemoryStore, MemoryWakeup, ScriptedAgent, S
 use orch_ports::{AgentEndpoint, InboxStatus, PortSet, Ports as _, ThreadStore, Wakeup};
 use orch_store_postgres::{PgStore, PgWakeup};
 use orch_surface_webhook::signature::sign_generic;
-use orch_surface_webhook::{GenericConfig, Secrets, generic};
+use orch_surface_webhook::signature::sign_github;
+use orch_surface_webhook::{GenericConfig, GithubConfig, Secrets, generic, github};
 use orch_testsupport::fake::{VERIFY_REPOSITORY, verify_commit};
 use serde_json::{Value, json};
 
@@ -131,10 +134,16 @@ async fn rig<S: ThreadStore, W: Wakeup>(
     let router = router_with_surfaces(
         Arc::clone(&app),
         ApiConfig::default(),
-        vec![generic::routes(
-            Arc::clone(&app),
-            GenericConfig::new(Secrets::parse(SECRET).unwrap()),
-        )],
+        vec![
+            generic::routes(
+                Arc::clone(&app),
+                GenericConfig::new(Secrets::parse(SECRET).unwrap()),
+            ),
+            github::routes(
+                Arc::clone(&app),
+                GithubConfig::new(Secrets::parse(SECRET).unwrap()),
+            ),
+        ],
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -230,6 +239,26 @@ impl<S: ThreadStore, W: Wakeup> Rig<S, W> {
             .as_u16()
     }
 
+    /// POSTs a GitHub delivery of `event`, signed as GitHub signs (the raw body), under
+    /// `delivery`. Returns the status.
+    async fn post_github(&self, event: &str, delivery: u128, body: &Value) -> u16 {
+        let body = body.to_string();
+        self.client
+            .post(format!("{}/webhooks/github", self.base))
+            .header("X-GitHub-Event", event)
+            .header("X-GitHub-Delivery", uuid_of(delivery))
+            .header(
+                "X-Hub-Signature-256",
+                sign_github(SECRET, body.as_bytes()).unwrap(),
+            )
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
     /// Runs the inbox worker until a pass claims nothing.
     async fn drain(&self) {
         while self.worker.tick().await > 0 {}
@@ -277,6 +306,21 @@ impl<S: ThreadStore, W: Wakeup> Rig<S, W> {
         self.app.list_events(&alice(), id, 0, 500).await.unwrap()
     }
 
+    async fn row_status_of(
+        &self,
+        source: &str,
+        prefix: &str,
+        delivery: u128,
+    ) -> Option<InboxStatus> {
+        self.app
+            .ports()
+            .store()
+            .find_inbox(source, &format!("{prefix}{}", uuid_of(delivery)))
+            .await
+            .unwrap()
+            .map(|row| row.status)
+    }
+
     async fn row_status(&self, delivery: u128) -> Option<InboxStatus> {
         self.app
             .ports()
@@ -291,6 +335,27 @@ impl<S: ThreadStore, W: Wakeup> Rig<S, W> {
 /// A delivery id: the UUID with `n` in its low bytes.
 fn uuid_of(n: u128) -> String {
     uuid::Uuid::from_u128(0x0195_c1a2_7b3e_7c11_8f2a_0000_0000_0000 | n).to_string()
+}
+
+/// The synthetic GitHub payload `file` (`orch-surface-webhook/testdata/github`), made about
+/// `commit` in the repository the fake agent pushes to.
+fn github_payload(file: &str, commit: &str, edit: impl FnOnce(&mut Value)) -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../surface-webhook/testdata/github")
+        .join(format!("{file}.json"));
+    let mut v: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    v["repository"]["html_url"] = json!("https://github.com/acme/demo");
+    for pointer in [
+        "/check_suite/head_sha",
+        "/check_run/head_sha",
+        "/workflow_run/head_sha",
+    ] {
+        if let Some(sha) = v.pointer_mut(pointer) {
+            *sha = json!(commit);
+        }
+    }
+    edit(&mut v);
+    v
 }
 
 fn cards(events: &[Event]) -> Vec<&orch_core::CiReport> {
@@ -485,6 +550,66 @@ async fn a_ci_deadline_blocks_the_thread<S: ThreadStore, W: Wakeup>(rig: Rig<S, 
     assert_eq!(cards(&rig.events(thread.id).await).len(), 1);
 }
 
+/// GitHub's own deliveries through the same path: a failed `check_run` for the pushed commit
+/// sends the agent back (the report's summary is in the findings, as text), a `check_suite` for
+/// another commit changes nothing, a `workflow_run` for the new commit that succeeded ends the
+/// job, and a `push` event is acknowledged and stores nothing.
+async fn github_deliveries_send_the_agent_back_and_end_the_job<S: ThreadStore, W: Wakeup>(
+    rig: Rig<S, W>,
+) {
+    let thread = rig.create().await;
+    let first = verify_commit(1);
+    let second = verify_commit(2);
+    rig.agent(thread.id, pushed(&first)).await;
+    rig.agent(thread.id, completed()).await;
+    assert_eq!(rig.thread(thread.id).await.state, ThreadState::Verifying);
+
+    let red = github_payload("check_run.completed.failure", &first, |_| {});
+    assert_eq!(rig.post_github("check_run", 1, &red).await, 202);
+    rig.drain().await;
+    let record = rig.thread(thread.id).await;
+    assert_eq!((record.state, record.job.attempt), (ThreadState::Queued, 2));
+    let events = rig.events(thread.id).await;
+    let rework = events
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::Rework(data) => Some(data.clone()),
+            _ => None,
+        })
+        .expect("a rework event");
+    assert!(
+        rework.findings[0]
+            .findings
+            .iter()
+            .any(|f| f.contains("build") && f.contains("2 tests failed")),
+        "{:?}",
+        rework.findings
+    );
+    let card = cards(&events);
+    assert_eq!(card[0].provider, orch_core::CiProvider::Github);
+    assert_eq!(card[0].repository, "github.com/acme/demo");
+
+    rig.agent(thread.id, pushed(&second)).await;
+    rig.agent(thread.id, completed()).await;
+    let old = github_payload("check_suite.completed.success", &first, |_| {});
+    assert_eq!(rig.post_github("check_suite", 2, &old).await, 202);
+    let push = json!({"ref": "refs/heads/agent/fix", "after": second});
+    assert_eq!(rig.post_github("push", 3, &push).await, 202);
+    rig.drain().await;
+    assert_eq!(rig.thread(thread.id).await.state, ThreadState::Verifying);
+    assert_eq!(
+        rig.row_status_of("github", "github:", 3).await,
+        None,
+        "a push is not stored"
+    );
+
+    let green = github_payload("workflow_run.completed.success", &second, |_| {});
+    assert_eq!(rig.post_github("workflow_run", 4, &green).await, 202);
+    rig.drain().await;
+    assert_eq!(rig.thread(thread.id).await.state, ThreadState::Done);
+    assert_eq!(cards(&rig.events(thread.id).await).len(), 3);
+}
+
 /// A refused delivery reaches neither the inbox nor a thread.
 async fn a_refused_delivery_changes_nothing<S: ThreadStore, W: Wakeup>(rig: Rig<S, W>) {
     let thread = rig.create().await;
@@ -533,5 +658,6 @@ backends!(
     a_report_received_before_its_watch_is_parked_then_matched_and_the_job_is_done,
     a_red_report_reworks_and_the_green_one_for_the_new_commit_finishes,
     a_ci_deadline_blocks_the_thread,
+    github_deliveries_send_the_agent_back_and_end_the_job,
     a_refused_delivery_changes_nothing,
 );

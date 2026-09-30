@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The webhook interaction surfaces: signed CI reports (POST /webhooks/ci, generic HMAC over the timestamp and body) become inbox rows. Machine routes, mounted by ORCH_SURFACES=webhook-generic."
+description = "The webhook interaction surfaces: signed CI reports (POST /webhooks/ci, generic HMAC over the timestamp and body; POST /webhooks/github, GitHub check_suite, check_run and workflow_run) become inbox rows. Machine routes, mounted by ORCH_SURFACES=webhook-generic and webhook-github."
 readme = "README.md"
 
 [dependencies]

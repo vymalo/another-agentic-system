@@ -17,6 +17,9 @@
 #   * the run stream ends with RUN_FINISHED (success), and the thread ends `done` within TIMEOUT;
 #   * the thread's AG-UI frames (GET /agui/threads/{id}/connect?mode=run) carry the `branch` and
 #     `pull_request` artifacts (`vymalo.artifact` activities; their JSON is in `content.text`);
+#   * the coder is gated on CI (dev/agents.yaml, ADR 0017): the thread's job has the gate `ci`, and the chat
+#     shows exactly one `vymalo.ci` card, from `mock-ci`, `success`, for the pushed commit (the thread ends
+#     `done` only after mock-ci reported it through the edge and the orchestrator's GitHub webhook);
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
 #   * git-server has the branch, and hello.txt on it is `hello`.
@@ -167,6 +170,18 @@ if [ -n "$branch" ] && [ "$pr_branch" = "$branch" ]; then
   ok "the pull request is for the pushed branch"
 else
   bad "the pull_request branch '$pr_branch' is not the pushed branch '$branch'"
+fi
+
+# --- CI (ADR 0017) --------------------------------------------------------------------------------
+# mock-ci polls git-server and posts a signed check_suite for the pushed commit; the gate waited for it.
+gate=$(api GET "/api/threads/$thread" 2>/dev/null | jq -r '(.job.gate // []) | join("+")' || true)
+if [ "$gate" = ci ]; then ok "the job runs under the gate ci"; else bad "the job's gate is '${gate:-none}', want ci"; fi
+ci_cards=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci")
+  | "\(.content.name)=\(.content.conclusion)@\(.content.sha)"] | join(" ")' "$events" 2>/dev/null || true)
+if [ -n "$commit" ] && [ "$ci_cards" = "mock-ci=success@$commit" ]; then
+  ok "one vymalo.ci card: mock-ci succeeded on the pushed commit"
+else
+  bad "the vymalo.ci cards are '${ci_cards:-none}', want exactly mock-ci=success@${commit:-<commit>}"
 fi
 
 # --- mock-github's journal ------------------------------------------------------------------

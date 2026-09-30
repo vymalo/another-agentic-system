@@ -60,8 +60,9 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `INBOX_MAX_ATTEMPTS` | `10` | at least 1; claims of one inbox row before it is dead-lettered (a row claimed more often without being finished is dead-lettered undelivered; claims handed back at shutdown or ended by a park are not counted) |
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
-| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them: `agui`, `mcp`, `webhook-generic`; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
+| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them: `agui`, `mcp`, `webhook-generic`, `webhook-github`; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
 | `WEBHOOK_GENERIC_SECRETS` | none | one or two comma-separated shared secrets of `POST /webhooks/ci` (`--webhook-generic-secrets`; a signature by either is good, so a secret can be rotated). **Required when a role that serves routes (`all`, `control-plane`) mounts `webhook-generic`** (exit 78); a third secret is a startup error; never logged, and hidden in `--help` |
+| `WEBHOOK_GITHUB_SECRETS` | none | one or two comma-separated secrets of `POST /webhooks/github` (`--webhook-github-secrets`); **required when a role that serves routes mounts `webhook-github`** (exit 78), a third secret is a startup error; never logged, hidden in `--help` |
 | `WEBHOOK_GENERIC_MAX_SKEW_SECS` | `300` | at least 1; how far `X-Vymalo-Timestamp` may be from the clock, either way (`--webhook-generic-max-skew-secs`) |
 | `ORCH_CI_TIMEOUT_SECS` | `3600` | at least 1; how long a job waits for the CI reports its gate needs before it is blocked with `ci_timeout` (no attempt is used); an `AGENTS_FILE` entry's `gate.ci.timeoutSecs` overrides it (`--ci-timeout-secs`) |
 | `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **`ci` and `agent-checks` are accepted by this build** (`ci` since slice 6; it needs reports, so mount `webhook-generic`); `verifier` is a startup error (78) naming the slice that enables it |
@@ -172,7 +173,7 @@ noted in `src/main.rs`.
 |---|---|---|
 | `surface-agui` | yes | [`orch-surface-agui`](../../crates/surface-agui/README.md), the surface name `agui` |
 | `surface-mcp` | yes | [`orch-surface-mcp`](../../crates/surface-mcp/README.md), the surface name `mcp` ([ADR 0019](../../../docs/decisions/0019-mcp-server-over-streamable-http.md)). On by default like `surface-agui`, so the image has it; it is mounted only when `ORCH_SURFACES` names it |
-| `surface-webhook` | yes | [`orch-surface-webhook`](../../crates/surface-webhook/README.md), the surface name `webhook-generic` (`POST /webhooks/ci`); `webhook-github` joins it in slice 9 |
+| `surface-webhook` | yes | [`orch-surface-webhook`](../../crates/surface-webhook/README.md), the surface names `webhook-generic` (`POST /webhooks/ci`) and `webhook-github` (`POST /webhooks/github`) |
 | `agent-local` | **no** | [`orch-agent-adam`](../../crates/agent-adam/README.md) and the adam-rs runtime: `transport: local` agents run in this process ([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)); the variable `AGENT_LOCAL_CONCURRENCY` |
 
 The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
@@ -199,6 +200,7 @@ The resource API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`
 | unset, or `agui` (the default) | the AG-UI routes: `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect`, `GET /agui/agents/{agentId}/capabilities` |
 | `agui,mcp` | and the MCP server at `/mcp`: a **machine route** outside the identity layer, guarded by `Authorization: Bearer <token>`; needs `MCP_TOKENS_FILE` and `MCP_ALLOWED_HOSTS` (a missing piece is exit 78 before anything connects) |
 | `webhook-generic` (with `WEBHOOK_GENERIC_SECRETS`) | `POST /webhooks/ci`: a signed CI report, a **machine route**: no user identity (it never reads `X-Auth-Request-Email`), guarded by an HMAC-SHA-256 over `"<timestamp>.<body>"`. The edge must pass `/webhooks/*` to the orchestrator without injecting an identity ([`api/webhooks.md`](../../../docs/api/webhooks.md)) |
+| `webhook-github` (with `WEBHOOK_GITHUB_SECRETS`) | `POST /webhooks/github`: GitHub's `check_run` and `workflow_run` deliveries (`completed` only; `ping` is 204, every other event is 202 and ignored), a **machine route** guarded by `X-Hub-Signature-256` over the raw body |
 
 That is the whole list. The legacy chat API interaction routes (`POST /api/threads`,
 `POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`, `GET /api/threads/{id}/stream`),
@@ -228,7 +230,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
 ## Tests
 
 * Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the variables, `ci`
-  accepted and `ORCH_CI_TIMEOUT_SECS` read (and overridden by a target's `ci.timeoutSecs`), the webhook: mounted by name with its secrets, a mounted route without secrets refused (a worker need not have them), the count, the skew and the redaction of the secrets, its feature off; the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
+  accepted and `ORCH_CI_TIMEOUT_SECS` read (and overridden by a target's `ci.timeoutSecs`), the webhook: mounted by name with its secrets (both webhooks), a mounted route without secrets refused (a worker need not have them), the count, the skew and the redaction of the secrets, its feature off; the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
   `ORCH_VERIFIER_TIMEOUT_SECS` (a missing or unknown verifier, a self-verifying one, a bad timeout refused), strict parsing of `gate:`, a
   target that weakens the deployment or exceeds the cap; defaults, the
   environment/flag mapping, unknown, empty and repeated surfaces, the removed

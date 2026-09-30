@@ -6,11 +6,10 @@ that a named check finished with a conclusion, for a commit in a repository. The
 matches it to the job that pushed that commit and lets the gate decide
 ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)).
 
-> Status (2026-09-30): the **generic route is built** (MVP slice 6; `orch-surface-webhook`, the surface name
-> `webhook-generic`). The **GitHub adapter is planned** (slice 9,
-> [`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)): this page is the contract it is built to, and the binary
-> does not know the name `webhook-github` yet. Facts about GitHub are marked *verified* with a date and a source, or
-> *unverified*.
+> Status (2026-09-30): **both routes are built** (MVP slices 6 and 9; `orch-surface-webhook`, the surface names
+> `webhook-generic` and `webhook-github`). The GitHub adapter was built against **synthetic** payloads shaped after
+> GitHub's documented schemas, not recorded deliveries (see [Verified and unverified](#verified-and-unverified-2026-09-30)).
+> Facts about GitHub are marked *verified* with a date and a source, or *unverified*.
 
 ## Routes
 
@@ -143,8 +142,8 @@ curl -sS -i https://orchestrator.example.com/webhooks/ci \
 
 `--data-binary` sends the bytes exactly as they are signed; `-d` would strip newlines. Expect
 `202`. Change one byte of the body, or send an old timestamp, and expect `401` and no stored
-report. The dev script [`dev/ci-webhook.sh`](../../dev/ci-webhook.sh) does this (the generic shape now, the
-GitHub shape with slice 9), and `dev/ci-e2e.sh` uses it to drive a gated job to `done`.
+report. The dev script [`dev/ci-webhook.sh`](../../dev/ci-webhook.sh) does this for either shape, and `dev/ci-e2e.sh`
+uses it to drive a gated job to `done`.
 
 ### Known-answer vectors
 
@@ -185,7 +184,10 @@ printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1
 ```
 
 (That body is the generic shape; it is used here only to show the computation. GitHub signs its own
-payloads.)
+payloads.) GitHub's own documented vector, *verified 2026-09-30*
+(<https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>): secret `It's a Secret to Everybody`,
+payload `Hello, World!` (no newline) gives
+`sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17`. Both are unit tests of `signature.rs`.
 
 ### Events accepted
 
@@ -201,19 +203,29 @@ from the payload; nothing else is trusted.
 All three normalise to the same report as the generic body: `repository` from
 `repository.html_url`, `sha` from `head_sha`, `branch` from `head_branch`, then `name`,
 `conclusion`, `url`, `summary`. Conclusions use the closed list above; a value outside it (or a
-missing one) counts as `failure`, so an unknown outcome never passes. Which field feeds `summary`
-and `url` for each event is fixed by the recorded fixtures of slice 9; where the payload has none,
-the member is absent.
+missing one) counts as `failure`, so an unknown outcome never passes. As built (slice 9):
+
+| Member | `check_suite` | `check_run` | `workflow_run` |
+|---|---|---|---|
+| `name` | `app.slug` (required) | `name` (required) | `name`; `workflow` when it is `null` or blank (the REST schema allows `null`) |
+| `branch` | `head_branch` (may be `null`: absent) | `check_suite.head_branch` | `head_branch` |
+| `url` | none: a suite has no page of its own in the payload | `html_url`, if `http(s)` | `html_url`, if `http(s)` |
+| `summary` | none | `output.summary`, cut to 16 KiB, absent when blank | none |
+
+`startup_failure`, which GitHub can report for a workflow run that could not start, is kept as its own conclusion (it
+fails); any other value outside the list, and `null`, is `failure`. `X-GitHub-Event` and `X-GitHub-Delivery` are read
+after the signature is good: a missing event is `400`, and an event that would be stored without a delivery id is `400`.
+Only `X-Hub-Signature-256` decides `401`. An event this page does not list is `202` whatever its body (it is not parsed).
 
 ### Response codes
 
 | Code | When | Stored? |
 |---|---|---|
 | `202 Accepted` | A `check_suite`, `check_run` or `workflow_run` with `action` = `completed`, validly signed. Also a repeated `X-GitHub-Delivery`, and any other event or action (those are acknowledged so GitHub does not retry or flag them) | Only the first kind, once |
-| `204 No Content` | `ping` (sent when the webhook is created) | No |
+| `204 No Content` | `ping` (sent when the webhook is created), validly signed. Not parsed | No |
 | `401 Unauthorized` | `X-Hub-Signature-256` missing, or matching no configured secret | No |
 | `413 Content Too Large` | The body is over 5 MiB | No |
-| `400 Bad Request` | Validly signed, but not JSON, or an accepted event without the fields above. An RFC 9457 problem | No |
+| `400 Bad Request` | Validly signed, but no `X-GitHub-Event`; or an accepted event that is not JSON, has no `action`, lacks a member it is read from (`repository.html_url`, the commit, the check's name, an app slug), or has no `X-GitHub-Delivery`. An RFC 9457 problem | No |
 
 GitHub expects a `2xx` within 10 seconds; the route stores the report and answers, and the worker
 does the rest, so a busy orchestrator does not turn into failed deliveries.
@@ -230,6 +242,15 @@ does the rest, so a busy orchestrator does not turn into failed deliveries.
   `skipped`, `timed_out`, `action_required`, `stale`. <https://docs.github.com/en/rest/checks/runs>
 - *Verified in the REST schemas* (check suites, workflow runs): `head_sha`, `head_branch`,
   `conclusion`, `repository.html_url`.
-- *Unverified*: that the webhook payloads carry these fields identically to the REST schemas, and
-  the exact members for `url` and `summary` per event. Slice 9 records real deliveries as fixtures
-  and this page is corrected to match them.
+- *Verified 2026-09-30* (the REST page for workflow runs, <https://docs.github.com/en/rest/actions/workflow-runs>):
+  `html_url`, `head_sha` and `head_branch` (string or null), `name` (string or null) and `conclusion` (string or null) of
+  a workflow run; it lists no values for `conclusion`, and `startup_failure` appears nowhere on it.
+- *Verified 2026-09-30* (<https://docs.github.com/en/webhooks/webhook-events-and-payloads>): the `ping` payload has
+  `zen`, `hook_id` and `hook`; the `workflow_run` payload has `workflow` and `workflow_run`. The same page names
+  `check_suite` and `check_run` as objects and documents **none of their members**.
+- *Unverified*: that the webhook payloads carry the members read above identically to the REST schemas, for all three
+  events (`check_suite.app.slug`, `check_run.output.summary` and `check_run.check_suite.head_branch` are not on any page
+  read), that GitHub sends `startup_failure`, and the `null`s the fixtures assume. **Slice 9 could not record real
+  deliveries**: the fixtures in `orchestrator/crates/surface-webhook/testdata/github` are *synthetic*, written by hand
+  after the documented schemas (their README says so). Recording a few (GitHub's "Recent Deliveries" shows the payload)
+  and replacing the files is the check that settles this; the route's tests then say what differs.

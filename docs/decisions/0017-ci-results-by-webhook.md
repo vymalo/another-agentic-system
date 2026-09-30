@@ -1,8 +1,9 @@
 # ADR 0017 — CI results by webhook: GitHub and a generic signed shape
 
-- **Status:** accepted (2026-09-30). **Built:** MVP slice 6 (the generic route, `SurfaceRoutes::machine`, the CI
-  source in the gate), 2026-09-30; see [Built (slice 6)](#built-slice-6). **Built:** slice 7 (the AG-UI card), 2026-09-30; see
-  [Built (slice 7)](#built-slice-7). **Planned, not built:** slice 8 (the web's card) and 9 (the GitHub adapter) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
+- **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 6 (the generic route,
+  `SurfaceRoutes::machine`, the CI source in the gate), slice 7 (the AG-UI card) and slice 9 (the GitHub adapter);
+  see [Built (slice 6)](#built-slice-6), [Built (slice 7)](#built-slice-7) and [Built (slice 9)](#built-slice-9).
+  **Planned, not built:** slice 8 (the web's card) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
   [`api/webhooks.md`](../api/webhooks.md).
@@ -144,8 +145,7 @@ stateDiagram-v2
 
 *2026-09-30.* The generic route, `SurfaceRoutes::machine`, the CI source of the gate and `ORCH_CI_TIMEOUT_SECS` are
 built and checked against the code (`orchestrator/crates/surface-webhook`, `api`, `app`, `core`; the binary). The
-GitHub route (`webhook-github`, `POST /webhooks/github`) is slice 9 and is not mounted: `webhook-github` is not yet a
-name `ORCH_SURFACES` knows. Where the build differs from, or fixes, the text above:
+GitHub route is slice 9 ([below](#built-slice-9)). Where the build differs from, or fixes, the text above:
 
 - **The guard is the signature check.** `SurfaceRoutes::machine(routes, guard)` mounts routes outside the identity
   layer and outside the request timeout, and takes the guard as a required argument, so a machine route cannot be added
@@ -170,7 +170,7 @@ name `ORCH_SURFACES` knows. Where the build differs from, or fixes, the text abo
   names `webhook-generic` is exit 78 for `all` and `control-plane`; a `worker` serves no routes and does not need it
   (a value that is set is validated in every role). More than two secrets is exit 78 too. The variable is redacted in
   `--help` and in `Debug`, and the value is never in a message or a log.
-- **`ping` and the GitHub events** are slice 9.
+- **`ping` and the GitHub events** are slice 9, below.
 - **The gate honours `ci`.** `pending_reason(Ci)` is `None`; the `ci` and `ci:` settings are accepted in a deployment or
   an `AGENTS_FILE` entry (never per thread); `verifier` is still refused until slice 10 ([ADR 0018](0018-verification-gate-and-rework-loop.md)).
 - **The core needed no change.** `ci_result` cards, the CI source and the CI deadline to `Blocked` (no attempt spent)
@@ -197,6 +197,32 @@ name `ORCH_SURFACES` knows. Where the build differs from, or fixes, the text abo
 - **Golden `ci`** (`ci.events.json`, `ci.agui.json`, `run-ci`, `connect-ci`, and the reference client's expectations):
   the fake agent's `verify-ci`, a red `ci/build` for the first commit, a green one for the second.
   The web's mock does not replay it yet (`NOT_MOCKED_YET`); slice 8 renders the card.
+
+## Built (slice 9)
+
+*2026-09-30.* `POST /webhooks/github` (`ORCH_SURFACES` name `webhook-github`, secret `WEBHOOK_GITHUB_SECRETS`, same
+feature `surface-webhook`) is built; contract in [`api/webhooks.md`](../api/webhooks.md#github-adapter-post-webhooksgithub).
+
+- **`ping` answers 204, as this ADR says.** (The slice's brief said 200; the ADR and the contract page say 204, the
+  ADR wins, and GitHub accepts any 2xx.) `ping` is not parsed.
+- **Order and codes.** The guard checks the signature header (401), the size (413, 5 MiB) and the HMAC (401) before
+  anything else; the handler then needs `X-GitHub-Event` (400 without) and answers: `ping` 204; the three events with
+  `action` = `completed` are stored under `github:<X-GitHub-Delivery>` and 202 (a delivery id is required for those, 400
+  without); every other event or action is 202 and not stored, and not parsed, so GitHub neither retries nor flags them.
+- **What `summary`, `url` and `name` are per event is fixed** (table in `api/webhooks.md`): a check suite has a name
+  (`app.slug`) but neither link nor summary; a check run has its `html_url` and `output.summary`; a workflow run has its
+  `html_url` and a name that may be `null` (then `workflow`). `startup_failure` is kept as a conclusion of its own (it
+  fails); anything else outside the closed list, and `null`, is `failure`.
+- **The fixtures are synthetic, not recorded.** No real delivery was available, so the payloads in
+  `crates/surface-webhook/testdata/github` were written by hand after the documented schemas and say so (their README).
+  What the docs do say was read on 2026-09-30 and is marked in the Verified section below; what they do not (the
+  members of `check_suite` and `check_run` payloads) stays *unverified* until a real delivery replaces a fixture.
+- **Dev stack.** `mock-ci` (`dev/mock-ci`, alpine with git, curl and openssl, pinned by tag and digest) polls
+  `git ls-remote` on `git-server` for `agent/*` and posts a signed `check_suite` through the edge (`success`, or
+  `failure` when the commit message contains `CI_FAIL`; `MOCK_CI_SHAPE=generic` for the generic body); its delivery ids
+  are derived from repository and commit, so a restart sends repeats, not new reports. The coder is gated on CI
+  (`gate: {require: [ci]}`), and `dev/coder-e2e.sh` asserts the job's gate and the `vymalo.ci` card. Not run here:
+  it needs Docker; the `Coder E2E` workflow is its first run.
 
 ## Security notes
 
@@ -230,8 +256,9 @@ name `ORCH_SURFACES` knows. Where the build differs from, or fixes, the text abo
 - The orchestrator must be reachable from the CI system (a public route, or a relay). The webhook
   is inbound.
 - Two secret variables and two body schemas to keep in step with `api/webhooks.md`.
-- GitHub webhook payloads are assumed to match the REST schemas' field names; slice 9 records real
-  fixtures to settle it.
+- GitHub webhook payloads are assumed to match the REST schemas' field names. Slice 9 meant to settle it with
+  recorded deliveries and could not (none was available): its fixtures are synthetic, and the question is still open
+  (status note of 2026-09-30, [Built (slice 9)](#built-slice-9)).
 
 ## Alternatives considered
 
@@ -273,11 +300,18 @@ Easy to reverse: limits, the skew window, the timeout and the TTL.
   <https://docs.github.com/en/rest/checks/runs>.
 - *Verified 2026-09-30* in the REST schemas (check suites, workflow runs): `head_sha`,
   `head_branch`, `conclusion`, `repository.html_url`. That the **webhook** payloads are identical to
-  the REST ones is *unverified*; slice 9 records real fixtures. Whether `workflow_run` can carry a
-  conclusion outside the list above (for example `startup_failure`) is *unverified*; such a value
-  fails closed as `failure`.
+  the REST ones is *unverified*, and still is after slice 9, whose fixtures are synthetic (status note of
+  2026-09-30). Whether `workflow_run` can carry a conclusion outside the list above (for example `startup_failure`)
+  is *unverified*; `startup_failure` is mapped to its own failing conclusion, any other such value fails closed as `failure`.
 - *Verified 2026-09-30* (adam-rs `882e239`): `adam-coder` emits `branch {repository, branch,
   base_branch, commit}` and `pull_request {…}` artifacts, so the watch key can be built from it.
+- *Verified 2026-09-30* (slice 9): GitHub's documented signature vector (secret `It's a Secret to Everybody`, payload
+  `Hello, World!`, `sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17`), the REST fields of a workflow
+  run (`html_url`, `head_sha`, `head_branch` and `name` nullable, `conclusion` nullable, no list of values, no
+  `startup_failure`), and the `ping` payload (`zen`, `hook_id`, `hook`). Sources: the pages named in
+  [`api/webhooks.md`](../api/webhooks.md#verified-and-unverified-2026-09-30). **Still unverified:** the members of the
+  `check_suite` and `check_run` webhook payloads beyond the REST schemas, and that GitHub sends `startup_failure`. The
+  slice's fixtures are synthetic, not recorded deliveries.
 - *Verified 2026-09-30* (slice 6), reading the source: `hmac` 0.13.0 re-exports `digest` 0.11.3's `Mac`, whose
   `verify_slice` checks the length and then compares with `subtle`'s `ct_eq` (`digest-0.11.3/src/mac.rs`). It is
   constant-time in the tag; the length of a tag is public.

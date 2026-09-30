@@ -17,8 +17,11 @@ pub(crate) fn text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 pub(crate) struct Verified {
     /// The raw body, as received.
     pub(crate) body: Bytes,
-    /// The header text the route asked for (its delivery id), as received.
+    /// The header text the route asked for (its delivery id), as received; empty when absent
+    /// (only the GitHub route tolerates that: for an event it ignores).
     pub(crate) delivery: String,
+    /// `X-GitHub-Event`, for the GitHub route; empty for the generic one.
+    pub(crate) event: String,
 }
 
 /// The 413 of a body over `limit`.

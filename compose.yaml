@@ -17,7 +17,8 @@
 # are always `worker`, with a 5 s lease so a killed one is replaced within seconds.
 #
 # The `app` profile also pulls the coder image (about 2.9 GB, linux/amd64 only) and builds the
-# git-server; `dev/coder-e2e.sh` then turns one chat message into a pull request. The coder is the
+# git-server and `mock-ci`; `dev/coder-e2e.sh` then turns one chat message into a pull request, and the
+# job ends `done` when the mock CI has reported the pushed commit (the coder is gated on CI). The coder is the
 # first entry of dev/agents.yaml, so it is the default agent. The other agents need only the
 # default profile: `docker compose up -d --wait` starts no coder.
 name: another-agentic-system
@@ -130,10 +131,12 @@ services:
       # or dev/mcp-e2e.sh reach it through the `edge`, which adds no identity to /mcp. The token is
       # named by dev/mcp-tokens.yaml and belongs to the edge's dev user, so the jobs it starts are in
       # the chat. `Host` values are the edge's own address (127.0.0.1 or localhost, any port).
-      # The CI webhook `POST /webhooks/ci` is a machine route too: a CI system signs its report with the
-      # secret below (docs/api/webhooks.md; dev/ci-webhook.sh plays a CI). The workers need neither.
-      ORCH_SURFACES: agui,mcp,webhook-generic
+      # The CI webhooks are machine routes too: `POST /webhooks/ci` (the generic signed report) and
+      # `POST /webhooks/github` (GitHub's own deliveries), signed with the secrets below
+      # (docs/api/webhooks.md; dev/ci-webhook.sh plays a CI, `mock-ci` is one). The workers serve no routes.
+      ORCH_SURFACES: agui,mcp,webhook-generic,webhook-github
       WEBHOOK_GENERIC_SECRETS: dev-webhook-secret-0123456789abcdef0123 # local development only
+      WEBHOOK_GITHUB_SECRETS: dev-webhook-secret-0123456789abcdef0123 # local development only; the secret `mock-ci` signs with
       MCP_TOKENS_FILE: /etc/orchestrator/mcp-tokens.yaml
       MCP_ALLOWED_HOSTS: 127.0.0.1,localhost
       MCP_TOKEN_DEV: dev-mcp-token-0123456789abcdef0123456789 # dummy: a real deployment keeps this in a secret
@@ -253,6 +256,28 @@ services:
       - "127.0.0.1:${GIT_SERVER_PORT:-8093}:8080"
     volumes:
       - git-data:/srv/git
+
+  # A stand-in for the CI of the repository (dev/mock-ci, ADR 0017): polls git-server for `agent/*` branches
+  # and posts a signed GitHub-shaped check_suite for each new commit through the edge (which passes
+  # /webhooks/* on without an identity): `success`, or `failure` when the commit message contains CI_FAIL.
+  # MOCK_CI_SHAPE=generic posts the generic body to /webhooks/ci instead. The coder's entry in
+  # dev/agents.yaml requires CI, so a job ends `done` when this has reported its commit.
+  mock-ci:
+    profiles: [app]
+    build:
+      context: ./dev/mock-ci
+    image: another-agentic-system/mock-ci:dev
+    environment:
+      GIT_SERVER_URL: http://git-server:8080
+      MOCK_CI_REPOS: local/sandbox
+      WEBHOOK_URL: http://edge:8080
+      WEBHOOK_SECRET: dev-webhook-secret-0123456789abcdef0123 # WEBHOOK_GITHUB_SECRETS / WEBHOOK_GENERIC_SECRETS of `orchestrator`
+      MOCK_CI_SHAPE: ${MOCK_CI_SHAPE:-github}
+    depends_on:
+      git-server:
+        condition: service_healthy
+      edge:
+        condition: service_healthy
 
   # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
   # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.

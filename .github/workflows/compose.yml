@@ -75,4 +75,4 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Shellcheck the dev scripts
-        run: shellcheck dev/*.sh dev/coder/*.sh
+        run: shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh

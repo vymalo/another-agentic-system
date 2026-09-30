@@ -18,7 +18,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,webhook-generic`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, and `POST /webhooks/ci` (see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a CI gate), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -27,6 +27,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`. No authentication. Vendored. |
+| `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_suite` (or, with `MOCK_CI_SHAPE=generic`, the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
 (the Rust build takes a few minutes the first time) and the git server, and pulls the coder image.
@@ -141,7 +142,7 @@ stateDiagram-v2
 **Run it.**
 
 ```sh
-docker compose --profile app up -d --build --wait     # pulls the coder, builds git-server, orchestrator, web
+docker compose --profile app up -d --build --wait     # pulls the coder, builds git-server, mock-ci, orchestrator, web
 dev/coder-e2e.sh                                       # OpenCode makes the change
 NO_OPENCODE=1 dev/coder-e2e.sh                         # the check command makes it
 docker compose down -v                                 # also forgets the pushed branches
@@ -529,6 +530,46 @@ report's summary keeps `red-once`. The mock pushes the same two commits every ti
 job that pushed it, so the script passes once per database (`docker compose down -v` to run it again). CI runs it in
 the `Coder E2E` workflow.
 
+**The GitHub shape and `mock-ci`.** `ci-webhook.sh --shape github [--event check_suite|check_run|workflow_run]` posts what
+GitHub would (`X-GitHub-Event`, `X-GitHub-Delivery`, `X-Hub-Signature-256` over the raw body; `--ping` sends the `ping` of a
+new webhook, answered 204) to `POST /webhooks/github`. `mock-ci` does the same on its own: every 2 s it lists the `agent/*`
+branches of `local/sandbox` on `git-server`, and for each commit it has not reported it posts a `check_suite` (`app.slug` is
+`mock-ci`) through the edge, `success`, or `failure` when the commit message contains `CI_FAIL`. The delivery id is derived from
+the repository and the commit, so a restart that forgets what it did sends a repeat, which the orchestrator counts once. It reports
+the repository as `http://git-server:8080/local/sandbox`, the address the coder's `branch` artifact names, because the orchestrator
+matches a report to a job by `host/owner/name` and the commit. The **coder is gated on CI** (`gate: {require: [ci]}` in
+`agents.yaml`), so `dev/coder-e2e.sh` also asserts the job's gate and one `vymalo.ci` card, `mock-ci`, `success`, on the pushed commit; in
+the chat, send the coder a task and the card appears when `mock-ci` has reported. `MOCK_CI_SHAPE=generic docker compose --profile app up -d mock-ci`
+makes it use the generic route instead.
+
+```mermaid
+sequenceDiagram
+  participant C as coder
+  participant G as git-server
+  participant M as mock-ci
+  participant E as edge
+  participant O as orchestrator
+  C->>G: push agent/run-prefix
+  C-->>O: branch artifact (repository, branch, commit): the watch on the commit
+  M->>G: git ls-remote --heads agent/*, then fetch the tip's message
+  M->>E: POST /webhooks/github check_suite completed, signed (success, or failure on CI_FAIL)
+  E->>O: no identity header
+  O-->>M: 202, stored (parked if the watch is not there yet)
+  C-->>O: completed
+  O-->>O: the report is applied: done on success, rework on failure
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Polling: every MOCK_CI_POLL_SECS
+  Polling --> Seen: the commit is already reported (marker file)
+  Polling --> Posting: a new commit on agent/*
+  Posting --> Reported: 2xx from the webhook
+  Posting --> Polling: any other answer, tried again on the next pass
+  Reported --> Polling
+  Seen --> Polling
+```
+
 ```mermaid
 sequenceDiagram
   actor U as dev/ci-e2e.sh
@@ -754,6 +795,15 @@ Caddy's `header_up -X-Auth-Request-Email` (the syntax is Caddy's documented dele
 WireMock itself.
 
 *Unverified*: the `Coder E2E` workflow running `dev/ci-e2e.sh` in containers (the machine that wrote this had no Docker daemon).
+
+*Verified 2026-09-30* (GitHub webhook, `mock-ci`, `ci-webhook.sh --shape github`): `dev/mock-ci/mock-ci.sh` (`MOCK_CI_ONCE=1`, against a bare repository
+through `file://` in place of `git-server`, and the real `orchestrator` binary with both webhooks mounted): for both shapes the branches
+`agent/*` were reported once each (`success`, and `failure` for a commit whose message contains `CI_FAIL`; `feature/*` was skipped; a second pass
+posted nothing), every post was `202`, and the stored rows hold the repository as `git-server:8080/local/sandbox`; `ci-webhook.sh --shape github`
+for a `ping` (204), the three events and a bad signature (401). `shellcheck` is clean. The base image tag and digest were read from the Docker Hub
+registry API. *Unverified*: the image build, `mock-ci` running in the compose network, **the coder's `branch` artifact naming the repository the way
+`mock-ci` reports it** (read in `adam-coder`'s `publish.rs` at `882e239`: `repository` is `wt.repo().url`), and the coder job ending `done` through it: the first
+run of all of it is the `Coder E2E` workflow.
 
 The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
 

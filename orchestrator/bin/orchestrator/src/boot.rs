@@ -101,8 +101,23 @@ fn surface_routes<P: orch_ports::Ports>(
                 generic,
             ))
         }
+        #[cfg(feature = "surface-webhook")]
+        Surface::WebhookGithub => {
+            let _ = sse_keepalive;
+            let github = cfg
+                .webhook_github
+                .clone()
+                .ok_or(ConfigError::MissingForSurface {
+                    var: "WEBHOOK_GITHUB_SECRETS",
+                    surface: surface.name(),
+                })?;
+            Ok(orch_surface_webhook::github::routes(
+                Arc::clone(app),
+                github,
+            ))
+        }
         #[cfg(not(feature = "surface-webhook"))]
-        Surface::WebhookGeneric => {
+        Surface::WebhookGeneric | Surface::WebhookGithub => {
             let _ = (cfg, app, sse_keepalive);
             Err(ConfigError::SurfaceNotCompiled {
                 surface: surface.name(),
@@ -289,7 +304,10 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
     }
     // A gate that waits for CI with no way for a report to arrive is not wrong (another replica
     // group may take the webhooks), but it ends in `ci_timeout`, so say so.
-    let takes_reports = cfg.surfaces.contains(&Surface::WebhookGeneric);
+    let takes_reports = cfg
+        .surfaces
+        .iter()
+        .any(|s| matches!(s, Surface::WebhookGeneric | Surface::WebhookGithub));
     let waits_for_ci = cfg.gate.requires(CheckSource::Ci)
         || cfg
             .target_gates

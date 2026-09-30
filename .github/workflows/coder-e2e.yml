@@ -3,8 +3,10 @@ name: Coder E2E
 # A chat message becomes a pull request (ADR 0014). The compose `app` profile runs the real edge,
 # web UI, orchestrator and Postgres, and the PUBLISHED adam-coder image pinned in compose.yaml,
 # beside mocks vendored from the same adam-rs commit (dev/coder/UPSTREAM): a scripted model, a
-# GitHub API stand-in and a git server. dev/coder-e2e.sh then creates a thread through the chat
-# API and checks the thread, the artifacts, the mocks' journals and the pushed branch.
+# GitHub API stand-in and a git server, and `mock-ci`, a CI stand-in that reports the pushed commit to the
+# orchestrator's GitHub webhook (the coder is gated on CI, ADR 0017). dev/coder-e2e.sh then creates a
+# thread through the AG-UI run route and checks the thread, the artifacts, the CI card, the mocks'
+# journals and the pushed branch.
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run the script twice
@@ -92,10 +94,10 @@ jobs:
           push: false
           tags: another-agentic-system/web:dev
           cache-from: type=gha,scope=web
-      - name: Pull the coder and build the git server
+      - name: Pull the coder and build the git server and the mock CI
         run: |
           docker compose pull coder
-          docker compose build git-server
+          docker compose build git-server mock-ci
       - name: Start the stack
         run: docker compose up -d --no-build --wait --wait-timeout 600
       - name: A chat message becomes a pull request (OpenCode makes the change)

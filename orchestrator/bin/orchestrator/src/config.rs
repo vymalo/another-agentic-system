@@ -29,7 +29,7 @@ use orch_core::{
 };
 use orch_ports::AgentEndpoint;
 #[cfg(feature = "surface-webhook")]
-use orch_surface_webhook::{GenericConfig, Secrets};
+use orch_surface_webhook::{GenericConfig, GithubConfig, Secrets};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use url::Url;
@@ -388,6 +388,9 @@ pub enum Surface {
     /// `POST /webhooks/ci` (`orch-surface-webhook`): the generic signed CI report, a machine route
     /// outside the identity layer (ADR 0017).
     WebhookGeneric,
+    /// `POST /webhooks/github` (`orch-surface-webhook`): GitHub's own `check_suite`, `check_run` and
+    /// `workflow_run` deliveries, a machine route guarded by `X-Hub-Signature-256` (ADR 0017).
+    WebhookGithub,
 }
 
 /// A surface name that used to exist. Asking for one is a [`ConfigError::RemovedSurface`], not an
@@ -428,7 +431,12 @@ const REMOVED: &[RemovedSurface] = &[RemovedSurface {
 
 impl Surface {
     /// Every surface this source tree knows, compiled in or not.
-    pub const ALL: &'static [Surface] = &[Surface::Agui, Surface::Mcp, Surface::WebhookGeneric];
+    pub const ALL: &'static [Surface] = &[
+        Surface::Agui,
+        Surface::Mcp,
+        Surface::WebhookGeneric,
+        Surface::WebhookGithub,
+    ];
 
     /// The name used in `ORCH_SURFACES`.
     pub const fn name(self) -> &'static str {
@@ -436,6 +444,7 @@ impl Surface {
             Surface::Agui => "agui",
             Surface::Mcp => "mcp",
             Surface::WebhookGeneric => "webhook-generic",
+            Surface::WebhookGithub => "webhook-github",
         }
     }
 
@@ -444,7 +453,7 @@ impl Surface {
         match self {
             Surface::Agui => "surface-agui",
             Surface::Mcp => "surface-mcp",
-            Surface::WebhookGeneric => "surface-webhook",
+            Surface::WebhookGeneric | Surface::WebhookGithub => "surface-webhook",
         }
     }
 
@@ -453,7 +462,7 @@ impl Surface {
         match self {
             Surface::Agui => cfg!(feature = "surface-agui"),
             Surface::Mcp => cfg!(feature = "surface-mcp"),
-            Surface::WebhookGeneric => cfg!(feature = "surface-webhook"),
+            Surface::WebhookGeneric | Surface::WebhookGithub => cfg!(feature = "surface-webhook"),
         }
     }
 
@@ -572,8 +581,9 @@ pub struct Args {
 
     /// Interaction surfaces to mount, comma separated (default agui, as far as the build has
     /// it). Known: agui, mcp (the MCP server at /mcp; it needs MCP_TOKENS_FILE and
-    /// MCP_ALLOWED_HOSTS), webhook-generic (POST /webhooks/ci, a machine route with no user
-    /// identity; needs WEBHOOK_GENERIC_SECRETS). The removed legacy `chat-api` is refused at
+    /// MCP_ALLOWED_HOSTS), webhook-generic (POST /webhooks/ci; needs WEBHOOK_GENERIC_SECRETS),
+    /// webhook-github (POST /webhooks/github; needs WEBHOOK_GITHUB_SECRETS). The webhooks are
+    /// machine routes with no user identity, guarded by a signature. The removed legacy `chat-api` is refused at
     /// startup. The resource API and health are always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
     pub surfaces: Option<String>,
@@ -662,6 +672,17 @@ pub struct Args {
         hide_env_values = true
     )]
     pub webhook_generic_secrets: Option<String>,
+
+    /// One or two comma-separated secrets of POST /webhooks/github (the secret of the GitHub
+    /// webhook; X-Hub-Signature-256 by either is good, so a secret can be rotated). Required (exit
+    /// 78 otherwise) when ORCH_SURFACES mounts webhook-github. Never logged.
+    #[arg(
+        long,
+        env = "WEBHOOK_GITHUB_SECRETS",
+        value_name = "SECRETS",
+        hide_env_values = true
+    )]
+    pub webhook_github_secrets: Option<String>,
 
     /// Seconds the X-Vymalo-Timestamp of a generic webhook may differ from the clock, either
     /// way, at least 1 (default 300).
@@ -756,6 +777,10 @@ pub struct Config {
     /// Its `Debug` shows how many secrets there are, never their values.
     #[cfg(feature = "surface-webhook")]
     pub webhook_generic: Option<GenericConfig>,
+    /// `WEBHOOK_GITHUB_SECRETS`: the GitHub webhook route (`None` when unset, which is refused only
+    /// if the route is to be mounted). Redacted in `Debug` like the generic one.
+    #[cfg(feature = "surface-webhook")]
+    pub webhook_github: Option<GithubConfig>,
     /// `AUTH_DEV_USER`: an identity for requests without `X-Auth-Request-Email`. Dev only.
     pub auth_dev_user: Option<UserId>,
     /// `DATABASE_MAX_CONNECTIONS` (at least 2: the wakeup listener holds one).
@@ -802,7 +827,9 @@ impl fmt::Debug for Config {
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
         #[cfg(feature = "surface-webhook")]
-        debug.field("webhook_generic", &self.webhook_generic);
+        debug
+            .field("webhook_generic", &self.webhook_generic)
+            .field("webhook_github", &self.webhook_github);
         debug.finish()
     }
 }
@@ -923,6 +950,12 @@ impl Config {
             surfaces.contains(&Surface::WebhookGeneric) && role.runs_control_plane(),
         )?;
 
+        #[cfg(feature = "surface-webhook")]
+        let webhook_github = webhook_github(
+            clean(args.webhook_github_secrets),
+            surfaces.contains(&Surface::WebhookGithub) && role.runs_control_plane(),
+        )?;
+
         let auth_dev_user = match clean(args.auth_dev_user) {
             None => None,
             Some(email) if email.contains('@') => Some(UserId::new(&email)),
@@ -1018,6 +1051,8 @@ impl Config {
             mcp,
             #[cfg(feature = "surface-webhook")]
             webhook_generic,
+            #[cfg(feature = "surface-webhook")]
+            webhook_github,
             auth_dev_user,
             database_max_connections,
             dispatcher_concurrency,
@@ -1394,6 +1429,29 @@ fn webhook_generic(
     }))
 }
 
+/// The GitHub webhook route's settings (`WEBHOOK_GITHUB_SECRETS`), required exactly when the route
+/// is to be mounted, like [`webhook_generic`].
+#[cfg(feature = "surface-webhook")]
+fn webhook_github(
+    secrets: Option<String>,
+    mounted: bool,
+) -> Result<Option<GithubConfig>, ConfigError> {
+    const VAR: &str = "WEBHOOK_GITHUB_SECRETS";
+    match secrets {
+        Some(raw) => Secrets::parse(&raw)
+            .map(|secrets| Some(GithubConfig::new(secrets)))
+            .map_err(|e| ConfigError::Invalid {
+                var: VAR,
+                reason: e.to_string(),
+            }),
+        None if mounted => Err(ConfigError::MissingForSurface {
+            var: VAR,
+            surface: Surface::WebhookGithub.name(),
+        }),
+        None => Ok(None),
+    }
+}
+
 /// Parses an optional numeric variable with a default and a lower bound.
 fn number<T>(raw: Option<String>, var: &'static str, default: T, min: T) -> Result<T, ConfigError>
 where
@@ -1648,6 +1706,7 @@ mod tests {
                 "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
                 "ORCH_CI_TIMEOUT_SECS" => &mut args.ci_timeout_secs,
                 "WEBHOOK_GENERIC_SECRETS" => &mut args.webhook_generic_secrets,
+                "WEBHOOK_GITHUB_SECRETS" => &mut args.webhook_github_secrets,
                 "WEBHOOK_GENERIC_MAX_SKEW_SECS" => &mut args.webhook_generic_max_skew_secs,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
@@ -2284,6 +2343,92 @@ mod tests {
         let cfg = load(&base(), AGENTS).unwrap();
         assert!(!cfg.surfaces.contains(&Surface::WebhookGeneric));
         assert!(cfg.webhook_generic.is_none());
+    }
+
+    #[cfg(feature = "surface-webhook")]
+    #[test]
+    fn the_github_webhook_is_mounted_by_name_with_its_own_secrets() {
+        let cfg = load(
+            &with(&[
+                ("ORCH_SURFACES", "agui,webhook-generic,webhook-github"),
+                ("WEBHOOK_GENERIC_SECRETS", "generic-secret"),
+                (
+                    "WEBHOOK_GITHUB_SECRETS",
+                    "github-secret-new, github-secret-old",
+                ),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.surfaces,
+            vec![
+                Surface::Agui,
+                Surface::WebhookGeneric,
+                Surface::WebhookGithub
+            ]
+        );
+        assert_eq!(cfg.webhook_github.as_ref().unwrap().secrets.len(), 2);
+        assert_eq!(cfg.webhook_generic.as_ref().unwrap().secrets.len(), 1);
+        assert_eq!(Surface::WebhookGithub.name(), "webhook-github");
+        assert_eq!(Surface::WebhookGithub.feature(), "surface-webhook");
+        // Each route needs its own secret: the generic one's is not the GitHub one's.
+        let err = load(
+            &with(&[
+                ("ORCH_SURFACES", "webhook-github"),
+                ("WEBHOOK_GENERIC_SECRETS", "generic-secret"),
+            ]),
+            AGENTS,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "WEBHOOK_GITHUB_SECRETS is required when ORCH_SURFACES mounts \"webhook-github\""
+        );
+        // Mounting the GitHub route alone needs nothing of the generic one.
+        let cfg = load(
+            &with(&[
+                ("ORCH_SURFACES", "webhook-github"),
+                ("WEBHOOK_GITHUB_SECRETS", "github-secret"),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        assert!(cfg.webhook_generic.is_none());
+        assert!(cfg.webhook_github.is_some());
+    }
+
+    #[cfg(feature = "surface-webhook")]
+    #[test]
+    fn the_github_secrets_are_checked_redacted_and_not_needed_by_a_worker() {
+        for (secrets, says) in [("a,b,hunter2-c", "at most 2"), (" , ", "names no secret")] {
+            let err = load(&with(&[("WEBHOOK_GITHUB_SECRETS", secrets)]), AGENTS).unwrap_err();
+            assert!(!err.to_string().contains("hunter2"), "{err}");
+            let (var, reason) = invalid_var(err);
+            assert_eq!(var, "WEBHOOK_GITHUB_SECRETS");
+            assert!(reason.contains(says), "{reason}");
+        }
+        let cfg = load(
+            &with(&[
+                ("ORCH_SURFACES", "webhook-github"),
+                ("WEBHOOK_GITHUB_SECRETS", "hunter2-current"),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(
+            shown.contains("webhook_github") && shown.contains("<1 redacted>"),
+            "{shown}"
+        );
+        assert!(!shown.contains("hunter2"), "{shown}");
+        // A worker serves no routes.
+        let worker = load(
+            &with(&[("ORCH_SURFACES", "webhook-github"), ("ORCH_ROLE", "worker")]),
+            AGENTS,
+        )
+        .unwrap();
+        assert!(worker.webhook_github.is_none());
     }
 
     #[cfg(feature = "surface-webhook")]

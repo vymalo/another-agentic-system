@@ -1,8 +1,9 @@
 //! HMAC-SHA-256 signatures of the two webhook schemes (ADR 0017).
 //!
-//! The generic scheme puts `sha256=` and the lowercase hex of an HMAC-SHA-256 of
-//! `"<timestamp>.<body>"` in a header, the timestamp being the exact text of its header, so a
-//! captured request cannot be replayed with a fresher timestamp.
+//! Both schemes put `sha256=` and the lowercase hex of an HMAC-SHA-256 in a header. They differ in
+//! what is signed: GitHub signs the raw body; the generic scheme signs `"<timestamp>.<body>"`, the
+//! timestamp being the exact text of its header, so a captured request cannot be replayed with a
+//! fresher timestamp.
 //!
 //! A signature is checked with [`Mac::verify_slice`], which compares the tag in constant time
 //! (`subtle`'s `ct_eq`; *verified 2026-09-30*, `digest` 0.10.7 `src/mac.rs`, `verify_slice`), and
@@ -88,6 +89,16 @@ pub(crate) fn verify(secrets: &Secrets, header: &str, parts: &[&[u8]]) -> bool {
     })
 }
 
+/// GitHub's signature: HMAC-SHA-256 of the raw body.
+pub fn sign_github(secret: &str, body: &[u8]) -> Option<String> {
+    sign(secret, &[body])
+}
+
+/// Whether `header` is GitHub's signature of `body` under any of `secrets`.
+pub(crate) fn verify_github(secrets: &Secrets, body: &[u8], header: &str) -> bool {
+    verify(secrets, header, &[body])
+}
+
 /// Whether `header` is the generic signature of `body` at `timestamp` under any of `secrets`.
 pub(crate) fn verify_generic(
     secrets: &Secrets,
@@ -125,6 +136,30 @@ mod tests {
             sign_generic("dev-webhook-secret", "1790800000", BODY.as_bytes()).unwrap(),
             "sha256=4fd60f8ffbbb110421e5f2c82030f78bcf59d4fe3e554040fc30502ccac27465"
         );
+    }
+
+    /// The example of GitHub's "Validating webhook deliveries" (*verified 2026-09-30*,
+    /// <https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries>), and
+    /// the vector of `docs/api/webhooks.md` for the same body as the generic one.
+    #[test]
+    fn github_signs_the_raw_body() {
+        assert_eq!(
+            sign_github("It's a Secret to Everybody", b"Hello, World!").unwrap(),
+            "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+        );
+        const BODY: &str = r#"{"version":1,"repository":"https://github.com/acme/widgets","sha":"0123456789abcdef0123456789abcdef01234567","branch":"agent/fix-flaky-test","name":"ci/build","conclusion":"success","url":"https://ci.example.com/runs/42","summary":"212 tests passed"}"#;
+        assert_eq!(
+            sign_github("dev-webhook-secret", BODY.as_bytes()).unwrap(),
+            "sha256=616371fff6e4a56b699e709bc03c3906c63e443bf9afa56b55793da68b772899"
+        );
+        let s = secrets("It's a Secret to Everybody");
+        let good = sign_github("It's a Secret to Everybody", b"Hello, World!").unwrap();
+        assert!(verify_github(&s, b"Hello, World!", &good));
+        assert!(!verify_github(&s, b"Hello, World?", &good));
+        // The two schemes do not stand for each other.
+        assert!(!verify_generic(&s, "1", b"Hello, World!", &good));
+        let generic = sign_generic("It's a Secret to Everybody", "1", b"x").unwrap();
+        assert!(!verify_github(&s, b"x", &generic));
     }
 
     #[test]

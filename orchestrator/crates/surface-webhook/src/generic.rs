@@ -138,6 +138,7 @@ async fn verify<P: Ports>(state: &State_<P>, req: Request) -> Result<Request, Pr
     parts.extensions.insert(Verified {
         body: bytes,
         delivery,
+        event: String::new(),
     });
     Ok(Request::from_parts(parts, axum::body::Body::empty()))
 }

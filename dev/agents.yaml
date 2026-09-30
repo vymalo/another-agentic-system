@@ -10,6 +10,11 @@
   name: Coder
   cardUrl: http://coder:8080/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
+  # Under a CI gate (ADR 0017, ADR 0018): the job is done when CI says the pushed commit is green. In this
+  # stack CI is `mock-ci`, which reports every commit on `agent/*` of git-server (`success`, or `failure`
+  # when the commit message contains CI_FAIL), and a red report sends the coder back with the report.
+  gate:
+    require: [ci]
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json

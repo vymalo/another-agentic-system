@@ -253,6 +253,7 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--gate", "ORCH_GATE"),
         ("--ci-timeout-secs", "ORCH_CI_TIMEOUT_SECS"),
         ("--webhook-generic-secrets", "WEBHOOK_GENERIC_SECRETS"),
+        ("--webhook-github-secrets", "WEBHOOK_GITHUB_SECRETS"),
         (
             "--webhook-generic-max-skew-secs",
             "WEBHOOK_GENERIC_MAX_SKEW_SECS",
@@ -287,6 +288,7 @@ fn every_setting_is_read_from_its_variable() {
         ("ORCH_CI_TIMEOUT_SECS", "0"),
         ("WEBHOOK_GENERIC_MAX_SKEW_SECS", "0"),
         ("WEBHOOK_GENERIC_SECRETS", "one,two,three"),
+        ("WEBHOOK_GITHUB_SECRETS", "one,two,three"),
         ("AUTH_DEV_USER", "not-an-email"),
         ("DATABASE_MAX_CONNECTIONS", "1"),
         ("DISPATCHER_CONCURRENCY", "0"),
@@ -376,27 +378,38 @@ fn a_gate_this_build_cannot_run_is_fatal_in_every_layer() {
 fn a_mounted_webhook_without_secrets_is_fatal_before_anything_connects() {
     let scratch = Scratch::new();
     let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
-    for (n, secrets) in [None, Some("  "), Some("a,b,hunter2-third")]
-        .into_iter()
-        .enumerate()
+    for (n, (surface, var, secrets)) in [
+        ("webhook-generic", "WEBHOOK_GENERIC_SECRETS", None),
+        ("webhook-generic", "WEBHOOK_GENERIC_SECRETS", Some("  ")),
+        (
+            "webhook-generic",
+            "WEBHOOK_GENERIC_SECRETS",
+            Some("a,b,hunter2-third"),
+        ),
+        ("webhook-github", "WEBHOOK_GITHUB_SECRETS", None),
+        (
+            "webhook-github",
+            "WEBHOOK_GITHUB_SECRETS",
+            Some("a,b,hunter2-third"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let mut env = vec![
             ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
             ("AGENTS_FILE", path_str(&agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
-            ("ORCH_SURFACES", "agui,webhook-generic"),
+            ("ORCH_SURFACES", surface),
         ];
         if let Some(secrets) = secrets {
-            env.push(("WEBHOOK_GENERIC_SECRETS", secrets));
+            env.push((var, secrets));
         }
         let mut run = spawn_logging_to(&scratch, &format!("webhook-{n}.log"), &env);
         let status = run.wait(Duration::from_secs(10));
         let log = run.log();
         assert_eq!(status.code(), Some(78), "{secrets:?}: EX_CONFIG; {log}");
-        assert!(
-            log.contains("WEBHOOK_GENERIC_SECRETS"),
-            "{secrets:?}: {log}"
-        );
+        assert!(log.contains(var), "{surface} {secrets:?}: {log}");
         assert!(!log.contains("hunter2"), "a secret leaked into the log");
         assert!(
             !log.contains("cannot connect to Postgres"),
@@ -2085,6 +2098,126 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
     assert!(
         log.contains("webhook-generic"),
+        "the surface is logged: {log}"
+    );
+    assert!(!log.contains(SECRET), "the secret leaked into the log");
+}
+
+/// The GitHub webhook through the real binary: `webhook-github` mounted with a secret answers a
+/// `ping` with 204, stores a signed `check_suite` (the synthetic fixture of the webhook crate) and
+/// acknowledges a `push` without storing it, and refuses a bad signature.
+#[cfg(feature = "surface-webhook")]
+#[tokio::test]
+async fn the_github_webhook_takes_a_signed_check_suite_and_acknowledges_the_rest() {
+    use orch_surface_webhook::signature::sign_github;
+
+    const SECRET: &str = "smoke-github-secret";
+    const DELIVERY: &str = "72d3162e-cc78-11e3-81ab-4c9367dc0958";
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let fixture = |name: &str| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/surface-webhook/testdata/github")
+            .join(format!("{name}.json"));
+        fs::read(path).unwrap()
+    };
+    let scratch = Scratch::new();
+    let (_agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+    let replica = Replica::start(
+        &scratch,
+        "github.log",
+        &url,
+        &agents,
+        &[
+            ("ORCH_SURFACES", "agui,webhook-github"),
+            ("WEBHOOK_GITHUB_SECRETS", SECRET),
+            ("INBOX_POLL_SECS", "1"),
+        ],
+    );
+    replica.wait_ready().await;
+    let post = |secret: &str, event: &str, delivery: &str, body: &[u8]| {
+        replica
+            .client
+            .post(format!("{}/webhooks/github", replica.base))
+            .header("X-GitHub-Event", event)
+            .header("X-GitHub-Delivery", delivery)
+            .header("X-Hub-Signature-256", sign_github(secret, body).unwrap())
+            .body(body.to_vec())
+            .send()
+    };
+    let pool = db.pool("smoke-github", 2).await;
+    let rows = || async {
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT source, idempotency_key, status FROM inbox ORDER BY created_at",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+
+    let suite = fixture("check_suite.completed.success");
+    assert_eq!(
+        post("guess", "check_suite", DELIVERY, &suite)
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        post(SECRET, "ping", DELIVERY, &fixture("ping"))
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(
+        post(SECRET, "push", DELIVERY, &fixture("push"))
+            .await
+            .unwrap()
+            .status(),
+        202
+    );
+    assert!(
+        rows().await.is_empty(),
+        "refused, ping and push wrote nothing"
+    );
+
+    assert_eq!(
+        post(SECRET, "check_suite", DELIVERY, &suite)
+            .await
+            .unwrap()
+            .status(),
+        202
+    );
+    assert_eq!(
+        post(SECRET, "check_suite", DELIVERY, &suite)
+            .await
+            .unwrap()
+            .status(),
+        202
+    );
+    eventually(
+        "the inbox worker parks the report no thread waits for",
+        || async {
+            let rows = rows().await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(
+                (rows[0].0.as_str(), rows[0].1.as_str()),
+                ("github", format!("github:{DELIVERY}").as_str())
+            );
+            (rows[0].2 == "parked").then_some(())
+        },
+    )
+    .await;
+
+    let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = replica.run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(
+        log.contains("webhook-github"),
         "the surface is logged: {log}"
     );
     assert!(!log.contains(SECRET), "the secret leaked into the log");

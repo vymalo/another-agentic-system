@@ -4,14 +4,9 @@
 //! unchanged, and the route never reads `X-Auth-Request-Email`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use jiff::Timestamp;
-use orch_api::{ApiConfig, router_with_surfaces};
-use orch_app::{AgentDirectory, App, AppConfig};
-use orch_ports::memory::{FixedClock, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
-use orch_ports::{InboxItem, InboxStatus, PortSet, ThreadStore};
+use orch_ports::{InboxItem, InboxStatus};
 use orch_surface_webhook::signature::sign_generic;
 use orch_surface_webhook::{GenericConfig, Secrets, generic};
 use serde_json::{Value, json};
@@ -19,56 +14,32 @@ use serde_json::{Value, json};
 const SECRET: &str = "dev-webhook-secret";
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 const DELIVERY: &str = "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a1b";
-/// 2026-09-30T12:00:00Z.
-const NOW: i64 = 1_790_769_600;
+mod support;
 
-type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds>;
+use support::{NOW, Rig};
 
-struct Rig {
-    base: String,
-    store: MemoryStore,
-    clock: FixedClock,
-    client: reqwest::Client,
+async fn start(secrets: &str, max_skew: u64) -> Rig {
+    let cfg = GenericConfig {
+        secrets: Secrets::parse(secrets).unwrap(),
+        max_skew: Duration::from_secs(max_skew),
+    };
+    Rig::start(|app| generic::routes(app, cfg)).await
 }
 
-impl Rig {
-    async fn start(secrets: &str, max_skew: u64) -> Rig {
-        let store = MemoryStore::new();
-        let clock = FixedClock::new(Timestamp::from_second(NOW).unwrap());
-        let app: Arc<App<Ports>> = Arc::new(
-            App::new(
-                PortSet {
-                    store: store.clone(),
-                    wakeup: MemoryWakeup::new(),
-                    agents: ScriptedAgent::new(),
-                    clock: clock.clone(),
-                    ids: SeqIds::default(),
-                },
-                AgentDirectory::new(Vec::new()),
-                AppConfig::default(),
-            )
-            .unwrap(),
-        );
-        let cfg = GenericConfig {
-            secrets: Secrets::parse(secrets).unwrap(),
-            max_skew: Duration::from_secs(max_skew),
-        };
-        let router = router_with_surfaces(
-            Arc::clone(&app),
-            ApiConfig::default(),
-            vec![generic::routes(app, cfg)],
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Rig {
-            base,
-            store,
-            clock,
-            client: reqwest::Client::builder().no_proxy().build().unwrap(),
-        }
-    }
+/// The sender's side of the generic scheme, on a [`Rig`].
+trait Generic {
+    fn signed(
+        &self,
+        secret: &str,
+        timestamp: i64,
+        delivery: &str,
+        body: &[u8],
+    ) -> reqwest::RequestBuilder;
+    async fn post(&self, body: &Value) -> reqwest::Response;
+    async fn row(&self, delivery: &str) -> Option<InboxItem>;
+}
 
+impl Generic for Rig {
     /// A signed request for `body` at `timestamp` (seconds), as a real sender builds it.
     fn signed(
         &self,
@@ -95,22 +66,8 @@ impl Rig {
             .unwrap()
     }
 
-    /// Whether the store holds any inbox row at all (a probe claim finds every due row).
-    async fn holds_a_row(&self) -> bool {
-        let now = orch_ports::Clock::now(&self.clock);
-        !self
-            .store
-            .claim_inbox("probe", now, Duration::from_secs(1), 10)
-            .await
-            .unwrap()
-            .is_empty()
-    }
-
     async fn row(&self, delivery: &str) -> Option<InboxItem> {
-        self.store
-            .find_inbox(generic::SOURCE, delivery)
-            .await
-            .unwrap()
+        self.find(generic::SOURCE, delivery).await
     }
 }
 
@@ -129,7 +86,7 @@ fn report() -> Value {
 
 #[tokio::test]
 async fn a_signed_report_is_stored_and_answered_202() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     let res = rig.post(&report()).await;
     assert_eq!(res.status(), 202);
     let row = rig
@@ -160,7 +117,7 @@ async fn a_signed_report_is_stored_and_answered_202() {
 
 #[tokio::test]
 async fn a_redelivery_is_202_again_and_stored_once() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     assert_eq!(rig.post(&report()).await.status(), 202);
     let first = rig.row(DELIVERY).await.unwrap();
     // The same delivery id, even with a different body and a later timestamp: one row, kept.
@@ -188,22 +145,13 @@ async fn a_redelivery_is_202_again_and_stored_once() {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    let claimed = rig
-        .store
-        .claim_inbox(
-            "probe",
-            orch_ports::Clock::now(&rig.clock),
-            Duration::from_secs(1),
-            10,
-        )
-        .await
-        .unwrap();
-    assert_eq!(claimed.len(), 1, "one row for three deliveries");
+    let claimed = rig.rows().await;
+    assert_eq!(claimed, 1, "one row for three deliveries");
 }
 
 #[tokio::test]
 async fn a_refused_delivery_writes_nothing() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     let body = report().to_string();
     let body = body.as_bytes();
     let ts = NOW.to_string();
@@ -360,7 +308,7 @@ async fn a_refused_delivery_writes_nothing() {
 
 #[tokio::test]
 async fn the_skew_window_is_inclusive_and_follows_the_clock() {
-    let rig = Rig::start(SECRET, 60).await;
+    let rig = start(SECRET, 60).await;
     let body = report().to_string();
     for (offset, want) in [(-60, 202), (60, 202), (-61, 401), (61, 401), (0, 202)] {
         let delivery = format!("0195c1a2-7b3e-7c11-8f2a-5d6e7f8{:05}", offset + 100);
@@ -388,7 +336,7 @@ async fn the_skew_window_is_inclusive_and_follows_the_clock() {
 
 #[tokio::test]
 async fn either_secret_of_a_rotation_is_accepted() {
-    let rig = Rig::start("new-secret,old-secret", 300).await;
+    let rig = start("new-secret,old-secret", 300).await;
     for (n, secret) in ["new-secret", "old-secret"].into_iter().enumerate() {
         let delivery = format!("0195c1a2-7b3e-7c11-8f2a-5d6e7f809a0{n}");
         let res = rig
@@ -413,7 +361,7 @@ async fn either_secret_of_a_rotation_is_accepted() {
 
 #[tokio::test]
 async fn a_body_over_256_kib_is_413_before_and_after_the_signature() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     let mut big = report();
     big["summary"] = json!("x".repeat(generic::MAX_BODY_BYTES));
     let body = big.to_string();
@@ -463,7 +411,7 @@ async fn a_body_over_256_kib_is_413_before_and_after_the_signature() {
 
 #[tokio::test]
 async fn a_signed_body_that_is_not_a_report_is_400_and_writes_nothing() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     let with = |edit: &dyn Fn(&mut Value)| {
         let mut v = report();
         edit(&mut v);
@@ -599,7 +547,7 @@ async fn a_signed_body_that_is_not_a_report_is_400_and_writes_nothing() {
 
 #[tokio::test]
 async fn the_optional_members_are_optional_and_unknown_ones_are_ignored() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     let minimal = json!({
         "version": 1,
         "repository": "git@github.com:Acme/Widgets.git",
@@ -620,7 +568,7 @@ async fn the_optional_members_are_optional_and_unknown_ones_are_ignored() {
 
 #[tokio::test]
 async fn only_http_links_survive_and_a_long_summary_is_cut() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     for (n, (url, kept)) in [
         ("https://ci.example.com/r/1", true),
         ("http://ci.example.com/r/1", true),
@@ -658,7 +606,7 @@ async fn only_http_links_survive_and_a_long_summary_is_cut() {
 
 #[tokio::test]
 async fn the_route_needs_no_identity_and_the_rest_of_the_api_still_does() {
-    let rig = Rig::start(SECRET, 300).await;
+    let rig = start(SECRET, 300).await;
     // No X-Auth-Request-Email: the webhook is a machine route.
     assert_eq!(rig.post(&report()).await.status(), 202);
     // An identity header changes nothing (it is not read) ...

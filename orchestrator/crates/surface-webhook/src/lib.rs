@@ -16,6 +16,13 @@
 //! HMAC-SHA-256 over `"<timestamp>.<body>"`, with a delivery id for idempotency. See
 //! [`generic`] for the order of the checks and [`signature`] for the scheme.
 //!
+//! # The GitHub route
+//!
+//! [`github::routes`] serves `POST /webhooks/github` (`webhook-github`): GitHub's own deliveries,
+//! signed with `X-Hub-Signature-256` over the raw body. `ping` is 204, `check_suite`, `check_run`
+//! and `workflow_run` with `action` = `completed` become the same report as the generic body,
+//! and every other event is acknowledged with 202 and not stored. See [`github`].
+//!
 //! Nothing here decides anything about a job. A route authenticates a delivery, normalises it to
 //! a [`CiReport`](orch_core::CiReport) and calls [`App::receive`](orch_app::App::receive); the
 //! inbox worker and the pure core do the rest. A valid report can add a check result to a job
@@ -26,9 +33,11 @@
 //! without touching the rest.
 
 pub mod generic;
+pub mod github;
 mod secrets;
 pub mod signature;
 mod wire;
 
 pub use generic::GenericConfig;
+pub use github::GithubConfig;
 pub use secrets::{MAX_SECRETS, Secrets, SecretsError};
