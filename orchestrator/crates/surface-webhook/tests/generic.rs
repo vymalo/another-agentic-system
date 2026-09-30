@@ -1,0 +1,709 @@
+//! `POST /webhooks/ci` over real HTTP, on the in-memory store and a clock the test holds: the
+//! guard's refusals write nothing (checked by asking the store for any due row), a valid report
+//! is stored once whatever the redeliveries, the identity layer of the rest of the API is
+//! unchanged, and the route never reads `X-Auth-Request-Email`.
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use jiff::Timestamp;
+use orch_api::{ApiConfig, router_with_surfaces};
+use orch_app::{AgentDirectory, App, AppConfig};
+use orch_ports::memory::{FixedClock, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
+use orch_ports::{InboxItem, InboxStatus, PortSet, ThreadStore};
+use orch_surface_webhook::signature::sign_generic;
+use orch_surface_webhook::{GenericConfig, Secrets, generic};
+use serde_json::{Value, json};
+
+const SECRET: &str = "dev-webhook-secret";
+const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const DELIVERY: &str = "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a1b";
+/// 2026-09-30T12:00:00Z.
+const NOW: i64 = 1_790_769_600;
+
+type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds>;
+
+struct Rig {
+    base: String,
+    store: MemoryStore,
+    clock: FixedClock,
+    client: reqwest::Client,
+}
+
+impl Rig {
+    async fn start(secrets: &str, max_skew: u64) -> Rig {
+        let store = MemoryStore::new();
+        let clock = FixedClock::new(Timestamp::from_second(NOW).unwrap());
+        let app: Arc<App<Ports>> = Arc::new(
+            App::new(
+                PortSet {
+                    store: store.clone(),
+                    wakeup: MemoryWakeup::new(),
+                    agents: ScriptedAgent::new(),
+                    clock: clock.clone(),
+                    ids: SeqIds::default(),
+                },
+                AgentDirectory::new(Vec::new()),
+                AppConfig::default(),
+            )
+            .unwrap(),
+        );
+        let cfg = GenericConfig {
+            secrets: Secrets::parse(secrets).unwrap(),
+            max_skew: Duration::from_secs(max_skew),
+        };
+        let router = router_with_surfaces(
+            Arc::clone(&app),
+            ApiConfig::default(),
+            vec![generic::routes(app, cfg)],
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        Rig {
+            base,
+            store,
+            clock,
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+        }
+    }
+
+    /// A signed request for `body` at `timestamp` (seconds), as a real sender builds it.
+    fn signed(
+        &self,
+        secret: &str,
+        timestamp: i64,
+        delivery: &str,
+        body: &[u8],
+    ) -> reqwest::RequestBuilder {
+        let ts = timestamp.to_string();
+        let sig = sign_generic(secret, &ts, body).unwrap();
+        self.client
+            .post(format!("{}/webhooks/ci", self.base))
+            .header("Content-Type", "application/json")
+            .header("X-Vymalo-Delivery", delivery)
+            .header("X-Vymalo-Timestamp", ts)
+            .header("X-Vymalo-Signature-256", sig)
+            .body(body.to_vec())
+    }
+
+    async fn post(&self, body: &Value) -> reqwest::Response {
+        self.signed(SECRET, NOW, DELIVERY, body.to_string().as_bytes())
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Whether the store holds any inbox row at all (a probe claim finds every due row).
+    async fn holds_a_row(&self) -> bool {
+        let now = orch_ports::Clock::now(&self.clock);
+        !self
+            .store
+            .claim_inbox("probe", now, Duration::from_secs(1), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    }
+
+    async fn row(&self, delivery: &str) -> Option<InboxItem> {
+        self.store
+            .find_inbox(generic::SOURCE, delivery)
+            .await
+            .unwrap()
+    }
+}
+
+fn report() -> Value {
+    json!({
+        "version": 1,
+        "repository": "https://github.com/acme/widgets",
+        "sha": SHA,
+        "branch": "agent/fix-flaky-test",
+        "name": "ci/build",
+        "conclusion": "success",
+        "url": "https://ci.example.com/runs/42",
+        "summary": "212 tests passed",
+    })
+}
+
+#[tokio::test]
+async fn a_signed_report_is_stored_and_answered_202() {
+    let rig = Rig::start(SECRET, 300).await;
+    let res = rig.post(&report()).await;
+    assert_eq!(res.status(), 202);
+    let row = rig
+        .row(DELIVERY)
+        .await
+        .expect("stored under the delivery id");
+    assert_eq!(row.status, InboxStatus::Pending);
+    assert_eq!(row.kind, "ci_report");
+    assert_eq!(
+        row.correlation.as_deref(),
+        Some(format!("ci:github.com/acme/widgets@{SHA}").as_str())
+    );
+    assert_eq!(
+        row.payload,
+        json!({
+            "kind": "ci_report",
+            "provider": "generic",
+            "repository": "github.com/acme/widgets",
+            "sha": SHA,
+            "branch": "agent/fix-flaky-test",
+            "name": "ci/build",
+            "conclusion": "success",
+            "url": "https://ci.example.com/runs/42",
+            "summary": "212 tests passed",
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_redelivery_is_202_again_and_stored_once() {
+    let rig = Rig::start(SECRET, 300).await;
+    assert_eq!(rig.post(&report()).await.status(), 202);
+    let first = rig.row(DELIVERY).await.unwrap();
+    // The same delivery id, even with a different body and a later timestamp: one row, kept.
+    rig.clock.advance(Duration::from_secs(20));
+    let mut other = report();
+    other["conclusion"] = json!("failure");
+    let res = rig
+        .signed(SECRET, NOW + 20, DELIVERY, other.to_string().as_bytes())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        202,
+        "a repeated delivery is acknowledged, not refused"
+    );
+    let after = rig.row(DELIVERY).await.unwrap();
+    assert_eq!(after.id, first.id);
+    assert_eq!(after.payload, first.payload, "the first delivery wins");
+    // Upper case and hyphenless spellings of the same UUID are the same delivery.
+    let shouted = DELIVERY.to_uppercase();
+    let res = rig
+        .signed(SECRET, NOW + 20, &shouted, report().to_string().as_bytes())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    let claimed = rig
+        .store
+        .claim_inbox(
+            "probe",
+            orch_ports::Clock::now(&rig.clock),
+            Duration::from_secs(1),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "one row for three deliveries");
+}
+
+#[tokio::test]
+async fn a_refused_delivery_writes_nothing() {
+    let rig = Rig::start(SECRET, 300).await;
+    let body = report().to_string();
+    let body = body.as_bytes();
+    let ts = NOW.to_string();
+    let good_sig = sign_generic(SECRET, &ts, body).unwrap();
+
+    let url = format!("{}/webhooks/ci", rig.base);
+    // Each case: the headers as sent (None leaves the header out).
+    type Headers<'a> = [(&'a str, Option<String>); 3];
+    let cases: Vec<(&str, Headers)> = vec![
+        (
+            "no signature",
+            [
+                ("X-Vymalo-Signature-256", None),
+                ("X-Vymalo-Timestamp", Some(ts.clone())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "no timestamp",
+            [
+                ("X-Vymalo-Signature-256", Some(good_sig.clone())),
+                ("X-Vymalo-Timestamp", None),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "no delivery id",
+            [
+                ("X-Vymalo-Signature-256", Some(good_sig.clone())),
+                ("X-Vymalo-Timestamp", Some(ts.clone())),
+                ("X-Vymalo-Delivery", None),
+            ],
+        ),
+        (
+            "a signature of another body",
+            [
+                (
+                    "X-Vymalo-Signature-256",
+                    Some(sign_generic(SECRET, &ts, b"{}").unwrap()),
+                ),
+                ("X-Vymalo-Timestamp", Some(ts.clone())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "a wrong secret",
+            [
+                (
+                    "X-Vymalo-Signature-256",
+                    Some(sign_generic("nope", &ts, body).unwrap()),
+                ),
+                ("X-Vymalo-Timestamp", Some(ts.clone())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "a signature without its prefix",
+            [
+                (
+                    "X-Vymalo-Signature-256",
+                    Some(good_sig.trim_start_matches("sha256=").to_owned()),
+                ),
+                ("X-Vymalo-Timestamp", Some(ts.clone())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "a signature over the body alone",
+            [
+                (
+                    "X-Vymalo-Signature-256",
+                    Some(orch_surface_webhook::signature::sign_generic(SECRET, "", body).unwrap()),
+                ),
+                ("X-Vymalo-Timestamp", Some(ts.clone())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "a timestamp that was not signed",
+            [
+                ("X-Vymalo-Signature-256", Some(good_sig.clone())),
+                ("X-Vymalo-Timestamp", Some((NOW + 1).to_string())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "a signed but stale timestamp",
+            [
+                (
+                    "X-Vymalo-Signature-256",
+                    Some(sign_generic(SECRET, &(NOW - 301).to_string(), body).unwrap()),
+                ),
+                ("X-Vymalo-Timestamp", Some((NOW - 301).to_string())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+        (
+            "a signed timestamp from the future",
+            [
+                (
+                    "X-Vymalo-Signature-256",
+                    Some(sign_generic(SECRET, &(NOW + 301).to_string(), body).unwrap()),
+                ),
+                ("X-Vymalo-Timestamp", Some((NOW + 301).to_string())),
+                ("X-Vymalo-Delivery", Some(DELIVERY.into())),
+            ],
+        ),
+    ];
+    for (why, headers) in cases {
+        let mut req = rig.client.post(&url).body(body.to_vec());
+        for (name, value) in headers {
+            if let Some(value) = value {
+                req = req.header(name, value);
+            }
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 401, "{why}");
+        assert_eq!(
+            res.headers()["content-type"],
+            "application/problem+json",
+            "{why}: an RFC 9457 problem"
+        );
+    }
+    // A timestamp that is not plain digits is refused even when it is signed as written.
+    for odd in [
+        "+1790769600",
+        " 1790769600",
+        "1790769600.0",
+        "-1",
+        "",
+        "1e9",
+        "0x6ac0a8c0",
+        "17907696000000",
+    ] {
+        let sig = sign_generic(SECRET, odd, body).unwrap();
+        let res = rig
+            .client
+            .post(&url)
+            .header("X-Vymalo-Delivery", DELIVERY)
+            .header("X-Vymalo-Timestamp", odd)
+            .header("X-Vymalo-Signature-256", sig)
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 401, "timestamp {odd:?}");
+    }
+    // A GET is guarded like the POST: 401, not a hint about the route.
+    let res = rig.client.get(&url).send().await.unwrap();
+    assert_eq!(res.status(), 401);
+
+    assert!(!rig.holds_a_row().await, "not one of them wrote a row");
+}
+
+#[tokio::test]
+async fn the_skew_window_is_inclusive_and_follows_the_clock() {
+    let rig = Rig::start(SECRET, 60).await;
+    let body = report().to_string();
+    for (offset, want) in [(-60, 202), (60, 202), (-61, 401), (61, 401), (0, 202)] {
+        let delivery = format!("0195c1a2-7b3e-7c11-8f2a-5d6e7f8{:05}", offset + 100);
+        let res = rig
+            .signed(SECRET, NOW + offset, &delivery, body.as_bytes())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), want, "offset {offset}");
+    }
+    // The clock moves, and so does the window: what was fresh is now stale.
+    rig.clock.advance(Duration::from_secs(61));
+    let res = rig
+        .signed(
+            SECRET,
+            NOW,
+            "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a99",
+            body.as_bytes(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn either_secret_of_a_rotation_is_accepted() {
+    let rig = Rig::start("new-secret,old-secret", 300).await;
+    for (n, secret) in ["new-secret", "old-secret"].into_iter().enumerate() {
+        let delivery = format!("0195c1a2-7b3e-7c11-8f2a-5d6e7f809a0{n}");
+        let res = rig
+            .signed(secret, NOW, &delivery, report().to_string().as_bytes())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 202, "{secret}");
+    }
+    let res = rig
+        .signed(
+            "retired-secret",
+            NOW,
+            "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a05",
+            report().to_string().as_bytes(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn a_body_over_256_kib_is_413_before_and_after_the_signature() {
+    let rig = Rig::start(SECRET, 300).await;
+    let mut big = report();
+    big["summary"] = json!("x".repeat(generic::MAX_BODY_BYTES));
+    let body = big.to_string();
+    assert!(body.len() > generic::MAX_BODY_BYTES);
+
+    // Declared: refused without reading it.
+    let res = rig
+        .signed(SECRET, NOW, DELIVERY, body.as_bytes())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 413);
+    assert_eq!(res.headers()["content-type"], "application/problem+json");
+
+    // Undeclared (chunked): the read itself is bounded.
+    let ts = NOW.to_string();
+    let sig = sign_generic(SECRET, &ts, body.as_bytes()).unwrap();
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> = body
+        .as_bytes()
+        .chunks(16 * 1024)
+        .map(|c| Ok(c.to_vec()))
+        .collect();
+    let res = rig
+        .client
+        .post(format!("{}/webhooks/ci", rig.base))
+        .header("X-Vymalo-Delivery", DELIVERY)
+        .header("X-Vymalo-Timestamp", ts)
+        .header("X-Vymalo-Signature-256", sig)
+        .body(reqwest::Body::wrap_stream(futures::stream::iter(chunks)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 413);
+
+    // Exactly at the limit is read (and is then a 400 for what it says, not a 413).
+    let mut at_limit = vec![b' '; generic::MAX_BODY_BYTES];
+    at_limit[0] = b'{';
+    at_limit[generic::MAX_BODY_BYTES - 1] = b'}';
+    let res = rig
+        .signed(SECRET, NOW, DELIVERY, &at_limit)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(!rig.holds_a_row().await);
+}
+
+#[tokio::test]
+async fn a_signed_body_that_is_not_a_report_is_400_and_writes_nothing() {
+    let rig = Rig::start(SECRET, 300).await;
+    let with = |edit: &dyn Fn(&mut Value)| {
+        let mut v = report();
+        edit(&mut v);
+        v
+    };
+    let bad: Vec<(&str, Vec<u8>)> = vec![
+        ("not JSON", b"not json".to_vec()),
+        ("an array", b"[]".to_vec()),
+        ("empty", Vec::new()),
+        (
+            "no sha",
+            with(&|v| {
+                v.as_object_mut().unwrap().remove("sha");
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            "no name",
+            with(&|v| {
+                v.as_object_mut().unwrap().remove("name");
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            "no repository",
+            with(&|v| {
+                v.as_object_mut().unwrap().remove("repository");
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            "no version",
+            with(&|v| {
+                v.as_object_mut().unwrap().remove("version");
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            "no conclusion",
+            with(&|v| {
+                v.as_object_mut().unwrap().remove("conclusion");
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            "a mistyped name",
+            with(&|v| v["name"] = json!(7)).to_string().into_bytes(),
+        ),
+        (
+            "a string version",
+            with(&|v| v["version"] = json!("1"))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "version 2",
+            with(&|v| v["version"] = json!(2)).to_string().into_bytes(),
+        ),
+        (
+            "version 0",
+            with(&|v| v["version"] = json!(0)).to_string().into_bytes(),
+        ),
+        (
+            "a short sha",
+            with(&|v| v["sha"] = json!("abc123"))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "a sha that is not hex",
+            with(&|v| v["sha"] = json!("g".repeat(40)))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "a repository that is no address",
+            with(&|v| v["repository"] = json!("nonsense"))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "an unknown conclusion",
+            with(&|v| v["conclusion"] = json!("passed"))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "a conclusion of another case",
+            with(&|v| v["conclusion"] = json!("Success"))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "startup_failure, which is GitHub's alone",
+            with(&|v| v["conclusion"] = json!("startup_failure"))
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "a blank name",
+            with(&|v| v["name"] = json!("  ")).to_string().into_bytes(),
+        ),
+    ];
+    for (why, body) in bad {
+        let res = rig
+            .signed(SECRET, NOW, DELIVERY, &body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{why}");
+        assert_eq!(
+            res.headers()["content-type"],
+            "application/problem+json",
+            "{why}"
+        );
+    }
+    // A delivery id that is no UUID.
+    for odd in ["delivery-1", "1", "0195c1a2"] {
+        let res = rig
+            .signed(SECRET, NOW, odd, report().to_string().as_bytes())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "delivery {odd:?}");
+    }
+    assert!(!rig.holds_a_row().await, "not one of them wrote a row");
+}
+
+#[tokio::test]
+async fn the_optional_members_are_optional_and_unknown_ones_are_ignored() {
+    let rig = Rig::start(SECRET, 300).await;
+    let minimal = json!({
+        "version": 1,
+        "repository": "git@github.com:Acme/Widgets.git",
+        "sha": SHA.to_uppercase(),
+        "name": "ci/build",
+        "conclusion": "failure",
+        "surprise": {"nested": true},
+    });
+    assert_eq!(rig.post(&minimal).await.status(), 202);
+    let row = rig.row(DELIVERY).await.unwrap();
+    assert_eq!(row.payload["repository"], "github.com/acme/widgets");
+    assert_eq!(row.payload["sha"], SHA, "stored lower case");
+    assert_eq!(row.payload["conclusion"], "failure");
+    for absent in ["branch", "url", "summary"] {
+        assert!(row.payload.get(absent).is_none(), "{absent}");
+    }
+}
+
+#[tokio::test]
+async fn only_http_links_survive_and_a_long_summary_is_cut() {
+    let rig = Rig::start(SECRET, 300).await;
+    for (n, (url, kept)) in [
+        ("https://ci.example.com/r/1", true),
+        ("http://ci.example.com/r/1", true),
+        ("javascript:alert(1)", false),
+        ("file:///etc/passwd", false),
+        ("data:text/html,x", false),
+        ("not a url", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut body = report();
+        body["url"] = json!(url);
+        let delivery = format!("0195c1a2-7b3e-7c11-8f2a-5d6e7f8000{n:02}");
+        let res = rig
+            .signed(SECRET, NOW, &delivery, body.to_string().as_bytes())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 202, "{url}");
+        let row = rig.row(&delivery).await.unwrap();
+        assert_eq!(row.payload.get("url").is_some(), kept, "{url}");
+    }
+    // 16 KiB of two-byte characters, cut on a character boundary at 16 KiB.
+    let mut body = report();
+    body["summary"] = json!("é".repeat(20_000));
+    assert_eq!(rig.post(&body).await.status(), 202);
+    let summary = rig.row(DELIVERY).await.unwrap().payload["summary"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(summary.len(), generic::MAX_SUMMARY_BYTES);
+    assert!(summary.chars().all(|c| c == 'é'));
+}
+
+#[tokio::test]
+async fn the_route_needs_no_identity_and_the_rest_of_the_api_still_does() {
+    let rig = Rig::start(SECRET, 300).await;
+    // No X-Auth-Request-Email: the webhook is a machine route.
+    assert_eq!(rig.post(&report()).await.status(), 202);
+    // An identity header changes nothing (it is not read) ...
+    let delivery = "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a02";
+    let res = rig
+        .signed(SECRET, NOW, delivery, report().to_string().as_bytes())
+        .header("X-Auth-Request-Email", "mallory@example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    // ... and it does not stand for a signature either.
+    let res = rig
+        .client
+        .post(format!("{}/webhooks/ci", rig.base))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .body(report().to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+    // Every other route is still behind the identity layer.
+    for path in ["/api/agents", "/api/threads", "/webhooks/other"] {
+        let res = rig
+            .client
+            .get(format!("{}{path}", rig.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 401, "{path}");
+    }
+    let res = rig
+        .client
+        .get(format!("{}/api/agents", rig.base))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // And health stays open.
+    let res = rig
+        .client
+        .get(format!("{}/healthz", rig.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}

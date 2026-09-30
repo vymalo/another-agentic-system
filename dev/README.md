@@ -18,7 +18,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp`: the AG-UI routes the web and the scripts here run on, beside the resource API, and the [MCP server](#the-mcp-server) at `/mcp`. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,webhook-generic`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, and `POST /webhooks/ci` (see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -56,7 +56,8 @@ sequenceDiagram
 ### The edge is not oauth2-proxy
 
 `edge` puts the chat UI, the resource API and the AG-UI routes on one origin, as the production ingress does, and sets
-`X-Auth-Request-Email: dev@example.com` on every API and AG-UI request, replacing whatever the client sent.
+`X-Auth-Request-Email: dev@example.com` on every API and AG-UI request, replacing whatever the client sent. `/webhooks/*` is the one
+exception: it reaches the orchestrator with **no** identity header at all (a webhook is authenticated by its signature).
 It authenticates nobody. It exists so the UI works locally without an identity provider; it must
 never be exposed beyond `127.0.0.1` (the compose file binds it there) and never used in production,
 where oauth2-proxy authenticates the user and the orchestrator trusts the header only because the
@@ -420,7 +421,7 @@ both attempts with two subagents; a `vymalo.check` that failed and one that pass
 `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate `agent_checks`, the second commit) and the thread of the resource
 API with the same `job`; `red-always` ending in `checks_failed` at attempt 3; a run that lowers the attempts with
 `forwardedProps["vymalo.gate"] = {"maxAttempts": 2}`; and the three refusals (a 400 problem, no thread created) for
-a run that removes the required source, asks for more attempts than `ORCH_MAX_ATTEMPTS_CAP` or requires `ci`, which
+a run that removes the required source, asks for more attempts than `ORCH_MAX_ATTEMPTS_CAP` or requires `verifier`, which
 this build cannot honour yet. CI runs it in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mock's side
 (the artifacts and how the rework prompt changes the answer) on its own.
 
@@ -498,6 +499,68 @@ the `verifier` entry a `gate: {require: []}`: an agent cannot verify its own wor
 would (exit 78, naming the agent and the fix). Mocks that push no `branch` would then be sent back three times and fail, which is
 the fail-closed reading of "no pushed commit".
 
+### CI (the gate, by webhook)
+
+`mock-coder-ci` in [`agents.yaml`](agents.yaml) is the same mock agent under `gate: {require: [ci]}`
+([ADR 0017](../docs/decisions/0017-ci-results-by-webhook.md), [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)):
+an agent that says `completed` is not done until a **signed CI report about the commit it pushed** arrives at
+`POST /webhooks/ci`. The orchestrator serves that route because compose sets `ORCH_SURFACES=agui,webhook-generic` and
+`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret` on it; the edge passes `/webhooks/*` on **without an identity**
+(`header_up -X-Auth-Request-Email` in the [Caddyfile](Caddyfile): a webhook is a machine route, authenticated by its
+signature and nothing else). The mock pushes a `branch` artifact and completes; the job then waits for CI, at most
+`ORCH_CI_TIMEOUT_SECS` (3600), after which the thread is blocked with `ci_timeout` and no attempt is used.
+
+[`ci-webhook.sh`](ci-webhook.sh) plays the CI system: it builds the body, signs `"<timestamp>.<body>"` with `openssl`
+and posts it (`--help` lists the options; see [`docs/api/webhooks.md`](../docs/api/webhooks.md) for the contract):
+
+```sh
+dev/ci-webhook.sh --sha 1111111111111111111111111111111111111111 --conclusion failure \
+                  --summary 'red-once: tests::login fails: expected 200, got 500'
+dev/ci-webhook.sh --sha 1111111111111111111111111111111111111111 --secret wrong --expect 401   # refused
+dev/ci-e2e.sh                                                                    # the whole story, asserted
+```
+
+`dev/ci-e2e.sh` runs `red-once fix the login` on `mock-coder-ci` and asserts: a wrong secret and a stale timestamp are
+401; the thread is `verifying` with the gate `ci` and the sha `1111111`; a red report for that commit sends the agent
+back (attempt 2, which pushes `2222222`); a report about the old commit changes nothing; a green report for the new
+commit ends the job `done` at attempt 2 of 3, and the run ends `RUN_FINISHED` (success); the same delivery id twice is
+accepted twice. The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
+report's summary keeps `red-once`. The mock pushes the same two commits every time and a commit is watched by the first
+job that pushed it, so the script passes once per database (`docker compose down -v` to run it again). CI runs it in
+the `Coder E2E` workflow.
+
+```mermaid
+sequenceDiagram
+  actor U as dev/ci-e2e.sh
+  participant E as edge
+  participant O as orchestrator
+  participant M as mock-agent (red-once)
+  U->>E: POST /agui/agents/mock-coder-ci "red-once fix the login"
+  E->>O: with X-Auth-Request-Email
+  O->>M: SendStreamingMessage
+  M-->>O: branch 1111111, checks, completed
+  O-->>U: thread verifying (the gate is ci), the run stays open
+  U->>E: POST /webhooks/ci failure for 1111111, signed (dev/ci-webhook.sh)
+  E->>O: no identity header
+  O-->>U: 202, stored in the inbox
+  O->>M: a new task in the same context, "this is attempt 2" and the report as a finding
+  M-->>O: branch 2222222, completed
+  U->>E: POST /webhooks/ci success for 1111111 (old): 202, changes nothing
+  U->>E: POST /webhooks/ci success for 2222222, twice with one delivery id
+  O-->>U: thread done at attempt 2 of 3, RUN_FINISHED success
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: red-once, mock-coder-ci
+  Working --> Verifying: completed, commit pushed, CI required
+  Verifying --> Working: a red report for the pushed commit (attempt + 1)
+  Verifying --> Verifying: a report for another commit, or one already counted
+  Verifying --> Done: a green report for the pushed commit
+  Verifying --> Blocked: no report within ORCH_CI_TIMEOUT_SECS (no attempt used)
+  Done --> [*]
+```
+
 ### Release channels (`mock-agent-releases`)
 
 Its card declares `https://agents.vymalo.com/a2a/extensions/release-channels/v1` with the example of
@@ -542,6 +605,7 @@ AGENT_ID=mock-coder-gated dev/try-thread.sh "red-once fix the login"       # che
 dev/verify-e2e.sh                                                          # asserts that, red-always and the refusals
 AGENT_ID=mock-coder-verified dev/try-thread.sh "push-flawed fix the login" # the verifier finds fault, sent back, done at attempt 2
 dev/verifier-e2e.sh                                                        # asserts that, what the verifier was sent, and the refusals
+dev/ci-e2e.sh                                                              # mock-coder-ci: a signed CI report sends it back, then ends the job
 ```
 
 The script runs the thread with `POST /agui/agents/{agentId}` (a UUID it mints as the thread id; `THREAD_ID`
@@ -678,6 +742,18 @@ features, `ORCH_SURFACES=agui,mcp`) on Postgres 16, `dev/wiremock/agent` served 
 -X-Auth-Request-Email` and `flush_interval -1` as committed); `caddy validate` accepts the Caddyfile; `docker compose config`
 accepts every profile; `shellcheck dev/*.sh` is clean. *Unverified*: `docker compose up` itself (no Docker daemon here);
 Claude Code and opencode against this server (neither was run; only `curl` and rmcp's own client were).
+
+The CI webhook (`mock-coder-ci`, `dev/ci-webhook.sh`, `dev/ci-e2e.sh`):
+
+*Verified 2026-09-30*: `dev/ci-e2e.sh` against the real `orchestrator` binary (debug build, `ORCH_SURFACES=agui,webhook-generic`,
+`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret`) on Postgres 16, with an agents file holding the `mock-coder-ci` entry of `dev/agents.yaml`
+and a stand-in that reads the mappings and files of `dev/wiremock/agent` (as for the verification scenarios above): every check
+printed `ok`, exit 0, including the signatures made by `dev/ci-webhook.sh` with `openssl` and checked by the Rust route. `shellcheck dev/*.sh`
+and `docker compose --profile '*' config -q` are clean. This proves the scripts' `jq` paths, the signing and the orchestrator's side; it does not prove
+Caddy's `header_up -X-Auth-Request-Email` (the syntax is Caddy's documented delete form; the webhooks never read the header either way) or
+WireMock itself.
+
+*Unverified*: the `Coder E2E` workflow running `dev/ci-e2e.sh` in containers (the machine that wrote this had no Docker daemon).
 
 The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
 

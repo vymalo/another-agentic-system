@@ -6,10 +6,11 @@ that a named check finished with a conclusion, for a commit in a repository. The
 matches it to the job that pushed that commit and lets the gate decide
 ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)).
 
-> Status: **planned, not built** (2026-09-30). The generic route arrives in MVP slice 6 and the
-> GitHub adapter in slice 9 ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)); this page is the
-> contract they are built to. Nothing on it is exposed by the current binary. Facts about GitHub are
-> marked *verified* with a date and a source, or *unverified*.
+> Status (2026-09-30): the **generic route is built** (MVP slice 6; `orch-surface-webhook`, the surface name
+> `webhook-generic`). The **GitHub adapter is planned** (slice 9,
+> [`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)): this page is the contract it is built to, and the binary
+> does not know the name `webhook-github` yet. Facts about GitHub are marked *verified* with a date and a source, or
+> *unverified*.
 
 ## Routes
 
@@ -22,7 +23,9 @@ Both are machine routes: no user identity, no cookie, and `X-Auth-Request-Email`
 edge must route `/webhooks/*` to the orchestrator without injecting an identity header. A route is
 mounted only when its name is in `ORCH_SURFACES`, and its secret variable is then required
 (`WEBHOOK_GITHUB_SECRETS`, `WEBHOOK_GENERIC_SECRETS`; up to two comma-separated secrets, for
-rotation; a missing one is exit 78). A signature is accepted if it matches either secret.
+rotation; a missing one is exit 78, and so is a third secret). A signature is accepted if it matches either
+secret. A `worker` role serves no routes and does not need the secrets. The secrets are never logged and never in
+a `Debug` or an error message.
 
 The signature is checked on the bytes as received, **before anything is stored**. The body is a
 report about a commit; it cannot start a job, and the only thing a valid report changes is a check
@@ -35,8 +38,8 @@ result.
 | Header | Value | Notes |
 |---|---|---|
 | `Content-Type` | `application/json` | |
-| `X-Vymalo-Delivery` | a UUID | The idempotency key. A repeat with the same value is stored once |
-| `X-Vymalo-Timestamp` | Unix time, whole seconds | Must be within plus or minus `WEBHOOK_GENERIC_MAX_SKEW_SECS` (default 300) of the orchestrator's clock |
+| `X-Vymalo-Delivery` | a UUID | The idempotency key. A repeat with the same value is stored once (`AAAA…` and `aaaa…` are the same UUID). Not a UUID: `400`, after the signature |
+| `X-Vymalo-Timestamp` | Unix time, whole seconds | ASCII digits only (no sign, blank or fraction; at most 12). Must be within plus or minus `WEBHOOK_GENERIC_MAX_SKEW_SECS` (default 300, at least 1; the boundary is inclusive) of the orchestrator's clock |
 | `X-Vymalo-Signature-256` | `sha256=` + lowercase hex | `HMAC-SHA-256(secret, "<ts>.<body>")`, where `<ts>` is the exact `X-Vymalo-Timestamp` text, then a full stop, then the raw body bytes |
 
 ### Body
@@ -60,10 +63,10 @@ result.
 | `repository` | string (URL) | yes | The repository. Normalised to the key `host/owner/name` (lower-cased, without `.git` or a trailing slash) |
 | `sha` | string | yes | The commit the check ran on: 40 hexadecimal characters (case-insensitive; stored lower-case) |
 | `branch` | string | no | The branch, for display. It is **not** used to find the job |
-| `name` | string | yes | The check's name (`ci/build`). It is what `gate.ci.required` lists |
-| `conclusion` | string | yes | One of the values below |
+| `name` | string | yes | The check's name (`ci/build`). It is what `gate.ci.required` lists. Not blank |
+| `conclusion` | string | yes | One of the eight values below, in lower case. Anything else is a `400` |
 | `url` | string (URL) | no | A link to the run, shown on the card. Only `http` and `https` are kept |
-| `summary` | string | no | A short text, shown on the card and quoted as untrusted data in a rework prompt. Truncated to 16 KiB |
+| `summary` | string | no | A short text, shown on the card and quoted as untrusted data in a rework prompt. Truncated to 16 KiB (at a character boundary) |
 
 Unknown members are ignored, so a sender can add fields without breaking; a required member that is missing or mistyped is a `400`.
 
@@ -94,7 +97,7 @@ report for the commit decides. Every report gets a card in the chat.
 |---|---|---|
 | `202 Accepted` | The signature and body are valid. Also for a repeated delivery id | Once |
 | `400 Bad Request` | The signature is valid but the body is not: malformed JSON, a missing or mistyped field, a `version` other than `1`, a bad `sha`, a `conclusion` outside the list. An RFC 9457 problem | No |
-| `401 Unauthorized` | A header is missing, the timestamp is outside the skew window, or the signature matches no configured secret | No |
+| `401 Unauthorized` | A header is missing, the timestamp is not plain digits or is outside the skew window, or the signature matches no configured secret. Also a request that is not a `POST`, because the guard comes first | No |
 | `413 Content Too Large` | The body is over 256 KiB | No |
 
 A `202` means "received", not "applied": the report is matched to a job by a worker, and a report
@@ -140,7 +143,24 @@ curl -sS -i https://orchestrator.example.com/webhooks/ci \
 
 `--data-binary` sends the bytes exactly as they are signed; `-d` would strip newlines. Expect
 `202`. Change one byte of the body, or send an old timestamp, and expect `401` and no stored
-report. The dev script `dev/ci-webhook.sh` (slice 6) does this for either shape.
+report. The dev script [`dev/ci-webhook.sh`](../../dev/ci-webhook.sh) does this (the generic shape now, the
+GitHub shape with slice 9), and `dev/ci-e2e.sh` uses it to drive a gated job to `done`.
+
+### Known-answer vectors
+
+The signature is `HMAC-SHA-256(key = secret, message = "<timestamp>.<body>")`, lowercase hex. These are
+checked by the unit tests of `orch-surface-webhook` (`signature.rs`) against the implementation, and were
+computed with OpenSSL 3 on 2026-09-30 (`printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r`).
+
+| # | Secret | Timestamp text | Body | Signature (`sha256=` + hex) |
+|---|---|---|---|---|
+| 1 | `dev-webhook-secret` | `1790800000` | the `$BODY` of the worked example above (compact, 250 bytes, no trailing newline) | `4fd60f8ffbbb110421e5f2c82030f78bcf59d4fe3e554040fc30502ccac27465` |
+| 2 | `Jefe` | none: the message is the two parts of RFC 4231 test case 2, `what do ya want ` and `for nothing?` | | `5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843` (the algorithm's own vector) |
+
+Skew vectors, for a clock at `T` and `WEBHOOK_GENERIC_MAX_SKEW_SECS` = 60 (the tests hold the clock):
+timestamps `T-60`, `T`, `T+60` are accepted; `T-61`, `T+61` are `401`; `+T`, ` T`, `T.0`, `-1`, the empty
+string and a 13-digit number are `401` even when signed exactly as written. Two secrets `new,old`: a
+signature by either is accepted, by a third is `401`.
 
 ## GitHub adapter (`POST /webhooks/github`)
 

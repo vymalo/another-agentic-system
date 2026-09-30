@@ -2,6 +2,7 @@
 #
 # It puts the chat UI, the resource API, the AG-UI route and the MCP server on ONE origin (as the production ingress does) and
 # injects a fixed identity. It performs no authentication at all: every request is "dev@example.com".
+# The exception is /webhooks/*: machine routes, which get no identity at all.
 # Local development only. Never expose it beyond 127.0.0.1 and never use it in production, where
 # oauth2-proxy authenticates the user and strips client-supplied copies of X-Auth-Request-Email.
 {
@@ -35,6 +36,16 @@
 		reverse_proxy orchestrator:8080 {
 			header_up -X-Auth-Request-Email
 			flush_interval -1
+		}
+	}
+
+	# The webhooks of CI systems (ADR 0017). Machine routes: no user, so NO identity. `header_up -X-Auth-Request-Email`
+	# deletes the header a client may have sent, and none is added: the orchestrator's webhook routes
+	# authenticate by signature and never read it. Production routes /webhooks/* the same way (oauth2-proxy
+	# `skip_auth_routes`, unverified: docs/api/webhooks.md).
+	handle /webhooks/* {
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
 		}
 	}
 

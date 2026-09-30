@@ -128,7 +128,7 @@ pub struct Setup {
     /// The `gate` key of an agent's `AGENTS_FILE` entry, by agent id.
     pub target_gates: BTreeMap<AgentId, GateLayer>,
     /// Which sources the instances honour (the build's rules by default; a test of a machinery
-    /// underneath a source this build still refuses, such as the inbox under `ci`, widens it).
+    /// underneath a source this build still refuses, such as the verifier, widens it).
     pub gate_rules: GateRules,
 }
 

@@ -31,59 +31,70 @@ fn everything() -> GateRules {
 }
 
 #[test]
-fn this_build_honours_agent_checks_and_the_verifier_but_not_ci() {
+fn this_build_honours_every_source() {
     let rules = GateRules::default();
     assert!(rules.honours(CheckSource::AgentChecks));
-    assert!(rules.honours(CheckSource::Verifier));
-    assert!(!rules.honours(CheckSource::Ci));
-    // Every source that is not honoured says which slice enables it; the ones that are say
-    // nothing.
-    assert!(pending_reason(CheckSource::AgentChecks).is_none());
-    assert!(pending_reason(CheckSource::Verifier).is_none());
-    assert!(pending_reason(CheckSource::Ci).unwrap().contains("slice 5"));
-    assert!(pending_reason(CheckSource::Ci).unwrap().contains("slice 6"));
+    assert!(
+        rules.honours(CheckSource::Ci),
+        "slice 6 built the CI webhook"
+    );
+    assert!(
+        rules.honours(CheckSource::Verifier),
+        "slice 10 built the verifier"
+    );
+    // A source that is not built says which slice enables it; every one is built now.
+    for source in CheckSource::ALL {
+        assert!(pending_reason(source).is_none(), "{source:?}");
+    }
     assert_eq!(known_sources(), "ci, agent-checks, verifier");
 }
 
 #[test]
-fn ci_is_refused_in_every_layer_and_the_message_names_the_slice() {
-    let rules = GateRules::default();
+fn a_source_the_build_does_not_honour_is_refused_in_every_layer_with_its_reason() {
+    // `honouring` is how a build (or a test) with fewer sources says so: the refusal names what is
+    // left, and the source it would need.
+    let rules = GateRules::default().honouring([CheckSource::AgentChecks]);
     let above = GatePolicy::default();
     let refused = [
-        (json!({"require": ["ci"]}), "slice 5"),
-        (json!({"require": ["agent-checks", "ci"]}), "slice 6"),
-        (json!({"require": ["verifier", "ci"]}), "slice 6"),
-        (json!({"ci": {"required": ["build"]}}), "slice 5"),
-        (json!({"ci": {"timeoutSecs": 60}}), "slice 6"),
+        json!({"require": ["ci"]}),
+        json!({"require": ["agent-checks", "verifier"]}),
+        json!({"verifier": "reviewer"}),
+        json!({"ci": {"required": ["build"]}}),
     ];
+    for at in [
+        Layer::Deployment,
+        Layer::Target(agent("coder")),
+        Layer::Thread,
+    ] {
+        for value in &refused {
+            let err = rules.apply(&above, &layer(value.clone()), &at).unwrap_err();
+            assert!(matches!(err, GateError::Unavailable { .. }), "{at} {value}");
+            let message = err.to_string();
+            assert!(message.contains("not available yet"), "{message}");
+        }
+    }
+}
+
+#[test]
+fn the_sources_this_build_honours_pass_in_every_layer_that_may_say_them() {
+    let rules = GateRules::default();
+    // Names for `ci` are in place above (a policy may name checks without requiring them), so a
+    // thread can add the source.
+    let mut above = GatePolicy::default();
+    above.ci.required = ["build".to_owned()].into();
     let layers = [
         Layer::Deployment,
         Layer::Target(agent("coder")),
         Layer::Thread,
     ];
     for at in &layers {
-        for (value, slice) in &refused {
-            let err = rules.apply(&above, &layer(value.clone()), at).unwrap_err();
-            assert!(matches!(err, GateError::Unavailable { .. }), "{at} {value}");
-            let message = err.to_string();
-            assert!(message.contains(slice), "{at} {value}: {message}");
-            assert!(
-                message.contains("only agent-checks, verifier can be required"),
-                "{message}"
-            );
+        for source in ["agent-checks", "ci", "verifier"] {
+            let policy = rules
+                .apply(&above, &layer(json!({"require": [source]})), at)
+                .unwrap();
+            assert_eq!(policy.require.len(), 1, "{at} {source}");
+            assert_eq!(policy.require.iter().next().unwrap().config_name(), source);
         }
-    }
-    // The sources this build honours pass in every layer.
-    for at in &layers {
-        let policy = rules
-            .apply(&above, &layer(json!({"require": ["agent-checks"]})), at)
-            .unwrap();
-        assert_eq!(policy.require.len(), 1);
-        assert!(policy.requires(CheckSource::AgentChecks));
-        let policy = rules
-            .apply(&above, &layer(json!({"require": ["verifier"]})), at)
-            .unwrap();
-        assert_eq!(policy.require, [CheckSource::Verifier].into());
     }
     // The verifier setting passes where a thread is not the one choosing it.
     for at in [Layer::Deployment, Layer::Target(agent("coder"))] {
@@ -113,6 +124,34 @@ fn ci_is_refused_in_every_layer_and_the_message_names_the_slice() {
         ),
         "{err}"
     );
+}
+
+#[test]
+fn the_ci_settings_are_honoured_for_a_deployment_or_a_target_and_never_per_thread() {
+    let rules = GateRules::default();
+    let above = GatePolicy::requiring([CheckSource::Ci]);
+    let settings = layer(json!({"ci": {"required": ["build", "lint"], "timeoutSecs": 60}}));
+    for at in [Layer::Deployment, Layer::Target(agent("coder"))] {
+        let policy = rules.apply(&above, &settings, &at).unwrap();
+        assert_eq!(
+            policy.ci.required,
+            ["build".to_owned(), "lint".to_owned()].into()
+        );
+        assert_eq!(policy.ci.timeout, jiff::SignedDuration::from_secs(60));
+    }
+    let err = rules.apply(&above, &settings, &Layer::Thread).unwrap_err();
+    assert!(
+        matches!(err, GateError::NotPerThread { setting: "ci", .. }),
+        "{err}"
+    );
+    let err = rules
+        .apply(
+            &above,
+            &layer(json!({"ci": {"timeoutSecs": 0}})),
+            &Layer::Deployment,
+        )
+        .unwrap_err();
+    assert!(matches!(err, GateError::Timeout { .. }), "{err}");
 }
 
 #[test]
@@ -425,6 +464,7 @@ fn startup_validation_resolves_every_agent() {
 
     // And what this build cannot honour never gets as far as the references.
     let err = GateRules::default()
+        .honouring([CheckSource::AgentChecks, CheckSource::Verifier])
         .validate(
             &deployment,
             &BTreeMap::from([(
@@ -434,7 +474,7 @@ fn startup_validation_resolves_every_agent() {
             &agents,
         )
         .unwrap_err();
-    assert!(err.to_string().contains("slice 5"), "{err}");
+    assert!(err.to_string().contains("ci settings"), "{err}");
 }
 
 #[test]
@@ -625,9 +665,9 @@ async fn a_request_that_weakens_or_overreaches_is_a_400_and_writes_nothing() {
         (json!({"require": []}), "may add sources"),
         (json!({"maxAttempts": 11}), "1..=10"),
         (json!({"maxAttempts": 0}), "1..=10"),
-        (json!({"require": ["agent-checks", "ci"]}), "slice 5"),
         // A thread may require the verifier, but not choose it: the target configures that.
         (json!({"verifier": "plain"}), "cannot be set per thread"),
+        (json!({"ci": {"required": ["build"]}}), "per thread"),
     ];
     for (request, why) in refused {
         let err = create_with(&app, "coder", Some(layer(request.clone())))
@@ -714,22 +754,38 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
     let w = World::new();
     let refused = |cfg: AppConfig| try_app(&w, cfg).err().map(|e| e.to_string());
     let ci = GatePolicy::requiring([CheckSource::Ci]);
+    // A build, or a deployment, that cannot honour CI: here, rules that leave it out.
+    let without_ci =
+        GateRules::default().honouring([CheckSource::AgentChecks, CheckSource::Verifier]);
+    let named = |gate: GatePolicy| {
+        let mut gate = gate;
+        gate.ci.required = ["build".to_owned()].into();
+        gate
+    };
 
     let says = refused(AppConfig {
-        gate: ci.clone(),
+        gate: named(ci.clone()),
+        gate_rules: without_ci.clone(),
         ..AppConfig::default()
     })
     .unwrap();
     assert!(
-        says.contains("slice 5") && says.contains("deployment"),
+        says.contains("deployment") && says.contains("the ci source"),
         "{says}"
     );
     let says = refused(AppConfig {
-        target_gates: BTreeMap::from([(agent("coder"), layer(json!({"require": ["ci"]})))]),
+        target_gates: BTreeMap::from([(
+            agent("coder"),
+            layer(json!({"require": ["ci"], "ci": {"required": ["build"]}})),
+        )]),
+        gate_rules: without_ci.clone(),
         ..AppConfig::default()
     })
     .unwrap();
-    assert!(says.contains("coder") && says.contains("slice 5"), "{says}");
+    assert!(
+        says.contains("coder") && says.contains("the ci source"),
+        "{says}"
+    );
     let says = refused(AppConfig {
         gate: GatePolicy {
             ci: orch_core::CiPolicy {
@@ -738,13 +794,11 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
             },
             ..GatePolicy::default()
         },
+        gate_rules: without_ci,
         ..AppConfig::default()
     })
     .unwrap();
-    assert!(
-        says.contains("slice 5") && says.contains("ci settings"),
-        "{says}"
-    );
+    assert!(says.contains("ci settings"), "{says}");
     // The verifier is honoured: naming one is fine, and a typo in its id is still caught.
     assert!(
         refused(AppConfig {
@@ -774,12 +828,10 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
     })
     .unwrap();
     assert!(says.contains("1..=10"), "{says}");
-    // With rules that honour more, the same gate builds, and its references are still checked.
-    let all = GateRules::default().honouring(CheckSource::ALL);
+    // A CI gate builds with this build's own rules (slice 6), and its references are still checked.
     assert!(
         refused(AppConfig {
             gate: ci.clone(),
-            gate_rules: all.clone(),
             ..AppConfig::default()
         })
         .is_none()
@@ -789,7 +841,6 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
             verifier: Some(agent("ghost")),
             ..ci
         },
-        gate_rules: all,
         ..AppConfig::default()
     })
     .unwrap();

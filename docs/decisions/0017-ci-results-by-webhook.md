@@ -1,7 +1,8 @@
 # ADR 0017 — CI results by webhook: GitHub and a generic signed shape
 
-- **Status:** accepted (2026-09-30). **Planned, not built:** MVP slices 6 (generic route, core),
-  7 and 8 (the card) and 9 (GitHub adapter) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
+- **Status:** accepted (2026-09-30). **Built:** MVP slice 6 (the generic route, `SurfaceRoutes::machine`, the CI
+  source in the gate), 2026-09-30; see [Built (slice 6)](#built-slice-6). **Planned, not built:** slices 7 and 8
+  (the card) and 9 (the GitHub adapter) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
   [`api/webhooks.md`](../api/webhooks.md).
@@ -139,6 +140,47 @@ stateDiagram-v2
   Dead --> [*]
 ```
 
+## Built (slice 6)
+
+*2026-09-30.* The generic route, `SurfaceRoutes::machine`, the CI source of the gate and `ORCH_CI_TIMEOUT_SECS` are
+built and checked against the code (`orchestrator/crates/surface-webhook`, `api`, `app`, `core`; the binary). The
+GitHub route (`webhook-github`, `POST /webhooks/github`) is slice 9 and is not mounted: `webhook-github` is not yet a
+name `ORCH_SURFACES` knows. Where the build differs from, or fixes, the text above:
+
+- **The guard is the signature check.** `SurfaceRoutes::machine(routes, guard)` mounts routes outside the identity
+  layer and outside the request timeout, and takes the guard as a required argument, so a machine route cannot be added
+  without one. The webhook's guard is a middleware that reads the body up to the route's limit, checks the headers, the
+  timestamp and the HMAC, and only then hands the handler the verified bytes in a request extension; a handler that
+  finds none refuses. The order is: the three headers (401), the timestamp is plain digits and within the skew (401),
+  the body within 256 KiB (413), the HMAC (401). Nothing is written before the HMAC is good, and the handler cannot be
+  reached without it.
+- **The clock is the application's.** The skew is judged against `App`'s injected clock, so a test that holds the clock
+  sees the same window the route does.
+- **Delivery ids are UUIDs.** `X-Vymalo-Delivery` must parse as a UUID (else 400, after the signature). It is stored
+  in its hyphenated lower-case form, so the two spellings of one UUID are one delivery. The inbox `source` is `generic`.
+- **The timestamp is `[0-9]{1,12}`.** A sign, a blank or a fraction is a 401. This keeps the signed string
+  `"<ts>.<body>"` unambiguous (a timestamp with a full stop could trade bytes with the body).
+- **The conclusions of the generic body are the eight of `api/webhooks.md`.** The core's enum also has
+  `startup_failure` (GitHub's `workflow_run` can say it); slice 9 maps it, the generic body refuses it with a 400.
+- **Only `http` and `https` links are kept**, and a summary is cut to 16 KiB at a character boundary.
+- **`ORCH_CI_TIMEOUT_SECS` is read** (default 3600, at least 1) as the deployment's `ci.timeout`; an `AGENTS_FILE`
+  entry's `gate.ci.timeoutSecs` overrides it for that agent. A gate that requires `ci` while no webhook surface is
+  mounted on a control plane logs a warning at startup; its jobs end `Blocked` (`ci_timeout`), never `Done`.
+- **Secrets are required by the role that serves the route.** `WEBHOOK_GENERIC_SECRETS` unset while `ORCH_SURFACES`
+  names `webhook-generic` is exit 78 for `all` and `control-plane`; a `worker` serves no routes and does not need it
+  (a value that is set is validated in every role). More than two secrets is exit 78 too. The variable is redacted in
+  `--help` and in `Debug`, and the value is never in a message or a log.
+- **`ping` and the GitHub events** are slice 9.
+- **The gate honours `ci`.** `pending_reason(Ci)` is `None`; the `ci` and `ci:` settings are accepted in a deployment or
+  an `AGENTS_FILE` entry (never per thread); `verifier` is still refused until slice 10 ([ADR 0018](0018-verification-gate-and-rework-loop.md)).
+- **The core needed no change.** `ci_result` cards, the CI source and the CI deadline to `Blocked` (no attempt spent)
+  were built in slices 2 and 5; the slice's end-to-end tests (`orch-e2e` `webhook.rs`, both stores, a clock the test
+  holds) drive them through the real route: a report that beats its watch is parked, matched and the job done; a red
+  report reworks with the report in the findings, and a report about the old commit changes nothing; with no report the
+  deadline blocks the thread; a refused delivery changes nothing.
+- **Reproducing the vectors.** The known-answer vectors are in [`api/webhooks.md`](../api/webhooks.md#known-answer-vectors)
+  and in the unit tests of `signature.rs`.
+
 ## Security notes
 
 - **Verify before any write.** The HMAC is over the raw bytes as received, not a re-serialised
@@ -219,5 +261,11 @@ Easy to reverse: limits, the skew window, the timeout and the TTL.
   fails closed as `failure`.
 - *Verified 2026-09-30* (adam-rs `882e239`): `adam-coder` emits `branch {repository, branch,
   base_branch, commit}` and `pull_request {…}` artifacts, so the watch key can be built from it.
-- *Unverified*, checked in slice 6: oauth2-proxy `skip_auth_routes` for `/webhooks/*`; that `hmac`
-  `verify_slice` is constant-time.
+- *Verified 2026-09-30* (slice 6), reading the source: `hmac` 0.13.0 re-exports `digest` 0.11.3's `Mac`, whose
+  `verify_slice` checks the length and then compares with `subtle`'s `ct_eq` (`digest-0.11.3/src/mac.rs`). It is
+  constant-time in the tag; the length of a tag is public.
+- *Verified 2026-09-30*: oauth2-proxy has the option `--skip-auth-route` / `skip_auth_routes` ("bypass authentication
+  for requests that match the method & path. Format: method=path_regex OR method!=path_regex. For all methods:
+  path_regex OR !=path_regex"). <https://oauth2-proxy.github.io/oauth2-proxy/configuration/overview>. *Unverified*:
+  that oauth2-proxy strips a client-supplied `X-Auth-Request-Email` on a skipped route. It does not matter to the
+  webhooks, which never read it, and the compose edge deletes it (`header_up -X-Auth-Request-Email`).

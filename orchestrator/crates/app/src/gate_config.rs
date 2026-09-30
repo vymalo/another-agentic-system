@@ -10,15 +10,14 @@
 //!   anywhere within `1..=cap`**, lower or higher than the layer above's. The one removal allowed
 //!   is for the verifier itself: the entry of the agent that is the verifier may leave the
 //!   `verifier` source out for itself, because an agent cannot verify its own work.
-//! * **This build honours only some sources** ([`GateRules::honours`]). Until the CI results
-//!   (slice 6) exist, a gate that required `ci` would wait for a report that can never come.
-//!   Configuration therefore refuses it (and the `ci` settings) in every layer, and fails
-//!   closed: the binary exits 78, a request is a 400. [`pending_reason`] says which sources those
-//!   are and why; [`GateRules::honouring`] is how a build (or a test) that has them says so. A
-//!   slice that makes a source real changes that arm, and then also owns what the source needs
-//!   on top of the rules here (its own settings, its own checks in
-//!   [`GateRules::check_verifier`]). The verifier has been real since slice 10: the dispatcher
-//!   asks it and the core times it out.
+//! * **This build honours only some sources** ([`GateRules::honours`]). `agent-checks`, `ci` (since
+//!   the CI webhook, slice 6) and `verifier` (since slice 10: the dispatcher asks it and the core
+//!   times it out) are real. [`pending_reason`] is where a source that is not built yet is listed
+//!   with why, and a gate that required one would be refused in every layer, failing closed: the
+//!   binary exits 78, a request is a 400. [`GateRules::honouring`] is how a test that wants more
+//!   (or fewer) says so. A slice that makes a source real changes that arm, and then also owns what
+//!   the source needs on top of the rules here (its own settings, its own checks in
+//!   [`GateRules::check_verifier`]).
 //! * **The verifier is another agent**, and only the deployment and a target choose it.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,10 +48,12 @@ pub const MAX_ATTEMPTS_CAP_CEILING: u32 = 100;
 pub fn pending_reason(source: CheckSource) -> Option<&'static str> {
     match source {
         CheckSource::AgentChecks => None,
-        CheckSource::Ci => Some(
-            "CI results need the inbox and timers (MVP slice 5) and the CI webhook (MVP slice 6), \
-             which are not built yet",
-        ),
+        // Built in slice 6: the webhooks write the reports (`orch-surface-webhook`), the inbox and
+        // the timers of slice 5 apply them and arm the deadline. Whether a deployment *receives*
+        // reports is its choice (`ORCH_SURFACES`); a gate that requires `ci` without a webhook
+        // ends `Blocked` (`ci_timeout`) after `ORCH_CI_TIMEOUT_SECS`, never `Done`.
+        CheckSource::Ci => None,
+        // Built in slice 10.
         CheckSource::Verifier => None,
     }
 }

@@ -113,6 +113,10 @@ jobs:
         # coder: the gate and the verification are the orchestrator's, so scripted agents are enough. The
         # script also reads the mock verifier's request journal, to see what the orchestrator really sent it.
         run: dev/verifier-e2e.sh
+      - name: The CI gate (a signed webhook report sends the agent back, then ends the job)
+        # `mock-coder-ci` (dev/agents.yaml) under `gate: {require: [ci]}`; dev/ci-webhook.sh plays the CI
+        # system through the edge's /webhooks/* (no identity) to POST /webhooks/ci (ADR 0017).
+        run: dev/ci-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.

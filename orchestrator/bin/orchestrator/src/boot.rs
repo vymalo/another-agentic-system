@@ -32,7 +32,7 @@ use axum::Router;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig, InboxWorker};
-use orch_core::BoxError;
+use orch_core::{BoxError, CheckSource};
 use orch_ports::{AgentTransport, PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
@@ -63,8 +63,9 @@ pub enum Fatal {
 
 /// The routes of one surface, built from its adapter crate.
 ///
-/// The configuration refuses a surface that is not compiled in, so the error arm below is a
-/// second line of defence, not a path a running service takes.
+/// The configuration refuses a surface that is not compiled in, and a webhook surface without
+/// its secrets, so the error arms below are a second line of defence, not paths a running
+/// service takes.
 fn surface_routes<P: orch_ports::Ports>(
     surface: Surface,
     app: &Arc<App<P>>,
@@ -73,10 +74,36 @@ fn surface_routes<P: orch_ports::Ports>(
 ) -> Result<SurfaceRoutes, ConfigError> {
     match surface {
         #[cfg(feature = "surface-agui")]
-        Surface::Agui => Ok(orch_surface_agui::routes(Arc::clone(app), sse_keepalive)),
+        Surface::Agui => {
+            let _ = cfg;
+            Ok(orch_surface_agui::routes(Arc::clone(app), sse_keepalive))
+        }
         #[cfg(not(feature = "surface-agui"))]
         Surface::Agui => {
-            let _ = (app, sse_keepalive);
+            let _ = (cfg, app, sse_keepalive);
+            Err(ConfigError::SurfaceNotCompiled {
+                surface: surface.name(),
+                feature: surface.feature(),
+            })
+        }
+        #[cfg(feature = "surface-webhook")]
+        Surface::WebhookGeneric => {
+            let _ = sse_keepalive;
+            let generic = cfg
+                .webhook_generic
+                .clone()
+                .ok_or(ConfigError::MissingForSurface {
+                    var: "WEBHOOK_GENERIC_SECRETS",
+                    surface: surface.name(),
+                })?;
+            Ok(orch_surface_webhook::generic::routes(
+                Arc::clone(app),
+                generic,
+            ))
+        }
+        #[cfg(not(feature = "surface-webhook"))]
+        Surface::WebhookGeneric => {
+            let _ = (cfg, app, sse_keepalive);
             Err(ConfigError::SurfaceNotCompiled {
                 surface: surface.name(),
                 feature: surface.feature(),
@@ -258,6 +285,21 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
     if cfg.surfaces.is_empty() {
         tracing::warn!(
             "no interaction surface is mounted: only the resource API and health are served"
+        );
+    }
+    // A gate that waits for CI with no way for a report to arrive is not wrong (another replica
+    // group may take the webhooks), but it ends in `ci_timeout`, so say so.
+    let takes_reports = cfg.surfaces.contains(&Surface::WebhookGeneric);
+    let waits_for_ci = cfg.gate.requires(CheckSource::Ci)
+        || cfg
+            .target_gates
+            .values()
+            .any(|g| g.require.iter().flatten().any(|s| s.0 == CheckSource::Ci));
+    if waits_for_ci && !takes_reports {
+        tracing::warn!(
+            timeout_secs = cfg.gate.ci.timeout.as_secs(),
+            "a gate requires ci but no webhook surface is mounted here (ORCH_SURFACES): a job \
+             waits for a report from elsewhere, or is blocked with ci_timeout"
         );
     }
     let surfaces = cfg

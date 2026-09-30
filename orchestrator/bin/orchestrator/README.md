@@ -60,8 +60,12 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `INBOX_MAX_ATTEMPTS` | `10` | at least 1; claims of one inbox row before it is dead-lettered (a row claimed more often without being finished is dead-lettered undelivered; claims handed back at shutdown or ended by a park are not counted) |
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
-| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), `agui` and `mcp`, as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
-| `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **`agent-checks` and `verifier` are accepted by this build**; `ci` is a startup error (78) naming the slices that enable it. `verifier` needs a verifier agent (`ORCH_VERIFIER`, or `gate.verifier` in an entry) |
+| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them: `agui`, `mcp`, `webhook-generic`; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
+| `WEBHOOK_GENERIC_SECRETS` | none | one or two comma-separated shared secrets of `POST /webhooks/ci` (`--webhook-generic-secrets`; a signature by either is good, so a secret can be rotated). **Required when a role that serves routes (`all`, `control-plane`) mounts `webhook-generic`** (exit 78); a third secret is a startup error; never logged, and hidden in `--help` |
+| `WEBHOOK_GENERIC_MAX_SKEW_SECS` | `300` | at least 1; how far `X-Vymalo-Timestamp` may be from the clock, either way (`--webhook-generic-max-skew-secs`) |
+| `ORCH_CI_TIMEOUT_SECS` | `3600` | at least 1; how long a job waits for the CI reports its gate needs before it is blocked with `ci_timeout` (no attempt is used); an `AGENTS_FILE` entry's `gate.ci.timeoutSecs` overrides it (`--ci-timeout-secs`) |
+| `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **`ci` and `agent-checks` are accepted by this build** (`ci` since slice 6; it needs reports, so mount `webhook-generic`); `verifier` is a startup error (78) naming the slice that enables it |
+| `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **All three are accepted by this build** (`ci` since slice 6, it needs reports, so mount `webhook-generic`; `verifier` since slice 10). `verifier` needs a verifier agent (`ORCH_VERIFIER`, or `gate.verifier` in an entry) |
 | `ORCH_MAX_ATTEMPTS` | `3` | attempts a gated job's agent gets, the first included (`--max-attempts`); at least 1 and at most the cap |
 | `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most an `AGENTS_FILE` entry or a run may set the attempts to (`--max-attempts-cap`); at most `100`. When only the cap is set below `3`, the default attempts are lowered to it; an explicit `ORCH_MAX_ATTEMPTS` above the cap is a startup error |
 | `ORCH_VERIFIER` | none | the verifier agent's id (`--verifier`): another configured agent than the ones it verifies (startup error otherwise, naming the agent and how to fix it). Used when the gate requires `verifier` |
@@ -107,9 +111,11 @@ Startup validates all of it and exits **78** with a message naming the variable 
 `maxAttempts` outside `1..=cap`; an entry whose `require` leaves out a source the deployment requires; a `verifier`
 that is not another configured agent; a gate that requires `verifier` with no verifier configured; an agent whose own
 gate requires the verifier and that is the verifier itself (its entry must leave `verifier` out of its `require`, the one
-removal a layer may make); an unknown member of `gate`. **`ci`, as a source or as a setting (`ci:`), is refused in every
-layer**: no surface writes CI reports until the CI webhook (slice 6) exists (the inbox and timers, MVP slice 5, are built),
-so a gate that required it could never pass. The message says which slices enable it. A run that asks for the same is a 400.
+removal a layer may make); an unknown member of `gate`. `ci` is honoured since slice 6 (the inbox and timers, slice 5,
+and the CI webhook write and apply its reports): a deployment or an entry may require it and set `ci: {required, timeoutSecs}`; a run may add `ci` to `require`
+but not set the `ci` settings. A control plane logs a warning when a gate requires `ci` and no webhook surface is mounted on it: those jobs end
+`Blocked` (`ci_timeout`) unless another replica group takes the webhooks. A source this build cannot honour would be refused in every layer, naming the slice
+that enables it (none is left). A run that asks for the same is a 400.
 
 **The verifier** (slice 10): when the worker completes under a gate that requires it, the dispatcher asks the verifier agent
 over A2A, in a context of its own (`<thread>-verify-<attempt>-<verification>`), to review the commit the worker pushed, and
@@ -166,6 +172,7 @@ noted in `src/main.rs`.
 |---|---|---|
 | `surface-agui` | yes | [`orch-surface-agui`](../../crates/surface-agui/README.md), the surface name `agui` |
 | `surface-mcp` | yes | [`orch-surface-mcp`](../../crates/surface-mcp/README.md), the surface name `mcp` ([ADR 0019](../../../docs/decisions/0019-mcp-server-over-streamable-http.md)). On by default like `surface-agui`, so the image has it; it is mounted only when `ORCH_SURFACES` names it |
+| `surface-webhook` | yes | [`orch-surface-webhook`](../../crates/surface-webhook/README.md), the surface name `webhook-generic` (`POST /webhooks/ci`); `webhook-github` joins it in slice 9 |
 | `agent-local` | **no** | [`orch-agent-adam`](../../crates/agent-adam/README.md) and the adam-rs runtime: `transport: local` agents run in this process ([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)); the variable `AGENT_LOCAL_CONCURRENCY` |
 
 The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
@@ -191,6 +198,7 @@ The resource API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`
 |---|---|
 | unset, or `agui` (the default) | the AG-UI routes: `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect`, `GET /agui/agents/{agentId}/capabilities` |
 | `agui,mcp` | and the MCP server at `/mcp`: a **machine route** outside the identity layer, guarded by `Authorization: Bearer <token>`; needs `MCP_TOKENS_FILE` and `MCP_ALLOWED_HOSTS` (a missing piece is exit 78 before anything connects) |
+| `webhook-generic` (with `WEBHOOK_GENERIC_SECRETS`) | `POST /webhooks/ci`: a signed CI report, a **machine route**: no user identity (it never reads `X-Auth-Request-Email`), guarded by an HMAC-SHA-256 over `"<timestamp>.<body>"`. The edge must pass `/webhooks/*` to the orchestrator without injecting an identity ([`api/webhooks.md`](../../../docs/api/webhooks.md)) |
 
 That is the whole list. The legacy chat API interaction routes (`POST /api/threads`,
 `POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`, `GET /api/threads/{id}/stream`),
@@ -219,8 +227,8 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
 
 ## Tests
 
-* Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the variables, `ci` refused in
-  `ORCH_GATE` and an `AGENTS_FILE` entry naming the slice, the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
+* Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the variables, `ci`
+  accepted and `ORCH_CI_TIMEOUT_SECS` read (and overridden by a target's `ci.timeoutSecs`), the webhook: mounted by name with its secrets, a mounted route without secrets refused (a worker need not have them), the count, the skew and the redaction of the secrets, its feature off; the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
   `ORCH_VERIFIER_TIMEOUT_SECS` (a missing or unknown verifier, a self-verifying one, a bad timeout refused), strict parsing of `gate:`, a
   target that weakens the deployment or exceeds the cap; defaults, the
   environment/flag mapping, unknown, empty and repeated surfaces, the removed
@@ -236,7 +244,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   process starts and completes it. Unit tests in `src/config.rs` cover the flavours: without the feature a local agent is
   refused naming `agent-local`, with it it is accepted, and `AGENT_LOCAL_CONCURRENCY` defaults to 4.
 * `tests/smoke.rs`: the built executable as a process. Without the feature, `transport: local` exits 78 naming `agent-local`. Configuration-error
-  tests always run (including a gate this build cannot honour (CI) or cannot run (the verifier with no agent to ask), in the environment and in `AGENTS_FILE`: exit 78, the slice named; the unreachable-database one waits out sqlx's 30 s
+  tests always run (including a gate this build cannot run (the verifier with no agent to ask), in the environment and in `AGENTS_FILE`: exit 78; the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, the removed
   `chat-api` (`the_removed_chat_api_surface_is_a_config_error_pointing_to_agui`: from the variable,

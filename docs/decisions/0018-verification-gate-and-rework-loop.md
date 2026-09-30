@@ -3,8 +3,9 @@
 - **Status:** accepted (2026-09-30). **Built:** MVP slice 2 (the core), slice 3 (configuration and
   the AG-UI projection) and slice 4 (the web), 2026-09-30, for the agent-checks source; see *Built
   (slice 3)* and *Built (slice 4)* below; and slice 10, 2026-09-30, the verifier agent (see *Built
-  (slice 10)* below).
-  **Planned, not built:** CI as a source (slices 5 and 6)
+  (slice 10)* below). Slices 5 and 6 (the inbox, and the CI webhook that makes `ci` a source this build honours) are
+  built too, see *Updated (slice 6)*.
+  **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
   concrete). Closes [open question 8](../open-questions.md#closed) and answers part of question 6
@@ -184,7 +185,7 @@ last findings in its `error` event.
   the verifier. A thread may set only `require` and `maxAttempts`, and spells a source `agent-checks` or
   `agent_checks`. A default `ORCH_MAX_ATTEMPTS` is lowered to a smaller `ORCH_MAX_ATTEMPTS_CAP`; one that is set must fit.
   The verifier of every agent's resolved gate must be a configured agent.
-- **This build honours only `agent-checks`** *(as slice 3 left it; since slice 10 it honours `verifier` as well, see Built (slice 10), and `ci` stays refused)*. The application still drops `RequestVerification` (slice 10; `Watch` and `Schedule` are executed since slice 5, but no
+- **This build honours only `agent-checks`** *(as slice 3 left it; it honours `verifier` as well since slice 10, see Built (slice 10), and `ci` since slice 6, see Updated (slice 6))*. The application still drops `RequestVerification` (slice 10; `Watch` and `Schedule` are executed since slice 5, but no
   surface writes CI reports until slice 6), so a gate that required `ci` or `verifier` would wait for a verdict
   that never comes. Configuration **refuses** those sources, and the `ci` and `verifier` settings, in every layer,
   and says which slice enables them: startup exits 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an `AGENTS_FILE`
@@ -197,6 +198,7 @@ last findings in its `error` event.
   verifier can be required (slices 6 and 10); the per-target `ci.timeoutSecs` is accepted by the parser and refused
   with the rest of the `ci` settings. *(Update 2026-09-30: slice 10 reads `ORCH_VERIFIER_TIMEOUT_SECS` and honours the
   verifier, see below; the rest of this paragraph and the one before it are as slice 3 left them, for the `ci` source.)*
+  *(Update 2026-09-30: `ORCH_CI_TIMEOUT_SECS` and the per-target `ci.timeoutSecs` are read since slice 6, see Updated (slice 6).)*
 - **Projection:** as above. The gate reaches the projection through `ThreadMeta.gate` (the job's copy, fixed when the
   thread was created); everything else is folded from the log. The `vymalo.check` card of a source in an attempt
   has a stable id, `check-<attempt>-<verification>-<source>`, and is `replace: true` (a second verification of the
@@ -226,6 +228,17 @@ last findings in its `error` event.
 - The mock replays both goldens (and `verify-pass`, and the mock-only `verify-ci` and `verify-wait`, which need the CI
   source of slices 5 and 6); the system tests run the fake agent's `verify-*` scripts through the real orchestrator.
   Rules and tests: [`web/README.md`](../../web/README.md#verification-the-gate).
+## Updated (slice 6)
+
+*2026-09-30.* **This build honours `ci` and `agent-checks`; `verifier` is still refused until slice 10.**
+`pending_reason(CheckSource::Ci)` is `None`: the CI webhook ([ADR 0017](0017-ci-results-by-webhook.md)) writes
+reports into the inbox that slice 5 built, so a gate that requires `ci` can be decided. The `ci` source and the `ci`
+settings (`ci.required`, `ci.timeoutSecs`) are accepted in the deployment (`ORCH_GATE`, `ORCH_CI_TIMEOUT_SECS`) and in
+an `AGENTS_FILE` entry, and refused per thread as before (`ci` cannot be set by a request; `require: [ci]` can be
+added by one). `verifier` and its setting are refused in every layer with the slice that enables them. Whether a
+deployment can *receive* reports is `ORCH_SURFACES`: a `ci` gate with no webhook mounted is not refused (another
+replica group may serve the webhooks), it ends `Blocked` (`ci_timeout`) after the timeout, and a control plane warns
+at startup.
 
 ## Built (slice 10)
 
@@ -322,13 +335,13 @@ above:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ORCH_GATE` | empty | required sources, comma list of `ci`, `agent-checks`, `verifier`; empty keeps today's behaviour. *Built: `agent-checks` and `verifier` are accepted; `ci` is refused until its slices* |
+| `ORCH_GATE` | empty | required sources, comma list of `ci`, `agent-checks`, `verifier`; empty keeps today's behaviour. *Built: all three are accepted (`ci` since slice 6, `verifier` since slice 10)* |
 | `ORCH_MAX_ATTEMPTS` | `3` | attempts per job, including the first |
 | `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most a target or a thread may raise it to; at most `100`. A default `ORCH_MAX_ATTEMPTS` is lowered to a smaller cap |
 | `ORCH_VERIFIER` | none | the verifier agent's id (must be configured and, when the gate requires the verifier, another agent than the one verified; startup error otherwise). *Built (slice 10)* |
 | `ORCH_VERIFIER_TIMEOUT_SECS` | `1800` | how long to wait for a verdict before `Blocked`, at least 1. *Built (slice 10)* |
 | `ORCH_VERIFIER_WATCH_SECS` | `5` | how often a verification looks at its thread while it waits for the verifier, at least 1; not a policy of the gate, a setting of the dispatcher. *Built (slice 10)* |
-| `ORCH_CI_TIMEOUT_SECS` | `3600` | how long to wait for CI before `Blocked` (ADR 0017). *Not read yet (slice 6)* |
+| `ORCH_CI_TIMEOUT_SECS` | `3600` | how long to wait for CI before `Blocked` (ADR 0017), at least 1; an `AGENTS_FILE` entry's `gate.ci.timeoutSecs` overrides it. *Read since slice 6* |
 | `AGENTS_FILE` `gate` | none | per-target override, shape above |
 
 ## Security notes

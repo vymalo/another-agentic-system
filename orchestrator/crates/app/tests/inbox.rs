@@ -10,8 +10,7 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_app::{
-    App, AppConfig, AppError, ApplyOutcome, GateRules, InboxConfig, InboxWorker, NewThread,
-    Received,
+    App, AppConfig, AppError, ApplyOutcome, InboxConfig, InboxWorker, NewThread, Received,
 };
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiPolicy, CiProvider,
@@ -46,9 +45,6 @@ fn app_config() -> AppConfig {
             },
             ..GatePolicy::requiring([CheckSource::Ci])
         },
-        // This build refuses a CI gate until the CI webhook exists (slice 6); the inbox is tested
-        // underneath it, so these tests honour every source.
-        gate_rules: GateRules::default().honouring(CheckSource::ALL),
         ..AppConfig::default()
     }
 }

@@ -250,6 +250,13 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--mcp-wait-max-concurrent", "MCP_WAIT_MAX_CONCURRENT"),
         ("--mcp-wait-max-per-user", "MCP_WAIT_MAX_PER_USER"),
         ("--mcp-allowed-origins", "MCP_ALLOWED_ORIGINS"),
+        ("--gate", "ORCH_GATE"),
+        ("--ci-timeout-secs", "ORCH_CI_TIMEOUT_SECS"),
+        ("--webhook-generic-secrets", "WEBHOOK_GENERIC_SECRETS"),
+        (
+            "--webhook-generic-max-skew-secs",
+            "WEBHOOK_GENERIC_MAX_SKEW_SECS",
+        ),
         ("--auth-dev-user", "AUTH_DEV_USER"),
         ("--database-max-connections", "DATABASE_MAX_CONNECTIONS"),
         ("--dispatcher-concurrency", "DISPATCHER_CONCURRENCY"),
@@ -277,6 +284,9 @@ fn every_setting_is_read_from_its_variable() {
         ("ORCH_ROLE", "controlplane"),
         ("ORCH_SURFACES", "a2a"),
         ("ORCH_SURFACES", ","),
+        ("ORCH_CI_TIMEOUT_SECS", "0"),
+        ("WEBHOOK_GENERIC_MAX_SKEW_SECS", "0"),
+        ("WEBHOOK_GENERIC_SECRETS", "one,two,three"),
         ("AUTH_DEV_USER", "not-an-email"),
         ("DATABASE_MAX_CONNECTIONS", "1"),
         ("DISPATCHER_CONCURRENCY", "0"),
@@ -313,47 +323,35 @@ fn every_setting_is_read_from_its_variable() {
     }
 }
 
-/// A gate the build cannot honour (CI, until its slices land) or cannot run (the verifier with
-/// nobody to ask) is refused before anything connects: exit 78, the message names the setting and
-/// says why. It never falls back to no gate.
+/// A gate the build cannot run (the verifier with nobody to ask, or an agent that would verify its
+/// own work) is refused before anything connects: exit 78, the message names the setting and says
+/// why. It never falls back to no gate. (`ci` has been honoured since the CI webhook, slice 6, and
+/// the verifier since slice 10: every source is, so what is refused is a gate that cannot be run.)
 #[test]
-fn a_gate_this_build_cannot_honour_is_fatal_in_every_layer() {
+fn a_gate_this_build_cannot_run_is_fatal_in_every_layer() {
     let scratch = Scratch::new();
     let plain = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
     let gated = scratch.file("gated.yaml");
     fs::write(
         &gated,
         format!(
-            "{}  gate: {{require: [agent-checks, ci]}}\n",
+            "{}  gate: {{require: [agent-checks, verifier], verifier: fake}}\n",
             agents_yaml("https://a.example.com/card")
         ),
     )
     .unwrap();
-    // (the AGENTS_FILE, extra variables, what the message says, the slice it names)
+    // (the AGENTS_FILE, extra variables, what the message says, what it names)
     type Case<'a> = (&'a Path, &'a [(&'a str, &'a str)], &'a str, &'a str);
-    let cases: [Case; 4] = [
-        (
-            &plain,
-            &[("ORCH_GATE", "ci")],
-            "ORCH_GATE is invalid",
-            "slice 5",
-        ),
-        (
-            &plain,
-            &[("ORCH_GATE", "verifier,ci"), ("ORCH_VERIFIER", "fake")],
-            "ORCH_GATE is invalid",
-            "slice 6",
-        ),
-        (&gated, &[], "AGENTS_FILE: ", "slice 6"),
-        // The verifier is honoured, but a gate that requires it needs an agent to ask.
+    let cases: [Case; 2] = [
         (
             &plain,
             &[("ORCH_GATE", "verifier")],
             "AGENTS_FILE: ",
             "no verifier agent is configured",
         ),
+        (&gated, &[], "AGENTS_FILE: ", "would verify its own work"),
     ];
-    for (n, (agents, extra, says, slice)) in cases.into_iter().enumerate() {
+    for (n, (agents, extra, says, names)) in cases.into_iter().enumerate() {
         // The database is unreachable on purpose: configuration is validated first.
         let mut env = vec![
             ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
@@ -366,8 +364,44 @@ fn a_gate_this_build_cannot_honour_is_fatal_in_every_layer() {
         assert_eq!(status.code(), Some(78), "EX_CONFIG: {}", run.log());
         let log = run.log();
         assert!(log.contains(says), "{says}: {log}");
-        assert!(log.contains(slice), "{slice}: {log}");
+        assert!(log.contains(names), "{names}: {log}");
         assert!(!log.contains(TOKEN), "a secret leaked into the log");
+    }
+}
+
+/// A webhook surface without its secret must not start: a route anyone can call is worse than no
+/// route. Exit 78 before anything connects, naming the variable and never a secret.
+#[cfg(feature = "surface-webhook")]
+#[test]
+fn a_mounted_webhook_without_secrets_is_fatal_before_anything_connects() {
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    for (n, secrets) in [None, Some("  "), Some("a,b,hunter2-third")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut env = vec![
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("ORCH_SURFACES", "agui,webhook-generic"),
+        ];
+        if let Some(secrets) = secrets {
+            env.push(("WEBHOOK_GENERIC_SECRETS", secrets));
+        }
+        let mut run = spawn_logging_to(&scratch, &format!("webhook-{n}.log"), &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(status.code(), Some(78), "{secrets:?}: EX_CONFIG; {log}");
+        assert!(
+            log.contains("WEBHOOK_GENERIC_SECRETS"),
+            "{secrets:?}: {log}"
+        );
+        assert!(!log.contains("hunter2"), "a secret leaked into the log");
+        assert!(
+            !log.contains("cannot connect to Postgres"),
+            "nothing connects before the configuration is accepted: {log}"
+        );
     }
 }
 
@@ -1942,4 +1976,116 @@ async fn a_verifier_gate_runs_through_the_real_binary() {
     let log = replica.run.borrow().log();
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
     assert!(!log.contains(TOKEN), "a secret leaked into the log");
+}
+
+/// The generic webhook through the real binary: `webhook-generic` mounted with a secret takes one
+/// signed report with no identity (202, one inbox row, then the inbox worker parks it: no thread
+/// watches that commit), refuses a bad signature (401, no second row), and leaves the rest of the
+/// API behind the identity layer. The secret is nowhere in the log.
+#[cfg(feature = "surface-webhook")]
+#[tokio::test]
+async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
+    use orch_surface_webhook::signature::sign_generic;
+
+    const SECRET: &str = "smoke-webhook-secret";
+    const DELIVERY: &str = "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a1b";
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (_agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+    let replica = Replica::start(
+        &scratch,
+        "webhook.log",
+        &url,
+        &agents,
+        &[
+            ("ORCH_SURFACES", "agui,webhook-generic"),
+            ("WEBHOOK_GENERIC_SECRETS", SECRET),
+            ("INBOX_POLL_SECS", "1"),
+        ],
+    );
+    replica.wait_ready().await;
+
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let body = serde_json::json!({
+        "version": 1,
+        "repository": "https://github.com/acme/widgets",
+        "sha": sha,
+        "branch": "agent/fix-flaky-test",
+        "name": "ci/build",
+        "conclusion": "success",
+        "url": "https://ci.example.com/runs/42",
+        "summary": "212 tests passed",
+    })
+    .to_string();
+    let post = |secret: &str, delivery: &str| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
+        let signature = sign_generic(secret, &ts, body.as_bytes()).unwrap();
+        replica
+            .client
+            .post(format!("{}/webhooks/ci", replica.base))
+            .header("X-Vymalo-Delivery", delivery)
+            .header("X-Vymalo-Timestamp", ts)
+            .header("X-Vymalo-Signature-256", signature)
+            .body(body.clone())
+            .send()
+    };
+    let pool = db.pool("smoke-webhook", 2).await;
+    let rows = || async {
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT source, idempotency_key, status FROM inbox ORDER BY created_at",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+
+    // A bad signature: 401 and nothing stored.
+    assert_eq!(
+        post("not-the-secret", DELIVERY).await.unwrap().status(),
+        401
+    );
+    assert!(rows().await.is_empty());
+
+    // A good one: 202, one row; a redelivery is 202 and still one row.
+    assert_eq!(post(SECRET, DELIVERY).await.unwrap().status(), 202);
+    assert_eq!(post(SECRET, DELIVERY).await.unwrap().status(), 202);
+    eventually(
+        "the inbox worker parks the report no thread waits for",
+        || async {
+            let rows = rows().await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(
+                (rows[0].0.as_str(), rows[0].1.as_str()),
+                ("generic", DELIVERY)
+            );
+            (rows[0].2 == "parked").then_some(())
+        },
+    )
+    .await;
+
+    // The rest of the API is still behind the identity layer.
+    let anonymous = replica
+        .client
+        .get(format!("{}/api/agents", replica.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+
+    let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = replica.run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(
+        log.contains("webhook-generic"),
+        "the surface is logged: {log}"
+    );
+    assert!(!log.contains(SECRET), "the secret leaked into the log");
 }

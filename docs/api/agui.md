@@ -284,12 +284,13 @@ refuse is a 400 whatever the thread.
 | Source | In `require` as | This build |
 |---|---|---|
 | The agent's own checks (its `checks` artifact) | `agent-checks` | **Honoured** |
-| CI on the pushed commit | `ci` | Refused: it needs the CI webhook (slice 6); the inbox and timers it rests on (MVP slice 5) are built. Startup exits 78; a request is a 400 whose `detail` says so |
+| CI on the pushed commit | `ci` | **Honoured** since MVP slice 6: a signed report about the pushed commit ([`webhooks.md`](webhooks.md)) is the verdict. The `ci` settings (`ci.required`, `ci.timeoutSecs`) are for a deployment or an `AGENTS_FILE` entry, never per thread (a request that sets them is a 400). Without a report the job is blocked with `ci_timeout` after `ORCH_CI_TIMEOUT_SECS` |
 | A verifier agent | `verifier` | **Honoured** since MVP slice 10: the dispatcher asks the verifier agent and its `verdict` artifact decides. The deployment or the agent's entry names it (`ORCH_VERIFIER`, `gate.verifier`); a thread may require the source but not choose the agent |
 
-The refusal of `ci` is deliberate and fail-closed. Until the CI webhook exists nothing writes the reports a `ci` source waits for, so a
-gate that required it would wait for a verdict that can never come; refusing it is the only way not to end a job "done"
-without the check the operator asked for. `pending_reason` in `orch-app`'s `gate_config.rs` says which sources those are and why. A slice that makes one real
+The refusal of a source this build cannot honour is deliberate and fail-closed: a gate that required one nothing can answer would
+wait for a verdict that can never come, and refusing it is the only way not to end a job "done" without the check the operator
+asked for. `pending_reason` in `orch-app`'s `gate_config.rs` says which sources those are and why (none is left: `ci` was refused
+until the CI webhook of slice 6, `verifier` until slice 10). A slice that makes one real
 changes its arm, and also owns what that source needs beyond it: its own settings, its checks in
 `GateRules::check_verifier`, and its cards in the projection. (The verifier was refused the same way until slice 10.)
 

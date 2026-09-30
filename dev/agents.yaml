@@ -41,6 +41,16 @@
   gate:
     require: [verifier]
     verifier: verifier
+- id: mock-coder-ci
+  name: Mock coder (CI gated)
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # The same mock again, under a CI gate (ADR 0017, ADR 0018): it pushes a commit and says it is done, and
+  # the job then waits for a CI report about that very commit, posted to /webhooks/ci (dev/ci-webhook.sh).
+  # A red report sends the agent back, a green one ends the job. `dev/ci-e2e.sh` drives it with the
+  # keyword `red-once` (attempt 1 pushes commit 1111111, attempt 2 pushes 2222222).
+  gate:
+    require: [ci]
 - id: mock-coder-releases
   name: Mock coder (releases)
   cardUrl: http://mock-agent-releases:8080/.well-known/agent-card.json
