@@ -204,9 +204,10 @@ async fn world_for(name: &str) -> World {
             World::with(Backend::Memory, verified_by_reviewer(script)).await
         }
         "ci" => {
-            let gate = GateLayer::from_json(&json!({"require": ["ci"]}))
-                .unwrap()
-                .unwrap();
+            let gate =
+                GateLayer::from_json(&json!({"require": ["ci"], "ci": {"required": ["ci/build"]}}))
+                    .unwrap()
+                    .unwrap();
             World::with(
                 Backend::Memory,
                 Setup {

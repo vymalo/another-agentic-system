@@ -388,7 +388,7 @@ pub enum Surface {
     /// `POST /webhooks/ci` (`orch-surface-webhook`): the generic signed CI report, a machine route
     /// outside the identity layer (ADR 0017).
     WebhookGeneric,
-    /// `POST /webhooks/github` (`orch-surface-webhook`): GitHub's own `check_suite`, `check_run` and
+    /// `POST /webhooks/github` (`orch-surface-webhook`): GitHub's own `check_run` and
     /// `workflow_run` deliveries, a machine route guarded by `X-Hub-Signature-256` (ADR 0017).
     WebhookGithub,
 }
@@ -662,6 +662,14 @@ pub struct Args {
     #[arg(long, env = "ORCH_CI_TIMEOUT_SECS", value_name = "SECS")]
     pub ci_timeout_secs: Option<String>,
 
+    /// The names of the CI checks that must pass, comma separated: GitHub's check name
+    /// (`check_run`) or workflow name (`workflow_run`), or the `name` of a generic report. A gate
+    /// that requires `ci` must name at least one (here, or in an agent's `gate.ci.required`);
+    /// without names the orchestrator refuses to start (78), because "the first report decides"
+    /// would let a red commit pass on a `skipped` report.
+    #[arg(long, env = "ORCH_CI_REQUIRED", value_name = "NAMES")]
+    pub ci_required: Option<String>,
+
     /// One or two comma-separated shared secrets for POST /webhooks/ci: a report is accepted when
     /// its signature matches either, so a secret can be rotated without a gap. Required (exit 78
     /// otherwise) when ORCH_SURFACES mounts webhook-generic. Never logged.
@@ -683,6 +691,12 @@ pub struct Args {
         hide_env_values = true
     )]
     pub webhook_github_secrets: Option<String>,
+
+    /// Seconds old the signed completion time of a GitHub event may be, at least 1 (default 86400,
+    /// one day). An older event is acknowledged (202) and not stored: a captured delivery is not
+    /// replayable for ever.
+    #[arg(long, env = "WEBHOOK_GITHUB_MAX_AGE_SECS", value_name = "SECS")]
+    pub webhook_github_max_age_secs: Option<String>,
 
     /// Seconds the X-Vymalo-Timestamp of a generic webhook may differ from the clock, either
     /// way, at least 1 (default 300).
@@ -872,19 +886,6 @@ impl Config {
         })?;
         let (agents, target_gates) =
             parse_agents_full(&text, &agents_file, get_env, LocalAgentKind::compiled_in)?;
-        let (gate, gate_rules) = parse_gate(
-            GateVars {
-                gate: clean(args.gate),
-                max_attempts: clean(args.max_attempts),
-                max_attempts_cap: clean(args.max_attempts_cap),
-                verifier: clean(args.verifier),
-                verifier_timeout_secs: clean(args.verifier_timeout_secs),
-                ci_timeout: clean(args.ci_timeout_secs),
-            },
-            &agents,
-            &target_gates,
-        )?;
-
         // Blank is unset, so `all`. The enum and its names belong to adam-host; a name it does
         // not know is refused here, so the error is the usual one, naming the variable (78).
         let role =
@@ -899,6 +900,29 @@ impl Config {
             None => default_surfaces(),
             Some(raw) => parse_surfaces(&raw)?,
         };
+
+        // A process that serves routes and mounts no CI webhook cannot receive a CI report, so a
+        // job could only wait for one until its deadline: `ci` is refused, in every layer and per
+        // thread. A worker serves no routes and cannot tell (the control plane decides).
+        let ci_refusal = (role.runs_control_plane()
+            && !surfaces
+                .iter()
+                .any(|s| matches!(s, Surface::WebhookGeneric | Surface::WebhookGithub)))
+        .then_some(NO_CI_SURFACE);
+        let (gate, gate_rules) = parse_gate(
+            GateVars {
+                gate: clean(args.gate),
+                max_attempts: clean(args.max_attempts),
+                max_attempts_cap: clean(args.max_attempts_cap),
+                verifier: clean(args.verifier),
+                verifier_timeout_secs: clean(args.verifier_timeout_secs),
+                ci_timeout: clean(args.ci_timeout_secs),
+                ci_required: clean(args.ci_required),
+                ci_refusal,
+            },
+            &agents,
+            &target_gates,
+        )?;
 
         // The MCP surface needs its tokens and hosts, and only a role that serves HTTP mounts it:
         // a worker is not asked for secrets it would never use.
@@ -953,6 +977,7 @@ impl Config {
         #[cfg(feature = "surface-webhook")]
         let webhook_github = webhook_github(
             clean(args.webhook_github_secrets),
+            clean(args.webhook_github_max_age_secs),
             surfaces.contains(&Surface::WebhookGithub) && role.runs_control_plane(),
         )?;
 
@@ -1106,7 +1131,13 @@ struct GateVars {
     verifier: Option<String>,
     verifier_timeout_secs: Option<String>,
     ci_timeout: Option<String>,
+    ci_required: Option<String>,
+    /// Why `ci` cannot be honoured in this process, when it cannot.
+    ci_refusal: Option<&'static str>,
 }
+
+/// Why `ci` is refused when no CI webhook surface is mounted.
+pub const NO_CI_SURFACE: &str = "no CI webhook surface is mounted (ORCH_SURFACES)";
 
 fn gate_var(var: &'static str, e: impl fmt::Display) -> ConfigError {
     ConfigError::Invalid {
@@ -1135,7 +1166,10 @@ fn parse_gate(
             format!("{cap} is above the ceiling of {MAX_ATTEMPTS_CAP_CEILING}"),
         ));
     }
-    let rules = GateRules::new(cap);
+    let mut rules = GateRules::new(cap);
+    if let Some(reason) = vars.ci_refusal {
+        rules = rules.refusing(CheckSource::Ci, reason);
+    }
     let at = Layer::Deployment;
 
     let mut policy = GatePolicy::default();
@@ -1170,6 +1204,20 @@ fn parse_gate(
         1,
     )?;
     policy.ci.timeout = jiff::SignedDuration::from_secs(ci_timeout);
+    if let Some(list) = vars.ci_required {
+        if let Some(refusal) = rules.refuse_ci_settings(&at) {
+            return Err(gate_var("ORCH_CI_REQUIRED", refusal));
+        }
+        policy.ci.required = list
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if policy.ci.required.is_empty() {
+            return Err(gate_var("ORCH_CI_REQUIRED", "names no check"));
+        }
+    }
     // A cap below the default lowers the default with it; an attempts value that is set is taken
     // as written and must fit.
     let attempts = number(
@@ -1207,6 +1255,10 @@ fn parse_gate(
         context: "AGENTS_FILE",
         reason: e.to_string(),
     };
+    // The deployment's own policy first, so a fault in it is not blamed on an agent's entry.
+    rules
+        .check_policy(&policy, &at)
+        .map_err(|e| gate_var("ORCH_GATE", e))?;
     for (id, layer) in targets {
         rules
             .for_target(&policy, id, Some(layer))
@@ -1424,8 +1476,8 @@ fn webhook_generic(
         None => None,
     };
     Ok(secrets.map(|secrets| GenericConfig {
-        secrets,
         max_skew: Duration::from_secs(max_skew),
+        ..GenericConfig::new(secrets)
     }))
 }
 
@@ -1434,12 +1486,24 @@ fn webhook_generic(
 #[cfg(feature = "surface-webhook")]
 fn webhook_github(
     secrets: Option<String>,
+    max_age_secs: Option<String>,
     mounted: bool,
 ) -> Result<Option<GithubConfig>, ConfigError> {
     const VAR: &str = "WEBHOOK_GITHUB_SECRETS";
+    let max_age = number(
+        max_age_secs,
+        "WEBHOOK_GITHUB_MAX_AGE_SECS",
+        orch_surface_webhook::github::DEFAULT_MAX_AGE_SECS,
+        1,
+    )?;
     match secrets {
         Some(raw) => Secrets::parse(&raw)
-            .map(|secrets| Some(GithubConfig::new(secrets)))
+            .map(|secrets| {
+                Some(GithubConfig {
+                    max_age: Duration::from_secs(max_age),
+                    ..GithubConfig::new(secrets)
+                })
+            })
             .map_err(|e| ConfigError::Invalid {
                 var: VAR,
                 reason: e.to_string(),
@@ -1705,8 +1769,10 @@ mod tests {
                 "ORCH_VERIFIER_TIMEOUT_SECS" => &mut args.verifier_timeout_secs,
                 "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
                 "ORCH_CI_TIMEOUT_SECS" => &mut args.ci_timeout_secs,
+                "ORCH_CI_REQUIRED" => &mut args.ci_required,
                 "WEBHOOK_GENERIC_SECRETS" => &mut args.webhook_generic_secrets,
                 "WEBHOOK_GITHUB_SECRETS" => &mut args.webhook_github_secrets,
+                "WEBHOOK_GITHUB_MAX_AGE_SECS" => &mut args.webhook_github_max_age_secs,
                 "WEBHOOK_GENERIC_MAX_SKEW_SECS" => &mut args.webhook_generic_max_skew_secs,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
@@ -2178,7 +2244,7 @@ mod tests {
                 ("ORCH_SURFACES", "webhook-generic"),
                 (
                     "WEBHOOK_GENERIC_SECRETS",
-                    "hunter2-current,hunter2-previous",
+                    "hunter2-current-0123456789abcdef0123456789,hunter2-previous-0123456789abcdef0123456789",
                 ),
             ]),
             AGENTS,
@@ -2324,7 +2390,10 @@ mod tests {
         let cfg = load(
             &with(&[
                 ("ORCH_SURFACES", "agui,webhook-generic"),
-                ("WEBHOOK_GENERIC_SECRETS", " dev-webhook-secret "),
+                (
+                    "WEBHOOK_GENERIC_SECRETS",
+                    " dev-webhook-secret-0123456789abcdef0123 ",
+                ),
             ]),
             AGENTS,
         )
@@ -2351,10 +2420,10 @@ mod tests {
         let cfg = load(
             &with(&[
                 ("ORCH_SURFACES", "agui,webhook-generic,webhook-github"),
-                ("WEBHOOK_GENERIC_SECRETS", "generic-secret"),
+                ("WEBHOOK_GENERIC_SECRETS", "generic-secret-0123456789abcdef0123456789"),
                 (
                     "WEBHOOK_GITHUB_SECRETS",
-                    "github-secret-new, github-secret-old",
+                    "github-secret-new-0123456789abcdef0123456789, github-secret-old-0123456789abcdef0123456789",
                 ),
             ]),
             AGENTS,
@@ -2376,7 +2445,10 @@ mod tests {
         let err = load(
             &with(&[
                 ("ORCH_SURFACES", "webhook-github"),
-                ("WEBHOOK_GENERIC_SECRETS", "generic-secret"),
+                (
+                    "WEBHOOK_GENERIC_SECRETS",
+                    "generic-secret-0123456789abcdef0123456789",
+                ),
             ]),
             AGENTS,
         )
@@ -2389,7 +2461,10 @@ mod tests {
         let cfg = load(
             &with(&[
                 ("ORCH_SURFACES", "webhook-github"),
-                ("WEBHOOK_GITHUB_SECRETS", "github-secret"),
+                (
+                    "WEBHOOK_GITHUB_SECRETS",
+                    "github-secret-0123456789abcdef0123456789",
+                ),
             ]),
             AGENTS,
         )
@@ -2401,7 +2476,13 @@ mod tests {
     #[cfg(feature = "surface-webhook")]
     #[test]
     fn the_github_secrets_are_checked_redacted_and_not_needed_by_a_worker() {
-        for (secrets, says) in [("a,b,hunter2-c", "at most 2"), (" , ", "names no secret")] {
+        for (secrets, says) in [
+            (
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,hunter2-c-0123456789abcdef0123456789",
+                "at most 2",
+            ),
+            (" , ", "names no secret"),
+        ] {
             let err = load(&with(&[("WEBHOOK_GITHUB_SECRETS", secrets)]), AGENTS).unwrap_err();
             assert!(!err.to_string().contains("hunter2"), "{err}");
             let (var, reason) = invalid_var(err);
@@ -2411,7 +2492,10 @@ mod tests {
         let cfg = load(
             &with(&[
                 ("ORCH_SURFACES", "webhook-github"),
-                ("WEBHOOK_GITHUB_SECRETS", "hunter2-current"),
+                (
+                    "WEBHOOK_GITHUB_SECRETS",
+                    "hunter2-current-0123456789abcdef0123456789",
+                ),
             ]),
             AGENTS,
         )
@@ -2501,7 +2585,10 @@ mod tests {
         let cases = [
             (
                 vec![
-                    ("WEBHOOK_GENERIC_SECRETS", "hunter2-a,hunter2-b,hunter2-c"),
+                    (
+                        "WEBHOOK_GENERIC_SECRETS",
+                        "hunter2-a-0123456789abcdef0123456789,hunter2-b-0123456789abcdef0123456789,hunter2-c-0123456789abcdef0123456789",
+                    ),
                     ("ORCH_SURFACES", "webhook-generic"),
                 ],
                 "WEBHOOK_GENERIC_SECRETS",
@@ -2525,7 +2612,10 @@ mod tests {
             ),
             // Set, but not mounted (agui alone): still checked, so a typo shows at once.
             (
-                vec![("WEBHOOK_GENERIC_SECRETS", "hunter2-a,hunter2-b,hunter2-c")],
+                vec![(
+                    "WEBHOOK_GENERIC_SECRETS",
+                    "hunter2-a-0123456789abcdef0123456789,hunter2-b-0123456789abcdef0123456789,hunter2-c-0123456789abcdef0123456789",
+                )],
                 "WEBHOOK_GENERIC_SECRETS",
                 "at most 2",
             ),
@@ -2539,7 +2629,7 @@ mod tests {
         }
         let cfg = load(
             &with(&[
-                ("WEBHOOK_GENERIC_SECRETS", "new,old"),
+                ("WEBHOOK_GENERIC_SECRETS", "new-new-new-new-new-new-new-new-new-new,old-old-old-old-old-old-old-old-old-old"),
                 ("WEBHOOK_GENERIC_MAX_SKEW_SECS", "60"),
                 ("ORCH_SURFACES", "webhook-generic"),
             ]),
@@ -2728,6 +2818,24 @@ mod tests {
         pairs
     }
 
+    /// The environment of a deployment that receives CI reports: the generic webhook mounted, with a
+    /// secret, and `extra` on top.
+    #[cfg(feature = "surface-webhook")]
+    fn with_ci_surface(
+        extra: &[(&'static str, &'static str)],
+    ) -> Vec<(&'static str, &'static str)> {
+        let mut pairs = base();
+        pairs.extend_from_slice(&[
+            ("ORCH_SURFACES", "agui,webhook-generic"),
+            (
+                "WEBHOOK_GENERIC_SECRETS",
+                "dev-webhook-secret-0123456789abcdef0123",
+            ),
+        ]);
+        pairs.extend_from_slice(extra);
+        pairs
+    }
+
     fn invalid_var(err: ConfigError) -> (&'static str, String) {
         match err {
             ConfigError::Invalid { var, reason } => (var, reason),
@@ -2876,14 +2984,24 @@ mod tests {
         assert!(reason.contains("leaves out `verifier`"), "{reason}");
     }
 
+    #[cfg(feature = "surface-webhook")]
     #[test]
     fn ci_is_accepted_as_a_source_and_its_timeout_is_read() {
-        let cfg = load(&with(&[("ORCH_GATE", "ci")]), AGENTS).unwrap();
+        let cfg = load(
+            &with_ci_surface(&[("ORCH_GATE", "ci"), ("ORCH_CI_REQUIRED", "build, lint")]),
+            AGENTS,
+        )
+        .unwrap();
         assert_eq!(cfg.gate.require, [CheckSource::Ci].into());
+        assert_eq!(
+            cfg.gate.ci.required,
+            ["build".to_owned(), "lint".to_owned()].into()
+        );
         assert_eq!(cfg.gate.ci.timeout, jiff::SignedDuration::from_secs(3600));
         let cfg = load(
-            &with(&[
+            &with_ci_surface(&[
                 ("ORCH_GATE", "agent-checks, ci"),
+                ("ORCH_CI_REQUIRED", "build"),
                 ("ORCH_CI_TIMEOUT_SECS", "90"),
             ]),
             AGENTS,
@@ -2908,6 +3026,112 @@ mod tests {
                 invalid_var(load(&with(&[("ORCH_CI_TIMEOUT_SECS", bad)]), AGENTS).unwrap_err());
             assert_eq!(var, "ORCH_CI_TIMEOUT_SECS", "{bad}");
             assert!(reason.contains(says), "{bad}: {reason}");
+        }
+    }
+
+    /// "The first report decides" lets a red commit pass on whichever report arrives first, so a
+    /// gate that requires `ci` names its checks, in the deployment and in every agent's entry.
+    #[cfg(feature = "surface-webhook")]
+    #[test]
+    fn a_gate_that_requires_ci_without_naming_a_check_is_refused_at_startup() {
+        let err = load(&with_ci_surface(&[("ORCH_GATE", "ci")]), AGENTS).unwrap_err();
+        let (var, reason) = invalid_var(err);
+        assert_eq!(var, "ORCH_GATE", "the deployment's fault, not an agent's");
+        assert!(reason.contains("ci.required"), "{reason}");
+        for gate in [
+            "{require: [ci]}",
+            "{require: [ci], ci: {required: []}}",
+            "{require: [ci], ci: {timeoutSecs: 30}}",
+        ] {
+            let err = load(&with_ci_surface(&[]), &agents_with_gate(gate)).unwrap_err();
+            let ConfigError::Gate { context, reason } = &err else {
+                panic!("{gate}: expected a gate error, got {err}");
+            };
+            assert_eq!(*context, "AGENTS_FILE");
+            assert!(
+                reason.contains("coder") && reason.contains("ci.required"),
+                "{gate}: {reason}"
+            );
+        }
+        // Names in the deployment serve every agent that adds ci.
+        let cfg = load(
+            &with_ci_surface(&[("ORCH_CI_REQUIRED", "build")]),
+            &agents_with_gate("{require: [ci]}"),
+        )
+        .unwrap();
+        assert_eq!(cfg.gate.ci.required, ["build".to_owned()].into());
+        // A list of blanks names nothing.
+        let err = load(&with_ci_surface(&[("ORCH_CI_REQUIRED", " , ")]), AGENTS).unwrap_err();
+        // (an all-blank value is unset, a comma list of blanks is a mistake)
+        assert_eq!(invalid_var(err).0, "ORCH_CI_REQUIRED");
+    }
+
+    /// With no CI webhook surface mounted, a report has no door: the process refuses `ci` in every
+    /// layer, per-thread requests included (they are checked with the same rules).
+    #[test]
+    fn ci_is_refused_when_no_ci_webhook_surface_is_mounted() {
+        let why = "no CI webhook surface is mounted (ORCH_SURFACES)";
+        let err = load(
+            &with(&[("ORCH_GATE", "ci"), ("ORCH_CI_REQUIRED", "build")]),
+            AGENTS,
+        )
+        .unwrap_err();
+        let (var, reason) = invalid_var(err);
+        assert_eq!(var, "ORCH_GATE");
+        assert!(reason.contains(why), "{reason}");
+        // An agent's entry, and the ci settings of the deployment.
+        let err = load(
+            &base(),
+            &agents_with_gate("{require: [ci], ci: {required: [build]}}"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::Gate { reason, .. } if reason.contains(why)),
+            "{err}"
+        );
+        let err = load(&with(&[("ORCH_CI_REQUIRED", "build")]), AGENTS).unwrap_err();
+        assert_eq!(invalid_var(err).0, "ORCH_CI_REQUIRED");
+        // The rules the process keeps refuse it for a thread as well.
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(!cfg.gate_rules.honours(CheckSource::Ci));
+        let mut above = orch_core::GatePolicy::default();
+        above.ci.required = ["build".to_owned()].into();
+        let request = orch_app::GateLayer::from_json(&serde_json::json!({"require": ["ci"]}))
+            .unwrap()
+            .unwrap();
+        let err = cfg
+            .gate_rules
+            .apply(&above, &request, &Layer::Thread)
+            .unwrap_err();
+        assert!(err.to_string().contains(why), "{err}");
+        // A worker serves no routes and cannot tell: the control plane decides.
+        let worker = load(
+            &with(&[
+                ("ORCH_ROLE", "worker"),
+                ("ORCH_GATE", "ci"),
+                ("ORCH_CI_REQUIRED", "build"),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        assert!(worker.gate_rules.honours(CheckSource::Ci));
+        // A surface list with the GitHub webhook alone is a door too.
+        #[cfg(feature = "surface-webhook")]
+        {
+            let cfg = load(
+                &with(&[
+                    ("ORCH_SURFACES", "webhook-github"),
+                    (
+                        "WEBHOOK_GITHUB_SECRETS",
+                        "github-secret-0123456789abcdef0123456789",
+                    ),
+                    ("ORCH_GATE", "ci"),
+                    ("ORCH_CI_REQUIRED", "build"),
+                ]),
+                AGENTS,
+            )
+            .unwrap();
+            assert!(cfg.gate_rules.honours(CheckSource::Ci));
         }
     }
 
@@ -2977,10 +3201,11 @@ mod tests {
         assert_eq!(cfg.target_gates.len(), 1);
     }
 
+    #[cfg(feature = "surface-webhook")]
     #[test]
     fn a_target_may_require_ci_and_its_timeout_overrides_the_deployments() {
         let cfg = load(
-            &with(&[("ORCH_CI_TIMEOUT_SECS", "600")]),
+            &with_ci_surface(&[("ORCH_CI_TIMEOUT_SECS", "600")]),
             &agents_with_gate("{require: [ci], ci: {required: [build], timeoutSecs: 45}}"),
         )
         .unwrap();

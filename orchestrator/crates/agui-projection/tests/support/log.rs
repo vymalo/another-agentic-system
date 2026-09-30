@@ -52,9 +52,16 @@ pub fn both_gate() -> GatePolicy {
     gate
 }
 
-/// A gate that requires CI on the pushed commit, three attempts.
+/// A gate that requires the CI check `ci/build` on the pushed commit, three attempts.
 pub fn ci_gate() -> GatePolicy {
-    GatePolicy::requiring([CheckSource::Ci])
+    ci_gate_of(["ci/build"])
+}
+
+/// A gate that requires the CI checks `names` on the pushed commit, three attempts.
+pub fn ci_gate_of<'a>(names: impl IntoIterator<Item = &'a str>) -> GatePolicy {
+    let mut gate = GatePolicy::requiring([CheckSource::Ci]);
+    gate.ci.required = names.into_iter().map(str::to_owned).collect();
+    gate
 }
 
 /// The events a legal log of `actions` makes, and the thread they belong to, under the gate

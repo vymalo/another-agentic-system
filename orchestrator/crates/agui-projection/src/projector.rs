@@ -808,16 +808,23 @@ impl Projector {
         out.push(finished.into());
     }
 
-    /// A CI report (ADR 0017): a `vymalo.ci` activity, for every report, counted or not. The
-    /// card is about a commit and a check, so its id is `ci-<sha>-<name>` and does not depend on
-    /// anything the projector has folded: a check that runs again on the same commit replaces
-    /// its card (`replace`), a report about another commit is a card of its own, and the same
-    /// log projects to the same ids whoever reads it. The report changes neither the state nor
-    /// the attempt (the `check_result` that follows it does, when it counts). One that arrives
-    /// after the job ended opens a run of its own, like any late event, and closes it.
+    /// A CI report (ADR 0017): a `vymalo.ci` activity, for every report, counted or not. **Every
+    /// report is a card of its own**: the id is `ci-<provider>-<sha>-<name>-<seq>`, `seq` being the
+    /// report's place in the log (one per report, since the inbox stores a delivery once), and
+    /// the snapshot does not `replace`. A later report about the same commit and check, however
+    /// it came, cannot overwrite the evidence of an earlier one, and a forged one cannot hide a
+    /// red. The same log projects to the same ids whoever reads it. The gate's verdict is not
+    /// this card: it is the `vymalo.check` card of source `ci`, replaced in place as the gate
+    /// decides. The report changes neither the state nor the attempt (the `check_result` that
+    /// follows it does, when it counts). One that arrives after the job ended opens a run of
+    /// its own, like any late event, and closes it.
     fn on_ci_result(&mut self, ev: &Event, d: &CiReport, out: &mut Vec<agui::Event>) {
         let opened = self.ensure_run(ev, out);
-        let id = format!("ci-{}-{}", d.sha, d.name);
+        let provider = serde_json::to_value(d.provider)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let id = format!("ci-{provider}-{}-{}-{}", d.sha, d.name, ev.seq);
         let mut content = Metadata::new();
         content.insert("name".to_owned(), Value::from(d.name.as_str()));
         content.insert("conclusion".to_owned(), Value::from(d.conclusion.as_str()));
@@ -834,10 +841,14 @@ impl Projector {
         content.insert("repository".to_owned(), Value::from(d.repository.as_str()));
         // A link is passed on only when it is `http` or `https`: a card is something to click.
         // (The webhook keeps only those already; the log is data, so this is checked again.)
-        let link = d
-            .url
-            .as_deref()
-            .filter(|u| u.starts_with("http://") || u.starts_with("https://"));
+        let link = d.url.as_deref().filter(|u| {
+            // The scheme is case-insensitive (`HTTPS://` is a link, `javascript:` is not).
+            let scheme_is = |scheme: &str| {
+                u.get(..scheme.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+            };
+            scheme_is("http://") || scheme_is("https://")
+        });
         for (key, value) in [
             ("branch", d.branch.as_deref()),
             ("url", link),
@@ -848,7 +859,7 @@ impl Projector {
             }
         }
         let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_CI, content);
-        snapshot.replace = Some(true);
+        snapshot.replace = Some(false);
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
         self.message_ids.insert(id);
         out.push(snapshot.into());

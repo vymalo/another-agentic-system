@@ -7,6 +7,10 @@
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
   [`api/webhooks.md`](../api/webhooks.md).
+  **Amended 2026-09-30 (review of slices 6, 7 and 9):** "the first completed report decides" is gone, `check_suite` is
+  not accepted, the idempotency keys come from the signed content and not from delivery ids, the AG-UI card id is
+  unique per report, and a few limits were added. The text of the Decision and of the Built sections below is kept as
+  it was written; [the status note](#status-note-2026-09-30-review-fixes) says what replaced what.
 
 ## Context
 
@@ -189,7 +193,8 @@ GitHub route is slice 9 ([below](#built-slice-9)). Where the build differs from,
 - **The id is `ci-<sha>-<name>`, not per attempt.** The text above leaves the id to the slice. A report is about a commit
   and a check, so its id depends on those and on nothing the projector has folded: the same log gives the same ids to
   every viewer and replay, a check that runs again on the same commit replaces its card (`replace: true`), and a report
-  about the old commit (which the gate ignores) is a card of its own. A per-attempt id would have tied the card to the
+  about the old commit (which the gate ignores) is a card of its own. *(Superseded on 2026-09-30, see the status note:
+  the id is now `ci-<provider>-<sha>-<name>-<seq>` and nothing is replaced.)* A per-attempt id would have tied the card to the
   fold state, and a late report about attempt 1's commit would have landed on attempt 2's card.
 - **The content** is the report plus what a renderer would otherwise have to compute: `passed` (from the closed
   conclusion enum), `shortSha`. `name`, `branch` and `summary` are untrusted text; `url` is passed on only when it is
@@ -224,13 +229,59 @@ feature `surface-webhook`) is built; contract in [`api/webhooks.md`](../api/webh
   (`gate: {require: [ci]}`), and `dev/coder-e2e.sh` asserts the job's gate and the `vymalo.ci` card. Not run here:
   it needs Docker; the `Coder E2E` workflow is its first run.
 
+## Status note (2026-09-30): review fixes
+
+A review of the three slices found that a red commit could pass, that a captured delivery could be replayed, and a few
+smaller faults. What changed, and which sentence above it replaces:
+
+- **A gate that requires `ci` names its checks.** Replaces "Otherwise the first completed report decides" (Common
+  rules) and the "first report decides" path of the core. With no names, the first report for a commit decided, so a
+  `skipped` report of another check, another workflow's, or a fork's, could pass a red commit. Now `ci.required` must
+  name at least one check wherever the resolved policy requires `ci`: the deployment (`ORCH_CI_REQUIRED`) and every
+  `AGENTS_FILE` entry are refused at startup (exit 78), a per-thread request that adds `ci` on a policy with none is a
+  400 or a tool error, and the core, should such a gate get through, lets nothing pass (the CI deadline blocks the job).
+  Only a named check decides; every other report is a card. ([ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-review-fixes).)
+- **`ci` is honoured only where a report can arrive.** A process that serves routes and mounts neither `webhook-generic`
+  nor `webhook-github` refuses `ci` in every layer, per-thread requests included, with "no CI webhook surface is mounted
+  (ORCH_SURFACES)". This replaces the startup warning of slice 6. A `worker` serves no routes and cannot tell.
+- **`check_suite` is dropped** from the GitHub adapter. A suite is named by its app (`github-actions`), so every check of
+  that app would have the same name and none could be required by name. `check_run` (named by the check) and
+  `workflow_run` (named by the workflow; a `null` or blank name is ignored: 202, not stored) remain. Replaces the
+  GitHub list of the Decision and the "three events" of Built (slice 9).
+- **A fork's run does not count.** A `workflow_run` whose `head_repository` is not the repository (or is missing), and a
+  `check_run` with a pull request whose head repository is not the repository, is acknowledged (202) and not stored.
+  The fork chooses its own workflow names; its commit is not one the agent pushed.
+- **Idempotency comes from what is signed.** `X-GitHub-Delivery` and `X-Vymalo-Delivery` are not signed, so a captured
+  request could be replayed under a new id and stored again. Replaces "Idempotency key: `github:<X-GitHub-Delivery>`"
+  and "`X-Vymalo-Delivery` (a UUID, the idempotency key)". GitHub: `check_run:<id>:<completed_at>` and
+  `workflow_run:<id>:<run_attempt>`. Generic: the SHA-256 of the signed string `"<ts>.<body>"`, so the same timestamp and
+  body are one delivery. The delivery-id headers are optional and only logged. An event whose signed `completed_at`
+  (`updated_at` for a workflow run) is older than `WEBHOOK_GITHUB_MAX_AGE_SECS` (default 86400) is acknowledged and not
+  stored, so a captured GitHub delivery is not replayable for ever (the generic route already had its skew window).
+- **`X-GitHub-Event` is not signed.** It only selects which parser reads the signed body, and the body must be what that
+  parser demands (a `check_run` header over a `workflow_run` body is a 400). It cannot make a body mean something else.
+- **Reading is bounded.** The body buffer is not sized from `Content-Length` (a declared 5 MiB with no bytes held 5 MiB
+  per connection); it grows with what arrives, up to the limit. Each webhook route gives up on a request after 10 seconds
+  (408), inside the route's guard and not on `SurfaceRoutes::machine` as a whole (an MCP wait is long). The refusal log
+  is one `warn` per route per 30 seconds, with the count of the ones held back, and `debug` for the rest.
+- **The AG-UI card id is unique per report** (see the note under [Built (slice 7)](#built-slice-7)).
+- **Secrets are at least 32 bytes**, trimmed, and a blank one is nothing. `X-GitHub-Event`, `X-Vymalo-Delivery` and
+  `X-GitHub-Delivery` are never trusted for a decision.
+- **Both sides of a match log the same key.** When a job's push starts a CI watch, and when a report is received, the
+  watch key (`ci:<repository key>@<sha>`) is logged at info with the repository key and the short sha, so a mismatch of
+  spelling shows by eye.
+
+Still open: what a real GitHub delivery carries (all fixtures are synthetic; every member read is *unverified* as listed
+in the Verified section), and per-repository secrets.
+
 ## Security notes
 
 - **Verify before any write.** The HMAC is over the raw bytes as received, not a re-serialised
   body. A missing or wrong signature is 401 and touches no table.
 - **Constant-time comparison** through the HMAC library's verify function; never `==` on hex.
-- **Replay.** GitHub's delivery id is unique per delivery; the generic shape signs a timestamp and
-  rejects one outside the skew window, and its delivery id dedupes inside it.
+- **Replay.** The generic shape signs a timestamp, rejects one outside the skew window, and is one delivery by its
+  timestamp and body; GitHub's key comes from the signed body and an event older than the maximum age is not stored.
+  A delivery-id header is never a key: it is not signed (status note above).
 - **Untrusted text.** `summary` and `name` come from the outside. They are shown in a card, and
   they flow into a rework prompt only as quoted, untrusted data ([ADR 0018](0018-verification-gate-and-rework-loop.md)).
   A report can fail a check or pass it; it cannot start a job, approve a review or merge.
@@ -312,9 +363,10 @@ Easy to reverse: limits, the skew window, the timeout and the TTL.
   [`api/webhooks.md`](../api/webhooks.md#verified-and-unverified-2026-09-30). **Still unverified:** the members of the
   `check_suite` and `check_run` webhook payloads beyond the REST schemas, and that GitHub sends `startup_failure`. The
   slice's fixtures are synthetic, not recorded deliveries.
-- *Verified 2026-09-30* (slice 6), reading the source: `hmac` 0.13.0 re-exports `digest` 0.11.3's `Mac`, whose
-  `verify_slice` checks the length and then compares with `subtle`'s `ct_eq` (`digest-0.11.3/src/mac.rs`). It is
-  constant-time in the tag; the length of a tag is public.
+- *Verified 2026-09-30* (slice 6), reading the source: `verify_slice` of `digest`'s `Mac` checks the length and then
+  compares with `subtle`'s `ct_eq`. It is constant-time in the tag; the length of a tag is public. (Re-read for the
+  versions the crate now uses, `hmac` 0.12.1 over `digest` 0.10.7, `digest-0.10.7/src/mac.rs`, `verify_slice`; the
+  crate uses those, the versions the MCP tokens' `sha2` 0.10 shares, and no longer `hmac` 0.13.)
 - *Verified 2026-09-30*: oauth2-proxy has the option `--skip-auth-route` / `skip_auth_routes` ("bypass authentication
   for requests that match the method & path. Format: method=path_regex OR method!=path_regex. For all methods:
   path_regex OR !=path_regex"). <https://oauth2-proxy.github.io/oauth2-proxy/configuration/overview>. *Unverified*:

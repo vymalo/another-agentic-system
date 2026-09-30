@@ -136,7 +136,7 @@ gets everything.
 | `check_result{source:"verifier", status:"passed"\|"failed"}` | The verdict | The `vymalo.check` snapshot (same id, `replace:true`) → `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{passed}}` |
 | A verification that ends without a verdict: `rework` (another source failed the round), a `user_message` or `ui_action` (abandoned), `thread_state{cancelled}`, `done`/`failed`, or `thread_state{blocked}` after `error{retryable:true}` when CI is also required (a timeout or a failure whose source the log does not name) | The verifier's subagent is still open | `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{status:"canceled"}}`, before the frames of the event that ended it |
 | `thread_state{blocked}` after `error{retryable:true}` (a timeout, or a verifier that could not be used) | The verifier's subagent is still open, and the gate does not require CI, so the hold can only be the verifier's | `SUBAGENT_ERROR{subagentRunId:"sub-verify-<verification>", message:<the error's>, code:"verifier_failed"}`, before the interrupt that closes the run |
-| `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<sha>-<name>", activityType:"vymalo.ci", replace:true, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
+| `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<provider>-<sha>-<name>-<seq>", activityType:"vymalo.ci", replace:false, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
@@ -274,14 +274,16 @@ stateDiagram-v2
 
 When a CI system reports on a commit ([`webhooks.md`](webhooks.md)), the orchestrator logs a `ci_result` event and the
 projection shows it as a `vymalo.ci` card, **for every report**: a report the gate counts (the pushed commit, a required
-name, the first one when none is named) and one it does not (another commit, a check nobody asked for, a repeat) are both
-cards. What the gate made of a report is the `vymalo.check` card of the source `ci` next to it.
+name) and one it does not (another commit, a check nobody asked for, a repeat) are both cards. What the gate made of a report is the `vymalo.check` card of the source `ci` next to it.
 
-- **The id is `ci-<sha>-<name>`**: the full 40-digit commit hash and the check's name. It depends on the report alone,
-  so the same log projects to the same ids for every viewer and every replay. A check that runs again on the same commit
-  says `replace: true` with the same id and replaces its card (the new conclusion shows where the old one was); a report
-  about another commit, or another check, is a card of its own. The card is the orchestrator's (no `subagentRunId`) and
-  carries the actor `system`.
+- **The id is `ci-<provider>-<sha>-<name>-<seq>`, unique per report**: the provider (`generic` or `github`), the full
+  40-digit commit hash, the check's name and the report's `seq` in the thread's log (the inbox stores a delivery once, so
+  each report is one event). It depends on the log alone, so the same log projects to the same ids for every viewer and
+  every replay. **A report never replaces another card**: the snapshot says `replace: false`, so a later report about
+  the same commit and check, a rerun, a repeat or a forged one leaves the earlier card, red evidence included. (An
+  earlier version keyed the id by commit and name and replaced; a second report could hide a red one.) The verdict of the
+  gate is not this card but the `vymalo.check` card of source `ci`, which is replaced in place as the gate decides. The
+  card is the orchestrator's (no `subagentRunId`) and carries the actor `system`.
 - **The content** is `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}`.
   `conclusion` is one of the closed set of [`webhooks.md`](webhooks.md#conclusions) (plus `startup_failure`, which only
   GitHub reports), `passed` says whether it counts as a pass (`success`, `neutral` and `skipped`), so a renderer never
@@ -302,7 +304,7 @@ The gate is configured in three layers, from the widest to the narrowest ([ADR 0
 `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP`, `ORCH_VERIFIER`), an agent's entry in `AGENTS_FILE`
 (`gate: {require, maxAttempts, verifier, ci}`) and the run that creates the thread
 (`forwardedProps["vymalo.gate"]: {require?, maxAttempts?}`). A layer may **add sources, never remove one** (its `require` is the whole list and must contain the one above's;
-`ci.required` names add up), and may set the attempts **anywhere within `1..=ORCH_MAX_ATTEMPTS_CAP`**, lower or
+`ci.required` names add up; a resolved policy that requires `ci` must name at least one, or the layer is refused), and may set the attempts **anywhere within `1..=ORCH_MAX_ATTEMPTS_CAP`**, lower or
 higher than the layer above's (`ORCH_MAX_ATTEMPTS_CAP` is at most 100). The one removal allowed is the verifier's own
 entry leaving the `verifier` source out for itself. A run may not choose the verifier or the CI settings. Sources are
 spelled `agent-checks` in configuration and `agent_checks` in the API; a request accepts both, so the `gate` of
@@ -313,7 +315,7 @@ refuse is a 400 whatever the thread.
 | Source | In `require` as | This build |
 |---|---|---|
 | The agent's own checks (its `checks` artifact) | `agent-checks` | **Honoured** |
-| CI on the pushed commit | `ci` | **Honoured** since MVP slice 6: a signed report about the pushed commit ([`webhooks.md`](webhooks.md)) is the verdict. The `ci` settings (`ci.required`, `ci.timeoutSecs`) are for a deployment or an `AGENTS_FILE` entry, never per thread (a request that sets them is a 400). Without a report the job is blocked with `ci_timeout` after `ORCH_CI_TIMEOUT_SECS` |
+| CI on the pushed commit | `ci` | **Honoured** since MVP slice 6: a signed report about the pushed commit ([`webhooks.md`](webhooks.md)) is the verdict. The `ci` settings (`ci.required`, `ci.timeoutSecs`) are for a deployment or an `AGENTS_FILE` entry, never per thread (a request that sets them is a 400). **A gate that requires `ci` names the checks that count** (`ci.required`, `ORCH_CI_REQUIRED` for the deployment): a request that adds `ci` on a policy with no names is a 400 ("no check is named"), and a process that mounts no CI webhook refuses `ci` altogether ("no CI webhook surface is mounted (ORCH_SURFACES)"). Without a report the job is blocked with `ci_timeout` after `ORCH_CI_TIMEOUT_SECS` |
 | A verifier agent | `verifier` | **Honoured** since MVP slice 10: the dispatcher asks the verifier agent and its `verdict` artifact decides. The deployment or the agent's entry names it (`ORCH_VERIFIER`, `gate.verifier`); a thread may require the source but not choose the agent |
 
 The refusal of a source this build cannot honour is deliberate and fail-closed: a gate that required one nothing can answer would

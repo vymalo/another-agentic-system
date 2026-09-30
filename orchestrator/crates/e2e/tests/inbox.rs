@@ -27,8 +27,8 @@ use serde_json::json;
 fn ci_gate(timeout: Duration) -> GatePolicy {
     GatePolicy {
         ci: CiPolicy {
+            required: ["build".to_owned()].into(),
             timeout: SignedDuration::try_from(timeout).unwrap(),
-            ..CiPolicy::default()
         },
         ..GatePolicy::requiring([CheckSource::Ci])
     }

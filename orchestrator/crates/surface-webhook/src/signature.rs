@@ -114,8 +114,19 @@ pub(crate) fn verify_generic(
 mod tests {
     use super::*;
 
+    const S3: &str = "s3cret-s3cret-s3cret-s3cret-s3cret";
+    const NEW: &str = "new-new-new-new-new-new-new-new-new";
+    const OLD: &str = "old-old-old-old-old-old-old-old-old";
+    const STRANGER: &str = "other-other-other-other-other-other";
+
     fn secrets(raw: &str) -> Secrets {
         Secrets::parse(raw).unwrap()
+    }
+
+    /// GitHub's own example secret is shorter than a secret this crate accepts in service; the
+    /// primitives take any key.
+    fn secrets_unchecked(raw: &str) -> Secrets {
+        Secrets::unchecked(raw)
     }
 
     /// RFC 4231, test case 2 (HMAC-SHA-256, key "Jefe"): a vector the implementation, not this
@@ -133,8 +144,13 @@ mod tests {
     fn the_documented_vector() {
         const BODY: &str = r#"{"version":1,"repository":"https://github.com/acme/widgets","sha":"0123456789abcdef0123456789abcdef01234567","branch":"agent/fix-flaky-test","name":"ci/build","conclusion":"success","url":"https://ci.example.com/runs/42","summary":"212 tests passed"}"#;
         assert_eq!(
-            sign_generic("dev-webhook-secret", "1790800000", BODY.as_bytes()).unwrap(),
-            "sha256=4fd60f8ffbbb110421e5f2c82030f78bcf59d4fe3e554040fc30502ccac27465"
+            sign_generic(
+                "dev-webhook-secret-0123456789abcdef0123",
+                "1790800000",
+                BODY.as_bytes()
+            )
+            .unwrap(),
+            "sha256=e7ff72c4411e69debb1f634a339e7c884641e4ada663a42369deead91e617944"
         );
     }
 
@@ -149,10 +165,10 @@ mod tests {
         );
         const BODY: &str = r#"{"version":1,"repository":"https://github.com/acme/widgets","sha":"0123456789abcdef0123456789abcdef01234567","branch":"agent/fix-flaky-test","name":"ci/build","conclusion":"success","url":"https://ci.example.com/runs/42","summary":"212 tests passed"}"#;
         assert_eq!(
-            sign_github("dev-webhook-secret", BODY.as_bytes()).unwrap(),
-            "sha256=616371fff6e4a56b699e709bc03c3906c63e443bf9afa56b55793da68b772899"
+            sign_github("dev-webhook-secret-0123456789abcdef0123", BODY.as_bytes()).unwrap(),
+            "sha256=3f7810292c8978124166e4004b825bbb80dbd5b64b72ddecd8099f832ba345d0"
         );
-        let s = secrets("It's a Secret to Everybody");
+        let s = secrets_unchecked("It's a Secret to Everybody");
         let good = sign_github("It's a Secret to Everybody", b"Hello, World!").unwrap();
         assert!(verify_github(&s, b"Hello, World!", &good));
         assert!(!verify_github(&s, b"Hello, World?", &good));
@@ -164,8 +180,8 @@ mod tests {
 
     #[test]
     fn the_timestamp_and_every_byte_of_the_body_are_signed() {
-        let s = secrets("s3cret");
-        let sig = sign_generic("s3cret", "1790800000", b"{}").unwrap();
+        let s = secrets(S3);
+        let sig = sign_generic(S3, "1790800000", b"{}").unwrap();
         assert!(verify_generic(&s, "1790800000", b"{}", &sig));
         assert!(!verify_generic(&s, "1790800001", b"{}", &sig));
         assert!(
@@ -183,19 +199,19 @@ mod tests {
 
     #[test]
     fn either_of_two_secrets_verifies_and_a_third_does_not() {
-        let both = secrets("new,old");
-        for signer in ["new", "old"] {
+        let both = secrets(&format!("{NEW},{OLD}"));
+        for signer in [NEW, OLD] {
             let sig = sign_generic(signer, "1", b"body").unwrap();
             assert!(verify_generic(&both, "1", b"body", &sig), "{signer}");
         }
-        let stranger = sign_generic("other", "1", b"body").unwrap();
+        let stranger = sign_generic(STRANGER, "1", b"body").unwrap();
         assert!(!verify_generic(&both, "1", b"body", &stranger));
     }
 
     #[test]
     fn a_malformed_header_never_verifies() {
-        let s = secrets("s3cret");
-        let good = sign_generic("s3cret", "1", b"x").unwrap();
+        let s = secrets(S3);
+        let good = sign_generic(S3, "1", b"x").unwrap();
         let hex = good.strip_prefix(PREFIX).unwrap();
         let upper = format!("{PREFIX}{}", hex.to_uppercase());
         assert!(

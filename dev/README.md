@@ -27,7 +27,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`. No authentication. Vendored. |
-| `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_suite` (or, with `MOCK_CI_SHAPE=generic`, the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
+| `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
 (the Rust build takes a few minutes the first time) and the git server, and pulls the coder image.
@@ -414,16 +414,16 @@ the notice **Checks failed after 3 attempts** (not "This thread is failed": the 
 not pass). Findings are text from a tool: a finding with `<script>` or markdown shows those characters, and a long
 one is cut with **Show more**. Reload the page mid-verification and the same badge, counter and cards come back
 (the page replays the log). The web's own mock (`pnpm dev:mock`, [`web/README.md`](../web/README.md#mock-server)) plays
-the same story with `verify-red-once` and `verify-red`, and two scenarios for what CI will add: `verify-ci` (a pending
+the same story with `verify-red-once` and `verify-red`, and three scenarios for CI and the wait: `verify-ci` (the orchestrator's `ci` golden: a red `ci/build`, a rework, a green one), `verify-ci-stale` (a pending
 card replaced by its answer, and a stale answer shown apart) and `verify-wait` (stays Verifying until cancelled).
 
 `dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts what a user sees: one run across
 both attempts with two subagents; a `vymalo.check` that failed and one that passed; the `vymalo.rework`; the final
 `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate `agent_checks`, the second commit) and the thread of the resource
 API with the same `job`; `red-always` ending in `checks_failed` at attempt 3; a run that lowers the attempts with
-`forwardedProps["vymalo.gate"] = {"maxAttempts": 2}`; and the three refusals (a 400 problem, no thread created) for
-a run that removes the required source, asks for more attempts than `ORCH_MAX_ATTEMPTS_CAP` or requires `verifier`, which
-this build cannot honour yet. CI runs it in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mock's side
+`forwardedProps["vymalo.gate"] = {"maxAttempts": 2}`; and the four refusals (a 400 problem, no thread created) for
+a run that removes the required source, asks for more attempts than `ORCH_MAX_ATTEMPTS_CAP`, requires `ci` where no check is named
+(`ci.required`) or requires `verifier` where no verifier agent is configured. CI runs it in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mock's side
 (the artifacts and how the rework prompt changes the answer) on its own.
 
 To gate every agent instead of one, set `ORCH_GATE=agent-checks` on the `orchestrator` service; the mocks that
@@ -491,7 +491,7 @@ pending and passed at attempt 2) and the finding; the `vymalo.rework`; the final
 `checks_failed` with the finding in the message; `push-clean` done at attempt 1 with no rework; **what the verifier was
 sent**, read from the mock's own request journal (`/__admin/requests`: the contexts `<thread>-verify-1-1` and
 `<thread>-verify-2-2`, never the thread's own, the commits, the attempt and the task quoted as untrusted); and the three refusals
-(a 400 problem, no thread created) for a run that chooses another verifier, drops the required source or requires `ci`. CI runs it
+(a 400 problem, no thread created) for a run that chooses another verifier, drops the required source or requires `ci` where no check is named (`ci.required`). CI runs it
 in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mocks' side (the `verdict` for each commit, the coder's commits, and
 how the rework prompt changes the coder's answer) on its own.
 
@@ -502,11 +502,14 @@ the fail-closed reading of "no pushed commit".
 
 ### CI (the gate, by webhook)
 
-`mock-coder-ci` in [`agents.yaml`](agents.yaml) is the same mock agent under `gate: {require: [ci]}`
+`mock-coder-ci` in [`agents.yaml`](agents.yaml) is the same mock agent under `gate: {require: [ci], ci: {required: [ci/build]}}`
 ([ADR 0017](../docs/decisions/0017-ci-results-by-webhook.md), [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)):
 an agent that says `completed` is not done until a **signed CI report about the commit it pushed** arrives at
-`POST /webhooks/ci`. The orchestrator serves that route because compose sets `ORCH_SURFACES=agui,webhook-generic` and
-`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret` on it; the edge passes `/webhooks/*` on **without an identity**
+`POST /webhooks/ci`, and **named `ci/build`**: a gate that requires CI names the checks that count (`ci.required`), and a
+report of any other name is a card and nothing else (there is no "first report decides": it let a red commit pass on
+a `skipped` report of another check). The orchestrator serves that route because compose sets
+`ORCH_SURFACES=agui,mcp,webhook-generic,webhook-github` and `WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123`
+on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**
 (`header_up -X-Auth-Request-Email` in the [Caddyfile](Caddyfile): a webhook is a machine route, authenticated by its
 signature and nothing else). The mock pushes a `branch` artifact and completes; the job then waits for CI, at most
 `ORCH_CI_TIMEOUT_SECS` (3600), after which the thread is blocked with `ci_timeout` and no attempt is used.
@@ -524,22 +527,29 @@ dev/ci-e2e.sh                                                                   
 `dev/ci-e2e.sh` runs `red-once fix the login` on `mock-coder-ci` and asserts: a wrong secret and a stale timestamp are
 401; the thread is `verifying` with the gate `ci` and the sha `1111111`; a red report for that commit sends the agent
 back (attempt 2, which pushes `2222222`); a report about the old commit changes nothing; a green report for the new
-commit ends the job `done` at attempt 2 of 3, and the run ends `RUN_FINISHED` (success); the same delivery id twice is
-accepted twice; and that the chat shows a `vymalo.ci` card per report (the conclusion, the short sha, the link and the summary; the old commit's report replaces the first card of that commit). The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
+commit ends the job `done` at attempt 2 of 3, and the run ends `RUN_FINISHED` (success); a `skipped` report of a check the
+gate does not name (`docs`) does not decide, even for the new commit; the same report again (same timestamp and body,
+another delivery id) is accepted twice and counted once; and that the chat shows a `vymalo.ci` card per report, each with
+an id of its own and none replacing another (the conclusion, the short sha, the link and the summary). The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
 report's summary keeps `red-once`. The mock pushes the same two commits every time and a commit is watched by the first
 job that pushed it, so the script passes once per database (`docker compose down -v` to run it again). CI runs it in
 the `Coder E2E` workflow.
 
-**The GitHub shape and `mock-ci`.** `ci-webhook.sh --shape github [--event check_suite|check_run|workflow_run]` posts what
+**The GitHub shape and `mock-ci`.** `ci-webhook.sh --shape github [--event check_run|workflow_run] [--fork]` posts what
 GitHub would (`X-GitHub-Event`, `X-GitHub-Delivery`, `X-Hub-Signature-256` over the raw body; `--ping` sends the `ping` of a
-new webhook, answered 204) to `POST /webhooks/github`. `mock-ci` does the same on its own: every 2 s it lists the `agent/*`
-branches of `local/sandbox` on `git-server`, and for each commit it has not reported it posts a `check_suite` (`app.slug` is
-`mock-ci`) through the edge, `success`, or `failure` when the commit message contains `CI_FAIL`. The delivery id is derived from
-the repository and the commit, so a restart that forgets what it did sends a repeat, which the orchestrator counts once. It reports
+new webhook, answered 204) to `POST /webhooks/github`; `--fork` makes the run one of a fork's code, which is acknowledged and
+not stored. `mock-ci` does the same on its own: every 2 s it lists the `agent/*`
+branches of `local/sandbox` on `git-server`, and for each commit it has not reported it posts a `check_run` named
+`mock-ci/build` through the edge, `success`, or `failure` when the commit message contains `CI_FAIL`. A commit is reported once
+(a marker file); the orchestrator's key for the delivery is made of the check run's id and completion time, so a restart that
+forgets what it did posts again with a new completion time, which is a new report. It reports
 the repository as `http://git-server:8080/local/sandbox`, the address the coder's `branch` artifact names, because the orchestrator
-matches a report to a job by `host/owner/name` and the commit. The **coder is gated on CI** (`gate: {require: [ci]}` in
-`agents.yaml`), so `dev/coder-e2e.sh` also asserts the job's gate and one `vymalo.ci` card, `mock-ci`, `success`, on the pushed commit; in
-the chat, send the coder a task and the card appears when `mock-ci` has reported. `MOCK_CI_SHAPE=generic docker compose --profile app up -d mock-ci`
+matches a report to a job by `host/owner/name` and the commit. The **coder is gated on CI** (`gate: {require: [ci], ci: {required: [mock-ci/build]}}` in
+`agents.yaml`), so `dev/coder-e2e.sh` also asserts the job's gate and one `vymalo.ci` card, `mock-ci/build`, `success`, on the pushed commit
+(when the thread does not end `done`, it prints the tail of the orchestrator's and `mock-ci`'s logs, whose info lines
+`watching for the CI reports of a pushed commit` and `a CI report will be matched to the job that watches this key` carry the same
+`watch_key` from both sides); in
+the chat, send the coder a task and the card appears when `mock-ci` has reported. `MOCK_CI_SHAPE=generic` (or `github-workflow`) `docker compose --profile app up -d mock-ci`
 makes it use the generic route instead.
 
 ```mermaid
@@ -552,7 +562,7 @@ sequenceDiagram
   C->>G: push agent/run-prefix
   C-->>O: branch artifact (repository, branch, commit): the watch on the commit
   M->>G: git ls-remote --heads agent/*, then fetch the tip's message
-  M->>E: POST /webhooks/github check_suite completed, signed (success, or failure on CI_FAIL)
+  M->>E: POST /webhooks/github check_run completed, signed (success, or failure on CI_FAIL)
   E->>O: no identity header
   O-->>M: 202, stored (parked if the watch is not there yet)
   C-->>O: completed
@@ -786,8 +796,8 @@ Claude Code and opencode against this server (neither was run; only `curl` and r
 
 The CI webhook (`mock-coder-ci`, `dev/ci-webhook.sh`, `dev/ci-e2e.sh`):
 
-*Verified 2026-09-30*: `dev/ci-e2e.sh` against the real `orchestrator` binary (debug build, `ORCH_SURFACES=agui,webhook-generic`,
-`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret`) on Postgres 16, with an agents file holding the `mock-coder-ci` entry of `dev/agents.yaml`
+*Verified 2026-09-30* (re-run after the review fixes, with `ci.required: [ci/build]`, the two webhooks and 32-byte secrets): `dev/ci-e2e.sh` against the real `orchestrator` binary (debug build, `ORCH_SURFACES=agui,webhook-generic,webhook-github`,
+`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123`) on Postgres 16, with an agents file holding the `mock-coder-ci` entry of `dev/agents.yaml`
 and a stand-in that reads the mappings and files of `dev/wiremock/agent` (as for the verification scenarios above): every check
 printed `ok`, exit 0, including the signatures made by `dev/ci-webhook.sh` with `openssl` and checked by the Rust route. `shellcheck dev/*.sh`
 and `docker compose --profile '*' config -q` are clean. This proves the scripts' `jq` paths, the signing and the orchestrator's side; it does not prove
@@ -796,11 +806,13 @@ WireMock itself.
 
 *Unverified*: the `Coder E2E` workflow running `dev/ci-e2e.sh` in containers (the machine that wrote this had no Docker daemon).
 
-*Verified 2026-09-30* (GitHub webhook, `mock-ci`, `ci-webhook.sh --shape github`): `dev/mock-ci/mock-ci.sh` (`MOCK_CI_ONCE=1`, against a bare repository
-through `file://` in place of `git-server`, and the real `orchestrator` binary with both webhooks mounted): for both shapes the branches
-`agent/*` were reported once each (`success`, and `failure` for a commit whose message contains `CI_FAIL`; `feature/*` was skipped; a second pass
-posted nothing), every post was `202`, and the stored rows hold the repository as `git-server:8080/local/sandbox`; `ci-webhook.sh --shape github`
-for a `ping` (204), the three events and a bad signature (401). `shellcheck` is clean. The base image tag and digest were read from the Docker Hub
+*Verified 2026-09-30* (GitHub webhook, `mock-ci`, `ci-webhook.sh --shape github`, re-run after the review fixes): `dev/mock-ci/mock-ci.sh` (`MOCK_CI_ONCE=1`, against a bare repository
+through `file://` in place of `git-server`, and the real `orchestrator` binary with both webhooks mounted): for the shapes `github` (a `check_run`),
+`github-workflow` (a `workflow_run`) and `generic` the branches `agent/*` were reported once each (`success`, and `failure` for a commit whose
+message contains `CI_FAIL`), every post was `202`, and the stored rows are keyed `check_run:<id>:<completed_at>`, `workflow_run:<id>:<attempt>` and the
+digest of the signed string. The hand-made HMAC of `mock-ci` (no secret on any command line) matches `openssl dgst -hmac` for keys shorter than,
+as long as and longer than a SHA-256 block, under dash and bash (`sh` of Alpine is busybox `ash`, with busybox `od` and `awk`: *unverified*).
+`ci-webhook.sh --shape github` for a `ping` (204), the two events and a bad signature (401). `shellcheck` is clean. The base image tag and digest were read from the Docker Hub
 registry API. *Unverified*: the image build, `mock-ci` running in the compose network, **the coder's `branch` artifact naming the repository the way
 `mock-ci` reports it** (read in `adam-coder`'s `publish.rs` at `882e239`: `repository` is `wt.repo().url`), and the coder job ending `done` through it: the first
 run of all of it is the `Coder E2E` workflow.

@@ -258,10 +258,12 @@ services:
       - git-data:/srv/git
 
   # A stand-in for the CI of the repository (dev/mock-ci, ADR 0017): polls git-server for `agent/*` branches
-  # and posts a signed GitHub-shaped check_suite for each new commit through the edge (which passes
-  # /webhooks/* on without an identity): `success`, or `failure` when the commit message contains CI_FAIL.
-  # MOCK_CI_SHAPE=generic posts the generic body to /webhooks/ci instead. The coder's entry in
-  # dev/agents.yaml requires CI, so a job ends `done` when this has reported its commit.
+  # and posts a signed GitHub-shaped check_run named `mock-ci/build` for each new commit through the edge
+  # (which passes /webhooks/* on without an identity): `success`, or `failure` when the commit message
+  # contains CI_FAIL. MOCK_CI_SHAPE=github-workflow posts a workflow_run, `generic` the generic body to
+  # /webhooks/ci. The coder's entry in dev/agents.yaml requires CI and names the check that counts
+  # (`mock-ci/build`), so a job ends `done` when this has reported its commit. The secret is read from
+  # the environment and never put on a command line.
   mock-ci:
     profiles: [app]
     build:

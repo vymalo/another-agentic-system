@@ -54,7 +54,10 @@ fn a_source_the_build_does_not_honour_is_refused_in_every_layer_with_its_reason(
     // `honouring` is how a build (or a test) with fewer sources says so: the refusal names what is
     // left, and the source it would need.
     let rules = GateRules::default().honouring([CheckSource::AgentChecks]);
-    let above = GatePolicy::default();
+    // Names for `ci` are in place above (a policy may name checks without requiring them), so a
+    // thread can add the source.
+    let mut above = GatePolicy::default();
+    above.ci.required = ["build".to_owned()].into();
     let refused = [
         json!({"require": ["ci"]}),
         json!({"require": ["agent-checks", "verifier"]}),
@@ -70,7 +73,10 @@ fn a_source_the_build_does_not_honour_is_refused_in_every_layer_with_its_reason(
             let err = rules.apply(&above, &layer(value.clone()), &at).unwrap_err();
             assert!(matches!(err, GateError::Unavailable { .. }), "{at} {value}");
             let message = err.to_string();
-            assert!(message.contains("not available yet"), "{message}");
+            assert!(
+                message.contains("only agent-checks can be required"),
+                "{message}"
+            );
         }
     }
 }
@@ -161,7 +167,11 @@ fn a_layer_may_add_sources_and_change_attempts_within_the_cap() {
     let target = rules
         .apply(
             &deployment,
-            &layer(json!({"require": ["agent-checks", "ci"], "maxAttempts": 5})),
+            &layer(json!({
+                "require": ["agent-checks", "ci"],
+                "maxAttempts": 5,
+                "ci": {"required": ["build"]}
+            })),
             &Layer::Target(agent("coder")),
         )
         .unwrap();
@@ -668,6 +678,11 @@ async fn a_request_that_weakens_or_overreaches_is_a_400_and_writes_nothing() {
         // A thread may require the verifier, but not choose it: the target configures that.
         (json!({"verifier": "plain"}), "cannot be set per thread"),
         (json!({"ci": {"required": ["build"]}}), "per thread"),
+        // `ci` on top of a policy that names no check: the first report would decide.
+        (
+            json!({"require": ["agent-checks", "ci"]}),
+            "no check is named",
+        ),
     ];
     for (request, why) in refused {
         let err = create_with(&app, "coder", Some(layer(request.clone())))
@@ -753,24 +768,20 @@ fn try_app(w: &World, cfg: AppConfig) -> Result<TestApp, GateError> {
 fn the_constructor_refuses_a_gate_that_could_never_pass() {
     let w = World::new();
     let refused = |cfg: AppConfig| try_app(&w, cfg).err().map(|e| e.to_string());
-    let ci = GatePolicy::requiring([CheckSource::Ci]);
+    let mut ci = GatePolicy::requiring([CheckSource::Ci]);
+    ci.ci.required = ["build".to_owned()].into();
     // A build, or a deployment, that cannot honour CI: here, rules that leave it out.
     let without_ci =
         GateRules::default().honouring([CheckSource::AgentChecks, CheckSource::Verifier]);
-    let named = |gate: GatePolicy| {
-        let mut gate = gate;
-        gate.ci.required = ["build".to_owned()].into();
-        gate
-    };
 
     let says = refused(AppConfig {
-        gate: named(ci.clone()),
+        gate: ci.clone(),
         gate_rules: without_ci.clone(),
         ..AppConfig::default()
     })
     .unwrap();
     assert!(
-        says.contains("deployment") && says.contains("the ci source"),
+        says.contains("deployment") && says.contains("only agent-checks, verifier"),
         "{says}"
     );
     let says = refused(AppConfig {
@@ -783,7 +794,7 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
     })
     .unwrap();
     assert!(
-        says.contains("coder") && says.contains("the ci source"),
+        says.contains("coder") && says.contains("only agent-checks, verifier"),
         "{says}"
     );
     let says = refused(AppConfig {
@@ -846,4 +857,105 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
     .unwrap();
     assert!(says.contains("ghost"), "{says}");
     assert!(try_app(&w, AppConfig::default()).is_ok());
+}
+
+/// A gate that requires `ci` names the checks that count: "the first report decides" would let a
+/// red commit pass on whichever report arrives first (a `skipped`, another workflow's).
+#[test]
+fn a_gate_that_requires_ci_must_name_its_checks_in_every_layer() {
+    let rules = GateRules::default();
+    let ci_only = GatePolicy::requiring([CheckSource::Ci]);
+    // The deployment's own policy.
+    let err = rules
+        .check_policy(&ci_only, &Layer::Deployment)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            GateError::CiWithoutChecks {
+                layer: Layer::Deployment
+            }
+        ),
+        "{err}"
+    );
+    assert!(err.to_string().contains("ci.required"), "{err}");
+    // A target that adds the source without names, or with an empty list.
+    for value in [
+        json!({"require": ["ci"]}),
+        json!({"require": ["ci"], "ci": {"required": []}}),
+        json!({"require": ["ci"], "ci": {"timeoutSecs": 30}}),
+    ] {
+        let err = rules
+            .apply(
+                &GatePolicy::default(),
+                &layer(value.clone()),
+                &Layer::Target(agent("coder")),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, GateError::CiWithoutChecks { .. }),
+            "{value}: {err}"
+        );
+    }
+    // A per-thread request that adds `ci` on top of a policy with no names.
+    let err = rules
+        .apply(
+            &GatePolicy::default(),
+            &layer(json!({"require": ["ci"]})),
+            &Layer::Thread,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            GateError::CiWithoutChecks {
+                layer: Layer::Thread
+            }
+        ),
+        "{err}"
+    );
+    // With names, it passes at every layer that may say it.
+    let named = rules
+        .apply(
+            &GatePolicy::default(),
+            &layer(json!({"require": ["ci"], "ci": {"required": ["build"]}})),
+            &Layer::Target(agent("coder")),
+        )
+        .unwrap();
+    rules.check_policy(&named, &Layer::Deployment).unwrap();
+    // A source that is not required does not need names.
+    rules
+        .check_policy(&GatePolicy::default(), &Layer::Deployment)
+        .unwrap();
+}
+
+/// A deployment that mounts no CI webhook refuses `ci` everywhere, per-thread requests included,
+/// with the reason it gives.
+#[test]
+fn a_deployment_can_refuse_ci_and_the_refusal_covers_every_layer() {
+    const WHY: &str = "no CI webhook surface is mounted (ORCH_SURFACES)";
+    let rules = GateRules::default().refusing(CheckSource::Ci, WHY);
+    assert!(!rules.honours(CheckSource::Ci));
+    assert!(rules.honours(CheckSource::AgentChecks));
+    let mut above = GatePolicy::default();
+    above.ci.required = ["build".to_owned()].into();
+    for at in [
+        Layer::Deployment,
+        Layer::Target(agent("coder")),
+        Layer::Thread,
+    ] {
+        let err = rules
+            .apply(&above, &layer(json!({"require": ["ci"]})), &at)
+            .unwrap_err();
+        assert!(matches!(err, GateError::Unavailable { .. }), "{at}: {err}");
+        let message = err.to_string();
+        assert!(message.contains(WHY), "{message}");
+        assert!(
+            message.contains("only agent-checks, verifier can be required"),
+            "{message}"
+        );
+    }
+    let mut ci = GatePolicy::requiring([CheckSource::Ci]);
+    ci.ci.required = ["build".to_owned()].into();
+    assert!(rules.check_policy(&ci, &Layer::Deployment).is_err());
 }

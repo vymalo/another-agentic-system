@@ -12,9 +12,13 @@
   tokenEnv: CODER_A2A_TOKEN
   # Under a CI gate (ADR 0017, ADR 0018): the job is done when CI says the pushed commit is green. In this
   # stack CI is `mock-ci`, which reports every commit on `agent/*` of git-server (`success`, or `failure`
-  # when the commit message contains CI_FAIL), and a red report sends the coder back with the report.
+  # when the commit message contains CI_FAIL) as the check `mock-ci/build`, and a red report sends the
+  # coder back with the report. A gate that requires `ci` names the checks that count (`ci.required`): a
+  # report of any other name is a card and nothing else, so no first report can pass a red commit.
   gate:
     require: [ci]
+    ci:
+      required: [mock-ci/build]
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json
@@ -53,9 +57,12 @@
   # The same mock again, under a CI gate (ADR 0017, ADR 0018): it pushes a commit and says it is done, and
   # the job then waits for a CI report about that very commit, posted to /webhooks/ci (dev/ci-webhook.sh).
   # A red report sends the agent back, a green one ends the job. `dev/ci-e2e.sh` drives it with the
-  # keyword `red-once` (attempt 1 pushes commit 1111111, attempt 2 pushes 2222222).
+  # keyword `red-once` (attempt 1 pushes commit 1111111, attempt 2 pushes 2222222). The check that
+  # counts is `ci/build`, the name dev/ci-webhook.sh reports under by default.
   gate:
     require: [ci]
+    ci:
+      required: [ci/build]
 - id: mock-coder-releases
   name: Mock coder (releases)
   cardUrl: http://mock-agent-releases:8080/.well-known/agent-card.json

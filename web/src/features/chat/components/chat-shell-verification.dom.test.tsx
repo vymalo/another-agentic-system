@@ -203,8 +203,8 @@ describe("a thread under the verification gate, in the app", () => {
     expect(cards()).toHaveLength(0);
   });
 
-  it("verify-ci: a pending card is replaced by its answer, a stale one stands apart", async () => {
-    const id = await makeThread("verify-ci ship it");
+  it("verify-ci-stale: a pending card is replaced by its answer, a stale one stands apart", async () => {
+    const id = await makeThread("verify-ci-stale ship it");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     await waitFor(() => expect(cards()).toHaveLength(3));

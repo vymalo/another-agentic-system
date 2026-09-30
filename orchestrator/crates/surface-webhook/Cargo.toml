@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The webhook interaction surfaces: signed CI reports (POST /webhooks/ci, generic HMAC over the timestamp and body; POST /webhooks/github, GitHub check_suite, check_run and workflow_run) become inbox rows. Machine routes, mounted by ORCH_SURFACES=webhook-generic and webhook-github."
+description = "The webhook interaction surfaces: signed CI reports (POST /webhooks/ci, generic HMAC over the timestamp and body; POST /webhooks/github, GitHub check_run and workflow_run) become inbox rows. Machine routes, mounted by ORCH_SURFACES=webhook-generic and webhook-github."
 readme = "README.md"
 
 [dependencies]
@@ -16,14 +16,15 @@ orch-api.workspace = true
 axum.workspace = true
 futures.workspace = true
 hmac.workspace = true
+jiff.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }

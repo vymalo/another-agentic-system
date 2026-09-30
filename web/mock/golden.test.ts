@@ -174,6 +174,16 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "failed" };
     },
+    // CI on the pushed commit (ADR 0017): a red `ci/build`, the agent sent back, a green one
+    ci: async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "verify-ci fix the login" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,

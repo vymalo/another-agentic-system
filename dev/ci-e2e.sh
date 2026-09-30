@@ -6,7 +6,8 @@
 #   dev/ci-e2e.sh                          # against the compose `edge` (http://127.0.0.1:8080)
 #   BASE_URL=http://127.0.0.1:8080 AGENT_ID=mock-coder-ci dev/ci-e2e.sh
 #
-# It needs `mock-coder-ci` (dev/agents.yaml: the WireMock coder under `gate: {require: [ci]}`), the
+# It needs `mock-coder-ci` (dev/agents.yaml: the WireMock coder under `gate: {require: [ci]}` and
+# `ci.required: [ci/build]`: only a report named ci/build counts), the
 # webhook surface (ORCH_SURFACES=agui,webhook-generic and WEBHOOK_GENERIC_SECRETS in compose.yaml), and
 # a Caddyfile that passes /webhooks/* on without an identity. It does not need the `app` profile's
 # coder: only the default services and the orchestrator, edge and web of the profile.
@@ -18,11 +19,15 @@
 #      `verifying` with the gate `ci` and the sha of that commit;
 #   3. a red report for that commit sends the agent back: attempt 2 (a new A2A task in the same
 #      context), which pushes commit 2222222 and completes; the thread is `verifying` again;
-#   4. a report for the OLD commit is a card and changes nothing (the thread stays `verifying`);
+#   4. a report for the OLD commit is a card and changes nothing (the thread stays `verifying`), and
+#      neither does a `skipped` report of a check the gate does not name (`docs`): no first report
+#      decides;
 #   5. a green report for the new commit ends the job: `done`, attempt 2 of 3, and the run ends
 #      RUN_FINISHED success;
-#   6. the same delivery id twice is accepted twice (202) and counted once;
-#   7. the chat shows a `vymalo.ci` card for every report (conclusion, short sha, link, summary).
+#   6. the same report again (same timestamp and body, whatever the delivery id) is accepted twice
+#      (202) and counted once;
+#   7. the chat shows a `vymalo.ci` card for every report, each with an id of its own (conclusion,
+#      short sha, link, summary).
 #
 # Environment (all optional):
 #   BASE_URL    where the API and the webhook are served  (default http://127.0.0.1:8080, the compose `edge`)
@@ -127,12 +132,20 @@ expect "the report is accepted" "$(ci --sha "$FIRST" --conclusion success | cut 
 sleep 2
 expect "the thread is still verifying" "$(api "/api/threads/$THREAD" | jq -r '[.state, .job.attempt] | join(" ")')" "verifying 2"
 
+echo "== a check the gate does not name cannot decide, even for the new commit"
+expect "the report is accepted" "$(ci --sha "$SECOND" --name docs --conclusion skipped | cut -d' ' -f1-2)" "HTTP 202"
+sleep 2
+expect "the thread is still verifying" "$(api "/api/threads/$THREAD" | jq -r '[.state, .job.attempt] | join(" ")')" "verifying 2"
+
 echo "== a green report for the new commit ends the job"
-delivery=$(uuid)
-expect "the report is accepted" "$(ci --sha "$SECOND" --conclusion success --branch agent/red-once \
-  --delivery "$delivery" --url 'https://ci.example.com/runs/2' --summary '212 tests passed' | cut -d' ' -f1-2)" "HTTP 202"
-expect "the same delivery again is accepted too" \
-  "$(ci --sha "$SECOND" --conclusion success --delivery "$delivery" | cut -d' ' -f1-2)" "HTTP 202"
+# The delivery id is not signed, so it is not what makes a report one report: the same timestamp and
+# body are, whatever the id says.
+at=$(date +%s)
+expect "the report is accepted" "$(ci --sha "$SECOND" --conclusion success --branch agent/red-once --timestamp "$at" \
+  --url 'https://ci.example.com/runs/2' --summary '212 tests passed' | cut -d' ' -f1-2)" "HTTP 202"
+expect "the same report again, under another delivery id, is accepted too" \
+  "$(ci --sha "$SECOND" --conclusion success --branch agent/red-once --timestamp "$at" \
+    --url 'https://ci.example.com/runs/2' --summary '212 tests passed' --delivery "$(uuid)" | cut -d' ' -f1-2)" "HTTP 202"
 wait_for "the thread is done at attempt 2 of 3" '[.state, .job.attempt, .job.maxAttempts] | join(" ")' "done 2 3" || exit 1
 
 # The run ends when the job does.
@@ -154,13 +167,15 @@ fi
 echo "== the chat shows every report as a card"
 curl -sS --max-time 60 -H "X-Auth-Request-Email: $AUTH_EMAIL" -H 'accept: text/event-stream' \
   "$BASE_URL/agui/threads/$THREAD/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' >"$tmp/events.json" || echo '[]' >"$tmp/events.json"
-expect "the vymalo.ci cards, in order: red, then the old commit's report replacing it, then green" \
+expect "the vymalo.ci cards, in order: red, the old commit's report, the unnamed check, green" \
   "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | "\(.content.shortSha)=\(.content.conclusion)"] | join(",")' "$tmp/events.json")" \
-  "1111111=failure,1111111=success,2222222=success"
-expect "one card per commit and check: the second report of 1111111 replaced the first" \
-  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | .messageId] | unique | length' "$tmp/events.json")" "2"
+  "1111111=failure,1111111=success,2222222=skipped,2222222=success"
+expect "every report has a card of its own: the later report of 1111111 did not replace the red one" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | .messageId] | unique | length' "$tmp/events.json")" "4"
+expect "no card replaces another" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | .replace] | unique | join(",")' "$tmp/events.json")" "false"
 expect "the card carries the link and the summary" \
-  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci" and .content.shortSha == "2222222")][0].content | [.passed, .url, .summary] | join(" ")' "$tmp/events.json")" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci" and .content.shortSha == "2222222" and .content.name == "ci/build")][0].content | [.passed, .url, .summary] | join(" ")' "$tmp/events.json")" \
   "true https://ci.example.com/runs/2 212 tests passed"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"

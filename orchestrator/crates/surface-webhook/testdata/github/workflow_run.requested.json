@@ -34,6 +34,26 @@
         "name": "Adam Coder",
         "email": "coder@example.com"
       }
+    },
+    "head_repository": {
+      "id": 186853002,
+      "node_id": "MDEwOlJlcG9zaXRvcnkxODY4NTMwMDI=",
+      "name": "widgets",
+      "full_name": "Acme/Widgets",
+      "private": false,
+      "html_url": "https://github.com/Acme/Widgets",
+      "fork": false,
+      "url": "https://api.github.com/repos/Acme/Widgets"
+    },
+    "repository": {
+      "id": 186853002,
+      "node_id": "MDEwOlJlcG9zaXRvcnkxODY4NTMwMDI=",
+      "name": "widgets",
+      "full_name": "Acme/Widgets",
+      "private": false,
+      "html_url": "https://github.com/Acme/Widgets",
+      "fork": false,
+      "url": "https://api.github.com/repos/Acme/Widgets"
     }
   },
   "repository": {

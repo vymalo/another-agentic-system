@@ -5,6 +5,9 @@
   (slice 3)* and *Built (slice 4)* below; and slice 10, 2026-09-30, the verifier agent (see *Built
   (slice 10)* below). Slices 5 and 6 (the inbox, and the CI webhook that makes `ci` a source this build honours) are
   built too, see *Updated (slice 6)*.
+  **Amended 2026-09-30 (review of slices 6, 7 and 9):** a gate that requires `ci` must name its
+  checks, and `ci` is honoured only where a webhook is mounted, see the
+  [status note](#status-note-2026-09-30-review-fixes); "the first completed CI report decides" below is superseded.
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -42,7 +45,7 @@ core logic in `orch-core`, the rules of [ADR 0016](0016-inbox-timers-and-job-led
 
 | Source | Evidence | Arrives as | Passes when |
 |---|---|---|---|
-| `Ci` | Reports on the pushed SHA ([ADR 0017](0017-ci-results-by-webhook.md)) | `Input::CiReported` | the `CiPolicy` says so: all required names pass, or the first completed report passes |
+| `Ci` | Reports on the pushed SHA ([ADR 0017](0017-ci-results-by-webhook.md)) | `Input::CiReported` | the `CiPolicy` says so: all required names pass. *(The first completed report used to pass when no name was required; superseded 2026-09-30, see the status note.)* |
 | `AgentChecks` | The agent's `checks {passed, commit, summary?, findings?}` artifact | the artifact, recognised in the core | `passed` is true for the pushed commit |
 | `Verifier` | A verifier A2A agent's `verdict {passed, findings[]}` artifact | `Input::VerifierReported` | `passed` is true |
 
@@ -86,7 +89,7 @@ configuration change.
 
 Defaults chosen (the owner's decisions, and the plan's defaults): the gate is empty; 3 attempts,
 capped at 10; a timeout blocks the thread rather than spending an attempt; without `ci.required`,
-the first completed CI report decides; a per-thread gate can add sources but not remove them.
+the first completed CI report decides *(superseded 2026-09-30: a gate that requires `ci` must name its checks, see the status note below)*; a per-thread gate can add sources but not remove them.
 
 ### Findings
 
@@ -331,6 +334,25 @@ above:
   `push-flawed` and `push-clean` keywords, `verifier` and `mock-coder-verified` in `dev/agents.yaml`, and
   `dev/verifier-e2e.sh`.
 
+## Status note (2026-09-30): review fixes
+
+- **`ci` requires `ci.required` names.** Replaces "without `ci.required`, the first completed CI report decides"
+  (Decision, *Defaults chosen*) and the `Ci` row of the sources table. With no names the first report for the pushed
+  commit decided, so a `skipped` report of another check, another workflow's, or a fork's, passed a red commit
+  ([ADR 0017](0017-ci-results-by-webhook.md#status-note-2026-09-30-review-fixes)). `GateRules` now refuses, as a
+  `GateError::CiWithoutChecks`, a resolved policy that requires `ci` and names no check: the deployment
+  (`ORCH_GATE` without `ORCH_CI_REQUIRED`) and every `AGENTS_FILE` entry at startup (exit 78), a per-thread `require`
+  that adds `ci` on a policy with no names as a 400 (or a tool error over MCP). Names union across layers as before, so a
+  layer cannot drop the ones above. The core is fail-closed too: with none named, no report counts and the CI deadline
+  blocks the job.
+- **`ci` is honoured only with a webhook surface.** `GateRules::refusing(Ci, reason)` is how a deployment refuses a
+  source of its own: the binary uses it when a process that serves routes mounts neither `webhook-generic` nor
+  `webhook-github`, with the reason "no CI webhook surface is mounted (ORCH_SURFACES)", for the deployment, for agents
+  and for per-thread requests. Replaces the startup warning of slice 6 ("a `ci` gate with no webhook mounted is not
+  refused"). A `worker` serves no routes and honours what the control plane decides.
+- **Configuration.** `ORCH_CI_REQUIRED` (comma-separated check names) sets the deployment's `ci.required`.
+- **The `vymalo.check` card of source `ci`** carries the summary of the check when exactly one is named.
+
 ## Configuration summary
 
 | Variable | Default | Meaning |
@@ -342,6 +364,7 @@ above:
 | `ORCH_VERIFIER_TIMEOUT_SECS` | `1800` | how long to wait for a verdict before `Blocked`, at least 1. *Built (slice 10)* |
 | `ORCH_VERIFIER_WATCH_SECS` | `5` | how often a verification looks at its thread while it waits for the verifier, at least 1; not a policy of the gate, a setting of the dispatcher. *Built (slice 10)* |
 | `ORCH_CI_TIMEOUT_SECS` | `3600` | how long to wait for CI before `Blocked` (ADR 0017), at least 1; an `AGENTS_FILE` entry's `gate.ci.timeoutSecs` overrides it. *Read since slice 6* |
+| `ORCH_CI_REQUIRED` | none | the names of the CI checks that must pass, comma list; a gate that requires `ci` must name at least one here or in an entry's `gate.ci.required` (exit 78 otherwise). *Read since the review of 2026-09-30* |
 | `AGENTS_FILE` `gate` | none | per-target override, shape above |
 
 ## Security notes

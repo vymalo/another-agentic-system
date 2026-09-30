@@ -40,8 +40,8 @@ fn app_config() -> AppConfig {
     AppConfig {
         gate: GatePolicy {
             ci: CiPolicy {
+                required: ["build".to_owned()].into(),
                 timeout: SignedDuration::from_secs(CI_TIMEOUT_SECS),
-                ..CiPolicy::default()
             },
             ..GatePolicy::requiring([CheckSource::Ci])
         },

@@ -176,7 +176,7 @@ What the diagrams cannot say:
   4. A row that matches no watch is **parked**. A later commit carrying `Watch { key }` inserts the
      watch and re-arms the parked rows in the same transaction.
   5. Parked rows expire after `INBOX_PARKED_TTL_SECS`.
-- **No ordering across rows.** The first completed report for each attempt decides.
+- **No ordering across rows.** The first completed report for each attempt decides. *(Amended 2026-09-30: for CI, only a check the gate names counts, so the first report of a named check decides; see the [ADR 0017 status note](0017-ci-results-by-webhook.md#status-note-2026-09-30-review-fixes).)*
 - **Ports.** The methods go on the existing `ThreadStore` (`receive`, `claim_inbox`, `park_inbox`,
   `retry_inbox`, `complete_inbox`), so the commit stays atomic; a second port would need a
   distributed transaction. Conformance cases join `thread_store_conformance!`: dedupe, park and

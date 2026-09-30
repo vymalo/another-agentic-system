@@ -9,7 +9,9 @@
 //! * with no report the deadline comes due, the thread is blocked with `ci_timeout`, and no
 //!   attempt is spent;
 //! * GitHub's own deliveries (`POST /webhooks/github`, the synthetic payloads of
-//!   `orch-surface-webhook`'s `testdata`) do the same through the same inbox.
+//!   `orch-surface-webhook`'s `testdata`) do the same through the same inbox, and only the checks
+//!   the gate names (`ci.required`) decide: an unnamed check's `skipped` arriving first, a fork's
+//!   green run and a `check_suite` change nothing.
 //!
 //! The agent is played through `App::apply` (the fake agent would only get in the way) and the
 //! inbox worker is driven one `tick` at a time, so nothing here waits or races: time is the
@@ -36,30 +38,32 @@ use orch_surface_webhook::signature::sign_github;
 use orch_surface_webhook::{GenericConfig, GithubConfig, Secrets, generic, github};
 use orch_testsupport::fake::{VERIFY_REPOSITORY, verify_commit};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
 #[path = "../../store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
-const SECRET: &str = "e2e-webhook-secret";
+const SECRET: &str = "e2e-webhook-secret-0123456789abcdef0123456789";
 const CI_TIMEOUT_SECS: i64 = 3600;
 /// 2026-09-30T12:00:00Z.
 const T0: i64 = 1_790_769_600;
 
 /// Defines, for each scenario `async fn name<S, W>(rig: Rig<S, W>)`, the tests `name::memory` and
-/// `name::postgres` (a no-op unless `ORCH_TEST_DATABASE_URL` is set).
+/// `name::postgres` (a no-op unless `ORCH_TEST_DATABASE_URL` is set), each on a gate that names
+/// the CI checks after the arrow.
 macro_rules! backends {
-    ($($name:ident),+ $(,)?) => {
+    ($($name:ident => $required:expr),+ $(,)?) => {
         $(
             mod $name {
                 #[tokio::test]
                 async fn memory() {
-                    super::$name(super::memory_rig().await).await;
+                    super::$name(super::memory_rig($required).await).await;
                 }
 
                 #[tokio::test]
                 async fn postgres() {
-                    match super::postgres_rig().await {
+                    match super::postgres_rig($required).await {
                         Some(rig) => super::$name(rig).await,
                         None => eprintln!(
                             "skipping the Postgres variant: ORCH_TEST_DATABASE_URL is not set"
@@ -88,11 +92,12 @@ fn alice() -> UserId {
     UserId::new("alice@example.com")
 }
 
-fn gate() -> GatePolicy {
+/// The gate: CI, and the checks that count. A gate that requires CI names them.
+fn gate(required: &[&str]) -> GatePolicy {
     GatePolicy {
         ci: CiPolicy {
+            required: required.iter().map(|n| (*n).to_owned()).collect(),
             timeout: SignedDuration::from_secs(CI_TIMEOUT_SECS),
-            ..CiPolicy::default()
         },
         max_attempts: 3,
         ..GatePolicy::requiring([CheckSource::Ci])
@@ -103,6 +108,7 @@ async fn rig<S: ThreadStore, W: Wakeup>(
     store: S,
     wakeup: W,
     db: Option<pgdb::TestDb>,
+    required: &[&str],
 ) -> Rig<S, W> {
     let clock = FixedClock::new(Timestamp::from_second(T0).unwrap());
     let directory = AgentDirectory::new(vec![AgentEntry {
@@ -124,7 +130,7 @@ async fn rig<S: ThreadStore, W: Wakeup>(
             },
             directory,
             AppConfig {
-                gate: gate(),
+                gate: gate(required),
                 ..AppConfig::default()
             },
         )
@@ -158,11 +164,11 @@ async fn rig<S: ThreadStore, W: Wakeup>(
     }
 }
 
-async fn memory_rig() -> Rig<MemoryStore, MemoryWakeup> {
-    rig(MemoryStore::new(), MemoryWakeup::new(), None).await
+async fn memory_rig(required: &[&str]) -> Rig<MemoryStore, MemoryWakeup> {
+    rig(MemoryStore::new(), MemoryWakeup::new(), None, required).await
 }
 
-async fn postgres_rig() -> Option<Rig<PgStore, PgWakeup>> {
+async fn postgres_rig(required: &[&str]) -> Option<Rig<PgStore, PgWakeup>> {
     let db = pgdb::TestDb::new().await?;
     let store = db.store().await; // migrates
     let wakeup = PgWakeup::start(db.pool("e2e-webhook", 4).await);
@@ -170,7 +176,7 @@ async fn postgres_rig() -> Option<Rig<PgStore, PgWakeup>> {
         wakeup.wait_listening(Duration::from_secs(10)).await,
         "the wakeup listener did not attach"
     );
-    Some(rig(store, wakeup, Some(db)).await)
+    Some(rig(store, wakeup, Some(db), required).await)
 }
 
 fn from_agent(update: AgentUpdate) -> Input {
@@ -219,16 +225,15 @@ fn report(commit: &str, name: &str, conclusion: &str, summary: Option<&str>) -> 
 }
 
 impl<S: ThreadStore, W: Wakeup> Rig<S, W> {
-    /// POSTs `body` to the route as a CI system would, signed at the clock's now, under
-    /// `delivery`. Returns the status.
-    async fn post(&self, delivery: u128, body: &Value) -> u16 {
+    /// POSTs `body` to the route as a CI system would, signed at the clock's now. Returns the
+    /// status. (The same body at the same time is the same delivery.)
+    async fn post(&self, body: &Value) -> u16 {
         let body = body.to_string();
         let ts = orch_ports::Clock::now(&self.clock).as_second().to_string();
         let signature = sign_generic(SECRET, &ts, body.as_bytes()).unwrap();
         self.client
             .post(format!("{}/webhooks/ci", self.base))
             .header("Content-Type", "application/json")
-            .header("X-Vymalo-Delivery", uuid_of(delivery))
             .header("X-Vymalo-Timestamp", ts)
             .header("X-Vymalo-Signature-256", signature)
             .body(body)
@@ -239,14 +244,14 @@ impl<S: ThreadStore, W: Wakeup> Rig<S, W> {
             .as_u16()
     }
 
-    /// POSTs a GitHub delivery of `event`, signed as GitHub signs (the raw body), under
-    /// `delivery`. Returns the status.
-    async fn post_github(&self, event: &str, delivery: u128, body: &Value) -> u16 {
+    /// POSTs a GitHub delivery of `event`, signed as GitHub signs (the raw body). Returns the
+    /// status.
+    async fn post_github(&self, event: &str, body: &Value) -> u16 {
         let body = body.to_string();
         self.client
             .post(format!("{}/webhooks/github", self.base))
             .header("X-GitHub-Event", event)
-            .header("X-GitHub-Delivery", uuid_of(delivery))
+            .header("X-GitHub-Delivery", uuid_of(1))
             .header(
                 "X-Hub-Signature-256",
                 sign_github(SECRET, body.as_bytes()).unwrap(),
@@ -306,29 +311,28 @@ impl<S: ThreadStore, W: Wakeup> Rig<S, W> {
         self.app.list_events(&alice(), id, 0, 500).await.unwrap()
     }
 
-    async fn row_status_of(
-        &self,
-        source: &str,
-        prefix: &str,
-        delivery: u128,
-    ) -> Option<InboxStatus> {
+    async fn row_status_under(&self, source: &str, key: &str) -> Option<InboxStatus> {
         self.app
             .ports()
             .store()
-            .find_inbox(source, &format!("{prefix}{}", uuid_of(delivery)))
+            .find_inbox(source, key)
             .await
             .unwrap()
             .map(|row| row.status)
     }
 
-    async fn row_status(&self, delivery: u128) -> Option<InboxStatus> {
-        self.app
-            .ports()
-            .store()
-            .find_inbox(generic::SOURCE, &uuid_of(delivery))
-            .await
-            .unwrap()
-            .map(|row| row.status)
+    /// The row of the generic report `body` posted now: keyed by the digest of what was signed.
+    async fn row_status(&self, body: &Value) -> Option<InboxStatus> {
+        let ts = orch_ports::Clock::now(&self.clock).as_second();
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{ts}.").as_bytes());
+        hasher.update(body.to_string().as_bytes());
+        let key: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        self.row_status_under(generic::SOURCE, &key).await
     }
 }
 
@@ -387,32 +391,19 @@ async fn a_report_received_before_its_watch_is_parked_then_matched_and_the_job_i
     let thread = rig.create().await;
     let commit = verify_commit(1);
 
-    assert_eq!(
-        rig.post(
-            1,
-            &report(&commit, "ci/build", "success", Some("212 passed"))
-        )
-        .await,
-        202
-    );
-    assert_eq!(rig.row_status(1).await, Some(InboxStatus::Pending));
+    let green = report(&commit, "ci/build", "success", Some("212 passed"));
+    assert_eq!(rig.post(&green).await, 202);
+    assert_eq!(rig.row_status(&green).await, Some(InboxStatus::Pending));
     rig.drain().await;
     assert_eq!(
-        rig.row_status(1).await,
+        rig.row_status(&green).await,
         Some(InboxStatus::Parked),
         "no thread watches the commit yet"
     );
     // A redelivery of a parked report is acknowledged and changes nothing.
-    assert_eq!(
-        rig.post(
-            1,
-            &report(&commit, "ci/build", "success", Some("212 passed"))
-        )
-        .await,
-        202
-    );
+    assert_eq!(rig.post(&green).await, 202);
     rig.drain().await;
-    assert_eq!(rig.row_status(1).await, Some(InboxStatus::Parked));
+    assert_eq!(rig.row_status(&green).await, Some(InboxStatus::Parked));
 
     // The agent pushes (which starts the watch, re-arming the parked report) and finishes (which
     // starts the verification).
@@ -423,7 +414,7 @@ async fn a_report_received_before_its_watch_is_parked_then_matched_and_the_job_i
 
     let record = rig.thread(thread.id).await;
     assert_eq!(record.state, ThreadState::Done);
-    assert_eq!(rig.row_status(1).await, Some(InboxStatus::Applied));
+    assert_eq!(rig.row_status(&green).await, Some(InboxStatus::Applied));
     let events = rig.events(thread.id).await;
     let cards = cards(&events);
     assert_eq!(cards.len(), 1, "one card, whatever the redeliveries");
@@ -450,7 +441,7 @@ async fn a_red_report_reworks_and_the_green_one_for_the_new_commit_finishes<
 
     let summary = "2 tests failed: parser::empty, parser::utf8";
     assert_eq!(
-        rig.post(1, &report(&first, "ci/build", "failure", Some(summary)))
+        rig.post(&report(&first, "ci/build", "failure", Some(summary)))
             .await,
         202
     );
@@ -485,8 +476,7 @@ async fn a_red_report_reworks_and_the_green_one_for_the_new_commit_finishes<
     rig.agent(thread.id, pushed(&second)).await;
     rig.agent(thread.id, completed()).await;
     assert_eq!(
-        rig.post(2, &report(&first, "ci/build", "failure", None))
-            .await,
+        rig.post(&report(&first, "ci/build", "failure", None)).await,
         202
     );
     rig.drain().await;
@@ -496,7 +486,7 @@ async fn a_red_report_reworks_and_the_green_one_for_the_new_commit_finishes<
         "a report about the old commit is a card and nothing else"
     );
     assert_eq!(
-        rig.post(3, &report(&second, "ci/build", "success", None))
+        rig.post(&report(&second, "ci/build", "success", None))
             .await,
         202
     );
@@ -541,7 +531,7 @@ async fn a_ci_deadline_blocks_the_thread<S: ThreadStore, W: Wakeup>(rig: Rig<S, 
     // A report that comes after the deadline is still a card, and the thread stays blocked for
     // the user to answer.
     assert_eq!(
-        rig.post(1, &report(&verify_commit(1), "ci/build", "success", None))
+        rig.post(&report(&verify_commit(1), "ci/build", "success", None))
             .await,
         202
     );
@@ -550,10 +540,12 @@ async fn a_ci_deadline_blocks_the_thread<S: ThreadStore, W: Wakeup>(rig: Rig<S, 
     assert_eq!(cards(&rig.events(thread.id).await).len(), 1);
 }
 
-/// GitHub's own deliveries through the same path: a failed `check_run` for the pushed commit
-/// sends the agent back (the report's summary is in the findings, as text), a `check_suite` for
-/// another commit changes nothing, a `workflow_run` for the new commit that succeeded ends the
-/// job, and a `push` event is acknowledged and stores nothing.
+/// GitHub's own deliveries through the same path, on a gate that names the check `build`: only
+/// that check decides. On the first attempt a fork's green `build`, an unnamed workflow's run, a
+/// `check_suite` and a `skipped` lint arrive before the red `build` and change nothing, the red
+/// `build` for the pushed commit sends the agent back (the report's summary is in the findings,
+/// as text), and on the second attempt a `push` event stores nothing and a green `build` for the
+/// new commit ends the job. A `workflow_run` named `CI` is a card and does not count.
 async fn github_deliveries_send_the_agent_back_and_end_the_job<S: ThreadStore, W: Wakeup>(
     rig: Rig<S, W>,
 ) {
@@ -564,8 +556,40 @@ async fn github_deliveries_send_the_agent_back_and_end_the_job<S: ThreadStore, W
     rig.agent(thread.id, completed()).await;
     assert_eq!(rig.thread(thread.id).await.state, ThreadState::Verifying);
 
+    // What arrives first, and must not decide.
+    let fork = github_payload("check_run.completed.fork_pull_request", &first, |v| {
+        v["check_run"]["conclusion"] = json!("success");
+    });
+    assert_eq!(rig.post_github("check_run", &fork).await, 202);
+    let fork_run = github_payload("workflow_run.completed.fork", &first, |_| {});
+    assert_eq!(rig.post_github("workflow_run", &fork_run).await, 202);
+    let unnamed = github_payload("workflow_run.completed.unnamed", &first, |v| {
+        v["workflow_run"]["conclusion"] = json!("success");
+    });
+    assert_eq!(rig.post_github("workflow_run", &unnamed).await, 202);
+    let suite = github_payload("check_suite.completed.success", &first, |_| {});
+    assert_eq!(rig.post_github("check_suite", &suite).await, 202);
+    let lint = github_payload("check_run.completed.success_no_summary", &first, |v| {
+        v["check_run"]["conclusion"] = json!("skipped");
+        v["check_run"]["id"] = json!(501);
+    });
+    assert_eq!(rig.post_github("check_run", &lint).await, 202);
+    let workflow = github_payload("workflow_run.completed.success", &first, |_| {});
+    assert_eq!(rig.post_github("workflow_run", &workflow).await, 202);
+    rig.drain().await;
+    assert_eq!(
+        rig.thread(thread.id).await.state,
+        ThreadState::Verifying,
+        "nothing that is not the named check decides"
+    );
+    assert_eq!(
+        cards(&rig.events(thread.id).await).len(),
+        2,
+        "the skipped lint and the CI workflow are cards; the fork, the unnamed run and the suite are not stored"
+    );
+
     let red = github_payload("check_run.completed.failure", &first, |_| {});
-    assert_eq!(rig.post_github("check_run", 1, &red).await, 202);
+    assert_eq!(rig.post_github("check_run", &red).await, 202);
     rig.drain().await;
     let record = rig.thread(thread.id).await;
     assert_eq!((record.state, record.job.attempt), (ThreadState::Queued, 2));
@@ -591,23 +615,32 @@ async fn github_deliveries_send_the_agent_back_and_end_the_job<S: ThreadStore, W
 
     rig.agent(thread.id, pushed(&second)).await;
     rig.agent(thread.id, completed()).await;
-    let old = github_payload("check_suite.completed.success", &first, |_| {});
-    assert_eq!(rig.post_github("check_suite", 2, &old).await, 202);
+    let old = github_payload("check_run.completed.timed_out", &first, |v| {
+        v["check_run"]["name"] = json!("build");
+        v["check_run"]["id"] = json!(502);
+    });
+    assert_eq!(rig.post_github("check_run", &old).await, 202);
     let push = json!({"ref": "refs/heads/agent/fix", "after": second});
-    assert_eq!(rig.post_github("push", 3, &push).await, 202);
+    assert_eq!(rig.post_github("push", &push).await, 202);
     rig.drain().await;
-    assert_eq!(rig.thread(thread.id).await.state, ThreadState::Verifying);
     assert_eq!(
-        rig.row_status_of("github", "github:", 3).await,
-        None,
-        "a push is not stored"
+        rig.thread(thread.id).await.state,
+        ThreadState::Verifying,
+        "a report about the old commit is a card and nothing else"
     );
 
-    let green = github_payload("workflow_run.completed.success", &second, |_| {});
-    assert_eq!(rig.post_github("workflow_run", 4, &green).await, 202);
+    let green = github_payload("check_run.completed.failure", &second, |v| {
+        v["check_run"]["conclusion"] = json!("success");
+        v["check_run"]["id"] = json!(503);
+    });
+    assert_eq!(rig.post_github("check_run", &green).await, 202);
     rig.drain().await;
     assert_eq!(rig.thread(thread.id).await.state, ThreadState::Done);
-    assert_eq!(cards(&rig.events(thread.id).await).len(), 3);
+    assert_eq!(
+        cards(&rig.events(thread.id).await).len(),
+        5,
+        "every stored report has a card"
+    );
 }
 
 /// A refused delivery reaches neither the inbox nor a thread.
@@ -625,7 +658,6 @@ async fn a_refused_delivery_changes_nothing<S: ThreadStore, W: Wakeup>(rig: Rig<
     let res = rig
         .client
         .post(format!("{}/webhooks/ci", rig.base))
-        .header("X-Vymalo-Delivery", uuid_of(9))
         .header("X-Vymalo-Timestamp", ts)
         .header("X-Vymalo-Signature-256", signature)
         .body(body.clone())
@@ -639,7 +671,6 @@ async fn a_refused_delivery_changes_nothing<S: ThreadStore, W: Wakeup>(rig: Rig<
     let res = rig
         .client
         .post(format!("{}/webhooks/ci", rig.base))
-        .header("X-Vymalo-Delivery", uuid_of(9))
         .header("X-Vymalo-Timestamp", ts)
         .header("X-Vymalo-Signature-256", signature)
         .body(body)
@@ -648,16 +679,20 @@ async fn a_refused_delivery_changes_nothing<S: ThreadStore, W: Wakeup>(rig: Rig<
         .unwrap();
     assert_eq!(res.status(), 401);
 
-    assert_eq!(rig.row_status(9).await, None);
+    assert_eq!(
+        rig.row_status(&report(&commit, "ci/build", "success", None))
+            .await,
+        None
+    );
     rig.drain().await;
     assert_eq!(rig.thread(thread.id).await.state, ThreadState::Verifying);
     assert_eq!(rig.events(thread.id).await.len(), before);
 }
 
 backends!(
-    a_report_received_before_its_watch_is_parked_then_matched_and_the_job_is_done,
-    a_red_report_reworks_and_the_green_one_for_the_new_commit_finishes,
-    a_ci_deadline_blocks_the_thread,
-    github_deliveries_send_the_agent_back_and_end_the_job,
-    a_refused_delivery_changes_nothing,
+    a_report_received_before_its_watch_is_parked_then_matched_and_the_job_is_done => &["ci/build"],
+    a_red_report_reworks_and_the_green_one_for_the_new_commit_finishes => &["ci/build"],
+    a_ci_deadline_blocks_the_thread => &["ci/build"],
+    github_deliveries_send_the_agent_back_and_end_the_job => &["build"],
+    a_refused_delivery_changes_nothing => &["ci/build"],
 );

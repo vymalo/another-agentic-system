@@ -515,6 +515,8 @@ async fn start_job_takes_a_gate_and_refuses_one_it_cannot_honour() {
     // A gate that cannot be honoured is a tool error naming why, and nothing is written.
     let written = h.threads_of(ALICE).await.len();
     for (gate, reason) in [
+        // `ci` on a policy that names no check: the first report would decide, so it is refused.
+        (json!({"require": ["ci"]}), "no check is named"),
         (json!({"require": ["magic"]}), "magic"),
         (json!({"maxAttempts": 0}), "attempts"),
         (json!({"maxAttempts": 100_000}), "attempts"),

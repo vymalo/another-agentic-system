@@ -18,8 +18,9 @@
 #      the thread is `failed`.
 #   3. A run may lower the attempts in `forwardedProps["vymalo.gate"]`: `maxAttempts: 2` ends after two.
 #   4. A run may not weaken the gate or ask for more than the deployment can honour: removing
-#      the source, more attempts than ORCH_MAX_ATTEMPTS_CAP, and `verifier` (not built yet, MVP
-#      slice 10) are each a 400 problem before any stream, and no thread is created.
+#      the source, more attempts than ORCH_MAX_ATTEMPTS_CAP, `ci` where no check is named
+#      (`ci.required`) and `verifier` where no verifier agent is configured are each a 400 problem
+#      before any stream, and no thread is created.
 #
 # Environment (all optional):
 #   BASE_URL    where the API is served     (default http://127.0.0.1:8080, the compose `edge`)
@@ -142,7 +143,8 @@ refused() { # refused DESCRIPTION GATE_JSON EXPECTED_DETAIL_FRAGMENT
 }
 refused "removing the source" '{"require": []}' "may add sources"
 refused "more attempts than the cap" '{"maxAttempts": 99}' "maxAttempts"
-refused "the verifier source (not built yet)" '{"require": ["agent-checks", "verifier"]}' "not available yet"
+refused "ci with no check named" '{"require": ["agent-checks", "ci"]}' "no check is named"
+refused "the verifier with no verifier agent" '{"require": ["agent-checks", "verifier"]}' "no verifier agent is configured"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

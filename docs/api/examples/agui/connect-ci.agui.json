@@ -209,14 +209,14 @@
         "summary": "1 test failed: tests::login",
         "url": "https://ci.example.com/runs/1"
       },
-      "messageId": "ci-0000000000000000000000000000000000000001-ci/build",
+      "messageId": "ci-generic-0000000000000000000000000000000000000001-ci/build-6",
       "metadata": {
         "vymalo.actor": {
           "name": "orchestrator",
           "type": "system"
         }
       },
-      "replace": true,
+      "replace": false,
       "type": "ACTIVITY_SNAPSHOT"
     },
     "id": 6
@@ -448,14 +448,14 @@
         "summary": "3 tests passed",
         "url": "https://ci.example.com/runs/2"
       },
-      "messageId": "ci-0000000000000000000000000000000000000002-ci/build",
+      "messageId": "ci-generic-0000000000000000000000000000000000000002-ci/build-13",
       "metadata": {
         "vymalo.actor": {
           "name": "orchestrator",
           "type": "system"
         }
       },
-      "replace": true,
+      "replace": false,
       "type": "ACTIVITY_SNAPSHOT"
     },
     "id": 13

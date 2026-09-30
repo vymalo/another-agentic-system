@@ -68,7 +68,7 @@
       }
     },
     {
-      "id": "ci-0000000000000000000000000000000000000001-ci/build",
+      "id": "ci-generic-0000000000000000000000000000000000000001-ci/build-6",
       "role": "activity",
       "activityType": "vymalo.ci",
       "content": {
@@ -143,7 +143,7 @@
       }
     },
     {
-      "id": "ci-0000000000000000000000000000000000000002-ci/build",
+      "id": "ci-generic-0000000000000000000000000000000000000002-ci/build-13",
       "role": "activity",
       "activityType": "vymalo.ci",
       "content": {

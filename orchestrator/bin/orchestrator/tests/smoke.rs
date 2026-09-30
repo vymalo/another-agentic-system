@@ -418,6 +418,73 @@ fn a_mounted_webhook_without_secrets_is_fatal_before_anything_connects() {
     }
 }
 
+/// A gate that requires `ci` must be able to receive a report and to tell which reports count:
+/// without a webhook surface, or without a named check, the binary exits 78 before anything
+/// connects (the alternative was a job that waits for a report nobody can send, or that a
+/// first `skipped` report of another check passes). A secret under 32 bytes is refused too.
+#[cfg(feature = "surface-webhook")]
+#[test]
+fn a_ci_gate_that_could_never_be_decided_is_fatal_before_anything_connects() {
+    const SECRET: &str = "smoke-webhook-secret-0123456789abcdef0123";
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let cases: [(&[(&str, &str)], &str); 5] = [
+        (
+            &[("ORCH_GATE", "ci"), ("ORCH_CI_REQUIRED", "build")],
+            "no CI webhook surface is mounted (ORCH_SURFACES)",
+        ),
+        (
+            &[
+                ("ORCH_GATE", "ci"),
+                ("ORCH_SURFACES", "agui,webhook-generic"),
+                ("WEBHOOK_GENERIC_SECRETS", SECRET),
+            ],
+            "ci.required",
+        ),
+        (
+            &[
+                ("ORCH_GATE", "ci"),
+                ("ORCH_CI_REQUIRED", " , "),
+                ("ORCH_SURFACES", "agui,webhook-generic"),
+                ("WEBHOOK_GENERIC_SECRETS", SECRET),
+            ],
+            "ORCH_CI_REQUIRED",
+        ),
+        (
+            &[
+                ("ORCH_SURFACES", "agui,webhook-generic"),
+                ("WEBHOOK_GENERIC_SECRETS", "hunter2"),
+            ],
+            "the minimum is 32",
+        ),
+        (
+            &[
+                ("ORCH_SURFACES", "agui,webhook-github"),
+                ("WEBHOOK_GITHUB_SECRETS", "hunter2"),
+            ],
+            "the minimum is 32",
+        ),
+    ];
+    for (n, (extra, says)) in cases.into_iter().enumerate() {
+        let mut env = vec![
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ];
+        env.extend_from_slice(extra);
+        let mut run = spawn_logging_to(&scratch, &format!("ci-gate-{n}.log"), &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(status.code(), Some(78), "{extra:?}: EX_CONFIG; {log}");
+        assert!(log.contains(says), "{extra:?}: {says}: {log}");
+        assert!(!log.contains("hunter2"), "a secret leaked into the log");
+        assert!(
+            !log.contains("cannot connect to Postgres"),
+            "nothing connects before the configuration is accepted: {log}"
+        );
+    }
+}
+
 #[test]
 fn a_flag_wins_over_its_variable() {
     let scratch = Scratch::new();
@@ -2000,7 +2067,7 @@ async fn a_verifier_gate_runs_through_the_real_binary() {
 async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
     use orch_surface_webhook::signature::sign_generic;
 
-    const SECRET: &str = "smoke-webhook-secret";
+    const SECRET: &str = "smoke-webhook-secret-0123456789abcdef0123";
     const DELIVERY: &str = "0195c1a2-7b3e-7c11-8f2a-5d6e7f809a1b";
     let Some(db) = pgdb::TestDb::new().await else {
         eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
@@ -2034,12 +2101,25 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
         "summary": "212 tests passed",
     })
     .to_string();
+    // One timestamp for every delivery of the test: the same timestamp and body are one delivery.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    let key = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{ts}.").as_bytes());
+        hasher.update(body.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
     let post = |secret: &str, delivery: &str| {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .to_string();
+        let ts = ts.clone();
         let signature = sign_generic(secret, &ts, body.as_bytes()).unwrap();
         replica
             .client
@@ -2067,9 +2147,11 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
     );
     assert!(rows().await.is_empty());
 
-    // A good one: 202, one row; a redelivery is 202 and still one row.
+    // A good one: 202, one row; a redelivery, and a replay under another delivery id, is 202 and
+    // still one row.
     assert_eq!(post(SECRET, DELIVERY).await.unwrap().status(), 202);
     assert_eq!(post(SECRET, DELIVERY).await.unwrap().status(), 202);
+    assert_eq!(post(SECRET, "another-id").await.unwrap().status(), 202);
     eventually(
         "the inbox worker parks the report no thread waits for",
         || async {
@@ -2077,7 +2159,8 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
             assert_eq!(rows.len(), 1, "{rows:?}");
             assert_eq!(
                 (rows[0].0.as_str(), rows[0].1.as_str()),
-                ("generic", DELIVERY)
+                ("generic", key.as_str()),
+                "keyed by the digest of the signed string, not by the delivery id"
             );
             (rows[0].2 == "parked").then_some(())
         },
@@ -2104,14 +2187,15 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
 }
 
 /// The GitHub webhook through the real binary: `webhook-github` mounted with a secret answers a
-/// `ping` with 204, stores a signed `check_suite` (the synthetic fixture of the webhook crate) and
-/// acknowledges a `push` without storing it, and refuses a bad signature.
+/// `ping` with 204, stores a signed `check_run` (the synthetic fixture of the webhook crate, dated
+/// now) and acknowledges a `push` and a `check_suite` without storing them, and refuses a bad
+/// signature.
 #[cfg(feature = "surface-webhook")]
 #[tokio::test]
-async fn the_github_webhook_takes_a_signed_check_suite_and_acknowledges_the_rest() {
+async fn the_github_webhook_takes_a_signed_check_run_and_acknowledges_the_rest() {
     use orch_surface_webhook::signature::sign_github;
 
-    const SECRET: &str = "smoke-github-secret";
+    const SECRET: &str = "smoke-github-secret-0123456789abcdef012345";
     const DELIVERY: &str = "72d3162e-cc78-11e3-81ab-4c9367dc0958";
     let Some(db) = pgdb::TestDb::new().await else {
         eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
@@ -2158,9 +2242,18 @@ async fn the_github_webhook_takes_a_signed_check_suite_and_acknowledges_the_rest
         .unwrap()
     };
 
+    // The fixture is dated on the day it was written; the route refuses an event older than a day,
+    // so the test dates it now.
+    let now = jiff::Timestamp::now().to_string();
+    let run = {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&fixture("check_run.completed.failure")).unwrap();
+        v["check_run"]["completed_at"] = serde_json::json!(now);
+        v.to_string().into_bytes()
+    };
     let suite = fixture("check_suite.completed.success");
     assert_eq!(
-        post("guess", "check_suite", DELIVERY, &suite)
+        post("guess", "check_run", DELIVERY, &run)
             .await
             .unwrap()
             .status(),
@@ -2180,20 +2273,29 @@ async fn the_github_webhook_takes_a_signed_check_suite_and_acknowledges_the_rest
             .status(),
         202
     );
-    assert!(
-        rows().await.is_empty(),
-        "refused, ping and push wrote nothing"
-    );
-
     assert_eq!(
         post(SECRET, "check_suite", DELIVERY, &suite)
             .await
             .unwrap()
             .status(),
+        202,
+        "a check_suite is named by an app, not a check: acknowledged, not stored"
+    );
+    assert!(
+        rows().await.is_empty(),
+        "refused, ping, push and check_suite wrote nothing"
+    );
+
+    assert_eq!(
+        post(SECRET, "check_run", DELIVERY, &run)
+            .await
+            .unwrap()
+            .status(),
         202
     );
+    // A redelivery, and a replay under another delivery id: the key is the signed body's.
     assert_eq!(
-        post(SECRET, "check_suite", DELIVERY, &suite)
+        post(SECRET, "check_run", "another-id", &run)
             .await
             .unwrap()
             .status(),
@@ -2206,7 +2308,7 @@ async fn the_github_webhook_takes_a_signed_check_suite_and_acknowledges_the_rest
             assert_eq!(rows.len(), 1, "{rows:?}");
             assert_eq!(
                 (rows[0].0.as_str(), rows[0].1.as_str()),
-                ("github", format!("github:{DELIVERY}").as_str())
+                ("github", format!("check_run:128620228:{now}").as_str())
             );
             (rows[0].2 == "parked").then_some(())
         },

@@ -11,7 +11,9 @@ use orch_core::{
     ThreadState, Timestamp,
 };
 use serde_json::{Value, json};
-use support::log::{Action, build_under, ci_gate, ci_report, gate, meta_under, thread_id};
+use support::log::{
+    Action, build_under, ci_gate, ci_gate_of, ci_report, gate, meta_under, thread_id,
+};
 use support::{lines, verify};
 
 const WORKING: Action = Action::Status(AgentTaskState::Working, None);
@@ -65,7 +67,7 @@ fn cards(frames: &[Frame]) -> Vec<(String, Option<bool>, Value)> {
 
 #[test]
 fn a_report_is_a_vymalo_ci_card_about_a_commit_and_a_check() {
-    let (_, frames, _) = project(
+    let (events, frames, _) = project(
         &[
             user(),
             WORKING,
@@ -75,11 +77,16 @@ fn a_report_is_a_vymalo_ci_card_about_a_commit_and_a_check() {
         ],
         &ci_gate(),
     );
+    let seq = events
+        .iter()
+        .find(|e| matches!(e.body, EventBody::CiResult(_)))
+        .unwrap()
+        .seq;
     let cards = cards(&frames);
     assert_eq!(cards.len(), 1);
     let (id, replace, content) = &cards[0];
-    assert_eq!(id, &format!("ci-{:040x}-ci/build", 1));
-    assert_eq!(*replace, Some(true));
+    assert_eq!(id, &format!("ci-generic-{:040x}-ci/build-{seq}", 1));
+    assert_eq!(*replace, Some(false), "a report never replaces another");
     assert_eq!(
         content,
         &json!({
@@ -127,8 +134,10 @@ fn the_card_comes_before_what_the_report_decided() {
 }
 
 #[test]
-fn a_check_that_runs_again_replaces_its_card_and_another_commit_has_its_own() {
-    let (_, frames, _) = project(
+fn every_report_is_a_card_of_its_own_even_for_the_same_check_on_the_same_commit() {
+    // A check that runs again, or a second report claiming to be the first, does not overwrite
+    // the earlier card: red evidence stays.
+    let (events, frames, _) = project(
         &[
             user(),
             WORKING,
@@ -141,20 +150,25 @@ fn a_check_that_runs_again_replaces_its_card_and_another_commit_has_its_own() {
         ],
         &GatePolicy::default(),
     );
+    let seqs: Vec<i64> = events
+        .iter()
+        .filter(|e| matches!(e.body, EventBody::CiResult(_)))
+        .map(|e| e.seq)
+        .collect();
     let cards = cards(&frames);
     let ids: Vec<&str> = cards.iter().map(|(id, _, _)| id.as_str()).collect();
-    let one = format!("ci-{:040x}-build", 1);
     assert_eq!(
         ids,
         [
-            one.as_str(),
-            one.as_str(),
-            &format!("ci-{:040x}-lint", 1),
-            &format!("ci-{:040x}-build", 2),
-        ],
-        "the same check on the same commit keeps its id, so the second replaces the first"
+            format!("ci-generic-{:040x}-build-{}", 1, seqs[0]),
+            format!("ci-generic-{:040x}-build-{}", 1, seqs[1]),
+            format!("ci-generic-{:040x}-lint-{}", 1, seqs[2]),
+            format!("ci-generic-{:040x}-build-{}", 2, seqs[3]),
+        ]
     );
-    assert!(cards.iter().all(|(_, replace, _)| *replace == Some(true)));
+    let distinct: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+    assert_eq!(distinct.len(), 4, "no two reports share an id");
+    assert!(cards.iter().all(|(_, replace, _)| *replace == Some(false)));
     assert_eq!(cards[0].2["conclusion"], "failure");
     assert_eq!(cards[1].2["conclusion"], "success");
     assert_eq!(cards[1].2["passed"], true);
@@ -204,7 +218,7 @@ fn a_report_after_the_job_ended_opens_a_run_of_its_own_and_closes_it() {
             ci("build", 1, CiConclusion::Success),
             ci("lint", 1, CiConclusion::Failure),
         ],
-        &ci_gate(),
+        &ci_gate_of(["build"]),
     );
     // The first report is the verdict (the job is done); the second arrives afterwards.
     assert_eq!(projector.thread_state(), ThreadState::Done);
@@ -294,11 +308,18 @@ fn untrusted_text_is_carried_as_text_and_only_http_links_are_passed() {
     assert_eq!(card["passed"], false, "action_required is not a pass");
     assert_eq!(card["provider"], "github");
     assert_eq!(card["url"], "https://ci.example.com/run");
+    // The scheme is case-insensitive, like a URL's.
+    for upper in ["HTTPS://ci.example.com/run", "Http://ci.example.com/run"] {
+        assert_eq!(card_of(Some(upper))["url"], upper, "{upper:?} is a link");
+    }
     for bad in [
         "javascript:alert(1)",
         "data:text/html,x",
         "file:///etc/passwd",
         "//evil",
+        "JavaScript:alert(1)",
+        "httpx://evil",
+        "htt",
         "",
     ] {
         assert!(

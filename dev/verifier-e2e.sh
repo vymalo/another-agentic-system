@@ -181,7 +181,8 @@ refused() { # refused DESCRIPTION GATE_JSON EXPECTED_DETAIL_FRAGMENT
 }
 refused "choosing another verifier" '{"verifier": "mock-coder"}' "cannot be set per thread"
 refused "dropping the verifier" '{"require": []}' "may add sources"
-refused "the ci source (not built yet)" '{"require": ["verifier", "ci"]}' "not available yet"
+# `ci` is honoured (slice 6), but a gate that requires it names the checks that count and this agent's has none
+refused "ci with no check named" '{"require": ["verifier", "ci"]}' "no check is named"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

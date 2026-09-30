@@ -91,8 +91,9 @@ impl CheckSource {
     }
 }
 
-/// What CI must say. `required` names the checks that count; empty means the first completed
-/// report decides.
+/// What CI must say. `required` names the checks that count. A gate that requires CI must name at
+/// least one (configuration refuses it otherwise); with none, nothing counts and the job ends
+/// `Blocked` by the CI deadline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CiPolicy {

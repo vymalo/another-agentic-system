@@ -18,11 +18,18 @@
 //!   (or fewer) says so. A slice that makes a source real changes that arm, and then also owns what
 //!   the source needs on top of the rules here (its own settings, its own checks in
 //!   [`GateRules::check_verifier`]).
+//! * **`ci` names its checks.** A resolved policy that requires `ci` must name at least one check
+//!   in `ci.required` ([`GateError::CiWithoutChecks`]): "the first report decides" would let a
+//!   red commit pass on whichever report arrives first (a `skipped`, another workflow's). The
+//!   deployment and every agent's entry are checked at startup; a per-thread request that adds
+//!   `ci` on top of a policy with no names is a 400.
+//! * **A deployment can refuse a source of its own** ([`GateRules::refusing`]): the binary
+//!   refuses `ci` when no CI webhook surface is mounted, with the reason it gives.
 //! * **The verifier is another agent**, and only the deployment and a target choose it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use orch_core::{AgentId, CheckSource, CiPolicy, GatePolicy};
+use orch_core::{AgentId, CheckSource, GatePolicy};
 use orch_ports::{AgentEndpoint, AgentTransport};
 use serde::Deserialize;
 use serde_json::Value;
@@ -50,8 +57,9 @@ pub fn pending_reason(source: CheckSource) -> Option<&'static str> {
         CheckSource::AgentChecks => None,
         // Built in slice 6: the webhooks write the reports (`orch-surface-webhook`), the inbox and
         // the timers of slice 5 apply them and arm the deadline. Whether a deployment *receives*
-        // reports is its choice (`ORCH_SURFACES`); a gate that requires `ci` without a webhook
-        // ends `Blocked` (`ci_timeout`) after `ORCH_CI_TIMEOUT_SECS`, never `Done`.
+        // reports is its choice (`ORCH_SURFACES`): the binary refuses `ci` with
+        // [`GateRules::refusing`] when it mounts no webhook, so that a job cannot wait for a report
+        // that has no door.
         CheckSource::Ci => None,
         // Built in slice 10.
         CheckSource::Verifier => None,
@@ -85,7 +93,8 @@ pub fn known_sources() -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CiLayer {
-    /// Names of the checks that must pass; empty or absent: the first completed report decides.
+    /// Names of the checks that must pass; a gate that requires `ci` must name at least one, in the layers that
+    /// are checked at startup.
     pub required: Option<BTreeSet<String>>,
     /// Seconds CI may take before the thread blocks.
     pub timeout_secs: Option<i64>,
@@ -152,8 +161,7 @@ pub enum GateError {
     Malformed(String),
     /// The layer asks for something this build cannot honour yet.
     #[error(
-        "{layer}: {what} is not available yet: {needs}. Until then only {} can be required",
-        honoured_names()
+        "{layer}: {what} is not available yet: {needs}. Until then only {only} can be required"
     )]
     Unavailable {
         /// The layer.
@@ -161,7 +169,9 @@ pub enum GateError {
         /// What was asked for (`the ci source`, `the verifier setting`, …).
         what: String,
         /// Why it cannot be honoured, and which slice enables it.
-        needs: &'static str,
+        needs: String,
+        /// What can be required in this build, for the message.
+        only: String,
     },
     /// `maxAttempts` outside `1..=cap`.
     #[error("{layer}: maxAttempts {value} is outside 1..={cap}")]
@@ -194,6 +204,16 @@ pub enum GateError {
         layer: Layer,
         /// The setting.
         setting: &'static str,
+    },
+    /// `ci` is required but no check is named, so any first report would decide.
+    #[error(
+        "{layer}: the ci source is required but no check is named; name at least one in \
+         ci.required (the check's name for GitHub's check_run, the workflow's for workflow_run), \
+         or a red commit could pass on whichever report arrives first"
+    )]
+    CiWithoutChecks {
+        /// The layer whose policy it is.
+        layer: Layer,
     },
     /// A timeout below one second.
     #[error("{layer}: ci.timeoutSecs must be at least 1")]
@@ -245,20 +265,13 @@ fn same_endpoint(a: &AgentEndpoint, b: &AgentEndpoint) -> bool {
     }
 }
 
-fn honoured_names() -> String {
-    let names: Vec<&str> = CheckSource::ALL
-        .into_iter()
-        .filter(|s| pending_reason(*s).is_none())
-        .map(CheckSource::config_name)
-        .collect();
-    names.join(", ")
-}
-
 /// The rules layers are checked against: which sources this build honours and how far attempts
 /// may be raised.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateRules {
     honoured: BTreeSet<CheckSource>,
+    /// Sources a deployment refuses although the build has them, and why.
+    refused: BTreeMap<CheckSource, String>,
     cap: u32,
 }
 
@@ -277,6 +290,7 @@ impl GateRules {
                 .into_iter()
                 .filter(|s| pending_reason(*s).is_none())
                 .collect(),
+            refused: BTreeMap::new(),
             cap: cap.clamp(1, MAX_ATTEMPTS_CAP_CEILING),
         }
     }
@@ -286,7 +300,35 @@ impl GateRules {
     #[must_use]
     pub fn honouring(mut self, sources: impl IntoIterator<Item = CheckSource>) -> Self {
         self.honoured = sources.into_iter().collect();
+        self.refused.clear();
         self
+    }
+
+    /// The same rules, refusing `source` for `reason` although the build has it: a deployment
+    /// that mounts no CI webhook surface cannot honour `ci`, for any layer, per-thread requests
+    /// included.
+    #[must_use]
+    pub fn refusing(mut self, source: CheckSource, reason: impl Into<String>) -> Self {
+        self.honoured.remove(&source);
+        self.refused.insert(source, reason.into());
+        self
+    }
+
+    fn reason(&self, source: CheckSource) -> String {
+        self.refused
+            .get(&source)
+            .cloned()
+            .or_else(|| pending_reason(source).map(str::to_owned))
+            .unwrap_or_else(|| "this build does not honour it".to_owned())
+    }
+
+    fn only(&self) -> String {
+        let names: Vec<&str> = CheckSource::ALL
+            .into_iter()
+            .filter(|s| self.honours(*s))
+            .map(CheckSource::config_name)
+            .collect();
+        names.join(", ")
     }
 
     /// The most attempts a target or a thread may ask for.
@@ -307,7 +349,8 @@ impl GateRules {
         Some(GateError::Unavailable {
             layer: layer.clone(),
             what: format!("the {} source", source.config_name()),
-            needs: pending_reason(source).unwrap_or("this build does not honour it"),
+            needs: self.reason(source),
+            only: self.only(),
         })
     }
 
@@ -329,7 +372,8 @@ impl GateRules {
         Some(GateError::Unavailable {
             layer: layer.clone(),
             what: what.to_owned(),
-            needs: pending_reason(source).unwrap_or("this build does not honour it"),
+            needs: self.reason(source),
+            only: self.only(),
         })
     }
 
@@ -425,7 +469,16 @@ impl GateRules {
                 policy.ci.timeout = jiff::SignedDuration::from_secs(secs);
             }
         }
+        self.check_ci_names(&policy, at)?;
         Ok(policy)
+    }
+
+    /// A policy that requires `ci` names the checks that count.
+    fn check_ci_names(&self, policy: &GatePolicy, at: &Layer) -> Result<(), GateError> {
+        if policy.requires(CheckSource::Ci) && policy.ci.required.is_empty() {
+            return Err(GateError::CiWithoutChecks { layer: at.clone() });
+        }
+        Ok(())
     }
 
     /// Checks the verifier of a resolved gate against the configured agents: when the gate
@@ -507,11 +560,14 @@ impl GateRules {
         {
             return Err(refusal);
         }
-        if policy.ci != CiPolicy::default()
+        // Names are a setting. The timeout is not: the deployment has one for every gate
+        // (`ORCH_CI_TIMEOUT_SECS`), whether or not anything requires CI.
+        if !policy.ci.required.is_empty()
             && let Some(refusal) = self.refuse_ci_settings(at)
         {
             return Err(refusal);
         }
+        self.check_ci_names(policy, at)?;
         self.check_attempts(at, policy.max_attempts)
     }
 

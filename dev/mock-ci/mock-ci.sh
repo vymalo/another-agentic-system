@@ -4,14 +4,22 @@
 # posts one SIGNED check result to the orchestrator, the way a real CI system would (ADR 0017,
 # docs/api/webhooks.md):
 #
-#   MOCK_CI_SHAPE=github   (default) a GitHub `check_suite` delivery (completed) to /webhooks/github,
-#                          signed with X-Hub-Signature-256 over the raw body
+#   MOCK_CI_SHAPE=github   (default) a GitHub `check_run` delivery (completed) to /webhooks/github, named
+#                          `mock-ci/build`, signed with X-Hub-Signature-256 over the raw body
+#   MOCK_CI_SHAPE=github-workflow  a GitHub `workflow_run` delivery (completed), named `mock-ci/build`
 #   MOCK_CI_SHAPE=generic  the generic body to /webhooks/ci, signed over "<timestamp>.<body>"
 #
+# The check is named `mock-ci/build`: the gate names the checks that count (`gate.ci.required` of the
+# coder's entry in dev/agents.yaml), and a report of another name is only a card.
+#
 # The conclusion is `failure` when the commit's message contains CI_FAIL, `success` otherwise. A
-# commit is reported once: the delivery id is derived from the repository and the commit, so a
-# restart that forgets what it reported sends the same id, which the orchestrator takes as a repeat.
+# commit is reported once, and remembered in $MOCK_CI_STATE; a restart that forgot what it reported
+# posts it again with a new completion time, which the orchestrator stores as a new report (the idempotency
+# key of a delivery is made of what is signed, not of an id the sender chooses).
 # A post that is not answered 2xx is tried again on the next pass.
+#
+# The secret is read from the environment and never appears on a command line (`openssl dgst -hmac KEY`
+# would show it to every process of the machine): the HMAC is built from two plain SHA-256 runs.
 #
 # Environment (defaults match compose.yaml):
 #   GIT_SERVER_URL      http://git-server:8080   where `git ls-remote` goes: <url>/<repo>.git
@@ -20,13 +28,14 @@
 #                                                name the repository the way the agent's `branch` artifact does
 #   WEBHOOK_URL         http://edge:8080         where the orchestrator's webhooks are served (the edge passes
 #                                                /webhooks/* on without an identity)
-#   WEBHOOK_SECRET      dev-webhook-secret       the shared secret (WEBHOOK_GENERIC_SECRETS / WEBHOOK_GITHUB_SECRETS)
-#   MOCK_CI_SHAPE       github                   github or generic
+#   WEBHOOK_SECRET      (required)               the shared secret (WEBHOOK_GENERIC_SECRETS / WEBHOOK_GITHUB_SECRETS),
+#                                                at least 32 bytes
+#   MOCK_CI_SHAPE       github                   github, github-workflow or generic
 #   MOCK_CI_POLL_SECS   2
 #   MOCK_CI_STATE       /var/lib/mock-ci         what was reported (one empty file per commit)
 #   MOCK_CI_ONCE        unset                    1 = one pass, then exit (non-zero if a post failed)
 #
-# POSIX sh; needs git, curl and openssl.
+# POSIX sh; needs git, curl, openssl, od and awk.
 set -eu
 
 git_server=${GIT_SERVER_URL:-http://git-server:8080}
@@ -36,13 +45,14 @@ repo_url=${MOCK_CI_REPO_URL:-$git_server}
 repo_url=${repo_url%/}
 webhook=${WEBHOOK_URL:-http://edge:8080}
 webhook=${webhook%/}
-secret=${WEBHOOK_SECRET:-dev-webhook-secret}
+secret=${WEBHOOK_SECRET:-}
 shape=${MOCK_CI_SHAPE:-github}
 poll=${MOCK_CI_POLL_SECS:-2}
 state=${MOCK_CI_STATE:-/var/lib/mock-ci}
 once=${MOCK_CI_ONCE:-}
 
-case $shape in github | generic) ;; *) echo "mock-ci: MOCK_CI_SHAPE must be github or generic, not '$shape'" >&2; exit 2 ;; esac
+case $shape in github | github-workflow | generic) ;; *) echo "mock-ci: MOCK_CI_SHAPE must be github, github-workflow or generic, not '$shape'" >&2; exit 2 ;; esac
+[ -n "$secret" ] || { echo "mock-ci: WEBHOOK_SECRET is required" >&2; exit 2; }
 
 log() { echo "mock-ci: $*"; }
 
@@ -51,35 +61,78 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 git init -q --bare "$scratch/repo"
 
-# hmac: HMAC-SHA-256 of stdin under $secret, as lowercase hex.
-hmac() { openssl dgst -sha256 -hmac "$secret" -r | cut -d' ' -f1; }
-
-# uuid_of TEXT: a UUID derived from TEXT (8-4-4-4-12 of its SHA-256).
-uuid_of() {
-  h=$(printf '%s' "$1" | openssl dgst -sha256 -r | cut -c1-32)
-  printf '%s-%s-%s-%s-%s' "$(echo "$h" | cut -c1-8)" "$(echo "$h" | cut -c9-12)" "$(echo "$h" | cut -c13-16)" \
-    "$(echo "$h" | cut -c17-20)" "$(echo "$h" | cut -c21-32)"
+# hexbin: hex on stdin, the same bytes as printf escapes on stdout.
+hexbin() {
+  awk '{ h = "0123456789abcdef"
+         for (i = 1; i < length($0); i += 2) {
+           printf "\\0%03o", (index(h, substr($0, i, 1)) - 1) * 16 + index(h, substr($0, i + 1, 1)) - 1 } }'
 }
 
-# post_github REPO BRANCH SHA CONCLUSION DELIVERY: a completed check_suite.
+# padxor N: the key (hex on stdin) padded with zeros to one 64-byte block and XORed with byte N.
+padxor() {
+  awk -v n="$1" '
+    function xor(a, b,    r, p, i) { r = 0; p = 1
+      for (i = 0; i < 8; i++) { if ((a % 2) != (b % 2)) r += p; a = int(a / 2); b = int(b / 2); p *= 2 }
+      return r }
+    { h = "0123456789abcdef"; k = $0
+      while (length(k) < 128) k = k "0"
+      out = ""
+      for (i = 1; i < length(k); i += 2) {
+        v = xor((index(h, substr(k, i, 1)) - 1) * 16 + index(h, substr(k, i + 1, 1)) - 1, n)
+        out = out substr(h, int(v / 16) + 1, 1) substr(h, v % 16 + 1, 1) }
+      print out }'
+}
+
+# hmac: HMAC-SHA-256 of stdin under $secret, as lowercase hex (RFC 2104 by hand: H((K^opad) || H((K^ipad) || m))).
+# Only shell builtins ever see the secret; no command line carries it.
+hmac() {
+  cat >"$scratch/message"
+  keyhex=$(printf '%s' "$secret" | od -An -v -tx1 | tr -d ' \n')
+  if [ "${#keyhex}" -gt 128 ]; then keyhex=$(printf '%s' "$secret" | openssl dgst -sha256 -r | cut -d' ' -f1); fi
+  ipad=$(printf '%s' "$keyhex" | padxor 54)
+  opad=$(printf '%s' "$keyhex" | padxor 92)
+  inner=$({ printf '%b' "$(printf '%s' "$ipad" | hexbin)"; cat "$scratch/message"; } |
+    openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n')
+  { printf '%b' "$(printf '%s' "$opad" | hexbin)"; printf '%b' "$(printf '%s' "$inner" | hexbin)"; } |
+    openssl dgst -sha256 -r | cut -d' ' -f1
+}
+
+# number_of TEXT: a positive number derived from TEXT (the first 8 hex digits of its SHA-256).
+number_of() {
+  h=$(printf '%s' "$1" | openssl dgst -sha256 -r | cut -c1-8)
+  echo "$((0x$h + 1))"
+}
+
+# post_github REPO BRANCH SHA CONCLUSION SUMMARY: a completed check_run (or workflow_run) named mock-ci/build.
+# Both carry the repository and its head repository as the same one, and the time it completed.
 post_github() {
-  body=$(printf '{"action":"completed","check_suite":{"id":%s,"head_branch":"%s","head_sha":"%s","status":"completed","conclusion":"%s","app":{"slug":"mock-ci","name":"Mock CI"}},"repository":{"full_name":"%s","html_url":"%s/%s"}}' \
-    "$(($(echo "$5" | cut -c1-8 | sed 's/^/0x/')))" "$2" "$3" "$4" "$1" "$repo_url" "$1")
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  id=$(number_of "$1@$3")
+  repo_json=$(printf '{"id":1,"name":"%s","full_name":"%s","html_url":"%s/%s"}' "${1#*/}" "$1" "$repo_url" "$1")
+  if [ "$shape" = github-workflow ]; then
+    event=workflow_run
+    body=$(printf '{"action":"completed","workflow_run":{"id":%s,"name":"mock-ci/build","head_branch":"%s","head_sha":"%s","status":"completed","conclusion":"%s","run_attempt":1,"updated_at":"%s","html_url":"%s/%s/actions/runs/%s","head_repository":%s},"repository":%s}' \
+      "$id" "$2" "$3" "$4" "$now" "$repo_url" "$1" "$id" "$repo_json" "$repo_json")
+  else
+    event=check_run
+    body=$(printf '{"action":"completed","check_run":{"id":%s,"name":"mock-ci/build","head_sha":"%s","status":"completed","conclusion":"%s","completed_at":"%s","html_url":"%s/%s/runs/%s","output":{"summary":"%s"},"check_suite":{"head_branch":"%s"},"pull_requests":[]},"repository":%s}' \
+      "$id" "$3" "$4" "$now" "$repo_url" "$1" "$id" "$5" "$2" "$repo_json")
+  fi
   curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$webhook/webhooks/github" \
     -H 'Content-Type: application/json' -H 'User-Agent: mock-ci' \
-    -H 'X-GitHub-Event: check_suite' -H "X-GitHub-Delivery: $5" \
+    -H "X-GitHub-Event: $event" -H "X-GitHub-Delivery: mock-ci-$id" \
     -H "X-Hub-Signature-256: sha256=$(printf '%s' "$body" | hmac)" \
     --data-binary "$body"
 }
 
-# post_generic REPO BRANCH SHA CONCLUSION DELIVERY SUMMARY: the generic body.
+# post_generic REPO BRANCH SHA CONCLUSION SUMMARY: the generic body.
 post_generic() {
   body=$(printf '{"version":1,"repository":"%s/%s","sha":"%s","branch":"%s","name":"mock-ci/build","conclusion":"%s","summary":"%s"}' \
-    "$repo_url" "$1" "$3" "$2" "$4" "$6")
+    "$repo_url" "$1" "$3" "$2" "$4" "$5")
   ts=$(date +%s)
   curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$webhook/webhooks/ci" \
     -H 'Content-Type: application/json' -H 'User-Agent: mock-ci' \
-    -H "X-Vymalo-Delivery: $5" -H "X-Vymalo-Timestamp: $ts" \
+    -H "X-Vymalo-Timestamp: $ts" \
     -H "X-Vymalo-Signature-256: sha256=$(printf '%s.%s' "$ts" "$body" | hmac)" \
     --data-binary "$body"
 }
@@ -97,9 +150,8 @@ report() {
     *CI_FAIL*) conclusion=failure; summary="CI_FAIL in the commit message" ;;
     *) conclusion=success; summary="the mock CI passed" ;;
   esac
-  id=$(uuid_of "$1@$3")
-  if [ "$shape" = github ]; then status=$(post_github "$1" "$2" "$3" "$conclusion" "$id") || status=000
-  else status=$(post_generic "$1" "$2" "$3" "$conclusion" "$id" "$summary") || status=000; fi
+  if [ "$shape" = generic ]; then status=$(post_generic "$1" "$2" "$3" "$conclusion" "$summary") || status=000
+  else status=$(post_github "$1" "$2" "$3" "$conclusion" "$summary") || status=000; fi
   case $status in
     2??) : >"$marker"; log "$shape: $conclusion for $1 $2 $(printf '%s' "$3" | cut -c1-7): HTTP $status" ;;
     *) log "$shape: $conclusion for $1 $2 $(printf '%s' "$3" | cut -c1-7): HTTP $status, will retry"; return 1 ;;

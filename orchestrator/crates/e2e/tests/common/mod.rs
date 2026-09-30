@@ -18,8 +18,8 @@ use orch_app::{
     InboxWorker, NewThread, Received,
 };
 use orch_core::{
-    AgentId, AgentTarget, CiConclusion, CiProvider, CiReport, Event, GatePolicy, Input, ThreadId,
-    ThreadRecord, UserId,
+    AgentId, AgentTarget, CiConclusion, CiPolicy, CiProvider, CiReport, Event, GatePolicy, Input,
+    ThreadId, ThreadRecord, UserId,
 };
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{
@@ -144,7 +144,15 @@ impl Default for Setup {
             reviewer: None,
             coder_token: None,
             plain_token: None,
-            gate: GatePolicy::default(),
+            // No source is required, but `ci/build` is the check a request that adds `ci` waits
+            // for: a gate that requires CI must name its checks (`GateError::CiWithoutChecks`).
+            gate: GatePolicy {
+                ci: CiPolicy {
+                    required: [GOLDEN_CI_CHECK.to_owned()].into(),
+                    ..CiPolicy::default()
+                },
+                ..GatePolicy::default()
+            },
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
         }
@@ -591,7 +599,10 @@ impl Node {
 
 // ---- the `ci` golden ---------------------------------------------------------------------
 
-/// The report of the `ci` golden: check `build` of the commit the fake agent's `verify-ci`
+/// The one check the `ci` golden waits for.
+pub const GOLDEN_CI_CHECK: &str = "ci/build";
+
+/// The report of the `ci` golden: check `ci/build` of the commit the fake agent's `verify-ci`
 /// script pushes in `attempt`, in the repository it reports.
 pub fn golden_ci_report(attempt: u32, conclusion: CiConclusion, summary: &str) -> CiReport {
     CiReport {
@@ -599,7 +610,7 @@ pub fn golden_ci_report(attempt: u32, conclusion: CiConclusion, summary: &str) -
         repository: "github.com/acme/demo".to_owned(),
         sha: orch_testsupport::fake::verify_commit(attempt),
         branch: Some("agent/fix".to_owned()),
-        name: "ci/build".to_owned(),
+        name: GOLDEN_CI_CHECK.to_owned(),
         conclusion,
         url: Some(format!("https://ci.example.com/runs/{attempt}")),
         summary: Some(summary.to_owned()),

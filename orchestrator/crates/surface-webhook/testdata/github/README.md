@@ -10,4 +10,9 @@ When a real delivery is recorded (GitHub's "Recent Deliveries" shows the payload
 keep the name, and delete this paragraph for that file.
 
 The file name is `<X-GitHub-Event>.<action>[.<variant>].json`; `tests/github.rs` states what each one must do.
+The times in them (`completed_at`, `updated_at`) are those of 2026-09-30, so a test that runs them against the real
+clock (the binary's smoke test) dates them again; the crate's own tests hold a clock at 2026-09-30T12:00:00Z.
+`check_suite.completed.success` is kept only to show that a suite is acknowledged and not stored; the
+`fork` fixtures (`workflow_run.completed.fork`, `check_run.completed.fork_pull_request`) are runs of code from another repository, and
+`workflow_run.completed.unnamed` has a `null` name: none of the three is stored.
 `Acme/Widgets` is capitalised on purpose: the repository key is lower case.

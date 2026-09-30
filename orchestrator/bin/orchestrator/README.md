@@ -61,9 +61,11 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
 | `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them: `agui`, `mcp`, `webhook-generic`, `webhook-github`; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
-| `WEBHOOK_GENERIC_SECRETS` | none | one or two comma-separated shared secrets of `POST /webhooks/ci` (`--webhook-generic-secrets`; a signature by either is good, so a secret can be rotated). **Required when a role that serves routes (`all`, `control-plane`) mounts `webhook-generic`** (exit 78); a third secret is a startup error; never logged, and hidden in `--help` |
+| `WEBHOOK_GENERIC_SECRETS` | none | one or two comma-separated shared secrets of `POST /webhooks/ci` (`--webhook-generic-secrets`; a signature by either is good, so a secret can be rotated). **Required when a role that serves routes (`all`, `control-plane`) mounts `webhook-generic`** (exit 78); a third secret, or one under 32 bytes, is a startup error; never logged, and hidden in `--help` |
 | `WEBHOOK_GITHUB_SECRETS` | none | one or two comma-separated secrets of `POST /webhooks/github` (`--webhook-github-secrets`); **required when a role that serves routes mounts `webhook-github`** (exit 78), a third secret is a startup error; never logged, hidden in `--help` |
 | `WEBHOOK_GENERIC_MAX_SKEW_SECS` | `300` | at least 1; how far `X-Vymalo-Timestamp` may be from the clock, either way (`--webhook-generic-max-skew-secs`) |
+| `WEBHOOK_GITHUB_MAX_AGE_SECS` | `86400` | at least 1; how old the signed `completed_at` (`updated_at` for a workflow run) of a GitHub event may be; an older event is acknowledged (202) and not stored (`--webhook-github-max-age-secs`) |
+| `ORCH_CI_REQUIRED` | none | comma-separated names of the CI checks that must pass, the deployment's `ci.required` (`--ci-required`); **a gate that requires `ci` must name at least one** (here or in an entry's `gate.ci.required`), else exit 78; `ci` is refused (78) when no CI webhook surface is mounted |
 | `ORCH_CI_TIMEOUT_SECS` | `3600` | at least 1; how long a job waits for the CI reports its gate needs before it is blocked with `ci_timeout` (no attempt is used); an `AGENTS_FILE` entry's `gate.ci.timeoutSecs` overrides it (`--ci-timeout-secs`) |
 | `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **`ci` and `agent-checks` are accepted by this build** (`ci` since slice 6; it needs reports, so mount `webhook-generic`); `verifier` is a startup error (78) naming the slice that enables it |
 | `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **All three are accepted by this build** (`ci` since slice 6, it needs reports, so mount `webhook-generic`; `verifier` since slice 10). `verifier` needs a verifier agent (`ORCH_VERIFIER`, or `gate.verifier` in an entry) |
@@ -114,8 +116,11 @@ that is not another configured agent; a gate that requires `verifier` with no ve
 gate requires the verifier and that is the verifier itself (its entry must leave `verifier` out of its `require`, the one
 removal a layer may make); an unknown member of `gate`. `ci` is honoured since slice 6 (the inbox and timers, slice 5,
 and the CI webhook write and apply its reports): a deployment or an entry may require it and set `ci: {required, timeoutSecs}`; a run may add `ci` to `require`
-but not set the `ci` settings. A control plane logs a warning when a gate requires `ci` and no webhook surface is mounted on it: those jobs end
-`Blocked` (`ci_timeout`) unless another replica group takes the webhooks. A source this build cannot honour would be refused in every layer, naming the slice
+but not set the `ci` settings. **A gate that requires `ci` names the checks that count** (`ci.required`, `ORCH_CI_REQUIRED` for the deployment): the process
+exits 78 for a deployment or an entry that requires `ci` without a name, and a run that adds `ci` on a policy with none is a 400.
+A process that serves routes and mounts neither `webhook-generic` nor `webhook-github` refuses `ci` in every layer (78 at
+startup, 400 for a run) with "no CI webhook surface is mounted (ORCH_SURFACES)"; a `worker` serves no routes and cannot tell, so it
+honours what the control plane decides. A source this build cannot honour would be refused in every layer, naming the slice
 that enables it (none is left). A run that asks for the same is a 400.
 
 **The verifier** (slice 10): when the worker completes under a gate that requires it, the dispatcher asks the verifier agent
@@ -230,7 +235,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
 ## Tests
 
 * Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the variables, `ci`
-  accepted and `ORCH_CI_TIMEOUT_SECS` read (and overridden by a target's `ci.timeoutSecs`), the webhook: mounted by name with its secrets (both webhooks), a mounted route without secrets refused (a worker need not have them), the count, the skew and the redaction of the secrets, its feature off; the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
+  accepted and `ORCH_CI_TIMEOUT_SECS` read (and overridden by a target's `ci.timeoutSecs`), the webhook: mounted by name with its secrets (both webhooks), a mounted route without secrets refused (a worker need not have them), the count, the 32-byte minimum, the skew and the redaction of the secrets, its feature off; a `ci` gate with no names or no webhook surface refused, and honoured beside a webhook or in a worker; the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
   `ORCH_VERIFIER_TIMEOUT_SECS` (a missing or unknown verifier, a self-verifying one, a bad timeout refused), strict parsing of `gate:`, a
   target that weakens the deployment or exceeds the cap; defaults, the
   environment/flag mapping, unknown, empty and repeated surfaces, the removed

@@ -1,16 +1,21 @@
 //! `POST /webhooks/ci`: the generic signed CI report (`docs/api/webhooks.md`, ADR 0017).
 //!
 //! A guard, mounted as the route's machine guard, does what must happen before anything else, in
-//! this order, and answers 401 or 413 itself when it fails:
+//! this order, and answers 401, 408 or 413 itself when it fails:
 //!
-//! 1. the three headers are there (401);
+//! 1. the signature and timestamp headers are there (401);
 //! 2. the timestamp is Unix seconds within the skew window of the clock (401);
-//! 3. the body is within 256 KiB (413);
+//! 3. the body is within 256 KiB (413) and arrives within the read timeout (408);
 //! 4. the signature is `HMAC-SHA-256("<timestamp>.<body>")` under one of the secrets (401).
 //!
 //! Only then does the handler run, on the bytes the guard verified. It reads the JSON (400),
 //! normalises it to a [`CiReport`] and hands it to [`App::receive`], which stores an inbox row
-//! and returns; the answer is 202 for a new report and for a repeat of a delivery id alike.
+//! and returns; the answer is 202 for a new report and for a repeat alike.
+//!
+//! **The idempotency key is a digest of what was signed** (`"<timestamp>.<body>"`), not the
+//! delivery id header: that header is not signed, so anyone who captured a request could replay
+//! it under a new id and have it stored again. The same timestamp and body are one delivery
+//! whatever the header says; `X-Vymalo-Delivery` is optional and only goes to the log.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,16 +31,17 @@ use orch_app::App;
 use orch_core::{CiConclusion, CiProvider, CiReport};
 use orch_ports::{Clock, InboxPayload, Ports};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::signature::verify_generic;
-use crate::wire::{Verified, read_limited, text};
+use crate::wire::{RefusalLog, Verified, read_limited, text};
 use crate::{Secrets, wire};
 
 /// The route.
 pub const PATH: &str = "/webhooks/ci";
 /// The body limit: 256 KiB. A report is a few hundred bytes and a summary at most 16 KiB.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
-/// The header with the delivery id (a UUID), the idempotency key.
+/// The optional header with the sender's delivery id. It is not signed, so it is only logged.
 pub const DELIVERY_HEADER: &str = "x-vymalo-delivery";
 /// The header with the Unix time in whole seconds the sender signed.
 pub const TIMESTAMP_HEADER: &str = "x-vymalo-timestamp";
@@ -47,6 +53,8 @@ pub const DEFAULT_MAX_SKEW_SECS: u64 = 300;
 pub const SOURCE: &str = "generic";
 /// The most bytes of a report's summary that are kept.
 pub const MAX_SUMMARY_BYTES: usize = 16 * 1024;
+/// The longest check name: a name ends up in a card's id, so it is bounded.
+pub const MAX_NAME_BYTES: usize = 256;
 
 /// What the generic route needs.
 #[derive(Debug, Clone)]
@@ -55,14 +63,17 @@ pub struct GenericConfig {
     pub secrets: Secrets,
     /// How far the timestamp may be from the clock, either way (`WEBHOOK_GENERIC_MAX_SKEW_SECS`).
     pub max_skew: Duration,
+    /// How long a delivery may take to arrive and be answered before it is cut off with 408.
+    pub read_timeout: Duration,
 }
 
 impl GenericConfig {
-    /// `secrets` and the default skew of five minutes.
+    /// `secrets`, the default skew of five minutes and the default read timeout of ten seconds.
     pub fn new(secrets: Secrets) -> Self {
         GenericConfig {
             secrets,
             max_skew: Duration::from_secs(DEFAULT_MAX_SKEW_SECS),
+            read_timeout: wire::DEFAULT_REQUEST_TIMEOUT,
         }
     }
 }
@@ -72,6 +83,8 @@ struct State_<P: Ports> {
     secrets: Secrets,
     /// The skew in seconds, saturated.
     max_skew_secs: i64,
+    read_timeout: Duration,
+    refusals: RefusalLog,
 }
 
 /// The route `POST /webhooks/ci`, as a machine route: no identity layer, its own guard.
@@ -80,6 +93,8 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, cfg: GenericConfig) -> SurfaceRoutes {
         app,
         secrets: cfg.secrets,
         max_skew_secs: i64::try_from(cfg.max_skew.as_secs()).unwrap_or(i64::MAX),
+        read_timeout: cfg.read_timeout,
+        refusals: RefusalLog::new(PATH),
     });
     let router = Router::new()
         .route(PATH, post(accept::<P>))
@@ -92,30 +107,36 @@ async fn guard<P: Ports>(
     req: Request,
     next: Next,
 ) -> Response {
-    match verify(&state, req).await {
-        Ok(req) => next.run(req).await,
-        Err(refusal) => refusal.into_response(),
+    // The timeout covers the read of the body and the handler, this route only: the machine
+    // routes as a whole have none (an MCP wait is long).
+    let served = async {
+        match verify(&state, req).await {
+            Ok(req) => next.run(req).await,
+            Err(refusal) => refusal.into_response(),
+        }
+    };
+    match tokio::time::timeout(state.read_timeout, served).await {
+        Ok(response) => response,
+        Err(_) => state
+            .refusals
+            .refuse(
+                StatusCode::REQUEST_TIMEOUT,
+                "the request did not arrive in time",
+            )
+            .into_response(),
     }
-}
-
-/// Why a delivery was refused, for the log (never the answer: that is the [`Problem`]).
-fn refuse(status: StatusCode, why: &'static str) -> Problem {
-    tracing::warn!(route = PATH, %status, why, "webhook delivery refused");
-    Problem::new(status, why)
 }
 
 /// The guard's checks. On success the request carries a [`Verified`] and an empty body.
 async fn verify<P: Ports>(state: &State_<P>, req: Request) -> Result<Request, Problem> {
     let (mut parts, body) = req.into_parts();
-    let unauthorized = |why| refuse(StatusCode::UNAUTHORIZED, why);
+    let unauthorized = |why| state.refusals.refuse(StatusCode::UNAUTHORIZED, why);
 
     let signature = text(&parts.headers, SIGNATURE_HEADER)
         .ok_or_else(|| unauthorized("missing or unreadable X-Vymalo-Signature-256"))?;
     let timestamp = text(&parts.headers, TIMESTAMP_HEADER)
         .ok_or_else(|| unauthorized("missing or unreadable X-Vymalo-Timestamp"))?;
-    let delivery = text(&parts.headers, DELIVERY_HEADER)
-        .ok_or_else(|| unauthorized("missing or unreadable X-Vymalo-Delivery"))?
-        .to_owned();
+    let delivery = wire::delivery_id(&parts.headers, DELIVERY_HEADER);
 
     let sent = parse_timestamp(timestamp)
         .ok_or_else(|| unauthorized("X-Vymalo-Timestamp is not Unix time in whole seconds"))?;
@@ -128,19 +149,32 @@ async fn verify<P: Ports>(state: &State_<P>, req: Request) -> Result<Request, Pr
 
     let bytes = read_limited(&parts.headers, body, MAX_BODY_BYTES)
         .await
-        .inspect_err(|p| {
-            tracing::warn!(route = PATH, status = p.status, "webhook delivery refused")
-        })?;
+        .map_err(|p| state.refusals.refused(p))?;
     if !verify_generic(&state.secrets, timestamp, &bytes, signature) {
         return Err(unauthorized("the signature does not match"));
     }
 
     parts.extensions.insert(Verified {
+        key: signed_digest(timestamp, &bytes),
         body: bytes,
         delivery,
         event: String::new(),
     });
     Ok(Request::from_parts(parts, axum::body::Body::empty()))
+}
+
+/// The lower-case hex SHA-256 of the signed string `"<timestamp>.<body>"`: the same timestamp and
+/// body are the same delivery, whatever headers came with them.
+fn signed_digest(timestamp: &str, body: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(timestamp.as_bytes());
+    hasher.update(b".");
+    hasher.update(body);
+    let mut out = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 /// `X-Vymalo-Timestamp`: ASCII digits only (no sign, no blank, no fraction), at most 12 of them.
@@ -163,16 +197,18 @@ async fn accept<P: Ports>(
         );
         return Err(Problem::new(StatusCode::UNAUTHORIZED, "not verified").into());
     };
-    let delivery = uuid::Uuid::parse_str(verified.delivery.trim())
-        .map_err(|_| Problem::bad_request("X-Vymalo-Delivery must be a UUID"))?
-        .hyphenated()
-        .to_string();
     let report = parse(&verified.body)?;
     let received = state
         .app
-        .receive(SOURCE, &delivery, InboxPayload::CiReport(report))
+        .receive(SOURCE, &verified.key, InboxPayload::CiReport(report))
         .await?;
-    tracing::info!(route = PATH, ?received, %delivery, "webhook report received");
+    tracing::info!(
+        route = PATH,
+        ?received,
+        key = %verified.key,
+        delivery = %verified.delivery,
+        "webhook report received"
+    );
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -226,6 +262,11 @@ fn parse(bytes: &[u8]) -> Result<CiReport, Problem> {
     let name = body.name.trim();
     if name.is_empty() {
         return Err(Problem::bad_request("name must not be empty"));
+    }
+    if name.len() > MAX_NAME_BYTES {
+        return Err(Problem::bad_request(format!(
+            "name is over {MAX_NAME_BYTES} bytes"
+        )));
     }
     Ok(CiReport {
         provider: CiProvider::Generic,

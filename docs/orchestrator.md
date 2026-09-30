@@ -400,21 +400,26 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> Arrived: POST /webhooks/ci
   Arrived --> Refused401: header missing, timestamp not digits or outside the skew, or HMAC matches no secret
+  Arrived --> Refused408: the request did not arrive within 10 s
   Arrived --> Refused413: body over 256 KiB
   Arrived --> Verified: HMAC good under either secret
-  Verified --> Refused400: not JSON, a field missing or mistyped, version other than 1, a bad sha, an unknown conclusion, a delivery id that is no UUID
+  Verified --> Refused400: not JSON, a field missing or mistyped, version other than 1, a bad sha, an unknown conclusion, a name over 256 bytes
   Verified --> Accepted202: stored once in the inbox, or already there
   Refused401 --> [*]
+  Refused408 --> [*]
   Refused413 --> [*]
   Refused400 --> [*]
   Accepted202 --> [*]: a worker matches it to a job by the watch on the commit
 ```
 
 `POST /webhooks/github` (slice 9) is the same machine route with GitHub's own scheme: the guard checks
-`X-Hub-Signature-256` over the raw body (401), the size (413, 5 MiB) and the HMAC, and the handler answers `ping` with 204,
-stores a `check_suite`, `check_run` or `workflow_run` with `action` = `completed` as a `CiReport` under
-`github:<X-GitHub-Delivery>` (202), and acknowledges every other event or action with 202 without storing it. Its fixtures
-are synthetic (no real delivery was available; [ADR 0017](decisions/0017-ci-results-by-webhook.md#built-slice-9)).
+`X-Hub-Signature-256` over the raw body (401), the size (413, 5 MiB), the read timeout (408, 10 s) and the HMAC, and the
+handler answers `ping` with 204, stores a `check_run` or `workflow_run` with `action` = `completed` as a `CiReport` under a key
+made of the signed body (`check_run:<id>:<completed_at>`, `workflow_run:<id>:<run_attempt>`; 202), and acknowledges every other
+event or action with 202 without storing it: `check_suite`, an unnamed workflow, a fork's run, an event older than
+`WEBHOOK_GITHUB_MAX_AGE_SECS`. The generic route's key is a digest of its signed string; delivery-id headers are only logged.
+Its fixtures are synthetic (no real delivery was available; [ADR 0017](decisions/0017-ci-results-by-webhook.md#built-slice-9),
+[status note](decisions/0017-ci-results-by-webhook.md#status-note-2026-09-30-review-fixes)).
 
 What the diagrams do not say: a `202` means *received*, not *applied*. The report waits in the inbox until the
 `InboxWorker` finds the watch of `ci:<repo-key>@<sha>` (set when the agent's `branch` artifact was applied), or

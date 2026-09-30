@@ -23,9 +23,10 @@
 #               verifier      the id of the agent that verifies this agent's work (required when
 #                             `require` has `verifier`, unless ORCH_VERIFIER names one): another
 #                             configured agent, never this one
-#               ci            {required: [check names], timeoutSecs}: which checks must pass (none:
-#                             the first report decides) and how long to wait for them before the
-#                             job is blocked (default ORCH_CI_TIMEOUT_SECS)
+#               ci            {required: [check names], timeoutSecs}: which checks must pass (a gate
+#                             that requires `ci` must name at least one, or startup fails; a report of
+#                             another name is a card and nothing else) and how long to wait for them
+#                             before the job is blocked (default ORCH_CI_TIMEOUT_SECS)
 #             Unknown keys are errors.
 - id: coder
   name: Coder
@@ -34,7 +35,7 @@
   # gate:
   #   require: [agent-checks, ci]
   #   maxAttempts: 3
-  #   ci: {required: [ci/build], timeoutSecs: 1800}
+  #   ci: {required: [ci/build], timeoutSecs: 1800}   # a gate that requires ci names the checks that count
 
 # A verifier (ADR 0018): `builder`'s work is not done until `reviewer`, another agent, passes the
 # commit it pushed. `reviewer` has its own card and its own token, and is never sent the builder's.
