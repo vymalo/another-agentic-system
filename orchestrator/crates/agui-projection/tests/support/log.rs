@@ -3,8 +3,8 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::{
-    AgentId, AgentTarget, AgentTaskState, AgentUpdate, Command, Event, Input, ThreadId,
-    ThreadState, Timestamp, UiActionData, UiVersion, UserId,
+    AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, Command, Event, GatePolicy,
+    Input, ThreadId, ThreadState, Timestamp, UiActionData, UiVersion, UserId,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -16,6 +16,11 @@ pub fn thread_id() -> ThreadId {
 }
 
 pub fn meta() -> orch_agui_projection::ThreadMeta {
+    meta_under(GatePolicy::default())
+}
+
+/// The thread of [`meta`], its job running under `gate`.
+pub fn meta_under(gate: GatePolicy) -> orch_agui_projection::ThreadMeta {
     orch_agui_projection::ThreadMeta {
         thread_id: thread_id(),
         title: "a thread".to_owned(),
@@ -23,7 +28,20 @@ pub fn meta() -> orch_agui_projection::ThreadMeta {
             agent_id: AgentId::new("plain"),
             release: None,
         },
+        gate,
     }
+}
+
+/// A gate that requires the agent's own checks, three attempts.
+pub fn gate() -> GatePolicy {
+    GatePolicy::requiring([CheckSource::AgentChecks])
+}
+
+/// The events a legal log of `actions` makes, and the thread they belong to: with the gate when
+/// `gated`, without it otherwise.
+pub fn world(gated: bool, actions: &[Action]) -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
+    let gate = if gated { gate() } else { GatePolicy::default() };
+    (build_under(actions, &gate), meta_under(gate))
 }
 
 /// One thing that happens to a thread.
@@ -66,6 +84,15 @@ pub enum Action {
     UiAct {
         ids: bool,
     },
+    /// The agent reports the branch it pushed (a commit named by `commit`).
+    Branch {
+        commit: u8,
+    },
+    /// The agent reports the result of its own checks on the commit named by `commit`.
+    Checks {
+        passed: bool,
+        commit: u8,
+    },
 }
 
 /// One operation of surface `s<surface>`, in the shapes of the A2UI spec.
@@ -106,6 +133,8 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         4 => (0u8..2, 0u8..4).prop_map(|(surface, op)| Action::Surface { surface, op }),
         1 => Just(Action::SurfaceRefused),
         2 => any::<bool>().prop_map(|ids| Action::UiAct { ids }),
+        3 => (0u8..3).prop_map(|commit| Action::Branch { commit }),
+        3 => (any::<bool>(), 0u8..3).prop_map(|(passed, commit)| Action::Checks { passed, commit }),
     ]
 }
 
@@ -138,9 +167,17 @@ struct Slot {
 /// Runs `actions` through `transition` and collects the events it appends, numbered from 1.
 /// Actions the state refuses (a message on a finished thread) are skipped, as the service does.
 pub fn build(actions: &[Action]) -> Vec<Event> {
+    build_under(actions, &GatePolicy::default())
+}
+
+/// [`build`] for a thread whose job runs under `gate`.
+pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
     let user = UserId::new("alice@example.com");
     let agent = AgentId::new("plain");
-    let mut state = orch_core::Snapshot::new(ThreadState::Queued);
+    let mut state = orch_core::Snapshot {
+        state: ThreadState::Queued,
+        job: orch_core::Job::with_gate(gate.clone()),
+    };
     let mut events: Vec<Event> = Vec::new();
     let mut slots = [Slot::default(), Slot::default()];
     let mut users = 0u32;
@@ -210,6 +247,26 @@ pub fn build(actions: &[Action]) -> Vec<Event> {
             }),
             Action::SurfaceRefused => agent_input(AgentUpdate::UiRejected {
                 reason: "message 0: no version".to_owned(),
+            }),
+            Action::Branch { commit } => agent_input(AgentUpdate::Artifact {
+                name: "branch".to_owned(),
+                mime_type: None,
+                uri: None,
+                text: Some(
+                    json!({"repository": "https://github.com/acme/demo.git", "branch": "agent/x",
+                           "commit": format!("{commit:040x}")})
+                    .to_string(),
+                ),
+            }),
+            Action::Checks { passed, commit } => agent_input(AgentUpdate::Artifact {
+                name: "checks".to_owned(),
+                mime_type: None,
+                uri: None,
+                text: Some(
+                    json!({"passed": passed, "commit": format!("{commit:040x}"),
+                           "findings": if *passed { json!([]) } else { json!(["it fails"]) }})
+                    .to_string(),
+                ),
             }),
             Action::UiAct { ids } => {
                 users += 1;

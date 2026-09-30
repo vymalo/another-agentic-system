@@ -21,7 +21,7 @@ orchestrator: no `orch-app`, no store, no HTTP. The AG-UI surface ([`orch-surfac
 
 | Item | What |
 |---|---|
-| `Projector::new(ThreadMeta)` | the projection of one thread, before its first event. `ThreadMeta` is what `STATE_SNAPSHOT` shows besides the state: thread id, title, target |
+| `Projector::new(ThreadMeta)` | the projection of one thread, before its first event. `ThreadMeta` is what `STATE_SNAPSHOT` shows besides the state: thread id, title, target, and the `gate` of the thread's job (`GatePolicy`, fixed when the thread was created; the default requires nothing) |
 | `Projector::apply(&Event, Audience) -> Vec<Frame>` | folds the next log event in; one call per event, in `seq` order |
 | `Frame { event, resume_id }` | an AG-UI event and, on the last frame of a log event with no text message open, the SSE `id:` (`Some(seq)`) a client may resume from |
 | `Audience::{Viewer, Requester { held_message_ids }}` | the connect stream gets everything; the POST that sent the input skips the user messages it already holds (`held_message_ids(&input)`) |
@@ -30,7 +30,7 @@ orchestrator: no `orch-app`, no store, no HTTP. The AG-UI surface ([`orch-surfac
 | `agent_capabilities(&AgentId, name, Option<&CardFacts>) -> AgentCapabilities` | the capabilities document from what the live card says (`CardFacts.ui`: the A2UI versions it lists, declared under each extension URI with `supportedCatalogIds`); `None` (an unreadable card) gives the smaller one |
 | `ui_surface` / `ui_action` | A2UI ([ADR 0013](../../../docs/decisions/0013-a2ui-generative-ui.md)): the projector keeps the operations of every live surface and sends each touched surface **whole** as `ACTIVITY_SNAPSHOT{activityType:"a2ui-surface", replace:true, content:{a2ui_operations}}` under the message id `a2ui-<seq>` of its first event (capped at 256 KiB of operations; a delete ends the surface; an operation that fails the envelope check is skipped, never relayed); a `ui_action` is a `vymalo.action` activity that opens a run under the action's `runId`. `ACTIVITY_A2UI_SURFACE`, `ACTIVITY_ACTION`, `A2UI_OPERATIONS_KEY` |
 | `Projector::view(&UserId) -> ThreadView` | what the thread holds, for `translate` |
-| `ci_result` / `check_result` / `rework` | the verification gate's events ([ADR 0018](../../../docs/decisions/0018-verification-gate-and-rework-loop.md)): **not projected yet** (no frames; the projection arrives with slice 3 of the MVP plan), and with the default gate none is ever logged. A thread in `verifying` counts as active, so its run stays open |
+| `check_result` / `rework` / the gate | the verification gate ([ADR 0018](../../../docs/decisions/0018-verification-gate-and-rework-loop.md), [`agui.md`](../../../docs/api/agui.md#verification-the-gate)). Under a gate that requires something the run stays open while the thread is `queued`, `working` or `verifying`. `agent_status{completed}` is `SUBAGENT_FINISHED` and a `STATE_SNAPSHOT` with `thread.state: "verifying"` and `job {attempt, maxAttempts, gate, sha?}` (every `STATE_SNAPSHOT` has `job` under a gate, none without one); `check_result` is the `ACTIVITY_SNAPSHOT` `vymalo.check` (`ACTIVITY_CHECK`, id `check-<attempt>-<verification>-<source>` (the verification counts the agent's `completed` events under the gate), `replace: true`; a `stale` answer is its own card `evt-<seq>` and changes nothing else); `rework` is `vymalo.rework` (`ACTIVITY_REWORK`, id `rework-<attempt>`), then `SUBAGENT_STARTED` for the next attempt and a `STATE_SNAPSHOT` (`queued`); `thread_state{done}` is `RUN_FINISHED` success, and the `error` that follows a failed check with `thread_state{failed}` is `RUN_ERROR` with `code: "checks_failed"` (`CODE_CHECKS_FAILED`). A hold (`error{retryable}` then `blocked` while verifying) ends the run in an answerable interrupt (`int-<seq of the thread_state>`), not `delivery_failed`. `job.sha` is the pushed commit (`branch` artifact) only, never the commit a check ran on. `ci_result` is not projected yet (slice 7) |
 | `translate(&RunAgentInput, &ThreadView) -> Result<Vec<Input>, InputError>` | new user message, `resume` answer or cancel, `forwardedProps.a2uiAction.userAction` (shape, size, and that `ThreadView`'s surfaces include the one named: `Input::UiAction` with the surface's version and the request's run id), or attach; `translate_with_warnings` also returns what was ignored |
 | `InputError::http_status()` | the status (400, 409, 413, 422) of a request refused before the stream (including a `runId` reused for new input; 413 is an A2UI action over the limits) |
 | `thread_id_of`, `release_selector`, `held_message_ids` | the request members a surface reads itself |
@@ -60,7 +60,7 @@ for event in log {
 - **Runs are balanced.** A run opens at the first event of a burst of activity (a user message, or
   an event nobody asked for) and closes at the event that ends it; nothing a run opened (a text
   message, a subagent invocation) is open when it ends. Between the core's transactions a run is
-  open exactly when the thread is `queued` or `working`. The module docs of `src/projector.rs`
+  open exactly when the thread is `queued`, `working` or `verifying`. The module docs of `src/projector.rs`
   explain how a run closes, including the two cases the log cannot tell apart.
 - **Ids come from the log.** `run-<seq>`, `sub-<seq>`, `int-<seq>`, `evt-<seq>`, or the ids a
   surface recorded (`user_message.data.messageId` / `runId`).
@@ -78,7 +78,8 @@ Offline, no database. `cargo test -p orch-agui-projection`:
 - `tests/projection.rs`: every row of the outbound table on a hand-written log (asking and
   answering, `auth_required`, failure, cancel, delivery failures, late and repeated events, partial
   messages, audiences, the resume preamble, the view).
-- `tests/props.rs` (proptest over logs made by the core's own `transition`): the stream is well
+- `tests/verify.rs`: the gate on hand-made logs (the sha, the verification in the card id, a stale card, a hold): the run stays open while verifying and a client that joins then is told where the job stands, one run and two subagents across a rework, the check and rework cards and their ids, `checks_failed`, a delivery failure after a rework, a job without a gate is unchanged (no `job` anywhere), a stale answer.
+- `tests/props.rs` (proptest over logs made by the core's own `transition`, with and without a gate): the stream is well
   formed at every prefix (against a Rust model of the reference consumer's rules in
   `tests/support/verify.rs`, and the vendored schema through `orch_agui_proto::testkit`); nothing
   is open at a terminal event; resuming from any resume point gives exactly the suffix, and the

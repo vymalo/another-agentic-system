@@ -1,0 +1,645 @@
+//! The gate's configuration layers (ADR 0018): the rules that put the deployment's gate, an
+//! agent's entry and a thread's request on top of each other, and their use when a thread is
+//! created. No dispatcher runs.
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
+mod support;
+
+use std::collections::BTreeMap;
+
+use orch_app::{
+    App, AppConfig, AppError, Creation, GateError, GateLayer, GateRules, Inbound, Layer, NewThread,
+    THREAD_GATE_KEY, known_sources, pending_reason,
+};
+use orch_core::{AgentId, CheckSource, Classify, ErrorClass, GatePolicy, ThreadId};
+use orch_ports::{PortSet, SystemClock};
+use serde_json::json;
+use support::*;
+
+fn layer(value: serde_json::Value) -> GateLayer {
+    GateLayer::from_json(&value).unwrap().unwrap()
+}
+
+fn agent(id: &str) -> AgentId {
+    AgentId::new(id)
+}
+
+/// The rules of a build that honours CI and the verifier too, for the rules those slices add.
+fn everything() -> GateRules {
+    GateRules::new(10).honouring(CheckSource::ALL)
+}
+
+#[test]
+fn this_build_honours_agent_checks_and_nothing_else() {
+    let rules = GateRules::default();
+    assert!(rules.honours(CheckSource::AgentChecks));
+    assert!(!rules.honours(CheckSource::Ci));
+    assert!(!rules.honours(CheckSource::Verifier));
+    // Every source that is not honoured says which slice enables it; the one that is says
+    // nothing.
+    assert!(pending_reason(CheckSource::AgentChecks).is_none());
+    assert!(pending_reason(CheckSource::Ci).unwrap().contains("slice 5"));
+    assert!(pending_reason(CheckSource::Ci).unwrap().contains("slice 6"));
+    assert!(
+        pending_reason(CheckSource::Verifier)
+            .unwrap()
+            .contains("slice 10")
+    );
+    assert_eq!(known_sources(), "ci, agent-checks, verifier");
+}
+
+#[test]
+fn ci_and_the_verifier_are_refused_in_every_layer_and_the_message_names_the_slice() {
+    let rules = GateRules::default();
+    let above = GatePolicy::default();
+    let refused = [
+        (json!({"require": ["ci"]}), "slice 5"),
+        (json!({"require": ["agent-checks", "ci"]}), "slice 6"),
+        (json!({"require": ["verifier"]}), "slice 10"),
+        (json!({"verifier": "reviewer"}), "slice 10"),
+        (json!({"ci": {"required": ["build"]}}), "slice 5"),
+        (json!({"ci": {"timeoutSecs": 60}}), "slice 6"),
+    ];
+    let layers = [
+        Layer::Deployment,
+        Layer::Target(agent("coder")),
+        Layer::Thread,
+    ];
+    for at in &layers {
+        for (value, slice) in &refused {
+            let err = rules.apply(&above, &layer(value.clone()), at).unwrap_err();
+            assert!(matches!(err, GateError::Unavailable { .. }), "{at} {value}");
+            let message = err.to_string();
+            assert!(message.contains(slice), "{at} {value}: {message}");
+            assert!(
+                message.contains("only agent-checks can be required"),
+                "{message}"
+            );
+        }
+    }
+    // The one source this build honours passes in every layer.
+    for at in &layers {
+        let policy = rules
+            .apply(&above, &layer(json!({"require": ["agent-checks"]})), at)
+            .unwrap();
+        assert_eq!(policy.require.len(), 1);
+        assert!(policy.requires(CheckSource::AgentChecks));
+    }
+}
+
+#[test]
+fn a_layer_may_add_sources_and_change_attempts_within_the_cap() {
+    let rules = everything();
+    let deployment = GatePolicy::requiring([CheckSource::AgentChecks]);
+    let target = rules
+        .apply(
+            &deployment,
+            &layer(json!({"require": ["agent-checks", "ci"], "maxAttempts": 5})),
+            &Layer::Target(agent("coder")),
+        )
+        .unwrap();
+    assert_eq!(
+        target.require,
+        [CheckSource::Ci, CheckSource::AgentChecks].into()
+    );
+    assert_eq!(target.max_attempts, 5);
+
+    let thread = rules
+        .apply(
+            &target,
+            &layer(json!({"require": ["ci", "agent-checks"], "maxAttempts": 10})),
+            &Layer::Thread,
+        )
+        .unwrap();
+    assert_eq!(thread.max_attempts, 10, "up to the cap");
+    let fewer = rules
+        .apply(&target, &layer(json!({"maxAttempts": 1})), &Layer::Thread)
+        .unwrap();
+    assert_eq!(fewer.max_attempts, 1, "and down to one");
+    assert_eq!(fewer.require, target.require, "an absent list inherits");
+}
+
+#[test]
+fn attempts_outside_one_to_the_cap_are_refused() {
+    let rules = GateRules::new(4);
+    for value in [0, 5, 100] {
+        let err = rules
+            .apply(
+                &GatePolicy::default(),
+                &layer(json!({"maxAttempts": value})),
+                &Layer::Thread,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GateError::Attempts {
+                layer: Layer::Thread,
+                value,
+                cap: 4
+            }
+        );
+        assert!(err.to_string().contains("1..=4"), "{err}");
+    }
+    assert!(
+        rules
+            .apply(
+                &GatePolicy::default(),
+                &layer(json!({"maxAttempts": 4})),
+                &Layer::Thread
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_layer_may_not_remove_a_source_the_layer_above_requires() {
+    let rules = everything();
+    let above = GatePolicy::requiring([CheckSource::AgentChecks, CheckSource::Ci]);
+    for value in [
+        json!({"require": []}),
+        json!({"require": ["ci"]}),
+        json!({"require": ["agent-checks"]}),
+    ] {
+        let err = rules
+            .apply(&above, &layer(value.clone()), &Layer::Thread)
+            .unwrap_err();
+        assert!(matches!(err, GateError::Removes { .. }), "{value}: {err}");
+        assert!(err.to_string().contains("may add sources"), "{err}");
+    }
+    // The same for a target against the deployment.
+    let err = rules
+        .apply(
+            &above,
+            &layer(json!({"require": []})),
+            &Layer::Target(agent("coder")),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("coder"), "{err}");
+}
+
+#[test]
+fn a_thread_cannot_choose_the_verifier_or_the_ci_settings() {
+    let rules = everything();
+    for (value, setting) in [
+        (json!({"verifier": "reviewer"}), "verifier"),
+        (json!({"ci": {"required": ["build"]}}), "ci"),
+    ] {
+        let err = rules
+            .apply(&GatePolicy::default(), &layer(value), &Layer::Thread)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GateError::NotPerThread {
+                layer: Layer::Thread,
+                setting
+            }
+        );
+    }
+    // A target may.
+    let policy = rules
+        .apply(
+            &GatePolicy::default(),
+            &layer(
+                json!({"require": ["verifier", "ci"], "verifier": "reviewer",
+                          "ci": {"required": ["build", "test"], "timeoutSecs": 120}}),
+            ),
+            &Layer::Target(agent("coder")),
+        )
+        .unwrap();
+    assert_eq!(policy.verifier, Some(agent("reviewer")));
+    assert_eq!(policy.ci.required.len(), 2);
+    assert_eq!(policy.ci.timeout.as_secs(), 120);
+    assert!(
+        rules
+            .apply(
+                &GatePolicy::default(),
+                &layer(json!({"ci": {"timeoutSecs": 0}})),
+                &Layer::Deployment
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn a_layer_is_read_strictly() {
+    for bad in [
+        json!({"unknown": 1}),
+        json!({"require": ["nonsense"]}),
+        json!({"require": "ci"}),
+        json!({"maxAttempts": "three"}),
+        json!({"maxAttempts": -1}),
+        json!({"ci": {"require": ["build"]}}),
+        json!("agent-checks"),
+        json!([1]),
+    ] {
+        let err = GateLayer::from_json(&bad).unwrap_err();
+        assert!(matches!(err, GateError::Malformed(_)), "{bad}");
+    }
+    let message = GateLayer::from_json(&json!({"require": ["nonsense"]}))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("one of: ci, agent-checks, verifier"),
+        "{message}"
+    );
+    // null is no layer; an empty object is a layer that says nothing.
+    assert_eq!(GateLayer::from_json(&json!(null)).unwrap(), None);
+    assert_eq!(
+        GateLayer::from_json(&json!({})).unwrap(),
+        Some(GateLayer::default())
+    );
+    assert_eq!(THREAD_GATE_KEY, "vymalo.gate");
+}
+
+#[test]
+fn the_verifier_must_be_another_configured_agent() {
+    let rules = everything();
+    let agents = directory(); // coder, plain
+    let with = |verifier: Option<&str>, required: bool| {
+        let mut policy = if required {
+            GatePolicy::requiring([CheckSource::Verifier])
+        } else {
+            GatePolicy::default()
+        };
+        policy.verifier = verifier.map(agent);
+        policy
+    };
+    let check = |policy: &GatePolicy, target: &str| {
+        rules.check_verifier(policy, &agent(target), &agents, &Layer::Deployment)
+    };
+    assert!(check(&with(Some("plain"), true), "coder").is_ok());
+    assert!(check(&with(None, false), "coder").is_ok());
+    assert!(matches!(
+        check(&with(None, true), "coder"),
+        Err(GateError::NoVerifier { .. })
+    ));
+    assert!(matches!(
+        check(&with(Some("ghost"), true), "coder"),
+        Err(GateError::UnknownVerifier { .. })
+    ));
+    assert!(
+        matches!(
+            check(&with(Some("ghost"), false), "coder"),
+            Err(GateError::UnknownVerifier { .. })
+        ),
+        "a typo is caught even when the verifier is not required yet"
+    );
+    assert!(matches!(
+        check(&with(Some("coder"), true), "coder"),
+        Err(GateError::SelfVerifier { .. })
+    ));
+    assert!(
+        check(&with(Some("coder"), false), "coder").is_ok(),
+        "the verifier's own gate does not require the verifier"
+    );
+}
+
+#[test]
+fn startup_validation_resolves_every_agent() {
+    let rules = everything();
+    let agents = directory(); // coder, plain
+    let deployment = GatePolicy::requiring([CheckSource::AgentChecks]);
+    let mut targets = BTreeMap::new();
+    targets.insert(
+        agent("coder"),
+        layer(json!({"require": ["agent-checks", "verifier"], "verifier": "plain"})),
+    );
+    assert!(rules.validate(&deployment, &targets, &agents).is_ok());
+
+    // A verifier that is set but not required by the agent's own gate is no self-verification:
+    // `ORCH_VERIFIER=plain` must not fail startup when it visits the entry of `plain` itself.
+    let mut named = deployment.clone();
+    named.verifier = Some(agent("plain"));
+    assert!(rules.validate(&named, &BTreeMap::new(), &agents).is_ok());
+    assert!(rules.validate(&named, &targets, &agents).is_ok());
+
+    // When the deployment requires the verifier, `plain` would verify itself...
+    let mut required = named.clone();
+    required.require.insert(CheckSource::Verifier);
+    let err = rules
+        .validate(&required, &BTreeMap::new(), &agents)
+        .unwrap_err();
+    assert!(matches!(err, GateError::SelfVerifier { .. }), "{err}");
+    assert!(err.to_string().contains("leaves out `verifier`"), "{err}");
+    // ... unless its own entry leaves the verifier out for itself, the one removal allowed.
+    let own = BTreeMap::from([(agent("plain"), layer(json!({"require": ["agent-checks"]})))]);
+    assert!(rules.validate(&required, &own, &agents).is_ok());
+    let policy = rules
+        .for_target(&required, &agent("plain"), own.get(&agent("plain")))
+        .unwrap();
+    assert!(!policy.requires(CheckSource::Verifier) && policy.requires(CheckSource::AgentChecks));
+    // Nothing else may go, for the verifier or for anyone else.
+    for (who, gate) in [
+        ("plain", json!({"require": []})),
+        ("coder", json!({"require": ["agent-checks"]})),
+    ] {
+        let targets = BTreeMap::from([(agent(who), layer(gate))]);
+        let err = rules.validate(&required, &targets, &agents).unwrap_err();
+        assert!(matches!(err, GateError::Removes { .. }), "{who}: {err}");
+    }
+
+    targets.insert(agent("coder"), layer(json!({"verifier": "ghost"})));
+    let err = rules.validate(&deployment, &targets, &agents).unwrap_err();
+    assert!(err.to_string().contains("ghost"), "{err}");
+
+    // The target that drops the deployment's source is refused, naming the agent.
+    targets.insert(agent("coder"), layer(json!({"require": []})));
+    let err = rules.validate(&deployment, &targets, &agents).unwrap_err();
+    assert!(err.to_string().contains("coder"), "{err}");
+
+    // And what this build cannot honour never gets as far as the references.
+    let err = GateRules::default()
+        .validate(
+            &deployment,
+            &BTreeMap::from([(agent("plain"), layer(json!({"verifier": "coder"})))]),
+            &agents,
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("slice 10"), "{err}");
+}
+
+#[test]
+fn the_ci_checks_of_a_layer_add_to_those_above_and_never_replace_them() {
+    let rules = everything();
+    let deployment = rules
+        .apply(
+            &GatePolicy::default(),
+            &layer(json!({"require": ["ci"], "ci": {"required": ["build", "test"]}})),
+            &Layer::Deployment,
+        )
+        .unwrap();
+    let target = rules
+        .apply(
+            &deployment,
+            &layer(json!({"ci": {"required": []}})),
+            &Layer::Target(agent("coder")),
+        )
+        .unwrap();
+    assert_eq!(
+        target.ci.required,
+        ["build".to_owned(), "test".to_owned()].into(),
+        "an empty list does not weaken the deployment's"
+    );
+    let more = rules
+        .apply(
+            &target,
+            &layer(json!({"ci": {"required": ["lint"], "timeoutSecs": 30}})),
+            &Layer::Target(agent("coder")),
+        )
+        .unwrap();
+    assert_eq!(more.ci.required.len(), 3);
+    assert_eq!(more.ci.timeout.as_secs(), 30);
+}
+
+#[test]
+fn both_spellings_of_a_source_are_read_and_the_round_trip_of_a_job_gate_works() {
+    let rules = GateRules::default();
+    for spelling in ["agent-checks", "agent_checks"] {
+        let policy = rules
+            .apply(
+                &GatePolicy::default(),
+                &layer(json!({"require": [spelling]})),
+                &Layer::Thread,
+            )
+            .unwrap();
+        assert_eq!(
+            policy.require,
+            [CheckSource::AgentChecks].into(),
+            "{spelling}"
+        );
+    }
+    // What the API emits (`Thread.job.gate`, as JobView writes it) is a valid request.
+    let job = GatePolicy::requiring([CheckSource::AgentChecks])
+        .require
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    let emitted = serde_json::to_value(&job).unwrap();
+    assert_eq!(emitted, json!(["agent_checks"]));
+    let again = rules
+        .apply(
+            &GatePolicy::requiring([CheckSource::AgentChecks]),
+            &layer(json!({ "require": emitted })),
+            &Layer::Thread,
+        )
+        .unwrap();
+    assert_eq!(again, GatePolicy::requiring([CheckSource::AgentChecks]));
+}
+
+#[test]
+fn a_request_is_compared_with_the_gate_the_thread_already_has() {
+    let w = World::new();
+    let app = w.app();
+    let has = GatePolicy {
+        max_attempts: 2,
+        ..GatePolicy::requiring([CheckSource::AgentChecks])
+    };
+    let changes = |request: serde_json::Value| app.gate_request_changes(&has, &layer(request));
+    // Saying what the thread has changes nothing, in either spelling.
+    assert!(!changes(json!({})).unwrap());
+    assert!(!changes(json!({"maxAttempts": 2})).unwrap());
+    assert!(!changes(json!({"require": ["agent_checks"], "maxAttempts": 2})).unwrap());
+    // A different number would, and so would more sources on a gate without them.
+    assert!(changes(json!({"maxAttempts": 3})).unwrap());
+    assert!(
+        app.gate_request_changes(
+            &GatePolicy::default(),
+            &layer(json!({"require": ["agent-checks"]}))
+        )
+        .unwrap()
+    );
+    // What the rules refuse in any case is a refusal, not a change.
+    assert!(matches!(
+        changes(json!({"require": []})),
+        Err(AppError::Invalid(_))
+    ));
+    assert!(matches!(
+        changes(json!({"maxAttempts": 99})),
+        Err(AppError::Invalid(_))
+    ));
+}
+
+// ---- a thread is created under the resolved gate ----------------------------------------
+
+fn new_thread(agent_id: &str) -> NewThread {
+    NewThread {
+        title: None,
+        target: target(agent_id),
+        text: "work".to_owned(),
+    }
+}
+
+async fn create_with(
+    app: &TestApp,
+    agent_id: &str,
+    request: Option<GateLayer>,
+) -> Result<orch_core::ThreadRecord, AppError> {
+    let id = ThreadId(uuid::Uuid::now_v7());
+    let inbound = Inbound {
+        gate: request,
+        ..Inbound::default()
+    };
+    match app
+        .create_thread_as(&alice(), id, new_thread(agent_id), inbound)
+        .await?
+    {
+        Creation::Created { thread, .. } => Ok(thread),
+        Creation::Exists => panic!("fresh id"),
+    }
+}
+
+#[tokio::test]
+async fn a_thread_starts_under_the_deployment_then_the_target_then_the_request() {
+    let w = World::new();
+    let app = w.app_with(AppConfig {
+        gate: GatePolicy::default(),
+        target_gates: BTreeMap::from([(
+            agent("coder"),
+            layer(json!({"require": ["agent-checks"], "maxAttempts": 2})),
+        )]),
+        ..AppConfig::default()
+    });
+
+    // Nothing configured for `plain`: today's behaviour, the default job.
+    let plain = create_with(&app, "plain", None).await.unwrap();
+    assert_eq!(plain.job, orch_core::Job::default());
+
+    // The target's entry applies to `coder`.
+    let coder = create_with(&app, "coder", None).await.unwrap();
+    assert_eq!(coder.job.gate.require, [CheckSource::AgentChecks].into());
+    assert_eq!(coder.job.gate.max_attempts, 2);
+    assert_eq!(coder.job.task.as_deref(), Some("work"));
+
+    // The request changes attempts, up to the cap, and the thread keeps the result.
+    let asked = create_with(&app, "coder", Some(layer(json!({"maxAttempts": 7}))))
+        .await
+        .unwrap();
+    assert_eq!(asked.job.gate.max_attempts, 7);
+    assert_eq!(asked.job.gate.require, [CheckSource::AgentChecks].into());
+    let stored = app.get_thread(&alice(), asked.id).await.unwrap();
+    assert_eq!(stored.job.gate, asked.job.gate);
+
+    // A request may turn the gate on for an agent that has none.
+    let on = create_with(
+        &app,
+        "plain",
+        Some(layer(json!({"require": ["agent-checks"]}))),
+    )
+    .await
+    .unwrap();
+    assert!(on.job.gate.requires(CheckSource::AgentChecks));
+    assert_eq!(on.job.gate.max_attempts, 3, "the default attempts");
+}
+
+#[tokio::test]
+async fn a_request_that_weakens_or_overreaches_is_a_400_and_writes_nothing() {
+    let w = World::new();
+    let app = w.app_with(AppConfig {
+        gate: GatePolicy::default(),
+        target_gates: BTreeMap::from([(
+            agent("coder"),
+            layer(json!({"require": ["agent-checks"]})),
+        )]),
+        ..AppConfig::default()
+    });
+    let refused = [
+        (json!({"require": []}), "may add sources"),
+        (json!({"maxAttempts": 11}), "1..=10"),
+        (json!({"maxAttempts": 0}), "1..=10"),
+        (json!({"require": ["agent-checks", "ci"]}), "slice 5"),
+        (json!({"require": ["verifier"]}), "slice 10"),
+        (json!({"verifier": "plain"}), "slice 10"),
+    ];
+    for (request, why) in refused {
+        let err = create_with(&app, "coder", Some(layer(request.clone())))
+            .await
+            .unwrap_err();
+        assert_eq!(err.class(), ErrorClass::Invalid, "{request}");
+        assert!(err.to_string().contains(why), "{request}: {err}");
+    }
+    assert!(
+        app.list_threads(&alice(), None, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused request creates no thread"
+    );
+}
+
+fn try_app(w: &World, cfg: AppConfig) -> Result<TestApp, GateError> {
+    App::new(
+        PortSet {
+            store: w.store.clone(),
+            wakeup: w.wakeup.clone(),
+            agents: w.agent.clone(),
+            clock: SystemClock,
+            ids: w.ids.clone(),
+        },
+        directory(),
+        cfg,
+    )
+}
+
+/// Another composition root cannot slip in a gate the build cannot honour: the constructor is
+/// where it is refused, not a 500 on every request later.
+#[test]
+fn the_constructor_refuses_a_gate_that_could_never_pass() {
+    let w = World::new();
+    let refused = |cfg: AppConfig| try_app(&w, cfg).err().map(|e| e.to_string());
+    let ci = GatePolicy::requiring([CheckSource::Ci]);
+
+    let says = refused(AppConfig {
+        gate: ci.clone(),
+        ..AppConfig::default()
+    })
+    .unwrap();
+    assert!(
+        says.contains("slice 5") && says.contains("deployment"),
+        "{says}"
+    );
+    let says = refused(AppConfig {
+        target_gates: BTreeMap::from([(agent("coder"), layer(json!({"require": ["ci"]})))]),
+        ..AppConfig::default()
+    })
+    .unwrap();
+    assert!(says.contains("coder") && says.contains("slice 5"), "{says}");
+    let says = refused(AppConfig {
+        gate: GatePolicy {
+            verifier: Some(agent("plain")),
+            ..GatePolicy::default()
+        },
+        ..AppConfig::default()
+    })
+    .unwrap();
+    assert!(says.contains("slice 10"), "{says}");
+    let says = refused(AppConfig {
+        gate: GatePolicy {
+            max_attempts: 11,
+            ..GatePolicy::default()
+        },
+        ..AppConfig::default()
+    })
+    .unwrap();
+    assert!(says.contains("1..=10"), "{says}");
+    // With rules that honour more, the same gate builds, and its references are still checked.
+    let all = GateRules::default().honouring(CheckSource::ALL);
+    assert!(
+        refused(AppConfig {
+            gate: ci.clone(),
+            gate_rules: all.clone(),
+            ..AppConfig::default()
+        })
+        .is_none()
+    );
+    let says = refused(AppConfig {
+        gate: GatePolicy {
+            verifier: Some(agent("ghost")),
+            ..ci
+        },
+        gate_rules: all,
+        ..AppConfig::default()
+    })
+    .unwrap();
+    assert!(says.contains("ghost"), "{says}");
+    assert!(try_app(&w, AppConfig::default()).is_ok());
+}

@@ -7,7 +7,7 @@ mod support;
 
 use std::time::Duration;
 
-use orch_app::{AppConfig, ApplyOutcome};
+use orch_app::{AppConfig, ApplyOutcome, GateRules};
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiProvider, CiReport,
     EventBody, GatePolicy, Input, Job, ThreadId, ThreadState,
@@ -22,6 +22,9 @@ fn gated(sources: &[CheckSource]) -> AppConfig {
     AppConfig {
         stream_poll: Duration::from_millis(100),
         gate: GatePolicy::requiring(sources.iter().copied()),
+        // The core decides CI and the verifier already; these tests play the application that
+        // will honour them.
+        gate_rules: GateRules::default().honouring(CheckSource::ALL),
         ..AppConfig::default()
     }
 }
@@ -251,4 +254,97 @@ async fn a_passing_ci_report_finishes_a_verifying_thread() {
     .await;
     let done = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(done.state, ThreadState::Done);
+}
+
+/// What the dispatcher does with each envelope of a task: the update, its idempotency key and the
+/// binding (the task and its state) written with it.
+async fn apply_as_dispatcher(
+    app: &TestApp,
+    id: ThreadId,
+    input: Input,
+    key: &str,
+    task: &str,
+    state: Option<AgentTaskState>,
+) -> ApplyOutcome {
+    let binding = orch_ports::BindingUpdate {
+        task_id: Some(task.to_owned()),
+        task_state: state,
+        revision: None,
+    };
+    app.apply(id, input, Some(key.to_owned()), Some(binding), None)
+        .await
+        .unwrap()
+}
+
+/// The worker that delegated attempt 1 dies after the completion that started the rework was
+/// committed and before it finished its outbox row. The row is claimed again and the task is
+/// followed from its start: every envelope comes again, under the keys it had. Nothing is
+/// written: not a second `check_result`, not a second `rework`, not a third delegation, and the
+/// completion of the old task is not taken for the completion of attempt 2.
+#[tokio::test]
+async fn a_replayed_completion_of_the_task_a_rework_left_changes_nothing() {
+    use AgentTaskState::{Completed, Working};
+    let w = World::new();
+    let cfg = || gated(&[CheckSource::AgentChecks]);
+    let app = w.app_with(cfg());
+    let t = create(&app, &alice(), "plain", "make it pass").await;
+
+    let task = "task-1";
+    let envelopes = [
+        (
+            from_agent(AgentUpdate::Status {
+                state: Working,
+                detail: None,
+            }),
+            "turn:row-1:task-1:status:working",
+            Some(Working),
+        ),
+        (branch(), "a2a:task-1:artifact:branch", None),
+        (
+            checks(false, &["test_login fails"]),
+            "a2a:task-1:artifact:checks",
+            None,
+        ),
+        (
+            completed(),
+            "turn:row-1:task-1:status:completed",
+            Some(Completed),
+        ),
+    ];
+    for (input, key, state) in envelopes.clone() {
+        let outcome = apply_as_dispatcher(&app, t.id, input, key, task, state).await;
+        assert!(
+            matches!(outcome, ApplyOutcome::Applied { .. }),
+            "{key}: {outcome:?}"
+        );
+    }
+    let reworked = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(
+        (reworked.state, reworked.job.attempt),
+        (ThreadState::Queued, 2)
+    );
+    let log = events(&app, &alice(), t.id).await;
+    let delegations = delegated_texts(&w, t.id).await;
+    assert_eq!(delegations.len(), 2, "the task, then the rework");
+
+    // Another process, the same database, the same task followed from its start.
+    let app2 = w.app_with(cfg());
+    for (input, key, state) in envelopes {
+        let outcome = apply_as_dispatcher(&app2, t.id, input, key, task, state).await;
+        assert_eq!(outcome, ApplyOutcome::Duplicate, "{key}");
+    }
+
+    let after = app2.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((after.state, after.job.attempt), (ThreadState::Queued, 2));
+    assert_eq!(after.job, reworked.job, "the ledger is untouched");
+    assert_eq!(
+        events(&app2, &alice(), t.id).await,
+        log,
+        "the log is untouched"
+    );
+    assert_eq!(
+        delegated_texts(&w, t.id).await,
+        delegations,
+        "no third delegation"
+    );
 }

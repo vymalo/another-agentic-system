@@ -16,10 +16,12 @@
 #[macro_use]
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use common::*;
-use orch_core::A2UI_EXTENSION_V0_9_1;
+use orch_app::GateLayer;
+use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId};
 use orch_testsupport::{Chat, FakeAgentOptions};
 use serde_json::{Value, json};
 
@@ -101,13 +103,37 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             );
             (id, "done")
         }
+        // The verification gate (ADR 0018): `plain` runs under `gate: {require: [agent-checks]}`
+        // (`world_for`). `verify-green` is red once: the agent's own checks fail, it is sent back
+        // with the findings and passes on attempt 2. `verify-red` never passes and runs out of
+        // attempts.
+        "verify-green" => (
+            chat.seed_thread("plain", "verify-red-once fix the login", None)
+                .await,
+            "done",
+        ),
+        "verify-red" => (
+            chat.seed_thread("plain", "verify-red fix the login", None)
+                .await,
+            "failed",
+        ),
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 7] = ["echo", "ask", "cancel", "fail", "talk", "release", "a2ui"];
+const SCENARIOS: [&str; 9] = [
+    "echo",
+    "ask",
+    "cancel",
+    "fail",
+    "talk",
+    "release",
+    "a2ui",
+    "verify-green",
+    "verify-red",
+];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
 async fn world_for(name: &str) -> World {
@@ -120,6 +146,19 @@ async fn world_for(name: &str) -> World {
                         ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
                         ..FakeAgentOptions::default()
                     },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        "verify-green" | "verify-red" => {
+            let gate = GateLayer::from_json(&json!({"require": ["agent-checks"]}))
+                .unwrap()
+                .unwrap();
+            World::with(
+                Backend::Memory,
+                Setup {
+                    target_gates: BTreeMap::from([(AgentId::new("plain"), gate)]),
                     ..Setup::default()
                 },
             )

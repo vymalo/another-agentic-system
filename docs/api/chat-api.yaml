@@ -128,11 +128,11 @@ paths:
             text/event-stream:
               schema: { type: string }
               x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
-        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { description: "The agent is not configured, or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
-        "409": { description: "The thread targets another agent, a run is already open on it, or it is finished (`done`, `failed`, `cancelled`)", $ref: "#/components/responses/Problem" }
+        "409": { description: "The thread targets another agent, a run is already open on it, it is finished (`done`, `failed`, `cancelled`), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
         "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
@@ -250,13 +250,44 @@ components:
         title: { type: string }
         target: { $ref: "#/components/schemas/AgentTarget" }
         state: { $ref: "#/components/schemas/ThreadState" }
+        job:
+          $ref: "#/components/schemas/ThreadJob"
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         lastSeq: { type: integer, format: int64 }
     ThreadState:
       type: string
-      description: MVP subset of the job lifecycle (docs/architecture.md)
-      enum: [queued, working, blocked, done, failed, cancelled]
+      description: |
+        MVP subset of the job lifecycle (docs/architecture.md). `verifying`: the agent finished and
+        the verification gate is checking its work (ADR 0018); only a thread under a gate is ever
+        there, and it is implied by the `check_result` events, never announced by a `thread_state`
+        event.
+      enum: [queued, working, verifying, blocked, done, failed, cancelled]
+    ThreadJob:
+      type: object
+      description: |
+        Where a job stands under the verification gate (ADR 0018). Present only when the gate
+        requires something; a thread without a gate has no `job`. The AG-UI `STATE_SNAPSHOT`
+        carries the same object under `job`.
+      required: [attempt, maxAttempts, gate]
+      properties:
+        attempt: { type: integer, minimum: 1, description: "The attempt the agent is on, from 1" }
+        maxAttempts: { type: integer, minimum: 1, description: "The attempts there are, the first included" }
+        gate:
+          type: array
+          description: "The sources that must pass before the thread is done"
+          items: { $ref: "#/components/schemas/CheckSource" }
+        sha:
+          type: string
+          description: "The commit the agent pushed in this attempt (its `branch` artifact), once it said so; not the commit a check ran on"
+    CheckSource:
+      type: string
+      enum: [ci, agent_checks, verifier]
+      description: |
+        Where a verdict on the agent's work comes from: CI on the pushed commit, the checks the
+        agent ran itself (its `checks` artifact), or a second agent that reviews the commit. A
+        build honours only some of them; configuration spells them `ci`, `agent-checks` and
+        `verifier`.
     Event:
       type: object
       required: [seq, threadId, at, kind, actor, data]
@@ -280,6 +311,9 @@ components:
         - error               # data: { message, retryable: bool }
         - ui_surface          # data: { operations: [A2UI message] }  an A2UI payload an agent sent to render (ADR 0013), already through the orchestrator's envelope check; attributed to the agent. Additive.
         - ui_action           # data: { surfaceId, name, sourceComponentId, context, version, runId? }  what the user did on an A2UI surface of the thread (ADR 0013); attributed to the user. Additive.
+        - ci_result           # data: { provider: github|generic, repository, sha, branch?, name, conclusion: success|neutral|skipped|failure|cancelled|timed_out|action_required|stale|startup_failure, url?, summary? }  a CI provider reported a completed check on a commit (ADR 0017); attributed to the system. Additive; not logged by this build yet.
+        - check_result        # data: { source: CheckSource, attempt, status: pending|passed|failed, name?, commit?, summary?, stale?, findings?: [string] }  a source of the verification gate answered (ADR 0018); attributed to the system. `findings` are untrusted text (at most 20 items and 16 KiB). `stale`: the answer was for a verification that is no longer the current one and decided nothing. Additive.
+        - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
     Actor:
       type: object
       required: [type, name]
@@ -301,7 +335,7 @@ components:
         final: { type: boolean }
         status:
           type: string
-          description: "agent_status: submitted, working, input_required, auth_required, completed, failed or canceled."
+          description: "agent_status: submitted, working, input_required, auth_required, completed, failed or canceled. check_result: pending, passed or failed."
         detail: { type: string }
         name: { type: string }
         mimeType: { type: string }
@@ -327,6 +361,29 @@ components:
           type: string
           enum: [v0.9, v0.9.1, v1.0]
           description: "ui_action only: the A2UI version of the surface, so the agent gets the action in the dialect it spoke."
+        source:
+          $ref: "#/components/schemas/CheckSource"
+        attempt:
+          type: integer
+          minimum: 1
+          description: "check_result: the attempt the answer belongs to. rework: the attempt that starts now."
+        maxAttempts:
+          type: integer
+          minimum: 1
+          description: "rework only: the attempts there are."
+        commit:
+          type: string
+          description: "check_result only: the commit the answer was about, when the source named one."
+        summary:
+          type: string
+          description: "check_result, ci_result: a one-line summary from the source. Untrusted text."
+        stale:
+          type: boolean
+          description: "check_result only: the answer was for a verification that is no longer the current one, and decided nothing."
+        findings:
+          type: array
+          description: "check_result: what is wrong, as strings. rework: per failed source, {source, findings}. Untrusted text; at most 20 items and 16 KiB per source."
+          items: {}
     AgUiRunAgentInput:
       description: The AG-UI 1.0 `RunAgentInput` (the vendored JSON Schema, `$defs/RunAgentInput`)
       $ref: "../../orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json#/$defs/RunAgentInput"

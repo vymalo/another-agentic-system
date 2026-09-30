@@ -1,0 +1,199 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "verify-red-once fix the login"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mimeType": "application/json",
+      "name": "branch",
+      "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+    },
+    "kind": "artifact",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mimeType": "application/json",
+      "name": "checks",
+      "text": "{\"commit\":\"0000000000000000000000000000000000000001\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+    },
+    "kind": "artifact",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 1,
+      "commit": "0000000000000000000000000000000000000001",
+      "findings": [
+        "tests::login fails: expected 200, got 500"
+      ],
+      "source": "agent_checks",
+      "status": "failed",
+      "summary": "1 test failed"
+    },
+    "kind": "check_result",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 2,
+      "findings": [
+        {
+          "findings": [
+            "tests::login fails: expected 200, got 500"
+          ],
+          "source": "agent_checks"
+        }
+      ],
+      "maxAttempts": 3
+    },
+    "kind": "rework",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mimeType": "application/json",
+      "name": "branch",
+      "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+    },
+    "kind": "artifact",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mimeType": "application/json",
+      "name": "checks",
+      "text": "{\"commit\":\"0000000000000000000000000000000000000002\",\"passed\":true,\"summary\":\"3 tests passed\"}"
+    },
+    "kind": "artifact",
+    "seq": 10,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 11,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 2,
+      "commit": "0000000000000000000000000000000000000002",
+      "source": "agent_checks",
+      "status": "passed",
+      "summary": "3 tests passed"
+    },
+    "kind": "check_result",
+    "seq": 12,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 13,
+    "threadId": "<thread-id>"
+  }
+]

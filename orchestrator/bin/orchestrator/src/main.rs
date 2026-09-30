@@ -146,6 +146,13 @@ mod tests {
         .context("reading the configuration");
         assert_eq!(exit_code(&removed), 78);
 
+        let gate = anyhow::Error::from(ConfigError::Gate {
+            context: "AGENTS_FILE",
+            reason: "the ci source is not available yet".to_owned(),
+        })
+        .context("reading the configuration");
+        assert_eq!(exit_code(&gate), 78);
+
         let db_down = anyhow::Error::from(StoreError::unavailable(io::Error::other("refused")))
             .context("cannot connect to Postgres");
         assert_eq!(exit_code(&db_down), 69);

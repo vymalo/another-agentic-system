@@ -7,12 +7,14 @@
 //! its own schema, so they run in parallel against one database.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_api::ApiConfig;
-use orch_app::{AgentDirectory, AgentEntry, App, AppConfig};
+use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, GateLayer};
+use orch_core::{AgentId, GatePolicy};
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, ThreadStore, UuidV7Ids, Wakeup};
 use orch_store_postgres::{PgStore, PgWakeup};
@@ -107,6 +109,10 @@ pub struct Setup {
     /// Bearer tokens the orchestrator is configured with.
     pub coder_token: Option<String>,
     pub plain_token: Option<String>,
+    /// The gate new threads start under (the deployment's; empty: no gate).
+    pub gate: GatePolicy,
+    /// The `gate` key of an agent's `AGENTS_FILE` entry, by agent id.
+    pub target_gates: BTreeMap<AgentId, GateLayer>,
 }
 
 impl Default for Setup {
@@ -119,6 +125,8 @@ impl Default for Setup {
             plain: FakeAgentOptions::default(),
             coder_token: None,
             plain_token: None,
+            gate: GatePolicy::default(),
+            target_gates: BTreeMap::new(),
         }
     }
 }
@@ -142,6 +150,8 @@ pub struct World {
     pub plain: FakeAgent,
     coder_token: Option<String>,
     plain_token: Option<String>,
+    gate: GatePolicy,
+    target_gates: BTreeMap<AgentId, GateLayer>,
 }
 
 impl World {
@@ -174,6 +184,8 @@ impl World {
             plain: FakeAgent::spawn(setup.plain).await,
             coder_token: setup.coder_token,
             plain_token: setup.plain_token,
+            gate: setup.gate,
+            target_gates: setup.target_gates,
         }
     }
 
@@ -196,20 +208,25 @@ impl World {
 
     /// A new orchestrator process (app state is per process; the database is shared).
     fn app<S: ThreadStore, W: Wakeup>(&self, store: S, wakeup: W) -> Arc<App<Stack<S, W>>> {
-        Arc::new(App::new(
-            PortSet {
-                store,
-                wakeup,
-                agents: self.agents.clone(),
-                clock: SystemClock,
-                ids: UuidV7Ids,
-            },
-            self.directory(),
-            AppConfig {
-                stream_poll: Duration::from_millis(100),
-                ..AppConfig::default()
-            },
-        ))
+        Arc::new(
+            App::new(
+                PortSet {
+                    store,
+                    wakeup,
+                    agents: self.agents.clone(),
+                    clock: SystemClock,
+                    ids: UuidV7Ids,
+                },
+                self.directory(),
+                AppConfig {
+                    stream_poll: Duration::from_millis(100),
+                    gate: self.gate.clone(),
+                    target_gates: self.target_gates.clone(),
+                    ..AppConfig::default()
+                },
+            )
+            .expect("a valid gate"),
+        )
     }
 
     /// Starts an orchestrator instance (API + dispatcher) named `owner`.

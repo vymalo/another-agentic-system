@@ -47,6 +47,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 reqwest.workspace = true
 sqlx.workspace = true

@@ -1,0 +1,164 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-7",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000001\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-1-1-agent_checks",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      }
+    },
+    {
+      "id": "rework-2",
+      "role": "activity",
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "tests::login fails: expected 200, got 500"
+            ],
+            "source": "agent_checks"
+          }
+        ],
+        "maxAttempts": 3
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000002\",\"passed\":true,\"summary\":\"3 tests passed\"}"
+      }
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-2-2-agent_checks",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "source": "agent_checks",
+        "status": "passed",
+        "summary": "3 tests passed"
+      }
+    }
+  ],
+  "state": {
+    "job": {
+      "attempt": 2,
+      "gate": [
+        "agent_checks"
+      ],
+      "maxAttempts": 3,
+      "sha": "0000000000000000000000000000000000000002"
+    },
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "verify-red-once fix the login"
+    }
+  },
+  "pendingInterrupts": []
+}

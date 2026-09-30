@@ -10,6 +10,12 @@
   name: Mock coder
   cardUrl: http://127.0.0.1:8081/.well-known/agent-card.json
   tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-coder-gated
+  name: Mock coder (gated)
+  cardUrl: http://127.0.0.1:8081/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  gate:
+    require: [agent-checks]
 - id: mock-coder-releases
   name: Mock coder (releases)
   cardUrl: http://127.0.0.1:8082/.well-known/agent-card.json

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -16,7 +16,7 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
-use crate::{AgentDirectory, AgentEntry, AppError};
+use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer};
 
 const MAX_TEXT_CHARS: usize = 100_000;
 const MAX_TITLE_CHARS: usize = 200;
@@ -35,6 +35,13 @@ pub struct AppConfig {
     /// changing it never affects a running job (ADR 0016). The default requires nothing: an
     /// agent finishing is enough, as before the gate existed.
     pub gate: GatePolicy,
+    /// The `gate` key of each agent's `AGENTS_FILE` entry: the layer between the deployment's
+    /// gate and a thread's request (ADR 0018). Validated at startup by
+    /// [`GateRules::validate`]; an agent without an entry runs under `gate` as it is.
+    pub target_gates: BTreeMap<AgentId, GateLayer>,
+    /// What a target or a thread may ask of the gate: which sources this build honours and the
+    /// most attempts it may raise the limit to.
+    pub gate_rules: GateRules,
 }
 
 impl Default for AppConfig {
@@ -44,6 +51,8 @@ impl Default for AppConfig {
             stream_poll: Duration::from_secs(5),
             max_commit_attempts: 8,
             gate: GatePolicy::default(),
+            target_gates: BTreeMap::new(),
+            gate_rules: GateRules::default(),
         }
     }
 }
@@ -81,6 +90,9 @@ pub struct Inbound {
     /// Makes a replay of this input a no-op: the first event carries it, and a second commit
     /// with the same key is [`ApplyOutcome::Duplicate`].
     pub key: Option<String>,
+    /// The gate the request asks for (AG-UI `forwardedProps["vymalo.gate"]`). It applies when
+    /// the request creates the thread: a thread's gate is fixed then (ADR 0016).
+    pub gate: Option<GateLayer>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -149,14 +161,22 @@ fn default_title(text: &str) -> String {
 impl<P: Ports> App<P> {
     /// Builds the service. It starts ready; a composition root that runs migrations first
     /// may call [`App::set_ready`] to control readiness itself.
-    pub fn new(ports: P, agents: AgentDirectory, cfg: AppConfig) -> Self {
-        App {
+    ///
+    /// The gate in `cfg` is checked here, whichever composition root built it: the deployment's
+    /// policy and every agent's resolved gate must ask only for what `cfg.gate_rules` honours,
+    /// with attempts in range and a verifier that is another configured agent
+    /// ([`GateRules::validate`]). A gate that could never pass is an error now (the binary
+    /// exits 78), not a 500 on every request later.
+    pub fn new(ports: P, agents: AgentDirectory, cfg: AppConfig) -> Result<Self, GateError> {
+        cfg.gate_rules
+            .validate(&cfg.gate, &cfg.target_gates, &agents)?;
+        Ok(App {
             ports,
             agents,
             cfg,
             ready: AtomicBool::new(true),
             shutting_down: AtomicBool::new(false),
-        }
+        })
     }
 
     /// The ports this service runs on.
@@ -338,10 +358,11 @@ impl<P: Ports> App<P> {
             )));
         }
         self.validate_target(&req.target).await?;
+        let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
         let now = self.ports.clock().now();
         let (next, cmds) = transition(
-            &Snapshot::queued(self.cfg.gate.clone()),
+            &Snapshot::queued(gate),
             &Input::UserMessage {
                 user: user.clone(),
                 text: req.text.clone(),
@@ -389,6 +410,47 @@ impl<P: Ports> App<P> {
                 }
             }
         }
+    }
+
+    /// The gate a new thread of `agent` starts under: the deployment's, then the agent's entry,
+    /// then what the request asked for. A request that asks for less than the layers above
+    /// require, or for something this build cannot honour, is [`AppError::Invalid`]; a fault in
+    /// the agent's own entry is not the caller's, so it is an internal error.
+    pub fn resolve_gate(
+        &self,
+        agent: &AgentId,
+        request: Option<&GateLayer>,
+    ) -> Result<GatePolicy, AppError> {
+        let rules = &self.cfg.gate_rules;
+        let mut policy = rules
+            .for_target(&self.cfg.gate, agent, self.cfg.target_gates.get(agent))
+            .map_err(|e| {
+                AppError::internal(format!("the gate of agent {agent} is invalid: {e}"))
+            })?;
+        if let Some(request) = request {
+            policy = rules
+                .apply(&policy, request, &Layer::Thread)
+                .map_err(|e| AppError::Invalid(e.to_string()))?;
+        }
+        Ok(policy)
+    }
+
+    /// Whether a run's gate request, put on the gate the thread already has, would change it.
+    /// A thread's gate is fixed when it is created (ADR 0016), so a surface refuses a run whose
+    /// request differs instead of dropping it. `Ok(false)` for a request that says what the
+    /// thread has; [`AppError::Invalid`] for one the rules refuse in any case (a source removed,
+    /// attempts out of range, something this build cannot honour).
+    pub fn gate_request_changes(
+        &self,
+        current: &GatePolicy,
+        request: &GateLayer,
+    ) -> Result<bool, AppError> {
+        let requested = self
+            .cfg
+            .gate_rules
+            .apply(current, request, &Layer::Thread)
+            .map_err(|e| AppError::Invalid(e.to_string()))?;
+        Ok(&requested != current)
     }
 
     /// The thread `id` when it exists and is the user's; `None` when nothing has this id;

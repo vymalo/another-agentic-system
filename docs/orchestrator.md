@@ -24,14 +24,16 @@ change.
 > timers, an inbox, MCP tools, and the model endpoint. The
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
 >
-> **Planned (design accepted 2026-09-30, not built).** The inbox, timers, the job ledger on the
-> thread, CI webhooks, the verification gate and the MCP server are designed in
+> **Partly built (design accepted 2026-09-30).** The job ledger and the gate in the core (MVP slice 2), and the
+> gate's configuration and its AG-UI projection (slice 3) are built, with the agent's own checks as the only
+> source the build honours ([The gate's configuration](#the-gates-configuration-and-its-projection-mvp-slice-3)).
+> The rest, the inbox, timers, CI webhooks, the verifier and the MCP server, is planned. They are all designed in
 > [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 > [ADR 0017](decisions/0017-ci-results-by-webhook.md),
 > [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) and
 > [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md), and built in the slices of
-> [`mvp.md`](mvp.md#the-slices-of-steps-2-3-and-6). Every passage below marked **Planned** for those
-> features describes that design; none of it is in the code.
+> [`mvp.md`](mvp.md#the-slices-of-steps-2-3-and-6). Every passage below marked **Planned** describes that
+> design; none of it is in the code.
 
 ## It is symmetric
 
@@ -514,6 +516,69 @@ recognised as stale.
 anything. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
 diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
 lifecycle in [Architecture](architecture.md#job-lifecycle).
+
+### The gate's configuration and its projection (MVP slice 3)
+
+**Built** (2026-09-30). The policy a job runs under is resolved once, when the thread is created, from three layers
+and then copied into `Job` ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#configuration)). The
+resolution is one set of rules, `GateRules` in `orch-app` (`gate_config.rs`), used by the binary at startup and by `App`
+for a request, so the same thing is refused in the same words everywhere.
+
+| Layer | Where | Members |
+|---|---|---|
+| Deployment | `ORCH_GATE` (comma list of `ci`, `agent-checks`, `verifier`; default none: today's behaviour), `ORCH_MAX_ATTEMPTS` (3), `ORCH_MAX_ATTEMPTS_CAP` (10, at most 100), `ORCH_VERIFIER` | the base policy |
+| Target | the `gate` key of an `AGENTS_FILE` entry, `deny_unknown_fields` | `require`, `maxAttempts`, `verifier`, `ci: {required, timeoutSecs}` |
+| Thread | AG-UI `forwardedProps["vymalo.gate"]` on the run that creates the thread | `require`, `maxAttempts` |
+
+```mermaid
+sequenceDiagram
+  participant B as Binary (startup)
+  participant S as Surface (a run)
+  participant A as App
+  participant R as GateRules
+  B->>R: apply(ORCH_* , each AGENTS_FILE gate) and validate the verifiers
+  R-->>B: ok, or a ConfigError: exit 78
+  S->>A: create_thread_as(agent, Inbound{gate: forwardedProps})
+  A->>R: apply(deployment, the agent's entry), then apply(that, the request)
+  R-->>A: the effective GatePolicy, or GateError
+  A-->>S: Created (the policy is in the job), or Invalid: a 400 problem
+  Note over A: the policy is now the thread's own, and a later change of any layer never reaches it
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Layer: a layer arrives (env, file entry or request)
+  Layer --> Refused: names a source or setting this build cannot honour (ci, verifier)
+  Layer --> Refused: leaves out a source the layer above requires
+  Layer --> Refused: maxAttempts outside 1..=cap, or verifier / ci set per thread
+  Layer --> Applied: adds sources, changes attempts
+  Applied --> [*]: the policy the next layer starts from
+  Refused --> [*]: exit 78 at startup, HTTP 400 for a request
+```
+
+- **What this build honours is listed in one place, and is checked in two.** `pending_reason` (a `match` over `CheckSource`,
+  no wildcard) says why a source cannot be honoured yet; `GateRules::new` honours the rest. The binary applies the rules
+  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. The application drops `Watch`, `Schedule` and
+  `RequestVerification` until the inbox and timers (slice 5) and the verifier dispatch (slice 10) exist, so a gate that
+  required `ci` or `verifier` would wait for a verdict that can never come. Configuration therefore **refuses** them in
+  every layer, naming the slice that enables them: at startup with exit 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an
+  `AGENTS_FILE` entry, including its `ci` and `verifier` keys), and as a 400 for a request. Slices 6 and 10 change
+  their arm of `pending_reason`, and each owns what its source needs beyond that (the verifier's checks in
+  `GateRules::check_verifier`, the `ci` settings, the cards).
+- **Sources: a layer adds, never removes; attempts: anywhere within the cap.** The requested `require` is the whole list
+  and must contain the layer above's (`ci.required` names add up; the verifier's own entry may leave the `verifier`
+  source out for itself); `maxAttempts` may be anything in `1..=ORCH_MAX_ATTEMPTS_CAP` (at most 100); a thread cannot choose the verifier or the CI
+  settings. The verifier must be another configured agent (checked at startup, for every agent's resolved gate).
+- **The projection** (`orch-agui-projection`, [`api/agui.md`](api/agui.md#verification-the-gate)) keeps the run open
+  while the thread is `queued`, `working` or `verifying`. It learns the gate from the thread record
+  (`ThreadMeta.gate`, the job's copy) and everything else from the log: `SUBAGENT_FINISHED` and a `STATE_SNAPSHOT` with
+  `job {attempt, maxAttempts, gate, sha}` at `completed`, `check_result` as the `vymalo.check` activity,
+  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `RUN_FINISHED` at `done`, `RUN_ERROR` with
+  `checks_failed` when the attempts are out, and a hold as an answerable interrupt. A run that continues a thread and asks
+  for a different gate than the thread's is a 409. The resource API's `Thread` carries the same `job` (`chat-api.yaml`).
+- **A rework is a new A2A task in the same context.** The first task is `completed` and cannot be continued, so the
+  dispatcher delegates the rework prompt without a task id (it continues a task only while it waits for the user); the
+  agent sees the same `contextId`. `orch-e2e` (`verify.rs`) pins it.
 
 ## Core types
 

@@ -534,6 +534,7 @@ fn inbound(message: &str, run: &str) -> orch_app::Inbound {
         message_id: Some(message.to_owned()),
         run_id: Some(run.to_owned()),
         key: Some(format!("k:{message}")),
+        ..orch_app::Inbound::default()
     }
 }
 

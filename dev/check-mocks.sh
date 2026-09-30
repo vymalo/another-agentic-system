@@ -4,6 +4,10 @@
 #
 #   dev/check-mocks.sh [AGENT_URL [RELEASES_URL]]     # defaults: http://127.0.0.1:8081, :8082
 #
+# It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
+# "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
+# rework prompt of the gate (which says "this is attempt N" and quotes the findings) changes the answer.
+#
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
 
@@ -71,6 +75,36 @@ for base in "$AGENT" "$RELEASES"; do
   check "SubscribeToTask -> task not found (-32001)" "$(rpc "$base" SubscribeToTask | jq -r .error.code)" "-32001"
   check "unknown method -> -32601" "$(rpc "$base" 'message/send' | jq -r .error.code)" "-32601"
 done
+
+echo "== $AGENT (verification scenarios)"
+# artifact BASE TEXT NAME JQ: a jq expression over the data part of the artifact NAME of the answer.
+artifact() {
+  rpc "$1" SendStreamingMessage "$2" |
+    sed -n 's/^data: //p' |
+    jq -r --arg n "$3" '.result.artifactUpdate.artifact | select(. != null and .name == $n) | .parts[0].data | '"$4"
+}
+# The prompt the gate sends an agent whose work failed (orch-core, verify.rs), with one finding in it.
+rework() { # rework ATTEMPT SCENARIO
+  printf 'Your work did not pass verification (attempt %s of 3); this is attempt %s. Fix what is reported below.\n\n### the checks of the agent\n- %s: tests::login fails: expected 200, got 500\n' "$(($1 - 1))" "$1" "$2"
+}
+check "red-once: attempt 1 streams a branch and checks, then completes" \
+  "$(frames "$AGENT" 'red-once fix the login')" "submitted,working,artifact,artifact,completed"
+check "red-once: attempt 1 pushes a commit" \
+  "$(artifact "$AGENT" 'red-once fix the login' branch '[.branch, (.commit | .[0:7])] | join(" ")')" "agent/red-once 1111111"
+check "red-once: attempt 1 checks fail, with a finding" \
+  "$(artifact "$AGENT" 'red-once fix the login' checks '[.passed, .commit[0:7], .findings[0]] | join(" ")')" \
+  "false 1111111 red-once: tests::login fails: expected 200, got 500"
+check "red-once: the rework prompt of attempt 2 gets passing checks on another commit" \
+  "$(artifact "$AGENT" "$(rework 2 red-once)" checks '[.passed, .commit[0:7], (.findings // [] | length)] | join(" ")')" "true 2222222 0"
+check "red-once: attempt 3 passes too" \
+  "$(artifact "$AGENT" "$(rework 3 red-once)" checks '.passed')" "true"
+check "red-always: attempt 1 fails" \
+  "$(artifact "$AGENT" 'red-always fix the login' checks '[.passed, .findings[0]] | join(" ")')" \
+  "false red-always: tests::login fails: expected 200, got 500"
+check "red-always: every rework fails again" \
+  "$(artifact "$AGENT" "$(rework 3 red-always)" checks '[.passed, .commit[0:7]] | join(" ")')" "false 3333333"
+check "red-always: the stream is branch, checks, completed like the others" \
+  "$(frames "$AGENT" "$(rework 2 red-always)")" "submitted,working,artifact,artifact,completed"
 
 echo "== $RELEASES (release-channels extension)"
 check "card declares the extension with channels and revisions" \

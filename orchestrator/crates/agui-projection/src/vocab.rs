@@ -16,6 +16,13 @@ pub const ACTIVITY_ERROR: &str = "vymalo.error";
 pub const ACTIVITY_A2UI_SURFACE: &str = "a2ui-surface";
 /// The member of an `a2ui-surface` activity's content that holds the operations.
 pub const A2UI_OPERATIONS_KEY: &str = "a2ui_operations";
+/// Activity type of a verification source's answer (`vymalo.check`, ADR 0018): the content is the
+/// `check_result` event's data, `{source, attempt, status, name?, commit?, summary?, stale?,
+/// findings?}`.
+pub const ACTIVITY_CHECK: &str = "vymalo.check";
+/// Activity type of a rework (`vymalo.rework`, ADR 0018): the content is the `rework` event's
+/// data, `{attempt, maxAttempts, findings: [{source, findings}]}`.
+pub const ACTIVITY_REWORK: &str = "vymalo.rework";
 /// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 
@@ -28,6 +35,8 @@ pub const PROBLEM_KEY: &str = "vymalo.problem";
 pub const CODE_AGENT_FAILED: &str = "agent_failed";
 /// `RUN_ERROR.code` for a delegation that could not be delivered.
 pub const CODE_DELIVERY_FAILED: &str = "delivery_failed";
+/// `RUN_ERROR.code` for a job whose work did not pass the verification gate in its last attempt.
+pub const CODE_CHECKS_FAILED: &str = "checks_failed";
 
 /// The release-channels extension URI (ADR 0008): the key of `forwardedProps` that selects a
 /// release when a thread is created.

@@ -1,0 +1,253 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "error:checks_failed"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-7",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-13",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000001\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-1-1-agent_checks",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      }
+    },
+    {
+      "id": "rework-2",
+      "role": "activity",
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "tests::login fails: expected 200, got 500"
+            ],
+            "source": "agent_checks"
+          }
+        ],
+        "maxAttempts": 3
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000002\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      }
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-2-2-agent_checks",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      }
+    },
+    {
+      "id": "rework-3",
+      "role": "activity",
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 3,
+        "findings": [
+          {
+            "findings": [
+              "tests::login fails: expected 200, got 500"
+            ],
+            "source": "agent_checks"
+          }
+        ],
+        "maxAttempts": 3
+      }
+    },
+    {
+      "id": "evt-14",
+      "role": "activity",
+      "subagentRunId": "sub-13",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-15",
+      "role": "activity",
+      "subagentRunId": "sub-13",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000003\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-16",
+      "role": "activity",
+      "subagentRunId": "sub-13",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000003\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      }
+    },
+    {
+      "id": "evt-17",
+      "role": "activity",
+      "subagentRunId": "sub-13",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-3-3-agent_checks",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 3,
+        "commit": "0000000000000000000000000000000000000003",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      }
+    },
+    {
+      "id": "evt-19",
+      "role": "activity",
+      "activityType": "vymalo.error",
+      "content": {
+        "message": "the work did not pass verification after 3 attempts; the agent's own checks: tests::login fails: expected 200, got 500",
+        "retryable": false
+      }
+    }
+  ],
+  "state": {
+    "job": {
+      "attempt": 3,
+      "gate": [
+        "agent_checks"
+      ],
+      "maxAttempts": 3,
+      "sha": "0000000000000000000000000000000000000003"
+    },
+    "thread": {
+      "state": "failed",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "verify-red fix the login"
+    }
+  },
+  "pendingInterrupts": []
+}

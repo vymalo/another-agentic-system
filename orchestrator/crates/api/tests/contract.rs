@@ -222,28 +222,31 @@ impl Harness {
             ),
             name: name.to_owned(),
         };
-        let app = Arc::new(App::new(
-            PortSet {
-                store: MemoryStore::new(),
-                wakeup: MemoryWakeup::new(),
-                agents: agent,
-                clock: SystemClock,
-                ids: SeqIds::default(),
-            },
-            AgentDirectory::new(vec![
-                entry("coder", "Coder"),
-                entry("plain", "Plain"),
-                // Hosted in-process (ADR 0015): the only agent without a card URL.
-                AgentEntry {
-                    endpoint: AgentEndpoint::local(AgentId::new("helper"), "echo"),
-                    name: "Helper".to_owned(),
+        let app = Arc::new(
+            App::new(
+                PortSet {
+                    store: MemoryStore::new(),
+                    wakeup: MemoryWakeup::new(),
+                    agents: agent,
+                    clock: SystemClock,
+                    ids: SeqIds::default(),
                 },
-            ]),
-            AppConfig {
-                stream_poll: Duration::from_millis(100),
-                ..AppConfig::default()
-            },
-        ));
+                AgentDirectory::new(vec![
+                    entry("coder", "Coder"),
+                    entry("plain", "Plain"),
+                    // Hosted in-process (ADR 0015): the only agent without a card URL.
+                    AgentEntry {
+                        endpoint: AgentEndpoint::local(AgentId::new("helper"), "echo"),
+                        name: "Helper".to_owned(),
+                    },
+                ]),
+                AppConfig {
+                    stream_poll: Duration::from_millis(100),
+                    ..AppConfig::default()
+                },
+            )
+            .expect("a valid gate"),
+        );
         let token = CancellationToken::new();
         let dispatcher = tokio::spawn(
             Dispatcher::new(Arc::clone(&app), fast_dispatcher(), "test-dispatcher")

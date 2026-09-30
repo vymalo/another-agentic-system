@@ -1,0 +1,462 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "verify-red-once fix the login",
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000001\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000001"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      },
+      "messageId": "check-1-1-agent_checks",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "tests::login fails: expected 200, got 500"
+            ],
+            "source": "agent_checks"
+          }
+        ],
+        "maxAttempts": 3
+      },
+      "messageId": "rework-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-7",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-8",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000002\",\"passed\":true,\"summary\":\"3 tests passed\"}"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-7",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000002"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "source": "agent_checks",
+        "status": "passed",
+        "summary": "3 tests passed"
+      },
+      "messageId": "check-2-2-agent_checks",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 12
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000002"
+        },
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red-once fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 13
+  }
+]

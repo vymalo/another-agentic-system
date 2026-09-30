@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_api::ApiConfig;
-use orch_app::{AgentDirectory, AgentEntry, App, AppConfig};
+use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, GateLayer};
 use orch_core::AgentId;
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, UuidV7Ids};
@@ -62,20 +62,31 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
         ..A2aConfig::default()
     })
     .unwrap();
-    let app = Arc::new(App::new(
-        PortSet {
-            store: MemoryStore::new(),
-            wakeup: MemoryWakeup::new(),
-            agents: client,
-            clock: SystemClock,
-            ids: UuidV7Ids,
-        },
-        AgentDirectory::new(entries),
-        AppConfig {
-            stream_poll: Duration::from_millis(100),
-            ..AppConfig::default()
-        },
-    ));
+    let app = Arc::new(
+        App::new(
+            PortSet {
+                store: MemoryStore::new(),
+                wakeup: MemoryWakeup::new(),
+                agents: client,
+                clock: SystemClock,
+                ids: UuidV7Ids,
+            },
+            AgentDirectory::new(entries),
+            AppConfig {
+                stream_poll: Duration::from_millis(100),
+                // `dev/agents.yaml` gates `mock-coder-gated`: its own checks must pass.
+                target_gates: [(
+                    AgentId::new("mock-coder-gated"),
+                    GateLayer::from_json(&serde_json::json!({"require": ["agent-checks"]}))
+                        .unwrap()
+                        .unwrap(),
+                )]
+                .into(),
+                ..AppConfig::default()
+            },
+        )
+        .expect("a valid gate"),
+    );
     let api = ApiConfig {
         sse_keepalive: Duration::from_millis(150),
         ..ApiConfig::default()
@@ -256,4 +267,62 @@ async fn the_release_mock_offers_channels_and_echoes_the_resolved_revision() {
         .try_create_thread("mock-coder-releases", "ship it", Some("nope"))
         .await;
     assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn red_once_is_sent_back_with_its_findings_and_passes_the_second_attempt() {
+    let Some(url) = mock(MOCK_URL) else { return };
+    let rig = rig(&[("mock-coder-gated", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder-gated", "red-once fix the login", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    let kinds = shape(&events);
+    assert_eq!(
+        kinds.iter().filter(|k| *k == "rework").count(),
+        1,
+        "{kinds:?}"
+    );
+    let checks: Vec<&str> = events
+        .iter()
+        .filter(|e| e["kind"] == "check_result")
+        .map(|e| e["data"]["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(checks, ["failed", "passed"], "{kinds:?}");
+    let rework = events.iter().find(|e| e["kind"] == "rework").unwrap();
+    assert_eq!(rework["data"]["attempt"], 2);
+    assert!(
+        rework["data"]["findings"][0]["findings"][0]
+            .as_str()
+            .is_some_and(|f| f.starts_with("red-once:")),
+        "{rework}"
+    );
+    assert_eq!(rig.chat.thread(&id).await["job"]["attempt"], 2);
+}
+
+#[tokio::test]
+async fn red_always_runs_out_of_attempts_and_fails_the_thread() {
+    let Some(url) = mock(MOCK_URL) else { return };
+    let rig = rig(&[("mock-coder-gated", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder-gated", "red-always fix the login", None)
+        .await;
+    rig.chat.wait_state(&id, "failed").await;
+    let events = rig.chat.events(&id).await;
+    let kinds = shape(&events);
+    assert_eq!(
+        kinds.iter().filter(|k| *k == "rework").count(),
+        2,
+        "{kinds:?}"
+    );
+    assert_eq!(
+        kinds.iter().filter(|k| *k == "check_result").count(),
+        3,
+        "{kinds:?}"
+    );
+    assert_eq!(kinds.last().unwrap(), "thread_state:failed");
+    assert_eq!(rig.chat.thread(&id).await["job"]["attempt"], 3);
 }

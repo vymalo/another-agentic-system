@@ -46,7 +46,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string, never logged |
-| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` ([`agents.example.yaml`](../../agents.example.yaml)); `transport` is `a2a` (the default when absent; `cardUrl` required) or `local` (`agent` required, names a `LocalAgentKind`; `cardUrl` and `tokenEnv` refused). `local` is refused with `LocalAgentsNotCompiled` (78) unless the build has the Cargo feature `agent-local`; any other `transport` is a startup error |
+| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}` ([`agents.example.yaml`](../../agents.example.yaml)); `gate` is the entry's verification gate, `{require?, maxAttempts?, verifier?, ci?: {required?, timeoutSecs?}}` with `deny_unknown_fields` (see [The gate](#the-verification-gate)); `transport` is `a2a` (the default when absent; `cardUrl` required) or `local` (`agent` required, names a `LocalAgentKind`; `cardUrl` and `tokenEnv` refused). `local` is refused with `LocalAgentsNotCompiled` (78) unless the build has the Cargo feature `agent-local`; any other `transport` is a startup error |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
 | `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
 | `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning |
@@ -56,8 +56,36 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
 | `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
+| `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **Only `agent-checks` is accepted by this build**; `ci` and `verifier` are a startup error (78) naming the slice that enables them |
+| `ORCH_MAX_ATTEMPTS` | `3` | attempts a gated job's agent gets, the first included (`--max-attempts`); at least 1 and at most the cap |
+| `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most an `AGENTS_FILE` entry or a run may set the attempts to (`--max-attempts-cap`); at most `100`. When only the cap is set below `3`, the default attempts are lowered to it; an explicit `ORCH_MAX_ATTEMPTS` above the cap is a startup error |
+| `ORCH_VERIFIER` | none | the verifier agent's id (`--verifier`). Refused (78) until the verifier dispatch is built |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
+
+### The verification gate
+
+[ADR 0018](../../../docs/decisions/0018-verification-gate-and-rework-loop.md). Three layers (sources can only be added, attempts set anywhere
+within the cap): the deployment (`ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP`, `ORCH_VERIFIER`), an agent's
+`gate:` in `AGENTS_FILE`, and the run that creates a thread (`forwardedProps["vymalo.gate"]`, see
+[`docs/api/agui.md`](../../../docs/api/agui.md#verification-the-gate)). The result is copied into the thread's job when
+it is created, so a change of configuration never reaches a running job.
+
+```yaml
+- id: coder
+  name: Coder
+  cardUrl: https://coder.example.com/.well-known/agent-card.json
+  gate:
+    require: [agent-checks]   # the agent's own `checks` artifact must pass, or it is sent back
+    maxAttempts: 2            # 1..=ORCH_MAX_ATTEMPTS_CAP
+```
+
+Startup validates all of it and exits **78** with a message naming the variable or the agent: an unknown source; a
+`maxAttempts` outside `1..=cap`; an entry whose `require` leaves out a source the deployment requires; a `verifier`
+that is not another configured agent; an unknown member of `gate`. **`ci` and `verifier`, as sources or as settings
+(`ci:`, `verifier:`), are refused in every layer**: the application drops the commands they need until the inbox and
+timers (MVP slice 5), the CI webhook (slice 6) and the verifier dispatch (slice 10) exist, so a gate that required
+them could never pass. The message says which slice enables them. A run that asks for the same is a 400.
 
 ### Logs and metrics
 
@@ -158,7 +186,9 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
 
 ## Tests
 
-* Unit tests in `src/config.rs`: no database, no environment (defaults, the
+* Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the four variables, `ci` and
+  `verifier` refused in `ORCH_GATE`, `ORCH_VERIFIER` and an `AGENTS_FILE` entry naming the slice, strict parsing of `gate:`, a
+  target that weakens the deployment or exceeds the cap; defaults, the
   environment/flag mapping, unknown, empty and repeated surfaces, the removed
   `chat-api` refused with an error naming it and AG-UI (`RemovedSurface`, from the variable and from the
   flag), `--help` naming every variable, the role: default `all`, each
@@ -171,7 +201,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   process starts and completes it. Unit tests in `src/config.rs` cover the flavours: without the feature a local agent is
   refused naming `agent-local`, with it it is accepted, and `AGENT_LOCAL_CONCURRENCY` defaults to 4.
 * `tests/smoke.rs`: the built executable as a process. Without the feature, `transport: local` exits 78 naming `agent-local`. Configuration-error
-  tests always run (the unreachable-database one waits out sqlx's 30 s
+  tests always run (including a gate this build cannot honour, in the environment and in `AGENTS_FILE`: exit 78, the slice named; the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, the removed
   `chat-api` (`the_removed_chat_api_surface_is_a_config_error_pointing_to_agui`: from the variable,

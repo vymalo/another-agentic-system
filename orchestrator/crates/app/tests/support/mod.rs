@@ -66,17 +66,20 @@ impl World {
     }
 
     pub fn app_with(&self, cfg: AppConfig) -> Arc<TestApp> {
-        Arc::new(App::new(
-            PortSet {
-                store: self.store.clone(),
-                wakeup: self.wakeup.clone(),
-                agents: self.agent.clone(),
-                clock: SystemClock,
-                ids: self.ids.clone(),
-            },
-            directory(),
-            cfg,
-        ))
+        Arc::new(
+            App::new(
+                PortSet {
+                    store: self.store.clone(),
+                    wakeup: self.wakeup.clone(),
+                    agents: self.agent.clone(),
+                    clock: SystemClock,
+                    ids: self.ids.clone(),
+                },
+                directory(),
+                cfg,
+            )
+            .expect("a valid gate"),
+        )
     }
 }
 

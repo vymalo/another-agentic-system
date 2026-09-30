@@ -1,7 +1,9 @@
 # ADR 0018 — Configurable verification gate and a bounded rework loop
 
-- **Status:** accepted (2026-09-30). **Planned, not built:** MVP slices 2 (core), 3 (configuration
-  and AG-UI), 4 (web) and 10 (verifier agent) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
+- **Status:** accepted (2026-09-30). **Built:** MVP slice 2 (the core) and slice 3 (configuration and
+  the AG-UI projection), 2026-09-30, for the agent-checks source; see *Built (slice 3)* below.
+  **Planned, not built:** slices 4 (web) and 10 (verifier agent), and CI as a source
+  (slices 5 and 6) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
   concrete). Closes [open question 8](../open-questions.md#closed) and answers part of question 6
   (attempts; wall clock for the waits on CI and the verifier). Builds on
@@ -163,16 +165,56 @@ cannot say: a `Blocked` thread that the user answers is delegated again **withou
 number, because the timeout was not the worker's failure; an out-of-attempts `Failed` carries the
 last findings in its `error` event.
 
+## Built (slice 3)
+
+*2026-09-30.* What the code does, where it refines the text above:
+
+- **Configuration** is one rule set, `GateRules` in `orch-app` (`gate_config.rs`): the binary applies the
+  deployment variables and every `AGENTS_FILE` entry with it at startup, and `App` applies the entry and the
+  request when a thread is created; `App::new` checks the deployment's policy and every entry again, so another
+  composition root cannot hand it a gate the build cannot honour (it returns an error; the binary exits 78). A layer is
+  `{require?, maxAttempts?, verifier?, ci?}`. What "each layer may only tighten the one above" comes to in code:
+  sources can only be added (`require` is the whole list and must contain the one above's; `ci.required` names
+  add up), and attempts can be anything in `1..=ORCH_MAX_ATTEMPTS_CAP` (at most 100), lower or higher than the
+  layer above's. The one removal allowed is the entry of the verifier itself leaving the `verifier` source out for
+  itself, because an agent cannot verify its own work; an agent whose own gate does not require the verifier may be
+  the verifier. A thread may set only `require` and `maxAttempts`, and spells a source `agent-checks` or
+  `agent_checks`. A default `ORCH_MAX_ATTEMPTS` is lowered to a smaller `ORCH_MAX_ATTEMPTS_CAP`; one that is set must fit.
+  The verifier of every agent's resolved gate must be a configured agent.
+- **This build honours only `agent-checks`.** The application still drops `Watch`, `Schedule` and
+  `RequestVerification` (slices 5 and 10), so a gate that required `ci` or `verifier` would wait for a verdict
+  that never comes. Configuration **refuses** those sources, and the `ci` and `verifier` settings, in every layer,
+  and says which slice enables them: startup exits 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an `AGENTS_FILE`
+  entry), a request is a 400. This is fail-closed: a job is never "done" without a check the operator required.
+  `pending_reason` in `gate_config.rs` is where the sources are listed, and `GateRules::honouring` how a build (or a
+  test) says it has more. It is **not** the only thing a later slice changes: the slice that makes `verifier` real also
+  owns its checks (`GateRules::check_verifier`, the verifier's own entry) and its cards, and the one that makes `ci` real
+  owns the `ci` settings and the watch keys.
+- **Not built yet:** `ORCH_CI_TIMEOUT_SECS` and `ORCH_VERIFIER_TIMEOUT_SECS`, which only matter once CI and the
+  verifier can be required (slices 6 and 10); the per-target `ci.timeoutSecs` is accepted by the parser and refused
+  with the rest of the `ci` settings.
+- **Projection:** as above. The gate reaches the projection through `ThreadMeta.gate` (the job's copy, fixed when the
+  thread was created); everything else is folded from the log. The `vymalo.check` card of a source in an attempt
+  has a stable id, `check-<attempt>-<verification>-<source>`, and is `replace: true` (a second verification of the
+  same attempt is a card of its own); `vymalo.rework` is `rework-<attempt>`; a rework opens the next attempt's
+  subagent at once. `job` is in `STATE_SNAPSHOT` and in `Thread` only under a gate, and its `sha` is the pushed
+  commit, never the commit a check ran on. A hold (`error{retryable}` then `blocked` while verifying) is an
+  answerable interrupt, not `delivery_failed`.
+  Goldens: `verify-green` (red once, then green), `verify-red` (three attempts, `checks_failed`).
+- **A rework is a new A2A task in the same context**, because the first task is `completed`; `orch-e2e` pins it.
+- **The gate is fixed at creation**, and a run that continues a thread and asks for another is a 409 (`orch-surface-agui`),
+  not a silent no-op.
+
 ## Configuration summary
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ORCH_GATE` | empty | required sources, comma list of `ci`, `agent-checks`, `verifier`; empty keeps today's behaviour |
+| `ORCH_GATE` | empty | required sources, comma list of `ci`, `agent-checks`, `verifier`; empty keeps today's behaviour. *Built: only `agent-checks` is accepted, see above* |
 | `ORCH_MAX_ATTEMPTS` | `3` | attempts per job, including the first |
-| `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most a target or a thread may raise it to |
-| `ORCH_VERIFIER` | none | the verifier agent's id (must be configured; startup error otherwise) |
-| `ORCH_VERIFIER_TIMEOUT_SECS` | `1800` | how long to wait for a verdict before `Blocked` |
-| `ORCH_CI_TIMEOUT_SECS` | `3600` | how long to wait for CI before `Blocked` (ADR 0017) |
+| `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most a target or a thread may raise it to; at most `100`. A default `ORCH_MAX_ATTEMPTS` is lowered to a smaller cap |
+| `ORCH_VERIFIER` | none | the verifier agent's id (must be configured; startup error otherwise). *Built: refused until slice 10* |
+| `ORCH_VERIFIER_TIMEOUT_SECS` | `1800` | how long to wait for a verdict before `Blocked`. *Not read yet (slice 10)* |
+| `ORCH_CI_TIMEOUT_SECS` | `3600` | how long to wait for CI before `Blocked` (ADR 0017). *Not read yet (slice 6)* |
 | `AGENTS_FILE` `gate` | none | per-target override, shape above |
 
 ## Security notes

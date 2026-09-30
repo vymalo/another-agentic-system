@@ -9,6 +9,7 @@ export type ThreadState = components["schemas"]["ThreadState"];
 export const THREAD_STATES = [
   "queued",
   "working",
+  "verifying",
   "blocked",
   "done",
   "failed",
@@ -33,4 +34,6 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 export const TERMINAL_STATES: readonly ThreadState[] = ["done", "failed", "cancelled"];
 export const isTerminal = (s: ThreadState | undefined): boolean =>
   s !== undefined && TERMINAL_STATES.includes(s);
-export const isActive = (s: ThreadState | undefined): boolean => s === "queued" || s === "working";
+/** A run is open while the thread is queued, working or (under a gate) being verified. */
+export const isActive = (s: ThreadState | undefined): boolean =>
+  s === "queued" || s === "working" || s === "verifying";

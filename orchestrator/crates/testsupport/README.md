@@ -26,7 +26,9 @@ Its helpers panic on failure, by design.
 
 The fake agent's behaviour is chosen by the first word of the user's message
 (`echo` or anything else, `ask`, `gate`, `slow`, `chunks`, `fail`, `talk`,
-`messages`, `auth`); the table is in `src/fake.rs`.
+`messages`, `auth`, and for the verification gate `verify-pass`, `verify-red-once` and `verify-red`, which report a
+`branch` and a `checks` artifact and answer the gate's rework prompt as a new task of the same context); the table is
+in `src/fake.rs`.
 
 ```rust
 use orch_testsupport::{FakeAgent, FakeAgentOptions};

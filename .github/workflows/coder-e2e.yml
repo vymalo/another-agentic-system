@@ -102,6 +102,10 @@ jobs:
         run: dev/coder-e2e.sh
       - name: The same without OpenCode (the check command makes the change)
         run: NO_OPENCODE=1 dev/coder-e2e.sh
+      - name: The verification gate (a failing check sends the agent back, then it passes; a run may not weaken the gate)
+        # The mock agent behind `mock-coder-gated` (dev/agents.yaml), not the coder: the gate is the
+        # orchestrator's, so a scripted agent that reports failing and then passing checks is enough.
+        run: dev/verify-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.

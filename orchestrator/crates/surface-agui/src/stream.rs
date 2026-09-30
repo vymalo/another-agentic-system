@@ -167,6 +167,7 @@ mod tests {
                 agent_id: AgentId::new("plain"),
                 release: None,
             },
+            gate: orch_core::GatePolicy::default(),
         }
     }
 

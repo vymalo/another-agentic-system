@@ -30,7 +30,7 @@ use anyhow::Context;
 use axum::Router;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
-use orch_app::{AgentDirectory, App, AppConfig, Dispatcher, DispatcherConfig};
+use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig};
 use orch_core::BoxError;
 use orch_ports::{AgentTransport, PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
@@ -139,17 +139,23 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     }
 
     // The database is migrated and reachable by now, so the app starts ready.
-    let app: Arc<App<Stack>> = Arc::new(App::new(
-        PortSet {
-            store: store.clone(),
-            wakeup,
-            agents,
-            clock: SystemClock,
-            ids: UuidV7Ids,
-        },
-        AgentDirectory::new(cfg.agents.clone()),
-        AppConfig::default(),
-    ));
+    let app: Arc<App<Stack>> = Arc::new(
+        App::new(
+            PortSet {
+                store: store.clone(),
+                wakeup,
+                agents,
+                clock: SystemClock,
+                ids: UuidV7Ids,
+            },
+            AgentDirectory::new(cfg.agents.clone()),
+            cfg.app_config(),
+        )
+        .map_err(|e| ConfigError::Gate {
+            context: "the verification gate",
+            reason: e.to_string(),
+        })?,
+    );
     Ok(Shared { store, app, local })
 }
 

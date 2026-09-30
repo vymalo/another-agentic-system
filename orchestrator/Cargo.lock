@@ -2102,6 +2102,7 @@ dependencies = [
  "jiff",
  "orch-core",
  "orch-ports",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

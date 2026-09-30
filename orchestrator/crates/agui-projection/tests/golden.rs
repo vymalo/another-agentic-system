@@ -17,12 +17,22 @@ use std::path::PathBuf;
 
 use orch_agui_projection::{Audience, Frame, Projector, ThreadMeta};
 use orch_agui_proto::testkit::assert_conforms;
-use orch_core::{AgentId, AgentTarget, Event, EventBody, Timestamp};
+use orch_core::{AgentId, AgentTarget, CheckSource, Event, EventBody, GatePolicy, Timestamp};
 use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 7] = ["echo", "ask", "cancel", "fail", "talk", "release", "a2ui"];
+const SCENARIOS: [&str; 9] = [
+    "echo",
+    "ask",
+    "cancel",
+    "fail",
+    "talk",
+    "release",
+    "a2ui",
+    "verify-green",
+    "verify-red",
+];
 
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")
@@ -38,6 +48,11 @@ fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
         EventBody::UserMessage(m) => m.text.lines().next().unwrap_or("").to_owned(),
         _ => String::new(),
     };
+    // The verification scenarios ran under the gate that requires the agent's own checks.
+    let gate = match name {
+        "verify-green" | "verify-red" => GatePolicy::requiring([CheckSource::AgentChecks]),
+        _ => GatePolicy::default(),
+    };
     ThreadMeta {
         thread_id: THREAD.parse().unwrap(),
         title,
@@ -45,6 +60,7 @@ fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
             agent_id: AgentId::new(agent),
             release,
         },
+        gate,
     }
 }
 

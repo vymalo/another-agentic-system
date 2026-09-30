@@ -10,6 +10,7 @@
 //! carries no secret value, and exits with the configuration code (78) rather than clap's
 //! usage code (2). Startup fails fast and fails closed.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
@@ -18,8 +19,11 @@ use std::time::Duration;
 
 use adam_host::Role;
 use clap::Parser;
-use orch_app::AgentEntry;
-use orch_core::{AgentId, UserId};
+use orch_app::{
+    AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules, Layer,
+    MAX_ATTEMPTS_CAP_CEILING, known_sources,
+};
+use orch_core::{AgentId, CheckSource, DEFAULT_MAX_ATTEMPTS, GatePolicy, UserId};
 use orch_ports::AgentEndpoint;
 use serde::Deserialize;
 use url::Url;
@@ -129,6 +133,16 @@ pub enum ConfigError {
         /// What is wrong with it.
         reason: String,
     },
+    /// The verification gate is configured in a way the rules refuse (ADR 0018): a source or
+    /// setting this build cannot honour yet, a layer that removes what the one above requires,
+    /// attempts outside the cap, a verifier that is not another configured agent.
+    #[error("{context}: {reason}")]
+    Gate {
+        /// Where: `AGENTS_FILE`.
+        context: &'static str,
+        /// What is wrong, naming the agent.
+        reason: String,
+    },
     /// The environment variable named by `tokenEnv` is unset or empty. Sending requests
     /// without the credential the operator asked for would be the unsafe reading.
     #[error(
@@ -170,6 +184,8 @@ struct AgentSpec {
     token_env: Option<String>,
     /// Required for `local` (the kind of agent), refused for `a2a`.
     agent: Option<String>,
+    /// The verification gate of this target (ADR 0018), on top of the deployment's.
+    gate: Option<GateLayer>,
 }
 
 /// A kind of agent hosted in the orchestrator's own process (`transport: local`, ADR 0015).
@@ -435,7 +451,7 @@ pub struct Args {
     #[arg(long, env = "DATABASE_URL", value_name = "URL", hide_env_values = true)]
     pub database_url: Option<String>,
 
-    /// YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` (required).
+    /// YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}` (required).
     #[arg(long, env = "AGENTS_FILE", value_name = "PATH")]
     pub agents_file: Option<String>,
 
@@ -454,6 +470,25 @@ pub struct Args {
     /// and health are always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
     pub surfaces: Option<String>,
+
+    /// Sources every job's work must pass before it is done, comma separated: ci, agent-checks,
+    /// verifier (default none: an agent that completes is done). This build honours only
+    /// agent-checks; ci and verifier are refused until their slices land.
+    #[arg(long, env = "ORCH_GATE", value_name = "LIST")]
+    pub gate: Option<String>,
+
+    /// Attempts a job's agent gets under a gate, the first included, at least 1 (default 3).
+    #[arg(long, env = "ORCH_MAX_ATTEMPTS", value_name = "N")]
+    pub max_attempts: Option<String>,
+
+    /// The most a target or a thread may raise the attempts to, at least 1 (default 10).
+    #[arg(long, env = "ORCH_MAX_ATTEMPTS_CAP", value_name = "N")]
+    pub max_attempts_cap: Option<String>,
+
+    /// The agent that verifies (an id in AGENTS_FILE). Refused until the verifier dispatch is
+    /// built.
+    #[arg(long, env = "ORCH_VERIFIER", value_name = "AGENT")]
+    pub verifier: Option<String>,
 
     /// E-mail served for requests without X-Auth-Request-Email. Development only.
     #[arg(long, env = "AUTH_DEV_USER", value_name = "EMAIL")]
@@ -504,6 +539,14 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// `AGENTS_FILE`, resolved: bearer tokens already read from their environment variables.
     pub agents: Vec<AgentEntry>,
+    /// The gate new threads start under before an agent's entry or a request changes it:
+    /// `ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_VERIFIER`.
+    pub gate: GatePolicy,
+    /// What a target or a thread may ask of the gate: this build's sources and
+    /// `ORCH_MAX_ATTEMPTS_CAP`.
+    pub gate_rules: GateRules,
+    /// The `gate` key of each `AGENTS_FILE` entry that has one.
+    pub target_gates: BTreeMap<AgentId, GateLayer>,
     /// `ORCH_ROLE`: which halves this process runs (`adam-host`'s closed enum; default `all`).
     pub role: Role,
     /// `ORCH_SURFACES`: the interaction surfaces to mount, no repeats. Empty only when the
@@ -533,6 +576,9 @@ impl fmt::Debug for Config {
             .field("database_url", &"<redacted>")
             .field("listen_addr", &self.listen_addr)
             .field("agents", &self.agents)
+            .field("gate", &self.gate)
+            .field("gate_rules", &self.gate_rules)
+            .field("target_gates", &self.target_gates)
             .field("role", &self.role)
             .field("surfaces", &self.surfaces)
             .field("auth_dev_user", &self.auth_dev_user)
@@ -583,7 +629,18 @@ impl Config {
             path: agents_file.clone(),
             source,
         })?;
-        let agents = parse_agents(&text, &agents_file, get_env)?;
+        let (agents, target_gates) =
+            parse_agents_full(&text, &agents_file, get_env, LocalAgentKind::compiled_in)?;
+        let (gate, gate_rules) = parse_gate(
+            GateVars {
+                gate: clean(args.gate),
+                max_attempts: clean(args.max_attempts),
+                max_attempts_cap: clean(args.max_attempts_cap),
+                verifier: clean(args.verifier),
+            },
+            &agents,
+            &target_gates,
+        )?;
 
         // Blank is unset, so `all`. The enum and its names belong to adam-host; a name it does
         // not know is refused here, so the error is the usual one, naming the variable (78).
@@ -654,6 +711,9 @@ impl Config {
             database_url,
             listen_addr,
             agents,
+            gate,
+            gate_rules,
+            target_gates,
             role,
             surfaces,
             auth_dev_user,
@@ -684,6 +744,126 @@ impl Config {
         }
         kinds
     }
+}
+
+impl Config {
+    /// The application settings the gate configuration contributes: what new threads start under
+    /// and the rules requests are checked against.
+    pub fn app_config(&self) -> AppConfig {
+        AppConfig {
+            gate: self.gate.clone(),
+            target_gates: self.target_gates.clone(),
+            gate_rules: self.gate_rules.clone(),
+            ..AppConfig::default()
+        }
+    }
+}
+
+/// The raw values of the gate's environment variables (blank already counted as unset).
+struct GateVars {
+    gate: Option<String>,
+    max_attempts: Option<String>,
+    max_attempts_cap: Option<String>,
+    verifier: Option<String>,
+}
+
+fn gate_var(var: &'static str, e: impl fmt::Display) -> ConfigError {
+    ConfigError::Invalid {
+        var,
+        reason: e.to_string(),
+    }
+}
+
+/// The deployment's gate and the rules, from the environment, then every target's entry put on
+/// top of it. Every refusal is a startup error (78): a gate that could not be honoured must not
+/// quietly become no gate.
+fn parse_gate(
+    vars: GateVars,
+    agents: &[AgentEntry],
+    targets: &BTreeMap<AgentId, GateLayer>,
+) -> Result<(GatePolicy, GateRules), ConfigError> {
+    let cap = number(
+        vars.max_attempts_cap,
+        "ORCH_MAX_ATTEMPTS_CAP",
+        DEFAULT_MAX_ATTEMPTS_CAP,
+        1,
+    )?;
+    if cap > MAX_ATTEMPTS_CAP_CEILING {
+        return Err(gate_var(
+            "ORCH_MAX_ATTEMPTS_CAP",
+            format!("{cap} is above the ceiling of {MAX_ATTEMPTS_CAP_CEILING}"),
+        ));
+    }
+    let rules = GateRules::new(cap);
+    let at = Layer::Deployment;
+
+    let mut policy = GatePolicy::default();
+    if let Some(list) = vars.gate {
+        let mut sources = Vec::new();
+        for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            let source = CheckSource::from_config_name(name).ok_or_else(|| {
+                gate_var(
+                    "ORCH_GATE",
+                    format!("unknown source {name:?} (one of: {})", known_sources()),
+                )
+            })?;
+            if let Some(refusal) = rules.refuse_source(&at, source) {
+                return Err(gate_var("ORCH_GATE", refusal));
+            }
+            sources.push(source);
+        }
+        if sources.is_empty() {
+            return Err(gate_var(
+                "ORCH_GATE",
+                format!("names no source (one of: {})", known_sources()),
+            ));
+        }
+        policy.require = sources.into_iter().collect();
+    }
+    // A cap below the default lowers the default with it; an attempts value that is set is taken
+    // as written and must fit.
+    let attempts = number(
+        vars.max_attempts,
+        "ORCH_MAX_ATTEMPTS",
+        DEFAULT_MAX_ATTEMPTS.min(cap),
+        1,
+    )?;
+    if attempts > cap {
+        return Err(gate_var(
+            "ORCH_MAX_ATTEMPTS",
+            format!("{attempts} is above ORCH_MAX_ATTEMPTS_CAP ({cap})"),
+        ));
+    }
+    policy.max_attempts = attempts;
+    if let Some(verifier) = vars.verifier {
+        if let Some(refusal) = rules.refuse_verifier_setting(&at) {
+            return Err(gate_var("ORCH_VERIFIER", refusal));
+        }
+        policy.verifier = Some(AgentId::new(verifier));
+    }
+
+    // Each target's entry on top of the deployment, then every agent's verifier against the
+    // configured agents. Both name the agent at fault.
+    let refused = |e: orch_app::GateError| ConfigError::Gate {
+        context: "AGENTS_FILE",
+        reason: e.to_string(),
+    };
+    for (id, layer) in targets {
+        rules
+            .for_target(&policy, id, Some(layer))
+            .map_err(refused)?;
+    }
+    rules
+        .validate(&policy, targets, &AgentDirectory::new(agents.to_vec()))
+        .map_err(|e| match e {
+            // A verifier the deployment names is the variable's fault, not a file's.
+            e @ orch_app::GateError::UnknownVerifier {
+                layer: Layer::Deployment,
+                ..
+            } => gate_var("ORCH_VERIFIER", e),
+            e => refused(e),
+        })?;
+    Ok((policy, rules))
 }
 
 /// Parses an optional numeric variable with a default and a lower bound.
@@ -725,6 +905,7 @@ fn invalid(id: &str, reason: impl Into<String>) -> ConfigError {
 }
 
 /// Parses the YAML list and resolves each `tokenEnv` through `env`.
+#[cfg(test)]
 fn parse_agents(
     yaml: &str,
     path: &Path,
@@ -735,12 +916,23 @@ fn parse_agents(
 
 /// [`parse_agents`] with the build's set of local agent kinds as a parameter, so the tests can
 /// exercise a build that has them.
+#[cfg(test)]
 fn parse_agents_with(
     yaml: &str,
     path: &Path,
     env: impl Fn(&str) -> Option<String>,
     local_compiled_in: impl Fn(LocalAgentKind) -> bool,
 ) -> Result<Vec<AgentEntry>, ConfigError> {
+    parse_agents_full(yaml, path, env, local_compiled_in).map(|(entries, _)| entries)
+}
+
+/// The entries of the YAML list and the `gate` key of each that has one.
+fn parse_agents_full(
+    yaml: &str,
+    path: &Path,
+    env: impl Fn(&str) -> Option<String>,
+    local_compiled_in: impl Fn(LocalAgentKind) -> bool,
+) -> Result<(Vec<AgentEntry>, BTreeMap<AgentId, GateLayer>), ConfigError> {
     let specs: Option<Vec<AgentSpec>> =
         serde_norway::from_str(yaml).map_err(|e| ConfigError::AgentsFileParse {
             path: path.to_owned(),
@@ -754,6 +946,7 @@ fn parse_agents_with(
     }
 
     let mut entries: Vec<AgentEntry> = Vec::with_capacity(specs.len());
+    let mut gates: BTreeMap<AgentId, GateLayer> = BTreeMap::new();
     for spec in specs {
         if !valid_agent_id(&spec.id) {
             return Err(invalid(
@@ -773,12 +966,15 @@ fn parse_agents_with(
             TransportKind::A2a => a2a_endpoint(&spec, &env)?,
             TransportKind::Local => local_endpoint(&spec, &local_compiled_in)?,
         };
+        if let Some(layer) = spec.gate {
+            gates.insert(AgentId::new(spec.id.clone()), layer);
+        }
         entries.push(AgentEntry {
             endpoint,
             name: spec.name.trim().to_owned(),
         });
     }
-    Ok(entries)
+    Ok((entries, gates))
 }
 
 /// `transport: a2a`: a card URL and an optional token variable.
@@ -909,6 +1105,10 @@ mod tests {
                 "LISTEN_ADDR" => &mut args.listen_addr,
                 "ORCH_ROLE" => &mut args.role,
                 "ORCH_SURFACES" => &mut args.surfaces,
+                "ORCH_GATE" => &mut args.gate,
+                "ORCH_MAX_ATTEMPTS" => &mut args.max_attempts,
+                "ORCH_MAX_ATTEMPTS_CAP" => &mut args.max_attempts_cap,
+                "ORCH_VERIFIER" => &mut args.verifier,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
                 "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
@@ -1603,6 +1803,10 @@ mod tests {
             "LISTEN_ADDR",
             "ORCH_ROLE",
             "ORCH_SURFACES",
+            "ORCH_GATE",
+            "ORCH_MAX_ATTEMPTS",
+            "ORCH_MAX_ATTEMPTS_CAP",
+            "ORCH_VERIFIER",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",
@@ -1621,5 +1825,333 @@ mod tests {
                 "--help does not name the role {name}:\n{help}"
             );
         }
+    }
+
+    // ---- the verification gate (ADR 0018) --------------------------------------------------
+
+    fn with(extra: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static str)> {
+        let mut pairs = base();
+        pairs.extend_from_slice(extra);
+        pairs
+    }
+
+    fn invalid_var(err: ConfigError) -> (&'static str, String) {
+        match err {
+            ConfigError::Invalid { var, reason } => (var, reason),
+            other => panic!("expected an invalid variable, got {other}"),
+        }
+    }
+
+    /// `AGENTS` with a `gate:` on the first agent.
+    fn agents_with_gate(gate: &str) -> String {
+        format!(
+            "\
+- id: coder
+  name: Coder
+  cardUrl: https://coder.example.com/.well-known/agent-card.json
+  tokenEnv: CODER_A2A_TOKEN
+  gate: {gate}
+- id: plain
+  name: Plain
+  cardUrl: http://plain.internal:9000/.well-known/agent-card.json
+"
+        )
+    }
+
+    #[test]
+    fn the_gate_defaults_to_none_with_three_attempts_and_a_cap_of_ten() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(cfg.gate.require.is_empty(), "no gate: today's behaviour");
+        assert!(!cfg.gate.is_active());
+        assert_eq!(cfg.gate.max_attempts, 3);
+        assert_eq!(cfg.gate_rules.cap(), 10);
+        assert!(cfg.target_gates.is_empty());
+        let app = cfg.app_config();
+        assert_eq!(app.gate, cfg.gate);
+        assert_eq!(app.gate_rules, cfg.gate_rules);
+    }
+
+    #[test]
+    fn the_deployment_gate_comes_from_the_environment() {
+        let cfg = load(
+            &with(&[
+                ("ORCH_GATE", " agent-checks , agent-checks"),
+                ("ORCH_MAX_ATTEMPTS", "5"),
+                ("ORCH_MAX_ATTEMPTS_CAP", "6"),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        assert_eq!(cfg.gate.require, [CheckSource::AgentChecks].into());
+        assert_eq!(cfg.gate.max_attempts, 5);
+        assert_eq!(cfg.gate_rules.cap(), 6);
+    }
+
+    #[test]
+    fn ci_and_the_verifier_are_refused_at_startup_naming_the_slice() {
+        for (pairs, var, slice) in [
+            (vec![("ORCH_GATE", "ci")], "ORCH_GATE", "slice 5"),
+            (
+                vec![("ORCH_GATE", "agent-checks,ci")],
+                "ORCH_GATE",
+                "slice 6",
+            ),
+            (vec![("ORCH_GATE", "verifier")], "ORCH_GATE", "slice 10"),
+            (
+                vec![("ORCH_VERIFIER", "plain")],
+                "ORCH_VERIFIER",
+                "slice 10",
+            ),
+        ] {
+            let err = load(&with(&pairs), AGENTS).unwrap_err();
+            let (got, reason) = invalid_var(err);
+            assert_eq!(got, var);
+            assert!(reason.contains(slice), "{pairs:?}: {reason}");
+            assert!(
+                reason.contains("only agent-checks can be required"),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_gate_variable_names_itself() {
+        let cases = [
+            (
+                vec![("ORCH_GATE", "nonsense")],
+                "ORCH_GATE",
+                "one of: ci, agent-checks, verifier",
+            ),
+            (vec![("ORCH_GATE", ",")], "ORCH_GATE", "names no source"),
+            (
+                vec![("ORCH_MAX_ATTEMPTS", "0")],
+                "ORCH_MAX_ATTEMPTS",
+                "at least 1",
+            ),
+            (
+                vec![("ORCH_MAX_ATTEMPTS", "many")],
+                "ORCH_MAX_ATTEMPTS",
+                "not a number",
+            ),
+            (
+                vec![("ORCH_MAX_ATTEMPTS", "11")],
+                "ORCH_MAX_ATTEMPTS",
+                "above ORCH_MAX_ATTEMPTS_CAP (10)",
+            ),
+            (
+                vec![("ORCH_MAX_ATTEMPTS_CAP", "0")],
+                "ORCH_MAX_ATTEMPTS_CAP",
+                "at least 1",
+            ),
+            (
+                vec![("ORCH_MAX_ATTEMPTS_CAP", "2"), ("ORCH_MAX_ATTEMPTS", "3")],
+                "ORCH_MAX_ATTEMPTS",
+                "above ORCH_MAX_ATTEMPTS_CAP (2)",
+            ),
+            (
+                vec![("ORCH_MAX_ATTEMPTS_CAP", "101")],
+                "ORCH_MAX_ATTEMPTS_CAP",
+                "above the ceiling of 100",
+            ),
+        ];
+        for (pairs, var, says) in cases {
+            let err = load(&with(&pairs), AGENTS).unwrap_err();
+            let (got, reason) = invalid_var(err);
+            assert_eq!(got, var, "{pairs:?}");
+            assert!(reason.contains(says), "{pairs:?}: {reason}");
+        }
+    }
+
+    #[test]
+    fn a_target_gate_is_read_from_agents_file_and_checked_on_top_of_the_deployment() {
+        let cfg = load(
+            &with(&[("ORCH_GATE", "agent-checks")]),
+            &agents_with_gate("{require: [agent-checks], maxAttempts: 2}"),
+        )
+        .unwrap();
+        let layer = &cfg.target_gates[&AgentId::new("coder")];
+        assert_eq!(layer.max_attempts, Some(2));
+        assert!(!cfg.target_gates.contains_key(&AgentId::new("plain")));
+        assert_eq!(cfg.app_config().target_gates, cfg.target_gates);
+
+        // Without a deployment gate the entry alone gates its agent.
+        let cfg = load(&base(), &agents_with_gate("{require: [agent-checks]}")).unwrap();
+        assert!(cfg.gate.require.is_empty());
+        assert_eq!(cfg.target_gates.len(), 1);
+    }
+
+    #[test]
+    fn a_target_gate_that_this_build_cannot_honour_is_refused_naming_the_agent_and_the_slice() {
+        for (gate, slice) in [
+            ("{require: [ci]}", "slice 5"),
+            ("{require: [agent-checks, ci]}", "slice 6"),
+            ("{require: [verifier], verifier: plain}", "slice 10"),
+            ("{verifier: plain}", "slice 10"),
+            ("{ci: {required: [build], timeoutSecs: 60}}", "slice 5"),
+        ] {
+            let err = load(&base(), &agents_with_gate(gate)).unwrap_err();
+            let ConfigError::Gate { context, reason } = &err else {
+                panic!("{gate}: expected a gate error, got {err}");
+            };
+            assert_eq!(*context, "AGENTS_FILE");
+            assert!(reason.contains("coder"), "{gate}: {reason}");
+            assert!(reason.contains(slice), "{gate}: {reason}");
+            assert!(err.to_string().starts_with("AGENTS_FILE: "), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_target_gate_is_parsed_strictly() {
+        for gate in [
+            "{surprise: 1}",
+            "{require: agent-checks}",
+            "{maxAttempts: many}",
+            "{ci: {surprise: 1}}",
+            "just-a-string",
+        ] {
+            let err = load(&base(), &agents_with_gate(gate)).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::AgentsFileParse { .. }),
+                "{gate}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_may_not_weaken_the_deployment_or_exceed_the_cap() {
+        let err = load(
+            &with(&[("ORCH_GATE", "agent-checks")]),
+            &agents_with_gate("{require: []}"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::Gate { reason, .. } if reason.contains("may add sources")),
+            "{err}"
+        );
+        let err = load(&base(), &agents_with_gate("{maxAttempts: 11}")).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::Gate { reason, .. } if reason.contains("1..=10")),
+            "{err}"
+        );
+        // The cap is the deployment's to raise.
+        let cfg = load(
+            &with(&[("ORCH_MAX_ATTEMPTS_CAP", "20")]),
+            &agents_with_gate("{maxAttempts: 11}"),
+        )
+        .unwrap();
+        assert_eq!(cfg.gate_rules.cap(), 20);
+    }
+
+    #[test]
+    fn the_debug_output_shows_the_gate() {
+        let cfg = load(&with(&[("ORCH_GATE", "agent-checks")]), AGENTS).unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(shown.contains("AgentChecks"), "{shown}");
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+
+    #[test]
+    fn a_cap_below_the_default_lowers_the_default_attempts_with_it() {
+        let cfg = load(&with(&[("ORCH_MAX_ATTEMPTS_CAP", "2")]), AGENTS).unwrap();
+        assert_eq!((cfg.gate.max_attempts, cfg.gate_rules.cap()), (2, 2));
+        let cfg = load(&with(&[("ORCH_MAX_ATTEMPTS_CAP", "1")]), AGENTS).unwrap();
+        assert_eq!(cfg.gate.max_attempts, 1);
+        // A value that is set is taken as written, and the ceiling bounds the cap.
+        let cfg = load(
+            &with(&[
+                ("ORCH_MAX_ATTEMPTS_CAP", "100"),
+                ("ORCH_MAX_ATTEMPTS", "100"),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        assert_eq!(cfg.gate.max_attempts, 100);
+    }
+
+    #[test]
+    fn both_spellings_of_a_source_are_accepted_in_every_layer() {
+        // The API says `agent_checks` (Thread.job.gate); the configuration says `agent-checks`.
+        for spelling in ["agent-checks", "agent_checks"] {
+            let cfg = load(
+                &with(&[("ORCH_GATE", spelling)]),
+                &agents_with_gate(&format!("{{require: [{spelling}]}}")),
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.gate.require,
+                [CheckSource::AgentChecks].into(),
+                "{spelling}"
+            );
+        }
+    }
+
+    /// `ORCH_GATE` itself, through `Config` and `AppConfig` to the job of a thread the `App`
+    /// creates: the variable is what the job runs under, and a target's entry and a request change
+    /// it only the way the rules say.
+    #[tokio::test]
+    async fn the_gate_variables_reach_the_job_of_a_created_thread() {
+        use orch_app::{App, Creation, Inbound, NewThread};
+        use orch_core::{AgentTarget, ThreadId};
+        use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
+        use orch_ports::{PortSet, SystemClock};
+
+        let cfg = load(
+            &with(&[("ORCH_GATE", "agent-checks"), ("ORCH_MAX_ATTEMPTS", "2")]),
+            &agents_with_gate("{maxAttempts: 4}"),
+        )
+        .unwrap();
+        let app = App::new(
+            PortSet {
+                store: MemoryStore::new(),
+                wakeup: MemoryWakeup::new(),
+                agents: ScriptedAgent::new(),
+                clock: SystemClock,
+                ids: SeqIds::default(),
+            },
+            AgentDirectory::new(cfg.agents.clone()),
+            cfg.app_config(),
+        )
+        .unwrap();
+        let create = |agent: &'static str, gate: Option<GateLayer>| {
+            let app = &app;
+            async move {
+                let inbound = Inbound {
+                    gate,
+                    ..Inbound::default()
+                };
+                let new = NewThread {
+                    title: None,
+                    target: AgentTarget {
+                        agent_id: AgentId::new(agent),
+                        release: None,
+                    },
+                    text: "go".to_owned(),
+                };
+                match app
+                    .create_thread_as(
+                        &UserId::new("alice@example.com"),
+                        ThreadId(uuid::Uuid::now_v7()),
+                        new,
+                        inbound,
+                    )
+                    .await
+                {
+                    Ok(Creation::Created { thread, .. }) => thread.job.gate,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        // `plain` has no entry: the variables. `coder` has one: its attempts, the variable's sources.
+        let plain = create("plain", None).await;
+        assert_eq!(plain.require, [CheckSource::AgentChecks].into());
+        assert_eq!(plain.max_attempts, 2);
+        let coder = create("coder", None).await;
+        assert_eq!(coder.require, [CheckSource::AgentChecks].into());
+        assert_eq!(coder.max_attempts, 4);
+        // A run may lower them again.
+        let asked = GateLayer::from_json(&serde_json::json!({"maxAttempts": 1}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(create("coder", Some(asked)).await.max_attempts, 1);
     }
 }

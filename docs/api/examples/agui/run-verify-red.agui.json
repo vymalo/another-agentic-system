@@ -1,0 +1,672 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000001\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000001"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      },
+      "messageId": "check-1-1-agent_checks",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "tests::login fails: expected 200, got 500"
+            ],
+            "source": "agent_checks"
+          }
+        ],
+        "maxAttempts": 3
+      },
+      "messageId": "rework-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-7",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-8",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000002\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-7",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000002"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      },
+      "messageId": "check-2-2-agent_checks",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 12
+  },
+  {
+    "event": {
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 3,
+        "findings": [
+          {
+            "findings": [
+              "tests::login fails: expected 200, got 500"
+            ],
+            "source": "agent_checks"
+          }
+        ],
+        "maxAttempts": 3
+      },
+      "messageId": "rework-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-13",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 13
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-14",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-13",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 14
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000003\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-15",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-13",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 15
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "checks",
+        "text": "{\"commit\":\"0000000000000000000000000000000000000003\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
+      },
+      "messageId": "evt-16",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-13",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 16
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-17",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-13",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-13",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000003"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 17
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 3,
+        "commit": "0000000000000000000000000000000000000003",
+        "findings": [
+          "tests::login fails: expected 200, got 500"
+        ],
+        "source": "agent_checks",
+        "status": "failed",
+        "summary": "1 test failed"
+      },
+      "messageId": "check-3-3-agent_checks",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 18
+  },
+  {
+    "event": {
+      "activityType": "vymalo.error",
+      "content": {
+        "message": "the work did not pass verification after 3 attempts; the agent's own checks: tests::login fails: expected 200, got 500",
+        "retryable": false
+      },
+      "messageId": "evt-19",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 19
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "agent_checks"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000003"
+        },
+        "thread": {
+          "state": "failed",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-red fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "code": "checks_failed",
+      "message": "the work did not pass verification after 3 attempts; the agent's own checks: tests::login fails: expected 200, got 500",
+      "metadata": {
+        "vymalo.problem": {
+          "detail": "the work did not pass verification after 3 attempts; the agent's own checks: tests::login fails: expected 200, got 500",
+          "title": "Checks failed",
+          "type": "about:blank"
+        }
+      },
+      "type": "RUN_ERROR"
+    },
+    "id": 20
+  }
+]

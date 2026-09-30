@@ -14,7 +14,9 @@ use orch_agui_projection::{
 use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{keep_alive, stream_headers};
 use orch_api::{ApiError, Problem};
-use orch_app::{App, AppError, ApplyOutcome, Creation, Inbound, NewThread};
+use orch_app::{
+    App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
+};
 use orch_core::{AgentId, AgentTarget, Event, Input, ThreadId, ThreadRecord, UserId, report};
 use orch_ports::Ports;
 
@@ -51,13 +53,16 @@ pub(crate) async fn run<P: Ports>(
     }
     let input = parsed.input;
     check_ids(&input)?;
+    let gate = gate_request(&input)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     let agent = AgentId::new(agent_id);
     if state.app.directory().get(&agent).is_none() {
         return Err(Problem::not_found("no such agent").into());
     }
     for _ in 0..MAX_ATTEMPTS {
-        if let Some(feed) = attempt(&state.app, &user, &agent, thread, &input).await? {
+        if let Some(feed) =
+            attempt(&state.app, &user, &agent, thread, &input, gate.as_ref()).await?
+        {
             let stream = frames(feed);
             let sse = Sse::new(stream).keep_alive(keep_alive(state.keepalive));
             return Ok((stream_headers(), sse).into_response());
@@ -65,6 +70,23 @@ pub(crate) async fn run<P: Ports>(
     }
     // Another request for this thread kept winning the race.
     Err(AppError::Contended.into())
+}
+
+/// The gate the run asks for, `forwardedProps["vymalo.gate"]` (ADR 0018): `{require?,
+/// maxAttempts?}`. It is read whether or not the run creates the thread, so a malformed one is
+/// a 400 every time. It applies when the run creates the thread, whose gate is fixed then; a run
+/// that continues a thread and asks for a different gate is a 409 (see `attempt`). Whether the
+/// request is allowed (it may add sources and change the attempts within the cap, never remove
+/// a source) is decided by [`App::create_thread_as`].
+fn gate_request(input: &RunAgentInput) -> Result<Option<GateLayer>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_GATE_KEY))
+    else {
+        return Ok(None);
+    };
+    GateLayer::from_json(value).map_err(|e| Problem::bad_request(e.to_string()))
 }
 
 /// The ids we write into the log are bounded.
@@ -85,6 +107,7 @@ pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
         thread_id: thread.id,
         title: thread.title.clone(),
         target: thread.target.clone(),
+        gate: thread.job.gate.clone(),
     }
 }
 
@@ -143,6 +166,7 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
+    gate: Option<&GateLayer>,
 ) -> Result<Option<Feed>, ApiError> {
     // The thread as the log holds it now, if there is one.
     let known = match app.find_thread(user, thread).await? {
@@ -161,6 +185,20 @@ async fn attempt<P: Ports>(
         None => ThreadView::new_thread(user.clone()),
     };
     view.ensure_agent(agent).map_err(|e| input_error(&e))?;
+    // A thread's gate is fixed when it is created (ADR 0016). A run that continues the thread
+    // (a follow-up, an answer, the loser of a race to create it) and asks for a different one
+    // is refused, not silently served under the gate the thread has.
+    if let (Some((record, _, _)), Some(request)) = (&known, gate)
+        && app.gate_request_changes(&record.job.gate, request)?
+    {
+        return Err(Problem::new(
+            StatusCode::CONFLICT,
+            "this run asks for a verification gate different from the one the thread has; a \
+             thread's gate is fixed when it is created: send the run without `vymalo.gate`, or \
+             with the gate the thread has (see `job` in its state), or start a new thread",
+        )
+        .into());
+    }
     let Translation { inputs, warnings } =
         translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
     for warning in &warnings {
@@ -221,6 +259,7 @@ async fn attempt<P: Ports>(
                 message_id: message_id.clone(),
                 run_id: run_id.clone(),
                 key: key_of(thread, &inputs[0]),
+                gate: gate.cloned(),
             };
             match app.create_thread_as(user, thread, new, inbound).await? {
                 Creation::Created {

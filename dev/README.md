@@ -17,7 +17,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is not set, so it is the default `agui`: the AG-UI routes the web and the scripts here run on, beside the resource API. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is not set, so it is the default `agui`: the AG-UI routes the web and the scripts here run on, beside the resource API. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`) and the AG-UI routes (`/agui/*`, streams unbuffered). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -259,6 +259,8 @@ table wins.
 
 | Keyword in the text | `SendStreamingMessage` answers with | Thread ends |
 |---|---|---|
+| `red-once` | `submitted`, `working`, artifacts `branch` and `checks` (failing, commit `1111111…`), `completed`; **with "this is attempt 2" or later in the text** (the gate's rework prompt, which quotes the findings, so it still says `red-once`) the same with passing checks on commit `2222222…`. See [Verification](#verification-the-gate) | `done` under a gate, at attempt 2 |
+| `red-always` | as the failing `red-once` (commit `3333333…`), on every attempt | `failed` under a gate, after 3 attempts |
 | `error` | JSON-RPC error `-32602` (HTTP 200): a permanent rejection, no retry | `failed`, `error` event |
 | `reject` | task `submitted`, then `rejected` with a message | `failed` |
 | `fail` | `submitted`, `working`, `failed` with a message | `failed` |
@@ -304,6 +306,60 @@ stateDiagram-v2
   Unauthorized --> [*]
 ```
 
+### Verification (the gate)
+
+`mock-coder-gated` in [`agents.yaml`](agents.yaml) is the same mock agent under
+`gate: {require: [agent-checks]}` ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): an
+agent that says `completed` is not done until the checks it reported pass. The mock reports them the way the
+gate reads them: an artifact `branch` (`{repository, branch, commit}`) and an artifact `checks`
+(`{passed, commit, summary, findings}`), both JSON in a data part, before it completes. The keywords choose what
+the checks say:
+
+- `red-once fix the login`: attempt 1 reports failing checks with one finding; the orchestrator sends the agent
+  back (a `rework` event, then a **new A2A task in the same context** whose text starts "Your work did not pass
+  verification (attempt 1 of 3); this is attempt 2" and quotes the finding as untrusted data); attempt 2 reports
+  passing checks on another commit. The thread ends `done`, `job.attempt` 2.
+- `red-always fix the login`: every attempt fails; after the third (`maxAttempts` 3 unless configured) the thread
+  ends `failed` and the run ends with `RUN_ERROR` `code: "checks_failed"`.
+
+```mermaid
+sequenceDiagram
+  actor U as Browser or dev/verify-e2e.sh
+  participant O as orchestrator
+  participant M as mock-agent (red-once)
+  U->>O: POST /agui/agents/mock-coder-gated "red-once fix the login"
+  O->>M: SendStreamingMessage (new task, context C)
+  M-->>O: working, branch 1111111, checks failed, completed
+  O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying, vymalo.check failed, vymalo.rework, SUBAGENT_STARTED
+  O->>M: SendStreamingMessage (a new task in context C, "this is attempt 2" and the finding)
+  M-->>O: working, branch 2222222, checks passed, completed
+  O-->>U: vymalo.check passed, STATE_SNAPSHOT done, RUN_FINISHED success
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: red-once or red-always
+  Working --> Verifying: completed, checks reported
+  Verifying --> Working: checks failed, attempts left (rework, attempt + 1)
+  Verifying --> Done: checks passed (red-once, attempt 2)
+  Verifying --> Failed: checks failed on the last attempt (red-always)
+  Done --> [*]
+  Failed --> [*]
+```
+
+`dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts what a user sees: one run across
+both attempts with two subagents; a `vymalo.check` that failed and one that passed; the `vymalo.rework`; the final
+`STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate `agent_checks`, the second commit) and the thread of the resource
+API with the same `job`; `red-always` ending in `checks_failed` at attempt 3; a run that lowers the attempts with
+`forwardedProps["vymalo.gate"] = {"maxAttempts": 2}`; and the three refusals (a 400 problem, no thread created) for
+a run that removes the required source, asks for more attempts than `ORCH_MAX_ATTEMPTS_CAP` or requires `ci`, which
+this build cannot honour yet. CI runs it in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mock's side
+(the artifacts and how the rework prompt changes the answer) on its own.
+
+To gate every agent instead of one, set `ORCH_GATE=agent-checks` on the `orchestrator` service; the mocks that
+report no `checks` would then be sent back three times and fail, which is the fail-closed reading of "no checks
+reported".
+
 ### Release channels (`mock-agent-releases`)
 
 Its card declares `https://agents.vymalo.com/a2a/extensions/release-channels/v1` with the example of
@@ -344,6 +400,8 @@ dev/try-thread.sh "ask me which branch"                          # blocked, prin
 THREAD_ID=<id> dev/try-thread.sh "use main"                      # the answer: done
 dev/try-thread.sh "fail please"                                  # failed
 AGENT_ID=mock-coder-releases RELEASE=staging dev/try-thread.sh "ship it"   # events carry [coder-r51]
+AGENT_ID=mock-coder-gated dev/try-thread.sh "red-once fix the login"       # checks fail, sent back, done at attempt 2
+dev/verify-e2e.sh                                                          # asserts that, red-always and the refusals
 ```
 
 The script runs the thread with `POST /agui/agents/{agentId}` (a UUID it mints as the thread id; `THREAD_ID`
@@ -401,7 +459,9 @@ To run the image with the feature: `docker build --build-arg ORCH_FEATURES=agent
 
 `orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real dispatcher and A2A adapter (driven over the AG-UI run route of the test instance: `Chat::create_thread`, `Chat::follow_up`)
 against the mocks: the default script, `ask` and its answer, `fail`, `error` and `reject`, cancelling
-a blocked thread, and the release echo. It skips unless told where the mocks are:
+a blocked thread, the release echo, and the verification scenarios (`red-once` sent back and done at attempt 2,
+`red-always` failed after three; through `AppConfig.target_gates`, as `dev/agents.yaml` gates `mock-coder-gated`).
+It skips unless told where the mocks are:
 
 ```sh
 docker compose up -d --wait mock-agent mock-agent-releases
@@ -434,6 +494,19 @@ with the same `--global-response-templating` flag and the same directories): eve
 release selections and cancel; `wiremock_agent.rs` (6 tests); `dev/Caddyfile` with `caddy validate`
 and `caddy run` from the 2.11.4 release (client-supplied `X-Auth-Request-Email` replaced, SSE passing
 through); `docker compose config` for both profiles; the image tags exist on Docker Hub.
+
+The verification scenarios (`red-once`, `red-always`, `mock-coder-gated`, `dev/verify-e2e.sh`):
+
+*Verified 2026-09-30*: `dev/verify-e2e.sh` against the real `orchestrator` binary (debug build, `ORCH_SURFACES=agui`) on
+Postgres 16, with an agents file holding the `mock-coder-gated` entry of `dev/agents.local.yaml`, and a stand-in that reads the mappings and files
+of `dev/wiremock/agent` (the card, the priorities, the body patterns and the four template variables of the
+`red-*` streams): every check printed `ok`, exit 0. `dev/check-mocks.sh`'s verification section the same way.
+`shellcheck dev/*.sh` and `docker compose --profile '*' config -q` are clean. This proves the script's `jq` paths, the
+orchestrator's side of the gate and the mappings' matching logic as the stand-in implements it, not WireMock itself.
+
+*Unverified*: `red-once` and `red-always` running in the `wiremock/wiremock:3.13.2` image (the regular expressions of
+the body patterns and the templates are the ones the other stubs use); the first run is the `Compose` workflow
+(`check-mocks.sh`, `wiremock_agent.rs`) and the `Coder E2E` workflow (`verify-e2e.sh`).
 
 *Unverified*: `docker compose up` itself, that is the containers, the image healthchecks, the two
 image builds and the WireMock image's argument handling. The machine that wrote this had no Docker

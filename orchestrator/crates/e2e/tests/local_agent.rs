@@ -161,20 +161,23 @@ fn app<S: ThreadStore, W: Wakeup>(
     wakeup: W,
     agents: ByTransport<A2aAgentClient, LocalAgentClient>,
 ) -> Arc<App<Stack<S, W>>> {
-    Arc::new(App::new(
-        PortSet {
-            store,
-            wakeup,
-            agents,
-            clock: SystemClock,
-            ids: UuidV7Ids,
-        },
-        World::directory(),
-        AppConfig {
-            stream_poll: Duration::from_millis(100),
-            ..AppConfig::default()
-        },
-    ))
+    Arc::new(
+        App::new(
+            PortSet {
+                store,
+                wakeup,
+                agents,
+                clock: SystemClock,
+                ids: UuidV7Ids,
+            },
+            World::directory(),
+            AppConfig {
+                stream_poll: Duration::from_millis(100),
+                ..AppConfig::default()
+            },
+        )
+        .expect("a valid gate"),
+    )
 }
 
 fn spawn_dispatcher<S: ThreadStore, W: Wakeup>(
