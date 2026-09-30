@@ -448,7 +448,7 @@ fn a_run_id_is_never_reused_for_new_input() {
 }
 
 #[test]
-fn a_finished_thread_refuses_new_input() {
+fn a_finished_thread_takes_a_message_as_its_next_job_and_refuses_an_action_or_a_stop() {
     for state in [
         ThreadState::Done,
         ThreadState::Failed,
@@ -458,12 +458,25 @@ fn a_finished_thread_refuses_new_input() {
             state,
             run_open: false,
             open_interrupts: vec![],
+            surfaces: [("s1".to_owned(), orch_core::UiVersion::V0_9_1)].into(),
             ..blocked()
         };
+        // A message is the next job's first word (ADR 0020).
         let input = request(json!({"messages": [user_msg("client-8", "again")]}));
-        let e = err(&input, view);
+        assert_eq!(
+            ok(&input, view.clone()),
+            [um("again", Some("client-8"), "run-x")]
+        );
+        // An action belongs to the finished job, and there is nothing left to stop.
+        let action = request(json!({"forwardedProps": {"a2uiAction": {"userAction": {
+            "name": "go", "surfaceId": "s1", "sourceComponentId": "b", "context": {}
+        }}}}));
+        let e = err(&action, view.clone());
         assert_eq!(e, InputError::ThreadFinished { state });
         assert_eq!(e.http_status(), 409);
+        let stop = request(json!({"resume": [{"interruptId": "int-3", "status": "cancelled"}]}));
+        let e = err(&stop, view);
+        assert_eq!(e, InputError::ThreadFinished { state });
     }
 }
 

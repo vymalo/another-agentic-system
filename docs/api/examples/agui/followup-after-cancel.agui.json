@@ -1,0 +1,332 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "slow work",
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "canceled",
+        "status": "canceled"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "status": "canceled"
+      },
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "cancelled",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "cancelled"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-5",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "echo never mind, do this",
+      "messageId": "evt-5",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-5",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "activityType": "vymalo.job",
+      "content": {
+        "job": 2
+      },
+      "messageId": "job-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-7",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-7",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "name": "result",
+        "text": "echo: echo never mind, do this",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-8",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-7",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-7",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "slow work"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-5",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 10
+  }
+]

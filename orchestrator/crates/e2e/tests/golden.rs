@@ -145,13 +145,32 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             inbox.shutdown().await;
             (id, "done")
         }
+        // A thread is a conversation (ADR 0020): a message on a finished thread starts the next
+        // job. `followup`: the first job is done, the second is asked for after it.
+        "followup" => {
+            let id = chat.seed_thread("plain", "echo hi", None).await;
+            chat.wait_state(&id, "done").await;
+            let event = chat.seed_message(&id, "echo now add tests").await;
+            assert_eq!(event["kind"], "user_message");
+            (id, "done")
+        }
+        // `followup-after-cancel`: a stopped job is not closed either.
+        "followup-after-cancel" => {
+            let id = chat.seed_thread("plain", "slow work", None).await;
+            chat.wait_state(&id, "working").await;
+            assert_eq!(chat.cancel(&id).await, 202);
+            chat.wait_state(&id, "cancelled").await;
+            let event = chat.seed_message(&id, "echo never mind, do this").await;
+            assert_eq!(event["kind"], "user_message");
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 12] = [
+const SCENARIOS: [&str; 14] = [
     "echo",
     "ask",
     "cancel",
@@ -164,6 +183,8 @@ const SCENARIOS: [&str; 12] = [
     "verify-verifier-green",
     "verify-verifier-red",
     "ci",
+    "followup",
+    "followup-after-cancel",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.

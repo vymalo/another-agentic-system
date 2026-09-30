@@ -48,9 +48,9 @@ use orch_agui_proto::{
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData,
     CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody, GatePolicy,
-    JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId, ThreadState,
-    UiActionData, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact,
-    serialized_len,
+    JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId,
+    ThreadState, UiActionData, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
+    recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -58,7 +58,7 @@ use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
-    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED,
+    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED,
     CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED, actor_metadata,
     problem_metadata, response_schema, status_content,
 };
@@ -193,8 +193,10 @@ pub struct Projector {
     run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now (a deleted surface is gone).
     surfaces: BTreeMap<String, Surface>,
+    /// Which job of the thread the log is in (from 1; `job_started` moves it, ADR 0020).
+    job_number: u32,
     /// The attempt the agent is on (`job.attempt` of the snapshot); from the `check_result` and
-    /// `rework` events.
+    /// `rework` events, and back to 1 with a new job.
     attempt: u32,
     /// The commit the agent pushed in this attempt (`job.sha`); from its `branch` artifact.
     sha: Option<String>,
@@ -237,6 +239,7 @@ impl Projector {
             message_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
+            job_number: 1,
             attempt: 1,
             verification: 0,
             sha: None,
@@ -341,8 +344,7 @@ impl Projector {
             EventBody::CheckResult(d) => self.on_check_result(event, d, &mut out),
             EventBody::Rework(d) => self.on_rework(event, d, &mut out),
             EventBody::CiResult(d) => self.on_ci_result(event, d, &mut out),
-            // Projected by the next change.
-            EventBody::JobStarted(_) => {}
+            EventBody::JobStarted(d) => self.on_job_started(event, d, &mut out),
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -368,6 +370,12 @@ impl Projector {
             .message_id
             .clone()
             .unwrap_or_else(|| format!("evt-{}", ev.seq));
+        // A message on a finished thread starts the next job (ADR 0020): the run it opens is the
+        // new job's, and says so from its first snapshot. The `job_started` that follows in the
+        // log adds the `vymalo.job` activity.
+        if self.state.is_terminal() {
+            self.begin_job(self.job_number.saturating_add(1));
+        }
         // The thread leaves `blocked` when the user answers, and abandons a verification when
         // the user writes during one; an answer clears the wait.
         if self.run.is_some() {
@@ -665,6 +673,45 @@ impl Projector {
         }
     }
 
+    /// The thread's next job started (ADR 0020). Normally the `user_message` that caused it has
+    /// begun it already; a redelivered message has no such event, and the boundary alone opens
+    /// the run.
+    fn on_job_started(&mut self, ev: &Event, d: &JobStartedData, out: &mut Vec<agui::Event>) {
+        let begun = self.job_number == d.job;
+        if !begun {
+            self.begin_job(d.job);
+        }
+        let opened = self.ensure_run(ev, out);
+        let mut content = Metadata::new();
+        content.insert("job".to_owned(), Value::from(d.job));
+        out.push(self.activity(
+            format!("job-{}", d.job),
+            ACTIVITY_JOB,
+            content,
+            &ev.actor,
+            false,
+        ));
+        if !begun && !opened {
+            out.push(self.state_snapshot());
+        }
+    }
+
+    /// Forgets the finished job: the new one is queued, on attempt 1, with nothing pushed and no
+    /// surface of the old one to act on (an action on an old card is a 422). The verification
+    /// count goes on, as the core's does.
+    fn begin_job(&mut self, number: u32) {
+        self.job_number = number;
+        self.attempt = 1;
+        self.sha = None;
+        self.state = ThreadState::Queued;
+        self.checks_failed = false;
+        self.interrupt = None;
+        self.failure = None;
+        self.suspended = None;
+        self.pending_error = None;
+        self.surfaces.clear();
+    }
+
     /// The user acted on a surface. Like a user message it answers a blocked thread and opens a
     /// run when none is open (the run id is the one the surface named, else `run-<seq>`); unlike
     /// one it says nothing in the transcript but a `vymalo.action` activity.
@@ -881,7 +928,12 @@ impl Projector {
         self.sha = None;
         self.checks_failed = false;
         self.state = ThreadState::Queued;
-        let id = format!("rework-{}", d.attempt);
+        // Two jobs can each be sent back for attempt 2: from job 2 the id says which job.
+        let id = if self.job_number > 1 {
+            format!("rework-j{}-{}", self.job_number, d.attempt)
+        } else {
+            format!("rework-{}", d.attempt)
+        };
         let content = match serde_json::to_value(d) {
             Ok(Value::Object(map)) => map,
             Ok(_) | Err(_) => Metadata::new(),
@@ -1252,9 +1304,16 @@ impl Projector {
                 "target": target,
             }
         });
+        // The first job says nothing more than before; a later one says which it is.
+        if self.job_number > 1 {
+            snapshot["thread"]["jobNumber"] = Value::from(self.job_number);
+        }
         // A job with a gate says where it stands; one without says nothing more than before.
         if self.meta.gate.is_active() {
-            let job = JobView::new(&self.meta.gate, self.attempt, self.sha.clone());
+            let job = JobView {
+                number: self.job_number,
+                ..JobView::new(&self.meta.gate, self.attempt, self.sha.clone())
+            };
             snapshot["job"] = serde_json::to_value(job).unwrap_or(Value::Null);
         }
         StateSnapshotEvent::new(snapshot).into()

@@ -334,21 +334,37 @@ async fn a_second_run_while_one_is_open_is_a_409() {
 }
 
 #[tokio::test]
-async fn a_finished_thread_takes_no_input_but_can_still_be_attached_to() {
+async fn a_finished_thread_takes_the_next_message_and_can_still_be_attached_to() {
     let h = Harness::start().await;
     let thread = new_thread_id();
     let first = input(&thread, "r1", &[("m1", "echo done")]);
     h.run("plain", ALICE, &first).await.all().await;
     h.wait_state(ALICE, &thread, "done").await;
-    let r = h
-        .refused(
-            "plain",
-            Some(ALICE),
-            &input(&thread, "r2", &[("m1", "echo done"), ("m2", "more")]),
-        )
-        .await;
-    let p = r.problem(409);
-    assert!(p["detail"].as_str().unwrap().contains("new thread"), "{p}");
+    // A message starts the thread's next job (ADR 0020): it is served, as a run of its own.
+    let second = input(&thread, "r2", &[("m1", "echo done"), ("m2", "more")]);
+    let frames = h.run("plain", ALICE, &second).await.all().await;
+    assert_eq!(frames.first().map(|f| f.kind()), Some("RUN_STARTED"));
+    assert_eq!(frames.last().map(|f| f.kind()), Some("RUN_FINISHED"));
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.event["activityType"] == "vymalo.job" && f.event["content"]["job"] == 2),
+        "the job starts in the run"
+    );
+    h.wait_state(ALICE, &thread, "done").await;
+    let kinds: Vec<String> = h
+        .events(ALICE, &thread)
+        .await
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(kinds.iter().filter(|k| *k == "job_started").count(), 1);
+    // A retry of the same message is an attach, not a third job.
+    let again = h.run("plain", ALICE, &second).await.all().await;
+    assert_eq!(again.len(), frames.len());
+    let kinds_after = h.events(ALICE, &thread).await.len();
+    assert_eq!(kinds_after, kinds.len());
+    // The first run is still there to attach to.
     assert_eq!(h.run("plain", ALICE, &first).await.all().await.len(), 10);
 }
 

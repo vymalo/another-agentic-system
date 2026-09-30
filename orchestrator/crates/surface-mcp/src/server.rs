@@ -162,7 +162,7 @@ fn failure(err: &AppError) -> Result<CallToolResult, ErrorData> {
         ErrorClass::NotFound => Ok(refused("no such job")),
         ErrorClass::Invalid => Ok(refused(err.to_string())),
         ErrorClass::Rejected => Ok(refused(match err {
-            AppError::Finished => "the job is finished; start a new one with start_job".to_owned(),
+            AppError::Finished => "this card belongs to a finished request".to_owned(),
             other => other.to_string(),
         })),
         ErrorClass::Conflict | ErrorClass::Transient | ErrorClass::RateLimited => {
