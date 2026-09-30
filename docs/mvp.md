@@ -17,14 +17,46 @@ platform harness remains the way to host agents later.
 | Step | Delivers | Done when | Status (checked against the code, 2026-09-29) |
 |---|---|---|---|
 | 1. **Skeleton** | Postgres schema (jobs, inbox, outbox, events, timers), stateless orchestrator, chat surface; model calls to a configured OpenAI-compatible endpoint | A job typed in the chat appears in the event log, and a second orchestrator replica takes over when the first is killed. | **Built, except the model endpoint.** Schema: `threads`, `events`, `a2a_bindings`, `outbox` (no `inbox` or `timers` yet, no job table: a thread is the unit). Orchestrator, resource API, AG-UI surface and `web/` exist. "Second replica takes over" is tested: `orch-e2e` `restart` and `replicas`, and the binary's SIGKILL smoke test. Nothing calls a model yet. |
-| 2. **One agent, end to end** | Chat → orchestrator → one A2A coding agent → pushed branch → CI result (webhook) streamed into the chat | A job ends as a pushed branch plus a CI result card, and survives an orchestrator restart mid-job. | **Built, except the CI webhook.** Chat → orchestrator → one A2A agent works end to end, streams its status and artifacts into the chat, and survives a restart mid-task (`orch-e2e` `restart`). The pushed branch is the agent's job; the webhook input and the CI result card are not built. |
-| 3. **Verify/rework loop** | Checks gate the job; failures loop back with findings, bounded by attempts | A deliberately failing task reworks and goes green, or ends `Failed` with findings — never "done" while red. | Planned |
+| 2. **One agent, end to end** | Chat → orchestrator → one A2A coding agent → pushed branch → CI result (webhook) streamed into the chat | A job ends as a pushed branch plus a CI result card, and survives an orchestrator restart mid-job. | **Built, except the CI webhook.** Chat → orchestrator → one A2A agent works end to end, streams its status and artifacts into the chat, and survives a restart mid-task (`orch-e2e` `restart`). The pushed branch is the agent's job; the webhook input and the CI result card are not built. **Planned** (2026-09-30): CI results arrive as a signed webhook, GitHub or a generic shape ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)), through the inbox ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)); slices 5 to 9 below. |
+| 3. **Verify/rework loop** | Checks gate the job; failures loop back with findings, bounded by attempts | A deliberately failing task reworks and goes green, or ends `Failed` with findings — never "done" while red. | Planned, designed 2026-09-30 ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a gate over CI, agent-reported checks and a verifier agent, each configurable; 3 attempts by default; slices 2 to 4 and 10 below. |
 | 4. **Planner + parallel agents** | A planner agent splits the job; agents run in parallel; results merge into one PR | A two-part task produces two branches worked in parallel and one PR. | Planned |
 | 5. **Reviewers** | Any A2A agents as reviewers | A reviewer's change request sends the job back to `Working` with its findings. | Planned |
-| 6. **More inputs/outputs** | MCP server (`start_job`), GitHub/Slack webhooks, timers | A job started from Claude Code via MCP reports progress back to Claude Code. | Planned. Also needs the inbox ([orchestrator](orchestrator.md#event-flow)). |
+| 6. **More inputs/outputs** | MCP server (`start_job`), GitHub/Slack webhooks, timers | A job started from Claude Code via MCP reports progress back to Claude Code. | Planned, designed 2026-09-30 ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)): the MCP server over streamable HTTP with bearer tokens (OIDC later), slices 11, 12 and 14 below. *Amended:* the note "also needs the inbox" no longer holds for MCP, which goes straight to `App`; the inbox and timers ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)) serve the webhooks and the CI deadline, slices 5 to 9. GitHub webhooks are designed for CI results only; Slack webhooks are not designed. |
 | 7. **Platform integration** | Release picker via the release-channels A2A extension (ADR 0008) | For a platform-hosted target, the dropdown lists channels and revisions from the live agent card, and the chat shows the revision that actually ran; a plain A2A target shows no picker. | **The picker is built, ahead of order**, and tested against the WireMock and in-process agents only; against a real platform it is *unverified* (open question 10). |
 
 Diagrams of what is built: [Architecture: as built](architecture.md#as-built).
+
+## The slices of steps 2, 3 and 6
+
+**Planned, not built** (owner decisions and design of 2026-09-30: [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+[ADR 0017](decisions/0017-ci-results-by-webhook.md), [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md),
+[ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). One pull request each; size S < M < L.
+Slice 1 is the documentation these ADRs are in.
+
+| # | Slice | Size | Builds and tests | Depends on |
+|---|---|---|---|---|
+| 1 | `docs`: ADRs 0016–0019, this page, the orchestrator and architecture docs, open questions 6 and 8, [`api/webhooks.md`](api/webhooks.md) | S | Documents only | none |
+| 2 | Job ledger and the verification gate in the pure core | L | `Snapshot`/`Job`, `Verifying`, the agent-checks source, rework, attempts, the new events. Migration `0003`: `threads.job`, `state` and event-kind `CHECK`s widened to every new kind, outbox `verify` + `task_id`. Transition-table rows; property tests (never `Done` while a required source is failed or pending; attempts never exceed the maximum; terminal states absorb; replay is deterministic); store conformance for `job` | 1 |
+| 3 | Gate configuration and the AG-UI projection of verification | M | The gate variables, `AGENTS_FILE` `gate`, `forwardedProps["vymalo.gate"]`, `vymalo.check`/`vymalo.rework`, a run open while verifying, `chat-api.yaml`. Goldens `verify-green`, `verify-red`; conformance; end-to-end tests. Dev stack: mock-agent `red-once`/`red-always`, `mock-coder-gated`, `dev/verify-e2e.sh` | 2 |
+| 4 | Web: verification states, attempt counter and findings | M | Renderers, the mock replays the goldens, DOM tests | 3 |
+| 5 | Inbox, watches and timers | M–L | Migration `0004`; `ThreadStore` inbox methods; `Commit.{watches,timers,inbox}`; `InboxWorker`; `Watch`/`Schedule`/`TimerFired`. Conformance (dedupe, park and re-arm in one transaction, fencing, expiry, a timer not due); a restart mid-inbox | 2 |
+| 6 | CI results in the core and the generic signed webhook | M–L | `CiReported`, `ci_result`, the CI source, the CI deadline to `Blocked`, `SurfaceRoutes::machine`, the generic route of `orch-surface-webhook`. HMAC and skew vectors; 401 with no write; duplicate to 202; parked then matched. Dev stack: Caddy `handle /webhooks/*`, `dev/ci-webhook.sh`, `dev/ci-e2e.sh` | 5 |
+| 7 | CI result card in AG-UI | S | The `vymalo.ci` activity, golden `ci.agui.json` | 6 |
+| 8 | Web: CI result card | S | Conclusion badge, name, short SHA, link | 7 |
+| 9 | GitHub webhook adapter | M | `/webhooks/github`, `ping`, the three events, recorded fixtures. Dev stack: `mock-ci`, coder `gate: {require: [ci]}`, the coder end-to-end script asserts the CI card and `done` | 6 |
+| 10 | Verifier agent in the gate | L | Outbox `verify`, the dispatcher's verifier path, `VerifierReported`, the verifier subagent in the projection, the verifier deadline. Dev stack: `mock-verifier`, `dev/verifier-e2e.sh` | 3, 5 |
+| 11 | MCP server with `start_job` and static bearer tokens | L | `orch-surface-mcp`; `list_agents`, `start_job`, `get_job`, `answer`, `cancel_job`; `MCP_TOKENS_FILE`, `MCP_ALLOWED_HOSTS`; `origin`. 401 paths, idempotent `start_job`, an in-process rmcp client. First check: rmcp's stateless mode against Claude Code (*unverified*) | 2 (3 for the gate) |
+| 12 | `wait_for_job` with MCP progress notifications | M | Progress stream, heartbeat, timeout, shutdown; increasing progress then the result; a replica killed mid-wait and the call repeated | 11 |
+| 13 | Complete local stack for the MVP | M | The `app` profile stays offline and deterministic, one script per scenario (chat to PR; `red-once` reworks to green; `red-always` fails; verifier findings rework; MCP `start_job` with progress); an optional `compose.live.yaml` and `.env.example`; opt-in smee relay; the coder re-pinned | 4, 8, 9, 10, 12 |
+| 14 | OIDC bearer tokens for MCP (after the MVP) | M | JWKS validation against WireMock | 11 |
+
+After slice 2, {3 → 4}, {5 → 6 → 7, 8, 9} and {11 → 12} can run in parallel; 10 can start after 3 and
+5. Migration numbers are fixed now (`0003` in slice 2, which widens every `CHECK` once; `0004` in
+slice 5). Slice 2 blocks everything and changes the signature of `transition`, so its tests are the
+largest change. The shared files are `config.rs`, `compose.yaml`, the Caddyfile, `dev/README.md` and
+`transition.rs`: rebase before merging. **Cross-repository:** adam-coder must emit a `checks {passed,
+commit, summary, findings}` artifact from `run_checks` (an adam-rs pull request); until it does, the
+coder's dev gate is CI only.
 
 ## Beyond the numbered steps: AG-UI
 

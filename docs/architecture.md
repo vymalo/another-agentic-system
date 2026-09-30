@@ -43,7 +43,7 @@ state is the job ledger and event log (the chat) in Postgres.
 | Component | Role | Notes |
 |---|---|---|
 | **Orchestrator** (Rust, this repo) | Durable thread state machine; decides what happens next | Stateless replicas over Postgres, run as a **control plane** (API, surfaces) and **workers** (dispatcher, in-process agents), or both in one process. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md), [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)) |
-| **Postgres (CNPG)** | Threads, the event log (= the chat), the A2A binding, the outbox | Also the work queue (`SKIP LOCKED`) and the wake-up bus (`LISTEN/NOTIFY`). The inbox and timers are planned. |
+| **Postgres (CNPG)** | Threads, the event log (= the chat), the A2A binding, the outbox | Also the work queue (`SKIP LOCKED`) and the wake-up bus (`LISTEN/NOTIFY`). The inbox and timers are planned ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). |
 | **Web chat surface** (Next.js + assistant-ui, this repo) | Chat surface and thread list | Renders the AG-UI 1.0 projection of the event log the orchestrator serves: it follows a thread's connect stream, starts runs with `POST /agui/agents/{agentId}` and answers interrupts by `resume` ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md), binding in [`api/agui.md`](api/agui.md), `@assistant-ui/react-ag-ui` per [ADR 0006](decisions/0006-assistant-ui-external-store.md)). Generative UI is A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)), rendered behind the web's own validator. The agent and thread lists and Cancel use the resource API. It has no server-side code: the browser talks to the orchestrator through the edge. |
 | **Agents** (external) | Planner, coding workers, reviewers, specialists | Anything reachable by an A2A agent-card URL. |
 | **Tools** (external) | GitHub, docs, search, … | MCP servers. Planned. |
@@ -408,7 +408,8 @@ startup error (exit 78).
 
 ## How a job flows
 
-**Target design** (MVP steps 3–7; steps 1–2 exist, see [As built](#as-built)). The built system
+**Target design** (MVP steps 3–7; steps 1–2 exist, see [As built](#as-built); the verify and rework part
+of it for one agent is [designed in more detail below](#verifying-the-rework-loop-and-attempts)). The built system
 delegates a whole thread to one agent; this is the multi-agent flow it grows into.
 
 ```mermaid
@@ -476,6 +477,65 @@ The two backward edges (checks fail → rework, change requests → rework) carr
 concrete findings and are bounded by budgets (attempts, wall clock, tokens).
 Exhausting a budget ends in `Failed` with the findings in the chat — never a
 silent "done".
+
+### Verifying, the rework loop and attempts
+
+**Planned** (designed 2026-09-30, MVP steps 2 and 3; not built).
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) makes the `Verifying` edges above
+concrete for the single-agent thread that exists today, and
+[ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md) holds the job ledger they need
+(`threads.job`). It differs from the target diagram in three ways: there is no `Reworking` state (a
+rework is `Queued` or `Working` with `attempt > 1`); a timeout in `Verifying` goes to `Blocked`, not
+`Failed`, and spends no attempt; and `Reviewing` is not part of it (step 5).
+
+```mermaid
+sequenceDiagram
+  participant A as Agent (A2A)
+  participant O as Orchestrator (pure transition)
+  participant X as Sources: CI webhook · agent checks · verifier agent
+  participant Y as You (chat)
+  A-->>O: branch and checks artifacts, then completed
+  alt the gate requires nothing (the default)
+    O-->>Y: Done, as today
+  else the gate requires sources
+    O->>X: Watch CI on the pushed SHA, Schedule the CI deadline, ask the verifier
+    O-->>Y: Verifying, attempt 1 of 3
+    X-->>O: results
+    alt every required source passed
+      O-->>Y: Done
+    else a source failed and attempts remain
+      O->>A: Delegate with the findings (quoted as untrusted), attempt + 1
+      O-->>Y: rework, then Verifying again
+    else a source failed on the last attempt
+      O-->>Y: Failed, with the findings
+    end
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued
+  Queued --> Working
+  Working --> Done: completed, empty gate
+  Working --> Verifying: completed, gate requires sources
+  Verifying --> Done: all required sources passed
+  Verifying --> Queued: failed, attempt < max: rework, attempt + 1
+  Verifying --> Failed: failed on the last attempt
+  Verifying --> Blocked: CI or verifier timeout, verifier failure
+  Verifying --> Queued: a user message (no attempt counted)
+  Verifying --> Cancelled: cancel
+  Blocked --> Queued: a user message
+  Done --> [*]
+  Failed --> [*]
+  Cancelled --> [*]
+```
+
+Three sources can be required, in any combination: CI on the pushed commit (a signed webhook,
+[ADR 0017](decisions/0017-ci-results-by-webhook.md)), the agent's own reported checks, and a verifier
+agent. The default gate is empty, which is today's behaviour. The attempts are 3 by default, raised no
+higher than 10; a target or a thread may add sources, never remove one its target requires. The chat
+shows a `verifying` badge, an attempt counter such as "2/3" and the findings per source
+([`api/agui.md`](api/agui.md) will carry the `vymalo.check` and `vymalo.rework` activities when built).
 
 ## Where it runs
 

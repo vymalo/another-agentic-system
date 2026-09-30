@@ -52,6 +52,13 @@
   What remains of this decision is step 3 of "The legacy interaction endpoints are deprecated by the
   flag", the removal of the crate, the feature and the operations, which waits for the owner. The
   decision stands.
+  Status note (2026-09-30): [ADR 0018](0018-verification-gate-and-rework-loop.md) (planned, not built)
+  changes one rule of the projection: a run stays open while a thread is `queued`, `working` or
+  `verifying`, and `RUN_FINISHED` comes at `done`, not at the agent's `completed`; a failed gate ends
+  in `RUN_ERROR` with `code: "checks_failed"`. It adds the activities `vymalo.check` and
+  `vymalo.rework`, and `user_message` gains `origin` ([ADR 0019](0019-mcp-server-over-streamable-http.md)).
+  The "inbox key" of this ADR stays the event's idempotency key: AG-UI does not use the inbox of
+  [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md). The decision stands.
 
 ## Context
 
