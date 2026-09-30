@@ -12,6 +12,9 @@
 # (the first entry of dev/agents.yaml) with one POST /agui/agents/{agentId} whose message names the
 # seeded repository, waits for a terminal state, and checks the whole chain. The agent list and the
 # thread state come from the resource API. (The legacy chat API routes were removed on 2026-09-30.)
+# Before the task it puts an empty commit naming the thread on main of the sandbox, so that the pushed
+# commit is this run's own even when an earlier run made the same change in the same second.
+#
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * the default agent of GET /api/agents is `coder`;
 #   * the run stream ends with RUN_FINISHED (success), and the thread ends `done` within TIMEOUT;
@@ -124,6 +127,21 @@ done
 # The consumer mints the thread id (a UUID); the first run creates the thread, owned by the edge
 # identity and targeting the agent of the URL. The response streams until the run ends.
 thread=$(uuid)
+
+# --- a base of this run's own -------------------------------------------------------------------------
+# The change is always the same (hello.txt on main), and git dates have one-second resolution: two runs in
+# the same second (dev/e2e-all.sh runs this script twice in a row) would push the very same commit, which
+# is watched by the first job that pushed it, so the second job would never hear its CI report. An empty
+# commit naming the thread on main makes this run's commit its own; the tree, and so check.sh, is unchanged.
+if git clone -q --depth 1 --branch main "$gitserver/$repo_path.git" "$tmp/base" 2>"$tmp/base.err" &&
+  git -C "$tmp/base" -c user.name=coder-e2e -c user.email=coder-e2e@example.invalid -c commit.gpgsign=false \
+    commit -q --allow-empty -m "coder-e2e base for thread $thread" 2>>"$tmp/base.err" &&
+  git -C "$tmp/base" push -q origin HEAD:main 2>>"$tmp/base.err"; then
+  ok "main of $repo_path is at a base of this run's own ($(git -C "$tmp/base" rev-parse --short=10 HEAD))"
+else
+  bad "cannot give this run a base of its own on main: $(head -c 300 "$tmp/base.err")"
+  finish
+fi
 input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$text" '{
   threadId: $thread, runId: $run, state: {}, tools: [], context: [],
   messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
