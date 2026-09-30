@@ -22,15 +22,28 @@ orch-ports = { path = "crates/ports" }
 orch-store-postgres = { path = "crates/store-postgres" }
 orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
+orch-agent-adam = { path = "crates/agent-adam" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-surface-agui = { path = "crates/surface-agui" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
-# Process plumbing shared with every adam-rs host: the `Role` enum and the role-aware `Host`
-# supervisor (ADR 0015). Pinned to a full commit sha, never a branch or a tag; a PR bumps it.
-adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "0e08fe07eaea7022a08f0fc5c883a373e17e6ca3", default-features = false, features = ["supervisor"] }
+# The adam-rs crates (ADR 0015), all pinned to one full commit sha, never a branch or a tag; a PR
+# bumps them together. `adam-host` is the process plumbing every adam-rs host shares (the `Role`
+# enum and the role-aware `Host` supervisor). The others are for `orch-agent-adam` only, behind the
+# binary's off-by-default feature `agent-local`: the durable runtime, the A2A task backend over it,
+# and the Postgres store and notifier.
+#
+# The two Postgres crates turn off their default `tls-rustls` feature: it selects sqlx's
+# `tls-rustls-ring`, and this workspace uses `tls-rustls-aws-lc-rs` (one TLS backend per process).
+adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb", default-features = false, features = ["supervisor"] }
+adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb" }
+adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb" }
+adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb" }
+adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb" }
+adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb", default-features = false }
+adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "882e23901ea9964e4a6ed96ee1aed2f4dcea98eb", default-features = false }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

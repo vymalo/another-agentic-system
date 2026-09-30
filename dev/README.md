@@ -373,6 +373,30 @@ For the UI on top of it, `MOCK_API_ORIGIN=http://127.0.0.1:8090 pnpm dev` in `we
 the dev rewrite of `/api/*`, whatever serves it). `pnpm dev:mock` is the web app's own contract mock
 and needs none of this.
 
+### An agent inside the orchestrator (`agent-local`)
+
+The orchestrator can host an agent in its own process ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)),
+behind the Cargo feature `agent-local`, which is off in the default build and in the compose image. [`agents.local-echo.yaml`](agents.local-echo.yaml)
+lists one, `echo`, which repeats your message back, so the loop (AG-UI, dispatcher, a durable run in Postgres) runs with no mock and
+no agent card:
+
+```sh
+docker compose up -d --wait postgres
+cd orchestrator
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch \
+AGENTS_FILE=../dev/agents.local-echo.yaml \
+AUTH_DEV_USER=dev@example.com \
+LOG_FORMAT=text \
+LISTEN_ADDR=127.0.0.1:8090 \
+  cargo run -p orchestrator --features agent-local
+BASE_URL=http://127.0.0.1:8090 AGENT_ID=echo ../dev/try-thread.sh "hello"
+psql postgres://postgres:postgres@localhost:5432/orch -c 'select id, agent, status from orch_agent_runs'
+```
+
+Without `--features agent-local` the same file stops the orchestrator at startup with exit code 78 and a message naming the feature.
+To run the image with the feature: `docker build --build-arg ORCH_FEATURES=agent-local -t orchestrator orchestrator`
+(*unverified*: no Docker daemon was available when this was written).
+
 ### The Rust test against the mocks
 
 `orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real dispatcher and A2A adapter (driven over the AG-UI run route of the test instance: `Chat::create_thread`, `Chat::follow_up`)

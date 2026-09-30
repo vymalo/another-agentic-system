@@ -62,20 +62,43 @@ An empty value counts as unset.
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string. Never logged. |
-| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` (`transport` is `a2a`, the default, which needs `cardUrl`; `local` is an in-process agent named by `agent` and is refused until a build has local agents), see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. The first entry is the default agent the chat UI preselects ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)). |
+| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` (`transport` is `a2a`, the default, which needs `cardUrl`; `local` is an in-process agent named by `agent`, served only by a build with the Cargo feature `agent-local` and refused at startup otherwise), see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. The first entry is the default agent the chat UI preselects ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)). |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | Control plane: the API. Worker: the probes only. |
 | `ORCH_ROLE` | `all` | What this process runs: `all`, `control-plane` (server, API and surfaces; no dispatcher) or `worker` (dispatcher, and a router with only `/healthz` and `/readyz`). Flag `--role`; the enum is `adam_host::Role` ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)). The role table is in [`bin/orchestrator`](bin/orchestrator/README.md#roles). An unknown value is a startup error. |
 | `ORCH_SURFACES` | `agui` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `agui`, the AG-UI routes `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect` and `GET /agui/agents/{agentId}/capabilities` ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md), [`docs/api/agui.md`](../docs/api/agui.md)). The legacy `chat-api` surface (`createThread`, `postMessage`, `listEvents`, `streamEvents`) was **removed on 2026-09-30**: naming it fails closed (exit 78, an error that says it was removed and points to AG-UI, see [`bin/orchestrator`](bin/orchestrator/README.md#surfaces)). An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-agui`) is not in the build is a startup error. The resource API and health are always mounted. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |
 | `DISPATCHER_CONCURRENCY` | `32` | Delegations processed at the same time by this replica. |
-| `OUTBOX_LEASE_SECS` | `30` | How long after a crash another replica waits before taking a delegation over (a graceful shutdown hands over at once). |
+| `OUTBOX_LEASE_SECS` | `30` | How long after a crash another replica waits before taking a delegation over (a graceful shutdown hands over at once). Also the lease of a local agent's run. |
+| `AGENT_LOCAL_CONCURRENCY` | `4` | Only in a build with the Cargo feature `agent-local`: runs of local agents stepped at once by this replica (at least 1). The local agents open a pool of their own, this plus 4 connections, on top of `DATABASE_MAX_CONNECTIONS`. |
 | `SHUTDOWN_GRACE_SECS` | `15` | Bound of each graceful-shutdown step. |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | Names this replica in leases. |
 | `RUST_LOG` / `LOG_FORMAT` | `info` / `json` | `LOG_FORMAT=text` for humans. |
 
 The identity header is only trustworthy behind a proxy (oauth2-proxy) that
 strips client-supplied copies; run the orchestrator only behind one.
+
+### Local agents (Cargo feature `agent-local`)
+
+An `AGENTS_FILE` entry with `transport: local` and `agent: echo` is an agent that runs inside the orchestrator
+process, on the durable adam-rs runtime ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md),
+[`docs/orchestrator.md`](../docs/orchestrator.md#local-agents)). The feature is **off by default**, so the default
+binary and image link no adam-rs runtime and refuse such an entry at startup (exit 78, naming the feature). Build one
+that hosts them with `cargo run -p orchestrator --features agent-local`, or the image with
+`docker build --build-arg ORCH_FEATURES=agent-local`; [`dev/agents.local-echo.yaml`](../dev/agents.local-echo.yaml) is a
+ready file.
+
+* **Where the state is.** In the orchestrator's own Postgres, in the tables `orch_agent_runs`, `orch_agent_journal` and
+  `orch_agent_meta`, notified on the channels `orch_agent_events` and `orch_agent_signals`. They are created at boot in
+  every role, next to the orchestrator's own tables, and nothing else uses the prefix `orch_agent_`. A worker that dies
+  mid-step loses nothing: another one resumes the run when its lease (`OUTBOX_LEASE_SECS`) has expired. Nothing deletes
+  finished runs yet ([open question 28](../docs/open-questions.md)).
+* **Roles.** `worker` and `all` step runs; `control-plane` only starts and reads them.
+* **Deployment notes.** Each replica of a process that has a local agent configured holds
+  `AGENT_LOCAL_CONCURRENCY + 4` more database connections than `DATABASE_MAX_CONNECTIONS` (a pool of its own, one
+  connection of which is the notifier's listener, which needs a session: a direct connection or a session-mode pooler,
+  not a transaction-mode one). A step that runs tools can starve the process that hosts it (lesson 1), so give such a
+  worker its own pod and limits.
 
 ### Container image
 
@@ -85,8 +108,9 @@ docker run --rm -p 8080:8080 -e DATABASE_URL=... -e AGENTS_FILE=/agents.yaml \
   -v "$PWD/orchestrator/agents.yaml:/agents.yaml:ro" orchestrator
 ```
 
-The build fetches one git dependency, `adam-host`, from `github.com/vymalo/another-adam-rs` (a public
-repository, pinned by commit sha), so the builder needs network access to github.com as well as crates.io.
+The build fetches git dependencies from `github.com/vymalo/another-adam-rs` (a public repository, pinned by one
+commit sha): `adam-host` always, and with the build argument `ORCH_FEATURES=agent-local` the runtime, task backend and
+Postgres crates too, so the builder needs network access to github.com as well as crates.io.
 Multi-stage (cargo-chef for the dependency layer), running as uid 65532 on
 `gcr.io/distroless/cc-debian12:nonroot` with the same Debian 12 glibc as the
 builder. CI builds it on every pull request, runs it against a Postgres service
@@ -146,13 +170,14 @@ change of the composition root, never a runtime plugin.
 | Directory | Package | Role |
 |---|---|---|
 | [`crates/core`](crates/core/README.md) | `orch-core` | Pure: contract types (`ThreadState`, `Event`, `EventKind`, `Actor`, …) and `transition`. No async, no I/O. |
-| [`crates/ports`](crates/ports/README.md) | `orch-ports` | Traits `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`; feature `testkit` adds in-memory implementations, a scripted fake agent and the conformance testkit. |
+| [`crates/ports`](crates/ports/README.md) | `orch-ports` | Traits `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`, and `ByTransport` (routes an endpoint to the A2A or the local client); feature `testkit` adds in-memory implementations, a scripted fake agent and the conformance testkit. |
 | [`crates/agui-proto`](crates/agui-proto/README.md) | `orch-agui-proto` | AG-UI 1.0 wire types as closed serde enums (all 31 events, `RunAgentInput`), the vendored official JSON Schema, and a `testkit` that validates against it. No `orch-*` dependencies. |
 | [`crates/agui-projection`](crates/agui-projection/README.md) | `orch-agui-projection` | Pure: the AG-UI view of the event log (`Projector`: events to frames, audiences, resume preamble) and the translation of a `RunAgentInput` to core inputs. Depends on `orch-core` and `orch-agui-proto` only; no async, no I/O. |
 | [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams) and the durable outbox `Dispatcher`, written against the ports. |
 | [`crates/api`](crates/api/README.md) | `orch-api` | The always-mounted HTTP edge: proxy-identity auth (fail closed), RFC 9457 problems, the resource API (agents, threads, cancel), health, and `SurfaceRoutes`, the mounting point of interaction surfaces. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
+| [`crates/agent-adam`](crates/agent-adam/README.md) | `orch-agent-adam` | `AgentClient` over adam-rs agents hosted in this process (`transport: local`), journaled in the orchestrator's Postgres under `orch_agent_`; only with the binary's feature `agent-local` (off by default). |
 | [`crates/a2a-mapping`](crates/a2a-mapping/README.md) | `orch-a2a-mapping` | Pure: the mapping from A2A 1.0 stream items and tasks to `AgentEnvelope`s and idempotency keys (`StreamMapper`, `snapshot`). No I/O, no async, no HTTP client. |
 | [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, clients for the resource API and the AG-UI routes; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
 | [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: AG-UI surface, dispatcher and A2A adapter against a fake agent over real HTTP, on either store. |
@@ -163,7 +188,7 @@ in the same change as the crate's API, environment variables or tests. The docs
 check fails when one is missing.
 
 Dependency direction: `core` ← `ports` ← `app` ← `api` ← the surface crates; adapters
-(`store-postgres`, `agent-a2a`; the latter builds on the pure `a2a-mapping`) implement the ports;
+(`store-postgres`, `agent-a2a`, `agent-adam`; the last two build on the pure `a2a-mapping`) implement the ports;
 only `bin/orchestrator` depends on all of them.
 
 ## Behaviour worth knowing

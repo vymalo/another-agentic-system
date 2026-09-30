@@ -17,9 +17,10 @@
   cardUrl: https://coder.example.com/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
 
-# An agent hosted in-process. Not available yet: until a build has local agents (Cargo feature
-# `agent-local`, arriving with the orch-agent-adam crate, ADR 0015 step 12) the orchestrator
-# refuses to start with this entry rather than skipping it.
+# An agent hosted in-process (ADR 0015). It needs a build with the Cargo feature `agent-local`
+# (`cargo run -p orchestrator --features agent-local`); without it the orchestrator refuses to
+# start with this entry rather than skipping it. Its runs are kept in the orchestrator's own
+# database, in the tables `orch_agent_*`. `dev/agents.local-echo.yaml` is a file to try it with.
 #
 # - id: helper
 #   name: Helper

@@ -4,6 +4,7 @@
 
 mod boot;
 mod config;
+mod local;
 mod logging;
 
 use std::process::ExitCode;
@@ -59,6 +60,10 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         if let Some(store) = cause.downcast_ref::<StoreError>()
             && store.class() == ErrorClass::Transient
         {
+            return EX_UNAVAILABLE;
+        }
+        // The local agents' database (a build with `agent-local`) is unreachable: same as the store.
+        if local::is_unavailable(cause) {
             return EX_UNAVAILABLE;
         }
         if let Some(Fatal::Listen { .. }) = cause.downcast_ref::<Fatal>() {
@@ -144,6 +149,16 @@ mod tests {
         let db_down = anyhow::Error::from(StoreError::unavailable(io::Error::other("refused")))
             .context("cannot connect to Postgres");
         assert_eq!(exit_code(&db_down), 69);
+
+        // The local agents' database (the feature `agent-local`) is the same outage: 69.
+        #[cfg(feature = "agent-local")]
+        {
+            let down = anyhow::Error::from(orch_agent_adam::LocalAgentsError::unavailable(
+                io::Error::other("refused"),
+            ))
+            .context("cannot connect the local agents to Postgres");
+            assert_eq!(exit_code(&down), 69);
+        }
 
         let db_bug = anyhow::Error::from(StoreError::internal(io::Error::other("syntax")))
             .context("cannot apply the database migrations");

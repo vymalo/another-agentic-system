@@ -16,6 +16,11 @@ path = "src/main.rs"
 default = ["surface-agui"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
+# In-process agents (`transport: local` in AGENTS_FILE, ADR 0015): adam-rs agents hosted by this
+# process, journaled in the orchestrator's own Postgres under the prefix `orch_agent_`. Off by
+# default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
+# agent is refused at startup (exit 78).
+agent-local = ["dep:orch-agent-adam"]
 
 [dependencies]
 adam-host.workspace = true
@@ -25,6 +30,7 @@ orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
+orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true
 clap.workspace = true

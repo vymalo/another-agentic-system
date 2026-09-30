@@ -58,14 +58,14 @@ stream and the capabilities document). **Planned:** `a2a`. The legacy `chat-api`
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
 gets MCP progress notifications; one started in the chat gets chat messages. The first step toward it is
-planned: `user_message` gains `origin: agui | chat_api | mcp`
+planned: `user_message` gains `origin: agui | mcp`
 ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). Today every log event
 records an `Actor` (`user`, `agent` or `system`), and the only reply channel is the thread's own
 event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has thirteen
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has fourteen
 library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
@@ -81,8 +81,9 @@ flowchart TB
   subgraph G_ADAPT["Adapters: implement the ports"]
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
     a2a["<b>orch-agent-a2a</b><br/>AgentClient over A2A 1.0<br/>a2a-client-lf"]
+    adam["<b>orch-agent-adam</b><br/>AgentClient over adam-rs agents<br/>hosted in this process (feature agent-local)"]
   end
-  subgraph G_MAP["Pure helper of the A2A adapter: no async, no I/O"]
+  subgraph G_MAP["Pure helper of the A2A and local adapters: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
   end
   subgraph G_APP["Application: written against the ports"]
@@ -101,7 +102,7 @@ flowchart TB
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>feature: surface-agui (default)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui (default), agent-local (off)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -112,6 +113,8 @@ flowchart TB
   pg --> ports
   a2a --> ports
   a2a --> a2amap
+  adam --> ports
+  adam --> a2amap
   a2amap --> ports
   app --> ports
   api --> app
@@ -122,6 +125,7 @@ flowchart TB
   bin --> api
   bin --> pg
   bin --> a2a
+  bin -. "feature agent-local" .-> adam
   bin -. "feature surface-agui" .-> surfagui
   surfagui --> api
   surfagui --> app
@@ -139,6 +143,7 @@ flowchart TB
   e2e -.-> ts
   e2e -.-> pg
   e2e -.-> a2a
+  e2e -.-> adam
   e2e -.-> api
   a2a -.-> ts
 
@@ -156,14 +161,18 @@ Rules the graph enforces, each checkable in the manifests:
 - **`orch-core` and `orch-agui-projection` are pure.** Neither depends on `tokio`, `sqlx`, `axum` or an
   HTTP client, so the compiler keeps the state machine and the AG-UI view a function of their
   inputs (ADR 0001, ADR 0004, ADR 0012).
-- **Adapters depend on `orch-core` and `orch-ports` only.** `orch-store-postgres` and
-  `orch-agent-a2a` name no other orchestrator crate (ADR 0009, rule 5: no implementation type in a
-  port signature), except that `orch-agent-a2a` uses `orch-a2a-mapping`, its own pure helper (the
-  mapping from A2A values to envelopes, itself depending on `orch-core` and `orch-ports` only and
-  on no HTTP client), not another adapter.
+- **Adapters depend on `orch-core` and `orch-ports` only.** `orch-store-postgres`,
+  `orch-agent-a2a` and `orch-agent-adam` name no other orchestrator crate (ADR 0009, rule 5: no
+  implementation type in a port signature), except that the last two use `orch-a2a-mapping`, their
+  shared pure helper (the mapping from A2A values to envelopes, itself depending on `orch-core` and
+  `orch-ports` only and on no HTTP client), not another adapter.
+- **`orch-agent-adam` is the only crate that names an adam-rs agent, runtime or store crate**
+  (ADR 0015), and the binary links it only with the feature `agent-local`, off by default: with
+  the feature off, `cargo tree -p orchestrator -i adam-runtime` finds nothing.
 - **`orch-app` and `orch-api` name no adapter.** Only `bin/orchestrator` depends on
-  the Postgres and A2A crates and chooses them (`type Stack = PortSet<PgStore, PgWakeup,
-  A2aAgentClient, SystemClock, UuidV7Ids>` in `boot.rs`).
+  the Postgres and agent crates and chooses them (`type Stack = PortSet<PgStore, PgWakeup, Agents,
+  SystemClock, UuidV7Ids>` in `boot.rs`, where `Agents` is `A2aAgentClient`, or with `agent-local`
+  `ByTransport<A2aAgentClient, LocalAgentClient>`, defined in `local.rs`).
 - **A surface depends on `orch-app` and `orch-api`, never on an adapter.** `orch-api` names no surface.
 - **`orch-agui-proto` depends on nothing of ours**, so it can be checked against the vendored
   AG-UI schema and moved on its own.
@@ -171,9 +180,10 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres | **Built** |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0 | **Built** |
+| `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
 | `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` | **Built** |
@@ -192,6 +202,8 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
 | `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities); it decides what *can* be mounted, `ORCH_SURFACES` what *is*. (`surface-chat-api` and its crate were removed on 2026-09-30.) |
+| `orchestrator` | `agent-local` | no | Compiles in `orch-agent-adam` and the adam-rs runtime: `transport: local` agents in `AGENTS_FILE` are served in this process (below). Without it such an entry is refused at startup (exit 78) and nothing of adam-rs's runtime is linked |
+| `orch-agent-adam` | `testkit` | no | The scripted agent, `LocalFixture` (the `AgentFixture` of the conformance suite), `LocalWorld` (processes sharing a journal) and a private Postgres schema; enable as a dev-dependency feature |
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
 
@@ -358,6 +370,92 @@ What the diagrams cannot say:
 - **What is not fenced.** `skip_unsent_delegates` and `release_leases` take no lease; they act on
   the thread's rows by status and time.
 
+## Local agents
+
+**Built** (`orch-agent-adam`, behind the binary's Cargo feature `agent-local`, off by default; [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
+An `AGENTS_FILE` entry with `transport: local` and `agent: <kind>` is an agent that runs in the
+orchestrator's own process, on the durable runtime of adam-rs. Remote agents stay plain A2A. The kinds are
+a closed enum (`LocalKind`, today `Echo`, which repeats the message back); the endpoint carries only the
+kind's name (`AgentTransport::Local`), and the binary's configuration maps its own `LocalAgentKind` to the
+crate's.
+
+The dispatcher calls one `AgentClient`. In a build with the feature it is
+`ByTransport<A2aAgentClient, LocalAgentClient>`, which routes each endpoint by its transport and holds no
+adam type. `LocalAgentClient` drives the runtime through the same seam an A2A server uses,
+`adam_a2a::TaskBackend` (implemented over the runtime by `adam-a2a-runtime`), and maps its events with
+`orch-a2a-mapping`, so an envelope has the idempotency key it would have from a remote agent. A task is a run
+of the journal; its caller is `orch:<agent id>`, and its id is derived from the agent kind, the caller, the
+thread's context and the message id, so sending the same outbox row twice reaches one task.
+
+```mermaid
+sequenceDiagram
+  participant D as Dispatcher
+  participant B as ByTransport
+  participant L as LocalAgentClient
+  participant T as RuntimeTaskBackend
+  participant R as Runtime + worker
+  participant DB as Postgres (orch_agent_*)
+  D->>B: send_stream(request, endpoint local)
+  B->>L: by transport, never the A2A client
+  L->>T: submit(caller, message, context)
+  T->>DB: start run under task_id_for(kind, caller, context, message)
+  T-->>L: task (submitted)
+  L->>T: subscribe(task)
+  T-->>L: snapshot, then status and artifact events
+  L-->>D: envelopes with the A2A idempotency keys
+  R->>DB: claim the run (lease), step, commit each transition
+  R-->>T: live events, and the polled record
+  Note over R,DB: the worker process dies, its lease runs out
+  R->>DB: another process claims the run and resumes it
+  D->>B: resubscribe(task)
+  B->>L: by transport
+  L->>T: get(task), subscribe(task)
+  T-->>L: snapshot (working), then the rest
+  L-->>D: the same keys as the first stream, so no event twice
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> submitted: submit (run created, no worker commit yet)
+  submitted --> working: a worker commits its first transition
+  working --> working: Continue, or Park on a timer
+  working --> input_required: Park with no timer (the agent asks)
+  input_required --> working: a follow-up message is delivered
+  working --> completed: Done
+  working --> failed: Fail, or a permanent error
+  working --> canceled: cancel (the run fails with "cancelled: ...")
+  input_required --> canceled: cancel
+  working --> working: lease expired, another worker claims the run and resumes it
+  completed --> [*]
+  failed --> [*]
+  canceled --> [*]
+```
+
+What the diagrams cannot say:
+
+- **The journal is the orchestrator's Postgres** (the owner's decision of 2026-09-30). The store is
+  `adam-store-postgres` on a pool of its own, with the table prefix `orch_agent_`: `orch_agent_runs`,
+  `orch_agent_journal`, `orch_agent_meta`. The notifier (`adam-notify-postgres`) uses the channels
+  `orch_agent_events` and `orch_agent_signals`, next to the orchestrator's `orch_thread`, `orch_outbox`
+  and `orch_resync`. Nothing collides with `threads`, `events`, `a2a_bindings` and `outbox`. The migration is
+  a `CREATE ... IF NOT EXISTS` in one transaction under an advisory lock of its own prefix, so every role and
+  every replica may run it at boot.
+- **A state machine of its own, under the thread's.** The runtime commits each transition by a version
+  compare-and-swap and leases the run to one worker; a worker that dies loses at most the step it was in. Side
+  effects go through the runtime's journal, so a replayed step gets the recorded result back (the agent's
+  contract; `Echo` has none). The thread's own state is unchanged: it follows the envelopes as for any agent.
+- **`resubscribe` is `TaskNotFound` for a finished task**, as with A2A; the dispatcher then polls `get_task`.
+  `cancel` of a running task ends the run and the thread sees `canceled`; of a finished one it is refused
+  (`NotCancelable`).
+- **What a local agent refuses**: a selected release (no release channels) and an A2UI action (no surfaces).
+  Both are `Rejected`, as the A2A adapter does when the card lacks the extension.
+- **Roles.** `worker` and `all` run the agents' worker and its notifier beside the dispatcher; `control-plane`
+  registers only the agents' starters (it can start and read a run, never step one) and runs neither. Each
+  process that has a local agent configured opens `AGENT_LOCAL_CONCURRENCY + 4` connections of its own, on top of
+  `DATABASE_MAX_CONNECTIONS`: one is the notifier's listener. `OUTBOX_LEASE_SECS` is also the lease of a local run.
+- **Not built yet**: retention of the `orch_agent_*` tables (open question 28), and the coder kind, an agent
+  with tools and a workspace, which is the next change of step 12.
+
 ## Thread state and transitions
 
 **Built.** The states, the events they append and the pure function that decides both are in
@@ -462,9 +560,9 @@ existing files are unchanged) needs `cardUrl` and takes an optional `tokenEnv`; 
 (a `LocalAgentKind`) and refuses `cardUrl` and `tokenEnv` rather than ignoring them, so a lost
 `transport: a2a` is a startup error, not a silently local agent. A `local` entry in a build without
 local agents fails closed with `ConfigError::LocalAgentsNotCompiled` (exit 78), as an
-`ORCH_SURFACES` name without its feature does. No build has them yet: the Cargo feature `agent-local`
-and the crate `orch-agent-adam` that implement them arrive in the next step-12 change, so today
-every `transport: local` entry is refused at startup. The chat API's `AgentInfo.cardUrl` is optional
+`ORCH_SURFACES` name without its feature does. The Cargo feature `agent-local` (off by default)
+compiles in the crate `orch-agent-adam` that implements them ([Local agents](#local-agents)); only a
+build with it accepts a `transport: local` entry. The chat API's `AgentInfo.cardUrl` is optional
 (`required: [id, name]`): an A2A agent has one, a local agent has none and the key is absent from
 the JSON. A release selection travels as
 `AgentTarget.release` and is only accepted when the *live* card advertises the release-channels
@@ -511,8 +609,8 @@ dependency pinned to a commit sha); this repository adds no role and no supervis
 | Role | Runs | Serves on `LISTEN_ADDR` |
 |---|---|---|
 | `control-plane` | migrations, the HTTP server: the resource API, the surfaces in `ORCH_SURFACES`, health. No dispatcher | the full API |
-| `worker` | migrations, the dispatcher (including the transitions for agent updates) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
-| `all` (default) | both, as before the role existed | the full API |
+| `worker` | migrations, the dispatcher (including the transitions for agent updates), and in a build with `agent-local` the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
+| `all` (default) | both, as before the role existed (with the local agents' worker in a build with `agent-local`) | the full API |
 
 The halves are already decoupled: the only things they share are the outbox, the thread version
 compare-and-swap and `LISTEN/NOTIFY`, all in Postgres, so there is no new protocol between them and

@@ -201,6 +201,35 @@ fn a_missing_agent_token_is_fatal_before_anything_connects() {
     assert!(log.contains("unset or empty"), "{log}");
 }
 
+/// A build without the Cargo feature `agent-local` has no in-process agents: an AGENTS_FILE that
+/// asks for one is a configuration error naming the feature, and it is found before anything
+/// connects (ADR 0015). With the feature the same file is served; see `tests/local.rs`.
+#[cfg(not(feature = "agent-local"))]
+#[test]
+fn transport_local_exits_78_naming_agent_local() {
+    let scratch = Scratch::new();
+    let agents = write_agents(
+        &scratch,
+        "- id: helper\n  name: Helper\n  transport: local\n  agent: echo\n",
+    );
+    // The database is unreachable on purpose: configuration is validated first.
+    let mut run = spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(&agents)),
+        ],
+    );
+    let status = run.wait(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(78), "EX_CONFIG");
+    let log = run.log();
+    assert!(
+        log.contains("agent-local") && log.contains("--features agent-local"),
+        "{log}"
+    );
+    assert!(log.contains("helper"), "{log}");
+}
+
 #[test]
 fn help_lists_every_flag_and_variable_and_exits_zero() {
     let scratch = Scratch::new();
@@ -603,10 +632,11 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
         (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
     })
     .await;
-    assert_eq!(
-        http_status(&client, &format!("{base}/readyz")).await,
-        Some(200)
-    );
+    // Ready can trail live (readiness pings the store): a bounded wait, not one look.
+    eventually("the binary answers /readyz", || async {
+        (http_status(&client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
 
     // Fail closed: no identity, no service (the health probes above needed none).
     assert_eq!(
@@ -736,12 +766,18 @@ impl Replica {
                 .then_some(())
         })
         .await;
-        assert_eq!(
-            http_status(&self.client, &format!("{}/readyz", self.base)).await,
-            Some(200),
-            "log:\n{}",
-            self.run.borrow().log()
-        );
+        // Ready can trail live (readiness pings the store), most of all on a loaded machine, so
+        // it gets the same bounded wait instead of one look.
+        eventually("the binary answers /readyz", || async {
+            assert!(
+                self.run.borrow_mut().exited().is_none(),
+                "the binary exited early; log:\n{}",
+                self.run.borrow().log()
+            );
+            (http_status(&self.client, &format!("{}/readyz", self.base)).await == Some(200))
+                .then_some(())
+        })
+        .await;
     }
 
     fn chat(&self) -> Chat {

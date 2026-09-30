@@ -174,3 +174,12 @@ migration step 12 of [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md), f
   error, an unknown or missing `agent` is an error listing the kinds, and a valid `local` entry is refused with
   `LocalAgentsNotCompiled` in this build and becomes `AgentEndpoint::local` when the build has its kind (tested
   through the parser's injected predicate).
+
+### Status note, 2026-09-30: `transport: local` is served by a build with `agent-local`
+
+The Cargo feature `agent-local` now exists ([ADR 0015](0015-control-plane-and-workers-on-adam-rs.md), migration step 12,
+third change). In a build with it, a `local` entry becomes `AgentEndpoint::local` and its agent runs in the orchestrator's
+process; in the default build it is still refused with `LocalAgentsNotCompiled` (exit 78), and the message now says to build
+with `--features agent-local`. The default agent, `adam-coder`, stays a plain A2A agent.
+- *Verified 2026-09-30* (`bin/orchestrator/src/config.rs`, its unit tests in both flavours, and
+  `bin/orchestrator/tests/smoke.rs`, `transport_local_exits_78_naming_agent_local`).

@@ -88,20 +88,131 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-a2a"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
+dependencies = [
+ "a2a-lf",
+ "a2a-server-lf",
+ "adam-error",
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "adam-a2a-runtime"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
+dependencies = [
+ "a2a-lf",
+ "adam-a2a",
+ "adam-core",
+ "adam-error",
+ "adam-runtime",
+ "async-trait",
+ "chrono",
+ "futures",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "adam-core"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
+dependencies = [
+ "adam-error",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "adam-error"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=0e08fe07eaea7022a08f0fc5c883a373e17e6ca3#0e08fe07eaea7022a08f0fc5c883a373e17e6ca3"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
 
 [[package]]
 name = "adam-host"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=0e08fe07eaea7022a08f0fc5c883a373e17e6ca3#0e08fe07eaea7022a08f0fc5c883a373e17e6ca3"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
 dependencies = [
  "adam-error",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "adam-notify-postgres"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "adam-runtime",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "adam-runtime"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "async-trait",
+ "chrono",
+ "futures",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "adam-store-postgres"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=882e23901ea9964e4a6ed96ee1aed2f4dcea98eb#882e23901ea9964e4a6ed96ee1aed2f4dcea98eb"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "async-trait",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "uuid",
 ]
 
 [[package]]
@@ -1909,6 +2020,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-agent-adam"
+version = "0.1.0"
+dependencies = [
+ "a2a-lf",
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-core",
+ "adam-notify-postgres",
+ "adam-runtime",
+ "adam-store-postgres",
+ "async-trait",
+ "chrono",
+ "futures",
+ "orch-a2a-mapping",
+ "orch-agent-adam",
+ "orch-core",
+ "orch-ports",
+ "orch-store-postgres",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "orch-agui-projection"
 version = "0.1.0"
 dependencies = [
@@ -1988,6 +2128,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "orch-agent-a2a",
+ "orch-agent-adam",
  "orch-agui-proto",
  "orch-api",
  "orch-app",
@@ -1999,6 +2140,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -2092,6 +2234,7 @@ dependencies = [
  "axum",
  "clap",
  "orch-agent-a2a",
+ "orch-agent-adam",
  "orch-api",
  "orch-app",
  "orch-core",
@@ -2876,6 +3019,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3113,6 +3265,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cfg-if",
+ "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -3189,6 +3342,7 @@ dependencies = [
  "bitflags 2.13.2",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest 0.11.3",
  "dotenvy",
@@ -3217,6 +3371,7 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -3250,6 +3405,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488e99c397a62007e4229aec669a179816339afc6d2620ca6fa420dbee2e982c"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "form_urlencoded",
  "futures-channel",

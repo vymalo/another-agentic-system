@@ -1,7 +1,7 @@
 # orchestrator (binary)
 
 The orchestrator service: the composition root that wires the Postgres store,
-the A2A adapter, the dispatcher, the resource API and the interaction surfaces
+the A2A adapter (and, with the feature `agent-local`, the local agents), the dispatcher, the resource API and the interaction surfaces
 chosen by `ORCH_SURFACES` into one stateless process. `ORCH_ROLE` says which
 halves the process runs: the control plane, a worker, or both
 ([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)).
@@ -13,7 +13,8 @@ implementations
 ([ADR 0009](../../../docs/decisions/0009-swappable-implementations-at-build-time.md)):
 [`orch-store-postgres`](../../crates/store-postgres/README.md) for
 `ThreadStore` and `Wakeup`, [`orch-agent-a2a`](../../crates/agent-a2a/README.md)
-for `AgentClient`, the system clock and UUIDv7 ids. It has no logic of its own:
+for `AgentClient` (and, with the feature `agent-local`, [`orch-agent-adam`](../../crates/agent-adam/README.md) for
+in-process agents, routed by transport with `ByTransport`), the system clock and UUIDv7 ids. It has no logic of its own:
 what the service does lives in [`orch-app`](../../crates/app/README.md) and
 [`orch-api`](../../crates/api/README.md) and the surface crates
 ([`orch-surface-agui`](../../crates/surface-agui/README.md)). Processes are stateless; the only
@@ -22,8 +23,9 @@ persistence is Postgres
 The role enum (`Role`) and the supervisor (`Host`) are not ours: they come from
 the `adam-host` crate of [adam-rs](https://github.com/vymalo/another-adam-rs),
 a git dependency pinned to a full commit sha in `orchestrator/Cargo.toml`
-(ADR 0015, decision 4); a PR bumps it. It brings two crates into the lock file,
-`adam-host` and `adam-error`, and nothing else new.
+(ADR 0015, decision 4); a PR bumps it. Without the feature `agent-local` it brings two crates into the
+dependency tree, `adam-host` and `adam-error`, and nothing else from adam-rs: `cargo tree -p orchestrator -i adam-runtime`
+finds nothing.
 Running it, the container image, configuration and shutdown are documented in
 [`orchestrator/README.md`](../../README.md); the design is in
 [`docs/orchestrator.md`](../../../docs/orchestrator.md).
@@ -33,7 +35,8 @@ Running it, the container image, configuration and shutdown are documented in
 | File | What |
 |---|---|
 | `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
-| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far, none compiled in yet), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
+| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far; compiled in with the feature `agent-local`; `needs_model()` says whether a kind calls a model), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
+| `src/local.rs` | the one place that knows `orch-agent-adam`, in two variants of one surface. With the feature `agent-local`: `Local::start` builds the local agents' own pool on `DATABASE_URL` and migrates their journal (only when `AGENTS_FILE` lists a local agent), `compose` builds `ByTransport<A2aAgentClient, LocalAgentClient>`, `Local::register` adds the agents' worker as a worker component in the roles that run workers, `is_unavailable` maps a transient failure to exit 69. Without it: `Agents` is the A2A client alone and `Local` cannot be built |
 | `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher as a worker component, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher releases its leases as it stops). Readiness flips first, so probes answer 503 for the whole drain |
 
 ## Environment
@@ -43,13 +46,14 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string, never logged |
-| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` ([`agents.example.yaml`](../../agents.example.yaml)); `transport` is `a2a` (the default when absent; `cardUrl` required) or `local` (`agent` required, names a `LocalAgentKind`; `cardUrl` and `tokenEnv` refused). `local` is refused with `LocalAgentsNotCompiled` (78) until a build has local agents (Cargo feature `agent-local`, not available yet); any other `transport` is a startup error |
+| `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` ([`agents.example.yaml`](../../agents.example.yaml)); `transport` is `a2a` (the default when absent; `cardUrl` required) or `local` (`agent` required, names a `LocalAgentKind`; `cardUrl` and `tokenEnv` refused). `local` is refused with `LocalAgentsNotCompiled` (78) unless the build has the Cargo feature `agent-local`; any other `transport` is a startup error |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
 | `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
 | `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning |
 | `DATABASE_MAX_CONNECTIONS` | `10` | at least 2 |
 | `DISPATCHER_CONCURRENCY` | `32` | |
-| `OUTBOX_LEASE_SECS` | `30` | |
+| `OUTBOX_LEASE_SECS` | `30` | also the lease of a local agent's run |
+| `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
 | `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
@@ -102,10 +106,20 @@ noted in `src/main.rs`.
 | Feature | Default | Compiles in |
 |---|---|---|
 | `surface-agui` | yes | [`orch-surface-agui`](../../crates/surface-agui/README.md), the surface name `agui` |
+| `agent-local` | **no** | [`orch-agent-adam`](../../crates/agent-adam/README.md) and the adam-rs runtime: `transport: local` agents run in this process ([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)); the variable `AGENT_LOCAL_CONCURRENCY` |
 
 The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
 named but not compiled in stops startup with an error naming its feature. The
 binary is `orchestrator` (`cargo run -p orchestrator`).
+
+**Local agents (`agent-local`).** An `AGENTS_FILE` entry with `transport: local` needs a build with
+`cargo run -p orchestrator --features agent-local`; without it the entry is refused at startup (78). With it and at
+least one such entry, every role opens a pool of its own on `DATABASE_URL` (`AGENT_LOCAL_CONCURRENCY + 4`
+connections, on top of `DATABASE_MAX_CONNECTIONS`) and creates the journal's tables, `orch_agent_runs`,
+`orch_agent_journal` and `orch_agent_meta` (prefix `orch_agent_`), after the orchestrator's own migrations; both are
+idempotent. The `worker` and `all` roles register the agents' worker (and its `NOTIFY` listener on the channels
+`orch_agent_events` and `orch_agent_signals`) as a worker component next to the dispatcher; the `control-plane` role
+runs neither and steps nothing. A transient failure of the local agents' database at boot exits `69`.
 
 ## Surfaces
 
@@ -151,7 +165,12 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   value, blank, unknown, the flag collected raw). `src/main.rs` maps every
   `HostError` to exit 70. `src/logging.rs`: role and instance first on every JSON and text
   line (an instance with a quote stays valid JSON, no fields means the stock line).
-* `tests/smoke.rs`: the built executable as a process. Configuration-error
+* `tests/local.rs` (`#![cfg(feature = "agent-local")]`, run with `--features agent-local`): the executable hosting
+  a local `echo` agent answers an AG-UI run and the journal holds the run (`orch_agent_runs`); a `control-plane`
+  process with a local agent starts, accepts a run and leaves it `queued` with an empty journal until a `worker`
+  process starts and completes it. Unit tests in `src/config.rs` cover the flavours: without the feature a local agent is
+  refused naming `agent-local`, with it it is accepted, and `AGENT_LOCAL_CONCURRENCY` defaults to 4.
+* `tests/smoke.rs`: the built executable as a process. Without the feature, `transport: local` exits 78 naming `agent-local`. Configuration-error
   tests always run (the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, the removed

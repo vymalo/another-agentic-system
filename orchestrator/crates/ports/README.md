@@ -10,7 +10,7 @@ The **ports** of the ports-and-adapters split
 [`docs/orchestrator.md`](../../../docs/orchestrator.md)). `orch-app` and
 `orch-api` are written against these traits; the adapters are separate crates:
 [`orch-store-postgres`](../store-postgres/README.md) (`ThreadStore`, `Wakeup`)
-and [`orch-agent-a2a`](../agent-a2a/README.md) (`AgentClient`). No
+[`orch-agent-a2a`](../agent-a2a/README.md) and [`orch-agent-adam`](../agent-adam/README.md) (`AgentClient`). No
 implementation type appears in a signature, and swapping happens at build time
 in the composition root, not through runtime plugins. Depends on
 [`orch-core`](../core/README.md) only.
@@ -22,6 +22,7 @@ in the composition root, not through runtime plugins. Depends on
 | `ThreadStore` | threads, the per-thread event log with a strictly increasing `seq` (`commit` is atomic and version-checked), the A2A binding, and the outbox (`claim_outbox`, then `renew_lease`, `mark_sent`, `retry_outbox` and `complete_outbox`, each taking the claim's `Lease { id, owner, attempt }`, as does `Commit.lease`: the fencing token, so a worker whose row was claimed again is refused with `false` / `CommitOutcome::Fenced`; `OutboxItem::lease()` builds it from a claimed row; `skip_unsent_delegates`, `release_leases`, `get_outbox`, `list_open_outbox`, and `outbox_stats(now) -> OutboxStats { due, waiting, leased, oldest_due_at }`, the counts behind `/metrics`); `ping` for readiness |
 | `Wakeup` | `notify(Topic)`, `subscribe()`, `capabilities()`; `Topic` is `Thread(ThreadId)`, `Outbox` or `Resync` (a hint only: the store is the truth) |
 | `AgentClient` | `read_card` (`AgentCardInfo { description, version, releases, ui }`: `ui` is `UiSupport { versions }`, present only when the live card lists the A2UI extension), `send_stream` (a `SendRequest` carries `content: SendContent::{Text, UiAction { action, at }}`), `resubscribe`, `get_task`, `cancel`, `find_task_by_message`; an agent is an `AgentEndpoint { id, transport }` where `AgentTransport` is a closed enum (`A2a { card_url, bearer }`, whose `Debug` redacts the bearer, and `Local { name }`, an agent hosted in the orchestrator's own process; build one with `AgentEndpoint::a2a` or `AgentEndpoint::local`; both variants are always compiled) |
+| `ByTransport<A, L>` | an `AgentClient` made of two: `a2a` serves `AgentTransport::A2a` endpoints, `local` serves `AgentTransport::Local`, decided by one exhaustive match in every method, so a new transport must be given a client before the workspace compiles. It holds no adapter type (`A` and `L` are any two `AgentClient`s); the binary builds it in a build with local agents |
 | `Clock`, `IdGen` | time and identifiers; `SystemClock`, `UuidV7Ids` |
 | `Ports`, `PortSet` | static-dispatch bundle of all five, chosen at build time |
 
@@ -53,7 +54,7 @@ let _store = ports.store();
   `commit_after_complete_is_fenced` and `expired_unclaimed_lease_still_commits` pin the fence.
 * The store case `event_data_roundtrip` also pins the A2UI kinds and the `OutboxPayload::Action` row (a `delegate` row whose payload is an action).
 * `tests/agent_conformance.rs`: the `AgentClient` testkit against `ScriptedAgent`.
-* Unit tests in `src/` pin the error classification tables.
+* Unit tests in `src/` pin the error classification tables and `ByTransport` (`routes_by_transport_and_never_crosses`: two scripted agents, every operation once per transport, neither ever sees the other's endpoint).
 
 Adapters run the same testkit; see
 [`orch-store-postgres`](../store-postgres/README.md). To add a `ThreadStore`

@@ -2,7 +2,8 @@
 //!
 //! - [`ThreadStore`]: threads, per-thread events with a strictly increasing `seq`, an outbox;
 //! - [`Wakeup`]: notify/listen hints;
-//! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card);
+//! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
+//!   and [`ByTransport`], which serves one endpoint set from two clients (remote A2A, in-process);
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -12,6 +13,7 @@
 mod agent;
 mod bundle;
 mod clock;
+mod route;
 mod store;
 mod wakeup;
 
@@ -26,6 +28,7 @@ pub use agent::{
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
+pub use route::ByTransport;
 pub use store::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,

@@ -1,0 +1,18 @@
+# AGENTS_FILE for running the orchestrator on the host with an agent that lives INSIDE it: no mock, no
+# agent card, no token. Needs the Cargo feature `agent-local` and the compose Postgres:
+#
+#   docker compose up -d --wait postgres
+#   cd orchestrator
+#   DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch \
+#   AGENTS_FILE=../dev/agents.local-echo.yaml \
+#   AUTH_DEV_USER=dev@example.com LOG_FORMAT=text LISTEN_ADDR=127.0.0.1:8090 \
+#     cargo run -p orchestrator --features agent-local
+#   BASE_URL=http://127.0.0.1:8090 AGENT_ID=echo ../dev/try-thread.sh "hello"
+#
+# Without the feature the orchestrator refuses this file at startup (exit 78, naming `agent-local`).
+# The agent's runs are in the orchestrator's database, tables `orch_agent_runs`, `orch_agent_journal`
+# and `orch_agent_meta` (ADR 0015).
+- id: echo
+  name: Echo (local)
+  transport: local
+  agent: echo
