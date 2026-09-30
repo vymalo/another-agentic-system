@@ -140,7 +140,7 @@ struct Slot {
 pub fn build(actions: &[Action]) -> Vec<Event> {
     let user = UserId::new("alice@example.com");
     let agent = AgentId::new("plain");
-    let mut state = ThreadState::Queued;
+    let mut state = orch_core::Snapshot::new(ThreadState::Queued);
     let mut events: Vec<Event> = Vec::new();
     let mut slots = [Slot::default(), Slot::default()];
     let mut users = 0u32;

@@ -168,7 +168,8 @@ pub struct Projector {
 
 fn is_active(state: ThreadState) -> bool {
     match state {
-        ThreadState::Queued | ThreadState::Working => true,
+        // A run stays open while the thread is verified (ADR 0018).
+        ThreadState::Queued | ThreadState::Working | ThreadState::Verifying => true,
         ThreadState::Blocked | ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
             false
         }
@@ -285,6 +286,10 @@ impl Projector {
             EventBody::Error(d) => self.on_error(event, d, &mut out),
             EventBody::UiSurface(d) => self.on_ui_surface(event, d, &mut out),
             EventBody::UiAction(d) => self.on_ui_action(event, d, &mut out),
+            // TODO(MVP slice 3): the gate's events become `vymalo.check` / `vymalo.rework`
+            // activities and a `vymalo.ci` card (ADR 0018, ADR 0017). Nothing is projected yet:
+            // with the default (empty) gate none of them is ever logged.
+            EventBody::CiResult(_) | EventBody::CheckResult(_) | EventBody::Rework(_) => {}
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -696,7 +701,9 @@ impl Projector {
             self.open_run(format!("run-{}", ev.seq), false, out);
         }
         match new {
-            ThreadState::Queued | ThreadState::Working => out.push(self.state_snapshot()),
+            ThreadState::Queued | ThreadState::Working | ThreadState::Verifying => {
+                out.push(self.state_snapshot());
+            }
             ThreadState::Blocked => match pending_error {
                 Some(message) => self.close_run(
                     RunClose::Error(Failure {
@@ -899,7 +906,7 @@ impl Projector {
             }
             ThreadState::Done => RunClose::Success,
             ThreadState::Cancelled => RunClose::Cancelled,
-            ThreadState::Queued | ThreadState::Working => return,
+            ThreadState::Queued | ThreadState::Working | ThreadState::Verifying => return,
         };
         self.close_run(close, ev.seq, out);
     }

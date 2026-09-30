@@ -3,6 +3,15 @@
 
 use orch_core::*;
 
+/// The gate is off in these tests (the default job), so the state alone decides: the shim keeps
+/// every case below as it was before the job existed.
+fn transition(
+    state: &ThreadState,
+    input: &Input,
+) -> Result<(ThreadState, Vec<Command>), TransitionError> {
+    orch_core::transition(&Snapshot::new(*state), input).map(|(next, cmds)| (next.state, cmds))
+}
+
 use ThreadState::{Blocked, Cancelled, Done, Failed, Queued, Working};
 
 const ALL: [ThreadState; 6] = [Queued, Working, Blocked, Done, Failed, Cancelled];
@@ -37,9 +46,12 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
     cmds.iter()
         .filter_map(|c| match c {
             Command::Append(d) => Some(&d.body),
-            Command::Delegate { .. } | Command::DelegateAction { .. } | Command::RequestCancel => {
-                None
-            }
+            Command::Delegate { .. }
+            | Command::DelegateAction { .. }
+            | Command::RequestCancel
+            | Command::Watch { .. }
+            | Command::Schedule { .. }
+            | Command::RequestVerification { .. } => None,
         })
         .collect()
 }

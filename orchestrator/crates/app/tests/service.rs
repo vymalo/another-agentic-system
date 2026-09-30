@@ -452,6 +452,7 @@ async fn the_event_stream_survives_a_missing_wakeup_via_the_safety_poll() {
             record.version,
             orch_ports::Commit {
                 new_state: ThreadState::Queued,
+                job: None,
                 events: vec![orch_ports::NewEvent {
                     at: jiff::Timestamp::now(),
                     actor: orch_core::Actor::system(),

@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, Classify,
-    ErrorClass, EventBody, ThreadId, ThreadState, UserId, UserMessageData,
+    Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
+    CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, EventBody,
+    GatePolicy, Hold, Job, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState, UserId,
+    UserMessageData,
 };
 use uuid::Uuid;
 
@@ -94,6 +96,7 @@ fn cancel_row(n: u128) -> NewOutbox {
 fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> Commit {
     Commit {
         new_state: state,
+        job: None,
         events,
         outbox,
         binding: None,
@@ -1336,4 +1339,251 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
         store.outbox_stats(at(1001)).await.unwrap(),
         OutboxStats::default()
     );
+}
+
+/// A job that uses every field of the ledger.
+fn busy_job() -> Job {
+    let mut gate = GatePolicy::requiring([CheckSource::Ci, CheckSource::Verifier]);
+    gate.max_attempts = 4;
+    gate.ci.required = ["build".to_owned()].into();
+    gate.verifier = Some(AgentId::new("reviewer"));
+    Job {
+        gate,
+        attempt: 2,
+        verification: 3,
+        task: Some("make the tests pass".into()),
+        pushed: Some(PushedRef {
+            repository: "github.com/vymalo/repo".into(),
+            branch: "agent/x".into(),
+            commit: "a".repeat(40),
+        }),
+        results: vec![CheckResult {
+            source: CheckSource::Ci,
+            name: Some("build".into()),
+            attempt: 2,
+            commit: Some("a".repeat(40)),
+            status: CheckStatus::Failed,
+            summary: Some("red".into()),
+            stale: false,
+            findings: vec!["build: failure".into()],
+        }],
+        hold: Some(Hold::CiTimeout),
+    }
+}
+
+/// The job is stored with the thread, comes back exactly, and a commit without one leaves it.
+pub async fn job_roundtrip<S: ThreadStore>(store: S) {
+    // A thread created without a job has no gate.
+    let (plain, _) = store
+        .create_thread(
+            new_thread(&alice(), 1),
+            commit(ThreadState::Queued, vec![user_event("hi", None)], vec![]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain.job, Job::default());
+    assert!(!plain.job.gate.is_active());
+
+    // A thread created with one keeps it, in every read.
+    let mut first = commit(ThreadState::Queued, vec![user_event("hi", None)], vec![]);
+    first.job = Some(busy_job());
+    let (created, _) = store
+        .create_thread(new_thread(&alice(), 2), first)
+        .await
+        .unwrap();
+    assert_eq!(created.job, busy_job());
+    let got = store
+        .get_thread(Some(&alice()), thread_id(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, created);
+    let listed = store.list_threads(&alice(), None, 10).await.unwrap();
+    assert_eq!(
+        listed.iter().find(|t| t.id == thread_id(2)).unwrap().job,
+        busy_job()
+    );
+
+    // A commit writes state and job together.
+    let mut next = busy_job();
+    next.attempt = 3;
+    next.results.clear();
+    next.hold = None;
+    let mut c = commit(ThreadState::Verifying, vec![user_event("x", None)], vec![]);
+    c.job = Some(next.clone());
+    let (record, _) = applied(store.commit(thread_id(2), 1, c).await.unwrap());
+    assert_eq!((record.state, &record.job), (ThreadState::Verifying, &next));
+    let got = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(got, record);
+
+    // A commit with no job changes the state and leaves the job.
+    let (record, _) = applied(
+        store
+            .commit(
+                thread_id(2),
+                2,
+                commit(ThreadState::Blocked, vec![], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!((record.state, &record.job), (ThreadState::Blocked, &next));
+
+    // A job change alone is a commit: it bumps the version.
+    let mut again = next.clone();
+    again.verification += 1;
+    let mut c = commit(ThreadState::Blocked, vec![], vec![]);
+    c.job = Some(again.clone());
+    let (record, events) = applied(store.commit(thread_id(2), 3, c).await.unwrap());
+    assert_eq!((record.version, record.job), (4, again));
+    assert!(events.is_empty());
+
+    // The job never leaks into the thread of someone else.
+    assert!(
+        store
+            .get_thread(Some(&bob()), thread_id(2))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// The job is written under the same compare-and-swap, lock and idempotency check as the state:
+/// a commit that is refused writes neither.
+pub async fn job_is_written_with_the_state<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let mut winner = commit(
+        ThreadState::Verifying,
+        vec![user_event("w", Some("k"))],
+        vec![],
+    );
+    let mut won = Job::with_gate(GatePolicy::requiring([CheckSource::AgentChecks]));
+    won.attempt = 2;
+    winner.job = Some(won.clone());
+    let (record, _) = applied(store.commit(thread_id(1), 1, winner).await.unwrap());
+    assert_eq!(record.job, won);
+
+    // A second writer that read the same version loses; its job is not written.
+    let mut loser = commit(ThreadState::Working, vec![user_event("l", None)], vec![]);
+    loser.job = Some(busy_job());
+    let res = store.commit(thread_id(1), 1, loser).await;
+    assert_eq!(class_of(&res), Some(ErrorClass::Conflict), "{res:?}");
+    let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(after, record, "a refused commit writes nothing");
+
+    // A replayed idempotency key is a duplicate; its job is not written either.
+    let mut replay = commit(
+        ThreadState::Working,
+        vec![user_event("w", Some("k"))],
+        vec![],
+    );
+    replay.job = Some(busy_job());
+    assert_eq!(
+        store.commit(thread_id(1), 2, replay).await.unwrap(),
+        CommitOutcome::Duplicate
+    );
+    let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(after, record);
+
+    // And a fenced commit (a stale claim) writes no job.
+    let held = claim(&store, "a", t0()).await;
+    let stale = held[0].lease().unwrap();
+    let mut fenced = under(
+        commit(ThreadState::Working, vec![user_event("f", None)], vec![]),
+        Lease {
+            attempt: stale.attempt + 1,
+            ..stale
+        },
+    );
+    fenced.job = Some(busy_job());
+    assert_eq!(
+        store.commit(thread_id(1), 2, fenced).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+    let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(after, record);
+
+    // Two writers race on one version: exactly one wins, and the job is the winner's.
+    let store = Arc::new(store);
+    let mut tasks = Vec::new();
+    for n in 0..4_u32 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            let mut job = Job::with_gate(GatePolicy::requiring([CheckSource::Ci]));
+            job.verification = n + 10;
+            let mut c = commit(ThreadState::Verifying, vec![], vec![]);
+            c.job = Some(job.clone());
+            (job, store.commit(thread_id(1), 2, c).await)
+        }));
+    }
+    let mut winners = Vec::new();
+    for task in tasks {
+        let (job, res) = task.await.unwrap();
+        match res {
+            Ok(CommitOutcome::Applied { .. }) => winners.push(job),
+            Err(e) => assert_eq!(e.class(), ErrorClass::Conflict),
+            Ok(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(winners.len(), 1);
+    let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(after.job, winners[0]);
+    assert_eq!(after.version, 3);
+}
+
+/// The events of the gate are stored and read back, and `verifying` is a state a thread can
+/// be in.
+pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
+    let sha = "b".repeat(40);
+    let bodies = vec![
+        EventBody::CiResult(CiReport {
+            provider: CiProvider::Github,
+            repository: "github.com/vymalo/repo".into(),
+            sha: sha.clone(),
+            branch: Some("agent/x".into()),
+            name: "build".into(),
+            conclusion: CiConclusion::TimedOut,
+            url: Some("https://ci.example/1".into()),
+            summary: None,
+        }),
+        EventBody::CheckResult(CheckResult {
+            source: CheckSource::Verifier,
+            name: None,
+            attempt: 2,
+            commit: Some(sha),
+            status: CheckStatus::Pending,
+            summary: None,
+            stale: true,
+            findings: vec![],
+        }),
+        EventBody::Rework(ReworkData {
+            attempt: 2,
+            max_attempts: 3,
+            findings: vec![SourceFindings {
+                source: CheckSource::AgentChecks,
+                findings: vec!["red".into()],
+            }],
+        }),
+    ];
+    let events: Vec<NewEvent> = bodies
+        .iter()
+        .map(|body| NewEvent {
+            at: t0(),
+            actor: Actor::system(),
+            body: body.clone(),
+            idempotency_key: None,
+        })
+        .collect();
+    let (record, stored) = store
+        .create_thread(
+            new_thread(&alice(), 1),
+            commit(ThreadState::Verifying, events, vec![]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record.state, ThreadState::Verifying);
+    let read = store.list_events(thread_id(1), 0, 10).await.unwrap();
+    assert_eq!(read, stored);
+    let read_bodies: Vec<EventBody> = read.into_iter().map(|e| e.body).collect();
+    assert_eq!(read_bodies, bodies);
 }

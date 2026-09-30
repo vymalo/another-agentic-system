@@ -2,6 +2,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::*;
+
+/// The gate is off in these tests (the default job), so the state alone decides: the shim keeps
+/// every case below as it was before the job existed.
+fn transition(
+    state: &ThreadState,
+    input: &Input,
+) -> Result<(ThreadState, Vec<Command>), TransitionError> {
+    orch_core::transition(&Snapshot::new(*state), input).map(|(next, cmds)| (next.state, cmds))
+}
 use proptest::prelude::*;
 
 fn arb_task_state() -> impl Strategy<Value = AgentTaskState> {

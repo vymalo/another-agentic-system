@@ -127,7 +127,10 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::Agent { .. }
         | Input::DeliveryFailed { .. }
         | Input::CancelledBeforeStart
-        | Input::CancelRejected { .. } => None,
+        | Input::CancelRejected { .. }
+        | Input::CiReported(_)
+        | Input::VerifierReported { .. }
+        | Input::TimerFired(_) => None,
     }
 }
 

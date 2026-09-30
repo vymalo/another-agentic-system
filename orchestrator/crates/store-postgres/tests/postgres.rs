@@ -55,6 +55,7 @@ fn event(text: &str, key: Option<String>) -> NewEvent {
 fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> Commit {
     Commit {
         new_state: state,
+        job: None,
         events,
         outbox,
         binding: None,
@@ -561,4 +562,86 @@ async fn commits_racing_a_reclaim_neither_deadlock_nor_half_write() {
         assert_eq!(row.lease_owner.as_deref(), Some("b"));
         assert_eq!(row.attempts, 2);
     }
+}
+
+/// Migration 0003 on a database that has run 0001 and 0002 and holds a thread: the old row
+/// reads back as a job with no gate, and the widened constraints take the new values.
+#[tokio::test]
+async fn migration_0003_upgrades_a_database_that_holds_threads() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    // Bring the schema to 0002 the way an older release did.
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("0001_init.sql"),
+        include_str!("../migrations/0001_init.sql"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("0002_ui_events.sql"),
+        include_str!("../migrations/0002_ui_events.sql"),
+    )
+    .unwrap();
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, created_at, updated_at) \
+         VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, now(), now())",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The old code could not write these; the old constraints refuse them.
+    let refused = sqlx::query("UPDATE threads SET state = 'verifying' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await;
+    assert!(refused.is_err(), "0002 has no `verifying`");
+
+    // The new release starts against it.
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    let thread = store.get_thread(None, ThreadId(id)).await.unwrap().unwrap();
+    assert_eq!(thread.state, ThreadState::Working);
+    assert_eq!(thread.job, orch_core::Job::default());
+    sqlx::query("UPDATE threads SET state = 'verifying' WHERE id = $1")
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    for kind in ["ci_result", "check_result", "rework"] {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, (SELECT coalesce(max(seq), 0) + 1 FROM events WHERE thread_id = $1), \
+                     now(), $2, '{}', '{}')",
+        )
+        .bind(id)
+        .bind(kind)
+        .execute(store.pool())
+        .await
+        .unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    // The outbox takes a `verify` row with the verifier's task id, and still refuses nonsense.
+    let insert_outbox = |kind: &'static str| {
+        sqlx::query(
+            "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, \
+             created_at, updated_at, task_id) \
+             VALUES ($1, $2, $3, '{}', 'pending', now(), now(), now(), 'task-1')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(id)
+        .bind(kind)
+        .execute(store.pool())
+    };
+    insert_outbox("verify").await.unwrap();
+    assert!(insert_outbox("nonsense").await.is_err());
 }
