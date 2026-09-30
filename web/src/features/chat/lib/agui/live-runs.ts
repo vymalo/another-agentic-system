@@ -33,7 +33,15 @@ const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMes
   metadata: { custom: m.actor ? { actor: m.actor } : {} },
 });
 
-const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/**
+ * How long the transcript must stay unchanged, and not running, to count as caught up: enough for
+ * the runtime to commit what it has been handed (it does so over several turns of the event loop).
+ */
+const SETTLE_MS = 20;
+/** How long `quiesce` waits for the runtime before it goes on without the transcript. */
+export const QUIESCE_TIMEOUT_MS = 5_000;
+
+type Watched = Pick<LiveRunsRuntime["thread"], "getState" | "subscribe">;
 
 /**
  * Waits until the transcript `thread.getState()` shows has caught up with what the runtime holds:
@@ -42,15 +50,48 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
  * branch of its own and replace the earlier runs. A replay delivers every run of a thread at
  * once, and since a message on a finished thread starts the next job (ADR 0020) a thread has
  * several runs with nothing between them.
+ *
+ * It listens to the runtime's own state subscription instead of polling: it resolves `true` when
+ * the thread is not running, it shows at least `atLeast` messages (what the caller just appended)
+ * and its message count has not changed for `settleMs`. If that does not
+ * happen within `timeoutMs` (a run that never ends) it warns and resolves `false`, and the caller
+ * goes on with the transcript it has.
  */
-async function quiesce(thread: LiveRunsRuntime["thread"]): Promise<void> {
-  let seen = -1;
-  for (let polls = 0; polls < 100; polls++) {
-    await tick();
-    const state = thread.getState();
-    if (!state.isRunning && state.messages.length === seen) return;
-    seen = state.messages.length;
-  }
+export function quiesce(
+  thread: Watched,
+  timeoutMs = QUIESCE_TIMEOUT_MS,
+  settleMs = SETTLE_MS,
+  /** The transcript is not caught up before it shows this many messages. */
+  atLeast = 0,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const finish = (caughtUp: boolean) => {
+      clearTimeout(settle);
+      clearTimeout(timer);
+      unsubscribe();
+      if (!caughtUp) {
+        console.warn(
+          `The transcript did not settle within ${timeoutMs} ms (the thread is still running): going on without it`,
+        );
+      }
+      resolve(caughtUp);
+    };
+    const look = () => {
+      clearTimeout(settle);
+      const state = thread.getState();
+      const count = state.messages.length;
+      if (state.isRunning || count < atLeast) return; // the next notification looks again
+      settle = setTimeout(() => {
+        const now = thread.getState();
+        if (!now.isRunning && now.messages.length === count) finish(true);
+        else look();
+      }, settleMs);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsubscribe = thread.subscribe(look);
+    look();
+  });
 }
 
 /** Applies one external run and resolves when the runtime finished it. */
@@ -82,9 +123,11 @@ export async function applyExternalRun(
   // `append` and `startRun` read the transcript `thread.getState()` shows (see `quiesce`): after an
   // earlier run, let it show what has been appended before each step. The first run has no
   // transcript to hang off: its parent is the start.
+  let shown = thread.getState().messages.length;
   for (const m of users) {
     await thread.append(userMessage(m, false));
-    if (after) await quiesce(thread);
+    // the message is in the transcript before the next step reads it
+    if (after) await quiesce(thread, QUIESCE_TIMEOUT_MS, SETTLE_MS, ++shown);
   }
   const head = thread.getState().messages.at(-1);
   await thread.startRun({ parentId: head?.id ?? null });

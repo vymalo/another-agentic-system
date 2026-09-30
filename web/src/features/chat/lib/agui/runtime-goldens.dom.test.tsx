@@ -218,7 +218,18 @@ async function play(name: string) {
   await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(last));
   await waitFor(() => expect(mounted.runtime().thread.getState().isRunning).toBe(false));
   await waitFor(() => expect(mounted.messages().length).toBeGreaterThan(1));
-  await new Promise((r) => setTimeout(r, 30));
+  // The runs of a replay are applied one after the other, each after the transcript has settled
+  // (`quiesce`): wait until the transcript stops changing instead of for a fixed time.
+  let seen = -1;
+  for (let i = 0; i < 100; i++) {
+    const count = mounted.messages().length;
+    const running = mounted.runtime().thread.getState().isRunning;
+    if (!running && count === seen) break;
+    seen = count;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
+  }
   return mounted;
 }
 

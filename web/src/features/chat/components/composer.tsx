@@ -76,13 +76,12 @@ export function Composer({ state, job, failure, isNew, sendError, onCancel, inpu
 
   return (
     <div className="flex flex-col gap-2 bg-background pt-3 pb-4">
-      {blocked ? (
-        // The question is the agent's last message, in the conversation; the box only says that
-        // the agent waits, for a screen reader.
-        <p role="status" className="sr-only">
-          Waiting for your answer.
-        </p>
-      ) : null}
+      {/* The question is the agent's last message, in the conversation; the box only says that
+          the agent waits, for a screen reader. The live region stays mounted and only its text
+          changes: one that appears with its text is often not announced. */}
+      <p role="status" className="sr-only">
+        {blocked ? "Waiting for your answer." : ""}
+      </p>
       {finished && state === "failed" && failure?.code === CHECKS_FAILED ? (
         <Alert variant="destructive" role="status" data-slot="checks-failed">
           <AlertTitle>

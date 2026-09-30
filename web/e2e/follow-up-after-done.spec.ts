@@ -37,7 +37,7 @@ test("a follow-up after Done goes on in the same conversation", async ({ page })
   await expect(log.getByRole("link", { name: "Pull request acme/demo#1" })).toHaveCount(2);
 });
 
-test("a stopped thread takes the next message, and so does a failed one", async ({ page }) => {
+test("a stopped thread takes the next message", async ({ page }) => {
   await startThread(page, "slow task");
   await expect(badge(page)).toHaveText("Working…");
   await page.getByRole("button", { name: "Stop" }).click();
@@ -50,6 +50,20 @@ test("a stopped thread takes the next message, and so does a failed one", async 
   await page.getByRole("button", { name: "Send" }).click();
   await expect(badge(page)).toHaveText("Done");
   await expect(conversation(page).getByText("echo: echo never mind, do this")).toHaveCount(1);
+});
+
+test("a failed thread takes the next message", async ({ page }) => {
+  await startThread(page, "fail please");
+  await expect(badge(page)).toHaveText("Failed");
+
+  const box = page.getByLabel("Message");
+  await expect(box).toBeEnabled();
+  await box.fill("echo try again");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(badge(page)).toHaveText("Done");
+  await expect(conversation(page).getByText("echo: echo try again")).toHaveCount(1);
+  // the failure of the first job is still in the transcript
+  await expect(conversation(page).getByText("Failed: scripted failure")).toBeVisible();
 });
 
 test("while the agent works the box is for drafting, and the button is Stop", async ({ page }) => {
