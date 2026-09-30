@@ -71,14 +71,14 @@ hexbin() {
 # padxor N: the key (hex on stdin) padded with zeros to one 64-byte block and XORed with byte N.
 padxor() {
   awk -v n="$1" '
-    function xor(a, b,    r, p, i) { r = 0; p = 1
+    function bitxor(a, b,    r, p, i) { r = 0; p = 1
       for (i = 0; i < 8; i++) { if ((a % 2) != (b % 2)) r += p; a = int(a / 2); b = int(b / 2); p *= 2 }
       return r }
     { h = "0123456789abcdef"; k = $0
       while (length(k) < 128) k = k "0"
       out = ""
       for (i = 1; i < length(k); i += 2) {
-        v = xor((index(h, substr(k, i, 1)) - 1) * 16 + index(h, substr(k, i + 1, 1)) - 1, n)
+        v = bitxor((index(h, substr(k, i, 1)) - 1) * 16 + index(h, substr(k, i + 1, 1)) - 1, n)
         out = out substr(h, int(v / 16) + 1, 1) substr(h, v % 16 + 1, 1) }
       print out }'
 }
