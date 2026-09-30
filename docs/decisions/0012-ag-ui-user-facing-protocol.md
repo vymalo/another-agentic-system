@@ -78,6 +78,15 @@
   ([`api/agui.md`](../api/agui.md)). A breaking change for operators and API clients:
   `refactor(orchestrator)!`. The decision stands.
 
+  Status note (2026-09-30): [ADR 0020](0020-a-thread-is-a-conversation.md) changes one row of the inbound
+  table ([`api/agui.md`](../api/agui.md#inbound-ag-ui--core-input)) and the 409 row of the refusals: a run
+  that carries a new user message on a finished thread (`done`, `failed`, `cancelled`) is **served** and
+  starts the thread's next job instead of being refused with "start a new thread". The projection gains the
+  event `job_started` (`thread.jobNumber` in `STATE_SNAPSHOT` from job 2, an activity `vymalo.job`, ids of
+  the attempt-scoped activities with a job infix from job 2). Only an A2UI action on a finished thread is
+  still a 409 ("this card belongs to a finished request"). A run is still open exactly while the thread is
+  `queued`, `working` or `verifying`. The decision stands.
+
 ## Context
 
 The owner: "I prefer we use standards. Because the industry might use it in the future."

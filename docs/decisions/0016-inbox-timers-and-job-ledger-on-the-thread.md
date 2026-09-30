@@ -9,6 +9,10 @@
   among the sources that fail without a pushed commit, and says what a refused `branch` artifact does
   (`Job.branch_problem`); `Job.task` holds the person's messages, not only the first
   ([ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)).
+  **Amended (2026-09-30, threads never lock):** section 1, "One thread holds one job", no longer holds: a
+  thread holds a sequence of jobs and `threads.job` stores the **current** one, with a `number`
+  ([ADR 0020](0020-a-thread-is-a-conversation.md)). Still no jobs table: earlier jobs are in the log,
+  marked by `job_started`. The MCP `job_id` is still the thread id.
   Refines [ADR 0001](0001-rust-state-machine-on-postgres.md) (the transactional inbox it named, and its
   one ledger). Gives the inbox its first user, the CI webhooks of
   [ADR 0017](0017-ci-results-by-webhook.md); the gate that uses the ledger is
@@ -41,6 +45,12 @@ the gate is configurable (ADR 0018) and that MCP comes with bearer tokens first 
 ### 1. The job lives on the thread
 
 One thread holds one job for MVP steps 2 to 6. The MCP `job_id` is the thread id.
+
+> *Amended 2026-09-30 ([ADR 0020](0020-a-thread-is-a-conversation.md)):* a thread holds a **sequence** of jobs, and
+> this column holds the current one (`Job.number`, from 1; a ledger without one is job 1). A message on a finished
+> thread starts job *n+1* (`Job::next()`: the gate kept, the attempt back to 1, the rest cleared, the verification
+> count **not** reset, so a timer or verdict of an earlier job is stale by the comparison below). The history is the
+> log (`job_started`), not a table; the reasons that follow still hold.
 
 The ledger is a new column, `threads.job jsonb NOT NULL DEFAULT '{}'`. It is written in the same
 commit as `state`, under the same `version` compare-and-swap (CAS). Reasons:

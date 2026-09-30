@@ -241,9 +241,9 @@ stateDiagram-v2
   RunActive --> Errored: agent or delivery failed (RUN_ERROR)
   Interrupted --> RunActive: next run with resume, or a new user message
   Errored --> RunActive: next run (thread still open after a retryable failure)
-  Succeeded --> [*]
-  Cancelled --> [*]
-  Errored --> [*]: thread failed
+  Succeeded --> RunActive: a new user message starts the next job (ADR 0020)
+  Cancelled --> RunActive: a new user message starts the next job
+  Errored --> RunActive: a new user message after the thread failed starts the next job
 ```
 
 ### Thread state
@@ -264,18 +264,52 @@ stateDiagram-v2
   Open --> Done: the agent completed
   Open --> Failed: the agent failed or rejected; permanent delivery failure
   Open --> Cancelled: the agent cancelled; cancelled before the agent started
-  Done --> [*]
-  Failed --> [*]
-  Cancelled --> [*]
+  Done --> Queued: a user message starts the next job
+  Failed --> Queued: a user message starts the next job
+  Cancelled --> Queued: a user message starts the next job
 ```
 
-`Open` is `queued`, `working` and `blocked`; `done`, `failed` and `cancelled` absorb. Inside
+`Open` is `queued`, `working` and `blocked`; `done`, `failed` and `cancelled` end the **current job**, not the
+thread ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)). Inside
 `Open`, a user message in `queued` or `working` keeps the state and sends another delegation, a
 cancel keeps the state and asks the agent to cancel (the outcome arrives as the agent's `canceled`),
-and artifacts and agent messages keep the state. On a finished thread a user message is refused
-(409, start a new thread) and a late agent update is dropped. A `thread_state` event is appended
-only when a thread *enters* `blocked`, `done`, `failed` or `cancelled`. The full table, row by row,
-is in [Orchestrator: thread state and transitions](orchestrator.md#thread-state-and-transitions).
+and artifacts and agent messages keep the state. On a finished thread a user message starts job *n+1*
+(`user_message`, `job_started`, a delegation; attempt 1 of the same gate, the agent's context kept), an A2UI action
+is refused (409: its card belongs to a finished request) and a late agent update is dropped. A `thread_state`
+event is appended only when a thread *enters* `blocked`, `done`, `failed` or `cancelled`. The full table, row by
+row, is in [Orchestrator: thread state and transitions](orchestrator.md#thread-state-and-transitions).
+
+#### A follow-up after the job ended
+
+```mermaid
+sequenceDiagram
+  participant U as Person (chat)
+  participant O as Orchestrator
+  participant L as Event log
+  participant A as Agent (A2A)
+  A-->>O: task T1 completed
+  O->>L: agent_status completed, thread_state done
+  O-->>U: the turn ends, the composer stays enabled
+  U->>O: a follow-up message
+  O->>L: user_message, job_started {job: 2}
+  O->>A: new task T2, same contextId, referenceTaskIds [T1]
+  A-->>O: working, artifacts, completed
+  O->>L: the events of job 2, thread_state done
+  O-->>U: the turn of job 2
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Job1Open: first message
+  Job1Open --> Job1Over: done, failed or cancelled
+  Job1Over --> Job2Open: a user message (job_started 2, attempt 1)
+  Job2Open --> Job2Over: done, failed or cancelled
+  Job2Over --> Job3Open: a user message
+```
+
+Only the current job is stored (`threads.job`, with its `number`); earlier jobs are in the log between
+`job_started` events. The A2A side is a new task on the same context that names the previous one
+([ADR 0021](decisions/0021-context-across-a2a-tasks.md)).
 
 ### The default agent
 
@@ -476,7 +510,8 @@ stateDiagram-v2
 The two backward edges (checks fail → rework, change requests → rework) carry
 concrete findings and are bounded by budgets (attempts, wall clock, tokens).
 Exhausting a budget ends in `Failed` with the findings in the chat — never a
-silent "done".
+silent "done". A finished job is not the end of the thread: the next message starts the next job
+([Thread state](#thread-state)).
 
 ### Verifying, the rework loop and attempts
 
@@ -527,15 +562,17 @@ stateDiagram-v2
   Verifying --> Queued: a user message (no attempt counted)
   Verifying --> Cancelled: cancel
   Blocked --> Queued: a user message
-  Done --> [*]
-  Failed --> [*]
-  Cancelled --> [*]
+  Done --> Queued: a user message: the next job, attempt 1
+  Failed --> Queued: a user message: the next job, attempt 1
+  Cancelled --> Queued: a user message: the next job, attempt 1
 ```
 
 Three sources can be required, in any combination: CI on the pushed commit (a signed webhook,
 [ADR 0017](decisions/0017-ci-results-by-webhook.md)), the agent's own reported checks, and a verifier
 agent. The default gate is empty, which is today's behaviour. The attempts are 3 by default, raised no
-higher than 10; a target or a thread may add sources, never remove one its target requires. The chat
+higher than 10; a target or a thread may add sources, never remove one its target requires. The gate
+applies to **each job** of a thread (attempts start again at 1 with a new job), while verifications are counted
+per thread ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)). The chat
 shows a `verifying` badge, an attempt counter such as "2/3" and the findings per source
 ([`api/agui.md`](api/agui.md) carries the `vymalo.check`, `vymalo.rework` and `vymalo.ci` activities).
 

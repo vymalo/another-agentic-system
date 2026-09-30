@@ -447,7 +447,7 @@ stateDiagram-v2
   Inflight --> Delivered: the turn ended (done, blocked, failed, cancelled), or a cancel went through
   Inflight --> Dead: permanent error, attempts exhausted, or the agent lost the task
   Pending --> Skipped: a cancel arrived before the message was sent
-  Inflight --> Skipped: same, with an expired lease; or the thread was already finished
+  Inflight --> Skipped: same, with an expired lease; the thread was cancelled; or a cancel row of an earlier job
   Dead --> [*]: DeliveryFailed applied to the thread
   Delivered --> [*]
   Skipped --> [*]
@@ -467,6 +467,18 @@ What the diagrams cannot say:
   polling `GetTask`) instead of sending the message again. On a later attempt of a row whose `sent_at` was
   never set, the worker first asks the agent whether the message id, which is the outbox row id, already
   created a task (`find_task_by_message`).
+- **A delegation that finds its thread finished is redelivered, not lost.** A `delegate` row that has not reached the
+  agent (`sent_at` unset) and whose thread is `done` or `failed` when it is claimed is a message the person wrote
+  while the job was open: the dispatcher applies `Input::Redeliver { text }` (key `redeliver:<row id>`), which starts
+  the next job for it ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)), and skips the row. On a `cancelled`
+  thread it is skipped with "message not delivered: thread already finished", as before: the person asked to stop. An
+  A2UI action row keeps that failure.
+- **A cancel row names its job.** `OutboxPayload::Cancel { job }`; a row whose job is not the thread's current one is
+  finished without calling the agent, so a "stop" typed during job 1 never stops job 2. A row stored before the field
+  existed reads as "the current job".
+- **A new task names the previous one.** When the row starts a task that does not continue an `input-required` one,
+  `SendRequest.reference_task_ids` is the binding's previous task id ([ADR 0021](decisions/0021-context-across-a2a-tasks.md)),
+  never for the verifier.
 - **Defaults** (`DispatcherConfig::default()`, verified in the code 2026-09-29): 32 concurrent rows,
   30 s lease renewed every 10 s (the binary sets the lease from `OUTBOX_LEASE_SECS` and renews at a
   third of it), 5 send attempts, retry delay 1 s doubling to 60 s (or the agent's `Retry-After`
@@ -631,8 +643,9 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 
 | Input | `queued` / `working` | `blocked` | `done` / `failed` / `cancelled` |
 |---|---|---|---|
-| `UserMessage` | State kept; append `user_message`, `Delegate` | → `queued`; same commands | `Err(Finished)` (HTTP 409) |
-| `Cancel` | State kept; `RequestCancel` | State kept; `RequestCancel` | No-op |
+| `UserMessage` | State kept; append `user_message`, `Delegate` | → `queued`; same commands | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
+| `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
+| `Cancel` | State kept; `RequestCancel { job }` (the current job's number) | State kept; `RequestCancel { job }` | No-op |
 | Agent status `submitted` | Nothing | Nothing | `Err(InvalidInState)`, dropped as late |
 | Agent status `working` | `queued` → `working`; append `agent_status`. Repeated in `working`: shown only with a detail | → `working` | `Err(InvalidInState)` |
 | Agent status `input_required`, `auth_required` | → `blocked`; append `agent_status`, `thread_state` | State kept; shown again only with a detail | `Err(InvalidInState)` |
@@ -640,7 +653,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | Agent status `failed`, `rejected` | → `failed` (`rejected` prefixes the detail); `agent_status`, `thread_state` | → `failed` | `Err(InvalidInState)` |
 | Agent status `canceled` | → `cancelled`; `agent_status`, `thread_state` | → `cancelled` | `Err(InvalidInState)` |
 | Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message`, `ui_surface` or `error` | Same | `Err(InvalidInState)` |
-| User's A2UI action (`UiAction`) | State kept; append `ui_action`, delegate the action | → `queued`; the same | `Err(Finished)` |
+| User's A2UI action (`UiAction`) | State kept; append `ui_action`, delegate the action | → `queued`; the same | `Err(Finished)` (HTTP 409; the card belongs to a finished request) |
 | `DeliveryFailed`, retryable | → `blocked`; append `error`, and `thread_state` on entering | State kept; append `error` | State kept; append `error` |
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
 | `CancelledBeforeStart` | → `cancelled`; `thread_state` | → `cancelled` | No-op |
@@ -648,8 +661,29 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
 `cancelled`; entering `queued` or `working` is implied by `user_message` and `agent_status`. The
-property test (`tests/properties.rs`) checks that terminal states absorb, that a `thread_state`
-event names the state the thread entered, and that `completed` reaches `done` from every open state.
+property test (`tests/properties.rs`) checks that terminal states absorb every input except
+`UserMessage` and `Redeliver`, which start job *n+1* with attempt 1, the same gate and the verification count
+not reset; that a `thread_state` event names the state the thread entered; and that `completed` reaches
+`done` from every open state.
+
+**Jobs on a thread** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md), built 2026-09-30). A thread is
+a conversation; `done`, `failed` and `cancelled` end the *current job*, not the thread. `Job.number` (from 1;
+a stored ledger without one is job 1) says which job is current, and only the current job is stored. The
+boundary is written in the log: the event `job_started {job}` (actor `system`) follows the `user_message` that
+starts job *n+1*. `Job::next()` keeps the gate and the verification count and resets the rest:
+
+| Field | New job |
+|---|---|
+| `number` | *n* + 1 |
+| `gate` | kept (the thread's, fixed at creation) |
+| `verification` | kept, never reset: a timer, verdict or `verify` row of an earlier job is stale by the comparison the core already makes |
+| `attempt` | 1 |
+| `task` | the new message |
+| `pushed`, `results`, `summary`, `hold`, `branch_problem` | cleared |
+
+A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
+card), and a CI report for an earlier job's commit cannot decide job *n+1* (`about_the_push` compares the new
+job's pushed commit).
 
 **Built in the core** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and
@@ -675,10 +709,11 @@ it already (`crates/core/tests/gate.rs` has a row for each).
 | Agent status other than `failed`, `rejected`, `canceled` | Nothing: a repeat or a late update of a task that is over |
 | `CiReported` on `done` / `failed` / `cancelled` | Only the `ci_result` card is appended |
 
-The job also carries a `verification` counter that grows every time a thread enters `verifying`. A user
+The job also carries a `verification` counter that grows every time a thread enters `verifying`, **per thread**
+(a new job does not reset it, [ADR 0020](decisions/0020-a-thread-is-a-conversation.md)). A user
 message abandons a verification without using an attempt, so the next one has the same `attempt`; timers
-and verdicts name the `verification` they belong to, which is how a leftover of the abandoned one is
-recognised as stale.
+and verdicts name the `verification` they belong to, which is how a leftover of the abandoned one, or of an earlier
+job, is recognised as stale.
 
 **What each source needs** (`verify.rs`, pure functions of the job; [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)).
 Git is the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)), so every source judges the
@@ -922,6 +957,7 @@ pub enum ThreadState { Queued, Working, Verifying, Blocked, Done, Failed, Cancel
 /// Everything that can happen to a thread, already protocol-neutral.
 pub enum Input {
     UserMessage { user: UserId, text: String, message_id: Option<String>, run_id: Option<String> },
+    Redeliver { text: String },   // a user message already in the log whose delegation never reached the agent
     Cancel { user: UserId },
     Agent { agent: AgentId, revision: Option<String>, update: AgentUpdate },
     DeliveryFailed { reason: String, retryable: bool },
@@ -933,15 +969,15 @@ pub enum Input {
 pub enum Command {
     Append(EventDraft),          // → an event in the thread's log
     Delegate { text: String },   // → an outbox row, kind `delegate`
-    RequestCancel,               // → an outbox row, kind `cancel`
+    RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_) }
 
 pub enum TransitionError {
-    Finished { state: ThreadState },                        // a user message on a finished thread
+    Finished { state: ThreadState },                        // an A2UI action on a finished thread
     InvalidInState { state: ThreadState, input: &'static str }, // a late agent update
 }
 
@@ -1264,8 +1300,8 @@ erDiagram
 | `outbox` | Commands to dispatch (`delegate`, `cancel`) | Status, attempts, `next_attempt_at`, lease owner and expiry, `sent_at`; two partial indexes over the open rows |
 
 **Specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
-[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)). Two migrations, their numbers fixed
-now so that parallel slices do not collide:
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)). Migrations, their numbers fixed
+so that parallel slices do not collide:
 
 - **`0003` (slice 2, built):** `threads.job jsonb NOT NULL DEFAULT '{}'`, written in the same commit as
   `state` under the same `version` compare-and-swap (`Commit.job`); the `threads.state` and `events.kind`
@@ -1275,13 +1311,16 @@ now so that parallel slices do not collide:
 - **`0004` (slice 5, built):** the `inbox` and `watches` tables, with the partial indexes the claim,
   the re-arm and the expiry use (`inbox_pending`, `inbox_inflight`, `inbox_parked_correlation`,
   `inbox_parked_at`).
+- **`0005` (threads never lock, built):** `events.kind` gains `job_started` ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)).
+  Nothing else changes in the schema: `Job.number` lives inside `threads.job` (a ledger without it is job 1), and
+  the outbox's `cancel` payload gains a `job` inside its JSON.
 
 ```mermaid
 erDiagram
   threads ||--o{ inbox : "correlation, through watches"
   threads ||--o{ watches : "key to thread"
   threads {
-    jsonb job "0003: gate, attempt, verification, pushed, results, hold"
+    jsonb job "0003: gate, number, attempt, verification, pushed, results, hold"
     text state "0003: + verifying"
   }
   outbox {
