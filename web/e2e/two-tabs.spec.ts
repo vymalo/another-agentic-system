@@ -39,7 +39,9 @@ test("an answer given in one tab reaches the other, which was waiting for it", a
   await expect(log.getByText("main", { exact: true })).toBeVisible();
   await expect(badge(other)).toHaveText("Done");
   await expect(log.getByText("answered: main")).toHaveCount(1);
-  await expect(log.getByText("Needs input: Which branch?")).toHaveCount(1);
+  // the question is the agent's words, said once; its status line no longer repeats them
+  await expect(log.getByText("Which branch?", { exact: true })).toHaveCount(1);
+  await expect(log.getByText("Needs input", { exact: true })).toHaveCount(1);
 });
 
 test("reloading a blocked thread offers the answer again", async ({ page }) => {

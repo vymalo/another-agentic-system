@@ -72,6 +72,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -142,8 +143,14 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000001",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
       },
       "messageId": "evt-4",
@@ -162,6 +169,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:05Z",
         "status": "completed"
       },
       "messageId": "evt-5",
@@ -221,6 +229,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "2027-01-15T08:00:06Z",
         "attempt": 1,
         "commit": "0000000000000000000000000000000000000001",
         "source": "verifier",
@@ -242,6 +251,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "2027-01-15T08:00:07Z",
         "attempt": 1,
         "commit": "0000000000000000000000000000000000000001",
         "findings": [
@@ -275,6 +285,7 @@
     "event": {
       "activityType": "vymalo.rework",
       "content": {
+        "at": "2027-01-15T08:00:08Z",
         "attempt": 2,
         "findings": [
           {
@@ -336,6 +347,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:09Z",
         "status": "working"
       },
       "messageId": "evt-9",
@@ -406,8 +418,14 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000002",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
       },
       "messageId": "evt-11",
@@ -426,6 +444,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:12Z",
         "status": "completed"
       },
       "messageId": "evt-12",
@@ -485,6 +504,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "2027-01-15T08:00:13Z",
         "attempt": 2,
         "commit": "0000000000000000000000000000000000000002",
         "source": "verifier",
@@ -506,6 +526,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "2027-01-15T08:00:14Z",
         "attempt": 2,
         "commit": "0000000000000000000000000000000000000002",
         "source": "verifier",

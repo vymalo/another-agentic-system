@@ -24,6 +24,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       }
     },
@@ -33,6 +34,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:03Z",
         "detail": "Reading the repository",
         "status": "working"
       }
@@ -50,6 +52,8 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "kind": "file",
         "name": "result",
         "text": "echo: talk to me",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -61,6 +65,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:06Z",
         "status": "completed"
       }
     }

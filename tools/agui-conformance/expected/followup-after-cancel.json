@@ -36,6 +36,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       }
     },
@@ -45,6 +46,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:03Z",
         "detail": "canceled",
         "status": "canceled"
       }
@@ -59,6 +61,7 @@
       "role": "activity",
       "activityType": "vymalo.job",
       "content": {
+        "at": "2027-01-15T08:00:06Z",
         "job": 2
       }
     },
@@ -68,6 +71,7 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:07Z",
         "status": "working"
       }
     },
@@ -77,6 +81,8 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "kind": "file",
         "name": "result",
         "text": "echo: echo never mind, do this",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -88,6 +94,7 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:09Z",
         "status": "completed"
       }
     }

@@ -96,8 +96,17 @@ async fn an_action_is_delivered_to_the_same_task_and_answers_the_wait() {
         .iter()
         .find(|f| f.event["activityType"] == "vymalo.action")
         .expect("the requester is shown what it did");
+    let mut content = action.event["content"].clone();
+    assert!(
+        content
+            .as_object_mut()
+            .unwrap()
+            .remove("at")
+            .is_some_and(|at| at.is_string()),
+        "every vymalo activity says when"
+    );
     assert_eq!(
-        action.event["content"],
+        content,
         json!({"surfaceId": "s1", "name": "go", "sourceComponentId": "go",
                "context": {"choice": "a"}})
     );

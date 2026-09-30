@@ -2,7 +2,9 @@
 //! Everything here is a function of the thread record and its event log.
 
 use orch_app::{App, AppError};
-use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadRecord, UserId};
+use orch_core::{
+    CheckSource, CheckStatus, EventBody, EventKind, ThreadRecord, UserId, pull_request_url,
+};
 use orch_ports::Ports;
 use serde::Serialize;
 
@@ -10,8 +12,6 @@ use serde::Serialize;
 /// store, whatever the length of the log. A job that produced more artifacts than this after
 /// its pull request shows none.
 const ARTIFACTS_LOOKED_AT: u32 = 32;
-/// The longest pull request URL that is passed on.
-const MAX_URL_BYTES: usize = 2048;
 /// Longest texts of the summary that come from outside (a CI provider, an agent, a verifier).
 /// They are untrusted, and one tool result must stay small.
 const MAX_NAME_CHARS: usize = 256;
@@ -122,39 +122,6 @@ fn cap(text: &str, max: usize) -> String {
     let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
     cut.push('…');
     cut
-}
-
-/// The URL of a pull request artifact: the agents name it `pull_request` (a data part whose JSON
-/// has a `url`) or "Pull request" (a url part), and the URL is in `uri` or in the JSON text.
-/// Only an `https` URL of a reasonable length, without spaces or control characters, is passed
-/// on: the artifact is agent output, and a client may show it as a link.
-fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Option<String> {
-    let name: String = name
-        .chars()
-        .map(|c| {
-            if c == '_' || c == '-' {
-                ' '
-            } else {
-                c.to_ascii_lowercase()
-            }
-        })
-        .collect();
-    if name.trim() != "pull request" {
-        return None;
-    }
-    let from_json = || {
-        let value: serde_json::Value = serde_json::from_str(text?).ok()?;
-        ["url", "html_url"]
-            .iter()
-            .find_map(|key| value.get(key)?.as_str().map(str::to_owned))
-    };
-    let url = uri.map(str::to_owned).or_else(from_json)?;
-    let plausible = url.len() <= MAX_URL_BYTES
-        && url
-            .strip_prefix("https://")
-            .is_some_and(|rest| !rest.is_empty())
-        && !url.chars().any(|c| c.is_control() || c.is_whitespace());
-    plausible.then_some(url)
 }
 
 /// The newest pull request the log mentions, from one bounded read of the newest artifacts.
@@ -416,42 +383,5 @@ mod tests {
         );
         assert!(!s.finished);
         assert!(summary_of(&record(ThreadState::Done, Job::default()), None).finished);
-    }
-
-    #[test]
-    fn a_pull_request_artifact_is_recognised_by_name_from_either_agent_shape() {
-        let url = "https://github.com/acme/demo/pull/1";
-        // The mock agent: a url part.
-        assert_eq!(
-            pull_request_url("Pull request", Some(url), None).as_deref(),
-            Some(url)
-        );
-        // adam-coder: a data part, JSON in the text.
-        assert_eq!(
-            pull_request_url("pull_request", None, Some(&format!(r#"{{"url":"{url}"}}"#)))
-                .as_deref(),
-            Some(url)
-        );
-        assert_eq!(pull_request_url("branch", Some(url), None), None);
-        // Only https, of a reasonable length, on one line.
-        for bad in [
-            "http://github.com/acme/demo/pull/1",
-            "javascript:alert(1)",
-            "https://",
-            "https://github.com/a b",
-            "https://github.com/a\nb",
-            &format!("https://github.com/{}", "a".repeat(3000)),
-        ] {
-            assert_eq!(
-                pull_request_url("Pull request", Some(bad), None),
-                None,
-                "{bad:?}"
-            );
-        }
-        assert_eq!(
-            pull_request_url("pull_request", None, Some("not json")),
-            None
-        );
-        assert_eq!(pull_request_url("pull_request", None, None), None);
     }
 }

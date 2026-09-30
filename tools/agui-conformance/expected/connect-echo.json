@@ -24,6 +24,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -33,6 +34,8 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "kind": "file",
         "name": "result",
         "text": "echo: echo hi",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -44,6 +47,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     }

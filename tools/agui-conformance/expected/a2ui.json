@@ -33,6 +33,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       }
     },
@@ -94,12 +95,19 @@
       }
     },
     {
+      "id": "st-5",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Pick one"
+    },
+    {
       "id": "evt-5",
       "role": "activity",
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
-        "detail": "Pick one",
+        "at": "2027-01-15T08:00:05Z",
         "status": "input_required"
       }
     },
@@ -108,6 +116,7 @@
       "role": "activity",
       "activityType": "vymalo.action",
       "content": {
+        "at": "2027-01-15T08:00:07Z",
         "context": {
           "choice": "a"
         },
@@ -122,6 +131,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:08Z",
         "status": "working"
       }
     },
@@ -131,6 +141,8 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "kind": "file",
         "name": "result",
         "text": "answered: ui-action go",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -142,6 +154,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:10Z",
         "status": "completed"
       }
     }

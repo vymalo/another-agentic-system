@@ -65,6 +65,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -97,6 +98,8 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "kind": "file",
         "name": "result",
         "text": "echo: echo hi",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -117,6 +120,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:04Z",
         "status": "completed"
       },
       "messageId": "evt-4",

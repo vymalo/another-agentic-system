@@ -29,7 +29,8 @@ pub fn flatten(frames: &[Vec<Frame>]) -> Vec<Frame> {
 }
 
 /// A one-line rendering of a frame for readable assertions: the type, the ids that name it, the
-/// attribution, and (for the frames that carry one) the payload.
+/// attribution, and (for the frames that carry one) the payload. An activity's `at` (the event's
+/// time, on every `vymalo.*` activity) is left out: `projection.rs` checks it once.
 pub fn line(frame: &Frame) -> String {
     use orch_agui_proto::Event as E;
     let id = frame
@@ -83,7 +84,12 @@ pub fn line(frame: &Frame) -> String {
             "ACTIVITY_SNAPSHOT {} {} {}{}",
             e.message_id,
             e.activity_type,
-            serde_json::to_string(&e.content).unwrap(),
+            serde_json::to_string(&{
+                let mut content = e.content.clone();
+                content.remove("at");
+                content
+            })
+            .unwrap(),
             subagent(e.subagent_run_id.as_ref())
         ),
         E::SubagentStarted(e) => format!("SUBAGENT_STARTED {} {}", e.subagent_run_id, e.name),

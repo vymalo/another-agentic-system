@@ -58,9 +58,9 @@ use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
-    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED,
-    CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED, actor_metadata,
-    problem_metadata, response_schema, status_content,
+    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, AT_KEY,
+    CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED,
+    actor_metadata, problem_metadata, response_schema, status_content,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -209,6 +209,58 @@ pub struct Projector {
     /// The actor of the agent's last event, so that a rework can start the next attempt's
     /// invocation under the same name and revision.
     last_agent: Option<Actor>,
+    /// The text of the open invocation's last final agent message: a status whose words are the
+    /// same is not said twice.
+    last_final: Option<String>,
+}
+
+/// The event's time, as the log writes it (RFC 3339): the `at` of every `vymalo.*` activity.
+fn at_of(ev: &Event) -> Value {
+    Value::from(ev.at.to_string())
+}
+
+/// The first `n` characters of a commit hash.
+fn short_sha(commit: &str) -> String {
+    commit.chars().take(SHORT_SHA_CHARS).collect()
+}
+
+/// What a `vymalo.artifact` adds to the artifact as sent: its `kind` and the fields a card needs,
+/// from [`recognise_artifact`]. A `branch` or `checks` artifact that cannot be used is a `file`.
+fn typed_artifact(d: &ArtifactData) -> Metadata {
+    let mut out = Metadata::new();
+    let mut put = |key: &str, value: Value| {
+        out.insert(key.to_owned(), value);
+    };
+    match recognise_artifact(&d.name, d.uri.as_deref(), d.text.as_deref()) {
+        Recognised::Branch(pushed) => {
+            put("kind", Value::from("branch"));
+            put("repository", Value::from(pushed.repository));
+            put("branch", Value::from(pushed.branch));
+            put("shortSha", Value::from(short_sha(&pushed.commit)));
+            put("sha", Value::from(pushed.commit));
+        }
+        Recognised::Checks(report) => {
+            put("kind", Value::from("checks"));
+            put("passed", Value::from(report.passed));
+            put("shortSha", Value::from(short_sha(&report.commit)));
+            put("sha", Value::from(report.commit));
+        }
+        Recognised::PullRequest(pr) => {
+            put("kind", Value::from("pull_request"));
+            put("url", Value::from(pr.url));
+            if let Some(number) = pr.number {
+                put("number", Value::from(number));
+            }
+            if let Some(repository) = pr.repository {
+                put("repository", Value::from(repository));
+            }
+            if let Some(branch) = pr.branch {
+                put("branch", Value::from(branch));
+            }
+        }
+        Recognised::Malformed { .. } | Recognised::Other => put("kind", Value::from("file")),
+    }
+    out
 }
 
 fn is_active(state: ThreadState) -> bool {
@@ -245,6 +297,7 @@ impl Projector {
             sha: None,
             checks_failed: false,
             last_agent: None,
+            last_final: None,
         }
     }
 
@@ -409,6 +462,9 @@ impl Projector {
         let opened = self.ensure_run(ev, out);
         self.ensure_invocation(ev, out);
         self.say(ev, d, out);
+        if d.is_final {
+            self.last_final = Some(d.text.clone());
+        }
         if opened {
             self.settle(ev, out);
         }
@@ -514,11 +570,25 @@ impl Projector {
         }
         let opened = self.ensure_run(ev, out);
         self.ensure_invocation(ev, out);
+        // What the agent says when it finishes or asks is its answer: an assistant message in the
+        // transcript, not a detail of the status (unless it said exactly that already).
+        let speaks = matches!(
+            d.status,
+            AgentStatus::Completed | AgentStatus::InputRequired | AgentStatus::AuthRequired
+        );
+        if speaks
+            && let Some(detail) = d.detail.as_deref()
+            && !detail.trim().is_empty()
+            && self.last_final.as_deref().map(str::trim) != Some(detail.trim())
+        {
+            self.say_status(ev, detail, out);
+        }
+        let detail = if speaks { None } else { d.detail.as_deref() };
         out.push(self.activity(
             format!("evt-{}", ev.seq),
             ACTIVITY_STATUS,
-            status_content(d.status, d.detail.as_deref()),
-            &ev.actor,
+            status_content(d.status, detail),
+            ev,
             true,
         ));
         match d.status {
@@ -578,6 +648,29 @@ impl Projector {
         }
     }
 
+    /// The words of a `completed`, `input_required` or `auth_required` status, as an assistant
+    /// message of the open invocation: `TEXT_MESSAGE_START/CONTENT/END` with the id `st-<seq>`,
+    /// named after the agent. A message still open is closed first.
+    fn say_status(&mut self, ev: &Event, detail: &str, out: &mut Vec<agui::Event>) {
+        self.close_text(out);
+        let Some(inv) = self.invocation.clone() else {
+            return;
+        };
+        let wire_id = agui::MessageId::new(format!("st-{}", ev.seq));
+        self.message_ids.insert(wire_id.as_str().to_owned());
+        let mut start = TextMessageStartEvent::new(wire_id.clone(), TextMessageRole::Assistant);
+        start.name = Some(inv.name.clone());
+        start.subagent_run_id = Some(inv.id.clone());
+        start.base.metadata = Some(actor_metadata(&ev.actor));
+        out.push(start.into());
+        let mut content = TextMessageContentEvent::new(wire_id.clone(), detail);
+        content.subagent_run_id = Some(inv.id.clone());
+        out.push(content.into());
+        let mut end = TextMessageEndEvent::new(wire_id);
+        end.subagent_run_id = Some(inv.id);
+        out.push(end.into());
+    }
+
     fn on_artifact(&mut self, ev: &Event, d: &ArtifactData, out: &mut Vec<agui::Event>) {
         let opened = self.ensure_run(ev, out);
         self.ensure_invocation(ev, out);
@@ -585,11 +678,12 @@ impl Projector {
         // while the thread is verified, and so is `job.sha`.
         if self.meta.gate.is_active()
             && self.state != ThreadState::Verifying
-            && let Recognised::Branch(pushed) = recognise_artifact(&d.name, d.text.as_deref())
+            && let Recognised::Branch(pushed) =
+                recognise_artifact(&d.name, d.uri.as_deref(), d.text.as_deref())
         {
             self.sha = Some(pushed.commit);
         }
-        let mut content = Metadata::new();
+        let mut content = typed_artifact(d);
         content.insert("name".to_owned(), Value::from(d.name.clone()));
         for (key, value) in [
             ("mimeType", &d.mime_type),
@@ -604,7 +698,7 @@ impl Projector {
             format!("evt-{}", ev.seq),
             ACTIVITY_ARTIFACT,
             content,
-            &ev.actor,
+            ev,
             true,
         ));
         if opened {
@@ -684,13 +778,7 @@ impl Projector {
         let opened = self.ensure_run(ev, out);
         let mut content = Metadata::new();
         content.insert("job".to_owned(), Value::from(d.job));
-        out.push(self.activity(
-            format!("job-{}", d.job),
-            ACTIVITY_JOB,
-            content,
-            &ev.actor,
-            false,
-        ));
+        out.push(self.activity(format!("job-{}", d.job), ACTIVITY_JOB, content, ev, false));
         if !begun && !opened {
             out.push(self.state_snapshot());
         }
@@ -744,7 +832,7 @@ impl Projector {
             format!("evt-{}", ev.seq),
             ACTIVITY_ACTION,
             content,
-            &ev.actor,
+            ev,
             false,
         ));
     }
@@ -786,10 +874,11 @@ impl Projector {
         if verifier && d.status == CheckStatus::Pending {
             self.open_verifier(out);
         }
-        let content = match serde_json::to_value(d) {
+        let mut content = match serde_json::to_value(d) {
             Ok(Value::Object(map)) => map,
             Ok(_) | Err(_) => Metadata::new(),
         };
+        content.insert(AT_KEY.to_owned(), at_of(ev));
         let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_CHECK, content);
         snapshot.replace = Some(true);
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
@@ -879,10 +968,7 @@ impl Projector {
         content.insert("conclusion".to_owned(), Value::from(d.conclusion.as_str()));
         content.insert("passed".to_owned(), Value::Bool(d.conclusion.passes()));
         content.insert("sha".to_owned(), Value::from(d.sha.as_str()));
-        content.insert(
-            "shortSha".to_owned(),
-            Value::from(d.sha.chars().take(SHORT_SHA_CHARS).collect::<String>()),
-        );
+        content.insert("shortSha".to_owned(), Value::from(short_sha(&d.sha)));
         content.insert(
             "provider".to_owned(),
             serde_json::to_value(d.provider).unwrap_or(Value::Null),
@@ -907,6 +993,7 @@ impl Projector {
                 content.insert(key.to_owned(), Value::from(value));
             }
         }
+        content.insert(AT_KEY.to_owned(), at_of(ev));
         let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_CI, content);
         snapshot.replace = Some(false);
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
@@ -934,10 +1021,11 @@ impl Projector {
         } else {
             format!("rework-{}", d.attempt)
         };
-        let content = match serde_json::to_value(d) {
+        let mut content = match serde_json::to_value(d) {
             Ok(Value::Object(map)) => map,
             Ok(_) | Err(_) => Metadata::new(),
         };
+        content.insert(AT_KEY.to_owned(), at_of(ev));
         let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_REWORK, content);
         snapshot.replace = Some(true);
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
@@ -955,6 +1043,7 @@ impl Projector {
             };
             out.push(Self::subagent_started(&inv).into());
             self.invocation = Some(inv);
+            self.last_final = None;
         }
         out.push(self.state_snapshot());
         if opened {
@@ -987,7 +1076,7 @@ impl Projector {
             format!("evt-{}", ev.seq),
             ACTIVITY_ERROR,
             content,
-            &ev.actor,
+            ev,
             false,
         )
     }
@@ -1004,7 +1093,7 @@ impl Projector {
             format!("evt-{}", ev.seq),
             ACTIVITY_ERROR,
             content,
-            &ev.actor,
+            ev,
             false,
         ));
         // An `error` right after a failed check is the gate running out of attempts; any other
@@ -1138,6 +1227,7 @@ impl Projector {
         }
         out.push(Self::subagent_started(&inv).into());
         self.invocation = Some(inv);
+        self.last_final = None;
     }
 
     fn subagent_started(inv: &Invocation) -> SubagentStartedEvent {
@@ -1321,20 +1411,24 @@ impl Projector {
 
     /// An `ACTIVITY_SNAPSHOT`, attributed to the open invocation when `attribute`. The activity
     /// is a message of its own, so its id joins the ids the thread already holds.
+    ///
+    /// Every `vymalo.*` activity says when its event happened (`at`, the event's time), so a
+    /// client can show it without keeping the log.
     fn activity(
         &mut self,
         id: String,
         activity_type: &str,
-        content: Metadata,
-        actor: &Actor,
+        mut content: Metadata,
+        ev: &Event,
         attribute: bool,
     ) -> agui::Event {
         self.message_ids.insert(id.clone());
+        content.insert(AT_KEY.to_owned(), at_of(ev));
         let mut snapshot = ActivitySnapshotEvent::new(id, activity_type, content);
         if attribute {
             snapshot.subagent_run_id = self.invocation.as_ref().map(|i| i.id.clone());
         }
-        snapshot.base.metadata = Some(actor_metadata(actor));
+        snapshot.base.metadata = Some(actor_metadata(&ev.actor));
         snapshot.into()
     }
 }

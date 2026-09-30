@@ -65,6 +65,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -97,6 +98,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:03Z",
         "detail": "canceled",
         "status": "canceled"
       },
@@ -200,6 +202,7 @@
     "event": {
       "activityType": "vymalo.job",
       "content": {
+        "at": "2027-01-15T08:00:06Z",
         "job": 2
       },
       "messageId": "job-2",
@@ -230,6 +233,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:07Z",
         "status": "working"
       },
       "messageId": "evt-7",
@@ -263,6 +267,8 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "kind": "file",
         "name": "result",
         "text": "echo: echo never mind, do this",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -283,6 +289,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:09Z",
         "status": "completed"
       },
       "messageId": "evt-9",

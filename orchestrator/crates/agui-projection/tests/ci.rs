@@ -77,11 +77,11 @@ fn a_report_is_a_vymalo_ci_card_about_a_commit_and_a_check() {
         ],
         &ci_gate(),
     );
-    let seq = events
+    let report = events
         .iter()
         .find(|e| matches!(e.body, EventBody::CiResult(_)))
-        .unwrap()
-        .seq;
+        .unwrap();
+    let seq = report.seq;
     let cards = cards(&frames);
     assert_eq!(cards.len(), 1);
     let (id, replace, content) = &cards[0];
@@ -100,6 +100,7 @@ fn a_report_is_a_vymalo_ci_card_about_a_commit_and_a_check() {
             "branch": "agent/x",
             "url": "https://ci.example.com/runs/1",
             "summary": "2 tests failed",
+            "at": report.at.to_string(),
         })
     );
 }

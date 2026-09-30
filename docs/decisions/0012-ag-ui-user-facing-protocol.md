@@ -87,6 +87,20 @@
   still a 409 ("this card belongs to a finished request"). A run is still open exactly while the thread is
   `queued`, `working` or `verifying`. The decision stands.
 
+  Status note (2026-09-30): the projection speaks for the agent the way a chat reads it (the owner, after
+  the first live runs: "It should feel like a classical chat, not a machine to machine chat interface").
+  (1) The words of an `agent_status` `completed`, `input_required` or `auth_required` are an AG-UI
+  assistant message, `TEXT_MESSAGE_START/CONTENT/END` with the id `st-<seq>` and the agent as `name`, in
+  the open invocation and before the status activity; the `vymalo.status` of those statuses no longer
+  carries `detail`, and words equal to the invocation's last final agent message are not said twice.
+  `failed` stays an error, `working` stays a step. (2) Every `vymalo.*` activity carries `at`, the time of
+  its event. (3) `vymalo.artifact` carries `kind` (`branch`, `checks`, `pull_request`, `file`) and the
+  fields a card needs, read by `orch_core::recognise_artifact`, which now also recognises a pull request
+  (the recognition moved from the MCP surface into the core, so both surfaces agree). All three are
+  additive for a client that ignores unknown members, except that a client which showed a status
+  `detail` now finds the words in the transcript instead. Details:
+  [`api/agui.md`](../api/agui.md#the-agents-words). The decision stands.
+
 ## Context
 
 The owner: "I prefer we use standards. Because the industry might use it in the future."

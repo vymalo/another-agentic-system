@@ -397,6 +397,8 @@ pub fn examples_dir() -> std::path::PathBuf {
 }
 
 /// `{"id"?, "event"}` per frame, the thread id as a placeholder, like the projection's goldens.
+/// An activity's `at` (the time of its event, a real clock here) is `<timestamp>`, as in the
+/// events goldens.
 pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
     fn placeholder(v: &mut Value, thread: &str) {
         match v {
@@ -415,7 +417,13 @@ pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
                 if let Some(id) = f.id {
                     frame.insert("id".to_owned(), json!(id));
                 }
-                frame.insert("event".to_owned(), f.event.clone());
+                let mut event = f.event.clone();
+                if event["type"] == "ACTIVITY_SNAPSHOT"
+                    && let Some(at) = event["content"].get_mut("at")
+                {
+                    *at = json!("<timestamp>");
+                }
+                frame.insert("event".to_owned(), event);
                 Value::Object(frame)
             })
             .collect(),

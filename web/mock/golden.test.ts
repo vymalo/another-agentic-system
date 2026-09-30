@@ -12,7 +12,8 @@ import { createMockServer } from "./server";
  * golden of docs/api/examples/agui (`<name>.agui.json`, written by orch-agui-projection from the
  * golden event log). The ids a client chooses are the ones the golden has (`evt-1`, `run-5`); what
  * is legitimately different is normalised: the thread id, the user's and the agent's names (the
- * mock's `reviewer` plays the orchestrator test's `plain`) and an agent message's id.
+ * mock's `reviewer` plays the orchestrator test's `plain`), an agent message's id and the time of
+ * an activity (`at`: the mock's clock is real, the golden's is fixed; both must have one).
  */
 
 type Thread = components["schemas"]["Thread"];
@@ -234,6 +235,20 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
     },
   };
 
+/** Every activity's `at` becomes `<timestamp>`; one without it fails the comparison. */
+function untimed(list: Frame[]): Frame[] {
+  return list.map((f) => {
+    const content = f.event.content;
+    if (f.event.type !== "ACTIVITY_SNAPSHOT" || typeof content !== "object" || content === null) {
+      return f;
+    }
+    const at = (content as Record<string, unknown>).at;
+    if (at === undefined) return f;
+    expect(typeof at).toBe("string");
+    return { ...f, event: { ...f.event, content: { ...content, at: "<timestamp>" } } };
+  });
+}
+
 /** Names and ids that legitimately differ between the mock and the golden. */
 function normalise(list: Frame[], threadId: string): Frame[] {
   const text = JSON.stringify(list)
@@ -274,7 +289,7 @@ describe("the mock server against the AG-UI goldens", () => {
       const { last } = await run(id);
       await waitForState(id, last);
       const viewer = await frames(await connect(base, id, { mode: "run" }));
-      expect(normalise(viewer, id)).toEqual(golden);
+      expect(untimed(normalise(viewer, id))).toEqual(untimed(golden));
     });
   }
 

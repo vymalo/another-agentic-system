@@ -936,13 +936,37 @@ pub struct ChecksReport {
     pub findings: Vec<String>,
 }
 
-/// What an agent's artifact means to the gate.
+/// Most bytes of a pull request URL that is passed on.
+pub const MAX_URL_BYTES: usize = 2048;
+
+/// A pull request the agent opened. The gate has no opinion on it; a chat shows it as a card and
+/// the MCP surface reports its URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestRef {
+    /// Its `https` URL (see [`pull_request_url`]).
+    pub url: String,
+    /// Its number: the payload's `number` (a JSON number or a string of digits, since A2A carries
+    /// numbers as floats), else the last segment of a `/pull/<n>`, `/pulls/<n>` or
+    /// `/merge_requests/<n>` URL.
+    pub number: Option<u64>,
+    /// The repository as [`repo_key`] normalises it: the payload's `repository`, else the part of
+    /// the URL before `/pull/` (or `/pulls/`, `/-/merge_requests/`, `/merge_requests/`).
+    pub repository: Option<String>,
+    /// The payload's `branch` (the head), when git accepts it as a branch name.
+    pub branch: Option<String>,
+}
+
+/// What an agent's artifact means to the gate, and to a chat that shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recognised {
     /// `branch {repository, branch, commit}`: the agent pushed.
     Branch(PushedRef),
     /// `checks {passed, commit, summary?, findings?}`: the agent's own checks.
     Checks(ChecksReport),
+    /// `pull_request {url, number?, repository?, branch?}` (a data part) or "Pull request" (a url
+    /// part): the agent opened a pull request. Not read by the gate. A pull request artifact
+    /// without a usable URL is [`Recognised::Other`].
+    PullRequest(PullRequestRef),
     /// One of the two names, but the payload cannot be used.
     Malformed {
         /// Which artifact.
@@ -963,9 +987,102 @@ pub enum KnownArtifact {
     Checks,
 }
 
-/// Reads the artifact `name` with the inline JSON `text` (an A2A data part arrives as JSON
-/// text). Pure: nothing is looked up.
-pub fn recognise_artifact(name: &str, text: Option<&str>) -> Recognised {
+/// The URL of a pull request artifact: the agents name it `pull_request` (a data part whose JSON
+/// has a `url`) or "Pull request" (a url part), and the URL is in `uri` or in the JSON text (`url`
+/// or `html_url`). Only an `https` URL of at most [`MAX_URL_BYTES`], without spaces or control
+/// characters, is passed on: the artifact is agent output, and a client may show it as a link.
+/// Pure.
+pub fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Option<String> {
+    if !is_pull_request_name(name) {
+        return None;
+    }
+    let from_json = || {
+        let value: Value = serde_json::from_str(text?).ok()?;
+        ["url", "html_url"]
+            .iter()
+            .find_map(|key| value.get(key)?.as_str().map(str::to_owned))
+    };
+    let url = uri.map(str::to_owned).or_else(from_json)?;
+    let plausible = url.len() <= MAX_URL_BYTES
+        && url
+            .strip_prefix("https://")
+            .is_some_and(|rest| !rest.is_empty())
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace());
+    plausible.then_some(url)
+}
+
+/// `pull_request`, "Pull request", `pull-request`: case, `_` and `-` do not matter.
+fn is_pull_request_name(name: &str) -> bool {
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c == '_' || c == '-' {
+                ' '
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    name.trim() == "pull request"
+}
+
+/// The pull request of the artifact `name` (see [`pull_request_url`]), with what else its payload
+/// or its URL say.
+fn recognise_pull_request(
+    name: &str,
+    uri: Option<&str>,
+    text: Option<&str>,
+) -> Option<PullRequestRef> {
+    let url = pull_request_url(name, uri, text)?;
+    let payload: Option<serde_json::Map<String, Value>> = text
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .and_then(|v| match v {
+            Value::Object(map) => Some(map),
+            _ => None,
+        });
+    let field = |key: &str| payload.as_ref().and_then(|p| p.get(key));
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let (base, tail) = [
+        "/-/merge_requests/",
+        "/merge_requests/",
+        "/pulls/",
+        "/pull/",
+    ]
+    .iter()
+    .find_map(|marker| path.rsplit_once(marker))
+    .map_or((None, None), |(base, tail)| (Some(base), Some(tail)));
+    let number = match field("number") {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(s)) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .or_else(|| {
+        let digits = tail?.split('/').next()?;
+        digits.parse().ok()
+    });
+    let repository = field("repository")
+        .and_then(Value::as_str)
+        .and_then(repo_key)
+        .or_else(|| base.and_then(repo_key));
+    let branch = field("branch")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|b| is_branch_name(b))
+        .map(str::to_owned);
+    Some(PullRequestRef {
+        url,
+        number,
+        repository,
+        branch,
+    })
+}
+
+/// Reads the artifact `name` with its `uri` and the inline JSON `text` (an A2A data part arrives
+/// as JSON text). Pure: nothing is looked up.
+pub fn recognise_artifact(name: &str, uri: Option<&str>, text: Option<&str>) -> Recognised {
+    if let Some(pull_request) = recognise_pull_request(name, uri, text) {
+        return Recognised::PullRequest(pull_request);
+    }
     let artifact = match name {
         "branch" => KnownArtifact::Branch,
         "checks" => KnownArtifact::Checks,

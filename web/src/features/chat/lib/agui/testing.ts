@@ -22,6 +22,13 @@ export function loadGolden(name: string, threadId = THREAD_ID): GoldenFrame[] {
   return JSON.parse(text) as GoldenFrame[];
 }
 
+/** The frames of a golden up to and including the resume point `id` (the end of a run, say). */
+export function framesThrough(frames: GoldenFrame[], id: number): GoldenFrame[] {
+  const end = frames.findIndex((f) => f.id === id);
+  if (end < 0) throw new Error(`no resume point ${id} in the golden`);
+  return frames.slice(0, end + 1);
+}
+
 /** One SSE frame as the orchestrator writes it. */
 export const frameText = ({ id, event }: GoldenFrame): string =>
   `${id === undefined ? "" : `id: ${id}\n`}data: ${JSON.stringify(event)}\n\n`;

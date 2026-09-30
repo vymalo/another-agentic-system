@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, configure, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { LiveStream, loadGolden, sse } from "./testing";
+import { framesThrough, LiveStream, loadGolden, sse } from "./testing";
 import { mountRuntime, type Summary, summarize } from "./testing-runtime";
 
 configure({ asyncUtilTimeout: 10_000 });
@@ -53,7 +53,11 @@ const EXPECTED: Record<string, Summary> = {
   ask: [
     USER("ask about branches"),
     // its interrupt was answered by the next run, so the runtime closed it
-    { role: "assistant", status: DONE, parts: [ACTOR, "status:working", "status:input_required"] },
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [ACTOR, "status:working", "text:Which branch?", "status:input_required"],
+    },
     USER("main"),
     {
       role: "assistant",
@@ -97,7 +101,7 @@ const EXPECTED: Record<string, Summary> = {
     {
       role: "assistant",
       status: DONE,
-      parts: [ACTOR, "status:working", "a2ui-surface", "status:input_required"],
+      parts: [ACTOR, "status:working", "a2ui-surface", "text:Pick one", "status:input_required"],
     },
     {
       role: "assistant",
@@ -254,7 +258,8 @@ describe("the goldens through the runtime", () => {
     const mounted = mountRuntime(() => sse(stream.body));
     mounted.agent.start();
     await act(async () => {
-      stream.frames(loadGolden("ask").slice(0, 12));
+      // the first run: up to the frame that closes it (resume point 4)
+      stream.frames(framesThrough(loadGolden("ask"), 4));
     });
     await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(4));
     await waitFor(() => expect(mounted.messages()).toHaveLength(2));

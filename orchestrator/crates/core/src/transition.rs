@@ -578,7 +578,7 @@ fn agent_input(
             match state {
                 ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
                     if job.gate.is_active() {
-                        cmds.extend(note_artifact(job, name, text.as_deref()));
+                        cmds.extend(note_artifact(job, name, uri.as_deref(), text.as_deref()));
                     }
                 }
                 ThreadState::Verifying
@@ -777,8 +777,8 @@ fn same_repository(a: &str, b: &str) -> bool {
 }
 
 /// What the gate makes of an artifact of the agent. Only called under an active gate.
-fn note_artifact(job: &mut Job, name: &str, text: Option<&str>) -> Vec<Command> {
-    match recognise_artifact(name, text) {
+fn note_artifact(job: &mut Job, name: &str, uri: Option<&str>, text: Option<&str>) -> Vec<Command> {
+    match recognise_artifact(name, uri, text) {
         Recognised::Branch(pushed) => {
             if job.pushed.as_ref() == Some(&pushed) {
                 return Vec::new();
@@ -844,7 +844,8 @@ fn note_artifact(job: &mut Job, name: &str, text: Option<&str>) -> Vec<Command> 
             job.branch_problem = Some(truncate_to(&reason, 512).to_owned());
             Vec::new()
         }
-        Recognised::Other => Vec::new(),
+        // The gate has no opinion on a pull request (the checks decide, not the agent opening one).
+        Recognised::PullRequest(_) | Recognised::Other => Vec::new(),
     }
 }
 
