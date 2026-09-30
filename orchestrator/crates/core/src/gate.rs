@@ -51,7 +51,8 @@ impl CheckSource {
     ];
 
     /// The spelling configuration uses (`ORCH_GATE`, `AGENTS_FILE`, `forwardedProps`): the wire
-    /// spelling of [`as_str`](Self::as_str) with dashes.
+    /// spelling of [`as_str`](Self::as_str) with dashes. Input accepts both
+    /// ([`from_config_name`](Self::from_config_name)); the API only emits the wire spelling.
     pub fn config_name(self) -> &'static str {
         match self {
             CheckSource::Ci => "ci",
@@ -60,11 +61,13 @@ impl CheckSource {
         }
     }
 
-    /// The source a configuration spelling names.
+    /// The source a spelling names: the configuration spelling (`agent-checks`) or the wire
+    /// spelling the API emits (`agent_checks`), so a `gate` read from `Thread.job` or a
+    /// `check_result` can be sent back as a request.
     pub fn from_config_name(name: &str) -> Option<CheckSource> {
         CheckSource::ALL
             .into_iter()
-            .find(|source| source.config_name() == name)
+            .find(|source| source.config_name() == name || source.as_str() == name)
     }
 
     /// The wire spelling.

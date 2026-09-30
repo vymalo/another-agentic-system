@@ -526,7 +526,7 @@ for a request, so the same thing is refused in the same words everywhere.
 
 | Layer | Where | Members |
 |---|---|---|
-| Deployment | `ORCH_GATE` (comma list of `ci`, `agent-checks`, `verifier`; default none: today's behaviour), `ORCH_MAX_ATTEMPTS` (3), `ORCH_MAX_ATTEMPTS_CAP` (10), `ORCH_VERIFIER` | the base policy |
+| Deployment | `ORCH_GATE` (comma list of `ci`, `agent-checks`, `verifier`; default none: today's behaviour), `ORCH_MAX_ATTEMPTS` (3), `ORCH_MAX_ATTEMPTS_CAP` (10, at most 100), `ORCH_VERIFIER` | the base policy |
 | Target | the `gate` key of an `AGENTS_FILE` entry, `deny_unknown_fields` | `require`, `maxAttempts`, `verifier`, `ci: {required, timeoutSecs}` |
 | Thread | AG-UI `forwardedProps["vymalo.gate"]` on the run that creates the thread | `require`, `maxAttempts` |
 
@@ -556,22 +556,26 @@ stateDiagram-v2
   Refused --> [*]: exit 78 at startup, HTTP 400 for a request
 ```
 
-- **What this build honours is in one place.** `pending_reason` (a `match` over `CheckSource`, no wildcard) says why a
-  source cannot be honoured yet; `GateRules::new` honours the rest. The application drops `Watch`, `Schedule` and
+- **What this build honours is listed in one place, and is checked in two.** `pending_reason` (a `match` over `CheckSource`,
+  no wildcard) says why a source cannot be honoured yet; `GateRules::new` honours the rest. The binary applies the rules
+  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. The application drops `Watch`, `Schedule` and
   `RequestVerification` until the inbox and timers (slice 5) and the verifier dispatch (slice 10) exist, so a gate that
   required `ci` or `verifier` would wait for a verdict that can never come. Configuration therefore **refuses** them in
   every layer, naming the slice that enables them: at startup with exit 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an
   `AGENTS_FILE` entry, including its `ci` and `verifier` keys), and as a 400 for a request. Slices 6 and 10 change
-  their arm of `pending_reason`; nothing else.
-- **A layer may only tighten the one above.** The requested `require` is the whole list and must contain the layer
-  above's; `maxAttempts` may be anything in `1..=ORCH_MAX_ATTEMPTS_CAP`; a thread cannot choose the verifier or the CI
+  their arm of `pending_reason`, and each owns what its source needs beyond that (the verifier's checks in
+  `GateRules::check_verifier`, the `ci` settings, the cards).
+- **Sources: a layer adds, never removes; attempts: anywhere within the cap.** The requested `require` is the whole list
+  and must contain the layer above's (`ci.required` names add up; the verifier's own entry may leave the `verifier`
+  source out for itself); `maxAttempts` may be anything in `1..=ORCH_MAX_ATTEMPTS_CAP` (at most 100); a thread cannot choose the verifier or the CI
   settings. The verifier must be another configured agent (checked at startup, for every agent's resolved gate).
 - **The projection** (`orch-agui-projection`, [`api/agui.md`](api/agui.md#verification-the-gate)) keeps the run open
   while the thread is `queued`, `working` or `verifying`. It learns the gate from the thread record
   (`ThreadMeta.gate`, the job's copy) and everything else from the log: `SUBAGENT_FINISHED` and a `STATE_SNAPSHOT` with
   `job {attempt, maxAttempts, gate, sha}` at `completed`, `check_result` as the `vymalo.check` activity,
-  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `RUN_FINISHED` at `done`, and `RUN_ERROR` with
-  `checks_failed` when the attempts are out. The resource API's `Thread` carries the same `job` (`chat-api.yaml`).
+  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `RUN_FINISHED` at `done`, `RUN_ERROR` with
+  `checks_failed` when the attempts are out, and a hold as an answerable interrupt. A run that continues a thread and asks
+  for a different gate than the thread's is a 409. The resource API's `Thread` carries the same `job` (`chat-api.yaml`).
 - **A rework is a new A2A task in the same context.** The first task is `completed` and cannot be continued, so the
   dispatcher delegates the rework prompt without a task id (it continues a task only while it waits for the user); the
   agent sees the same `contextId`. `orch-e2e` (`verify.rs`) pins it.

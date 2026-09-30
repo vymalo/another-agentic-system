@@ -131,14 +131,14 @@ async fn a_failed_check_sends_the_agent_back_and_the_second_attempt_is_green(bac
     // The checks and the rework, as activities with ids derived from the log.
     let checks = activities(&frames, "vymalo.check");
     assert_eq!(checks.len(), 2);
-    assert_eq!(checks[0]["messageId"], "check-1-agent_checks");
+    assert_eq!(checks[0]["messageId"], "check-1-1-agent_checks");
     assert_eq!(checks[0]["content"]["status"], "failed");
     assert_eq!(checks[0]["content"]["attempt"], 1);
     assert_eq!(
         checks[0]["content"]["findings"],
         json!(["tests::login fails: expected 200, got 500"])
     );
-    assert_eq!(checks[1]["messageId"], "check-2-agent_checks");
+    assert_eq!(checks[1]["messageId"], "check-2-2-agent_checks");
     assert_eq!(checks[1]["content"]["status"], "passed");
     let reworks = activities(&frames, "vymalo.rework");
     assert_eq!(reworks.len(), 1);
@@ -402,9 +402,244 @@ async fn a_request_that_weakens_the_gate_or_asks_too_much_is_a_400(backend: Back
     assert_eq!(world.coder.executions().len(), 1);
 }
 
+/// A follow-up run on `thread` that answers `interrupt`, asking for `gate` (none when `Null`).
+fn answer_input(thread: &str, run: &str, interrupt: &Value, gate: Value) -> Value {
+    let mut extra = json!({"resume": [{
+        "interruptId": interrupt, "status": "resolved", "payload": {"text": "main"},
+    }]});
+    if !gate.is_null() {
+        extra["forwardedProps"] = json!({"vymalo.gate": gate});
+    }
+    Chat::agui_input(thread, run, &[("msg-1", "ask about it")], extra)
+}
+
+async fn detail_of(resp: reqwest::Response) -> String {
+    let problem: Value = resp.json().await.unwrap();
+    problem["detail"].as_str().unwrap_or_default().to_owned()
+}
+
+/// A thread's gate is fixed when it is created. A run that continues the thread and asks for a
+/// different one is refused (409), not served under the gate the thread has; the same gate, or
+/// none, is fine; a malformed or weakening one is a 400 whatever the thread.
+async fn a_follow_up_may_not_ask_for_another_gate(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let gated = thread_id(30);
+    let ungated = thread_id(31);
+
+    // Both threads are blocked on a question; one has a gate of two attempts, the other none.
+    let first = read(
+        &chat,
+        "plain",
+        &gated_input(
+            &gated,
+            "ask about it",
+            json!({"require": ["agent-checks"], "maxAttempts": 2}),
+        ),
+    )
+    .await;
+    let interrupt = first.last().unwrap().event["outcome"]["interrupts"][0]["id"].clone();
+    let plain_first = read(
+        &chat,
+        "plain",
+        &Chat::agui_input(&ungated, "run-1", &[("msg-1", "ask about it")], json!({})),
+    )
+    .await;
+    let plain_interrupt =
+        plain_first.last().unwrap().event["outcome"]["interrupts"][0]["id"].clone();
+    let before = chat.events(&gated).await.len();
+
+    let refused = [
+        // (thread, interrupt, gate, status, what the problem says)
+        (
+            &gated,
+            &interrupt,
+            json!({"maxAttempts": 3}),
+            409,
+            "different",
+        ),
+        (
+            &gated,
+            &interrupt,
+            json!({"require": ["agent-checks"], "maxAttempts": 5}),
+            409,
+            "different",
+        ),
+        (
+            &ungated,
+            &plain_interrupt,
+            json!({"require": ["agent-checks"]}),
+            409,
+            "different",
+        ),
+        (
+            &ungated,
+            &plain_interrupt,
+            json!({"maxAttempts": 2}),
+            409,
+            "different",
+        ),
+        (
+            &gated,
+            &interrupt,
+            json!({"require": []}),
+            400,
+            "may add sources",
+        ),
+        (
+            &gated,
+            &interrupt,
+            json!({"maxAttempts": 99}),
+            400,
+            "1..=10",
+        ),
+        (
+            &gated,
+            &interrupt,
+            json!({"require": "agent-checks"}),
+            400,
+            "malformed",
+        ),
+        (
+            &gated,
+            &interrupt,
+            json!({"surprise": true}),
+            400,
+            "unknown field",
+        ),
+    ];
+    for (n, (thread, interrupt, gate, status, says)) in refused.into_iter().enumerate() {
+        let body = answer_input(thread, &format!("run-x{n}"), interrupt, gate.clone());
+        let resp = chat.agui_post("plain", &body).await;
+        assert_eq!(resp.status().as_u16(), status, "{gate}");
+        let detail = detail_of(resp).await;
+        assert!(detail.contains(says), "{gate}: {detail}");
+    }
+    assert_eq!(
+        chat.events(&gated).await.len(),
+        before,
+        "nothing was written"
+    );
+    assert_eq!(chat.thread(&gated).await["job"]["maxAttempts"], 2);
+    assert!(chat.thread(&ungated).await.get("job").is_none());
+    assert_eq!(
+        world.plain.executions().len(),
+        2,
+        "no refused run reached the agent"
+    );
+
+    // Saying what the thread has, in either spelling, is served.
+    let ok = read(
+        &chat,
+        "plain",
+        &answer_input(
+            &gated,
+            "run-ok",
+            &interrupt,
+            json!({"require": ["agent_checks"], "maxAttempts": 2}),
+        ),
+    )
+    .await;
+    assert_eq!(ok[0].event["runId"], "run-ok");
+    // ... and so is saying nothing.
+    let ok = read(
+        &chat,
+        "plain",
+        &answer_input(&ungated, "run-ok", &plain_interrupt, Value::Null),
+    )
+    .await;
+    assert_eq!(
+        ok.last().unwrap().event["outcome"],
+        json!({"type": "success"})
+    );
+}
+
+/// Two first runs race to create one thread and ask for different gates. The winner's gate is
+/// the thread's; the loser is told so, and does not run under it.
+async fn the_loser_of_a_race_to_create_a_thread_is_not_given_the_winners_gate(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = thread_id(32);
+    let body = |run: &str, msg: &str, attempts: u32| {
+        Chat::agui_input(
+            &thread,
+            run,
+            &[(msg, "verify-pass all good")],
+            json!({"forwardedProps": {"vymalo.gate": {"require": ["agent-checks"], "maxAttempts": attempts}}}),
+        )
+    };
+    let (body_a, body_b) = (body("run-a", "msg-a", 2), body("run-b", "msg-b", 3));
+    let (a, b) = tokio::join!(
+        chat.agui_post("plain", &body_a),
+        chat.agui_post("plain", &body_b),
+    );
+    let (won, lost, attempts) = match (a.status().as_u16(), b.status().as_u16()) {
+        (200, 409) => (a, b, 2),
+        (409, 200) => (b, a, 3),
+        other => panic!("one run wins and the other is told so, got {other:?}"),
+    };
+    assert_eq!(won.status().as_u16(), 200);
+    let detail = detail_of(lost).await;
+    assert!(detail.contains("gate"), "{detail}");
+    chat.wait_state(&thread, "done").await;
+    assert_eq!(chat.thread(&thread).await["job"]["maxAttempts"], attempts);
+    assert_eq!(
+        world.plain.executions().len(),
+        1,
+        "one message, delivered once"
+    );
+}
+
+/// What the API says about a job's gate is a valid request: `Thread.job.gate` copied into a new
+/// run's `vymalo.gate.require` (the API says `agent_checks`, the configuration `agent-checks`).
+async fn the_gate_of_a_job_can_be_sent_back_as_a_request(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let first = thread_id(33);
+    read(
+        &chat,
+        "plain",
+        &gated_input(
+            &first,
+            "verify-pass ok",
+            json!({"require": ["agent-checks"], "maxAttempts": 2}),
+        ),
+    )
+    .await;
+    chat.wait_state(&first, "done").await;
+    let job = chat.thread(&first).await["job"].clone();
+    assert_eq!(job["gate"], json!(["agent_checks"]));
+
+    let second = thread_id(34);
+    let frames = read(
+        &chat,
+        "plain",
+        &gated_input(
+            &second,
+            "verify-pass ok",
+            json!({"require": job["gate"], "maxAttempts": job["maxAttempts"]}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        frames.last().unwrap().event["outcome"],
+        json!({"type": "success"})
+    );
+    chat.wait_state(&second, "done").await;
+    let copied = chat.thread(&second).await["job"].clone();
+    assert_eq!(copied["gate"], job["gate"]);
+    assert_eq!(copied["maxAttempts"], job["maxAttempts"]);
+}
+
 backends!(
     a_failed_check_sends_the_agent_back_and_the_second_attempt_is_green,
     an_agent_that_never_passes_fails_after_the_last_attempt,
     a_thread_may_change_the_attempts_and_gets_the_targets_gate,
     a_request_that_weakens_the_gate_or_asks_too_much_is_a_400,
+    a_follow_up_may_not_ask_for_another_gate,
+    the_loser_of_a_race_to_create_a_thread_is_not_given_the_winners_gate,
+    the_gate_of_a_job_can_be_sent_back_as_a_request,
 );

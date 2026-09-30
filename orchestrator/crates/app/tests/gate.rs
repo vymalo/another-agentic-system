@@ -7,7 +7,7 @@ mod support;
 
 use std::time::Duration;
 
-use orch_app::{AppConfig, ApplyOutcome};
+use orch_app::{AppConfig, ApplyOutcome, GateRules};
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiProvider, CiReport,
     EventBody, GatePolicy, Input, Job, ThreadId, ThreadState,
@@ -22,6 +22,9 @@ fn gated(sources: &[CheckSource]) -> AppConfig {
     AppConfig {
         stream_poll: Duration::from_millis(100),
         gate: GatePolicy::requiring(sources.iter().copied()),
+        // The core decides CI and the verifier already; these tests play the application that
+        // will honour them.
+        gate_rules: GateRules::default().honouring(CheckSource::ALL),
         ..AppConfig::default()
     }
 }

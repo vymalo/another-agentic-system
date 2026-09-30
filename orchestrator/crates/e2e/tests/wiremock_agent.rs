@@ -62,28 +62,31 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
         ..A2aConfig::default()
     })
     .unwrap();
-    let app = Arc::new(App::new(
-        PortSet {
-            store: MemoryStore::new(),
-            wakeup: MemoryWakeup::new(),
-            agents: client,
-            clock: SystemClock,
-            ids: UuidV7Ids,
-        },
-        AgentDirectory::new(entries),
-        AppConfig {
-            stream_poll: Duration::from_millis(100),
-            // `dev/agents.yaml` gates `mock-coder-gated`: its own checks must pass.
-            target_gates: [(
-                AgentId::new("mock-coder-gated"),
-                GateLayer::from_json(&serde_json::json!({"require": ["agent-checks"]}))
-                    .unwrap()
-                    .unwrap(),
-            )]
-            .into(),
-            ..AppConfig::default()
-        },
-    ));
+    let app = Arc::new(
+        App::new(
+            PortSet {
+                store: MemoryStore::new(),
+                wakeup: MemoryWakeup::new(),
+                agents: client,
+                clock: SystemClock,
+                ids: UuidV7Ids,
+            },
+            AgentDirectory::new(entries),
+            AppConfig {
+                stream_poll: Duration::from_millis(100),
+                // `dev/agents.yaml` gates `mock-coder-gated`: its own checks must pass.
+                target_gates: [(
+                    AgentId::new("mock-coder-gated"),
+                    GateLayer::from_json(&serde_json::json!({"require": ["agent-checks"]}))
+                        .unwrap()
+                        .unwrap(),
+                )]
+                .into(),
+                ..AppConfig::default()
+            },
+        )
+        .expect("a valid gate"),
+    );
     let api = ApiConfig {
         sse_keepalive: Duration::from_millis(150),
         ..ApiConfig::default()

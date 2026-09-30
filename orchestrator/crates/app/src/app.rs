@@ -16,7 +16,7 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
-use crate::{AgentDirectory, AgentEntry, AppError, GateLayer, GateRules, Layer};
+use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer};
 
 const MAX_TEXT_CHARS: usize = 100_000;
 const MAX_TITLE_CHARS: usize = 200;
@@ -161,14 +161,22 @@ fn default_title(text: &str) -> String {
 impl<P: Ports> App<P> {
     /// Builds the service. It starts ready; a composition root that runs migrations first
     /// may call [`App::set_ready`] to control readiness itself.
-    pub fn new(ports: P, agents: AgentDirectory, cfg: AppConfig) -> Self {
-        App {
+    ///
+    /// The gate in `cfg` is checked here, whichever composition root built it: the deployment's
+    /// policy and every agent's resolved gate must ask only for what `cfg.gate_rules` honours,
+    /// with attempts in range and a verifier that is another configured agent
+    /// ([`GateRules::validate`]). A gate that could never pass is an error now (the binary
+    /// exits 78), not a 500 on every request later.
+    pub fn new(ports: P, agents: AgentDirectory, cfg: AppConfig) -> Result<Self, GateError> {
+        cfg.gate_rules
+            .validate(&cfg.gate, &cfg.target_gates, &agents)?;
+        Ok(App {
             ports,
             agents,
             cfg,
             ready: AtomicBool::new(true),
             shutting_down: AtomicBool::new(false),
-        }
+        })
     }
 
     /// The ports this service runs on.
@@ -425,6 +433,24 @@ impl<P: Ports> App<P> {
                 .map_err(|e| AppError::Invalid(e.to_string()))?;
         }
         Ok(policy)
+    }
+
+    /// Whether a run's gate request, put on the gate the thread already has, would change it.
+    /// A thread's gate is fixed when it is created (ADR 0016), so a surface refuses a run whose
+    /// request differs instead of dropping it. `Ok(false)` for a request that says what the
+    /// thread has; [`AppError::Invalid`] for one the rules refuse in any case (a source removed,
+    /// attempts out of range, something this build cannot honour).
+    pub fn gate_request_changes(
+        &self,
+        current: &GatePolicy,
+        request: &GateLayer,
+    ) -> Result<bool, AppError> {
+        let requested = self
+            .cfg
+            .gate_rules
+            .apply(current, request, &Layer::Thread)
+            .map_err(|e| AppError::Invalid(e.to_string()))?;
+        Ok(&requested != current)
     }
 
     /// The thread `id` when it exists and is the user's; `None` when nothing has this id;

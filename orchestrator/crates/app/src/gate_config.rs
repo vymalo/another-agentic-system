@@ -5,20 +5,25 @@
 //! of a run). [`GateRules::apply`] puts a layer on the policy above it and enforces, in one
 //! place, what may not be done:
 //!
-//! * **A layer may only tighten the one above.** It may add sources and change the attempts
-//!   (within `1..=cap`); it may not drop a source the layer above requires.
+//! * **Sources: a layer may add, never remove.** Its `require` is the whole list and must contain
+//!   the one the layer above requires; `ci.required` is unioned with the layer above's. **Attempts:
+//!   anywhere within `1..=cap`**, lower or higher than the layer above's. The one removal allowed
+//!   is for the verifier itself: the entry of the agent that is the verifier may leave the
+//!   `verifier` source out for itself, because an agent cannot verify its own work.
 //! * **This build honours only some sources** ([`GateRules::honours`]). Until the inbox and the
 //!   timers (slice 5), the CI results (slice 6) and the verifier dispatch (slice 10) exist, the
 //!   application drops the commands a `ci` or `verifier` source needs (`Watch`, `Schedule`,
 //!   `RequestVerification`), so a gate that required either would wait for a verdict that can
 //!   never come. Configuration therefore refuses them in every layer, and fails closed: the
-//!   binary exits 78, a request is a 400. [`pending_reason`] is the one place to change when a
-//!   slice makes a source real.
+//!   binary exits 78, a request is a 400. [`pending_reason`] says which sources those are and
+//!   why; [`GateRules::honouring`] is how a build (or a test) that has them says so. A slice that
+//!   makes a source real changes that arm, and then also owns what the source needs on top of the
+//!   rules here (its own settings, its own checks in [`GateRules::check_verifier`]).
 //! * **The verifier is another agent**, and only the deployment and a target choose it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use orch_core::{AgentId, CheckSource, GatePolicy};
+use orch_core::{AgentId, CheckSource, CiPolicy, GatePolicy};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -31,6 +36,10 @@ pub const THREAD_GATE_KEY: &str = "vymalo.gate";
 /// Attempts the deployment allows a target or a thread to raise the limit to, when
 /// `ORCH_MAX_ATTEMPTS_CAP` says nothing.
 pub const DEFAULT_MAX_ATTEMPTS_CAP: u32 = 10;
+
+/// The most `ORCH_MAX_ATTEMPTS_CAP` may be: a job is bounded by construction (ADR 0018), and this
+/// is the bound of the bound.
+pub const MAX_ATTEMPTS_CAP_CEILING: u32 = 100;
 
 /// Why this build cannot honour `source` yet, or `None` when it can.
 ///
@@ -210,7 +219,8 @@ pub enum GateError {
     },
     /// An agent cannot verify its own work.
     #[error(
-        "{layer}: agent {agent:?} cannot be its own verifier; the verifier must be another configured agent"
+        "{layer}: agent {agent:?} would verify its own work; the verifier must be another configured \
+         agent. Give the entry of {agent:?} in AGENTS_FILE a `gate` whose `require` leaves out `verifier`"
     )]
     SelfVerifier {
         /// The layer.
@@ -252,7 +262,7 @@ impl GateRules {
                 .into_iter()
                 .filter(|s| pending_reason(*s).is_none())
                 .collect(),
-            cap: cap.max(1),
+            cap: cap.clamp(1, MAX_ATTEMPTS_CAP_CEILING),
         }
     }
 
@@ -364,7 +374,16 @@ impl GateRules {
         let mut policy = above.clone();
         if let Some(sources) = &layer.require {
             let wanted: BTreeSet<CheckSource> = sources.iter().map(|s| s.0).collect();
-            if let Some(dropped) = above.require.iter().find(|s| !wanted.contains(s)) {
+            // The verifier's own entry may leave the verifier out for itself, and nothing else out.
+            let is_the_verifier = |agent: &AgentId| above.verifier.as_ref() == Some(agent);
+            let may_drop = |s: &CheckSource| {
+                *s == CheckSource::Verifier && matches!(at, Layer::Target(a) if is_the_verifier(a))
+            };
+            if let Some(dropped) = above
+                .require
+                .iter()
+                .find(|s| !wanted.contains(s) && !may_drop(s))
+            {
                 return Err(GateError::Removes {
                     layer: at.clone(),
                     dropped: *dropped,
@@ -380,8 +399,9 @@ impl GateRules {
             policy.verifier = Some(AgentId::new(verifier.clone()));
         }
         if let Some(ci) = &layer.ci {
+            // Names add up: a layer cannot weaken the checks the layer above waits for.
             if let Some(required) = &ci.required {
-                policy.ci.required = required.clone();
+                policy.ci.required.extend(required.iter().cloned());
             }
             if let Some(secs) = ci.timeout_secs {
                 if secs < 1 {
@@ -394,8 +414,9 @@ impl GateRules {
     }
 
     /// Checks the verifier of a resolved gate against the configured agents: when the gate
-    /// requires the verifier there must be one; any verifier must be a configured agent other
-    /// than `target`.
+    /// requires the verifier there must be one; any verifier must be a configured agent; and an
+    /// agent whose gate requires the verifier cannot be that verifier itself (an agent whose gate
+    /// does not can: the reviewer is not reviewed by itself).
     pub fn check_verifier(
         &self,
         policy: &GatePolicy,
@@ -416,7 +437,7 @@ impl GateRules {
                         verifier: verifier.to_string(),
                     });
                 }
-                if verifier == target {
+                if policy.requires(CheckSource::Verifier) && verifier == target {
                     return Err(GateError::SelfVerifier {
                         layer: at.clone(),
                         agent: verifier.to_string(),
@@ -441,14 +462,38 @@ impl GateRules {
         }
     }
 
-    /// Startup validation: every agent's resolved gate is valid and its verifier, if any, is
-    /// another configured agent. `targets` are the `gate` keys of `AGENTS_FILE` by agent.
+    /// Checks a policy that was not built by [`apply`](Self::apply) (the deployment's, as a
+    /// composition root hands it over): it requires and configures only what this build honours,
+    /// and its attempts are in range.
+    pub fn check_policy(&self, policy: &GatePolicy, at: &Layer) -> Result<(), GateError> {
+        for source in &policy.require {
+            if let Some(refusal) = self.refuse_source(at, *source) {
+                return Err(refusal);
+            }
+        }
+        if policy.verifier.is_some()
+            && let Some(refusal) = self.refuse_verifier_setting(at)
+        {
+            return Err(refusal);
+        }
+        if policy.ci != CiPolicy::default()
+            && let Some(refusal) = self.refuse_ci_settings(at)
+        {
+            return Err(refusal);
+        }
+        self.check_attempts(at, policy.max_attempts)
+    }
+
+    /// Startup validation: the deployment's policy is valid ([`check_policy`](Self::check_policy)),
+    /// and so is every agent's resolved gate, whose verifier, if any, is a configured agent.
+    /// `targets` are the `gate` keys of `AGENTS_FILE` by agent.
     pub fn validate(
         &self,
         deployment: &GatePolicy,
         targets: &BTreeMap<AgentId, GateLayer>,
         agents: &AgentDirectory,
     ) -> Result<(), GateError> {
+        self.check_policy(deployment, &Layer::Deployment)?;
         for entry in agents.iter() {
             let id = &entry.endpoint.id;
             let layer = targets.get(id);

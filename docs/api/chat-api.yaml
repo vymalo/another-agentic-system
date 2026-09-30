@@ -128,11 +128,11 @@ paths:
             text/event-stream:
               schema: { type: string }
               x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
-        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { description: "The agent is not configured, or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
-        "409": { description: "The thread targets another agent, a run is already open on it, or it is finished (`done`, `failed`, `cancelled`)", $ref: "#/components/responses/Problem" }
+        "409": { description: "The thread targets another agent, a run is already open on it, it is finished (`done`, `failed`, `cancelled`), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
         "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
@@ -279,7 +279,7 @@ components:
           items: { $ref: "#/components/schemas/CheckSource" }
         sha:
           type: string
-          description: "The commit the agent pushed in this attempt, once it said so"
+          description: "The commit the agent pushed in this attempt (its `branch` artifact), once it said so; not the commit a check ran on"
     CheckSource:
       type: string
       enum: [ci, agent_checks, verifier]

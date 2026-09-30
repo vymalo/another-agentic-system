@@ -42,17 +42,20 @@ fn new_app() -> Arc<App<Stack>> {
         ),
         name: "Plain".to_owned(),
     };
-    Arc::new(App::new(
-        PortSet {
-            store: MemoryStore::new(),
-            wakeup: MemoryWakeup::new(),
-            agents: ScriptedAgent::new(),
-            clock: SystemClock,
-            ids: SeqIds::default(),
-        },
-        AgentDirectory::new(vec![entry]),
-        AppConfig::default(),
-    ))
+    Arc::new(
+        App::new(
+            PortSet {
+                store: MemoryStore::new(),
+                wakeup: MemoryWakeup::new(),
+                agents: ScriptedAgent::new(),
+                clock: SystemClock,
+                ids: SeqIds::default(),
+            },
+            AgentDirectory::new(vec![entry]),
+            AppConfig::default(),
+        )
+        .expect("a valid gate"),
+    )
 }
 
 async fn edge(cfg: ApiConfig, surfaces: Vec<SurfaceRoutes>) -> Edge {

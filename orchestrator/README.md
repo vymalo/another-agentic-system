@@ -73,7 +73,7 @@ An empty value counts as unset.
 | `AGENT_LOCAL_CONCURRENCY` | `4` | Only in a build with the Cargo feature `agent-local`: runs of local agents stepped at once by this replica (at least 1). The local agents open a pool of their own, this plus 4 connections, on top of `DATABASE_MAX_CONNECTIONS`. |
 | `SHUTDOWN_GRACE_SECS` | `15` | Bound of each graceful-shutdown step. |
 | `ORCH_GATE` | none | The sources every job must pass before it is `done`: a comma list of `ci`, `agent-checks`, `verifier` (flag `--gate`; [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)). None is no gate. This build honours only `agent-checks`; `ci` and `verifier` are a startup error (78) naming the slice that enables them. |
-| `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP` | `3`, `10` | Attempts a gated job's agent gets (the first included), and the most an `AGENTS_FILE` entry or a run may raise them to. |
+| `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP` | `3`, `10` | Attempts a gated job's agent gets (the first included), and the most an `AGENTS_FILE` entry or a run may set them to (at most 100; a smaller cap lowers the default attempts). |
 | `ORCH_VERIFIER` | none | The verifier agent's id. Refused (78) until the verifier dispatch is built. |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | Names this replica in leases. |
 | `RUST_LOG` / `LOG_FORMAT` | `info` / `json` | `LOG_FORMAT=text` for humans. |

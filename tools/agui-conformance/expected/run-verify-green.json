@@ -59,7 +59,7 @@
       }
     },
     {
-      "id": "check-1-agent_checks",
+      "id": "check-1-1-agent_checks",
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {
@@ -131,7 +131,7 @@
       }
     },
     {
-      "id": "check-2-agent_checks",
+      "id": "check-2-2-agent_checks",
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {

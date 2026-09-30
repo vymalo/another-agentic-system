@@ -208,22 +208,25 @@ impl World {
 
     /// A new orchestrator process (app state is per process; the database is shared).
     fn app<S: ThreadStore, W: Wakeup>(&self, store: S, wakeup: W) -> Arc<App<Stack<S, W>>> {
-        Arc::new(App::new(
-            PortSet {
-                store,
-                wakeup,
-                agents: self.agents.clone(),
-                clock: SystemClock,
-                ids: UuidV7Ids,
-            },
-            self.directory(),
-            AppConfig {
-                stream_poll: Duration::from_millis(100),
-                gate: self.gate.clone(),
-                target_gates: self.target_gates.clone(),
-                ..AppConfig::default()
-            },
-        ))
+        Arc::new(
+            App::new(
+                PortSet {
+                    store,
+                    wakeup,
+                    agents: self.agents.clone(),
+                    clock: SystemClock,
+                    ids: UuidV7Ids,
+                },
+                self.directory(),
+                AppConfig {
+                    stream_poll: Duration::from_millis(100),
+                    gate: self.gate.clone(),
+                    target_gates: self.target_gates.clone(),
+                    ..AppConfig::default()
+                },
+            )
+            .expect("a valid gate"),
+        )
     }
 
     /// Starts an orchestrator instance (API + dispatcher) named `owner`.

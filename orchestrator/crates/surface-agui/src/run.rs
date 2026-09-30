@@ -74,9 +74,10 @@ pub(crate) async fn run<P: Ports>(
 
 /// The gate the run asks for, `forwardedProps["vymalo.gate"]` (ADR 0018): `{require?,
 /// maxAttempts?}`. It is read whether or not the run creates the thread, so a malformed one is
-/// a 400 every time; it applies only when the run creates the thread, whose gate is fixed then.
-/// Whether the request is allowed (it may add sources and change the attempts within the cap,
-/// never remove a source) is decided by [`App::create_thread_as`].
+/// a 400 every time. It applies when the run creates the thread, whose gate is fixed then; a run
+/// that continues a thread and asks for a different gate is a 409 (see `attempt`). Whether the
+/// request is allowed (it may add sources and change the attempts within the cap, never remove
+/// a source) is decided by [`App::create_thread_as`].
 fn gate_request(input: &RunAgentInput) -> Result<Option<GateLayer>, Problem> {
     let Some(value) = input
         .forwarded_props
@@ -184,6 +185,20 @@ async fn attempt<P: Ports>(
         None => ThreadView::new_thread(user.clone()),
     };
     view.ensure_agent(agent).map_err(|e| input_error(&e))?;
+    // A thread's gate is fixed when it is created (ADR 0016). A run that continues the thread
+    // (a follow-up, an answer, the loser of a race to create it) and asks for a different one
+    // is refused, not silently served under the gate the thread has.
+    if let (Some((record, _, _)), Some(request)) = (&known, gate)
+        && app.gate_request_changes(&record.job.gate, request)?
+    {
+        return Err(Problem::new(
+            StatusCode::CONFLICT,
+            "this run asks for a verification gate different from the one the thread has; a \
+             thread's gate is fixed when it is created: send the run without `vymalo.gate`, or \
+             with the gate the thread has (see `job` in its state), or start a new thread",
+        )
+        .into());
+    }
     let Translation { inputs, warnings } =
         translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
     for warning in &warnings {

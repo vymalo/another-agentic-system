@@ -13,6 +13,6 @@ pub use directory::{AgentDirectory, AgentEntry};
 pub use dispatcher::{Dispatcher, DispatcherConfig};
 pub use error::AppError;
 pub use gate_config::{
-    CiLayer, DEFAULT_MAX_ATTEMPTS_CAP, GateError, GateLayer, GateRules, Layer, SourceName,
-    THREAD_GATE_KEY, known_sources, pending_reason,
+    CiLayer, DEFAULT_MAX_ATTEMPTS_CAP, GateError, GateLayer, GateRules, Layer,
+    MAX_ATTEMPTS_CAP_CEILING, SourceName, THREAD_GATE_KEY, known_sources, pending_reason,
 };

@@ -139,17 +139,23 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     }
 
     // The database is migrated and reachable by now, so the app starts ready.
-    let app: Arc<App<Stack>> = Arc::new(App::new(
-        PortSet {
-            store: store.clone(),
-            wakeup,
-            agents,
-            clock: SystemClock,
-            ids: UuidV7Ids,
-        },
-        AgentDirectory::new(cfg.agents.clone()),
-        cfg.app_config(),
-    ));
+    let app: Arc<App<Stack>> = Arc::new(
+        App::new(
+            PortSet {
+                store: store.clone(),
+                wakeup,
+                agents,
+                clock: SystemClock,
+                ids: UuidV7Ids,
+            },
+            AgentDirectory::new(cfg.agents.clone()),
+            cfg.app_config(),
+        )
+        .map_err(|e| ConfigError::Gate {
+            context: "the verification gate",
+            reason: e.to_string(),
+        })?,
+    );
     Ok(Shared { store, app, local })
 }
 

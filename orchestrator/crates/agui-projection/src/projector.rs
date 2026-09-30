@@ -174,6 +174,9 @@ pub struct Projector {
     attempt: u32,
     /// The commit the agent pushed in this attempt (`job.sha`); from its `branch` artifact.
     sha: Option<String>,
+    /// How many verifications have started (the job's `verification`): the agent's `completed`
+    /// under a gate starts one.
+    verification: u32,
     /// A source of the gate failed and nothing has answered it yet: an `error` that follows is
     /// the gate running out of attempts.
     checks_failed: bool,
@@ -210,6 +213,7 @@ impl Projector {
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
             attempt: 1,
+            verification: 0,
             sha: None,
             checks_failed: false,
             last_agent: None,
@@ -515,6 +519,7 @@ impl Projector {
                 // Under a gate the agent finishing is not the end: the thread is verified, the
                 // run stays open, and the `check_result` events that follow say how it went.
                 if self.meta.gate.is_active() {
+                    self.verification += 1;
                     self.state = ThreadState::Verifying;
                     out.push(self.state_snapshot());
                 }
@@ -672,10 +677,9 @@ impl Projector {
         let id = if d.stale {
             format!("evt-{}", ev.seq)
         } else {
+            // `job.sha` is the commit the agent pushed (its `branch` artifact), the same as
+            // `Thread.job`. A check's `commit` is the commit the check ran on, which may differ.
             self.attempt = d.attempt.max(1);
-            if let Some(commit) = &d.commit {
-                self.sha = Some(commit.clone());
-            }
             if d.status == orch_core::CheckStatus::Failed {
                 self.checks_failed = true;
             }
@@ -685,7 +689,15 @@ impl Projector {
                 self.state = ThreadState::Verifying;
                 out.push(self.state_snapshot());
             }
-            format!("check-{}-{}", d.attempt, d.source.as_str())
+            // One card per source in one verification of one attempt: a second verification of
+            // the same attempt (the user wrote, a held answer) is a card of its own, at its own
+            // place in the transcript, and `replace` only ever updates within one.
+            format!(
+                "check-{}-{}-{}",
+                d.attempt,
+                self.verification.max(1),
+                d.source.as_str()
+            )
         };
         let content = match serde_json::to_value(d) {
             Ok(Value::Object(map)) => map,
@@ -819,6 +831,7 @@ impl Projector {
         pending_error: Option<String>,
         out: &mut Vec<agui::Event>,
     ) {
+        let was_verifying = self.state == ThreadState::Verifying;
         self.state = new;
         if self.run.is_none() {
             self.open_run(format!("run-{}", ev.seq), false, out);
@@ -826,6 +839,19 @@ impl Projector {
         match new {
             ThreadState::Queued | ThreadState::Working | ThreadState::Verifying => {
                 out.push(self.state_snapshot());
+            }
+            // A thread that waits while it is verified (CI or the verifier did not answer in
+            // time, or the verifier could not be reached) waits for the user like any blocked
+            // thread: its run ends in an interrupt the user can answer, with the reason as the
+            // message, not in a delivery failure.
+            ThreadState::Blocked if was_verifying && pending_error.is_some() => {
+                self.interrupt = Some(PendingInterrupt {
+                    id: format!("int-{}", ev.seq),
+                    reason: "input_required",
+                    message: pending_error,
+                    subagent: None,
+                });
+                self.close_run(RunClose::Interrupt, ev.seq, out);
             }
             ThreadState::Blocked => match pending_error {
                 Some(message) => self.close_run(

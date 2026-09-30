@@ -18,7 +18,7 @@
 #               require       sources that must pass; at least the deployment's. This build honours
 #                             only `agent-checks` (the agent's own `checks` artifact); `ci` and
 #                             `verifier` are refused at startup until their slices are built.
-#               maxAttempts   1..=ORCH_MAX_ATTEMPTS_CAP (default 3, cap 10)
+#               maxAttempts   1..=ORCH_MAX_ATTEMPTS_CAP (default 3, cap 10, at most 100)
 #               verifier, ci  refused for now (they belong to `verifier` and `ci`)
 #             Unknown keys are errors.
 - id: coder

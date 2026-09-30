@@ -55,7 +55,7 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
 The `verify-green.agui.json` and `verify-red.agui.json` goldens are the verification gate a viewer reads (ADR 0018,
 [`../agui.md`](../agui.md#verification-the-gate)): **one run** for all the attempts, `SUBAGENT_FINISHED` at each
 `completed` and never `RUN_FINISHED` until the job is done or out of attempts, the `job` of every `STATE_SNAPSHOT`
-(`attempt`, `maxAttempts`, `gate`, `sha`), the `vymalo.check` card of each source and attempt (`check-<attempt>-<source>`),
+(`attempt`, `maxAttempts`, `gate`, `sha`), the `vymalo.check` card of each source in each verification of each attempt (`check-<attempt>-<verification>-<source>`),
 `vymalo.rework` (`rework-<attempt>`) and the subagent of the next attempt (`sub-<seq of the rework>`). Their event logs are
 produced with the fake agent's `verify-*` scripts, whose commits are `<attempt as 40 hex digits>`. The reference client's
 `expected/verify-green.json` shows the last state it holds: `done`, attempt 2, and one card per source and attempt.

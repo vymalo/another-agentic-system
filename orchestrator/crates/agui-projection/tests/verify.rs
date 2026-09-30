@@ -9,8 +9,9 @@ mod support;
 use orch_agui_projection::{Audience, Frame, Projector};
 use orch_agui_proto::testkit::assert_conforms;
 use orch_core::{
-    AgentTaskState, CheckResult, CheckSource, CheckStatus, Event, EventBody, GatePolicy,
-    ThreadState,
+    Actor, AgentId, AgentStatus, AgentStatusData, AgentTaskState, CheckResult, CheckSource,
+    CheckStatus, ErrorData, Event, EventBody, GatePolicy, ThreadState, ThreadStateData, Timestamp,
+    UserId, UserMessageData,
 };
 use serde_json::{Value, json};
 use support::log::{Action, build_under, gate, meta_under};
@@ -91,7 +92,7 @@ fn a_finished_agent_under_a_gate_ends_its_subagent_and_keeps_the_run_open() {
         .position(|l| l.starts_with("SUBAGENT_FINISHED"))
         .unwrap();
     assert!(story[finished + 1].starts_with("STATE_SNAPSHOT verifying"));
-    assert!(story[finished + 2].contains("check-1-agent_checks vymalo.check"));
+    assert!(story[finished + 2].contains("check-1-1-agent_checks vymalo.check"));
     assert!(story[finished + 3].starts_with("STATE_SNAPSHOT done"));
     assert!(story[finished + 4].starts_with("RUN_FINISHED r-1 success"));
     assert!(!projector.run_open());
@@ -172,7 +173,7 @@ fn a_failed_check_is_a_card_then_a_rework_and_the_next_attempts_subagent() {
     // the attempt and the source.
     let check_1 = all
         .iter()
-        .find(|f| f.event.event_type().as_str() == "ACTIVITY_SNAPSHOT" && line_has(f, "check-1-"))
+        .find(|f| f.event.event_type().as_str() == "ACTIVITY_SNAPSHOT" && line_has(f, "check-1-1-"))
         .unwrap();
     let check_1 = serde_json::to_value(&check_1.event).unwrap();
     assert_eq!(check_1["activityType"], "vymalo.check");
@@ -181,7 +182,10 @@ fn a_failed_check_is_a_card_then_a_rework_and_the_next_attempts_subagent() {
     assert_eq!(check_1["content"]["status"], "failed");
     assert_eq!(check_1["content"]["attempt"], 1);
     assert_eq!(check_1["content"]["findings"], json!(["it fails"]));
-    assert!(text.contains("check-2-agent_checks vymalo.check"), "{text}");
+    assert!(
+        text.contains("check-2-2-agent_checks vymalo.check"),
+        "{text}"
+    );
 
     // The rework card, then the subagent of attempt 2, then the state that says so.
     let rework = story
@@ -347,4 +351,249 @@ fn a_stale_answer_is_a_card_of_its_own_and_changes_nothing_else() {
     );
     assert_eq!(projector.thread_state(), ThreadState::Verifying);
     assert!(projector.run_open());
+}
+
+// ---- review fixes -----------------------------------------------------------------------
+
+fn event(seq: i64, actor: Actor, body: EventBody) -> Event {
+    Event {
+        seq,
+        thread_id: support::log::thread_id(),
+        at: Timestamp::from_second(1_800_000_000 + seq).unwrap(),
+        actor,
+        body,
+    }
+}
+
+fn agent_status(seq: i64, status: AgentStatus) -> Event {
+    event(
+        seq,
+        Actor::agent(&AgentId::new("plain"), None),
+        EventBody::AgentStatus(AgentStatusData {
+            status,
+            detail: None,
+        }),
+    )
+}
+
+fn user_message(seq: i64) -> Event {
+    event(
+        seq,
+        Actor::user(&UserId::new("alice@example.com")),
+        EventBody::UserMessage(UserMessageData::new("go")),
+    )
+}
+
+fn check(seq: i64, source: CheckSource, status: CheckStatus, stale: bool) -> Event {
+    event(
+        seq,
+        Actor::system(),
+        EventBody::CheckResult(CheckResult {
+            source,
+            name: None,
+            attempt: 1,
+            commit: None,
+            status,
+            summary: None,
+            stale,
+            findings: vec![],
+        }),
+    )
+}
+
+fn fold(events: &[Event], gate: GatePolicy) -> (Vec<Frame>, Projector) {
+    let mut projector = Projector::new(meta_under(gate));
+    let frames = events
+        .iter()
+        .flat_map(|e| projector.apply(e, Audience::Viewer))
+        .collect();
+    (frames, projector)
+}
+
+/// Every sha any snapshot of the frames carries.
+fn shas(frames: &[Frame]) -> Vec<String> {
+    frames
+        .iter()
+        .filter_map(snapshot_job)
+        .filter_map(|job| job["sha"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn the_sha_of_the_snapshot_is_the_pushed_commit_not_the_commit_the_checks_ran_on() {
+    let abc = format!("{:040x}", 1);
+    let def = format!("{:040x}", 2);
+    // The agent pushed `def` and its checks ran on `abc`.
+    let (_, frames, _) = project(
+        &[
+            user(),
+            WORKING,
+            Action::Branch { commit: 2 },
+            Action::Checks {
+                passed: true,
+                commit: 1,
+            },
+            COMPLETED,
+        ],
+        &gate(),
+    );
+    let all = flat(&frames);
+    let found = shas(&all);
+    assert!(!found.is_empty());
+    assert!(found.iter().all(|s| *s == def), "{found:?}");
+    assert!(!found.contains(&abc));
+    // ... and the check card itself still says which commit it ran on.
+    let card = all
+        .iter()
+        .find(|f| line_has(f, "vymalo.check"))
+        .map(|f| serde_json::to_value(&f.event).unwrap())
+        .unwrap();
+    assert_eq!(card["content"]["commit"], abc);
+}
+
+#[test]
+fn checks_without_a_pushed_branch_give_the_snapshots_no_sha() {
+    let (_, frames, _) = project(
+        &[
+            user(),
+            WORKING,
+            Action::Checks {
+                passed: true,
+                commit: 1,
+            },
+            COMPLETED,
+        ],
+        &gate(),
+    );
+    let all = flat(&frames);
+    assert!(all.iter().filter_map(snapshot_job).count() >= 3);
+    assert_eq!(shas(&all), Vec::<String>::new());
+}
+
+#[test]
+fn a_second_verification_of_the_same_attempt_is_a_card_of_its_own() {
+    // CI (which this build does not honour yet, so the events are made by hand) has not answered
+    // when the user writes: the verification is abandoned without using the attempt, and the
+    // agent finishes again. The two verifications of attempt 1 must not share a card.
+    let gate = GatePolicy::requiring([CheckSource::Ci]);
+    let events = [
+        user_message(1),
+        agent_status(2, AgentStatus::Working),
+        agent_status(3, AgentStatus::Completed),
+        check(4, CheckSource::Ci, CheckStatus::Pending, false),
+        user_message(5),
+        agent_status(6, AgentStatus::Working),
+        agent_status(7, AgentStatus::Completed),
+        check(8, CheckSource::Ci, CheckStatus::Pending, false),
+        check(9, CheckSource::Ci, CheckStatus::Passed, false),
+    ];
+    let (frames, _) = fold(&events, gate);
+    all_conform(&frames);
+    let ids: Vec<String> = frames
+        .iter()
+        .filter(|f| line_has(f, "vymalo.check"))
+        .map(|f| serde_json::to_value(&f.event).unwrap())
+        .map(|e| e["messageId"].as_str().unwrap().to_owned())
+        .collect();
+    // Within one verification the pending card and its answer share an id (`replace`).
+    assert_eq!(ids, ["check-1-1-ci", "check-1-2-ci", "check-1-2-ci"]);
+}
+
+#[test]
+fn a_stale_check_card_never_takes_a_check_id() {
+    let gate = GatePolicy::requiring([CheckSource::Ci]);
+    let events = [
+        user_message(1),
+        agent_status(2, AgentStatus::Working),
+        agent_status(3, AgentStatus::Completed),
+        check(4, CheckSource::Ci, CheckStatus::Pending, false),
+        check(5, CheckSource::Ci, CheckStatus::Passed, true),
+        check(6, CheckSource::Verifier, CheckStatus::Failed, true),
+    ];
+    let (frames, projector) = fold(&events, gate);
+    let ids: Vec<String> = frames
+        .iter()
+        .filter(|f| line_has(f, "vymalo.check"))
+        .map(|f| serde_json::to_value(&f.event).unwrap())
+        .map(|e| e["messageId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, ["check-1-1-ci", "evt-5", "evt-6"]);
+    assert_eq!(
+        projector.thread_state(),
+        ThreadState::Verifying,
+        "and they decided nothing"
+    );
+}
+
+#[test]
+fn a_hold_ends_the_run_in_an_interrupt_the_user_can_answer() {
+    // CI did not report in time: `error{retryable}` then `blocked`, in a thread that was being
+    // verified. It projects as a blocked thread does, not as a failed delivery.
+    let gate = GatePolicy::requiring([CheckSource::Ci]);
+    let mut events = vec![
+        user_message(1),
+        agent_status(2, AgentStatus::Working),
+        agent_status(3, AgentStatus::Completed),
+        check(4, CheckSource::Ci, CheckStatus::Pending, false),
+        event(
+            5,
+            Actor::system(),
+            EventBody::Error(ErrorData {
+                message: "CI did not report in time".to_owned(),
+                retryable: true,
+            }),
+        ),
+        event(
+            6,
+            Actor::system(),
+            EventBody::ThreadState(ThreadStateData {
+                state: ThreadState::Blocked,
+            }),
+        ),
+    ];
+    let (frames, projector) = fold(&events, gate.clone());
+    all_conform(&frames);
+    let last = frames.last().unwrap();
+    let orch_agui_proto::Event::RunFinished(finished) = &last.event else {
+        panic!("{:?}", lines(&frames));
+    };
+    let value = serde_json::to_value(finished).unwrap();
+    assert_eq!(value["outcome"]["type"], "interrupt", "{value}");
+    let asked = &value["outcome"]["interrupts"][0];
+    assert_eq!(asked["id"], "int-6");
+    assert_eq!(asked["reason"], "input_required");
+    assert_eq!(asked["message"], "CI did not report in time");
+    assert!(!lines(&frames).iter().any(|l| l.starts_with("RUN_ERROR")));
+    // The interrupt is one the thread holds, so an answer (`resume`) can name it.
+    let view = projector.view(&UserId::new("alice@example.com"));
+    let orch_agui_projection::ThreadView::Known(known) = view else {
+        panic!("the thread is known");
+    };
+    assert_eq!(known.open_interrupts, ["int-6"]);
+    assert_eq!(known.state, ThreadState::Blocked);
+
+    // A delivery failure of the agent, out of any verification, is still a delivery failure.
+    events.truncate(2);
+    events.push(event(
+        3,
+        Actor::system(),
+        EventBody::Error(ErrorData {
+            message: "cannot deliver".to_owned(),
+            retryable: true,
+        }),
+    ));
+    events.push(event(
+        4,
+        Actor::system(),
+        EventBody::ThreadState(ThreadStateData {
+            state: ThreadState::Blocked,
+        }),
+    ));
+    let (frames, _) = fold(&events, gate);
+    assert!(
+        lines(&frames)
+            .last()
+            .unwrap()
+            .starts_with("RUN_ERROR delivery_failed")
+    );
 }

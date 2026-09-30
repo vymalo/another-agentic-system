@@ -180,7 +180,7 @@
         "status": "failed",
         "summary": "1 test failed"
       },
-      "messageId": "check-1-agent_checks",
+      "messageId": "check-1-1-agent_checks",
       "metadata": {
         "vymalo.actor": {
           "name": "orchestrator",
@@ -388,7 +388,7 @@
         "status": "passed",
         "summary": "3 tests passed"
       },
-      "messageId": "check-2-agent_checks",
+      "messageId": "check-2-2-agent_checks",
       "metadata": {
         "vymalo.actor": {
           "name": "orchestrator",

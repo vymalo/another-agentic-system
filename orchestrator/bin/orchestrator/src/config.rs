@@ -21,7 +21,7 @@ use adam_host::Role;
 use clap::Parser;
 use orch_app::{
     AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules, Layer,
-    known_sources,
+    MAX_ATTEMPTS_CAP_CEILING, known_sources,
 };
 use orch_core::{AgentId, CheckSource, DEFAULT_MAX_ATTEMPTS, GatePolicy, UserId};
 use orch_ports::AgentEndpoint;
@@ -788,6 +788,12 @@ fn parse_gate(
         DEFAULT_MAX_ATTEMPTS_CAP,
         1,
     )?;
+    if cap > MAX_ATTEMPTS_CAP_CEILING {
+        return Err(gate_var(
+            "ORCH_MAX_ATTEMPTS_CAP",
+            format!("{cap} is above the ceiling of {MAX_ATTEMPTS_CAP_CEILING}"),
+        ));
+    }
     let rules = GateRules::new(cap);
     let at = Layer::Deployment;
 
@@ -814,10 +820,12 @@ fn parse_gate(
         }
         policy.require = sources.into_iter().collect();
     }
+    // A cap below the default lowers the default with it; an attempts value that is set is taken
+    // as written and must fit.
     let attempts = number(
         vars.max_attempts,
         "ORCH_MAX_ATTEMPTS",
-        DEFAULT_MAX_ATTEMPTS,
+        DEFAULT_MAX_ATTEMPTS.min(cap),
         1,
     )?;
     if attempts > cap {
@@ -1914,11 +1922,6 @@ mod tests {
                 "ORCH_GATE",
                 "one of: ci, agent-checks, verifier",
             ),
-            (
-                vec![("ORCH_GATE", "agent_checks")],
-                "ORCH_GATE",
-                "unknown source",
-            ),
             (vec![("ORCH_GATE", ",")], "ORCH_GATE", "names no source"),
             (
                 vec![("ORCH_MAX_ATTEMPTS", "0")],
@@ -1941,13 +1944,17 @@ mod tests {
                 "at least 1",
             ),
             (
-                vec![("ORCH_MAX_ATTEMPTS_CAP", "2")],
+                vec![("ORCH_MAX_ATTEMPTS_CAP", "2"), ("ORCH_MAX_ATTEMPTS", "3")],
                 "ORCH_MAX_ATTEMPTS",
                 "above ORCH_MAX_ATTEMPTS_CAP (2)",
             ),
+            (
+                vec![("ORCH_MAX_ATTEMPTS_CAP", "101")],
+                "ORCH_MAX_ATTEMPTS_CAP",
+                "above the ceiling of 100",
+            ),
         ];
         for (pairs, var, says) in cases {
-            // The last case sets only the cap: the default attempts (3) are above it.
             let err = load(&with(&pairs), AGENTS).unwrap_err();
             let (got, reason) = invalid_var(err);
             assert_eq!(got, var, "{pairs:?}");
@@ -1998,7 +2005,6 @@ mod tests {
         for gate in [
             "{surprise: 1}",
             "{require: agent-checks}",
-            "{require: [agent_checks]}",
             "{maxAttempts: many}",
             "{ci: {surprise: 1}}",
             "just-a-string",
@@ -2042,5 +2048,110 @@ mod tests {
         let shown = format!("{cfg:?}");
         assert!(shown.contains("AgentChecks"), "{shown}");
         assert!(!shown.contains("secret"), "{shown}");
+    }
+
+    #[test]
+    fn a_cap_below_the_default_lowers_the_default_attempts_with_it() {
+        let cfg = load(&with(&[("ORCH_MAX_ATTEMPTS_CAP", "2")]), AGENTS).unwrap();
+        assert_eq!((cfg.gate.max_attempts, cfg.gate_rules.cap()), (2, 2));
+        let cfg = load(&with(&[("ORCH_MAX_ATTEMPTS_CAP", "1")]), AGENTS).unwrap();
+        assert_eq!(cfg.gate.max_attempts, 1);
+        // A value that is set is taken as written, and the ceiling bounds the cap.
+        let cfg = load(
+            &with(&[
+                ("ORCH_MAX_ATTEMPTS_CAP", "100"),
+                ("ORCH_MAX_ATTEMPTS", "100"),
+            ]),
+            AGENTS,
+        )
+        .unwrap();
+        assert_eq!(cfg.gate.max_attempts, 100);
+    }
+
+    #[test]
+    fn both_spellings_of_a_source_are_accepted_in_every_layer() {
+        // The API says `agent_checks` (Thread.job.gate); the configuration says `agent-checks`.
+        for spelling in ["agent-checks", "agent_checks"] {
+            let cfg = load(
+                &with(&[("ORCH_GATE", spelling)]),
+                &agents_with_gate(&format!("{{require: [{spelling}]}}")),
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.gate.require,
+                [CheckSource::AgentChecks].into(),
+                "{spelling}"
+            );
+        }
+    }
+
+    /// `ORCH_GATE` itself, through `Config` and `AppConfig` to the job of a thread the `App`
+    /// creates: the variable is what the job runs under, and a target's entry and a request change
+    /// it only the way the rules say.
+    #[tokio::test]
+    async fn the_gate_variables_reach_the_job_of_a_created_thread() {
+        use orch_app::{App, Creation, Inbound, NewThread};
+        use orch_core::{AgentTarget, ThreadId};
+        use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
+        use orch_ports::{PortSet, SystemClock};
+
+        let cfg = load(
+            &with(&[("ORCH_GATE", "agent-checks"), ("ORCH_MAX_ATTEMPTS", "2")]),
+            &agents_with_gate("{maxAttempts: 4}"),
+        )
+        .unwrap();
+        let app = App::new(
+            PortSet {
+                store: MemoryStore::new(),
+                wakeup: MemoryWakeup::new(),
+                agents: ScriptedAgent::new(),
+                clock: SystemClock,
+                ids: SeqIds::default(),
+            },
+            AgentDirectory::new(cfg.agents.clone()),
+            cfg.app_config(),
+        )
+        .unwrap();
+        let create = |agent: &'static str, gate: Option<GateLayer>| {
+            let app = &app;
+            async move {
+                let inbound = Inbound {
+                    gate,
+                    ..Inbound::default()
+                };
+                let new = NewThread {
+                    title: None,
+                    target: AgentTarget {
+                        agent_id: AgentId::new(agent),
+                        release: None,
+                    },
+                    text: "go".to_owned(),
+                };
+                match app
+                    .create_thread_as(
+                        &UserId::new("alice@example.com"),
+                        ThreadId(uuid::Uuid::now_v7()),
+                        new,
+                        inbound,
+                    )
+                    .await
+                {
+                    Ok(Creation::Created { thread, .. }) => thread.job.gate,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        // `plain` has no entry: the variables. `coder` has one: its attempts, the variable's sources.
+        let plain = create("plain", None).await;
+        assert_eq!(plain.require, [CheckSource::AgentChecks].into());
+        assert_eq!(plain.max_attempts, 2);
+        let coder = create("coder", None).await;
+        assert_eq!(coder.require, [CheckSource::AgentChecks].into());
+        assert_eq!(coder.max_attempts, 4);
+        // A run may lower them again.
+        let asked = GateLayer::from_json(&serde_json::json!({"maxAttempts": 1}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(create("coder", Some(asked)).await.max_attempts, 1);
     }
 }
