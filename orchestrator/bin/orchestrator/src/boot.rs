@@ -69,6 +69,7 @@ fn surface_routes<P: orch_ports::Ports>(
     surface: Surface,
     app: &Arc<App<P>>,
     sse_keepalive: Duration,
+    cfg: &Config,
 ) -> Result<SurfaceRoutes, ConfigError> {
     match surface {
         #[cfg(feature = "surface-agui")]
@@ -81,7 +82,55 @@ fn surface_routes<P: orch_ports::Ports>(
                 feature: surface.feature(),
             })
         }
+        #[cfg(feature = "surface-mcp")]
+        Surface::Mcp => mcp_routes(app, cfg),
+        #[cfg(not(feature = "surface-mcp"))]
+        Surface::Mcp => {
+            let _ = (app, cfg);
+            Err(ConfigError::SurfaceNotCompiled {
+                surface: surface.name(),
+                feature: surface.feature(),
+            })
+        }
     }
+}
+
+/// The MCP server's routes. The tokens, hosts and public URL were validated when the
+/// configuration was read; the crate checks them again, and a failure is the same kind of error
+/// (exit 78), not a panic.
+#[cfg(feature = "surface-mcp")]
+fn mcp_routes<P: orch_ports::Ports>(
+    app: &Arc<App<P>>,
+    cfg: &Config,
+) -> Result<SurfaceRoutes, ConfigError> {
+    let invalid = |var: &'static str| {
+        move |e: &dyn std::fmt::Display| ConfigError::Invalid {
+            var,
+            reason: e.to_string(),
+        }
+    };
+    // Only reachable with the surface mounted, which the configuration reads the settings for.
+    let settings = cfg
+        .mcp
+        .as_ref()
+        .ok_or(ConfigError::Missing("MCP_TOKENS_FILE"))?;
+    let tokens = orch_surface_mcp::TokenTable::new(settings.tokens.iter().cloned())
+        .map_err(|e| invalid("MCP_TOKENS_FILE")(&e))?;
+    let mut config =
+        orch_surface_mcp::McpConfig::new(tokens, settings.allowed_hosts.iter().cloned())
+            .map_err(|e| invalid("MCP_ALLOWED_HOSTS")(&e))?;
+    if let Some(url) = &settings.public_url {
+        config = config
+            .with_public_url(url)
+            .map_err(|e| invalid("ORCH_PUBLIC_URL")(&e))?;
+    }
+    tracing::info!(
+        tokens = settings.tokens.len(),
+        allowed_hosts = %settings.allowed_hosts.join(","),
+        web_url = settings.public_url.is_some(),
+        "the MCP server is mounted at /mcp"
+    );
+    Ok(orch_surface_mcp::routes(Arc::clone(app), config))
 }
 
 type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids>;
@@ -203,7 +252,7 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
     let surfaces = cfg
         .surfaces
         .iter()
-        .map(|&surface| surface_routes(surface, app, api.sse_keepalive))
+        .map(|&surface| surface_routes(surface, app, api.sse_keepalive, cfg))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(orch_api::router_with_surfaces(
         Arc::clone(app),

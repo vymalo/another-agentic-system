@@ -62,6 +62,7 @@ fn message(text: &str) -> Input {
         text: text.into(),
         message_id: None,
         run_id: None,
+        origin: orch_core::Origin::Agui,
     }
 }
 fn ci_report(name: &str, sha: &str, conclusion: CiConclusion) -> CiReport {

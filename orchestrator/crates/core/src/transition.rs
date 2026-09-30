@@ -20,7 +20,7 @@ use crate::agent::{AgentTaskState, AgentUpdate};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
-    ThreadStateData, UserMessageData,
+    Origin, ThreadStateData, UserMessageData,
 };
 use crate::gate::{
     CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_TASK_BYTES, PushedRef,
@@ -45,6 +45,8 @@ pub enum Input {
         message_id: Option<String>,
         /// The id of the run the surface started or continued with it, recorded in the log.
         run_id: Option<String>,
+        /// The surface the message came in through, recorded in the log (ADR 0019).
+        origin: Origin,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -264,6 +266,7 @@ fn user_message(
     text: &str,
     message_id: &Option<String>,
     run_id: &Option<String>,
+    origin: Origin,
 ) -> Vec<Command> {
     vec![
         append(
@@ -272,6 +275,7 @@ fn user_message(
                 text: text.to_owned(),
                 message_id: message_id.clone(),
                 run_id: run_id.clone(),
+                origin,
             }),
         ),
         Command::Delegate {
@@ -328,10 +332,11 @@ fn decide(
             text,
             message_id,
             run_id,
+            origin,
         } => match state {
             ThreadState::Queued | ThreadState::Working => {
                 note_task(job, text);
-                Ok((state, user_message(user, text, message_id, run_id)))
+                Ok((state, user_message(user, text, message_id, run_id, *origin)))
             }
             // Blocked, or being verified: the user's message re-delegates. It does not use an
             // attempt: an attempt is used only when the gate fails.
@@ -340,7 +345,7 @@ fn decide(
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
-                    user_message(user, text, message_id, run_id),
+                    user_message(user, text, message_id, run_id, *origin),
                 ))
             }
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {

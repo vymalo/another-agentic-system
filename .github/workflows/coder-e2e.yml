@@ -8,7 +8,7 @@ name: Coder E2E
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run the script twice
-#              (with OpenCode, then NO_OPENCODE=1), then restart the orchestrator as a control plane
+#              (with OpenCode, then NO_OPENCODE=1), run dev/mcp-e2e.sh (an MCP client through the edge), then restart the orchestrator as a control plane
 #              beside two workers (profile `split`) and run dev/split-e2e.sh, which SIGKILLs the
 #              worker that holds a task (ADR 0015)
 #
@@ -106,6 +106,8 @@ jobs:
         # The mock agent behind `mock-coder-gated` (dev/agents.yaml), not the coder: the gate is the
         # orchestrator's, so a scripted agent that reports failing and then passing checks is enough.
         run: dev/verify-e2e.sh
+      - name: An MCP client starts a job and follows it to done (bearer token, no identity header)
+        run: dev/mcp-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.

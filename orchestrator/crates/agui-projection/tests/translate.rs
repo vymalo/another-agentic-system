@@ -79,6 +79,7 @@ fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
         text: text.to_owned(),
         message_id: message_id.map(str::to_owned),
         run_id: Some(run_id.to_owned()),
+        origin: orch_core::Origin::Agui,
     }
 }
 
@@ -812,6 +813,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 text: "go".into(),
                 message_id: Some("client-1".into()),
                 run_id: Some("run-a".into()),
+                origin: orch_core::Origin::Agui,
             }),
         ),
         ev(
@@ -867,6 +869,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             text: text.clone(),
             message_id: message_id.clone(),
             run_id: run_id.clone(),
+            origin: orch_core::Origin::Agui,
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.

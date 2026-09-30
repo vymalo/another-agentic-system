@@ -17,7 +17,9 @@ use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
 };
-use orch_core::{AgentId, AgentTarget, Event, Input, ThreadId, ThreadRecord, UserId, report};
+use orch_core::{
+    AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UserId, report,
+};
 use orch_ports::Ports;
 
 use crate::refuse::{check_accept, check_json, input_error};
@@ -260,6 +262,7 @@ async fn attempt<P: Ports>(
                 run_id: run_id.clone(),
                 key: key_of(thread, &inputs[0]),
                 gate: gate.cloned(),
+                origin: Origin::Agui,
             };
             match app.create_thread_as(user, thread, new, inbound).await? {
                 Creation::Created {

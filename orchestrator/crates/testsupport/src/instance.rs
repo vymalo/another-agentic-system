@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use orch_api::ApiConfig;
+use orch_api::{ApiConfig, SurfaceRoutes};
 use orch_app::{App, Dispatcher, DispatcherConfig, NewThread};
 use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
 use orch_ports::Ports;
@@ -187,6 +187,18 @@ impl TestInstance {
         dispatcher: Option<DispatcherConfig>,
         owner: &str,
     ) -> Self {
+        Self::spawn_with_surfaces(app, api, dispatcher, owner, Vec::new()).await
+    }
+
+    /// Like [`TestInstance::spawn_with`], and `extra` surfaces (built by the caller over the same
+    /// `app`, for example the MCP server) are mounted beside the AG-UI routes.
+    pub async fn spawn_with_surfaces<P: Ports>(
+        app: Arc<App<P>>,
+        api: ApiConfig,
+        dispatcher: Option<DispatcherConfig>,
+        owner: &str,
+        extra: Vec<SurfaceRoutes>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let shutdown = CancellationToken::new();
@@ -196,15 +208,13 @@ impl TestInstance {
         let keepalive = api.sse_keepalive;
         let crash = CancellationToken::new();
         let log: Arc<dyn LogTap> = Arc::new(AppLog(Arc::clone(&app)));
-        let router = orch_api::router_with_surfaces(
-            Arc::clone(&app),
-            api,
-            vec![orch_surface_agui::routes(app, keepalive)],
-        )
-        .layer(axum::middleware::from_fn({
-            let crash = crash.clone();
-            move |request, next| break_on_crash(crash.clone(), request, next)
-        }));
+        let mut surfaces = vec![orch_surface_agui::routes(Arc::clone(&app), keepalive)];
+        surfaces.extend(extra);
+        let router =
+            orch_api::router_with_surfaces(app, api, surfaces).layer(axum::middleware::from_fn({
+                let crash = crash.clone();
+                move |request, next| break_on_crash(crash.clone(), request, next)
+            }));
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });

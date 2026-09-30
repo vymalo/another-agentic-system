@@ -19,7 +19,7 @@ pub use agent::{AgentTaskState, AgentUpdate};
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData,
-    Event, EventBody, EventKind, ThreadStateData, UserMessageData,
+    Event, EventBody, EventKind, Origin, ThreadStateData, UserMessageData,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,

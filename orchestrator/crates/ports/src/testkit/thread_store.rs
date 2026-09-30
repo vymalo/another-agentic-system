@@ -7,8 +7,8 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
     CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, EventBody,
-    GatePolicy, Hold, Job, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState, Timer,
-    UserId, UserMessageData, WatchKey,
+    GatePolicy, Hold, Job, Origin, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState,
+    Timer, UserId, UserMessageData, WatchKey,
 };
 use uuid::Uuid;
 
@@ -216,6 +216,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             text: "with ids".into(),
             message_id: Some("msg-1".into()),
             run_id: Some("run-1".into()),
+            origin: Origin::Agui,
         }),
         idempotency_key: None,
     };
@@ -224,6 +225,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             text: "run only".into(),
             message_id: None,
             run_id: Some("run-2".into()),
+            origin: Origin::Agui,
         }),
         ..user_event("unused", None)
     };
@@ -268,6 +270,14 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             body: EventBody::UiAction(action.clone()),
             idempotency_key: None,
         },
+        // ADR 0019: a message an MCP client sent says so; the chat's leave the member out.
+        NewEvent {
+            body: EventBody::UserMessage(UserMessageData {
+                origin: Origin::Mcp,
+                ..UserMessageData::new("from a tool")
+            }),
+            ..user_event("unused", None)
+        },
     ];
     let bodies: Vec<EventBody> = wanted.iter().map(|e| e.body.clone()).collect();
     let action_row = NewOutbox {
@@ -294,7 +304,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     );
     assert_eq!(
         read.iter().map(|e| e.seq).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7]
+        [1, 2, 3, 4, 5, 6, 7, 8]
     );
     // The wire form the API serves is what the store returned: no null, camelCase ids.
     let data: Vec<serde_json::Value> = read.iter().map(|e| e.body.data_value()).collect();
@@ -317,6 +327,10 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         data[6],
         serde_json::json!({"surfaceId": "s1", "name": "go", "sourceComponentId": "btn",
                            "context": {"choice": "a"}, "version": "v0.9.1", "runId": "run-3"})
+    );
+    assert_eq!(
+        data[7],
+        serde_json::json!({"text": "from a tool", "origin": "mcp"})
     );
     // The delegation of an action keeps its payload, and is a `delegate` row.
     let open = store.list_open_outbox(thread_id(1)).await.unwrap();

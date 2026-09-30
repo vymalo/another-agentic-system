@@ -43,7 +43,7 @@ protocol:
 | Protocol | As a server (input) | As a client (output) | Status |
 |---|---|---|---|
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
-| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | **Planned**: the server as `orch-surface-mcp`, over streamable HTTP with bearer tokens, going straight to `App` and not through the inbox ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); the client side is not designed yet |
+| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | Server: **`start_job`, `get_job`, `answer`, `cancel_job` and `list_agents` built** (`orch-surface-mcp`, over streamable HTTP, stateless, with bearer tokens, going straight to `App` and not through the inbox, [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); `wait_for_job` **planned** (slice 12); the client side is not designed yet |
 | AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
 | Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
 | Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The inbox it writes to is **built**: `App::receive` stores a report and the `InboxWorker` applies it |
@@ -54,14 +54,15 @@ small REST resource API beside it (agents, threads, cancel, health: always mount
 binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
 (`ORCH_SURFACES`, default `agui`). **Built:** the mechanism, the `agui` surface (the run route, the connect
-stream and the capabilities document). **Planned:** `a2a`. The legacy `chat-api` surface was removed on
+stream and the capabilities document) and the `mcp` surface (a machine route with bearer tokens, off unless
+named). **Planned:** `a2a`. The legacy `chat-api` surface was removed on
 2026-09-30 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag)).
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
 gets MCP progress notifications; one started in the chat gets chat messages. The first step toward it is
-planned: `user_message` gains `origin: agui | mcp`
-([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). Today every log event
+**built**: `user_message` gains `origin: agui | mcp` (`orch_core::Origin`; `agui`, the default, is not written, so
+older logs read as before; [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). Today every log event
 records an `Actor` (`user`, `agent` or `system`), and the only reply channel is the thread's own
 event log, which every surface reads.
 
@@ -97,14 +98,14 @@ flowchart TB
   subgraph G_SURF["Interaction surfaces: mounted by ORCH_SURFACES"]
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
     surfwh["<b>orch-surface-webhook</b> (planned)<br/>POST /webhooks/github, /webhooks/ci<br/>machine routes, HMAC"]:::planned
-    surfmcp["<b>orch-surface-mcp</b> (planned)<br/>/mcp, streamable HTTP<br/>machine route, bearer"]:::planned
+    surfmcp["<b>orch-surface-mcp</b><br/>/mcp, streamable HTTP, stateless<br/>machine route, bearer tokens"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui (default), agent-local (off)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp (default), agent-local (off)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -129,16 +130,16 @@ flowchart TB
   bin --> a2a
   bin -. "feature agent-local" .-> adam
   bin -. "feature surface-agui" .-> surfagui
+  bin -. "feature surface-mcp" .-> surfmcp
   surfagui --> api
   surfagui --> app
   surfagui --> proj
   surfagui --> proto
   surfwh -.-> api
   surfwh -.-> app
-  surfmcp -.-> api
-  surfmcp -.-> app
+  surfmcp --> api
+  surfmcp --> app
   bin -.-> surfwh
-  bin -.-> surfmcp
   ts --> api
   ts --> app
   ts --> surfagui
@@ -194,7 +195,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | `orch-surface-webhook` | `POST /webhooks/github` and `POST /webhooks/ci`: HMAC on the raw body, normalise to a `CiReport`, `App::receive`; feature `surface-webhook`, on by default | **Planned** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
-| `orch-surface-mcp` | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Planned** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)) |
+| `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `answer`, `cancel_job`; `wait_for_job` is planned | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slice 11 |
 | MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root | **Built** |
@@ -203,15 +204,15 @@ Rules the graph enforces, each checkable in the manifests:
 
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
+| `orchestrator` | `surface-mcp` | yes | Compiles in `orch-surface-mcp` (`rmcp`, its tower service and the bearer check). Mounted only when `ORCH_SURFACES` names `mcp`, and then `MCP_TOKENS_FILE` and `MCP_ALLOWED_HOSTS` are required |
 | `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities); it decides what *can* be mounted, `ORCH_SURFACES` what *is*. (`surface-chat-api` and its crate were removed on 2026-09-30.) |
 | `orchestrator` | `agent-local` | no | Compiles in `orch-agent-adam` and the adam-rs runtime: `transport: local` agents in `AGENTS_FILE` are served in this process (below). Without it such an entry is refused at startup (exit 78) and nothing of adam-rs's runtime is linked |
 | `orch-agent-adam` | `testkit` | no | The scripted agent, `LocalFixture` (the `AgentFixture` of the conformance suite), `LocalWorld` (processes sharing a journal) and a private Postgres schema; enable as a dev-dependency feature |
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
 
-Planned, not built: the features `surface-webhook` (on by default; selects `orch-surface-webhook`, whose
-surfaces are the `ORCH_SURFACES` names `webhook-github` and `webhook-generic`) and a feature for the MCP
-surface. Its name is left to slice 11; `surface-mcp` by analogy.
+Planned, not built: the feature `surface-webhook` (on by default; selects `orch-surface-webhook`, whose
+surfaces are the `ORCH_SURFACES` names `webhook-github` and `webhook-generic`).
 
 There is no Cargo feature that selects the store or the A2A client: the binary depends on
 `orch-store-postgres` and `orch-agent-a2a` unconditionally, because there is one implementation of
@@ -936,16 +937,16 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
   route. The core half is **partly built**: `App` scopes every read and write to the owner (someone
   else's thread is a 404, never a 403), but `transition` does not yet decide by origin, because
   only a signed-in user and the delegated agent can send inputs. *Planned:* a webhook must not be
-  able to approve a PR. The planned webhook and MCP routes are **machine routes**
-  (`SurfaceRoutes::machine(router, guard)`), the only routes outside the identity layer; they take a
+  able to approve a PR. The MCP route (built) and the planned webhook routes are **machine routes**
+  (`SurfaceRoutes::machine(router, guard)`, built with the MCP surface), the only routes outside the identity layer; they take a
   required authenticator (an HMAC check, a bearer check) and never read `X-Auth-Request-Email`
   ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). A `CiReported` input can only add a check
   result; it cannot approve or merge.
 - **Request/response protocols return immediately. Built.** `postMessage` answers 202 with the
   `user_message` event and the work continues in the dispatcher; `createThread` answers 201. A2A
   has this built in (`SendStreamingMessage` streams the task; `SubscribeToTask` and `GetTask`
-  resume it). For MCP, *planned*: `start_job` returns a job id at once, and `wait_for_job` follows it with
-  progress notifications ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)).
+  resume it). For MCP, `start_job` returns a job id at once (**built**), and `wait_for_job` follows it with
+  progress notifications (*planned*, slice 12) ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)).
 - **Optional protocol extensions are capability-detected. Built.** The A2A adapter reads each agent
   card live on every call, never caches it, and offers release selection only when the card declares
   the release-channels extension with well-formed parameters; a selected release is refused, never
@@ -1081,7 +1082,7 @@ erDiagram
 (`receive`, `claim_inbox`, `park_inbox`, `retry_inbox`, `complete_inbox`, and `expire_parked_inbox`,
 `release_inbox_leases`, `get_watch`, `get_inbox`, `find_inbox`) are on `ThreadStore` so that the commit stays
 one transaction; the conformance cases are in `thread_store_conformance!`. `user_message` gains an `origin`
-field (no column; it is in the event's `data`). The chat needs none of this when the gate is empty.
+field (no column; it is in the event's `data`; **built** with the MCP surface). The chat needs none of this when the gate is empty.
 
 ### Live updates
 

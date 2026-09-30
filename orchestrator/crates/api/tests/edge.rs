@@ -607,3 +607,71 @@ async fn probes_report_readiness_and_shutdown_while_the_api_keeps_answering() {
     // The API keeps answering while draining.
     assert_eq!(status("/api/agents", Some(ALICE)).await, 200);
 }
+
+/// A machine route (ADR 0016, ADR 0019) is outside the identity layer and the request timeout,
+/// and is guarded by the layer its surface hands over: there is no way to add one without.
+#[tokio::test]
+async fn a_machine_route_needs_its_own_guard_and_not_the_identity() {
+    use axum::extract::Request;
+    use axum::http::StatusCode;
+    use axum::middleware::{Next, from_fn};
+    use axum::response::{IntoResponse, Response};
+
+    async fn guard(request: Request, next: Next) -> Response {
+        match request.headers().get("x-machine-key") {
+            Some(v) if v == "secret" => next.run(request).await,
+            _ => StatusCode::FORBIDDEN.into_response(),
+        }
+    }
+    async fn who(request: Request) -> String {
+        // The identity layer did not run: there is no `UserId`, and the route never reads the header.
+        format!(
+            "machine, identity extension: {}",
+            request.extensions().get::<UserId>().is_some()
+        )
+    }
+    let machine =
+        SurfaceRoutes::new().machine(Router::new().route("/m/who", get(who)), from_fn(guard));
+    let cfg = ApiConfig {
+        // The plain timeout would cut a slow call; a machine route is not subject to it.
+        request_timeout: Duration::from_millis(50),
+        auth: AuthConfig {
+            dev_user: Some(UserId::new("dev@example.com")),
+        },
+        ..ApiConfig::default()
+    };
+    let e = edge(cfg, vec![test_surface(Duration::ZERO), machine]).await;
+    let call = |key: Option<&'static str>, user: Option<&'static str>| {
+        let mut req = e.client.get(format!("{}/m/who", e.base));
+        if let Some(key) = key {
+            req = req.header("x-machine-key", key);
+        }
+        if let Some(user) = user {
+            req = req.header("X-Auth-Request-Email", user);
+        }
+        req.send()
+    };
+    // The guard decides: with the key, no identity is needed; without it, an identity does not help.
+    let ok = call(Some("secret"), None).await.unwrap();
+    assert_eq!(ok.status(), 200);
+    assert_eq!(
+        ok.text().await.unwrap(),
+        "machine, identity extension: false"
+    );
+    for (key, user) in [
+        (None, None),
+        (Some("wrong"), Some(ALICE)),
+        (None, Some(ALICE)),
+    ] {
+        assert_eq!(
+            call(key, user).await.unwrap().status(),
+            403,
+            "{key:?} {user:?}"
+        );
+    }
+    // Everything else is still behind the identity layer (here the dev user answers for it).
+    let r = e.call(reqwest::Method::GET, "/x/whoami", None).await;
+    assert_eq!(r.text().await.unwrap(), "dev@example.com");
+    let r = e.call(reqwest::Method::GET, "/api/agents", None).await;
+    assert_eq!(r.status(), 200);
+}

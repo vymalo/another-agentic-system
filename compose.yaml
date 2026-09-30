@@ -55,8 +55,9 @@ x-orchestrator-env: &orchestrator-env
   MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
   LOG_FORMAT: text
-  # No ORCH_SURFACES: the default is `agui`, the AG-UI routes beside the resource API (ADR 0012).
-  # The web and the dev scripts speak only AG-UI. The legacy chat API surface was removed on
+  # No ORCH_SURFACES here: the default is `agui`, the AG-UI routes beside the resource API (ADR 0012),
+  # which is all a worker needs; the `orchestrator` service adds `mcp` (ADR 0019). The web and the
+  # dev scripts speak AG-UI (and MCP, dev/mcp-e2e.sh). The legacy chat API surface was removed on
   # 2026-09-30: `ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup
   # (see orchestrator/bin/orchestrator/README.md).
   # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
@@ -101,12 +102,25 @@ services:
   orchestrator:
     <<: *orchestrator
     profiles: [app]
+    # The anchor's volumes are replaced, not merged: the agents file again, and the MCP tokens.
+    volumes:
+      - ./dev/agents.yaml:/etc/orchestrator/agents.yaml:ro
+      - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
     environment:
       <<: *orchestrator-env
       # `all` (control plane and dispatcher in one process) unless the split profile is in use, where
       # ORCHESTRATOR_ROLE=control-plane leaves the delivery to the workers. The instance id stays the
       # default ($HOSTNAME-<uuid>).
       ORCH_ROLE: ${ORCHESTRATOR_ROLE:-all}
+      # The AG-UI routes the web speaks, and the MCP server (ADR 0019) at /mcp: Claude Code, opencode
+      # or dev/mcp-e2e.sh reach it through the `edge`, which adds no identity to /mcp. The token is
+      # named by dev/mcp-tokens.yaml and belongs to the edge's dev user, so the jobs it starts are in
+      # the chat. `Host` values are the edge's own address (127.0.0.1 or localhost, any port).
+      ORCH_SURFACES: agui,mcp
+      MCP_TOKENS_FILE: /etc/orchestrator/mcp-tokens.yaml
+      MCP_ALLOWED_HOSTS: 127.0.0.1,localhost
+      MCP_TOKEN_DEV: dev-mcp-token # dummy: a real deployment keeps this in a secret
+      ORCH_PUBLIC_URL: http://127.0.0.1:${EDGE_PORT:-8080} # the chat, for the web_url of start_job
     # No `depends_on` for `coder`: the agent card is read when a thread is delegated, never at boot, and a
     # coder that is down leaves it first in the list and fails the thread like any agent that is down.
     # No healthcheck of its own: the distroless image has no shell or curl. `edge` probes /readyz through the proxy.

@@ -537,6 +537,7 @@ fn inbound(message: &str, run: &str) -> orch_app::Inbound {
         message_id: Some(message.to_owned()),
         run_id: Some(run.to_owned()),
         key: Some(format!("k:{message}")),
+        origin: orch_core::Origin::Agui,
         ..orch_app::Inbound::default()
     }
 }
@@ -659,6 +660,7 @@ async fn submit_applies_under_a_key_and_a_replay_is_a_duplicate() {
         text: "main".to_owned(),
         message_id: Some("m-2".to_owned()),
         run_id: Some("r-2".to_owned()),
+        origin: orch_core::Origin::Agui,
     };
     // Not yet blocked, but a user message is valid while working, so it is applied.
     let first = app
@@ -694,6 +696,7 @@ async fn submit_validates_the_text_and_checks_the_owner() {
         text: text.to_owned(),
         message_id: None,
         run_id: None,
+        origin: orch_core::Origin::Agui,
     };
     assert!(
         invalid(

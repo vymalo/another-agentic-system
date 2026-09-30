@@ -1,7 +1,8 @@
 # ADR 0019 — MCP server over streamable HTTP: bearer first, OIDC later
 
-- **Status:** accepted (2026-09-30). **Planned, not built:** MVP slices 11 (tools and bearer
-  tokens), 12 (`wait_for_job` with progress) and 14 (OIDC, after the MVP)
+- **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 11 (tools and bearer
+  tokens; see the [status note](#status-note-2026-09-30-slice-11-is-built)). **Planned, not
+  built:** slices 12 (`wait_for_job` with progress) and 14 (OIDC, after the MVP)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). Amends the design sentence "every input
   goes through the inbox" of [`orchestrator.md`](../orchestrator.md#event-flow) for MCP, and the
   "needs the inbox" note of MVP step 6. Refines [ADR 0004](0004-closed-enums-over-dyn-registry.md)
@@ -221,12 +222,59 @@ Easy to reverse: the wait bound, the heartbeat, the progress granularity.
 - *Verified 2026-09-30*: Claude Code adds an HTTP MCP server with `claude mcp add --transport http
   <name> <url> --header "Authorization: Bearer …"`, and has a five-minute idle window that
   progress resets. Source: <https://code.claude.com/docs/en/mcp>.
-- *Unverified*, checked in slice 11 (first) and 12: whether Claude Code works against rmcp's
-  stateless mode, and whether it displays progress; oauth2-proxy `skip_auth_routes` for `/mcp`; the
-  current `secrecy` version.
+- *Verified 2026-09-30* (slice 11) by reading the rmcp 3.5.0 source and by running it: a
+  `StreamableHttpService` built with `StreamableHttpServerConfig::with_legacy_session_mode(false)` and a
+  `NeverSessionManager` serves every POST with a fresh handler and hands out no `Mcp-Session-Id`; it copies the
+  request's `http::request::Parts` (with the extensions the layers above it set) into the request context, which is how
+  a tool learns the token's user; `allowed_hosts` defaults to `localhost`, `127.0.0.1` and `::1`, and an **empty** list
+  allows every host (so `McpConfig` refuses an empty list); an entry without a port matches any port; a disallowed
+  `Host` is `403`. The crate's own client, with its legacy `initialize` handshake and with the `2026-07-28`
+  `server/discover` lifecycle, works against it (`orch-surface-mcp`'s `tests/`).
+- *Verified 2026-09-30*: `secrecy` 0.10.3 (`SecretString`, `ExposeSecret`; the version in `Cargo.lock`), `subtle` 2.6
+  (`ConstantTimeEq`) and `sha2` 0.10.
+- *Unverified*, and **not tried** in slice 11: whether **Claude Code** (or opencode) works against rmcp's stateless
+  mode; nothing but rmcp's own client and `curl` has spoken to it. Whether they display progress is checked in slice 12.
+  oauth2-proxy `skip_auth_routes` for `/mcp` (the dev edge is Caddy; no oauth2-proxy was run).
 
 ### Status note, 2026-09-30: no `chat_api` origin
 
 The legacy chat API surface was removed the same day ([ADR 0012](0012-ag-ui-user-facing-protocol.md)'s
 status note), so `origin` has two values, `agui` and `mcp`, not the three first written here. The
 decision stands.
+
+### Status note, 2026-09-30: slice 11 is built
+
+`orch-surface-mcp` (feature `surface-mcp`, surface name `mcp`) serves `list_agents`, `start_job`, `get_job`, `answer` and
+`cancel_job` at `/mcp`, stateless, behind static bearer tokens. The decision above stands; this note records what
+building it settled.
+
+- **`web_url`.** The variable is **`ORCH_PUBLIC_URL`** (flag `--public-url`): the public origin of the chat, for example
+  `https://chat.example.com`, with no path. `start_job` answers `web_url` as `<origin>/threads/<job_id>` (the web's
+  route) and **omits it** when the variable is unset. No public-origin variable existed before. It is used only when the
+  surface is mounted, but a malformed value is a startup error whatever the surface.
+- **What the surface reads.** `MCP_TOKENS_FILE`, `MCP_ALLOWED_HOSTS` (comma separated) and the `tokenEnv` variables are
+  required when `mcp` is in `ORCH_SURFACES` **and the role serves HTTP** (`all`, `control-plane`); a `worker` is not asked
+  for the secrets of a surface it never mounts. A missing or empty token variable, an unreadable or malformed file, a
+  user that is not an e-mail address, and one token given to two users are configuration errors (exit 78) found before
+  anything connects. A user may have several tokens (a rotation). `MCP_WAIT_MAX_SECS` arrives with slice 12.
+- **The machine route** is `SurfaceRoutes::machine(routes, guard)` in `orch-api`, as the design of
+  [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md) has it: the routes sit outside the identity layer and the
+  request timeout, and the guard (here the bearer check, a tower layer) is a required argument, so a machine route cannot
+  be added without one. It was built here because slice 11 needs it first; slice 6 uses it.
+- **`origin`.** `user_message` data gains `origin`, `agui` or `mcp`. The default, `agui`, is **not written**: an event
+  without the member reads as `agui`, so every log written before the field existed reads as it did, and the AG-UI
+  projection and its goldens are untouched (the projection does not carry it yet: the web's "from Claude Code" is a later
+  change). The `Input::UserMessage` of the core and `Inbound` of `App` carry it.
+- **Idempotency.** With a `client_request_id` the job id is the first 16 bytes of SHA-256 over a domain tag, the
+  length-prefixed user and the request id, with the UUID version (8) and variant bits set. Two users with the same request
+  id get two jobs; a retry, on any replica and concurrently, gets `Exists` and the same `job_id` (`created: false`). The
+  answer carries **`created`**, which the decision does not list (additive). The id is not time-ordered, and the resource
+  API lists threads by id (`ORDER BY id DESC`), so a thread started with a `client_request_id` sorts among the others by
+  its hash, not by its age; threads without one are UUIDv7 as before. Listing by `created_at` is a follow-up.
+- **Tools.** Unknown arguments are refused (`invalid params`), so a client that sends `gate` (offered with the per-thread
+  gate of slice 3) hears that it did not apply. A failure the caller can act on (no such job, a finished job, an empty
+  text, an unknown agent) is a tool result with `isError: true`; only a malformed call or a fault of the server is a
+  protocol error. `get_job` adds `title`, `agent`, `finished`, `hold` and `last_seq` (the cursor for `after_seq`) to the
+  summary the decision lists; the pull request is found in the log (an artifact named `pull_request` or "Pull request").
+- **Cargo feature.** `surface-mcp` is **on by default**, like `surface-agui`: the image has it, and it is mounted only when
+  `ORCH_SURFACES` names `mcp`.

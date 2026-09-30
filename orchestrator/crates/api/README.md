@@ -24,7 +24,8 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `router::<P>(Arc<App<P>>, ApiConfig) -> axum::Router` | health and the resource API, no interaction surface |
 | `health_router::<P>(Arc<App<P>>) -> axum::Router` | `/healthz`, `/readyz` and `/metrics` only, no identity, every other path 404: for a process with no HTTP interface (a worker-only orchestrator). The full routers serve the same routes |
 | `router_with_surfaces::<P>(app, ApiConfig, Vec<SurfaceRoutes>)` | the same plus the routes of the given surfaces, all behind the identity layer |
-| `SurfaceRoutes` | what a surface contributes: `plain(Router)` (request timeout applies) and `streaming(Router)` (SSE, no timeout); already bound to the surface's own state |
+| `SurfaceRoutes` | what a surface contributes: `plain(Router)` (request timeout applies), `streaming(Router)` (SSE, no timeout) and `machine(Router, guard)`; already bound to the surface's own state |
+| `SurfaceRoutes::machine(routes, guard)` | routes for a caller that is not a person behind oauth2-proxy (an MCP client with a bearer token, later a webhook): **outside** the identity layer and the request timeout, wrapped in `guard`, a tower layer that is the surface's own authentication and a required argument, so a machine route cannot be added without one. It must fail closed and never read `X-Auth-Request-Email` ([ADR 0016](../../../docs/decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). The only user is [`orch-surface-mcp`](../surface-mcp/README.md) |
 | `ApiConfig` | `auth`, `sse_keepalive` (15 s; read by surfaces, not by this crate), `request_timeout` (30 s, everything but streaming routes) |
 | `AuthConfig { dev_user }`, `IDENTITY_HEADER` | identity handling; `dev_user: None` fails closed |
 | `Problem`, `ApiError` | RFC 9457 `application/problem+json` errors, and what a handler can `?` (an `AppError` mapped by its class, or a ready problem) |

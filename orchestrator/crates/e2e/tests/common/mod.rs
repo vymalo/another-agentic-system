@@ -271,6 +271,16 @@ impl World {
 
     /// Starts an instance named `owner`; `dispatch: false` serves the API only.
     pub async fn instance_with(&self, owner: &str, dispatch: bool) -> TestInstance {
+        self.instance_full(owner, dispatch, false).await
+    }
+
+    /// Like [`World::instance_with`], and the MCP server is mounted at `/mcp` with the tokens
+    /// [`ALICE_TOKEN`] and [`BOB_TOKEN`].
+    pub async fn instance_with_mcp(&self, owner: &str, dispatch: bool) -> TestInstance {
+        self.instance_full(owner, dispatch, true).await
+    }
+
+    async fn instance_full(&self, owner: &str, dispatch: bool, mcp: bool) -> TestInstance {
         let dispatcher = dispatch.then(fast_dispatcher);
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
@@ -279,7 +289,8 @@ impl World {
         match &self.db {
             Db::Memory { store, wakeup } => {
                 let app = self.app(store.clone(), wakeup.clone());
-                TestInstance::spawn_with(app, api, dispatcher, owner).await
+                let extra = mcp_routes(&app, mcp);
+                TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
             }
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
@@ -289,7 +300,8 @@ impl World {
                     "the wakeup listener did not attach"
                 );
                 let app = self.app(PgStore::from_pool(pool), wakeup);
-                TestInstance::spawn_with(app, api, dispatcher, owner).await
+                let extra = mcp_routes(&app, mcp);
+                TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
             }
         }
     }
@@ -298,6 +310,24 @@ impl World {
     pub fn chat(&self, instance: &TestInstance) -> Chat {
         instance.chat(ALICE)
     }
+}
+
+pub const ALICE_TOKEN: &str = "alice-token";
+pub const BOB_TOKEN: &str = "bob-token";
+
+/// The MCP surface over `app`, when asked for.
+fn mcp_routes<P: orch_ports::Ports>(app: &Arc<App<P>>, mcp: bool) -> Vec<orch_api::SurfaceRoutes> {
+    if !mcp {
+        return Vec::new();
+    }
+    let secret = |s: &str| secrecy::SecretString::from(s.to_owned());
+    let tokens = orch_surface_mcp::TokenTable::new([
+        (orch_core::UserId::new(ALICE), secret(ALICE_TOKEN)),
+        (orch_core::UserId::new(BOB), secret(BOB_TOKEN)),
+    ])
+    .unwrap();
+    let config = orch_surface_mcp::McpConfig::new(tokens, ["127.0.0.1"]).unwrap();
+    vec![orch_surface_mcp::routes(Arc::clone(app), config)]
 }
 
 /// Asserts `seq` is exactly 1..=n.

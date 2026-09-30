@@ -2,9 +2,11 @@
 //! problems, the resource API (agents, thread list and details, cancel) and health, in
 //! `docs/api/chat-api.yaml`.
 //!
-//! Interaction surfaces (AG-UI today) are separate crates. Each builds
-//! [`SurfaceRoutes`], and [`router_with_surfaces`] mounts them behind the same identity layer,
-//! so a surface cannot forget authentication.
+//! Interaction surfaces (AG-UI, MCP) are separate crates. Each builds [`SurfaceRoutes`], and
+//! [`router_with_surfaces`] mounts them behind the same identity layer, so a surface cannot forget
+//! authentication. The one exception is a [machine route](SurfaceRoutes::machine): a route for a
+//! caller that has no oauth2-proxy cookie (an MCP client with a bearer token), which the surface
+//! guards itself.
 //!
 //! Identity comes from `X-Auth-Request-Email` (set by oauth2-proxy). Requests without it are
 //! refused with 401 everywhere except `/healthz`, `/readyz` and `/metrics` (fail closed); the optional
@@ -21,12 +23,17 @@ pub mod sse;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::convert::Infallible;
+
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::middleware::from_fn_with_state;
+use axum::response::IntoResponse;
+use axum::routing::Route;
 use axum::routing::{get, post};
 use orch_app::App;
 use orch_ports::Ports;
+use tower::{Layer, Service};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -74,11 +81,12 @@ impl<P: Ports> Clone for ApiState<P> {
 ///
 /// `plain` routes get the request timeout; `streaming` routes (SSE) do not. Both sit behind
 /// the identity layer once mounted by [`router_with_surfaces`], and a handler can take
-/// `Extension<orch_core::UserId>`.
+/// `Extension<orch_core::UserId>`. `machine` routes sit behind neither.
 #[derive(Debug, Default)]
 pub struct SurfaceRoutes {
     plain: Router,
     streaming: Router,
+    machine: Router,
 }
 
 impl SurfaceRoutes {
@@ -98,6 +106,28 @@ impl SurfaceRoutes {
     #[must_use]
     pub fn streaming(mut self, routes: Router) -> Self {
         self.streaming = self.streaming.merge(routes);
+        self
+    }
+
+    /// Adds machine routes (ADR 0016, ADR 0019): routes for a caller that is not a person behind
+    /// oauth2-proxy, so they sit **outside** the identity layer, and outside the request timeout
+    /// (a machine route may be a long call).
+    ///
+    /// `guard` is the surface's own authentication, a tower layer (an HMAC check, a bearer check)
+    /// that wraps `routes` here, so a machine route cannot be added without one. It must fail
+    /// closed and never read `X-Auth-Request-Email` (the edge does not set it on these paths, and
+    /// a client can send anything): the caller's identity is whatever the surface's own credential
+    /// says it is.
+    #[must_use]
+    pub fn machine<L>(mut self, routes: Router, guard: L) -> Self
+    where
+        L: Layer<Route> + Clone + Send + Sync + 'static,
+        L::Service: Service<Request> + Clone + Send + Sync + 'static,
+        <L::Service as Service<Request>>::Response: IntoResponse + 'static,
+        <L::Service as Service<Request>>::Error: Into<Infallible> + 'static,
+        <L::Service as Service<Request>>::Future: Send + 'static,
+    {
+        self.machine = self.machine.merge(routes.layer(guard));
         self
     }
 }
@@ -162,9 +192,11 @@ pub fn router_with_surfaces<P: Ports>(
         .with_state(state);
     let mut plain = resource;
     let mut streaming = Router::new();
+    let mut machine = Router::new();
     for surface in surfaces {
         plain = plain.merge(surface.plain);
         streaming = streaming.merge(surface.streaming);
+        machine = machine.merge(surface.machine);
     }
     let plain = plain.layer(TimeoutLayer::with_status_code(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -179,5 +211,7 @@ pub fn router_with_surfaces<P: Ports>(
             Arc::new(cfg.auth),
             auth::require_identity,
         ));
-    edge_layers(Router::new().merge(health).merge(api))
+    // Machine routes are merged beside the identity-guarded routes, not under them: their surface
+    // guards them. A path they do not own falls through to the guarded router's 401/404.
+    edge_layers(Router::new().merge(health).merge(machine).merge(api))
 }

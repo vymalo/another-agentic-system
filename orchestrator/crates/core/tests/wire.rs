@@ -323,6 +323,7 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
             text: "hi".into(),
             message_id: Some("msg-1".into()),
             run_id: Some("run-1".into()),
+            origin: orch_core::Origin::Agui,
         }),
         Actor::system(),
     );
@@ -343,6 +344,38 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
     assert_eq!(serde_json::to_value(&d).unwrap(), only_run);
     let old: UserMessageData = serde_json::from_value(json!({"text": "hi"})).unwrap();
     assert_eq!(old, UserMessageData::new("hi"));
+}
+
+/// ADR 0019: `origin` is `agui` (left out of the log) or `mcp`. A log written before the field
+/// existed has no `origin`, and reads as the chat.
+#[test]
+fn a_message_from_a_tool_says_so_and_an_old_one_reads_as_the_chat() {
+    let mcp = UserMessageData {
+        origin: Origin::Mcp,
+        ..UserMessageData::new("fix it")
+    };
+    let v = serde_json::to_value(&mcp).unwrap();
+    assert_eq!(v, json!({"text": "fix it", "origin": "mcp"}));
+    assert_eq!(serde_json::from_value::<UserMessageData>(v).unwrap(), mcp);
+
+    let old: UserMessageData = serde_json::from_value(json!({"text": "hi"})).unwrap();
+    assert_eq!(old.origin, Origin::Agui);
+    let spelled: UserMessageData =
+        serde_json::from_value(json!({"text": "hi", "origin": "agui"})).unwrap();
+    assert_eq!(spelled, old, "an explicit agui is the same message");
+    assert_eq!(
+        serde_json::to_value(&old).unwrap(),
+        json!({"text": "hi"}),
+        "the default is not spelled"
+    );
+    assert!(
+        serde_json::from_value::<UserMessageData>(json!({"text": "x", "origin": "chat_api"}))
+            .is_err()
+    );
+    assert_eq!(
+        (Origin::Agui.as_str(), Origin::Mcp.as_str()),
+        ("agui", "mcp")
+    );
 }
 
 #[test]

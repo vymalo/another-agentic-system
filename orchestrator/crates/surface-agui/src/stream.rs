@@ -151,7 +151,7 @@ mod tests {
     use axum::response::IntoResponse;
     use orch_agui_projection::ThreadMeta;
     use orch_core::{
-        Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, EventBody, ThreadId,
+        Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, EventBody, Origin, ThreadId,
         ThreadState, ThreadStateData, Timestamp, UserId, UserMessageData,
     };
 
@@ -189,6 +189,7 @@ mod tests {
                 text: text.to_owned(),
                 message_id: Some(format!("m-{seq}")),
                 run_id: Some(run.to_owned()),
+                origin: Origin::default(),
             }),
         )
     }

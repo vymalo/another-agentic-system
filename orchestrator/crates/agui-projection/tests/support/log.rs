@@ -197,6 +197,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     text: text.clone(),
                     message_id: ids.then(|| format!("m-{users}")),
                     run_id: ids.then(|| format!("r-{users}")),
+                    origin: orch_core::Origin::Agui,
                 }
             }
             Action::Cancel => Input::Cancel { user: user.clone() },

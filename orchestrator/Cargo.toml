@@ -26,6 +26,7 @@ orch-agent-adam = { path = "crates/agent-adam" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-surface-agui = { path = "crates/surface-agui" }
+orch-surface-mcp = { path = "crates/surface-mcp" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
@@ -74,3 +75,11 @@ eventsource-stream = "0.2.3"
 proptest = "1"
 url = "2"
 chrono = { version = "0.4", default-features = false }
+# The MCP server surface (ADR 0019). `server` brings the handler traits and the JSON Schema
+# derivation, `transport-streamable-http-server` the tower service that `orch-surface-mcp` mounts.
+# The tests add the client side as a dev-dependency.
+rmcp = { version = "3.5", default-features = false, features = ["server", "transport-streamable-http-server"] }
+secrecy = "0.10"
+schemars = "1"
+subtle = "2.6"
+sha2 = "0.10"

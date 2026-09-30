@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{ContentPart, Message, MessageContent, ResumeStatus, RunAgentInput};
-use orch_core::{AgentId, Input, ThreadId, ThreadState, UiActionData, UiVersion, UserId};
+use orch_core::{AgentId, Input, Origin, ThreadId, ThreadState, UiActionData, UiVersion, UserId};
 use serde_json::{Map, Value};
 
 use crate::vocab::RELEASE_CHANNELS_URI;
@@ -441,12 +441,14 @@ pub fn translate_with_warnings(
             text,
             message_id: None,
             run_id,
+            origin: Origin::Agui,
         }],
         (None, Some((id, text)), _) => vec![Input::UserMessage {
             user,
             text,
             message_id: Some(id),
             run_id,
+            origin: Origin::Agui,
         }],
         (None, None, true) => vec![Input::Cancel { user }],
         (None, None, false) => {

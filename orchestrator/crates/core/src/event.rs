@@ -131,10 +131,41 @@ pub enum AgentStatus {
     Canceled,
 }
 
+/// Which surface a user message came in through (ADR 0019). Closed (ADR 0004): a new surface that
+/// speaks for a user adds a variant.
+///
+/// [`Origin::Agui`] is the default, and the log does not spell it: an event without an `origin`
+/// reads as `agui`, so every log written before the field existed reads as it always did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// The chat, over AG-UI (the web, or any AG-UI consumer).
+    #[default]
+    Agui,
+    /// An MCP client (Claude Code, opencode, ...), through the MCP server.
+    Mcp,
+}
+
+impl Origin {
+    /// The wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Origin::Agui => "agui",
+            Origin::Mcp => "mcp",
+        }
+    }
+
+    /// Whether this is the default, which the log leaves out.
+    pub fn is_default(&self) -> bool {
+        *self == Origin::default()
+    }
+}
+
 /// `data` of a `user_message`.
 ///
 /// `message_id` and `run_id` are set when the message came from a surface that names them (an
-/// AG-UI message id and run id); both are absent, never `null`, otherwise.
+/// AG-UI message id and run id); both are absent, never `null`, otherwise. `origin` is absent for
+/// a message from the chat (`agui`) and `mcp` for one an MCP client sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserMessageData {
@@ -146,15 +177,19 @@ pub struct UserMessageData {
     /// The id of the run this message started or continued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// The surface the message came in through; absent (the default, `agui`) in older logs.
+    #[serde(default, skip_serializing_if = "Origin::is_default")]
+    pub origin: Origin,
 }
 
 impl UserMessageData {
-    /// A message with no surface-assigned ids.
+    /// A message from the chat with no surface-assigned ids.
     pub fn new(text: impl Into<String>) -> Self {
         UserMessageData {
             text: text.into(),
             message_id: None,
             run_id: None,
+            origin: Origin::default(),
         }
     }
 }

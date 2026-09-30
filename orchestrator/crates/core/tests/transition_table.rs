@@ -30,6 +30,7 @@ fn um(text: &str) -> Input {
         text: text.into(),
         message_id: None,
         run_id: None,
+        origin: orch_core::Origin::Agui,
     }
 }
 fn status(state: AgentTaskState, detail: Option<&str>) -> Input {
@@ -93,6 +94,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
         text: "hi".into(),
         message_id: Some("m-1".into()),
         run_id: Some("r-1".into()),
+        origin: orch_core::Origin::Agui,
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -103,12 +105,37 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                     text: "hi".into(),
                     message_id: Some("m-1".into()),
                     run_id: Some("r-1".into()),
+                    origin: orch_core::Origin::Agui,
                 })
             ),
             other => panic!("unexpected {other:?}"),
         }
         // The delegation carries the text only: the agent never sees surface ids.
         assert_eq!(cmds[1], Command::Delegate { text: "hi".into() });
+    }
+}
+
+#[test]
+fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
+    let input = Input::UserMessage {
+        user: user(),
+        text: "hi".into(),
+        message_id: None,
+        run_id: None,
+        origin: orch_core::Origin::Mcp,
+    };
+    for s in [Queued, Working, Blocked] {
+        let (_, cmds) = run(s, &input);
+        match &cmds[0] {
+            Command::Append(d) => assert_eq!(
+                d.body,
+                EventBody::UserMessage(UserMessageData {
+                    origin: orch_core::Origin::Mcp,
+                    ..UserMessageData::new("hi")
+                })
+            ),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }
 
