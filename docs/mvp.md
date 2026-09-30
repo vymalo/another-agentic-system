@@ -28,7 +28,7 @@ Diagrams of what is built: [Architecture: as built](architecture.md#as-built).
 
 ## The slices of steps 2, 3 and 6
 
-**Slices 2, 3, 4, 5 and 11 are built (2026-09-30); the rest is planned, not built** (owner decisions and design of 2026-09-30: [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+**Slices 2, 3, 4, 5, 11 and 12 are built (2026-09-30); the rest is planned, not built** (owner decisions and design of 2026-09-30: [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0017](decisions/0017-ci-results-by-webhook.md), [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md),
 [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). One pull request each; size S < M < L.
 Slice 1 is the documentation these ADRs are in.
@@ -46,7 +46,7 @@ Slice 1 is the documentation these ADRs are in.
 | 9 | GitHub webhook adapter | M | `/webhooks/github`, `ping`, the three events, recorded fixtures. Dev stack: `mock-ci`, coder `gate: {require: [ci]}`, the coder end-to-end script asserts the CI card and `done` | 6 |
 | 10 | Verifier agent in the gate | L | Outbox `verify`, the dispatcher's verifier path, `VerifierReported`, the verifier subagent in the projection, the verifier deadline. Dev stack: `mock-verifier`, `dev/verifier-e2e.sh` | 3, 5 |
 | 11 | MCP server with `start_job` and static bearer tokens | L | **Built (2026-09-30).** `orch-surface-mcp`; `list_agents`, `start_job`, `get_job`, `answer`, `cancel_job`; `MCP_TOKENS_FILE`, `MCP_ALLOWED_HOSTS`, `ORCH_PUBLIC_URL`; `origin`; `SurfaceRoutes::machine`. 401 paths, idempotent `start_job`, an in-process rmcp client on the memory store and on Postgres, a binary smoke test. Dev stack: Caddy `handle @mcp`, `dev/mcp-tokens.yaml`, `dev/mcp.json.example`, `dev/mcp-e2e.sh`. rmcp's stateless mode is checked with rmcp's own client only; against Claude Code it is *unverified* | 2 (3 for the gate) |
-| 12 | `wait_for_job` with MCP progress notifications | M | Progress stream, heartbeat, timeout, shutdown; increasing progress then the result; a replica killed mid-wait and the call repeated | 11 |
+| 12 | `wait_for_job` with MCP progress notifications | M | **Built (2026-09-30).** Progress stream, heartbeat, timeout, shutdown; `MCP_WAIT_MAX_SECS`; increasing progress then the result; a timeout and a re-call with `after_seq` that lose nothing; a finished job at once; a shutdown; a replica killed mid-wait and the call repeated on another (two `App`s over one Postgres). The wait loop is tested on a paused clock. Dev stack: `dev/mcp-e2e.sh` reads the progress from the SSE response | 11 |
 | 13 | Complete local stack for the MVP | M | The `app` profile stays offline and deterministic, one script per scenario (chat to PR; `red-once` reworks to green; `red-always` fails; verifier findings rework; MCP `start_job` with progress); an optional `compose.live.yaml` and `.env.example`; opt-in smee relay; the coder re-pinned | 4, 8, 9, 10, 12 |
 | 14 | OIDC bearer tokens for MCP (after the MVP) | M | JWKS validation against WireMock | 11 |
 

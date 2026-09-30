@@ -246,6 +246,7 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--mcp-tokens-file", "MCP_TOKENS_FILE"),
         ("--mcp-allowed-hosts", "MCP_ALLOWED_HOSTS"),
         ("--public-url", "ORCH_PUBLIC_URL"),
+        ("--mcp-wait-max-secs", "MCP_WAIT_MAX_SECS"),
         ("--auth-dev-user", "AUTH_DEV_USER"),
         ("--database-max-connections", "DATABASE_MAX_CONNECTIONS"),
         ("--dispatcher-concurrency", "DISPATCHER_CONCURRENCY"),
@@ -278,6 +279,9 @@ fn every_setting_is_read_from_its_variable() {
         ("DISPATCHER_CONCURRENCY", "0"),
         ("OUTBOX_LEASE_SECS", "2"),
         ("SHUTDOWN_GRACE_SECS", "0"),
+        // Read whatever the surfaces are: a typo is not quietly ignored until `mcp` is mounted.
+        ("ORCH_PUBLIC_URL", "chat.example.com"),
+        ("MCP_WAIT_MAX_SECS", "0"),
     ] {
         let mut run = spawn(
             &scratch,
@@ -771,6 +775,7 @@ async fn mcp_is_mounted_by_its_name_and_a_token_lists_the_tools() {
             "list_agents",
             "start_job",
             "get_job",
+            "wait_for_job",
             "answer",
             "cancel_job"
         ]

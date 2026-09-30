@@ -43,7 +43,7 @@ protocol:
 | Protocol | As a server (input) | As a client (output) | Status |
 |---|---|---|---|
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
-| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | Server: **`start_job`, `get_job`, `answer`, `cancel_job` and `list_agents` built** (`orch-surface-mcp`, over streamable HTTP, stateless, with bearer tokens, going straight to `App` and not through the inbox, [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); `wait_for_job` **planned** (slice 12); the client side is not designed yet |
+| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | Server: **built** (`orch-surface-mcp`: `start_job`, `get_job`, `wait_for_job` with progress notifications, `answer`, `cancel_job` and `list_agents`, over streamable HTTP, stateless, with bearer tokens, going straight to `App` and not through the inbox, [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); the client side is not designed yet |
 | AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
 | Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
 | Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The inbox it writes to is **built**: `App::receive` stores a report and the `InboxWorker` applies it |
@@ -195,7 +195,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | `orch-surface-webhook` | `POST /webhooks/github` and `POST /webhooks/ci`: HMAC on the raw body, normalise to a `CiReport`, `App::receive`; feature `surface-webhook`, on by default | **Planned** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
-| `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `answer`, `cancel_job`; `wait_for_job` is planned | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slice 11 |
+| `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
 | MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root | **Built** |
@@ -945,8 +945,8 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
 - **Request/response protocols return immediately. Built.** `postMessage` answers 202 with the
   `user_message` event and the work continues in the dispatcher; `createThread` answers 201. A2A
   has this built in (`SendStreamingMessage` streams the task; `SubscribeToTask` and `GetTask`
-  resume it). For MCP, `start_job` returns a job id at once (**built**), and `wait_for_job` follows it with
-  progress notifications (*planned*, slice 12) ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)).
+  resume it). For MCP, `start_job` returns a job id at once and `wait_for_job` follows it with
+  progress notifications (**built**) ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)).
 - **Optional protocol extensions are capability-detected. Built.** The A2A adapter reads each agent
   card live on every call, never caches it, and offers release selection only when the card declares
   the release-channels extension with well-formed parameters; a selected release is refused, never

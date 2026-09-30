@@ -407,7 +407,7 @@ async fn a_client_that_negotiates_the_stateless_lifecycle_works_too() {
     let config =
         StreamableHttpClientTransportConfig::with_uri(h.mcp_url.clone()).auth_header(ALICE_TOKEN);
     let transport = StreamableHttpClientTransport::from_config(config);
-    let client = ()
+    let client = Progress::default()
         .serve_with_lifecycle(
             transport,
             ClientLifecycleMode::Discover {

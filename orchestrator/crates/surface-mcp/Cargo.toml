@@ -26,18 +26,16 @@ sha2.workspace = true
 uuid.workspace = true
 futures.workspace = true
 jiff.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
-orch-store-postgres.workspace = true
 orch-testsupport.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true
-sqlx.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
-futures.workspace = true
-serde_json.workspace = true
+# `test-util` gives tests/wait.rs its paused clock.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

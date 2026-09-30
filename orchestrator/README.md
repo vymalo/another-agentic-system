@@ -14,8 +14,8 @@ the process itself keeps nothing, so a restart mid-task loses nothing. Design:
 > binary and image. The legacy chat API interaction routes were removed on 2026-09-30. Since MVP slice 5 the
 > inbox, watches and timers are built: the inbox worker applies timers (the CI and verifier deadlines the
 > gate schedules) and the reports that `App::receive` stores. The MCP server (`start_job`,
-> `get_job`, `answer`, `cancel_job`, `list_agents` with bearer tokens, slice 11 of [`docs/mvp.md`](../docs/mvp.md)) is
-> built and off unless `ORCH_SURFACES` names `mcp`. The planner, verify/rework, reviewers and the webhook
+> `get_job`, `wait_for_job` with progress notifications, `answer`, `cancel_job`, `list_agents` with bearer tokens, slices
+> 11 and 12 of [`docs/mvp.md`](../docs/mvp.md)) is built and off unless `ORCH_SURFACES` names `mcp`. The planner, verify/rework, reviewers and the webhook
 > inputs come in later steps ([`docs/mvp.md`](../docs/mvp.md)).
 
 ## Run it locally
@@ -73,6 +73,7 @@ An empty value counts as unset.
 | `MCP_TOKENS_FILE` | required with `mcp` | YAML list of `{user, tokenEnv}` (flag `--mcp-tokens-file`): the e-mail that owns the jobs of a bearer token, and the environment variable that holds the token. An unset or empty variable, an unreadable or malformed file, a user that is not an e-mail address, or one token for two users is a startup error (78). A user may have several tokens (a rotation). Not read by a `worker`. See [`dev/mcp-tokens.yaml`](../dev/mcp-tokens.yaml). |
 | `MCP_TOKEN_<NAME>` | required by the file | Whatever a `tokenEnv` names: the bearer token. Secret; never logged, compared in constant time. |
 | `MCP_ALLOWED_HOSTS` | required with `mcp` | Comma-separated `Host` values the MCP server accepts (flag `--mcp-allowed-hosts`), for example `orch.example.com`; a name without a port matches any port. Anything else is 403 (DNS rebinding). Empty is a startup error. |
+| `MCP_WAIT_MAX_SECS` | `3600` | The largest `timeout_secs` the MCP tool `wait_for_job` honours (flag `--mcp-wait-max-secs`), 1 to 86400; a larger request is cut to it. Anything else is a startup error. |
 | `ORCH_PUBLIC_URL` | unset | The chat's public origin, for example `https://chat.example.com` (flag `--public-url`). The MCP server gives `start_job` a `web_url` of `<origin>/threads/<job_id>` from it; without it there is none. A malformed value (not an http(s) origin) is a startup error. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |

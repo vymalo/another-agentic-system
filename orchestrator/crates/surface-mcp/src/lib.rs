@@ -1,5 +1,5 @@
-//! The MCP server surface (ADR 0019): the tools `list_agents`, `start_job`, `get_job`, `answer`
-//! and `cancel_job` over MCP streamable HTTP, at `/mcp`, so that Claude Code, opencode or any MCP
+//! The MCP server surface (ADR 0019): the tools `list_agents`, `start_job`, `get_job`,
+//! `wait_for_job`, `answer` and `cancel_job` over MCP streamable HTTP, at `/mcp`, so that Claude Code, opencode or any MCP
 //! client can give the orchestrator a job and follow it.
 //!
 //! # Where it sits
@@ -30,6 +30,8 @@
 //! ```text
 //! start_job {text, agent?, title?, client_request_id?} -> {job_id, state, created, web_url?}
 //! get_job {job_id}        -> state, attempt, branch, pull request, last CI result, findings
+//! wait_for_job {job_id, after_seq?, timeout_secs}
+//!                         -> follows the job (progress notifications), then the summary + outcome
 //! answer {job_id, text}   -> {job_id, state}
 //! cancel_job {job_id}     -> {job_id, state, finished}
 //! list_agents {}          -> {agents: [{id, name, description}]}
@@ -40,8 +42,10 @@ mod id;
 mod job;
 mod server;
 mod tools;
+pub mod wait;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::middleware::from_fn_with_state;
@@ -55,7 +59,9 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 pub use auth::{McpUser, TokenError, TokenTable};
 pub use id::{MAX_CLIENT_REQUEST_ID_BYTES, job_id_for};
 pub use job::{Branch, Findings, JobSummary, LastCheck, PullRequest};
-pub use tools::{AnswerArgs, CancelJobArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName};
+pub use tools::{
+    AnswerArgs, CancelJobArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName, WaitForJobArgs,
+};
 
 /// The path the server is mounted at.
 pub const MCP_PATH: &str = "/mcp";
@@ -73,7 +79,16 @@ pub enum ConfigError {
     /// The public URL is not an `http` or `https` URL.
     #[error("the public URL {0:?} is not an http(s) URL")]
     BadPublicUrl(String),
+    /// A wait bound or heartbeat of zero: `wait_for_job` could not wait, or would never stop
+    /// sending heartbeats.
+    #[error("{0} must not be zero")]
+    ZeroDuration(&'static str),
 }
+
+/// The default largest `timeout_secs` of `wait_for_job` (`MCP_WAIT_MAX_SECS`).
+pub const DEFAULT_WAIT_MAX: Duration = Duration::from_secs(3600);
+/// The default interval of the heartbeat notification of `wait_for_job`.
+pub const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(60);
 
 /// What the surface needs to run.
 #[derive(Debug)]
@@ -81,6 +96,8 @@ pub struct McpConfig {
     tokens: TokenTable,
     allowed_hosts: Vec<String>,
     public_url: Option<String>,
+    wait_max: Duration,
+    heartbeat: Duration,
 }
 
 impl McpConfig {
@@ -104,7 +121,29 @@ impl McpConfig {
             tokens,
             allowed_hosts,
             public_url: None,
+            wait_max: DEFAULT_WAIT_MAX,
+            heartbeat: DEFAULT_HEARTBEAT,
         })
+    }
+
+    /// The largest `timeout_secs` `wait_for_job` honours (`MCP_WAIT_MAX_SECS`); a larger one is
+    /// cut to it. Default [`DEFAULT_WAIT_MAX`].
+    pub fn with_wait_max(mut self, max: Duration) -> Result<Self, ConfigError> {
+        if max.is_zero() {
+            return Err(ConfigError::ZeroDuration("the wait bound"));
+        }
+        self.wait_max = max;
+        Ok(self)
+    }
+
+    /// How often `wait_for_job` sends a heartbeat notification, so that a client's idle window
+    /// keeps being reset. Default [`DEFAULT_HEARTBEAT`]; tests make it short.
+    pub fn with_heartbeat(mut self, interval: Duration) -> Result<Self, ConfigError> {
+        if interval.is_zero() {
+            return Err(ConfigError::ZeroDuration("the heartbeat interval"));
+        }
+        self.heartbeat = interval;
+        Ok(self)
     }
 
     /// The public origin of the chat (`https://chat.example.com`), so that `start_job` can give
@@ -127,6 +166,8 @@ impl McpConfig {
 #[derive(Debug)]
 pub(crate) struct Settings {
     public_url: Option<String>,
+    wait_max: Duration,
+    heartbeat: Duration,
 }
 
 impl Settings {
@@ -145,8 +186,14 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, config: McpConfig) -> SurfaceRoutes {
         tokens,
         allowed_hosts,
         public_url,
+        wait_max,
+        heartbeat,
     } = config;
-    let settings = Arc::new(Settings { public_url });
+    let settings = Arc::new(Settings {
+        public_url,
+        wait_max,
+        heartbeat,
+    });
     let http = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_allowed_hosts(allowed_hosts);

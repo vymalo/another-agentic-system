@@ -36,6 +36,9 @@ const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
 #[cfg(feature = "agent-local")]
 const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
+const DEFAULT_MCP_WAIT_MAX_SECS: u64 = 3600;
+/// The largest `MCP_WAIT_MAX_SECS`: a day. A wait is a request that stays open.
+const MAX_MCP_WAIT_MAX_SECS: u64 = 86_400;
 const MAX_AGENT_ID_LEN: usize = 63;
 
 /// A configuration problem. The message is what the operator sees.
@@ -187,6 +190,8 @@ pub struct McpSettings {
     pub allowed_hosts: Vec<String>,
     /// `ORCH_PUBLIC_URL`: the chat's public origin, for the `web_url` of `start_job`.
     pub public_url: Option<String>,
+    /// `MCP_WAIT_MAX_SECS`: the largest `timeout_secs` of `wait_for_job`.
+    pub wait_max: Duration,
 }
 
 impl fmt::Debug for McpSettings {
@@ -198,6 +203,7 @@ impl fmt::Debug for McpSettings {
             )
             .field("allowed_hosts", &self.allowed_hosts)
             .field("public_url", &self.public_url)
+            .field("wait_max", &self.wait_max)
             .finish()
     }
 }
@@ -567,6 +573,11 @@ pub struct Args {
     #[arg(long, env = "ORCH_PUBLIC_URL", value_name = "URL")]
     pub public_url: Option<String>,
 
+    /// The largest `timeout_secs` the tool `wait_for_job` of the surface `mcp` honours, in
+    /// seconds, between 1 and 86400 (default 3600). A larger request is cut to it.
+    #[arg(long, env = "MCP_WAIT_MAX_SECS", value_name = "SECS")]
+    pub mcp_wait_max_secs: Option<String>,
+
     /// E-mail served for requests without X-Auth-Request-Email. Development only.
     #[arg(long, env = "AUTH_DEV_USER", value_name = "EMAIL")]
     pub auth_dev_user: Option<String>,
@@ -765,11 +776,24 @@ impl Config {
         let public_url = clean(args.public_url)
             .map(|raw| parse_public_url(&raw))
             .transpose()?;
+        let mcp_wait_max_secs = number(
+            clean(args.mcp_wait_max_secs),
+            "MCP_WAIT_MAX_SECS",
+            DEFAULT_MCP_WAIT_MAX_SECS,
+            1,
+        )?;
+        if mcp_wait_max_secs > MAX_MCP_WAIT_MAX_SECS {
+            return Err(ConfigError::Invalid {
+                var: "MCP_WAIT_MAX_SECS",
+                reason: format!("must be at most {MAX_MCP_WAIT_MAX_SECS}"),
+            });
+        }
         let mcp = if surfaces.contains(&Surface::Mcp) && role.runs_control_plane() {
             Some(McpSettings {
                 tokens: parse_mcp_tokens(clean(args.mcp_tokens_file), &get_env, &read)?,
                 allowed_hosts: parse_allowed_hosts(clean(args.mcp_allowed_hosts))?,
                 public_url,
+                wait_max: Duration::from_secs(mcp_wait_max_secs),
             })
         } else {
             None
@@ -1358,6 +1382,7 @@ mod tests {
                 "MCP_TOKENS_FILE" => &mut args.mcp_tokens_file,
                 "MCP_ALLOWED_HOSTS" => &mut args.mcp_allowed_hosts,
                 "ORCH_PUBLIC_URL" => &mut args.public_url,
+                "MCP_WAIT_MAX_SECS" => &mut args.mcp_wait_max_secs,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
                 "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
@@ -2072,6 +2097,7 @@ mod tests {
             "MCP_TOKENS_FILE",
             "MCP_ALLOWED_HOSTS",
             "ORCH_PUBLIC_URL",
+            "MCP_WAIT_MAX_SECS",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",
@@ -2488,6 +2514,7 @@ mod tests {
             ["orch.example.com", "orch.example.com:443"]
         );
         assert_eq!(mcp.public_url.as_deref(), Some("https://chat.example.com"));
+        assert_eq!(mcp.wait_max, Duration::from_secs(3600), "the default bound");
         // Nothing prints a token.
         let shown = format!("{mcp:?}");
         assert!(!shown.contains("secret"), "{shown}");
@@ -2601,6 +2628,41 @@ mod tests {
             let mut env = mcp_env();
             env.push(("ORCH_PUBLIC_URL", url));
             invalid(&env, TOKENS, "ORCH_PUBLIC_URL");
+        }
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn the_wait_bound_is_a_number_of_seconds_within_limits() {
+        let with = |value: &'static str| {
+            let mut env = mcp_env();
+            env.push(("MCP_WAIT_MAX_SECS", value));
+            load_mcp(&env, TOKENS)
+        };
+        assert_eq!(
+            with("90").unwrap().mcp.unwrap().wait_max,
+            Duration::from_secs(90)
+        );
+        assert_eq!(
+            with(" 1 ").unwrap().mcp.unwrap().wait_max,
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            with("86400").unwrap().mcp.unwrap().wait_max,
+            Duration::from_secs(86_400)
+        );
+        for bad in ["0", "86401", "-5", "soon", "1.5"] {
+            let err = with(bad).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "MCP_WAIT_MAX_SECS",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
         }
     }
 

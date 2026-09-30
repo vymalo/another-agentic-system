@@ -184,6 +184,7 @@ async fn a_known_token_reaches_the_tools_over_a_stateless_server() {
             "list_agents",
             "start_job",
             "get_job",
+            "wait_for_job",
             "answer",
             "cancel_job"
         ]

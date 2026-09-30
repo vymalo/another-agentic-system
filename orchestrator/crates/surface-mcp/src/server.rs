@@ -5,6 +5,7 @@
 //! keeps state in the process; a fresh server is built for every request (stateless mode).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use orch_app::{AgentDirectory, App, AppError, Creation, Inbound, NewThread};
 use orch_core::{
@@ -13,10 +14,11 @@ use orch_core::{
 use orch_ports::{IdGen, Ports};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ServerCapabilities,
+    ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
-use rmcp::{ErrorData, RoleServer, ServerHandler};
+use rmcp::{ErrorData, Peer, RoleServer, ServerHandler};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -24,11 +26,15 @@ use serde_json::{Value, json};
 use crate::Settings;
 use crate::auth::McpUser;
 use crate::id::{MAX_CLIENT_REQUEST_ID_BYTES, job_id_for};
-use crate::job::summarise;
-use crate::tools::{AnswerArgs, CancelJobArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName};
+use crate::job::{JobSummary, summarise};
+use crate::tools::{
+    AnswerArgs, CancelJobArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName, WaitForJobArgs,
+};
+use crate::wait::{ProgressSink, WaitRequest, wait_for_job};
 
 /// What the server tells a client about itself, once, at `initialize`.
-const INSTRUCTIONS: &str = "Start a job with start_job and look at it with get_job. \
+const INSTRUCTIONS: &str = "Start a job with start_job and look at it with get_job, or follow it \
+    with wait_for_job (call it again with resume_after_seq to keep waiting). \
     A job in state blocked waits for an answer: send it with answer. Jobs are the caller's own; \
     a job_id that is not yours is reported as unknown.";
 
@@ -42,6 +48,40 @@ impl<P: Ports> McpServer<P> {
     pub(crate) fn new(app: Arc<App<P>>, settings: Arc<Settings>) -> Self {
         McpServer { app, settings }
     }
+}
+
+/// Progress notifications to the client that made the request, when it asked for them (a
+/// `progressToken`).
+struct PeerSink {
+    peer: Peer<RoleServer>,
+    token: Option<ProgressToken>,
+}
+
+impl ProgressSink for PeerSink {
+    async fn send(&self, progress: u64, message: String) -> bool {
+        let Some(token) = &self.token else {
+            return true;
+        };
+        // A counter of a few thousand at most: exact in an f64.
+        #[allow(clippy::cast_precision_loss)]
+        let progress = progress as f64;
+        self.peer
+            .notify_progress(
+                ProgressNotificationParam::new(token.clone(), progress).with_message(message),
+            )
+            .await
+            .is_ok()
+    }
+}
+
+/// What `wait_for_job` answers: how the wait ended, where to resume, and the job as `get_job`
+/// says it.
+#[derive(Serialize)]
+struct WaitResult {
+    outcome: &'static str,
+    resume_after_seq: i64,
+    #[serde(flatten)]
+    job: JobSummary,
 }
 
 /// The user the bearer check let in. A request that reaches a tool without one did not pass the
@@ -204,6 +244,41 @@ impl<P: Ports> McpServer<P> {
         }
     }
 
+    async fn wait_for_job(
+        &self,
+        user: &UserId,
+        args: WaitForJobArgs,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Some(id) = job_id(&args.job_id) else {
+            return Ok(refused("no such job"));
+        };
+        if args.after_seq.is_some_and(|after| after < 0) {
+            return Ok(refused("after_seq must not be negative"));
+        }
+        let request = WaitRequest {
+            after_seq: args.after_seq,
+            timeout: Duration::from_secs(args.timeout_secs).min(self.settings.wait_max),
+            heartbeat: self.settings.heartbeat,
+        };
+        let sink = PeerSink {
+            peer: context.peer.clone(),
+            token: context.meta.get_progress_token(),
+        };
+        let waited = match wait_for_job(&self.app, user, id, &request, &sink, &context.ct).await {
+            Ok(waited) => waited,
+            Err(e) => return failure(&e),
+        };
+        match summarise(&self.app, user, &waited.thread).await {
+            Ok(job) => success(&WaitResult {
+                outcome: waited.end.as_str(),
+                resume_after_seq: waited.resume_after_seq,
+                job,
+            }),
+            Err(e) => failure(&e),
+        }
+    }
+
     async fn answer(&self, user: &UserId, args: AnswerArgs) -> Result<CallToolResult, ErrorData> {
         let Some(id) = job_id(&args.job_id) else {
             return Ok(refused("no such job"));
@@ -292,6 +367,10 @@ impl<P: Ports> ServerHandler for McpServer<P> {
             }
             ToolName::StartJob => self.start_job(&user, parse_args(request.arguments)?).await,
             ToolName::GetJob => self.get_job(&user, parse_args(request.arguments)?).await,
+            ToolName::WaitForJob => {
+                let args = parse_args(request.arguments)?;
+                self.wait_for_job(&user, args, &context).await
+            }
             ToolName::Answer => self.answer(&user, parse_args(request.arguments)?).await,
             ToolName::CancelJob => self.cancel_job(&user, parse_args(request.arguments)?).await,
         };

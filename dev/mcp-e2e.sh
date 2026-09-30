@@ -9,7 +9,7 @@
 # prints one ok or FAIL line per check; it exits 1 if any failed:
 #   * a request without a token is 401 with `WWW-Authenticate: Bearer`, and so is a wrong token;
 #   * `initialize` answers with the server's tools capability and no `Mcp-Session-Id`;
-#   * `tools/list` gives the five tools;
+#   * `tools/list` gives the six tools;
 #   * `list_agents` lists the agent the job is given to;
 #   * `start_job` returns a job id, its state and (the compose stack sets ORCH_PUBLIC_URL) a web_url;
 #     the same `client_request_id` again returns the same job, not a second one;
@@ -17,7 +17,12 @@
 #   * the chat's resource API shows the same thread `done` for the token's user, so the job is in
 #     the chat too;
 #   * an unknown job is "no such job", a message to the finished job is refused and a cancel of it
-#     is a no-op.
+#     is a no-op;
+#   * `wait_for_job` with a progress token, on the mock agent's `slow` script (8 s): the response is an
+#     event stream, `notifications/progress` come with a counter that only increases, one per event of
+#     the job, and the last message is the finished job with its pull request;
+#   * a `wait_for_job` that times out (`timeout_secs: 0`) says where to resume, and the call that resumes
+#     there reports the rest: together the two calls name every event of the job exactly once.
 #
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL     http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge` (which adds no identity to /mcp)
@@ -119,7 +124,7 @@ code=$(post "$token" '{"jsonrpc":"2.0","method":"notifications/initialized"}')
 if [ "$code" = 202 ]; then ok "notifications/initialized accepted"; else bad "notifications/initialized: HTTP $code"; fi
 
 tools=$(rpc 3 tools/list '{}' | jq -r '[.result.tools[]?.name] | join(" ")')
-want="list_agents start_job get_job answer cancel_job"
+want="list_agents start_job get_job wait_for_job answer cancel_job"
 if [ "$tools" = "$want" ]; then ok "tools/list: $tools"; else bad "tools/list: '$tools', want '$want'"; fi
 
 # --- a job -------------------------------------------------------------------------------------
@@ -199,6 +204,65 @@ if [ "$is_error" = false ] && [ "$(printf '%s' "$cancelled" | jq -r '.state')" =
   ok "cancel_job on the finished job is a no-op (still done)"
 else
   bad "cancel_job on the finished job: error=$is_error $cancelled"
+fi
+
+# --- following a job: wait_for_job and its progress notifications --------------------------------
+# The mock agent's `slow` script dribbles its answer over 8 s, so the job is still working when the
+# wait starts. The progress token makes the server report each event as an SSE notification.
+seqs_of() { # seqs_of FILE: the seq of each event a response reported, one per line
+  sed -n 's/^data: *//p' "$1" | jq -r 'select(.method == "notifications/progress") | .params.message' | sed -n 's/^#\([0-9][0-9]*\) .*/\1/p'
+}
+call start_job "$(jq -cn --arg agent "$agent_id" '{text: "slow: add a health endpoint", agent: $agent}')"
+slow=$(printf '%s' "$result" | jq -r '.job_id // empty')
+if [ -z "$slow" ]; then bad "start_job (slow): $result"; finish; fi
+wait_call='{"jsonrpc":"2.0","id":900,"method":"tools/call","params":{"name":"wait_for_job","_meta":{"progressToken":"e2e-wait-1"},"arguments":{"job_id":"JOB","after_seq":0,"timeout_secs":60}}}'
+code=$(post "$token" "$(printf '%s' "$wait_call" | sed "s/JOB/$slow/")")
+if [ "$code" = 200 ] && grep -qi '^content-type: text/event-stream' "$tmp/h"; then
+  ok "wait_for_job: an event stream"
+else
+  bad "wait_for_job: HTTP $code, $(grep -i '^content-type:' "$tmp/h" | tr -d '\r')"
+fi
+sed -n 's/^data: *//p' "$tmp/b" | jq -c 'select(.method == "notifications/progress")' > "$tmp/notes"
+notes=$(wc -l < "$tmp/notes" | tr -d ' ')
+if [ "$notes" -ge 2 ] && jq -s -e 'all(.[]; .params.progressToken == "e2e-wait-1") and ([.[].params.progress] as $p | [range(1; length)] | all($p[.] > $p[. - 1])) and ([.[].params.progress] | first == 1)' "$tmp/notes" >/dev/null; then
+  ok "wait_for_job: $notes progress notifications for the token, the counter increasing from 1"
+else
+  bad "wait_for_job: $notes progress notifications, or their token or counter is wrong: $(head -c 400 "$tmp/notes")"
+fi
+final=$(message 900 | jq -c '.result.structuredContent // {}')
+last_reported=$(seqs_of "$tmp/b" | tail -n 1)
+if [ "$(printf '%s' "$final" | jq -r '.outcome')" = finished ] && [ "$(printf '%s' "$final" | jq -r '.state')" = "done" ] &&
+  [ -n "$last_reported" ] && [ "$(printf '%s' "$final" | jq -r '.last_seq')" = "$last_reported" ]; then
+  ok "wait_for_job: the result is the finished job, and its last event (#$last_reported) was the last notification"
+else
+  bad "wait_for_job: the result is $final, the last notification named #${last_reported:-none}"
+fi
+case $(printf '%s' "$final" | jq -r '.pull_request.url // empty') in
+  https://*) ok "wait_for_job: the result names the pull request" ;;
+  *) bad "wait_for_job: no pull request in $final" ;;
+esac
+
+# A wait that times out says where to resume; the call that resumes there loses nothing.
+call start_job "$(jq -cn --arg agent "$agent_id" '{text: "slow: add another endpoint", agent: $agent}')"
+resumed=$(printf '%s' "$result" | jq -r '.job_id // empty')
+first_call=$(post "$token" "$(printf '%s' "$wait_call" | sed -e "s/JOB/$resumed/" -e 's/"timeout_secs":60/"timeout_secs":0/' -e 's/e2e-wait-1/e2e-wait-2/' -e 's/"id":900/"id":901/')")
+cp "$tmp/b" "$tmp/first"
+first_result=$(message 901 | jq -c '.result.structuredContent // {}')
+resume=$(printf '%s' "$first_result" | jq -r '.resume_after_seq // empty')
+if [ "$first_call" = 200 ] && [ "$(printf '%s' "$first_result" | jq -r '.outcome')" = timed_out ] && [ -n "$resume" ]; then
+  ok "wait_for_job with timeout_secs 0: timed_out, resume_after_seq $resume"
+else
+  bad "wait_for_job with timeout_secs 0: HTTP $first_call, $first_result"
+fi
+second_call=$(post "$token" "$(printf '%s' "$wait_call" | sed -e "s/JOB/$resumed/" -e "s/\"after_seq\":0/\"after_seq\":${resume:-0}/" -e 's/e2e-wait-1/e2e-wait-3/' -e 's/"id":900/"id":902/')")
+cp "$tmp/b" "$tmp/second"
+second_result=$(message 902 | jq -c '.result.structuredContent // {}')
+together=$( (seqs_of "$tmp/first"; seqs_of "$tmp/second") | tr '\n' ' ' | sed 's/ *$//')
+want_seqs=$(seq 1 "$(printf '%s' "$second_result" | jq -r '.last_seq // 0')" | tr '\n' ' ' | sed 's/ *$//')
+if [ "$second_call" = 200 ] && [ "$(printf '%s' "$second_result" | jq -r '.outcome')" = finished ] && [ -n "$together" ] && [ "$together" = "$want_seqs" ]; then
+  ok "resuming at $resume: finished, and the two calls named events $together exactly once each"
+else
+  bad "resuming at ${resume:-?}: HTTP $second_call, $second_result; the calls named '$together', the log has '$want_seqs'"
 fi
 
 finish

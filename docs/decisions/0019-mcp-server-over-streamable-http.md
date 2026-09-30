@@ -1,8 +1,9 @@
 # ADR 0019 — MCP server over streamable HTTP: bearer first, OIDC later
 
-- **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 11 (tools and bearer
-  tokens; see the [status note](#status-note-2026-09-30-slice-11-is-built)). **Planned, not
-  built:** slices 12 (`wait_for_job` with progress) and 14 (OIDC, after the MVP)
+- **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slices 11 (tools and bearer
+  tokens; see the [status note](#status-note-2026-09-30-slice-11-is-built)) and 12 (`wait_for_job`
+  with progress; [status note](#status-note-2026-09-30-slice-12-is-built)). **Planned, not
+  built:** slice 14 (OIDC, after the MVP)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). Amends the design sentence "every input
   goes through the inbox" of [`orchestrator.md`](../orchestrator.md#event-flow) for MCP, and the
   "needs the inbox" note of MVP step 6. Refines [ADR 0004](0004-closed-enums-over-dyn-registry.md)
@@ -230,11 +231,16 @@ Easy to reverse: the wait bound, the heartbeat, the progress granularity.
   allows every host (so `McpConfig` refuses an empty list); an entry without a port matches any port; a disallowed
   `Host` is `403`. The crate's own client, with its legacy `initialize` handshake and with the `2026-07-28`
   `server/discover` lifecycle, works against it (`orch-surface-mcp`'s `tests/`).
+- *Verified 2026-09-30* (slice 12), same method: a tool handler's `Peer::notify_progress` (with the request's
+  `progressToken`, read from the request context) reaches the client on the response of a stateless POST, which is then
+  a `text/event-stream`; rmcp's client hands each one to `ClientHandler::on_progress`; the request's cancellation token
+  is cancelled when the client goes away. Through Caddy 2.11.4 with `flush_interval -1`, `curl -N` received the
+  notifications when they happened (at 0.1 s, 3.5 s, 6.1 s and 8.1 s of an 8 s job), not at the end.
 - *Verified 2026-09-30*: `secrecy` 0.10.3 (`SecretString`, `ExposeSecret`; the version in `Cargo.lock`), `subtle` 2.6
   (`ConstantTimeEq`) and `sha2` 0.10.
-- *Unverified*, and **not tried** in slice 11: whether **Claude Code** (or opencode) works against rmcp's stateless
-  mode; nothing but rmcp's own client and `curl` has spoken to it. Whether they display progress is checked in slice 12.
-  oauth2-proxy `skip_auth_routes` for `/mcp` (the dev edge is Caddy; no oauth2-proxy was run).
+- *Unverified*, and **not tried** in slices 11 and 12: whether **Claude Code** (or opencode) works against rmcp's
+  stateless mode, and whether it displays the progress notifications or resets its idle window on them; nothing but
+  rmcp's own client and `curl` has spoken to it. oauth2-proxy `skip_auth_routes` for `/mcp` (the dev edge is Caddy; no oauth2-proxy was run).
 
 ### Status note, 2026-09-30: no `chat_api` origin
 
@@ -278,3 +284,35 @@ building it settled.
   summary the decision lists; the pull request is found in the log (an artifact named `pull_request` or "Pull request").
 - **Cargo feature.** `surface-mcp` is **on by default**, like `surface-agui`: the image has it, and it is mounted only when
   `ORCH_SURFACES` names `mcp`.
+
+### Status note, 2026-09-30: slice 12 is built
+
+`wait_for_job {job_id, after_seq?, timeout_secs}` follows a job through `App::event_stream`. The decision stands; this
+note records what building it settled.
+
+- **Two phases.** A call first **catches up**: it reports the events after its cursor that the log holds when the call
+  starts, with no deadline (so even `timeout_secs: 0` reports what happened, then returns). Then, if the job is finished
+  or blocked, it returns. Otherwise it goes **live**: one progress notification per event as it arrives, a heartbeat,
+  and the deadline. It returns `finished` (`done`, `failed` or `cancelled`) or `blocked` when the event that says so is
+  the last one of the log, `timed_out` when the timeout runs out, and `interrupted` when the stream ends (the process is
+  shutting down) or the client goes away. The result is the summary of `get_job` plus **`outcome`** and
+  **`resume_after_seq`** (the last event the call read; every outcome carries it). A state that the log did not announce
+  is still seen at the next heartbeat, and a timeout that runs out on a job that has stopped is reported as the stop.
+- **`after_seq`.** Omitted, the call starts at the end of the log as it is when the call begins, so it reports only what
+  happens next (a job that is already finished or blocked answers at once); `0` reports the whole log; a value beyond the
+  end is the end. A negative value is a tool error. `timeout_secs` is required, at most `MCP_WAIT_MAX_SECS` (a larger one
+  is **cut to it**, not refused), and may be 0.
+- **Progress.** With a `progressToken`, one `notifications/progress` per event whose message is `#<seq> <what
+  happened>` (for example `#3 artifact: Pull request`), cut to 200 characters and flattened to one line; the partial
+  messages of an agent that is still writing are not reported. The `progress` value is a counter from 1 that only
+  increases, shared by events and heartbeats. The heartbeat is sent **every 60 s from the start of the call**
+  (`still waiting (job working, last event #7)`), whether or not events came in between; the interval is
+  `McpConfig::with_heartbeat`, which the tests shorten. Without a token nothing is sent. A failed send (the transport is
+  closed) ends the call.
+- **Configuration.** `MCP_WAIT_MAX_SECS` (flag `--mcp-wait-max-secs`), default 3600, between 1 and 86400; anything else is
+  a startup error. `McpConfig::with_wait_max` takes any non-zero duration, which the tests use to make the bound short.
+- **What is tested, and how.** The wait loop runs on the in-memory stack under a paused clock, so the timeout, the
+  heartbeat and the stream's poll move only when a test advances them and nothing synchronises with a sleep; the same
+  calls run over HTTP with an rmcp client that records the notifications; and `orch-e2e` runs them on Postgres across two
+  replicas, including one whose replica is killed mid-wait and a re-call on the other with the cursor of the last
+  notification, after which the two calls together name every event once.

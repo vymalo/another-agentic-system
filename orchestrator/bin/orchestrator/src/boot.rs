@@ -118,7 +118,9 @@ fn mcp_routes<P: orch_ports::Ports>(
         .map_err(|e| invalid("MCP_TOKENS_FILE")(&e))?;
     let mut config =
         orch_surface_mcp::McpConfig::new(tokens, settings.allowed_hosts.iter().cloned())
-            .map_err(|e| invalid("MCP_ALLOWED_HOSTS")(&e))?;
+            .map_err(|e| invalid("MCP_ALLOWED_HOSTS")(&e))?
+            .with_wait_max(settings.wait_max)
+            .map_err(|e| invalid("MCP_WAIT_MAX_SECS")(&e))?;
     if let Some(url) = &settings.public_url {
         config = config
             .with_public_url(url)
@@ -128,6 +130,7 @@ fn mcp_routes<P: orch_ports::Ports>(
         tokens = settings.tokens.len(),
         allowed_hosts = %settings.allowed_hosts.join(","),
         web_url = settings.public_url.is_some(),
+        wait_max_secs = settings.wait_max.as_secs(),
         "the MCP server is mounted at /mcp"
     );
     Ok(orch_surface_mcp::routes(Arc::clone(app), config))

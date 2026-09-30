@@ -188,7 +188,7 @@ the edge forwards `/mcp` without an identity header (and drops one the client se
 | The token | `dev-mcp-token`, a dummy: `MCP_TOKEN_DEV` in `compose.yaml`, named by `tokenEnv` in [`mcp-tokens.yaml`](mcp-tokens.yaml) (`MCP_TOKENS_FILE`) |
 | Whose jobs | `dev@example.com`, the identity the edge gives the chat, so a job started over MCP is in the chat's thread list (`web_url` in the answer of `start_job` points at it: `ORCH_PUBLIC_URL`) |
 | Which `Host` | `127.0.0.1` and `localhost`, any port (`MCP_ALLOWED_HOSTS`); anything else is 403 |
-| The tools | `list_agents`, `start_job`, `get_job`, `answer`, `cancel_job` |
+| The tools | `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` |
 
 ```sh
 claude mcp add --transport http orchestrator http://127.0.0.1:8080/mcp --header "Authorization: Bearer dev-mcp-token"
@@ -199,9 +199,13 @@ others). Then ask the client to start a job on the agent `mock-coder` ("start a 
 endpoint"), or drive it from the terminal:
 
 ```sh
-dev/mcp-e2e.sh          # curl and jq: 401s, initialize, tools/list, start_job (and a retry), get_job to done, the refusals
+dev/mcp-e2e.sh          # curl and jq: 401s, initialize, tools/list, start_job (and a retry), get_job to done, the refusals,
+                        # then wait_for_job with a progress token on a `slow` job (8 s) and a timeout that is resumed
 ```
 
+`wait_for_job` answers as an event stream when the request has a `progressToken`: one `notifications/progress` per event
+of the job (`#3 artifact: Pull request`, a counter that only increases) and a heartbeat every 60 s, then the result. The
+edge does not buffer it, so the notifications arrive as the events happen; the script reads them from the SSE response.
 The script speaks MCP by hand and prints one `ok` or `FAIL` line per check. Its default agent is `mock-coder`, which ends with
 a pull request in seconds; `AGENT_ID`, `MCP_TOKEN`, `BASE_URL`, `AUTH_EMAIL` and `TIMEOUT` change what it uses.
 The server is **stateless**: it hands out no `Mcp-Session-Id`, so any replica serves any call.
@@ -572,7 +576,7 @@ the `app` profile is only parsed there, and run by the `Coder E2E` workflow (bel
 
 The MCP server (`dev/mcp-e2e.sh`, `dev/mcp-tokens.yaml`, the `@mcp` block of the `dev/Caddyfile`):
 
-*Verified 2026-09-30*: `dev/mcp-e2e.sh` (every check `ok`, exit 0) against the real `orchestrator` debug binary (default
+*Verified 2026-09-30*: `dev/mcp-e2e.sh`, including the `wait_for_job` checks (every check `ok`, exit 0) against the real `orchestrator` debug binary (default
 features, `ORCH_SURFACES=agui,mcp`) on Postgres 16, `dev/wiremock/agent` served by `wiremock-standalone-3.13.2.jar`, and Caddy
 2.11.4 running the `dev/Caddyfile` with the two upstream addresses and the port changed (the `@mcp` block, `header_up
 -X-Auth-Request-Email` and `flush_interval -1` as committed); `caddy validate` accepts the Caddyfile; `docker compose config`

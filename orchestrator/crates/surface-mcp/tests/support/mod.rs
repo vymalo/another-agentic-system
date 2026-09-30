@@ -2,7 +2,7 @@
 //! mounted, and an in-process rmcp client that speaks to it over streamable HTTP.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use orch_api::{ApiConfig, AuthConfig};
@@ -11,19 +11,19 @@ use orch_core::{AgentId, GatePolicy, ThreadId, UserId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, ThreadStore};
 use orch_surface_mcp::{McpConfig, TokenTable};
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
-use rmcp::service::RunningService;
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, ProgressNotificationParam};
+use rmcp::service::{NotificationContext, RunningService};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::{ClientHandler, Peer, RoleClient, ServiceExt};
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
-pub type Client = RunningService<RoleClient, ()>;
+pub type Client = RunningService<RoleClient, Progress>;
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
@@ -36,6 +36,8 @@ pub struct Options {
     pub gate: GatePolicy,
     pub public_url: Option<&'static str>,
     pub dev_user: Option<&'static str>,
+    pub heartbeat: Option<Duration>,
+    pub wait_max: Option<Duration>,
 }
 
 pub struct Harness {
@@ -132,6 +134,12 @@ impl Harness {
         if let Some(url) = options.public_url {
             config = config.with_public_url(url).unwrap();
         }
+        if let Some(heartbeat) = options.heartbeat {
+            config = config.with_heartbeat(heartbeat).unwrap();
+        }
+        if let Some(max) = options.wait_max {
+            config = config.with_wait_max(max).unwrap();
+        }
         let api = ApiConfig {
             auth: AuthConfig {
                 dev_user: options.dev_user.map(UserId::new),
@@ -196,9 +204,64 @@ impl Harness {
 
 /// A client for `url` with the bearer `token`.
 pub async fn connect(url: &str, token: &str) -> Client {
+    connect_recording(url, token).await.0
+}
+
+/// A client that keeps the progress notifications it receives, as `(progress, message)`.
+#[derive(Clone, Default)]
+pub struct Progress {
+    seen: Arc<Mutex<Vec<(f64, String)>>>,
+}
+
+impl ClientHandler for Progress {
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((params.progress, params.message.unwrap_or_default()));
+    }
+}
+
+impl Progress {
+    pub fn all(&self) -> Vec<(f64, String)> {
+        self.seen.lock().unwrap().clone()
+    }
+
+    /// The `seq` of each event notification (`#7 ...`), heartbeats left out.
+    pub fn seqs(&self) -> Vec<i64> {
+        self.all()
+            .iter()
+            .filter_map(|(_, m)| m.strip_prefix('#'))
+            .filter_map(|m| m.split(' ').next()?.parse().ok())
+            .collect()
+    }
+
+    pub fn heartbeats(&self) -> usize {
+        self.all()
+            .iter()
+            .filter(|(_, m)| m.starts_with("still waiting"))
+            .count()
+    }
+}
+
+/// A client for `url` that records its progress notifications in the returned [`Progress`].
+pub async fn connect_recording(
+    url: &str,
+    token: &str,
+) -> (RunningService<RoleClient, Progress>, Progress) {
     let config = StreamableHttpClientTransportConfig::with_uri(url.to_owned()).auth_header(token);
     let transport = StreamableHttpClientTransport::from_config(config);
-    ().serve(transport).await.expect("the MCP handshake")
+    let progress = Progress::default();
+    let client = progress
+        .clone()
+        .serve(transport)
+        .await
+        .expect("the MCP handshake");
+    (client, progress)
 }
 
 /// What a tool call gave back.
@@ -245,6 +308,18 @@ pub async fn try_call(
         .call_tool(CallToolRequestParams::new(tool).with_arguments(map))
         .await?;
     Ok(outcome_of(result))
+}
+
+/// Calls a tool through a peer, which a spawned task can own (a client cannot be cloned).
+pub async fn call_peer(peer: &Peer<RoleClient>, tool: &'static str, args: Value) -> Outcome {
+    let Value::Object(map) = args else {
+        panic!("arguments must be an object");
+    };
+    let result = peer
+        .call_tool(CallToolRequestParams::new(tool).with_arguments(map))
+        .await
+        .unwrap_or_else(|e| panic!("{tool} failed at the protocol level: {e}"));
+    outcome_of(result)
 }
 
 /// A `start_job` that must be accepted; its `job_id`.

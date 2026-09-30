@@ -67,6 +67,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `MCP_TOKENS_FILE` | required with `mcp` | YAML list of `{user, tokenEnv}` (`--mcp-tokens-file`): who each bearer token is; read by the roles that serve HTTP only. A `tokenEnv` variable that is unset or empty is `McpTokenEnvMissing` and an unreadable file `McpTokensFileRead` (both 78) |
 | `MCP_TOKEN_<NAME>` | required by the file | the variable a `tokenEnv` names: the bearer token (a `SecretString`, never logged) |
 | `MCP_ALLOWED_HOSTS` | required with `mcp` | comma-separated `Host` values the MCP server accepts (`--mcp-allowed-hosts`) |
+| `MCP_WAIT_MAX_SECS` | `3600` | the largest `timeout_secs` of `wait_for_job` (`--mcp-wait-max-secs`), 1 to 86400, larger requests are cut to it |
 | `ORCH_PUBLIC_URL` | unset | the chat's public origin (`--public-url`), for the `web_url` of `start_job`; an origin with no path |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
@@ -205,7 +206,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   value, blank, unknown, the flag collected raw). `src/main.rs` maps every
   `HostError` to exit 70. `src/logging.rs`: role and instance first on every JSON and text
   line (an instance with a quote stays valid JSON, no fields means the stock line).
-* Unit tests of the MCP settings in `src/config.rs`: tokens, hosts and public URL read and normalised (user lower-cased, token trimmed, hosts split), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
+* Unit tests of the MCP settings in `src/config.rs`: tokens, hosts, public URL and wait bound read and normalised (user lower-cased, token trimmed, hosts split; `MCP_WAIT_MAX_SECS` 1 to 86400), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
 * `tests/local.rs` (`#![cfg(feature = "agent-local")]`, run with `--features agent-local`): the executable hosting
   a local `echo` agent answers an AG-UI run and the journal holds the run (`orch_agent_runs`); a `control-plane`
   process with a local agent starts, accepts a run and leaves it `queued` with an empty journal until a `worker`
@@ -225,7 +226,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
   database with a SIGKILL mid-task. The MCP surface (`mcp_without_its_tokens_or_hosts_is_a_config_error`: each missing piece is
   exit 78 naming it, before anything connects, with no token in the log; `mcp_is_mounted_by_its_name_and_a_token_lists_the_tools`:
-  the process mounted with `ORCH_SURFACES=agui,mcp` answers 401 with the challenge without or with a wrong token, `tools/list` and
+  the process mounted with `ORCH_SURFACES=agui,mcp` answers 401 with the challenge without or with a wrong token, `tools/list` (six tools) and
   `list_agents` with the token, 403 for a `Host` that is not listed; `mcp_is_not_there_unless_it_is_named`: 404). The roles: `--role worker` (over a
   nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` answers 404 on
   `/api/...` and `/metrics` with role and instance on every log line; a `control-plane` process serves the API but the thread stays

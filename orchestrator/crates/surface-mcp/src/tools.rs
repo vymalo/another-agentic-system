@@ -18,6 +18,8 @@ pub enum ToolName {
     StartJob,
     /// A summary of a job.
     GetJob,
+    /// Follows a job until it is over or blocked, with progress notifications.
+    WaitForJob,
     /// Sends a message to a job (an answer to a question, or a follow-up).
     Answer,
     /// Cancels a job.
@@ -30,6 +32,7 @@ impl ToolName {
         ToolName::ListAgents,
         ToolName::StartJob,
         ToolName::GetJob,
+        ToolName::WaitForJob,
         ToolName::Answer,
         ToolName::CancelJob,
     ];
@@ -40,6 +43,7 @@ impl ToolName {
             ToolName::ListAgents => "list_agents",
             ToolName::StartJob => "start_job",
             ToolName::GetJob => "get_job",
+            ToolName::WaitForJob => "wait_for_job",
             ToolName::Answer => "answer",
             ToolName::CancelJob => "cancel_job",
         }
@@ -65,6 +69,14 @@ impl ToolName {
                 "Summarise a job: its state, attempt, the branch and commit the agent pushed, the \
                  pull request, the last CI result and any findings that failed a check."
             }
+            ToolName::WaitForJob => {
+                "Wait for a job: returns when it is finished or blocked (waiting for your answer), \
+                 or after timeout_secs, with the same summary as get_job plus outcome \
+                 (finished, blocked, timed_out, interrupted) and resume_after_seq. Progress \
+                 notifications report each event as it happens when the request has a \
+                 progressToken. To keep waiting, call again with after_seq = resume_after_seq: \
+                 nothing is lost."
+            }
             ToolName::Answer => {
                 "Send a message to a job: the answer to a question the agent asked (state \
                  blocked), or a follow-up while it works. Refused when the job is finished."
@@ -77,7 +89,7 @@ impl ToolName {
 
     fn annotations(self) -> ToolAnnotations {
         match self {
-            ToolName::ListAgents | ToolName::GetJob => {
+            ToolName::ListAgents | ToolName::GetJob | ToolName::WaitForJob => {
                 ToolAnnotations::new().read_only(true).open_world(false)
             }
             ToolName::StartJob => ToolAnnotations::new()
@@ -103,6 +115,7 @@ impl ToolName {
             ToolName::ListAgents => schema_for_input::<NoArgs>(),
             ToolName::StartJob => schema_for_input::<StartJobArgs>(),
             ToolName::GetJob => schema_for_input::<GetJobArgs>(),
+            ToolName::WaitForJob => schema_for_input::<WaitForJobArgs>(),
             ToolName::Answer => schema_for_input::<AnswerArgs>(),
             ToolName::CancelJob => schema_for_input::<CancelJobArgs>(),
         }
@@ -153,6 +166,21 @@ pub struct GetJobArgs {
     pub job_id: String,
 }
 
+/// The arguments of `wait_for_job`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitForJobArgs {
+    /// The job_id from start_job.
+    pub job_id: String,
+    /// Report the events after this sequence number. Omitted: only what happens from now on. 0:
+    /// the whole log. Use the resume_after_seq of an earlier call to continue it.
+    #[serde(default)]
+    pub after_seq: Option<i64>,
+    /// How long to wait, in seconds; at most the server's limit (larger values are cut to it).
+    /// 0 reports what the log holds now and returns.
+    pub timeout_secs: u64,
+}
+
 /// The arguments of `answer`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -185,7 +213,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), ToolName::ALL.len());
-        assert_eq!(ToolName::parse("wait_for_job"), None);
+        assert_eq!(ToolName::parse("wait_for_job"), Some(ToolName::WaitForJob));
         assert_eq!(ToolName::parse("START_JOB"), None, "names are exact");
     }
 
@@ -205,6 +233,12 @@ mod tests {
         );
         let get = ToolName::GetJob.definition();
         assert_eq!(get.input_schema["required"], serde_json::json!(["job_id"]));
+        let wait = ToolName::WaitForJob.definition();
+        assert_eq!(
+            wait.input_schema["required"],
+            serde_json::json!(["job_id", "timeout_secs"])
+        );
+        assert!(wait.input_schema["properties"]["after_seq"].is_object());
     }
 
     #[test]

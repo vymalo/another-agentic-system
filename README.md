@@ -84,7 +84,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0016](docs/decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md) | Inbox, timers and the job ledger on the thread (`threads.job`); unsolicited machine input only. *Slices 2 and 5 built* |
 | [0017](docs/decisions/0017-ci-results-by-webhook.md) | CI results by webhook: a GitHub adapter and a generic signed shape. *Planned* |
 | [0018](docs/decisions/0018-verification-gate-and-rework-loop.md) | Configurable verification gate (CI, agent checks, verifier agent) and a bounded rework loop; refines 0002. *Built for the agent's own checks (slices 2, 3); CI and the verifier planned* |
-| [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Tools and bearer tokens built; `wait_for_job` and OIDC planned* |
+| [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Tools, bearer tokens and `wait_for_job` built; OIDC planned* |
 
 ## Local development
 
