@@ -86,9 +86,9 @@ async fn delegated_texts(w: &World, id: ThreadId) -> Vec<String> {
         .into_iter()
         .filter_map(|row| match row.payload {
             OutboxPayload::Delegate { text, .. } => Some(text),
-            OutboxPayload::Action { .. } | OutboxPayload::Cancel | OutboxPayload::Verify { .. } => {
-                None
-            }
+            OutboxPayload::Action { .. }
+            | OutboxPayload::Cancel { .. }
+            | OutboxPayload::Verify { .. } => None,
         })
         .collect()
 }

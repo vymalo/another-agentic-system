@@ -697,10 +697,11 @@ impl<P: Ports> App<P> {
                     .check()
                     .map_err(|e| AppError::Invalid(format!("invalid action: {e}")))?;
             }
-            // Machine inputs (a CI report, the verifier's verdict, a timer) come from the
+            // Machine inputs (a redelivery, a CI report, the verifier's verdict, a timer) come from the
             // inbox and the dispatcher through `apply`, never from a user's request: a user
             // must not be able to forge a check result.
-            Input::CiReported(_)
+            Input::Redeliver { .. }
+            | Input::CiReported(_)
             | Input::VerifierReported { .. }
             | Input::VerifierFailed { .. }
             | Input::TimerFired(_) => {
@@ -772,9 +773,9 @@ impl<P: Ports> App<P> {
                         release: target.release.clone(),
                     },
                 }),
-                Command::RequestCancel => outbox.push(NewOutbox {
+                Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
-                    payload: OutboxPayload::Cancel,
+                    payload: OutboxPayload::Cancel { job: Some(job) },
                 }),
                 // Both are written in this commit: the watch also re-arms the reports that
                 // were parked waiting for it, and the timer becomes an inbox row that the

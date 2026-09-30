@@ -33,6 +33,8 @@ pub enum EventKind {
     CheckResult,
     /// The gate failed and the agent was sent back to work (ADR 0018).
     Rework,
+    /// A message on a finished thread started its next job (ADR 0020).
+    JobStarted,
 }
 
 impl EventKind {
@@ -50,6 +52,7 @@ impl EventKind {
             EventKind::CiResult => "ci_result",
             EventKind::CheckResult => "check_result",
             EventKind::Rework => "rework",
+            EventKind::JobStarted => "job_started",
         }
     }
 }
@@ -250,6 +253,14 @@ pub struct ErrorData {
     pub retryable: bool,
 }
 
+/// `data` of a `job_started`: the thread's next job began (ADR 0020). The first job of a thread
+/// has no such event; it starts with the thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobStartedData {
+    /// The number of the job that started, from 2.
+    pub job: u32,
+}
+
 /// The kind-specific payload of an event (contract `EventData`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventBody {
@@ -275,6 +286,8 @@ pub enum EventBody {
     CheckResult(CheckResult),
     /// See [`ReworkData`].
     Rework(ReworkData),
+    /// See [`JobStartedData`].
+    JobStarted(JobStartedData),
 }
 
 impl EventBody {
@@ -292,6 +305,7 @@ impl EventBody {
             EventBody::CiResult(_) => EventKind::CiResult,
             EventBody::CheckResult(_) => EventKind::CheckResult,
             EventBody::Rework(_) => EventKind::Rework,
+            EventBody::JobStarted(_) => EventKind::JobStarted,
         }
     }
 
@@ -309,6 +323,7 @@ impl EventBody {
             EventBody::CiResult(d) => serde_json::to_value(d),
             EventBody::CheckResult(d) => serde_json::to_value(d),
             EventBody::Rework(d) => serde_json::to_value(d),
+            EventBody::JobStarted(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -328,6 +343,7 @@ impl EventBody {
             EventKind::CiResult => EventBody::CiResult(serde_json::from_value(data)?),
             EventKind::CheckResult => EventBody::CheckResult(serde_json::from_value(data)?),
             EventKind::Rework => EventBody::Rework(serde_json::from_value(data)?),
+            EventKind::JobStarted => EventBody::JobStarted(serde_json::from_value(data)?),
         })
     }
 }

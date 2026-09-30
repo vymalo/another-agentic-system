@@ -92,6 +92,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             retryable
         }),
         1 => Just(Input::CancelledBeforeStart),
+        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text }),
         1 => (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected { reason, retryable }),
         8 => (0..NAMES.len(), sha.clone(), 0..REPOS.len(), arb_conclusion()).prop_map(
@@ -157,7 +158,7 @@ fn appended(cmds: &[Command]) -> impl Iterator<Item = &EventBody> {
         Command::Append(d) => Some(&d.body),
         Command::Delegate { .. }
         | Command::DelegateAction { .. }
-        | Command::RequestCancel
+        | Command::RequestCancel { .. }
         | Command::Watch { .. }
         | Command::Schedule { .. }
         | Command::RequestVerification { .. } => None,
@@ -236,15 +237,37 @@ proptest! {
                 Err(other) => return Err(TestCaseError::fail(format!("unexpected error {other}"))),
             };
 
-            // (1) Terminal states absorb: state and job stay as they were.
+            // (1) A finished job absorbs everything but a message, which starts the next job
+            // (ADR 0020): the state and the job stay as they were otherwise.
+            let next_job = next.job.number != before.job.number;
             if before.state.is_terminal() {
-                prop_assert_eq!(&next, &before);
+                let message = matches!(input, Input::UserMessage { .. } | Input::Redeliver { .. });
+                if message && !(before.state == ThreadState::Cancelled && matches!(input, Input::Redeliver { .. })) {
+                    prop_assert!(next_job);
+                    prop_assert_eq!(next.state, ThreadState::Queued);
+                    prop_assert_eq!(next.job.number, before.job.number + 1);
+                    let (Input::UserMessage { text, .. } | Input::Redeliver { text }) = input else {
+                        unreachable!()
+                    };
+                    let mut expected = before.job.next();
+                    if gate.is_active() {
+                        expected.task = Some(text.clone());
+                    }
+                    prop_assert_eq!(&next.job, &expected);
+                } else {
+                    prop_assert_eq!(&next, &before);
+                }
+            } else {
+                prop_assert!(!next_job);
             }
             // (2) The attempt is between 1 and the maximum, and moves only with a rework.
             prop_assert!(next.job.attempt >= 1 && next.job.attempt <= gate.max());
             let reworks = appended(&cmds).filter(|b| matches!(b, EventBody::Rework(_))).count();
             let delegations = cmds.iter().filter(|c| matches!(c, Command::Delegate { .. })).count();
-            if next.job.attempt != before.job.attempt {
+            if next_job {
+                prop_assert_eq!(next.job.attempt, 1);
+                prop_assert_eq!(next.job.verification, before.job.verification);
+            } else if next.job.attempt != before.job.attempt {
                 prop_assert_eq!(next.job.attempt, before.job.attempt + 1);
                 prop_assert_eq!(reworks, 1);
                 prop_assert_eq!(next.state, ThreadState::Queued);
@@ -266,7 +289,7 @@ proptest! {
                     EventBody::CheckResult(r) if !r.stale => {
                         answers.insert(r.source, r.status);
                     }
-                    EventBody::Rework(_) => answers.clear(),
+                    EventBody::Rework(_) | EventBody::JobStarted(_) => answers.clear(),
                     _ => {}
                 }
             }
@@ -356,7 +379,9 @@ proptest! {
         let mut snap = Snapshot::queued(GatePolicy::default());
         for input in &inputs {
             if let Ok((next, cmds)) = transition(&snap, input) {
-                prop_assert_eq!(&next.job, &Job::default());
+                // Only the number of the job moves (a message on a finished thread).
+                prop_assert_eq!(&next.job, &Job { number: next.job.number, ..Job::default() });
+                prop_assert!(next.job.number >= snap.job.number);
                 prop_assert!(next.state != ThreadState::Verifying);
                 let machine_commands = cmds.iter().any(|c| {
                     matches!(

@@ -91,7 +91,7 @@ fn delegate(n: u128) -> NewOutbox {
 fn cancel_row(n: u128) -> NewOutbox {
     NewOutbox {
         id: outbox_id(n),
-        payload: OutboxPayload::Cancel,
+        payload: OutboxPayload::Cancel { job: Some(1) },
     }
 }
 
@@ -1588,6 +1588,7 @@ fn busy_job() -> Job {
     gate.ci.required = ["build".to_owned()].into();
     gate.verifier = Some(AgentId::new("reviewer"));
     Job {
+        number: 3,
         gate,
         attempt: 2,
         verification: 3,
@@ -1773,8 +1774,8 @@ pub async fn job_is_written_with_the_state<S: ThreadStore>(store: S) {
     assert_eq!(after.version, 3);
 }
 
-/// The events of the gate are stored and read back, and `verifying` is a state a thread can
-/// be in.
+/// The events of the gate (and `job_started`) are stored and read back, and `verifying` is a
+/// state a thread can be in.
 pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
     let sha = "b".repeat(40);
     let bodies = vec![
@@ -1806,6 +1807,7 @@ pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
                 findings: vec!["red".into()],
             }],
         }),
+        EventBody::JobStarted(orch_core::JobStartedData { job: 2 }),
     ];
     let events: Vec<NewEvent> = bodies
         .iter()

@@ -122,7 +122,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             Command::Append(d) => Some(&d.body),
             Command::Delegate { .. }
             | Command::DelegateAction { .. }
-            | Command::RequestCancel
+            | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
             | Command::RequestVerification { .. } => None,
@@ -1505,7 +1505,9 @@ fn cancel_while_verifying_cancels_at_once() {
     assert_eq!(snap.state, Cancelled);
     assert!(announced(&cmds, Cancelled));
     assert!(
-        !cmds.contains(&Command::RequestCancel),
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::RequestCancel { .. })),
         "the agent's task is over"
     );
 }
@@ -2439,4 +2441,113 @@ fn timers_and_watch_keys_have_a_stable_wire_shape() {
         json!("verifier_failed")
     );
     assert_eq!(CheckSource::AgentChecks.as_str(), "agent_checks");
+}
+
+// ---- a thread is a conversation (ADR 0020) ----------------------------------------------------
+
+#[test]
+fn a_follow_up_after_done_runs_the_gate_afresh_with_its_own_attempts() {
+    let (done, _) = feed(
+        gated(&[CheckSource::AgentChecks]),
+        &[branch(S1), checks(true, S1, &[]), completed()],
+    );
+    assert_eq!(done.state, Done);
+    assert_eq!(done.job.verification, 1);
+    let (two, cmds) = step(&done, &message("one more thing"));
+    assert_eq!(two.state, Queued);
+    assert_eq!(two.job.number, 2);
+    assert_eq!(two.job.attempt, 1);
+    assert_eq!(two.job.gate, done.job.gate);
+    assert!(two.job.results.is_empty() && two.job.pushed.is_none());
+    assert_eq!(two.job.task.as_deref(), Some("one more thing"));
+    assert!(
+        bodies(&cmds)
+            .iter()
+            .any(|b| matches!(b, EventBody::JobStarted(d) if d.job == 2))
+    );
+    // Job 2 completes with nothing pushed: the gate fails it and sends it back, on attempt 2 of
+    // this job, and the verification count goes on from the thread's.
+    let (back, _) = feed(two, &[completed()]);
+    assert_eq!(back.state, Queued);
+    assert_eq!(back.job.number, 2);
+    assert_eq!(back.job.attempt, 2);
+    assert_eq!(back.job.verification, 2);
+}
+
+#[test]
+fn a_job_that_used_every_attempt_does_not_take_the_next_job_s() {
+    let mut start = gated(&[CheckSource::AgentChecks]);
+    start.job.gate.max_attempts = 1;
+    let (failed, _) = feed(start, &[completed()]);
+    assert_eq!(failed.state, Failed);
+    let (two, _) = step(&failed, &message("try again"));
+    assert_eq!((two.state, two.job.number, two.job.attempt), (Queued, 2, 1));
+    let (good, _) = feed(two, &[branch(S1), checks(true, S1, &[]), completed()]);
+    assert_eq!(good.state, Done);
+}
+
+#[test]
+fn the_leftovers_of_an_earlier_job_are_stale_in_the_next() {
+    let (done, _) = feed(
+        with_verifier(gated(&[CheckSource::Verifier])),
+        &[branch(S1), completed(), verdict(1, 1, true, &[])],
+    );
+    assert_eq!(done.state, Done);
+    let (two, _) = step(&done, &message("again"));
+    let (verifying, _) = feed(two, &[branch(S2), completed()]);
+    assert_eq!(verifying.state, Verifying);
+    assert_eq!(verifying.job.verification, 2);
+    // The verdict, the failure and the deadlines of job 1 name verification 1.
+    let stale = [
+        verdict(1, 1, true, &[]),
+        verdict(1, 1, false, &["old"]),
+        Input::VerifierFailed {
+            attempt: 1,
+            verification: 1,
+            reason: "down".into(),
+        },
+        Input::TimerFired(Timer::VerifierDeadline {
+            attempt: 1,
+            verification: 1,
+        }),
+        Input::TimerFired(Timer::CiDeadline {
+            attempt: 1,
+            verification: 1,
+        }),
+    ];
+    for input in stale {
+        let (after, _) = step(&verifying, &input);
+        assert_eq!(after, verifying, "{input:?}");
+    }
+    let (passed, _) = step(&verifying, &verdict(1, 2, true, &[]));
+    assert_eq!(passed.state, Done);
+}
+
+#[test]
+fn a_ci_report_of_an_earlier_job_is_a_card_and_nothing_more() {
+    let (done, _) = feed(
+        gated(&[CheckSource::Ci]),
+        &[
+            branch(S1),
+            completed(),
+            ci("build", S1, CiConclusion::Success),
+        ],
+    );
+    assert_eq!(done.state, Done);
+    let (two, _) = step(&done, &message("again"));
+    let (two, _) = feed(two, &[branch(S2)]);
+    let (after, cmds) = step(&two, &ci("build", S1, CiConclusion::Failure));
+    assert_eq!(after, two, "the ledger of job 2 is about S2");
+    assert!(matches!(bodies(&cmds)[..], [EventBody::CiResult(_)]));
+}
+
+#[test]
+fn a_cancel_names_the_job_it_stops() {
+    let (two, _) = feed(
+        Snapshot::queued(GatePolicy::default()),
+        &[completed(), message("again")],
+    );
+    assert_eq!((two.state, two.job.number), (Queued, 2));
+    let (_, cmds) = step(&two, &Input::Cancel { user: user() });
+    assert!(cmds.contains(&Command::RequestCancel { job: 2 }));
 }

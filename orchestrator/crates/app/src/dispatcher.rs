@@ -112,6 +112,8 @@ enum Flow {
 struct Loaded {
     ctx: Ctx,
     state: ThreadState,
+    /// The number of the thread's current job (ADR 0020).
+    job: u32,
     binding: orch_ports::AgentBinding,
 }
 
@@ -372,6 +374,7 @@ impl<P: Ports> Dispatcher<P> {
         Ok(Some(Loaded {
             ctx,
             state: thread.state,
+            job: thread.job.number,
             binding,
         }))
     }
@@ -384,7 +387,7 @@ impl<P: Ports> Dispatcher<P> {
                 at,
                 release,
             } => (SendContent::UiAction { action, at }, release),
-            OutboxPayload::Cancel | OutboxPayload::Verify { .. } => {
+            OutboxPayload::Cancel { .. } | OutboxPayload::Verify { .. } => {
                 return self
                     .finish(
                         &row,
@@ -399,6 +402,7 @@ impl<P: Ports> Dispatcher<P> {
             ctx,
             state,
             binding,
+            ..
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -407,6 +411,20 @@ impl<P: Ports> Dispatcher<P> {
         if state.is_terminal() {
             if row.sent_at.is_some() {
                 return self.finish(&row, OutboxFinal::Delivered).await;
+            }
+            // A message the person wrote while the job was open, behind a delegation that ended
+            // it: the thread is a conversation (ADR 0020), so it is the next job's, not lost. A
+            // person who stopped the thread asked for that; an action belongs to a finished job.
+            if let OutboxPayload::Delegate { text, .. } = &row.payload
+                && state != ThreadState::Cancelled
+            {
+                self.apply_quiet(
+                    &row,
+                    Input::Redeliver { text: text.clone() },
+                    format!("redeliver:{}", row.id),
+                )
+                .await?;
+                return self.finish(&row, OutboxFinal::Skipped).await;
             }
             self.apply_quiet(
                 &row,
@@ -729,11 +747,19 @@ impl<P: Ports> Dispatcher<P> {
         let Some(Loaded {
             ctx,
             state,
+            job,
             binding,
         }) = self.load(&row).await?
         else {
             return Ok(());
         };
+        // A stop typed during an earlier job must not stop this one (ADR 0020). A row written
+        // before it named its job means the current one.
+        if let OutboxPayload::Cancel { job: Some(asked) } = &row.payload
+            && *asked != job
+        {
+            return self.finish(&row, OutboxFinal::Skipped).await;
+        }
         if state.is_terminal() {
             return self.finish(&row, OutboxFinal::Delivered).await;
         }

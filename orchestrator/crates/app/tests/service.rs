@@ -385,7 +385,7 @@ async fn threads_list_newest_first_with_a_cursor() {
 }
 
 #[tokio::test]
-async fn post_message_validates_and_rejects_finished_threads() {
+async fn post_message_validates_and_a_finished_thread_takes_the_next_job() {
     let w = World::new();
     let app = w.app();
     let t = create(&app, &alice(), "plain", "hi").await;
@@ -416,10 +416,26 @@ async fn post_message_validates_and_rejects_finished_threads() {
     )
     .await
     .unwrap();
-    assert!(matches!(
-        app.post_message(&alice(), t.id, "late".into()).await,
-        Err(AppError::Finished)
-    ));
+    // A finished thread is a conversation: the next message starts the next job (ADR 0020).
+    let late = app
+        .post_message(&alice(), t.id, "late".into())
+        .await
+        .unwrap();
+    assert_eq!(late.kind(), EventKind::UserMessage);
+    let record = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((record.state, record.job.number), (ThreadState::Queued, 2));
+    let kinds: Vec<EventKind> = app
+        .list_events(&alice(), t.id, 0, 100)
+        .await
+        .unwrap()
+        .iter()
+        .map(|e| e.kind())
+        .collect();
+    assert_eq!(
+        kinds[kinds.len() - 2..],
+        [EventKind::UserMessage, EventKind::JobStarted]
+    );
+    // What is refused on a finished job is an action on its card; a stop is a no-op.
 }
 
 #[tokio::test]

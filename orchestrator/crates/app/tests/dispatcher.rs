@@ -266,12 +266,160 @@ async fn permanent_rejection_fails_the_thread_without_retrying() {
         other => panic!("{other:?}"),
     }
     assert_eq!(w.agent.sends().len(), 1);
-    // A finished thread takes no more messages.
-    let err = app
-        .post_message(&alice(), t.id, "more".into())
+    // A finished thread is not closed: the next message starts the next job (ADR 0020).
+    app.post_message(&alice(), t.id, "echo more".into())
         .await
-        .unwrap_err();
-    assert!(matches!(err, orch_app::AppError::Finished));
+        .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(
+        shape(&ev)[3..],
+        [
+            "user_message",
+            "job_started",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_follow_up_after_done_is_a_new_task_in_the_same_context() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.post_message(&alice(), t.id, "echo again".into())
+        .await
+        .unwrap();
+    eventually("the second job is done", || async {
+        let ev = events(&app, &alice(), t.id).await;
+        (shape(&ev)
+            .iter()
+            .filter(|s| *s == "thread_state:done")
+            .count()
+            == 2)
+            .then_some(())
+    })
+    .await;
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(shape(&ev).iter().filter(|s| *s == "job_started").count(), 1);
+    match &ev[6].body {
+        EventBody::JobStarted(d) => assert_eq!(d.job, 2),
+        other => panic!("{other:?}"),
+    }
+    let record = w.store.get_thread(None, t.id).await.unwrap().unwrap();
+    assert_eq!(record.job.number, 2);
+    let sends = w.agent.sends();
+    assert_eq!(sends.len(), 2);
+    match (&sends[0], &sends[1]) {
+        (
+            Call::Send {
+                task_id: None,
+                context_id: c1,
+                ..
+            },
+            Call::Send {
+                task_id: None,
+                text,
+                context_id: c2,
+                ..
+            },
+        ) => {
+            assert_eq!(text, "echo again");
+            assert_eq!(c1, c2, "the same context");
+        }
+        other => panic!("{other:?}"),
+    }
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_message_queued_behind_the_one_that_ended_the_job_starts_the_next_job() {
+    let w = World::new();
+    let app = w.app();
+    // Two delegations are queued before anything is sent: the second waits for the first, and
+    // by then the thread is done. It used to be dropped ("thread already finished").
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    app.post_message(&alice(), t.id, "echo two".into())
+        .await
+        .unwrap();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("both jobs are done", || async {
+        let ev = events(&app, &alice(), t.id).await;
+        (shape(&ev)
+            .iter()
+            .filter(|s| *s == "thread_state:done")
+            .count()
+            == 2)
+            .then_some(())
+    })
+    .await;
+    let ev = events(&app, &alice(), t.id).await;
+    assert_contiguous(&ev);
+    let shape = shape(&ev);
+    assert_eq!(shape.iter().filter(|s| *s == "job_started").count(), 1);
+    assert!(!shape.contains(&"error".to_owned()), "{shape:?}");
+    assert_eq!(w.agent.sends().len(), 2);
+    let record = w.store.get_thread(None, t.id).await.unwrap().unwrap();
+    assert_eq!((record.state, record.job.number), (ThreadState::Done, 2));
+    assert!(w.store.list_open_outbox(t.id).await.unwrap().is_empty());
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stop_typed_during_an_earlier_job_does_not_stop_the_next() {
+    let w = World::new();
+    let app = w.app();
+    // Job 1: a stop is asked, but the job ends by itself before the dispatcher serves it.
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    app.cancel(&alice(), t.id).await.unwrap();
+    app.apply(
+        t.id,
+        orch_core::Input::Agent {
+            agent: AgentId::new("plain"),
+            revision: None,
+            update: orch_core::AgentUpdate::Status {
+                state: orch_core::AgentTaskState::Completed,
+                detail: None,
+            },
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // Job 2 starts, then the dispatcher serves the old stop.
+    app.post_message(&alice(), t.id, "gate two".into())
+        .await
+        .unwrap();
+    let open = w.store.list_open_outbox(t.id).await.unwrap();
+    assert!(open.iter().any(|r| matches!(
+        r.payload,
+        orch_ports::OutboxPayload::Cancel { job: Some(1) }
+    )));
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the stop row is finished", || async {
+        let open = w.store.list_open_outbox(t.id).await.unwrap();
+        (!open
+            .iter()
+            .any(|r| r.kind == orch_ports::OutboxKind::Cancel))
+        .then_some(())
+    })
+    .await;
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "the agent was never asked to stop"
+    );
+    assert_ne!(state_of(&w, t.id).await, ThreadState::Cancelled);
     run.shutdown().await;
 }
 

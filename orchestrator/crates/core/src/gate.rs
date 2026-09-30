@@ -255,13 +255,21 @@ impl Hold {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Job {
-    /// The policy this job runs under.
+    /// Which job of the thread this is, from 1 (ADR 0020: a thread is a conversation, and a
+    /// message on a finished thread starts the next job). A ledger stored before the field
+    /// existed is job 1. Only the current job is stored; the log keeps the rest, marked by
+    /// `job_started` events.
+    #[serde(skip_serializing_if = "is_first_job")]
+    pub number: u32,
+    /// The policy this job runs under. The thread's: every job of a thread runs under the gate
+    /// it was created with.
     pub gate: GatePolicy,
     /// The attempt the agent is on, from 1; never above `gate.max()`.
     pub attempt: u32,
-    /// How many verifications have started. A report or timer of an earlier one is stale even
-    /// when the attempt is the same (a user message abandons a verification without using an
-    /// attempt).
+    /// How many verifications have started **on the thread**, never reset by a new job
+    /// ([`Job::next`]). A report or timer of an earlier one is stale even when the attempt is
+    /// the same (a user message abandons a verification without using an attempt, and the
+    /// attempt of a new job starts again at 1).
     pub verification: u32,
     /// The person's messages of this job, in the order they wrote them, for the prompts the core
     /// writes (the rework and the verifier's): the first message, then each later one after a
@@ -292,9 +300,14 @@ pub struct Job {
     pub hold: Option<Hold>,
 }
 
+fn is_first_job(number: &u32) -> bool {
+    *number == 1
+}
+
 impl Default for Job {
     fn default() -> Self {
         Job {
+            number: 1,
             gate: GatePolicy::default(),
             attempt: 1,
             verification: 0,
@@ -316,6 +329,23 @@ impl Job {
             ..Job::default()
         }
     }
+
+    /// The job that follows this one on the same thread (ADR 0020): the next number, the same
+    /// gate, attempt 1 and an empty ledger (`task`, `pushed`, `results`, `summary`, `hold`,
+    /// `branch_problem`).
+    ///
+    /// `verification` is **kept**: it counts the verifications of the thread, so a timer, a
+    /// verdict or a `verify` row of an earlier job names a verification the new job has not
+    /// reached and is stale by the comparison the core already makes.
+    #[must_use]
+    pub fn next(&self) -> Job {
+        Job {
+            number: self.number.saturating_add(1),
+            gate: self.gate.clone(),
+            verification: self.verification,
+            ..Job::default()
+        }
+    }
 }
 
 /// What a client is told about a job: `Thread.job` of the resource API and `job` in the AG-UI
@@ -323,7 +353,11 @@ impl Job {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobView {
-    /// The attempt the agent is on, from 1.
+    /// Which job of the thread this is; present from job 2 (a thread on its first job has none,
+    /// and a view without one reads as job 1).
+    #[serde(default = "first_job", skip_serializing_if = "is_first_job")]
+    pub number: u32,
+    /// The attempt the agent is on, from 1 (in this job).
     pub attempt: u32,
     /// The attempts there are.
     pub max_attempts: u32,
@@ -334,10 +368,15 @@ pub struct JobView {
     pub sha: Option<String>,
 }
 
+fn first_job() -> u32 {
+    1
+}
+
 impl JobView {
     /// The view of a job under `gate`, on `attempt`, that pushed `sha`.
     pub fn new(gate: &GatePolicy, attempt: u32, sha: Option<String>) -> Self {
         JobView {
+            number: 1,
             attempt,
             max_attempts: gate.max(),
             gate: gate.require.iter().copied().collect(),
@@ -349,8 +388,9 @@ impl JobView {
 impl Job {
     /// What clients are told about this job; `None` when the gate requires nothing.
     pub fn view(&self) -> Option<JobView> {
-        self.gate.is_active().then(|| {
-            JobView::new(
+        self.gate.is_active().then(|| JobView {
+            number: self.number,
+            ..JobView::new(
                 &self.gate,
                 self.attempt,
                 self.pushed.as_ref().map(|p| p.commit.clone()),

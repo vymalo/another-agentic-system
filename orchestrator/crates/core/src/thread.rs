@@ -29,7 +29,8 @@ pub enum ThreadState {
 }
 
 impl ThreadState {
-    /// `done`, `failed` and `cancelled` are absorbing.
+    /// `done`, `failed` and `cancelled`: the current job is over. The thread is not: a user message
+    /// starts the next job (ADR 0020); every other input is refused or dropped.
     pub fn is_terminal(self) -> bool {
         match self {
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => true,

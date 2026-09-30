@@ -341,6 +341,8 @@ impl Projector {
             EventBody::CheckResult(d) => self.on_check_result(event, d, &mut out),
             EventBody::Rework(d) => self.on_rework(event, d, &mut out),
             EventBody::CiResult(d) => self.on_ci_result(event, d, &mut out),
+            // Projected by the next change.
+            EventBody::JobStarted(_) => {}
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);

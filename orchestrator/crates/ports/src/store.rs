@@ -88,8 +88,15 @@ pub enum OutboxPayload {
         /// Selected release channel or revision.
         release: Option<String>,
     },
-    /// Cancel.
-    Cancel,
+    /// Cancel. `job` is the job of the thread the person asked to stop (ADR 0020): a row claimed
+    /// after that job ended and the next began is finished without calling the agent. A row
+    /// written before the field existed has none and means the thread's current job. (Such a row
+    /// was stored as the bare string `"cancel"`; the Postgres codec reads it as `{"cancel": {}}`.)
+    Cancel {
+        /// The job to cancel, when the row says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        job: Option<u32>,
+    },
     /// Ask `verifier` to review `pushed` (ADR 0018). `attempt` and `verification` say which
     /// verification of the job this answers: a row whose verification is over is dropped, and
     /// the verdict it produces carries them, so the core can tell a stale one.
@@ -112,7 +119,7 @@ impl OutboxPayload {
     pub fn kind(&self) -> OutboxKind {
         match self {
             OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
-            OutboxPayload::Cancel => OutboxKind::Cancel,
+            OutboxPayload::Cancel { .. } => OutboxKind::Cancel,
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
         }
     }

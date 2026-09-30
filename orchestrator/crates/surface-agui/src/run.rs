@@ -148,6 +148,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
             .as_ref()
             .map(|id| format!("agui:{thread}:run:{id}")),
         Input::UserMessage { .. }
+        | Input::Redeliver { .. }
         | Input::Cancel { .. }
         | Input::Agent { .. }
         | Input::DeliveryFailed { .. }
