@@ -218,7 +218,7 @@ sequenceDiagram
   O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying (job attempt 1)
   O-->>U: ACTIVITY_SNAPSHOT vymalo.check check-1-1-agent_checks (failed, findings)
   O-->>U: ACTIVITY_SNAPSHOT vymalo.rework rework-2
-  O->>W: a new task in the same context, with the findings quoted as untrusted data
+  O->>W: a new task in the same context, with the person's request and the findings quoted as untrusted data
   O-->>U: SUBAGENT_STARTED (attempt 2), STATE_SNAPSHOT queued (job attempt 2)
   W-->>O: artifacts branch and checks (passed), completed
   O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying

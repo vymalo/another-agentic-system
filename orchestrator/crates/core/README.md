@@ -67,7 +67,9 @@ Offline, no environment variables.
 * `tests/properties.rs`: `proptest` properties over random input sequences, with the gate off.
 * `tests/wire.rs` also pins `Thread.job` (present only under a gate, and nothing else of the ledger with it) and the wire shapes of `check_result` and `rework`.
 * `tests/gate.rs`: the verification gate, one test per rule of the loop: the artifacts, the agent-checks
-  source, CI (current, stale, early, required names), the verifier, the deadlines, an abandoned verification
+  source (which passes only with checks that name the pushed commit: no pushed commit, checks that name no commit
+  and checks for another commit each fail; ADR 0018, status note of 2026-09-30), the rework prompt (the person's request
+  in its own fence before the findings, capped, unable to close its fence; the task kept under every gate), CI (current, stale, early, required names), the verifier, the deadlines, an abandoned verification
   and the `verification` counter, rework and running out of attempts, findings caps and quoting, repository
   keys, and the stored shape of `Job` and the new events.
   The verifier's rules: the request (commit, attempt, quoted pushed ref, task and summary, and nothing of the worker's outside a fence), the branch names git refuses, a verdict and a failure of the current or another verification, the hold and what answering it does, `parse_verdict` and its caps, the context of each verification.

@@ -490,7 +490,7 @@ table wins.
 
 | Keyword in the text | `SendStreamingMessage` answers with | Thread ends |
 |---|---|---|
-| `red-once` | `submitted`, `working`, artifacts `branch` and `checks` (failing, commit `1111111…`), `completed`; **with "this is attempt 2" or later in the text** (the gate's rework prompt, which quotes the findings, so it still says `red-once`) the same with passing checks on commit `2222222…`. See [Verification](#verification-the-gate) | `done` under a gate, at attempt 2 |
+| `red-once` | `submitted`, `working`, artifacts `branch` and `checks` (failing, commit `1111111…`), `completed`; **with "this is attempt 2" or later in the text** (the gate's rework prompt, which carries the task and quotes the findings, so it still says `red-once`) the same with passing checks on commit `2222222…`. See [Verification](#verification-the-gate) | `done` under a gate, at attempt 2 |
 | `red-always` | as the failing `red-once` (commit `3333333…`), on every attempt | `failed` under a gate, after 3 attempts |
 | `error` | JSON-RPC error `-32602` (HTTP 200): a permanent rejection, no retry | `failed`, `error` event |
 | `reject` | task `submitted`, then `rejected` with a message | `failed` |
@@ -550,7 +550,9 @@ the checks say:
 
 - `red-once fix the login`: attempt 1 reports failing checks with one finding; the orchestrator sends the agent
   back (a `rework` event, then a **new A2A task in the same context** whose text starts "Your work did not pass
-  verification (attempt 1 of 3); this is attempt 2" and quotes the finding as untrusted data); attempt 2 reports
+  verification (attempt 1 of 3); this is attempt 2", carries **the person's request in their own words** (a fenced
+  block labelled `request`: each attempt is a new task, and an agent need not remember the one before) and quotes the finding as
+  untrusted data); attempt 2 reports
   passing checks on another commit. The thread ends `done`, `job.attempt` 2.
 - `red-always fix the login`: every attempt fails; after the third (`maxAttempts` 3 unless configured) the thread
   ends `failed` and the run ends with `RUN_ERROR` `code: "checks_failed"`.
@@ -619,8 +621,8 @@ a run that removes the required source, asks for more attempts than `ORCH_MAX_AT
 (the artifacts and how the rework prompt changes the answer) on its own.
 
 To gate every agent instead of one, set `ORCH_GATE=agent-checks` on the `orchestrator` service; the mocks that
-report no `checks` would then be sent back three times and fail, which is the fail-closed reading of "no checks
-reported".
+report no `checks`, or no `branch` (the checks count only on the commit the agent pushed, [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)),
+would then be sent back three times and fail, which is the fail-closed reading of "no checks reported" and of "no pushed commit".
 
 ### Verifier (the verifier agent of the gate)
 

@@ -102,7 +102,7 @@ projection to the chat are [ADR 0018](0018-verification-gate-and-rework-loop.md)
 | Every required source has passed | `Done`. |
 | A source has failed and `attempt < max_attempts` | A `rework` event; `Delegate` with the findings text built in the core; state `Queued`; `attempt + 1`. |
 | A source has failed on the last attempt | `Failed`, with the findings in `error` and in `check_result` events. |
-| CI or the verifier is required and there is no pushed SHA | A failed check: "no pushed commit". |
+| CI, the verifier or the agent's own checks are required and there is no pushed SHA | A failed check: "no pushed commit". *(The agent's own checks joined the list on 2026-09-30, [ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit): checks on a tree nobody pushed prove nothing.)* |
 | A stale timer, or a CI result for an older SHA or attempt | Its event is recorded; nothing else changes. |
 | A CI result on a finished thread | Only its card is appended. |
 | A user message during `Verifying` | That verification is abandoned and the message is delegated; no attempt is counted. |

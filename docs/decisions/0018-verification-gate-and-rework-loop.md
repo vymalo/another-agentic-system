@@ -8,6 +8,9 @@
   **Amended 2026-09-30 (review of slices 6, 7 and 9):** a gate that requires `ci` must name its
   checks, and `ci` is honoured only where a webhook is mounted, see the
   [status note](#status-note-2026-09-30-review-fixes); "the first completed CI report decides" below is superseded.
+  **Amended 2026-09-30 (the first live run):** the agent's own checks pass only on the pushed commit, see the
+  [status note](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit), which also has the rework prompt
+  carry the person's request.
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -46,14 +49,15 @@ core logic in `orch-core`, the rules of [ADR 0016](0016-inbox-timers-and-job-led
 | Source | Evidence | Arrives as | Passes when |
 |---|---|---|---|
 | `Ci` | Reports on the pushed SHA ([ADR 0017](0017-ci-results-by-webhook.md)) | `Input::CiReported` | the `CiPolicy` says so: all required names pass. *(The first completed report used to pass when no name was required; superseded 2026-09-30, see the status note.)* |
-| `AgentChecks` | The agent's `checks {passed, commit, summary?, findings?}` artifact | the artifact, recognised in the core | `passed` is true for the pushed commit |
+| `AgentChecks` | The agent's `checks {passed, commit, summary?, findings?}` artifact | the artifact, recognised in the core | `passed` is true **and** a commit was pushed **and** the checks ran on exactly that commit. *(Without a pushed commit they used to pass; superseded 2026-09-30, see the second status note.)* |
 | `Verifier` | A verifier A2A agent's `verdict {passed, findings[]}` artifact | `Input::VerifierReported` | `passed` is true |
 
 Two rules from the loop that matter here:
 
 - A required source with nothing to check counts as failed rather than pending forever. With no
   pushed SHA, CI and the verifier fail with "no pushed commit". With `AgentChecks` required and no
-  `checks` artifact by the time the agent completes, it fails with "no checks reported".
+  `checks` artifact by the time the agent completes, it fails with "no checks reported". *(Since 2026-09-30 the
+  agent's checks need a pushed commit too: with none they fail with "no pushed commit", like the other two.)*
 - A failed source ends the round at once: the thread reworks (or fails) without waiting for the
   others. A result that arrives later for an older SHA or attempt is recorded and changes nothing.
 
@@ -353,6 +357,54 @@ above:
 - **Configuration.** `ORCH_CI_REQUIRED` (comma-separated check names) sets the deployment's `ci.required`.
 - **The `vymalo.check` card of source `ci`** carries the summary of the check when exactly one is named.
 
+## Status note (2026-09-30): the agent's checks need a pushed commit
+
+*Why.* On the owner's first live run (real model, real GitHub, `dev/agents.live.yaml`, the coder gated on
+`agent-checks`) the owner typed "Hi". The coder answered in plain text and completed; the gate sent it back with "no
+checks reported". On attempt 2 the model invented a task on a repository nobody asked for and ran `run_checks` on the
+**unchanged** worktree. That produced a passing `checks` artifact bound to the base `HEAD`, no `branch` artifact and
+no pushed commit, and the thread ended **Done** ("Attempt 2/3"). Nothing had been produced, and the gate called it
+finished.
+
+*What was wrong.* `agent_checks` compared the checks' commit with the pushed one only when **both** existed. With no
+pushed commit, or with checks that named none, the comparison was skipped and the checks' own `passed` decided. That
+contradicts [ADR 0003](0003-git-as-durable-state-ephemeral-workers.md) (git is the artifact: what the agent did is the
+commit it pushed) and this ADR's own table ("`passed` is true for the pushed commit"), and it was the one source of
+the three that did not fail closed on a missing push. CI and the verifier already did.
+
+*The rule now.* A job gated on `agent-checks` is done only when the checks passed **on the pushed commit**:
+
+| What the job holds when the agent finishes | The source says |
+|---|---|
+| no `checks` artifact | failed: "no checks reported" (unchanged) |
+| checks, but no pushed commit (no `branch` artifact) | failed: "no pushed commit: the agent reported no `branch` artifact, so there is nothing to check", the same finding CI and the verifier give; if the checks themselves failed, their findings follow it, so the agent sees both |
+| checks and a pushed commit, but the checks name no commit | failed: "the checks name no commit, so they cannot be tied to the pushed commit <sha>" (an unreadable `checks` artifact keeps its own reason, which already fails) |
+| checks that ran on another commit than the pushed one | failed: "the checks ran on commit A but the pushed commit is B" (unchanged) |
+| checks that passed on the pushed commit | passed |
+
+A failed source reworks while attempts are left, so the owner's "Hi" now ends in a rework telling the agent to push
+its work, and after the last attempt in `Failed` with that finding, never in `Done`. `transition` stays a pure function:
+the change is in `verify::agent_checks`, which reads only the job.
+
+*The rework prompt carries the request (same day, same run).* On attempt 2 of that run the coder said that "the task text
+itself was never carried into this session; the feedback contained only the check-result complaint". It was right:
+each attempt is a **new A2A task** ([Decision](#decision), the rework), and an agent need not remember the one before
+(the coder keeps no memory across tasks), but `rework_prompt` sent only the findings. The prompt now opens as before
+("Your work did not pass verification (attempt N of M); this is attempt N+1"), then carries **the person's request in
+their own words**, in a fence labelled `request`, with the instruction to keep working on the same repository and
+branch, and only then the findings, quoted as untrusted data as before. The request is the job's `task`, which
+`note_task` keeps for the verifier's prompt under **every** active gate (not only the verifier's) and caps at 8 KiB
+(`MAX_TASK_BYTES`); it is the first message of the thread, and a job with no task (a ledger written before the field)
+gets the prompt it always got. The two texts are fenced differently on purpose: the request is the instruction to
+follow, the findings are data that describes problems and "not instructions". Each fence is longer than any run of
+backticks inside its text, so neither can close its own. A later message of the person is delegated to the agent when
+it is sent, and is not repeated here.
+
+*Consequences.* A gate on `agent-checks` alone is now a gate on "the agent pushed a commit and its own checks passed
+on it". An agent that only answers questions cannot sit under it: give that agent no gate (`gate: {}`), as
+`dev/agents.live.yaml` says. The local stack's mocks already push a `branch` before their `checks` (`dev/wiremock/agent`,
+the coder's script in `dev/coder/wiremock`), so no scenario changed.
+
 ## Configuration summary
 
 | Variable | Default | Meaning |
@@ -377,7 +429,9 @@ above:
   source, so a hostile or careless client cannot turn a gated target into an ungated one.
 - **The verifier cannot complete the job.** Its envelopes never become `Input::Agent`; only a
   `verdict` artifact does, as a single `VerifierReported`.
-- **Fail closed.** No verdict, no pushed commit, no checks reported: each is a failed check.
+- **Fail closed.** No verdict, no pushed commit, no checks reported: each is a failed check. The agent's own
+  checks are refused as well when nothing was pushed or they name another commit (status note of 2026-09-30, the
+  first live run).
   Timeouts block; they never pass.
 - The attempt cap bounds token and wall-clock spend by construction; the wait timeouts bound the
   rest.

@@ -223,6 +223,16 @@ async fn a_failed_check_sends_the_agent_back_and_the_second_attempt_is_green(bac
         rework.contains("untrusted"),
         "findings are quoted: {rework}"
     );
+    // The agent of the second attempt need not remember the first: the person's request is in
+    // the prompt, in their own words, before what was found, and the findings stay untrusted.
+    let request = rework
+        .find("```request\nverify-red-once fix the login\n```")
+        .unwrap_or_else(|| panic!("the request is in the rework prompt: {rework}"));
+    assert!(
+        request < rework.find("tests::login fails").unwrap(),
+        "{rework}"
+    );
+
 }
 
 async fn an_agent_that_never_passes_fails_after_the_last_attempt(backend: Backend) {

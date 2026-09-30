@@ -680,6 +680,24 @@ message abandons a verification without using an attempt, so the next one has th
 and verdicts name the `verification` they belong to, which is how a leftover of the abandoned one is
 recognised as stale.
 
+**What each source needs** (`verify.rs`, pure functions of the job; [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)).
+Git is the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)), so every source judges the
+commit the agent pushed, and none passes without one:
+
+| Source | Passes when | Otherwise it is **failed** with |
+|---|---|---|
+| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit | "no checks reported" (no artifact); "no pushed commit" (no `branch` artifact; if the checks themselves failed, their findings follow it); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
+| `ci` | every named check reported `success`, `neutral` or `skipped` for the pushed commit | "no pushed commit"; a failing report's findings; pending while a named check has not reported |
+| `verifier` | a `verdict` with `passed: true` for the current attempt and verification | "no pushed commit"; the verdict's findings; pending until it answers |
+
+A failed source reworks while attempts are left: **the rework prompt** (`rework_prompt`, written by the core) opens with
+"Your work did not pass verification (attempt N of M); this is attempt N+1", then carries **the person's request in
+their own words** (the job's `task`, kept under every active gate and capped at 8 KiB like the verifier's copy, in a
+fence labelled `request`, with the instruction to keep working on the same repository and branch), then the findings
+of each failed source, quoted as untrusted data. Each attempt is a new A2A task, and an agent need not remember the
+one before, so the prompt has to carry the task itself. Both fences are longer than any run of backticks inside
+what they hold, so neither text can close its own.
+
 `completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
 anything. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
 diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
@@ -922,7 +940,8 @@ The gate policy is copied into `Job` at thread creation, so a configuration chan
 job. Pure functions of the core recognise the agent's `branch` artifact (sets `pushed`, emits
 `Watch { ci:<repo-key>@<sha> }`) and `checks` artifact (`recognise_artifact`), and normalise repository
 keys (`repo_key`). Findings are capped at 20 items and 16 KiB per source (`cap_findings`) and quoted as
-untrusted data in the rework prompt, which the core writes. `Job::default()` (the `{}` a row gets from the
+untrusted data in the rework prompt, which the core writes (after the person's request, see
+[Thread state and transitions](#thread-state-and-transitions)). `Job::default()` (the `{}` a row gets from the
 database) has no gate. There is still no wildcard arm anywhere. Where the code differs from the ADR's
 sketch: the `verification` counter, the `task` (the user's request) and the `summary` (what the agent said
 about its work), both kept for the verifier's prompt, are additions, so is `VerifierFailed` (slice 10), and a
