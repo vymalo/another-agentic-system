@@ -83,6 +83,11 @@ jobs:
       - run: cargo clippy -p orchestrator --no-default-features --bins --locked -- -D warnings
       - run: cargo test -p orchestrator --no-default-features --bins --locked
       - run: cargo test --workspace --locked
+      # In-process agents (ADR 0015) are a Cargo feature of the binary, off by default and so
+      # not covered by the workspace commands above: lint it, and run its own tests (the
+      # binary hosting an echo agent, and the roles splitting the work) against the database.
+      - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
+      - run: cargo test -p orchestrator --features agent-local --locked
 
   image:
     needs: check

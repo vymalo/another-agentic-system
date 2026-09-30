@@ -9,6 +9,10 @@
 # linked binary runs unchanged on the distroless `cc` image, which also carries the CA
 # certificates the A2A client needs for https agent cards. The Rust version is pinned by the
 # builder tag (`rust-toolchain.toml` is left out of the context, see `.dockerignore`).
+#
+# Cargo features of the binary are a build argument. The default is none of the optional ones,
+# so the image links no in-process agents (ADR 0015); `--build-arg ORCH_FEATURES=agent-local`
+# builds one that can host them. Its value is the same for the dependency layer and the build.
 
 FROM lukemathwalker/cargo-chef:0.1.77-rust-1.94.1-bookworm AS chef
 WORKDIR /src
@@ -18,10 +22,12 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS build
+ARG ORCH_FEATURES=""
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json --package orchestrator
+RUN cargo chef cook --release --locked --recipe-path recipe.json --package orchestrator \
+    --features "$ORCH_FEATURES"
 COPY . .
-RUN cargo build --release --locked --package orchestrator
+RUN cargo build --release --locked --package orchestrator --features "$ORCH_FEATURES"
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 LABEL org.opencontainers.image.source="https://github.com/vymalo/another-agentic-system" \

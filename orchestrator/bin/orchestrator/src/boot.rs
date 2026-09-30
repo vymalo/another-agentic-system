@@ -38,6 +38,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ConfigError, Surface};
+use crate::local::{self, Agents, Local};
 
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
 /// retrying in the background, and consumers poll in the meantime.
@@ -82,13 +83,15 @@ fn surface_routes<P: orch_ports::Ports>(
     }
 }
 
-type Stack = PortSet<PgStore, PgWakeup, A2aAgentClient, SystemClock, UuidV7Ids>;
+type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids>;
 
 /// What every role needs, built once by [`setup`].
 struct Shared {
     /// Kept to close the pool at the very end.
     store: PgStore,
     app: Arc<App<Stack>>,
+    /// The local agents (`transport: local`), when `AGENTS_FILE` lists any.
+    local: Option<Local>,
 }
 
 /// Connects, migrates and builds the [`App`] every role runs on.
@@ -109,8 +112,11 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         tracing::warn!("the wakeup listener is not attached yet; falling back to polling");
     }
 
-    let agents =
-        A2aAgentClient::new(A2aConfig::default()).context("cannot build the A2A client")?;
+    let a2a = A2aAgentClient::new(A2aConfig::default()).context("cannot build the A2A client")?;
+    // After the orchestrator's own migrations, before the app: every role creates the local
+    // agents' journal too (idempotent, and serialised by its own advisory lock).
+    let local = Local::start(cfg).await?;
+    let agents = local::compose(a2a, local.as_ref());
     for agent in &cfg.agents {
         let e = &agent.endpoint;
         match &e.transport {
@@ -144,7 +150,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         AgentDirectory::new(cfg.agents.clone()),
         AppConfig::default(),
     ));
-    Ok(Shared { store, app })
+    Ok(Shared { store, app, local })
 }
 
 /// Binds the listen address. Every role needs it: a control plane serves its API there, a worker
@@ -253,13 +259,16 @@ impl Drop for MarkStopping {
 ///
 /// | role | components |
 /// |---|---|
-/// | `all` | the HTTP server (control plane), the dispatcher (worker) |
-/// | `control-plane` | the HTTP server; no dispatcher |
-/// | `worker` | the dispatcher, and the health-only router on `LISTEN_ADDR` |
+/// | `all` | the HTTP server (control plane), the dispatcher and the local agents' worker (worker) |
+/// | `control-plane` | the HTTP server; no dispatcher, no local agents' worker |
+/// | `worker` | the dispatcher, the local agents' worker, and the health-only router on `LISTEN_ADDR` |
+///
+/// The local agents' worker exists only in a build with the feature `agent-local`, and only
+/// when `AGENTS_FILE` lists a `transport: local` agent (see [`crate::local`]).
 pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     install_crypto_provider();
 
-    let Shared { store, app } = setup(&cfg).await?;
+    let Shared { store, app, local } = setup(&cfg).await?;
 
     // Bind and build everything that can fail before any component starts.
     let listener = listen(&cfg).await?;
@@ -312,6 +321,12 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
         Ok(())
     });
 
+    // The local agents' worker (roles that run workers) steps runs beside the dispatcher.
+    let host = match &local {
+        Some(local) => local.register(host),
+        None => host,
+    };
+
     let stopping = Arc::clone(&app);
     let outcome = host
         .run(async move {
@@ -320,6 +335,9 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
             mark_stopping(&stopping);
         })
         .await;
+    if let Some(local) = local {
+        local.close().await;
+    }
     store.pool().close().await;
     tracing::info!("stopped");
     outcome.map_err(Into::into)

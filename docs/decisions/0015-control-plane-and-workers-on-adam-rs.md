@@ -415,3 +415,72 @@ Step 12 is split. These two come first, because they need no adam-rs dependency 
   reads `cardUrl`); `GET /api/agents` validates against the contract with an agent that has no card URL
   (`surface-chat-api`'s conformance test lists one from the scripted stack; since 2026-09-30 that test is `orch-api`'s `tests/contract.rs`).
 - *Unverified:* a real deployment reading an agents file with a `local` entry; none can run until the next change.
+
+### Status note, 2026-09-30: migration step 12 built
+
+The third change of step 12: `orch-agent-adam`, the local agents behind the Cargo feature `agent-local`, with the
+`Echo` kind only. The coder kind (an agent with tools and a workspace) is the next change.
+
+- **The owner decided the journal's home on 2026-09-30.** A local agent keeps its journal in the *orchestrator's*
+  Postgres, in tables prefixed `orch_agent_`. This settles the line in decision 6 that said the owner had not
+  confirmed it, and closes "revisit it before the first local agent ships". A second database stays possible later
+  (the store takes a pool), but it is a data migration ("Hard to reverse").
+- **What was built.**
+  - `orch-agent-adam` (`LocalAgents`, `LocalAgentClient`, the closed `LocalKind`) drives one `adam-runtime` `Runtime`
+    per process through the `adam-a2a` `TaskBackend` seam (`adam-a2a-runtime`), and maps the results with
+    `orch-a2a-mapping`, so its idempotency keys are the HTTP client's.
+  - `orch-ports` gains `ByTransport<A, L>`, which routes each endpoint to its client by transport and holds no adam
+    type.
+  - The binary has the feature `agent-local`, **off by default**: `LocalAgentKind::compiled_in` is
+    `cfg!(feature = "agent-local")` and the refusal of `transport: local` names the feature. It reads
+    `AGENT_LOCAL_CONCURRENCY` (default 4) under the feature.
+  - The Dockerfile takes the build argument `ORCH_FEATURES` (empty by default).
+- **The pin moved** from `0e08fe07…` to `882e23901ea9964e4a6ed96ee1aed2f4dcea98eb` (adam-rs `main`). The seven adam
+  crates the orchestrator uses share it (`adam-host`, `adam-core`, `adam-runtime`, `adam-a2a`, `adam-a2a-runtime`,
+  `adam-store-postgres`, `adam-notify-postgres`). The bump is additive for `adam-host` (it gained `Placement`).
+- **The TLS backend is kept single.** `adam-store-postgres` and `adam-notify-postgres` default to their feature
+  `tls-rustls`, which selects sqlx's `tls-rustls-ring`; the orchestrator uses `tls-rustls-aws-lc-rs`. The workspace
+  depends on both with `default-features = false`. *Verified 2026-09-30:* `cargo tree -p orchestrator -i ring` finds
+  nothing with the feature on or off.
+- **Where the journal lives at boot.** Every role that has a local agent configured builds a pool of its own from
+  `DATABASE_URL`, sized `AGENT_LOCAL_CONCURRENCY + 4`, and migrates the journal after the orchestrator's own
+  migrations (both are idempotent under their own advisory locks). The `worker` and `all` roles run the agents'
+  worker and its notifier beside the dispatcher; the `control-plane` role runs neither and registers the agents'
+  starters only. Each replica therefore holds `AGENT_LOCAL_CONCURRENCY + 4` more database connections, on top of
+  `DATABASE_MAX_CONNECTIONS`.
+- *Verified 2026-09-30* (adam-rs at `882e239`, read in `/home/user/another-adam-rs`):
+  - `PgStore::with_table_prefix` accepts `[a-z0-9_]`, at most 40 characters, not starting with a digit
+    (`crates/adam-store-postgres/src/lib.rs:84`); every table, index and constraint name derives from the prefix, and
+    `Store::migrate` is `CREATE … IF NOT EXISTS` in one transaction under
+    `pg_advisory_xact_lock(hashtext('adam-rs:migrate:<prefix>'))` (`lib.rs:421-422`); `SCHEMA_VERSION` is 2 (`lib.rs:50`).
+    The tables are `orch_agent_runs`, `orch_agent_journal` and `orch_agent_meta`.
+  - `PgNotify::with_channel_prefix` gives the channels `{prefix}events` and `{prefix}signals`
+    (`crates/adam-notify-postgres/src/lib.rs:156`), here `orch_agent_events` and `orch_agent_signals`; the
+    orchestrator's are `orch_thread`, `orch_outbox` and `orch_resync`, and its tables `threads`, `events`,
+    `a2a_bindings` and `outbox`, so nothing collides.
+  - **The `NOTIFY` payload limit is now verified:** nothing over `MAX_PAYLOAD_BYTES = 7_999` is sent
+    (`crates/adam-notify-postgres/src/wire.rs:15`); an oversize status is cut on a character boundary and any other
+    oversize event is dropped (its artifact is still in the durable run). This replaces the *unverified* item on the
+    8000 bytes above.
+  - `RuntimeTaskBackend` implements `TaskBackend` (`submit`, `get`, `cancel`, `subscribe`) with these properties:
+    a task id that is not a UUID gives `Ok(None)` (`crates/adam-a2a-runtime/src/backend.rs:161`); one backend serves
+    one agent name; a new task's id is `task_id_for(agent, subject, context, message_id)`
+    (`crates/adam-a2a-runtime/src/ids.rs:50`), so resubmitting a message is idempotent; a cancel is committed as
+    `Failed "cancelled: …"` and read back as `canceled` (`crates/adam-a2a-runtime/src/convert.rs:14`).
+    `TaskEvent::ends_stream` and the loop that cuts a stream (`crates/adam-a2a/src/backend.rs:72`,
+    `crates/adam-a2a/src/handler.rs:72`) are copied, since the loop is private there.
+- *Verified 2026-09-30* (this repository, against Postgres 16): the `AgentClient` conformance suite passes on the
+  local client over the in-memory journal and over Postgres; a task survives its worker dying mid-step (two
+  processes on one schema, a 1 s lease: the second steps it to its end and a resubscribe shows the original keys);
+  the tables and channels carry the prefix and no `adam_` table exists; the orchestrator's tables, adam's default
+  prefix and ours coexist in one schema; the migration is idempotent under six concurrent replicas; through the
+  dispatcher, an echo thread completes, a restart mid-task finishes with no gap and no duplicate, and a cancel
+  reaches the local task; the binary answers a run through a local `echo` agent, and a control plane starts the run
+  without stepping it until a worker starts. `cargo tree -p orchestrator -i adam-runtime` fails with the feature off,
+  so the default binary links no adam runtime.
+- *Unverified:* the Docker build with `--build-arg ORCH_FEATURES=agent-local` (`cargo chef cook` with `--features`;
+  there is no Docker daemon here, and CI builds the default image only). *Unverified:* the SIGKILL process test of a
+  local agent's worker: the durability test aborts the worker's future in-process, which drops its steps and stops its
+  lease renewals without a process boundary. It comes with the coder kind, whose steps hold a workspace.
+  *Unverified:* retention of the `orch_agent_*` tables: `Store::purge_finished` exists in adam-rs but nothing calls it
+  yet (open question 28).

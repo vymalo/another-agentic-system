@@ -17,11 +17,13 @@ orch-app.workspace = true
 orch-api.workspace = true
 orch-agui-proto = { workspace = true, features = ["testkit"] }
 orch-agent-a2a.workspace = true
+orch-agent-adam = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 orch-store-postgres.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 serde_json.workspace = true
 futures.workspace = true
 reqwest.workspace = true

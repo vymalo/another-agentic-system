@@ -28,6 +28,8 @@ const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_DISPATCHER_CONCURRENCY: usize = 32;
 const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
+#[cfg(feature = "agent-local")]
+const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
 const MAX_AGENT_ID_LEN: usize = 63;
 
@@ -85,9 +87,8 @@ pub enum ConfigError {
     /// agents. Fail closed, like a surface that is not compiled in: the entry is never quietly
     /// dropped or served by the A2A client.
     #[error(
-        "agent {agent:?}: transport \"local\" is not in this build (it needs the Cargo feature \
-         {feature:?}, which is not available yet: in-process agents arrive with orch-agent-adam, \
-         ADR 0015 step 12)"
+        "agent {agent:?}: transport \"local\" is not in this build; it needs the Cargo feature \
+         {feature:?}: build the orchestrator with `--features {feature}` (ADR 0015)"
     )]
     LocalAgentsNotCompiled {
         /// The agent entry's id.
@@ -202,11 +203,22 @@ impl LocalAgentKind {
         }
     }
 
-    /// Whether this build contains the kind. Always `false` for now: the feature and the crate
-    /// that implements local agents (`orch-agent-adam`) do not exist yet, and a feature that
-    /// enabled nothing would only move the failure from startup to the first message. The PR
-    /// that adds them turns this into `cfg!(feature = "agent-local")`.
+    /// Whether this build contains the kind: the Cargo feature `agent-local` compiles in
+    /// `orch-agent-adam`, which hosts every kind listed here.
     pub const fn compiled_in(self) -> bool {
+        match self {
+            LocalAgentKind::Echo => cfg!(feature = "agent-local"),
+        }
+    }
+
+    /// Whether the kind calls a language model, and so needs the model endpoint configured
+    /// (ADR 0005). Echo needs none; a kind that does adds a check at startup, not at the first
+    /// message.
+    #[cfg_attr(
+        not(feature = "agent-local"),
+        allow(dead_code, reason = "only the composition of local agents asks")
+    )]
+    pub const fn needs_model(self) -> bool {
         match self {
             LocalAgentKind::Echo => false,
         }
@@ -227,7 +239,7 @@ impl LocalAgentKind {
             .join(", ")
     }
 
-    fn parse(name: &str) -> Option<Self> {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|k| k.name() == name)
     }
 }
@@ -455,7 +467,15 @@ pub struct Args {
     #[arg(long, env = "DISPATCHER_CONCURRENCY", value_name = "N")]
     pub dispatcher_concurrency: Option<String>,
 
-    /// Seconds a crashed replica's claim blocks others, at least 3 (default 30).
+    /// Runs of local agents (`transport: local`) stepped at once, at least 1 (default 4). The
+    /// pool of the local agents is this plus 4 connections. Builds with the Cargo feature
+    /// `agent-local` only.
+    #[cfg(feature = "agent-local")]
+    #[arg(long, env = "AGENT_LOCAL_CONCURRENCY", value_name = "N")]
+    pub agent_local_concurrency: Option<String>,
+
+    /// Seconds a crashed replica's claim blocks others, at least 3 (default 30). Also how long
+    /// a crashed replica's local agent runs stay leased.
     #[arg(long, env = "OUTBOX_LEASE_SECS", value_name = "SECS")]
     pub outbox_lease_secs: Option<String>,
 
@@ -495,6 +515,9 @@ pub struct Config {
     pub database_max_connections: u32,
     /// `DISPATCHER_CONCURRENCY`: outbox rows processed at once.
     pub dispatcher_concurrency: usize,
+    /// `AGENT_LOCAL_CONCURRENCY`: runs of local agents stepped at once.
+    #[cfg(feature = "agent-local")]
+    pub agent_local_concurrency: usize,
     /// `OUTBOX_LEASE_SECS`: how long a crashed replica's claim blocks others.
     pub outbox_lease: Duration,
     /// `ORCH_INSTANCE_ID`: names this replica in outbox leases.
@@ -505,7 +528,8 @@ pub struct Config {
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Config")
+        let mut debug = f.debug_struct("Config");
+        debug
             .field("database_url", &"<redacted>")
             .field("listen_addr", &self.listen_addr)
             .field("agents", &self.agents)
@@ -516,8 +540,10 @@ impl fmt::Debug for Config {
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
             .field("outbox_lease", &self.outbox_lease)
             .field("instance_id", &self.instance_id)
-            .field("shutdown_grace", &self.shutdown_grace)
-            .finish()
+            .field("shutdown_grace", &self.shutdown_grace);
+        #[cfg(feature = "agent-local")]
+        debug.field("agent_local_concurrency", &self.agent_local_concurrency);
+        debug.finish()
     }
 }
 
@@ -597,6 +623,13 @@ impl Config {
             DEFAULT_DISPATCHER_CONCURRENCY,
             1,
         )?;
+        #[cfg(feature = "agent-local")]
+        let agent_local_concurrency = number(
+            clean(args.agent_local_concurrency),
+            "AGENT_LOCAL_CONCURRENCY",
+            DEFAULT_AGENT_LOCAL_CONCURRENCY,
+            1,
+        )?;
         let outbox_lease_secs = number(
             clean(args.outbox_lease_secs),
             "OUTBOX_LEASE_SECS",
@@ -626,10 +659,30 @@ impl Config {
             auth_dev_user,
             database_max_connections,
             dispatcher_concurrency,
+            #[cfg(feature = "agent-local")]
+            agent_local_concurrency,
             outbox_lease: Duration::from_secs(outbox_lease_secs),
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
         })
+    }
+}
+
+impl Config {
+    /// The distinct kinds of local agent `AGENTS_FILE` lists, in file order. Empty when no entry
+    /// has `transport: local`, and then no local runtime is built.
+    #[cfg(feature = "agent-local")]
+    pub fn local_kinds(&self) -> Vec<LocalAgentKind> {
+        let mut kinds: Vec<LocalAgentKind> = Vec::new();
+        for entry in &self.agents {
+            if let orch_ports::AgentTransport::Local { name } = &entry.endpoint.transport
+                && let Some(kind) = LocalAgentKind::parse(name)
+                && !kinds.contains(&kind)
+            {
+                kinds.push(kind);
+            }
+        }
+        kinds
     }
 }
 
@@ -859,6 +912,8 @@ mod tests {
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
                 "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
+                #[cfg(feature = "agent-local")]
+                "AGENT_LOCAL_CONCURRENCY" => &mut args.agent_local_concurrency,
                 "OUTBOX_LEASE_SECS" => &mut args.outbox_lease_secs,
                 "SHUTDOWN_GRACE_SECS" => &mut args.shutdown_grace_secs,
                 "ORCH_INSTANCE_ID" => &mut args.instance_id,
@@ -1063,8 +1118,11 @@ mod tests {
 
     const LOCAL: &str = "- id: helper\n  name: Helper\n  transport: local\n  agent: echo\n";
 
+    /// Without the feature there is no local runtime to serve the entry, so it is refused at
+    /// startup, naming the feature and the agent (never dropped, never sent to the A2A client).
+    #[cfg(not(feature = "agent-local"))]
     #[test]
-    fn a_local_agent_is_refused_naming_the_feature_while_no_build_has_it() {
+    fn a_local_agent_is_refused_naming_the_feature_in_a_build_without_it() {
         let err = agents_err(LOCAL, &[]);
         assert!(
             matches!(
@@ -1076,14 +1134,61 @@ mod tests {
         );
         let text = err.to_string();
         assert!(
-            text.contains("agent-local") && text.contains("helper"),
+            text.contains("\"agent-local\"")
+                && text.contains("--features agent-local")
+                && text.contains("helper"),
             "{text}"
         );
-        // The day the feature exists, this test is replaced by one per build flavour.
-        assert!(
-            LocalAgentKind::ALL.iter().all(|k| !k.compiled_in()),
-            "flip this test with the feature"
+        assert!(LocalAgentKind::ALL.iter().all(|k| !k.compiled_in()));
+    }
+
+    /// With the feature the same entry is accepted, as a local endpoint of its kind.
+    #[cfg(feature = "agent-local")]
+    #[test]
+    fn a_local_agent_is_accepted_in_a_build_with_the_feature() {
+        let entries = parse_agents(LOCAL, Path::new("agents.yaml"), env_of(&[])).unwrap();
+        assert_eq!(
+            entries[0].endpoint,
+            AgentEndpoint::local(AgentId::new("helper"), "echo")
         );
+        assert!(LocalAgentKind::ALL.iter().all(|k| k.compiled_in()));
+    }
+
+    #[test]
+    fn no_local_kind_needs_a_model_yet() {
+        assert!(LocalAgentKind::ALL.iter().all(|k| !k.needs_model()));
+    }
+
+    #[cfg(feature = "agent-local")]
+    #[test]
+    fn the_local_concurrency_defaults_to_four_and_must_be_positive() {
+        assert_eq!(load(&base(), AGENTS).unwrap().agent_local_concurrency, 4);
+        let mut env = base();
+        env.push(("AGENT_LOCAL_CONCURRENCY", "9"));
+        assert_eq!(load(&env, AGENTS).unwrap().agent_local_concurrency, 9);
+        for bad in ["0", "many"] {
+            let mut env = base();
+            env.push(("AGENT_LOCAL_CONCURRENCY", bad));
+            assert!(
+                matches!(
+                    load(&env, AGENTS).unwrap_err(),
+                    ConfigError::Invalid {
+                        var: "AGENT_LOCAL_CONCURRENCY",
+                        ..
+                    }
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[cfg(feature = "agent-local")]
+    #[test]
+    fn the_kinds_in_use_are_listed_once_in_file_order() {
+        let both = format!("{AGENTS}{LOCAL}{}", LOCAL.replace("helper", "second"));
+        let cfg = load(&base(), &both).unwrap();
+        assert_eq!(cfg.local_kinds(), [LocalAgentKind::Echo]);
+        assert!(load(&base(), AGENTS).unwrap().local_kinds().is_empty());
     }
 
     #[test]
