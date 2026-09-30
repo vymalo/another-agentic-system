@@ -134,10 +134,12 @@ async fn start_job_refuses_bad_arguments_before_writing_anything() {
     assert!(out.is_error);
     assert!(out.text.contains("at most 256"), "{}", out.text);
 
-    // A protocol error for arguments that are not the tool's: unknown members, wrong types,
-    // and above all `gate`, which is not offered yet and must not be silently dropped.
+    // A protocol error for arguments that are not the tool's: unknown members and wrong types,
+    // a gate that is not `{require?, maxAttempts?}` included, none silently dropped.
     for args in [
-        json!({"text": "hi", "gate": {"require": ["ci"]}}),
+        json!({"text": "hi", "gate": {"retries": 3}}),
+        json!({"text": "hi", "gate": {"require": "agent-checks"}}),
+        json!({"text": "hi", "surprise": true}),
         json!({"text": 7}),
         json!({}),
     ] {
@@ -183,14 +185,18 @@ async fn a_retried_start_job_is_the_same_job() {
     wait_state(&client, job, "working").await;
     assert_eq!(h.agent.sends().len(), 1);
 
-    // The retry may carry a different text: the job that is there is what it returns.
+    // A retry may leave out what it does not want to change, but not say something else.
     let third = call(
         &client,
         "start_job",
         json!({"text": "something else", "client_request_id": "req-1"}),
     )
     .await;
-    assert_eq!(third.value["job_id"], first.value["job_id"]);
+    assert!(third.is_error, "{third:?}");
+    assert!(third.text.contains("the text"), "{}", third.text);
+    assert!(third.text.contains("client_request_id"), "{}", third.text);
+    assert_eq!(h.threads_of(ALICE).await.len(), 1);
+    assert_eq!(h.agent.sends().len(), 1, "no second delivery");
 
     // Another id is another job; no id is never a retry; another user's same id is theirs.
     let other = call(
@@ -306,6 +312,7 @@ async fn a_job_of_someone_else_is_not_found_never_forbidden() {
     let unknown = "00000000-0000-7000-8000-00000000ffff";
     for (tool, extra) in [
         ("get_job", json!({})),
+        ("wait_for_job", json!({"timeout_secs": 1, "after_seq": 0})),
         ("answer", json!({"text": "hello"})),
         ("cancel_job", json!({})),
     ] {
@@ -421,4 +428,208 @@ async fn a_client_that_negotiates_the_stateless_lifecycle_works_too() {
     let job = out.value["job_id"].as_str().unwrap();
     wait_state(&client, job, "done").await;
     let _: Value = out.value;
+}
+
+#[tokio::test]
+async fn a_retry_that_says_something_else_is_refused_not_answered_with_the_first_job() {
+    let h = Harness::start().await;
+    let client = h.client(ALICE_TOKEN).await;
+    let first = call(
+        &client,
+        "start_job",
+        json!({"text": "echo one", "client_request_id": "same", "title": "One", "agent": "plain"}),
+    )
+    .await;
+    assert!(!first.is_error, "{first:?}");
+    let job = first.value["job_id"].as_str().unwrap().to_owned();
+    let before = events(&h, &job).await.len();
+
+    for (what, args) in [
+        (
+            "the text",
+            json!({"text": "echo two", "client_request_id": "same"}),
+        ),
+        (
+            "the agent",
+            json!({"text": "echo one", "client_request_id": "same", "agent": "coder"}),
+        ),
+        (
+            "the title",
+            json!({"text": "echo one", "client_request_id": "same", "title": "Two"}),
+        ),
+    ] {
+        let out = call(&client, "start_job", args).await;
+        assert!(out.is_error, "{what}: {out:?}");
+        assert!(out.text.contains(what), "{what}: {}", out.text);
+        assert!(out.text.contains("new client_request_id"), "{}", out.text);
+    }
+    // The same request, and a retry that leaves out the optional parts, are the job.
+    for args in [
+        json!({"text": "echo one", "client_request_id": "same", "title": "One", "agent": "plain"}),
+        json!({"text": "echo one", "client_request_id": "same"}),
+    ] {
+        let out = call(&client, "start_job", args).await;
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(out.value["job_id"], first.value["job_id"]);
+        assert_eq!(out.value["created"], false);
+    }
+    assert_eq!(h.threads_of(ALICE).await.len(), 1);
+    assert_eq!(events(&h, &job).await.len(), before, "nothing was added");
+}
+
+#[tokio::test]
+async fn start_job_takes_a_gate_and_refuses_one_it_cannot_honour() {
+    let h = Harness::start().await;
+    let client = h.client(ALICE_TOKEN).await;
+    let out = call(
+        &client,
+        "start_job",
+        json!({"text": "echo gated", "gate": {"require": ["agent-checks"], "maxAttempts": 2}}),
+    )
+    .await;
+    assert!(!out.is_error, "{out:?}");
+    let threads = h.threads_of(ALICE).await;
+    assert_eq!(threads.len(), 1);
+    let gate = &threads[0].job.gate;
+    assert!(
+        gate.require.contains(&orch_core::CheckSource::AgentChecks),
+        "{gate:?}"
+    );
+    assert_eq!(gate.max_attempts, 2);
+
+    // Without a gate the deployment's applies.
+    let plain = call(&client, "start_job", json!({"text": "echo plain"})).await;
+    assert!(!plain.is_error, "{plain:?}");
+    let threads = h.threads_of(ALICE).await;
+    assert!(
+        threads
+            .iter()
+            .find(|t| t.id.to_string() == plain.value["job_id"].as_str().unwrap())
+            .unwrap()
+            .job
+            .gate
+            .require
+            .is_empty()
+    );
+
+    // A gate that cannot be honoured is a tool error naming why, and nothing is written.
+    let written = h.threads_of(ALICE).await.len();
+    for (gate, reason) in [
+        (json!({"require": ["ci"]}), "ci"),
+        (json!({"require": ["verifier"]}), "verifier"),
+        (json!({"require": ["magic"]}), "magic"),
+        (json!({"maxAttempts": 0}), "attempts"),
+        (json!({"maxAttempts": 100_000}), "attempts"),
+    ] {
+        let out = try_call(
+            &client,
+            "start_job",
+            json!({"text": "echo no", "gate": gate}),
+        )
+        .await;
+        let out = out.unwrap_or_else(|e| panic!("{gate}: {e}"));
+        assert!(out.is_error, "{gate}: {out:?}");
+        assert!(out.text.contains("gate"), "{gate}: {}", out.text);
+        assert!(
+            out.text.to_lowercase().contains(reason),
+            "{gate}: {}",
+            out.text
+        );
+    }
+    assert_eq!(h.threads_of(ALICE).await.len(), written);
+}
+
+#[tokio::test]
+async fn a_retry_with_another_gate_is_refused_and_one_with_the_same_gate_is_the_job() {
+    let h = Harness::start().await;
+    let client = h.client(ALICE_TOKEN).await;
+    let args = |gate: Value| json!({"text": "echo g", "client_request_id": "gated", "gate": gate});
+    let first = call(
+        &client,
+        "start_job",
+        args(json!({"require": ["agent-checks"], "maxAttempts": 2})),
+    )
+    .await;
+    assert!(!first.is_error, "{first:?}");
+
+    // The same gate, or no gate at all, is a retry.
+    let same = call(
+        &client,
+        "start_job",
+        args(json!({"require": ["agent-checks"], "maxAttempts": 2})),
+    )
+    .await;
+    assert_eq!(same.value["job_id"], first.value["job_id"], "{same:?}");
+    let none = call(
+        &client,
+        "start_job",
+        json!({"text": "echo g", "client_request_id": "gated"}),
+    )
+    .await;
+    assert_eq!(none.value["job_id"], first.value["job_id"], "{none:?}");
+
+    // A different gate would be a different job: refused, and the gate stays what it was.
+    let other = call(&client, "start_job", args(json!({"maxAttempts": 3}))).await;
+    assert!(other.is_error, "{other:?}");
+    assert!(other.text.contains("the gate"), "{}", other.text);
+    let threads = h.threads_of(ALICE).await;
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].job.gate.max_attempts, 2);
+}
+
+#[tokio::test]
+async fn a_job_id_that_another_users_thread_has_is_a_clear_error_and_leaks_nothing() {
+    use orch_app::{Inbound, NewThread};
+    use orch_core::{AgentTarget, UserId};
+
+    let h = Harness::start().await;
+    // Bob's own thread sits on the id Alice's request would derive (only a thread made before
+    // the ids were reserved, or a hash collision, can).
+    let id = orch_surface_mcp::job_id_for(&UserId::new(ALICE), "taken");
+    h.app
+        .create_thread_as(
+            &UserId::new(BOB),
+            id,
+            NewThread {
+                title: Some("bob's secret".to_owned()),
+                target: AgentTarget {
+                    agent_id: AgentId::new("plain"),
+                    release: None,
+                },
+                text: "gate bob".to_owned(),
+            },
+            Inbound::default(),
+        )
+        .await
+        .unwrap();
+
+    let client = h.client(ALICE_TOKEN).await;
+    let out = tokio::time::timeout(
+        T,
+        call(
+            &client,
+            "start_job",
+            json!({"text": "echo mine", "client_request_id": "taken"}),
+        ),
+    )
+    .await
+    .expect("no hang");
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("client_request_id"), "{}", out.text);
+    assert!(
+        !out.text.contains("secret") && !out.text.contains("bob"),
+        "{}",
+        out.text
+    );
+    assert!(out.value.is_null());
+    assert!(h.threads_of(ALICE).await.is_empty());
+    // Bob's thread is untouched: still the one message.
+    let bobs = h.store.list_events(id, 0, 100).await.unwrap();
+    assert_eq!(
+        bobs.iter()
+            .filter(|e| e.kind() == EventKind::UserMessage)
+            .count(),
+        1
+    );
+    h.agent.release_gate();
 }

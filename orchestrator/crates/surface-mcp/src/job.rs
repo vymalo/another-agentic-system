@@ -2,15 +2,21 @@
 //! Everything here is a function of the thread record and its event log.
 
 use orch_app::{App, AppError};
-use orch_core::{CheckSource, CheckStatus, EventBody, ThreadId, ThreadRecord, UserId};
+use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadId, ThreadRecord, UserId};
 use orch_ports::Ports;
 use serde::Serialize;
 
-/// Events read per page when looking for the pull request.
-const PAGE: u32 = 500;
-/// Pages read at most: a job with a log longer than this shows no pull request, rather than
-/// making one `get_job` read an unbounded log.
-const MAX_PAGES: u32 = 20;
+/// How many of the newest artifacts are looked at for the pull request: one bounded read of the
+/// store, whatever the length of the log. A job that produced more artifacts than this after
+/// its pull request shows none.
+const ARTIFACTS_LOOKED_AT: u32 = 32;
+/// The longest pull request URL that is passed on.
+const MAX_URL_BYTES: usize = 2048;
+/// Longest texts of the summary that come from outside (a CI provider, an agent, a verifier).
+/// They are untrusted, and one tool result must stay small.
+const MAX_NAME_CHARS: usize = 256;
+const MAX_SUMMARY_CHARS: usize = 1024;
+const MAX_FINDING_CHARS: usize = 1024;
 
 /// The branch the agent pushed.
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -105,8 +111,20 @@ fn status(status: CheckStatus) -> &'static str {
     }
 }
 
+/// `text` cut to at most `max` characters, with an ellipsis where it was cut.
+fn cap(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
 /// The URL of a pull request artifact: the agents name it `pull_request` (a data part whose JSON
 /// has a `url`) or "Pull request" (a url part), and the URL is in `uri` or in the JSON text.
+/// Only an `https` URL of a reasonable length, without spaces or control characters, is passed
+/// on: the artifact is agent output, and a client may show it as a link.
 fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Option<String> {
     let name: String = name
         .chars()
@@ -127,32 +145,31 @@ fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Option
             .iter()
             .find_map(|key| value.get(key)?.as_str().map(str::to_owned))
     };
-    uri.map(str::to_owned).or_else(from_json)
+    let url = uri.map(str::to_owned).or_else(from_json)?;
+    let plausible = url.len() <= MAX_URL_BYTES
+        && url
+            .strip_prefix("https://")
+            .is_some_and(|rest| !rest.is_empty())
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace());
+    plausible.then_some(url)
 }
 
-/// The last pull request the log mentions.
+/// The newest pull request the log mentions, from one bounded read of the newest artifacts.
 async fn find_pull_request<P: Ports>(
     app: &App<P>,
     user: &UserId,
     id: ThreadId,
 ) -> Result<Option<PullRequest>, AppError> {
-    let mut found = None;
-    let mut after = 0;
-    for _ in 0..MAX_PAGES {
-        let page = app.list_events(user, id, after, PAGE).await?;
-        for event in &page {
-            if let EventBody::Artifact(a) = &event.body
-                && let Some(url) = pull_request_url(&a.name, a.uri.as_deref(), a.text.as_deref())
-            {
-                found = Some(PullRequest { url });
-            }
-        }
-        match page.last() {
-            Some(last) if page.len() == PAGE as usize => after = last.seq,
-            _ => break,
-        }
-    }
-    Ok(found)
+    let newest = app
+        .latest_events(user, id, EventKind::Artifact, ARTIFACTS_LOOKED_AT)
+        .await?;
+    Ok(newest.iter().find_map(|event| {
+        let EventBody::Artifact(a) = &event.body else {
+            return None;
+        };
+        pull_request_url(&a.name, a.uri.as_deref(), a.text.as_deref())
+            .map(|url| PullRequest { url })
+    }))
 }
 
 /// Summarises `thread`, which belongs to `user`.
@@ -175,17 +192,21 @@ pub fn summary_of(thread: &ThreadRecord, pull_request: Option<PullRequest>) -> J
         .rev()
         .find(|r| r.source == CheckSource::Ci)
         .map(|r| LastCheck {
-            name: r.name.clone(),
+            name: r.name.as_deref().map(|n| cap(n, MAX_NAME_CHARS)),
             status: status(r.status),
-            commit: r.commit.clone(),
-            summary: r.summary.clone(),
+            commit: r.commit.as_deref().map(|c| cap(c, MAX_NAME_CHARS)),
+            summary: r.summary.as_deref().map(|s| cap(s, MAX_SUMMARY_CHARS)),
         });
     let mut findings: Vec<Findings> = Vec::new();
     for result in &job.results {
         if result.status == CheckStatus::Failed && !result.findings.is_empty() {
             findings.push(Findings {
                 source: result.source.as_str(),
-                items: result.findings.clone(),
+                items: result
+                    .findings
+                    .iter()
+                    .map(|f| cap(f, MAX_FINDING_CHARS))
+                    .collect(),
             });
         }
     }
@@ -250,6 +271,31 @@ mod tests {
             stale: false,
             findings: findings.iter().map(|f| (*f).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn what_comes_from_outside_is_cut_to_size() {
+        assert_eq!(cap("short", 10), "short");
+        let cut = cap(&"é".repeat(50), 10);
+        assert_eq!(cut.chars().count(), 10);
+        assert!(cut.ends_with('…'));
+
+        let mut job = Job::with_gate(GatePolicy::requiring([CheckSource::Ci]));
+        let mut r = result(CheckSource::Ci, CheckStatus::Failed, &[]);
+        r.name = Some("n".repeat(5_000));
+        r.summary = Some("s".repeat(50_000));
+        r.findings = vec!["f".repeat(50_000); 3];
+        job.results = vec![r];
+        let s = summary_of(&record(ThreadState::Working, job), None);
+        let ci = s.ci.as_ref().unwrap();
+        assert!(ci.name.as_ref().unwrap().chars().count() <= MAX_NAME_CHARS);
+        assert!(ci.summary.as_ref().unwrap().chars().count() <= MAX_SUMMARY_CHARS);
+        assert!(
+            s.findings[0]
+                .items
+                .iter()
+                .all(|f| f.chars().count() <= MAX_FINDING_CHARS)
+        );
     }
 
     #[test]
@@ -328,6 +374,21 @@ mod tests {
             Some(url)
         );
         assert_eq!(pull_request_url("branch", Some(url), None), None);
+        // Only https, of a reasonable length, on one line.
+        for bad in [
+            "http://github.com/acme/demo/pull/1",
+            "javascript:alert(1)",
+            "https://",
+            "https://github.com/a b",
+            "https://github.com/a\nb",
+            &format!("https://github.com/{}", "a".repeat(3000)),
+        ] {
+            assert_eq!(
+                pull_request_url("Pull request", Some(bad), None),
+                None,
+                "{bad:?}"
+            );
+        }
         assert_eq!(
             pull_request_url("pull_request", None, Some("not json")),
             None

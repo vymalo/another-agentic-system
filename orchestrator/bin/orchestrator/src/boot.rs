@@ -121,6 +121,11 @@ fn mcp_routes<P: orch_ports::Ports>(
             .map_err(|e| invalid("MCP_ALLOWED_HOSTS")(&e))?
             .with_wait_max(settings.wait_max)
             .map_err(|e| invalid("MCP_WAIT_MAX_SECS")(&e))?;
+    config = config
+        .with_wait_limits(settings.wait_max_concurrent, settings.wait_max_per_user)
+        .map_err(|e| invalid("MCP_WAIT_MAX_CONCURRENT")(&e))?
+        .with_allowed_origins(settings.allowed_origins.iter().cloned())
+        .map_err(|e| invalid("MCP_ALLOWED_ORIGINS")(&e))?;
     if let Some(url) = &settings.public_url {
         config = config
             .with_public_url(url)
@@ -131,6 +136,9 @@ fn mcp_routes<P: orch_ports::Ports>(
         allowed_hosts = %settings.allowed_hosts.join(","),
         web_url = settings.public_url.is_some(),
         wait_max_secs = settings.wait_max.as_secs(),
+        wait_max_concurrent = settings.wait_max_concurrent,
+        wait_max_per_user = settings.wait_max_per_user,
+        allowed_origins = settings.allowed_origins.len(),
         "the MCP server is mounted at /mcp"
     );
     Ok(orch_surface_mcp::routes(Arc::clone(app), config))

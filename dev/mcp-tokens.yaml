@@ -1,6 +1,6 @@
 # MCP_TOKENS_FILE of the compose `orchestrator` service (ADR 0019): who each bearer token is.
 #
-# `tokenEnv` names the environment variable that holds the token (MCP_TOKEN_DEV=dev-mcp-token in
+# `tokenEnv` names the environment variable that holds the token (MCP_TOKEN_DEV=dev-mcp-token-0123456789abcdef0123456789 in
 # compose.yaml, a dummy); the token itself is never in this file. `user` is the e-mail that owns the
 # jobs the token starts. It is the same address the `edge` injects for the chat (dev@example.com), so a
 # job started from an MCP client is in the chat's thread list. A user may have more than one token

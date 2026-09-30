@@ -28,13 +28,13 @@ use crate::auth::McpUser;
 use crate::id::{MAX_CLIENT_REQUEST_ID_BYTES, job_id_for};
 use crate::job::{JobSummary, summarise};
 use crate::tools::{
-    AnswerArgs, CancelJobArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName, WaitForJobArgs,
+    AnswerArgs, CancelJobArgs, GateArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName, WaitForJobArgs,
 };
-use crate::wait::{ProgressSink, WaitRequest, wait_for_job};
+use crate::wait::{ProgressSink, WaitEnd, WaitRequest, effective_timeout, wait_for_job};
 
 /// What the server tells a client about itself, once, at `initialize`.
 const INSTRUCTIONS: &str = "Start a job with start_job and look at it with get_job, or follow it \
-    with wait_for_job (call it again with resume_after_seq to keep waiting). \
+    with wait_for_job (call it again with after_seq set to its resume_after_seq to keep waiting). \
     A job in state blocked waits for an answer: send it with answer. Jobs are the caller's own; \
     a job_id that is not yours is reported as unknown.";
 
@@ -80,8 +80,39 @@ impl ProgressSink for PeerSink {
 struct WaitResult {
     outcome: &'static str,
     resume_after_seq: i64,
+    /// For `interrupted`: the call was cut short by a restart, and this is a short delay after
+    /// which to call again (with `after_seq`), so that clients do not spin against a replica
+    /// that is going away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_secs: Option<u64>,
     #[serde(flatten)]
     job: JobSummary,
+}
+
+/// The delay an interrupted `wait_for_job` suggests before it is called again.
+const RETRY_AFTER_INTERRUPTED_SECS: u64 = 2;
+
+/// Runs a tool that must not stay open (everything but `wait_for_job`) for at most `timeout`:
+/// the machine route has no request timeout of its own.
+async fn within(
+    timeout: Duration,
+    tool: ToolName,
+    call: impl Future<Output = Result<CallToolResult, ErrorData>>,
+) -> Result<CallToolResult, ErrorData> {
+    if let Ok(result) = tokio::time::timeout(timeout, call).await {
+        result
+    } else {
+        tracing::warn!(
+            tool = tool.name(),
+            ?timeout,
+            "a tool call took too long and was cut off"
+        );
+        Ok(refused(format!(
+            "{} took longer than {} s and was stopped; try again",
+            tool.name(),
+            timeout.as_secs().max(1)
+        )))
+    }
 }
 
 /// The user the bearer check let in. A request that reaches a tool without one did not pass the
@@ -183,9 +214,20 @@ impl<P: Ports> McpServer<P> {
             }
             Some(id) => Some(id),
         };
-        let agent_id = match args.agent.as_deref().map(str::trim) {
-            Some(id) if !id.is_empty() => AgentId::new(id),
-            _ => match Self::default_agent(self.app.directory()) {
+        let gate = match args.gate.as_ref().map(GateArgs::to_layer) {
+            None => None,
+            Some(Ok(layer)) => Some(layer),
+            Some(Err(reason)) => return Ok(refused(format!("invalid gate: {reason}"))),
+        };
+        let named_agent = args
+            .agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(AgentId::new);
+        let agent_id = match &named_agent {
+            Some(id) => id.clone(),
+            None => match Self::default_agent(self.app.directory()) {
                 Some(id) => id,
                 None => return Ok(refused("no agent is configured")),
             },
@@ -196,25 +238,59 @@ impl<P: Ports> McpServer<P> {
             None => ThreadId(self.app.ports().ids().new_id()),
         };
         let new = NewThread {
-            title: args.title,
+            title: args.title.clone(),
             target: AgentTarget {
                 agent_id,
                 release: None,
             },
-            text: args.text,
+            text: args.text.clone(),
         };
         let inbound = Inbound {
             origin: Origin::Mcp,
+            gate: gate.clone(),
             ..Inbound::default()
         };
         let (thread, created) = match self.app.create_thread_as(user, id, new, inbound).await {
             Ok(Creation::Created { thread, .. }) => (thread, true),
             // The caller's own job with this id: a retry, or a request that lost a race with
-            // itself. Nothing was written; the answer is the job that is there.
-            Ok(Creation::Exists) => match self.app.get_thread(user, id).await {
-                Ok(thread) => (thread, false),
-                Err(e) => return failure(&e),
-            },
+            // itself. Nothing was written. It is the same request, or it is refused.
+            Ok(Creation::Exists) => {
+                let thread = match self.app.get_thread(user, id).await {
+                    Ok(thread) => thread,
+                    Err(e) => return failure(&e),
+                };
+                match self
+                    .difference_from_first_request(
+                        user,
+                        &thread,
+                        &args,
+                        named_agent.as_ref(),
+                        gate.as_ref(),
+                    )
+                    .await
+                {
+                    Ok(None) => (thread, false),
+                    Ok(Some(what)) => {
+                        return Ok(refused(format!(
+                            "client_request_id {:?} was already used for a different request ({what} \
+                             differs from the job it started, {}); use a new client_request_id for a \
+                             new job",
+                            client_request_id.unwrap_or_default(),
+                            thread.id
+                        )));
+                    }
+                    Err(e) => return failure(&e),
+                }
+            }
+            // Only a job id that another user's thread already has: the id is derived, so this is
+            // a collision or a thread made before the ids were reserved. Nothing of that thread
+            // is said.
+            Err(AppError::NotFound) if client_request_id.is_some() => {
+                tracing::warn!(%id, "start_job: the job id derived for a client_request_id is taken");
+                return Ok(refused(
+                    "this client_request_id cannot be used (its job id is taken); use another one",
+                ));
+            }
             Err(e) => return failure(&e),
         };
         let mut result = json!({
@@ -228,6 +304,39 @@ impl<P: Ports> McpServer<P> {
             object.insert("web_url".to_owned(), Value::String(url));
         }
         success(&result)
+    }
+
+    /// What of a repeated `start_job` differs from the request the job was started by: the text of
+    /// its first message, the agent and title when the repeat names them, and the gate when it
+    /// asks for one that would change the job's. `None` when it is the same request.
+    async fn difference_from_first_request(
+        &self,
+        user: &UserId,
+        thread: &orch_core::ThreadRecord,
+        args: &StartJobArgs,
+        named_agent: Option<&AgentId>,
+        gate: Option<&orch_app::GateLayer>,
+    ) -> Result<Option<&'static str>, AppError> {
+        let first = self.app.list_events(user, thread.id, 0, 1).await?;
+        let first_text = first.first().and_then(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => Some(m.text.as_str()),
+            _ => None,
+        });
+        if first_text != Some(args.text.as_str()) {
+            return Ok(Some("the text"));
+        }
+        if named_agent.is_some_and(|a| a != &thread.target.agent_id) {
+            return Ok(Some("the agent"));
+        }
+        if args.title.as_deref().is_some_and(|t| t != thread.title) {
+            return Ok(Some("the title"));
+        }
+        if let Some(layer) = gate
+            && self.app.gate_request_changes(&thread.job.gate, layer)?
+        {
+            return Ok(Some("the gate"));
+        }
+        Ok(None)
     }
 
     async fn get_job(&self, user: &UserId, args: GetJobArgs) -> Result<CallToolResult, ErrorData> {
@@ -256,14 +365,25 @@ impl<P: Ports> McpServer<P> {
         if args.after_seq.is_some_and(|after| after < 0) {
             return Ok(refused("after_seq must not be negative"));
         }
+        let token = context.meta.get_progress_token();
+        // A wait stays open; only so many are allowed at once, per process and per user.
+        let _slot = match self.settings.waits.acquire(user) {
+            Ok(slot) => slot,
+            Err(busy) => return Ok(refused(busy.message())),
+        };
         let request = WaitRequest {
             after_seq: args.after_seq,
-            timeout: Duration::from_secs(args.timeout_secs).min(self.settings.wait_max),
+            timeout: effective_timeout(
+                Duration::from_secs(args.timeout_secs),
+                self.settings.wait_max,
+                self.settings.heartbeat,
+                token.is_some(),
+            ),
             heartbeat: self.settings.heartbeat,
         };
         let sink = PeerSink {
             peer: context.peer.clone(),
-            token: context.meta.get_progress_token(),
+            token,
         };
         let waited = match wait_for_job(&self.app, user, id, &request, &sink, &context.ct).await {
             Ok(waited) => waited,
@@ -273,6 +393,8 @@ impl<P: Ports> McpServer<P> {
             Ok(job) => success(&WaitResult {
                 outcome: waited.end.as_str(),
                 resume_after_seq: waited.resume_after_seq,
+                retry_after_secs: (waited.end == WaitEnd::Interrupted)
+                    .then_some(RETRY_AFTER_INTERRUPTED_SECS),
                 job,
             }),
             Err(e) => failure(&e),
@@ -360,20 +482,60 @@ impl<P: Ports> ServerHandler for McpServer<P> {
                 None,
             ));
         };
+        let limit = self.settings.tool_timeout;
         let result = match tool {
             ToolName::ListAgents => {
                 parse_args::<NoArgs>(request.arguments)?;
-                self.list_agents().await
+                within(limit, tool, self.list_agents()).await
             }
-            ToolName::StartJob => self.start_job(&user, parse_args(request.arguments)?).await,
-            ToolName::GetJob => self.get_job(&user, parse_args(request.arguments)?).await,
+            ToolName::StartJob => {
+                let args = parse_args(request.arguments)?;
+                within(limit, tool, self.start_job(&user, args)).await
+            }
+            ToolName::GetJob => {
+                let args = parse_args(request.arguments)?;
+                within(limit, tool, self.get_job(&user, args)).await
+            }
+            // The one tool that is meant to stay open: bounded by its own timeout and slots.
             ToolName::WaitForJob => {
                 let args = parse_args(request.arguments)?;
                 self.wait_for_job(&user, args, &context).await
             }
-            ToolName::Answer => self.answer(&user, parse_args(request.arguments)?).await,
-            ToolName::CancelJob => self.cancel_job(&user, parse_args(request.arguments)?).await,
+            ToolName::Answer => {
+                let args = parse_args(request.arguments)?;
+                within(limit, tool, self.answer(&user, args)).await
+            }
+            ToolName::CancelJob => {
+                let args = parse_args(request.arguments)?;
+                within(limit, tool, self.cancel_job(&user, args)).await
+            }
         };
         result.map(CallToolResponse::from)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tool_that_takes_too_long_is_stopped_with_a_message_and_a_fast_one_is_not() {
+        let slow = within(Duration::from_secs(30), ToolName::GetJob, async {
+            std::future::pending::<()>().await;
+            Ok(CallToolResult::success(vec![]))
+        })
+        .await
+        .unwrap();
+        assert_eq!(slow.is_error, Some(true));
+        let text = format!("{:?}", slow.content);
+        assert!(text.contains("get_job took longer than 30 s"), "{text}");
+
+        let fast = within(Duration::from_secs(30), ToolName::GetJob, async {
+            Ok(CallToolResult::success(vec![ContentBlock::text("ok")]))
+        })
+        .await
+        .unwrap();
+        assert_eq!(fast.is_error, Some(false));
     }
 }

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, Job, ThreadId, ThreadRecord, UserId, WatchKey};
+use orch_core::{Event, EventKind, Job, ThreadId, ThreadRecord, UserId, WatchKey};
 use orch_ports::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxItem, InboxLease,
     Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId,
@@ -677,6 +677,27 @@ impl ThreadStore for PgStore {
         )
         .bind(thread.0)
         .bind(after)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?
+        .iter()
+        .map(|row| event_from_row(thread, row))
+        .collect()
+    }
+
+    async fn latest_events(
+        &self,
+        thread: ThreadId,
+        kind: EventKind,
+        limit: u32,
+    ) -> Result<Vec<Event>, StoreError> {
+        sqlx::query(
+            "SELECT seq, at, kind, actor, data FROM events \
+             WHERE thread_id = $1 AND kind = $2 ORDER BY seq DESC LIMIT $3",
+        )
+        .bind(thread.0)
+        .bind(kind.as_str())
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await

@@ -185,13 +185,13 @@ the edge forwards `/mcp` without an identity header (and drops one the client se
 | What | Where |
 |---|---|
 | The URL | `http://127.0.0.1:8080/mcp` (the edge; `EDGE_PORT` moves it) |
-| The token | `dev-mcp-token`, a dummy: `MCP_TOKEN_DEV` in `compose.yaml`, named by `tokenEnv` in [`mcp-tokens.yaml`](mcp-tokens.yaml) (`MCP_TOKENS_FILE`) |
+| The token | `dev-mcp-token-0123456789abcdef0123456789`, a dummy: `MCP_TOKEN_DEV` in `compose.yaml`, named by `tokenEnv` in [`mcp-tokens.yaml`](mcp-tokens.yaml) (`MCP_TOKENS_FILE`) |
 | Whose jobs | `dev@example.com`, the identity the edge gives the chat, so a job started over MCP is in the chat's thread list (`web_url` in the answer of `start_job` points at it: `ORCH_PUBLIC_URL`) |
 | Which `Host` | `127.0.0.1` and `localhost`, any port (`MCP_ALLOWED_HOSTS`); anything else is 403 |
 | The tools | `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` |
 
 ```sh
-claude mcp add --transport http orchestrator http://127.0.0.1:8080/mcp --header "Authorization: Bearer dev-mcp-token"
+claude mcp add --transport http orchestrator http://127.0.0.1:8080/mcp --header "Authorization: Bearer dev-mcp-token-0123456789abcdef0123456789"
 ```
 
 [`mcp.json.example`](mcp.json.example) is the same as a generic client configuration (Claude Code's `.mcp.json`, most
@@ -209,6 +209,10 @@ edge does not buffer it, so the notifications arrive as the events happen; the s
 The script speaks MCP by hand and prints one `ok` or `FAIL` line per check. Its default agent is `mock-coder`, which ends with
 a pull request in seconds; `AGENT_ID`, `MCP_TOKEN`, `BASE_URL`, `AUTH_EMAIL` and `TIMEOUT` change what it uses.
 The server is **stateless**: it hands out no `Mcp-Session-Id`, so any replica serves any call.
+A `wait_for_job` without a `progressToken` returns `timed_out` (with `resume_after_seq`) after at most one heartbeat interval (60 s),
+and a user can hold 16 waits open (256 per process): more is the tool error "too many waits" (`MCP_WAIT_MAX_PER_USER`,
+`MCP_WAIT_MAX_CONCURRENT`). A request with an `Origin` header (a browser) is 403 unless listed in `MCP_ALLOWED_ORIGINS`.
+The dummy token is 32 bytes or more because the orchestrator refuses a shorter one.
 
 Troubleshooting: `401` with `WWW-Authenticate: Bearer` is a missing or wrong token (nothing else says why, on
 purpose); `403` is a `Host` the server does not list, for example a client that reaches the edge by another name

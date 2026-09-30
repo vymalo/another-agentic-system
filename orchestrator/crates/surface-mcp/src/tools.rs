@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rmcp::handler::server::common::schema_for_input;
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Every tool the server offers. A new tool is a new variant, so the compiler finds every place
 /// that must know it.
@@ -62,8 +62,9 @@ impl ToolName {
             }
             ToolName::StartJob => {
                 "Start a job: give an agent a task. Returns at once with the job_id and its state; \
-                 use get_job to look at it. Set client_request_id to make a retry safe: the same \
-                 client_request_id returns the same job instead of starting another."
+                 use get_job or wait_for_job to look at it. Set client_request_id to make a retry \
+                 safe: the same client_request_id with the same request returns the same job \
+                 instead of starting another, and a different request is refused."
             }
             ToolName::GetJob => {
                 "Summarise a job: its state, attempt, the branch and commit the agent pushed, the \
@@ -74,8 +75,10 @@ impl ToolName {
                  or after timeout_secs, with the same summary as get_job plus outcome \
                  (finished, blocked, timed_out, interrupted) and resume_after_seq. Progress \
                  notifications report each event as it happens when the request has a \
-                 progressToken. To keep waiting, call again with after_seq = resume_after_seq: \
-                 nothing is lost."
+                 progressToken; without one the wait is cut to the server's heartbeat interval \
+                 (60 s by default), because nothing could keep the connection alive. To keep \
+                 waiting, call again with after_seq = resume_after_seq: nothing is lost. An \
+                 interrupted outcome (the server is restarting) carries retry_after_secs."
             }
             ToolName::Answer => {
                 "Send a message to a job: the answer to a question the agent asked (state \
@@ -137,10 +140,39 @@ impl ToolName {
 #[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
+/// The verification gate a job asks for (ADR 0018): the same object as AG-UI's
+/// `forwardedProps["vymalo.gate"]`, checked by the same rules. It may add sources and raise or
+/// lower the attempts within the deployment's cap; it never removes a source the deployment
+/// requires. Fixed when the job is created.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GateArgs {
+    /// Sources that must pass before the job is done: `agent-checks` (the agent's own checks).
+    /// `ci` and `verifier` are named here too, but a deployment that cannot honour them refuses
+    /// the job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require: Option<Vec<String>>,
+    /// Attempts the agent gets, the first included, within the deployment's cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+}
+
+impl GateArgs {
+    /// The layer the application checks. `Err` is a reason to show the caller.
+    pub fn to_layer(&self) -> Result<orch_app::GateLayer, String> {
+        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        match orch_app::GateLayer::from_json(&value) {
+            Ok(Some(layer)) => Ok(layer),
+            Ok(None) => Ok(orch_app::GateLayer::default()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 /// The arguments of `start_job`.
 ///
-/// Unknown arguments are refused, not ignored: a client that sends `gate` (not offered yet) must
-/// hear that the gate did not apply, not run an ungated job believing it was gated.
+/// Unknown arguments are refused, not ignored: a client must hear that an argument did not
+/// apply, not run a job believing it had been given.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartJobArgs {
@@ -156,6 +188,10 @@ pub struct StartJobArgs {
     /// the first call started. Without it every call starts a new job.
     #[serde(default)]
     pub client_request_id: Option<String>,
+    /// The verification gate for this job. Omitted: the deployment's gate. Refused, naming the
+    /// reason, when the deployment cannot honour it.
+    #[serde(default)]
+    pub gate: Option<GateArgs>,
 }
 
 /// The arguments of `get_job`.
@@ -227,9 +263,13 @@ mod tests {
         let start = ToolName::StartJob.definition();
         assert_eq!(start.input_schema["required"], serde_json::json!(["text"]));
         assert!(start.input_schema["properties"]["client_request_id"].is_object());
-        assert!(
-            start.input_schema["properties"].get("gate").is_none(),
-            "the gate lands with the per-thread gate"
+        assert_eq!(
+            start.input_schema["$defs"]["GateArgs"]["properties"]
+                .as_object()
+                .map(|p| p.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+            ["maxAttempts", "require"],
+            "the gate object is {{require?, maxAttempts?}}"
         );
         let get = ToolName::GetJob.definition();
         assert_eq!(get.input_schema["required"], serde_json::json!(["job_id"]));
@@ -242,12 +282,34 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_becomes_the_layer_the_application_checks() {
+        let args: StartJobArgs = serde_json::from_value(serde_json::json!(
+            {"text": "go", "gate": {"require": ["agent-checks"], "maxAttempts": 2}}
+        ))
+        .unwrap();
+        let layer = args.gate.unwrap().to_layer().unwrap();
+        assert_eq!(layer.max_attempts, Some(2));
+        assert_eq!(layer.require.as_ref().map(Vec::len), Some(1));
+        let bad: GateArgs =
+            serde_json::from_value(serde_json::json!({"require": ["magic"]})).unwrap();
+        let reason = bad.to_layer().unwrap_err();
+        assert!(reason.contains("magic"), "{reason}");
+    }
+
+    #[test]
     fn unknown_arguments_are_refused() {
         let err = serde_json::from_value::<StartJobArgs>(
-            serde_json::json!({"text": "go", "gate": {"require": ["ci"]}}),
+            serde_json::json!({"text": "go", "gates": {"require": ["ci"]}}),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("gate"), "{err}");
+        assert!(err.to_string().contains("gates"), "{err}");
+        // Inside the gate too: a verifier or CI setting is not a thread's to make.
+        assert!(
+            serde_json::from_value::<StartJobArgs>(
+                serde_json::json!({"text": "go", "gate": {"verifier": "v"}})
+            )
+            .is_err()
+        );
         assert!(serde_json::from_value::<GetJobArgs>(serde_json::json!({})).is_err());
     }
 }

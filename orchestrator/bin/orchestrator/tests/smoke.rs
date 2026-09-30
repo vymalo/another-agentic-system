@@ -247,6 +247,9 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--mcp-allowed-hosts", "MCP_ALLOWED_HOSTS"),
         ("--public-url", "ORCH_PUBLIC_URL"),
         ("--mcp-wait-max-secs", "MCP_WAIT_MAX_SECS"),
+        ("--mcp-wait-max-concurrent", "MCP_WAIT_MAX_CONCURRENT"),
+        ("--mcp-wait-max-per-user", "MCP_WAIT_MAX_PER_USER"),
+        ("--mcp-allowed-origins", "MCP_ALLOWED_ORIGINS"),
         ("--auth-dev-user", "AUTH_DEV_USER"),
         ("--database-max-connections", "DATABASE_MAX_CONNECTIONS"),
         ("--dispatcher-concurrency", "DISPATCHER_CONCURRENCY"),
@@ -282,6 +285,9 @@ fn every_setting_is_read_from_its_variable() {
         // Read whatever the surfaces are: a typo is not quietly ignored until `mcp` is mounted.
         ("ORCH_PUBLIC_URL", "chat.example.com"),
         ("MCP_WAIT_MAX_SECS", "0"),
+        ("MCP_WAIT_MAX_CONCURRENT", "0"),
+        ("MCP_WAIT_MAX_PER_USER", "many"),
+        ("MCP_ALLOWED_ORIGINS", "*"),
     ] {
         let mut run = spawn(
             &scratch,
@@ -605,7 +611,7 @@ async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
 // ---- the MCP surface (ADR 0019) ---------------------------------------------------------------
 
 const MCP_TOKENS: &str = "- user: mcp-user@example.com\n  tokenEnv: MCP_TOKEN_SMOKE\n";
-const MCP_TOKEN: &str = "smoke-mcp-bearer";
+const MCP_TOKEN: &str = "smoke-mcp-bearer-0123456789abcdef0123456789";
 
 fn write_mcp_tokens(scratch: &Scratch) -> PathBuf {
     let path = scratch.file("mcp-tokens.yaml");
@@ -656,6 +662,38 @@ fn mcp_without_its_tokens_or_hosts_is_a_config_error() {
             "nothing connects before the configuration is accepted: {log}"
         );
         assert!(!log.contains(MCP_TOKEN), "a token leaked into the log");
+    }
+    // A token that is too short to be a secret, and hosts that are not `Host` values (a URL, a
+    // wildcard, a port that is not a number), are refused at startup too, never at the first call.
+    for (var, bad, want) in [
+        ("MCP_TOKEN_SMOKE", "short", "shorter than 32 bytes"),
+        (
+            "MCP_ALLOWED_HOSTS",
+            "https://orch.example.com",
+            "MCP_ALLOWED_HOSTS",
+        ),
+        ("MCP_ALLOWED_HOSTS", "*", "MCP_ALLOWED_HOSTS"),
+        (
+            "MCP_ALLOWED_HOSTS",
+            "orch.example.com:port",
+            "MCP_ALLOWED_HOSTS",
+        ),
+        (
+            "MCP_ALLOWED_ORIGINS",
+            "orch.example.com",
+            "MCP_ALLOWED_ORIGINS",
+        ),
+    ] {
+        let mut env = full.to_vec();
+        env.retain(|(k, _)| *k != var);
+        env.push((var, bad));
+        let mut run = spawn(&scratch, &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(status.code(), Some(78), "{var}={bad}: EX_CONFIG; {log}");
+        assert!(log.contains(want), "{var}={bad}: {log}");
+        assert!(!log.contains(MCP_TOKEN), "a token leaked into the log");
+        assert!(!log.contains("cannot connect to Postgres"), "{log}");
     }
     // A token file that is not there is the same kind of error.
     let mut env = full.to_vec();
@@ -806,6 +844,28 @@ async fn mcp_is_mounted_by_its_name_and_a_token_lists_the_tools() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 403);
+    // A browser's `Origin` is refused unless listed (none is), and two `Authorization` headers
+    // are not a token, whichever they carry.
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Origin", "https://attacker.example.com")
+        .bearer_auth(MCP_TOKEN)
+        .json(&list)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 403);
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Authorization", format!("Bearer {MCP_TOKEN}"))
+        .header("Authorization", format!("Bearer {MCP_TOKEN}"))
+        .json(&list)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
 
     let status = run.borrow_mut().terminate(Duration::from_secs(20));
     let log = run.borrow().log();

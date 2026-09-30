@@ -250,6 +250,51 @@ async fn a_retry_on_another_replica_is_the_same_job(backend: Backend) {
     wait_state(&on_two, job, "done").await;
 }
 
+/// Concurrent `start_job` calls with one `client_request_id`, across replicas, make one job: one
+/// of them creates it, the others find it, and the agent is called once. (On Postgres the race is
+/// decided by the insert, not by anything in a process.)
+async fn concurrent_starts_across_replicas_make_one_job(backend: Backend) {
+    let world = World::start(backend).await;
+    let one = world.instance_with_mcp("orch-1", true).await;
+    let two = world.instance_with_mcp("orch-2", false).await;
+    let mut clients = Vec::new();
+    for instance in [&one, &two, &one, &two, &one, &two] {
+        clients.push(client(instance, ALICE_TOKEN).await);
+    }
+    let args = json!({"text": "gate the race", "agent": "plain", "client_request_id": "race-1"});
+    let results =
+        futures::future::join_all(clients.iter().map(|c| call(c, "start_job", args.clone()))).await;
+    for (is_error, result) in &results {
+        assert!(!is_error, "{result}");
+    }
+    let ids: std::collections::HashSet<&str> = results
+        .iter()
+        .map(|(_, r)| r["job_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 1, "{results:?}");
+    assert_eq!(
+        results.iter().filter(|(_, r)| r["created"] == true).count(),
+        1,
+        "{results:?}"
+    );
+    let job = *ids.iter().next().unwrap();
+    let chat = world.chat(&one);
+    let (status, listed) = chat.get("/api/threads").await;
+    assert_eq!(status, 200);
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    let messages = chat
+        .events(job)
+        .await
+        .iter()
+        .filter(|e| e["kind"] == "user_message")
+        .count();
+    assert_eq!(messages, 1);
+    wait_state(&clients[0], job, "working").await;
+    assert_eq!(world.plain.executions().len(), 1);
+    world.plain.release_gate();
+    wait_state(&clients[0], job, "done").await;
+}
+
 /// The seqs of a job's whole log.
 async fn log_seqs(world: &World, instance: &orch_testsupport::TestInstance, job: &str) -> Vec<i64> {
     world
@@ -375,4 +420,5 @@ backends!(
     an_answer_unblocks_a_job,
     a_cancel_reaches_the_agent,
     a_retry_on_another_replica_is_the_same_job,
+    concurrent_starts_across_replicas_make_one_job,
 );

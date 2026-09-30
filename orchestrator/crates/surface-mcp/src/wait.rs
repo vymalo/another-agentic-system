@@ -13,9 +13,13 @@
 //!    and reported first. No deadline applies: a call always reports what already happened, even
 //!    with a timeout of zero. Then, if the job is finished or blocked, the call returns.
 //! 2. **Live.** Events are reported as they arrive, a heartbeat notification goes out every
-//!    `heartbeat` (so a client's idle window keeps being reset), and the call returns when the job
-//!    is finished or blocked and its last event was read, when `timeout` runs out, or when the
-//!    stream ends (the process is shutting down).
+//!    `heartbeat` counted from the start of the call (so a client's idle window keeps being
+//!    reset), and the call returns when the job is finished or blocked and its last event was
+//!    read, when `timeout` runs out, or when the stream ends (the process is shutting down).
+//!
+//! A call whose request has no `progressToken` cannot send a heartbeat, and a proxy in front of
+//! the server may cut a response that stays silent: [`effective_timeout`] keeps such a call to
+//! one heartbeat interval.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,6 +92,24 @@ pub struct Waited {
     pub resume_after_seq: i64,
     /// The job as it is now.
     pub thread: ThreadRecord,
+}
+
+/// How long a call may really wait: `requested`, at most `wait_max`, and, when the request has no
+/// `progressToken` (so nothing can be sent while waiting), at most one `heartbeat` interval, so
+/// that a proxy with an idle timeout does not cut a silent response. The caller then gets
+/// `timed_out` with `resume_after_seq` and calls again.
+pub fn effective_timeout(
+    requested: Duration,
+    wait_max: Duration,
+    heartbeat: Duration,
+    has_progress_token: bool,
+) -> Duration {
+    let bounded = requested.min(wait_max);
+    if has_progress_token {
+        bounded
+    } else {
+        bounded.min(heartbeat)
+    }
 }
 
 /// Whether the job has nothing more to say until someone acts.
@@ -173,9 +195,10 @@ pub async fn wait_for_job<P: Ports>(
     sink: &impl ProgressSink,
     cancel: &CancellationToken,
 ) -> Result<Waited, AppError> {
-    let deadline = Instant::now()
+    let started = Instant::now();
+    let deadline = started
         .checked_add(request.timeout)
-        .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365));
+        .unwrap_or_else(|| started + Duration::from_secs(86_400 * 365));
     let mut thread = app.get_thread(user, id).await?;
     let start = request
         .after_seq
@@ -213,8 +236,7 @@ pub async fn wait_for_job<P: Ports>(
         });
     }
 
-    let mut heartbeat =
-        tokio::time::interval_at(Instant::now() + request.heartbeat, request.heartbeat);
+    let mut heartbeat = tokio::time::interval_at(started + request.heartbeat, request.heartbeat);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         let end = tokio::select! {
@@ -229,14 +251,14 @@ pub async fn wait_for_job<P: Ports>(
                         Some(message) => report.send(message).await,
                         None => true,
                     };
-                    if !sent {
-                        Some(WaitEnd::Interrupted)
-                    } else if matches!(event.body, EventBody::ThreadState(_)) {
-                        // A job stops on the event that says so, once that is the last one.
+                    if sent {
+                        // Whenever the last event of the log has been read, look at where the
+                        // job stands: it stops on the event that says so, and a state that no
+                        // event announced is not missed either.
                         thread = app.get_thread(user, id).await?;
                         (cursor >= thread.last_seq).then(|| stopped(&thread)).flatten()
                     } else {
-                        None
+                        Some(WaitEnd::Interrupted)
                     }
                 }
             },
@@ -297,6 +319,28 @@ mod tests {
             actor: Actor::system(),
             body,
         }
+    }
+
+    #[test]
+    fn without_a_progress_token_a_wait_is_kept_to_one_heartbeat() {
+        let (minute, hour, day) = (
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+            Duration::from_secs(86_400),
+        );
+        // With a token: what was asked, up to the bound.
+        assert_eq!(effective_timeout(hour, day, minute, true), hour);
+        assert_eq!(effective_timeout(day, hour, minute, true), hour);
+        // Without one nothing can keep the connection alive, so no more than a heartbeat.
+        assert_eq!(effective_timeout(hour, day, minute, false), minute);
+        assert_eq!(
+            effective_timeout(Duration::from_secs(5), day, minute, false),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            effective_timeout(Duration::ZERO, day, minute, false),
+            Duration::ZERO
+        );
     }
 
     #[test]

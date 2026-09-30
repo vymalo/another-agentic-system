@@ -12,7 +12,7 @@
 #   * `tools/list` gives the six tools;
 #   * `list_agents` lists the agent the job is given to;
 #   * `start_job` returns a job id, its state and (the compose stack sets ORCH_PUBLIC_URL) a web_url;
-#     the same `client_request_id` again returns the same job, not a second one;
+#     the same `client_request_id` again returns the same job, not a second one (with another text it is refused);
 #   * `get_job`, polled, ends `done` and names the pull request the mock agent opened;
 #   * the chat's resource API shows the same thread `done` for the token's user, so the job is in
 #     the chat too;
@@ -26,7 +26,7 @@
 #
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL     http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge` (which adds no identity to /mcp)
-#   MCP_TOKEN    dev-mcp-token, the dummy bearer token of dev/mcp-tokens.yaml
+#   MCP_TOKEN    dev-mcp-token-0123456789abcdef0123456789, the dummy bearer token of dev/mcp-tokens.yaml
 #   AUTH_EMAIL   dev@example.com, the user of that token, sent as X-Auth-Request-Email to the chat API
 #   AGENT_ID     mock-coder, the mock A2A agent that finishes with a pull request
 #   TIMEOUT      120    seconds to wait for the job
@@ -37,7 +37,7 @@ set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
-token=${MCP_TOKEN:-dev-mcp-token}
+token=${MCP_TOKEN:-dev-mcp-token-0123456789abcdef0123456789}
 email=${AUTH_EMAIL:-dev@example.com}
 agent_id=${AGENT_ID:-mock-coder}
 timeout=${TIMEOUT:-120}
@@ -158,6 +158,13 @@ if [ "$(printf '%s' "$retried" | jq -r '.job_id')" = "$job" ] && [ "$(printf '%s
   ok "start_job again with the same client_request_id: the same job, not created"
 else
   bad "start_job again: $retried, want job $job and created false"
+fi
+call start_job "$(jq -cn --arg agent "$agent_id" --arg id "$request_id" \
+  '{text: "something else entirely", agent: $agent, client_request_id: $id}')"
+if [ "$is_error" = true ] && printf '%s' "$result" | grep -q 'client_request_id'; then
+  ok "start_job with the same client_request_id and another text: refused"
+else
+  bad "start_job with another text: $result, want a refusal naming client_request_id"
 fi
 
 # Poll get_job until the job is over. `blocked` is not final for a job, but nothing here answers it.

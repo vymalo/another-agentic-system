@@ -312,8 +312,8 @@ impl World {
     }
 }
 
-pub const ALICE_TOKEN: &str = "alice-token";
-pub const BOB_TOKEN: &str = "bob-token";
+pub const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
+pub const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
 
 /// The MCP surface over `app`, when asked for.
 fn mcp_routes<P: orch_ports::Ports>(app: &Arc<App<P>>, mcp: bool) -> Vec<orch_api::SurfaceRoutes> {

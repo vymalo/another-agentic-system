@@ -357,10 +357,12 @@ async fn a_heartbeat_goes_out_every_interval_and_shares_the_counter() {
     assert!(
         sent[2]
             .1
-            .starts_with("still waiting (job queued, last event #2"),
+            .starts_with("still waiting (job working, last event #2"),
         "{}",
         sent[2].1
     );
+    // The state the heartbeat reports is the thread as the last event left it, not as it was when
+    // the call began.
     // The timeout ends it.
     tokio::time::advance(Duration::from_secs(3600)).await;
     assert_eq!(finished(call).await.end, WaitEnd::TimedOut);

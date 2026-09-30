@@ -513,6 +513,19 @@ impl<P: Ports> App<P> {
         Ok(self.ports.store().list_events(id, after, limit).await?)
     }
 
+    /// The newest `limit` events of `kind` of one of the user's threads, newest first (one
+    /// bounded read; someone else's thread is `NotFound`).
+    pub async fn latest_events(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+        kind: EventKind,
+        limit: u32,
+    ) -> Result<Vec<Event>, AppError> {
+        self.get_thread(user, id).await?;
+        Ok(self.ports.store().latest_events(id, kind, limit).await?)
+    }
+
     /// Appends a user message and queues its delegation. Returns the `user_message` event.
     pub async fn post_message(
         &self,

@@ -65,12 +65,14 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most an `AGENTS_FILE` entry or a run may set the attempts to (`--max-attempts-cap`); at most `100`. When only the cap is set below `3`, the default attempts are lowered to it; an explicit `ORCH_MAX_ATTEMPTS` above the cap is a startup error |
 | `ORCH_VERIFIER` | none | the verifier agent's id (`--verifier`). Refused (78) until the verifier dispatch is built |
 | `MCP_TOKENS_FILE` | required with `mcp` | YAML list of `{user, tokenEnv}` (`--mcp-tokens-file`): who each bearer token is; read by the roles that serve HTTP only. A `tokenEnv` variable that is unset or empty is `McpTokenEnvMissing` and an unreadable file `McpTokensFileRead` (both 78) |
-| `MCP_TOKEN_<NAME>` | required by the file | the variable a `tokenEnv` names: the bearer token (a `SecretString`, never logged) |
-| `MCP_ALLOWED_HOSTS` | required with `mcp` | comma-separated `Host` values the MCP server accepts (`--mcp-allowed-hosts`) |
+| `MCP_TOKEN_<NAME>` | required by the file | the variable a `tokenEnv` names: the bearer token (a `SecretString`, never logged), at least 32 bytes (shorter is `Invalid`, 78) |
+| `MCP_ALLOWED_HOSTS` | required with `mcp` | comma-separated `Host` values the MCP server accepts (`--mcp-allowed-hosts`), each `host` or `host:port`: a URL, `*` or a port that is not a number is `Invalid` (78) |
 | `MCP_WAIT_MAX_SECS` | `3600` | the largest `timeout_secs` of `wait_for_job` (`--mcp-wait-max-secs`), 1 to 86400, larger requests are cut to it |
+| `MCP_WAIT_MAX_CONCURRENT`, `MCP_WAIT_MAX_PER_USER` | `256`, `16` | the most `wait_for_job` calls one process, and one user, may hold open (`--mcp-wait-max-concurrent`, `--mcp-wait-max-per-user`), at least 1 |
+| `MCP_ALLOWED_ORIGINS` | none | comma-separated browser origins the MCP server lets through (`--mcp-allowed-origins`), each `http(s)://host[:port]`; a request with another `Origin` is 403 |
 | `ORCH_PUBLIC_URL` | unset | the chat's public origin (`--public-url`), for the `web_url` of `start_job`; an origin with no path |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
-| `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
+| `RUST_LOG`, `LOG_FORMAT` | `info,rmcp=warn`, `json` | `LOG_FORMAT=text` for humans; `RUST_LOG` replaces the default whole (the MCP library logs a line per request at `info`) |
 
 ### The verification gate
 
@@ -206,7 +208,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   value, blank, unknown, the flag collected raw). `src/main.rs` maps every
   `HostError` to exit 70. `src/logging.rs`: role and instance first on every JSON and text
   line (an instance with a quote stays valid JSON, no fields means the stock line).
-* Unit tests of the MCP settings in `src/config.rs`: tokens, hosts, public URL and wait bound read and normalised (user lower-cased, token trimmed, hosts split; `MCP_WAIT_MAX_SECS` 1 to 86400), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
+* Unit tests of the MCP settings in `src/config.rs`: tokens, hosts, public URL and wait bound read and normalised (user lower-cased, token trimmed, hosts split and required to be authorities, origins, the 32-byte token minimum, the wait limits; `MCP_WAIT_MAX_SECS` 1 to 86400), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
 * `tests/local.rs` (`#![cfg(feature = "agent-local")]`, run with `--features agent-local`): the executable hosting
   a local `echo` agent answers an AG-UI run and the journal holds the run (`orch_agent_runs`); a `control-plane`
   process with a local agent starts, accepts a run and leaves it `queued` with an empty journal until a `worker`

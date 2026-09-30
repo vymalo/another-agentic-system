@@ -47,8 +47,8 @@ async fn another_scheme_is_401() {
     let h = Harness::start().await;
     for value in [
         "Basic YWxpY2U6cGFzcw==",
-        "Token alice-token",
-        "alice-token",
+        &format!("Token {ALICE_TOKEN}"),
+        ALICE_TOKEN,
         "Bearer",
         "Bearer ",
     ] {
@@ -60,7 +60,14 @@ async fn another_scheme_is_401() {
 #[tokio::test]
 async fn an_unknown_token_is_401_however_close_it_is() {
     let h = Harness::start().await;
-    for token in ["nope", "alice-toke", "alice-token-", "ALICE-TOKEN", "bob"] {
+    let near = [
+        "nope".to_owned(),
+        ALICE_TOKEN[..ALICE_TOKEN.len() - 1].to_owned(),
+        format!("{ALICE_TOKEN}-"),
+        ALICE_TOKEN.to_uppercase(),
+        "bob".to_owned(),
+    ];
+    for token in near {
         let resp = h
             .post(
                 &[("Authorization", &format!("Bearer {token}"))],
@@ -210,4 +217,98 @@ async fn a_known_token_reaches_the_tools_over_a_stateless_server() {
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().get("mcp-session-id").is_none());
+}
+
+#[tokio::test]
+async fn more_than_one_authorization_header_is_refused_whichever_token_they_carry() {
+    let h = Harness::start().await;
+    let alice = format!("Bearer {ALICE_TOKEN}");
+    let bob = format!("Bearer {BOB_TOKEN}");
+    for headers in [
+        // Two users' tokens: which one is the caller is for no intermediary to guess.
+        vec![
+            ("Authorization", alice.as_str()),
+            ("Authorization", bob.as_str()),
+        ],
+        vec![
+            ("Authorization", bob.as_str()),
+            ("Authorization", alice.as_str()),
+        ],
+        // The same token twice, and a good one beside a bad one.
+        vec![
+            ("Authorization", alice.as_str()),
+            ("Authorization", alice.as_str()),
+        ],
+        vec![
+            ("Authorization", alice.as_str()),
+            ("Authorization", "Bearer nope"),
+        ],
+    ] {
+        let resp = h.post(&headers, &start_job_body()).await;
+        assert_unauthorized(&h, resp).await;
+    }
+    // One header is what works.
+    let resp = h
+        .post(&[("Authorization", alice.as_str())], &start_job_body())
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(h.threads_of(ALICE).await.len(), 1);
+    assert!(h.threads_of(BOB).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_browser_origin_is_refused_unless_it_is_listed_and_other_clients_are_not_affected() {
+    let bearer = format!("Bearer {ALICE_TOKEN}");
+    let h = Harness::start().await;
+    // A page in a browser (the `Origin` header is what says so) cannot use the token's
+    // authority through the user's browser, even with a token in hand.
+    let resp = h
+        .post(
+            &[
+                ("Authorization", bearer.as_str()),
+                ("Origin", "https://evil.example.com"),
+            ],
+            &start_job_body(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    h.assert_nothing_written().await;
+    // A request without one is a non-browser client: the CLI clients and the SDKs.
+    let resp = h
+        .post(&[("Authorization", bearer.as_str())], &start_job_body())
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    // The bearer guard comes first: no token, no hint about origins.
+    let resp = h
+        .post(&[("Origin", "https://evil.example.com")], &start_job_body())
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // A listed origin passes; another one still does not.
+    let h = Harness::start_with(Options {
+        allowed_origins: vec!["https://app.example.com"],
+        ..Options::default()
+    })
+    .await;
+    let resp = h
+        .post(
+            &[
+                ("Authorization", bearer.as_str()),
+                ("Origin", "https://app.example.com"),
+            ],
+            &start_job_body(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = h
+        .post(
+            &[
+                ("Authorization", bearer.as_str()),
+                ("Origin", "https://evil.example.com"),
+            ],
+            &start_job_body(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(h.threads_of(ALICE).await.len(), 1);
 }

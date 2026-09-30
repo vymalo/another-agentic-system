@@ -39,6 +39,11 @@ const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
 const DEFAULT_MCP_WAIT_MAX_SECS: u64 = 3600;
 /// The largest `MCP_WAIT_MAX_SECS`: a day. A wait is a request that stays open.
 const MAX_MCP_WAIT_MAX_SECS: u64 = 86_400;
+const DEFAULT_MCP_WAIT_MAX_CONCURRENT: usize = 256;
+const DEFAULT_MCP_WAIT_MAX_PER_USER: usize = 16;
+/// The shortest bearer token: 32 bytes, what `openssl rand -base64 32` gives (43 characters).
+/// Static tokens never expire and nothing slows a guess down.
+const MIN_MCP_TOKEN_BYTES: usize = 32;
 const MAX_AGENT_ID_LEN: usize = 63;
 
 /// A configuration problem. The message is what the operator sees.
@@ -192,6 +197,12 @@ pub struct McpSettings {
     pub public_url: Option<String>,
     /// `MCP_WAIT_MAX_SECS`: the largest `timeout_secs` of `wait_for_job`.
     pub wait_max: Duration,
+    /// `MCP_WAIT_MAX_CONCURRENT`: the most `wait_for_job` calls this process holds open.
+    pub wait_max_concurrent: usize,
+    /// `MCP_WAIT_MAX_PER_USER`: the most one user may hold open.
+    pub wait_max_per_user: usize,
+    /// `MCP_ALLOWED_ORIGINS`: browser origins let through; none by default.
+    pub allowed_origins: Vec<String>,
 }
 
 impl fmt::Debug for McpSettings {
@@ -204,6 +215,9 @@ impl fmt::Debug for McpSettings {
             .field("allowed_hosts", &self.allowed_hosts)
             .field("public_url", &self.public_url)
             .field("wait_max", &self.wait_max)
+            .field("wait_max_concurrent", &self.wait_max_concurrent)
+            .field("wait_max_per_user", &self.wait_max_per_user)
+            .field("allowed_origins", &self.allowed_origins)
             .finish()
     }
 }
@@ -578,6 +592,22 @@ pub struct Args {
     #[arg(long, env = "MCP_WAIT_MAX_SECS", value_name = "SECS")]
     pub mcp_wait_max_secs: Option<String>,
 
+    /// The most `wait_for_job` calls this process holds open at once, at least 1 (default 256).
+    /// Over it a call is refused ("too many waits").
+    #[arg(long, env = "MCP_WAIT_MAX_CONCURRENT", value_name = "N")]
+    pub mcp_wait_max_concurrent: Option<String>,
+
+    /// The most `wait_for_job` calls one user may hold open at once, at least 1 (default 16).
+    #[arg(long, env = "MCP_WAIT_MAX_PER_USER", value_name = "N")]
+    pub mcp_wait_max_per_user: Option<String>,
+
+    /// Browser origins the surface `mcp` lets through, comma separated, for example
+    /// `https://inspector.example.com`. A request with an Origin header that is not listed is
+    /// refused (403) whatever its token; requests without one, from every non-browser client,
+    /// are not affected. Default: none.
+    #[arg(long, env = "MCP_ALLOWED_ORIGINS", value_name = "LIST")]
+    pub mcp_allowed_origins: Option<String>,
+
     /// E-mail served for requests without X-Auth-Request-Email. Development only.
     #[arg(long, env = "AUTH_DEV_USER", value_name = "EMAIL")]
     pub auth_dev_user: Option<String>,
@@ -782,6 +812,19 @@ impl Config {
             DEFAULT_MCP_WAIT_MAX_SECS,
             1,
         )?;
+        let wait_max_concurrent = number(
+            clean(args.mcp_wait_max_concurrent),
+            "MCP_WAIT_MAX_CONCURRENT",
+            DEFAULT_MCP_WAIT_MAX_CONCURRENT,
+            1,
+        )?;
+        let wait_max_per_user = number(
+            clean(args.mcp_wait_max_per_user),
+            "MCP_WAIT_MAX_PER_USER",
+            DEFAULT_MCP_WAIT_MAX_PER_USER,
+            1,
+        )?;
+        let allowed_origins = parse_allowed_origins(clean(args.mcp_allowed_origins))?;
         if mcp_wait_max_secs > MAX_MCP_WAIT_MAX_SECS {
             return Err(ConfigError::Invalid {
                 var: "MCP_WAIT_MAX_SECS",
@@ -794,6 +837,9 @@ impl Config {
                 allowed_hosts: parse_allowed_hosts(clean(args.mcp_allowed_hosts))?,
                 public_url,
                 wait_max: Duration::from_secs(mcp_wait_max_secs),
+                wait_max_concurrent,
+                wait_max_per_user,
+                allowed_origins,
             })
         } else {
             None
@@ -1074,7 +1120,70 @@ fn parse_allowed_hosts(raw: Option<String>) -> Result<Vec<String>, ConfigError> 
                 .to_owned(),
         });
     }
+    // A `Host` header is an authority: a name or an address, with or without a port. A URL, a
+    // wildcard or a path matches nothing, and would only look like a rule.
+    if let Some(bad) = hosts.iter().find(|h| !is_authority(h)) {
+        return Err(ConfigError::Invalid {
+            var: "MCP_ALLOWED_HOSTS",
+            reason: format!(
+                "{bad:?} is not a host name or address, with or without a port (no scheme, \
+                 path, wildcard or credentials): write orch.example.com or orch.example.com:8443"
+            ),
+        });
+    }
     Ok(hosts)
+}
+
+/// Whether `host` is a `Host` header value: a name or an address, with or without a port.
+/// (Kept here, beside `orch_surface_mcp::is_host_authority`, because this file also builds
+/// without the `surface-mcp` feature.)
+fn is_authority(host: &str) -> bool {
+    if host.contains(['@', '*', '/', '?', '#', ' ']) {
+        return false;
+    }
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    if authority.as_str() != host || authority.host().is_empty() {
+        return false;
+    }
+    match host[authority.host().len()..].strip_prefix(':') {
+        None => host.len() == authority.host().len(),
+        Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
+/// `MCP_ALLOWED_ORIGINS`: `http(s)://host[:port]` entries, possibly none.
+fn parse_allowed_origins(raw: Option<String>) -> Result<Vec<String>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let origins: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for origin in &origins {
+        let ok = Url::parse(origin).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.has_host()
+                && u.username().is_empty()
+                && u.path() == "/"
+                && u.query().is_none()
+                && u.fragment().is_none()
+        }) && !origin.ends_with('/');
+        if !ok {
+            return Err(ConfigError::Invalid {
+                var: "MCP_ALLOWED_ORIGINS",
+                reason: format!(
+                    "{origin:?} is not an origin: write https://host or https://host:port, \
+                     with no path"
+                ),
+            });
+        }
+    }
+    Ok(origins)
 }
 
 /// `MCP_TOKENS_FILE`: the YAML list, with each token read from the variable its `tokenEnv` names.
@@ -1122,6 +1231,12 @@ fn parse_mcp_tokens(
                 user: user.to_owned(),
                 var: var.to_owned(),
             })?;
+        if token.len() < MIN_MCP_TOKEN_BYTES {
+            return Err(invalid(format!(
+                "the token of {user:?} (in {var}) is shorter than {MIN_MCP_TOKEN_BYTES} bytes; \
+                 generate one with `openssl rand -base64 32`"
+            )));
+        }
         let user = UserId::new(user);
         if let Some((other, _)) = tokens
             .iter()
@@ -1383,6 +1498,9 @@ mod tests {
                 "MCP_ALLOWED_HOSTS" => &mut args.mcp_allowed_hosts,
                 "ORCH_PUBLIC_URL" => &mut args.public_url,
                 "MCP_WAIT_MAX_SECS" => &mut args.mcp_wait_max_secs,
+                "MCP_WAIT_MAX_CONCURRENT" => &mut args.mcp_wait_max_concurrent,
+                "MCP_WAIT_MAX_PER_USER" => &mut args.mcp_wait_max_per_user,
+                "MCP_ALLOWED_ORIGINS" => &mut args.mcp_allowed_origins,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
                 "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
@@ -2098,6 +2216,9 @@ mod tests {
             "MCP_ALLOWED_HOSTS",
             "ORCH_PUBLIC_URL",
             "MCP_WAIT_MAX_SECS",
+            "MCP_WAIT_MAX_CONCURRENT",
+            "MCP_WAIT_MAX_PER_USER",
+            "MCP_ALLOWED_ORIGINS",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",
@@ -2482,8 +2603,11 @@ mod tests {
                 "MCP_ALLOWED_HOSTS",
                 "orch.example.com, orch.example.com:443,",
             ),
-            ("MCP_TOKEN_ALICE", " alice-secret\n"),
-            ("MCP_TOKEN_BOB", "bob-secret"),
+            (
+                "MCP_TOKEN_ALICE",
+                " alice-secret-0123456789abcdef0123456789\n",
+            ),
+            ("MCP_TOKEN_BOB", "bob-secret-0123456789abcdef012345678901"),
         ]);
         env
     }
@@ -2505,8 +2629,11 @@ mod tests {
         assert_eq!(
             tokens,
             [
-                ("alice@example.com", "alice-secret"),
-                ("bob@example.com", "bob-secret")
+                (
+                    "alice@example.com",
+                    "alice-secret-0123456789abcdef0123456789"
+                ),
+                ("bob@example.com", "bob-secret-0123456789abcdef012345678901")
             ]
         );
         assert_eq!(
@@ -2663,6 +2790,131 @@ mod tests {
                 ),
                 "{bad}: {err}"
             );
+        }
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn hosts_must_be_authorities_and_origins_origins() {
+        let with = |var: &'static str, value: &'static str| {
+            let mut env = mcp_env();
+            env.retain(|(k, _)| *k != var);
+            env.push((var, value));
+            load_mcp(&env, TOKENS)
+        };
+        // Names, addresses and ports are hosts.
+        for good in [
+            "orch.example.com",
+            "orch.example.com:8443",
+            "localhost,127.0.0.1:8080,[::1]:8080",
+        ] {
+            assert!(with("MCP_ALLOWED_HOSTS", good).is_ok(), "{good}");
+        }
+        // Anything else would match no Host header, and only look like a rule.
+        for bad in [
+            "https://orch.example.com",
+            "*",
+            "*.example.com",
+            "orch.example.com/mcp",
+            "user@orch.example.com",
+            "orch example",
+            "orch.example.com:notaport",
+        ] {
+            let err = with("MCP_ALLOWED_HOSTS", bad).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "MCP_ALLOWED_HOSTS",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
+        }
+        assert!(
+            with(
+                "MCP_ALLOWED_ORIGINS",
+                "https://inspector.example.com,http://localhost:6274"
+            )
+            .is_ok()
+        );
+        assert!(
+            with("MCP_ALLOWED_ORIGINS", "")
+                .unwrap()
+                .mcp
+                .unwrap()
+                .allowed_origins
+                .is_empty()
+        );
+        for bad in [
+            "inspector.example.com",
+            "https://x.example.com/",
+            "https://x.example.com/app",
+            "*",
+            "ftp://x.example.com",
+        ] {
+            let err = with("MCP_ALLOWED_ORIGINS", bad).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "MCP_ALLOWED_ORIGINS",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn a_token_shorter_than_32_bytes_is_refused() {
+        let mut env = mcp_env();
+        env.retain(|(k, _)| *k != "MCP_TOKEN_BOB");
+        env.push(("MCP_TOKEN_BOB", "0123456789012345678901234567890"));
+        let err = load_mcp(&env, TOKENS).unwrap_err();
+        let ConfigError::Invalid {
+            var: "MCP_TOKENS_FILE",
+            reason,
+        } = &err
+        else {
+            panic!("{err}");
+        };
+        assert!(reason.contains("shorter than 32 bytes"), "{reason}");
+        assert!(
+            !reason.contains("0123456789012345678901234567890"),
+            "the token is not echoed"
+        );
+        // Exactly 32 is enough.
+        env.retain(|(k, _)| *k != "MCP_TOKEN_BOB");
+        env.push(("MCP_TOKEN_BOB", "01234567890123456789012345678901"));
+        assert!(load_mcp(&env, TOKENS).is_ok());
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn the_wait_limits_default_and_are_at_least_one() {
+        let mcp = load_mcp(&mcp_env(), TOKENS).unwrap().mcp.unwrap();
+        assert_eq!((mcp.wait_max_concurrent, mcp.wait_max_per_user), (256, 16));
+        let mut env = mcp_env();
+        env.extend([
+            ("MCP_WAIT_MAX_CONCURRENT", "8"),
+            ("MCP_WAIT_MAX_PER_USER", "2"),
+        ]);
+        let mcp = load_mcp(&env, TOKENS).unwrap().mcp.unwrap();
+        assert_eq!((mcp.wait_max_concurrent, mcp.wait_max_per_user), (8, 2));
+        for var in ["MCP_WAIT_MAX_CONCURRENT", "MCP_WAIT_MAX_PER_USER"] {
+            for bad in ["0", "-1", "many"] {
+                let mut env = mcp_env();
+                env.push((var, bad));
+                let err = load_mcp(&env, TOKENS).unwrap_err();
+                assert!(
+                    matches!(&err, ConfigError::Invalid { var: v, .. } if *v == var),
+                    "{var}={bad}: {err}"
+                );
+            }
         }
     }
 

@@ -2,8 +2,9 @@
 
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slices 11 (tools and bearer
   tokens; see the [status note](#status-note-2026-09-30-slice-11-is-built)) and 12 (`wait_for_job`
-  with progress; [status note](#status-note-2026-09-30-slice-12-is-built)). **Planned, not
-  built:** slice 14 (OIDC, after the MVP)
+  with progress; [status note](#status-note-2026-09-30-slice-12-is-built)); the review fixes
+  ([status note](#status-note-2026-09-30-review-fixes)) bound the waits, reserve the job ids and
+  add `start_job.gate`. **Planned, not built:** slice 14 (OIDC, after the MVP)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). Amends the design sentence "every input
   goes through the inbox" of [`orchestrator.md`](../orchestrator.md#event-flow) for MCP, and the
   "needs the inbox" note of MVP step 6. Refines [ADR 0004](0004-closed-enums-over-dyn-registry.md)
@@ -100,6 +101,9 @@ MCP message. This is one additive field; existing events read as before.
 | `MCP_TOKENS_FILE` | none | YAML `[{user, tokenEnv}]`; required when the surface is mounted |
 | `MCP_ALLOWED_HOSTS` | none | required; the `Host` values the server accepts |
 | `MCP_WAIT_MAX_SECS` | `3600` | the largest `timeout_secs` of `wait_for_job` |
+| `MCP_WAIT_MAX_CONCURRENT` | `256` | most `wait_for_job` calls one process holds open (status note: review fixes) |
+| `MCP_WAIT_MAX_PER_USER` | `16` | most `wait_for_job` calls one user holds open |
+| `MCP_ALLOWED_ORIGINS` | none | browser origins let through; a request with any other `Origin` is refused |
 | `MCP_TOKEN_<NAME>` | none | whatever `tokenEnv` names; one per token, secret |
 
 `web_url` in `start_job`'s answer needs the public origin of the web chat surface; the plan names
@@ -277,8 +281,8 @@ building it settled.
   answer carries **`created`**, which the decision does not list (additive). The id is not time-ordered, and the resource
   API lists threads by id (`ORDER BY id DESC`), so a thread started with a `client_request_id` sorts among the others by
   its hash, not by its age; threads without one are UUIDv7 as before. Listing by `created_at` is a follow-up.
-- **Tools.** Unknown arguments are refused (`invalid params`), so a client that sends `gate` (offered with the per-thread
-  gate of slice 3) hears that it did not apply. A failure the caller can act on (no such job, a finished job, an empty
+- **Tools.** Unknown arguments are refused (`invalid params`), so a client hears that an argument did not apply
+  (`gate` was refused this way until the review fixes below added it). A failure the caller can act on (no such job, a finished job, an empty
   text, an unknown agent) is a tool result with `isError: true`; only a malformed call or a fault of the server is a
   protocol error. `get_job` adds `title`, `agent`, `finished`, `hold` and `last_seq` (the cursor for `after_seq`) to the
   summary the decision lists; the pull request is found in the log (an artifact named `pull_request` or "Pull request").
@@ -316,3 +320,47 @@ note records what building it settled.
   calls run over HTTP with an rmcp client that records the notifications; and `orch-e2e` runs them on Postgres across two
   replicas, including one whose replica is killed mid-wait and a re-call on the other with the cursor of the last
   notification, after which the two calls together name every event once.
+
+### Status note, 2026-09-30: review fixes
+
+A review of slices 11 and 12 found no blocker; these changes followed it. The decision stands.
+
+- **`start_job.gate`.** `{require?, maxAttempts?}`, the per-thread layer of
+  [ADR 0018](0018-verification-gate-and-rework-loop.md), is checked by `App::resolve_gate`; a gate the deployment
+  cannot honour is a tool error that names the reason (in this build only `agent-checks` can be required, so `ci` and
+  `verifier` are refused until their slices are built). A gate of the wrong shape, or with another member, is refused as
+  invalid params. The gate is fixed when the job is created: a retry with the same `client_request_id` and a gate that
+  would change it is refused (`App::gate_request_changes`); a retry that leaves the gate out is a retry.
+- **A retry says what the first request said.** The same `client_request_id` with another text, agent, title or gate is
+  **refused**, naming what differs, instead of returning the first job as if it were the new request. A retry that
+  leaves out the optional arguments is the job. (This replaces the slice 11 behaviour, "the job that is there is what
+  it returns".)
+- **Job ids are reserved.** The id derived from a `client_request_id` has UUID version 8 (`ThreadId::is_derived`); the
+  AG-UI surface, which lets a client choose a thread id, **refuses a new thread with a version-8 id** (400), so a chat
+  client cannot occupy the id a later `start_job` would derive. If a thread of another user already has the derived id
+  (a collision, or a thread made before the reservation), `start_job` answers a tool error that says the
+  `client_request_id` cannot be used, and nothing of that thread.
+- **Waits are bounded.** A `wait_for_job` is a request that stays open on a route with no request timeout, so there are
+  caps: `MCP_WAIT_MAX_CONCURRENT` (per process, 256) and `MCP_WAIT_MAX_PER_USER` (per user, 16); a call over a cap is a
+  tool error starting "too many waits". A slot is given back however the call ends, including a client that hangs up
+  (the request's cancellation token). Every other tool is cut off after 30 s (a tool error).
+- **A wait nobody listens to is short.** A call **without a `progressToken`** sends nothing, so an intermediary may take
+  it for dead: it returns `timed_out` with `resume_after_seq` after at most one heartbeat interval (60 s), however large
+  `timeout_secs` is. A client that wants to wait longer passes a token, or calls again with the cursor. The tool
+  description and the crate README say so.
+- **Interrupted says when to come back.** A replica that is shutting down ends its waits with `interrupted` and
+  `retry_after_secs` (2), so a client does not spin against it.
+- **`get_job` reads the pull request with one bounded query** (`ThreadStore::latest_events`, the newest artifacts first,
+  32 of them, with a conformance case), not a scan of the log. Text that came from the agent or the log (titles, the
+  pull request's fields, findings) is cut to a size, and only an `https` pull request URL is reported.
+- **Smaller.** The wait re-reads the thread whenever its cursor reaches the last event, so a stop announced by the last
+  event is seen at once; the heartbeat is timed from the start of the call; the server's instructions say `after_seq`.
+  `MCP_ALLOWED_HOSTS` entries must be `host` or `host:port` (a URL, a wildcard or a port that is not a number is exit
+  78); a token is at least **32 bytes** (exit 78); more than one `Authorization` header is 401; rmcp's `Origin`
+  validation is on with an empty allow-list (`MCP_ALLOWED_ORIGINS` to let browser origins through), which non-browser
+  clients, who send no `Origin`, do not meet. The default log filter is `info,rmcp=warn`.
+- **Behind oauth2-proxy.** `/mcp` authenticates itself, so the proxy must let it through without a session:
+  oauth2-proxy's `skip_auth_routes` (for example `^/mcp`). *Unverified*: no oauth2-proxy was run here. Also
+  *unverified*: whether oauth2-proxy passes an `Authorization: Bearer` header it did not issue through to the upstream
+  untouched (with `skip_auth_routes` it should not look at it; it can also be configured to treat such a header as its
+  own JWT, `skip_jwt_bearer_tokens`, which must be off for this route). Check both before relying on it.

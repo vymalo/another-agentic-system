@@ -19,9 +19,10 @@ pub enum TokenError {
     /// No token at all: the surface would refuse everyone, which is a mistake, not a policy.
     #[error("no token is configured")]
     NoTokens,
-    /// A token with no characters.
-    #[error("the token of {user} is empty")]
-    Empty {
+    /// A token that is too short to resist guessing. A generator gives 32 random bytes as 43
+    /// characters of base64: `openssl rand -base64 32`.
+    #[error("the token of {user} is shorter than {MIN_TOKEN_BYTES} bytes")]
+    TooShort {
         /// Whose token.
         user: String,
     },
@@ -34,6 +35,10 @@ pub enum TokenError {
         second: String,
     },
 }
+
+/// The shortest token the surface accepts, in bytes. A static bearer token does not expire and
+/// nothing slows down a guess, so it must be a random secret, not a word.
+pub const MIN_TOKEN_BYTES: usize = 32;
 
 /// The user a request is authenticated as: what the bearer check puts in the request, and what
 /// the tools read. It is the only identity an MCP call has (`X-Auth-Request-Email` is never read).
@@ -79,8 +84,8 @@ impl TokenTable {
         let mut entries: Vec<Entry> = Vec::new();
         for (user, token) in tokens {
             let token = token.expose_secret();
-            if token.trim().is_empty() {
-                return Err(TokenError::Empty {
+            if token.len() < MIN_TOKEN_BYTES {
+                return Err(TokenError::TooShort {
                     user: user.to_string(),
                 });
             }
@@ -124,9 +129,16 @@ impl TokenTable {
 }
 
 /// The token of an `Authorization: Bearer <token>` header. The scheme is case-insensitive
-/// (RFC 9110); anything else, a missing header and a header that is not text are `None`.
+/// (RFC 9110); anything else, a missing header, a header that is not text and **more than one
+/// `Authorization` header** are `None`: with two, a proxy and this server could read different
+/// ones, so none is trusted.
 fn bearer(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let mut all = headers.get_all(header::AUTHORIZATION).iter();
+    let value = all.next()?;
+    if all.next().is_some() {
+        return None;
+    }
+    let value = value.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("bearer") {
         return None;
@@ -166,15 +178,19 @@ pub(crate) async fn require_bearer(
 mod tests {
     use super::*;
 
+    const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
+    const ALICE_NEXT: &str = "alice-next-0123456789abcdef0123456789";
+    const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
+
     fn secret(s: &str) -> SecretString {
         SecretString::from(s.to_owned())
     }
 
     fn table() -> TokenTable {
         TokenTable::new([
-            (UserId::new("alice@example.com"), secret("alice-token")),
-            (UserId::new("alice@example.com"), secret("alice-next-token")),
-            (UserId::new("bob@example.com"), secret("bob-token")),
+            (UserId::new("alice@example.com"), secret(ALICE_TOKEN)),
+            (UserId::new("alice@example.com"), secret(ALICE_NEXT)),
+            (UserId::new("bob@example.com"), secret(BOB_TOKEN)),
         ])
         .unwrap()
     }
@@ -184,14 +200,19 @@ mod tests {
         let t = table();
         assert_eq!(t.len(), 3);
         assert_eq!(
-            t.authenticate("bob-token").unwrap().as_str(),
+            t.authenticate(BOB_TOKEN).unwrap().as_str(),
             "bob@example.com"
         );
         // A rotation: both of alice's tokens work.
-        for token in ["alice-token", "alice-next-token"] {
+        for token in [ALICE_TOKEN, ALICE_NEXT] {
             assert_eq!(t.authenticate(token).unwrap().as_str(), "alice@example.com");
         }
-        for wrong in ["", "alice", "alice-token ", "ALICE-TOKEN", "bob-token\n"] {
+        let (with_space, upper, with_newline) = (
+            format!("{ALICE_TOKEN} "),
+            ALICE_TOKEN.to_uppercase(),
+            format!("{BOB_TOKEN}\n"),
+        );
+        for wrong in ["", "alice", &with_space, &upper, &with_newline] {
             assert!(t.authenticate(wrong).is_none(), "{wrong:?}");
         }
     }
@@ -199,14 +220,24 @@ mod tests {
     #[test]
     fn unusable_sets_are_refused() {
         assert_eq!(TokenTable::new([]).unwrap_err(), TokenError::NoTokens);
-        assert!(matches!(
-            TokenTable::new([(UserId::new("a@x.io"), secret("  "))]).unwrap_err(),
-            TokenError::Empty { user } if user == "a@x.io"
-        ));
+        // Empty, a word, and one byte too few.
+        for short in ["", "  ", "password", &"x".repeat(MIN_TOKEN_BYTES - 1)] {
+            assert!(
+                matches!(
+                    TokenTable::new([(UserId::new("a@x.io"), secret(short))]).unwrap_err(),
+                    TokenError::TooShort { user } if user == "a@x.io"
+                ),
+                "{short:?}"
+            );
+        }
+        assert!(
+            TokenTable::new([(UserId::new("a@x.io"), secret(&"x".repeat(MIN_TOKEN_BYTES)))])
+                .is_ok()
+        );
         assert!(matches!(
             TokenTable::new([
-                (UserId::new("a@x.io"), secret("same")),
-                (UserId::new("b@x.io"), secret("same")),
+                (UserId::new("a@x.io"), secret(ALICE_TOKEN)),
+                (UserId::new("b@x.io"), secret(ALICE_TOKEN)),
             ])
             .unwrap_err(),
             TokenError::Shared { first, second } if (first.as_str(), second.as_str()) == ("a@x.io", "b@x.io")
@@ -216,7 +247,7 @@ mod tests {
     #[test]
     fn a_table_never_shows_a_token() {
         let shown = format!("{:?}", table());
-        assert!(!shown.contains("token"), "{shown}");
+        assert!(!shown.contains("0123456789"), "{shown}");
         assert!(shown.contains("alice@example.com"));
     }
 
@@ -235,5 +266,12 @@ mod tests {
         assert_eq!(bearer(&with("Bearer ")), None);
         assert_eq!(bearer(&with("abc")), None);
         assert_eq!(bearer(&HeaderMap::new()), None);
+        // Two headers: none is trusted, even when both say the same.
+        let mut two = with("Bearer abc");
+        two.append(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer abc"),
+        );
+        assert_eq!(bearer(&two), None);
     }
 }

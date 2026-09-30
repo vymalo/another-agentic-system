@@ -632,6 +632,92 @@ pub async fn concurrent_writers_keep_seq_contiguous<S: ThreadStore>(store: S) {
     assert_eq!(texts.len(), 21, "no duplicated events");
 }
 
+/// `latest_events`: the newest events of one kind, newest first, bounded by the limit, and only
+/// of the thread asked for.
+pub async fn latest_events_newest_first<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    let artifact = |name: &str| NewEvent {
+        at: t0(),
+        actor: Actor::agent(&AgentId::new("coder"), None),
+        body: EventBody::Artifact(orch_core::ArtifactData {
+            name: name.to_owned(),
+            mime_type: None,
+            uri: None,
+            text: None,
+        }),
+        idempotency_key: None,
+    };
+    let events = vec![
+        artifact("a"),
+        user_event("between", None),
+        artifact("b"),
+        artifact("c"),
+        user_event("last", None),
+    ];
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Working, events, vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    // Another thread's artifact must not show.
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![artifact("other")], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    let names = |v: Vec<orch_core::Event>| {
+        v.into_iter()
+            .filter_map(|e| match e.body {
+                EventBody::Artifact(a) => Some((e.seq, a.name)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let all = store
+        .latest_events(thread_id(1), orch_core::EventKind::Artifact, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        names(all),
+        [
+            (5, "c".to_owned()),
+            (4, "b".to_owned()),
+            (2, "a".to_owned())
+        ]
+    );
+    let newest = store
+        .latest_events(thread_id(1), orch_core::EventKind::Artifact, 1)
+        .await
+        .unwrap();
+    assert_eq!(names(newest), [(5, "c".to_owned())]);
+    assert!(
+        store
+            .latest_events(thread_id(1), orch_core::EventKind::Error, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .latest_events(thread_id(9), orch_core::EventKind::Artifact, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no thread, no events"
+    );
+}
+
 pub async fn list_events_after_limit<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     let events: Vec<NewEvent> = (0..4).map(|i| user_event(&format!("e{i}"), None)).collect();

@@ -182,6 +182,17 @@ async fn attempt<P: Ports>(
         }
         None => None,
     };
+    // The ids the MCP surface derives from a user and a request id are not for a consumer to
+    // choose (ADR 0019): a thread could be created under an id another user's `start_job` will
+    // need. A job that exists is still continued here.
+    if known.is_none() && thread.is_derived() {
+        return Err(Problem::bad_request(format!(
+            "thread ids of UUID version {} are reserved for jobs started over MCP; mint a \
+             UUIDv7 (or any other version) for a new thread",
+            ThreadId::DERIVED_VERSION
+        ))
+        .into());
+    }
     let view = match &known {
         Some((_, _, projector)) => projector.view(user),
         None => ThreadView::new_thread(user.clone()),

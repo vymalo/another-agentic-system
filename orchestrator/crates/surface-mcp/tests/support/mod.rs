@@ -27,8 +27,8 @@ pub type Client = RunningService<RoleClient, Progress>;
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
-pub const ALICE_TOKEN: &str = "alice-token";
-pub const BOB_TOKEN: &str = "bob-token";
+pub const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
+pub const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
 pub const T: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
@@ -38,6 +38,10 @@ pub struct Options {
     pub dev_user: Option<&'static str>,
     pub heartbeat: Option<Duration>,
     pub wait_max: Option<Duration>,
+    /// `(per process, per user)`.
+    pub wait_limits: Option<(usize, usize)>,
+    pub tool_timeout: Option<Duration>,
+    pub allowed_origins: Vec<&'static str>,
 }
 
 pub struct Harness {
@@ -140,6 +144,17 @@ impl Harness {
         if let Some(max) = options.wait_max {
             config = config.with_wait_max(max).unwrap();
         }
+        if let Some((process, user)) = options.wait_limits {
+            config = config.with_wait_limits(process, user).unwrap();
+        }
+        if let Some(timeout) = options.tool_timeout {
+            config = config.with_tool_timeout(timeout).unwrap();
+        }
+        if !options.allowed_origins.is_empty() {
+            config = config
+                .with_allowed_origins(options.allowed_origins.iter().copied())
+                .unwrap();
+        }
         let api = ApiConfig {
             auth: AuthConfig {
                 dev_user: options.dev_user.map(UserId::new),
@@ -200,6 +215,39 @@ impl Harness {
         assert!(self.threads_of(BOB).await.is_empty());
         assert!(self.agent.calls().is_empty(), "{:?}", self.agent.calls());
     }
+}
+
+/// The JSON-RPC messages a raw `POST /mcp` answered with, in order: the body itself, or the `data:`
+/// events of an event stream.
+pub async fn messages(resp: reqwest::Response) -> Vec<Value> {
+    let is_stream = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    let body = resp.text().await.unwrap();
+    if !is_stream {
+        return serde_json::from_str(&body).into_iter().collect();
+    }
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str(data.trim()).ok())
+        .collect()
+}
+
+/// A raw `tools/call` body. `progress_token` adds `_meta.progressToken`, which is what makes a
+/// server send progress notifications; without it a call says nothing is listening.
+pub fn tool_call(tool: &str, arguments: Value, progress_token: Option<&str>) -> Value {
+    let mut params = json!({ "name": tool, "arguments": arguments });
+    if let Some(token) = progress_token {
+        params["_meta"] = json!({ "progressToken": token });
+    }
+    json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+}
+
+/// The `Authorization` header of `token`.
+pub fn bearer(token: &str) -> (&'static str, String) {
+    ("Authorization", format!("Bearer {token}"))
 }
 
 /// A client for `url` with the bearer `token`.
