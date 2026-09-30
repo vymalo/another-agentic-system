@@ -259,7 +259,6 @@ pub struct Job {
     /// message on a finished thread starts the next job). A ledger stored before the field
     /// existed is job 1. Only the current job is stored; the log keeps the rest, marked by
     /// `job_started` events.
-    #[serde(skip_serializing_if = "is_first_job")]
     pub number: u32,
     /// The policy this job runs under. The thread's: every job of a thread runs under the gate
     /// it was created with.

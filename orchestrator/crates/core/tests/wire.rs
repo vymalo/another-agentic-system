@@ -134,16 +134,13 @@ fn job_started_is_the_systems_word_and_carries_the_number() {
 }
 
 #[test]
-fn a_ledger_without_a_number_is_job_one_and_only_a_later_job_writes_it() {
+fn a_ledger_without_a_number_is_job_one_and_the_ledger_writes_it() {
     let job: Job = serde_json::from_value(json!({})).unwrap();
     assert_eq!(job.number, 1);
     let old: Job = serde_json::from_value(json!({"attempt": 2, "verification": 3})).unwrap();
     assert_eq!(old.number, 1);
-    // job 1 is written exactly as before the field existed
-    assert_eq!(
-        serde_json::to_value(Job::default()).unwrap().get("number"),
-        None
-    );
+    // the ledger always says which job it is (the export shows it), unlike the client's view
+    assert_eq!(serde_json::to_value(Job::default()).unwrap()["number"], 1);
     let second = old.next();
     let v = serde_json::to_value(&second).unwrap();
     assert_eq!(v["number"], 2);
