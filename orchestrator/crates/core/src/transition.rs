@@ -23,9 +23,9 @@ use crate::event::{
     Origin, ThreadStateData, UserMessageData,
 };
 use crate::gate::{
-    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_SUMMARY_BYTES, MAX_TASK_BYTES,
-    PushedRef, Recognised, Snapshot, Timer, Verdict, WatchKey, cap_findings, recognise_artifact,
-    repo_key, truncate_to,
+    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_SUMMARY_BYTES, PushedRef,
+    Recognised, Snapshot, Timer, Verdict, WatchKey, add_task_message, cap_findings,
+    recognise_artifact, repo_key, truncate_to,
 };
 use crate::ids::{AgentId, UserId};
 use crate::thread::ThreadState;
@@ -329,11 +329,12 @@ pub fn transition(
 /// Most bytes of a verifier failure's reason that reach the log.
 const MAX_HOLD_REASON_BYTES: usize = 512;
 
-/// Keeps the user's task for the verifier, under an active gate only (an empty gate never
-/// touches the job).
+/// Keeps what the person wrote, for the prompts the core writes (the rework and the verifier's):
+/// every user message of the job in order, capped (`add_task_message`). Under an active gate
+/// only: a job with no gate never has a ledger to keep it in, and never needs one.
 fn note_task(job: &mut Job, text: &str) {
-    if job.gate.is_active() && job.task.is_none() {
-        job.task = Some(truncate_to(text, MAX_TASK_BYTES).to_owned());
+    if job.gate.is_active() {
+        job.task = add_task_message(job.task.as_deref(), text);
     }
 }
 
@@ -731,6 +732,7 @@ fn note_artifact(job: &mut Job, name: &str, text: Option<&str>) -> Vec<Command> 
                 key: WatchKey::ci(&pushed.repository, &pushed.commit),
             });
             job.pushed = Some(pushed);
+            job.branch_problem = None;
             watch.into_iter().collect()
         }
         Recognised::Checks(report) => {
@@ -776,9 +778,15 @@ fn note_artifact(job: &mut Job, name: &str, text: Option<&str>) -> Vec<Command> 
         }
         Recognised::Malformed {
             artifact: crate::gate::KnownArtifact::Branch,
-            reason: _,
+            reason,
+        } => {
+            // Nothing was pushed as far as the gate can tell, and the agent should hear why
+            // (a source with no pushed commit says this instead of "no pushed commit"). An earlier
+            // usable `branch` stays the pushed commit.
+            job.branch_problem = Some(truncate_to(&reason, 512).to_owned());
+            Vec::new()
         }
-        | Recognised::Other => Vec::new(),
+        Recognised::Other => Vec::new(),
     }
 }
 

@@ -106,6 +106,83 @@ async fn the_default_gate_requires_nothing_and_the_job_stays_the_default() {
     assert_eq!(done.job, Job::default());
 }
 
+/// The owner's first live run (ADR 0018, 2026-09-30): "Hi" answered in plain text, then checks run
+/// on an unchanged worktree. Neither pushed a commit, so neither may end the thread `done`.
+#[tokio::test]
+async fn checks_without_a_pushed_commit_never_end_the_thread_done() {
+    let w = World::new();
+    let app = w.app_with(gated(&[CheckSource::AgentChecks]));
+    let t = create(&app, &alice(), "plain", "Hi").await;
+
+    // Attempt 1: a plain-text answer, no checks, nothing pushed.
+    apply(&app, t.id, completed()).await;
+    let after = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!((after.state, after.job.attempt), (ThreadState::Queued, 2));
+
+    // Attempt 2: passing checks on the base commit, and no `branch` artifact.
+    apply(&app, t.id, checks(true, &[])).await;
+    apply(&app, t.id, completed()).await;
+    let after = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(after.state, ThreadState::Queued, "reworked, not done");
+    assert_eq!(after.job.attempt, 3);
+    let texts = delegated_texts(&w, t.id).await;
+    assert!(
+        texts.last().unwrap().contains("no pushed commit"),
+        "{texts:?}"
+    );
+    assert!(texts.last().unwrap().contains("```request\nHi\n```"));
+
+    // Attempt 3 is the last: the same again fails the thread, with the reason.
+    apply(&app, t.id, checks(true, &[])).await;
+    apply(&app, t.id, completed()).await;
+    let failed = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(failed.state, ThreadState::Failed);
+    let ev = events(&app, &alice(), t.id).await;
+    let message = ev
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::Error(d) => Some(d.message.clone()),
+            _ => None,
+        })
+        .expect("an error event");
+    assert!(message.contains("no pushed commit"), "{message}");
+    // The only state the log announces is the failure: nothing was ever `done`.
+    let announced: Vec<ThreadState> = ev
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::ThreadState(d) => Some(d.state),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, [ThreadState::Failed]);
+}
+
+/// The coder asks what to do, the person answers, the attempt fails: the rework must carry the
+/// answer too, or the agent is told to keep working on "Hi".
+#[tokio::test]
+async fn a_rework_carries_every_message_the_person_wrote() {
+    let w = World::new();
+    let app = w.app_with(gated(&[CheckSource::AgentChecks]));
+    let t = create(&app, &alice(), "plain", "Hi").await;
+    app.post_message(&alice(), t.id, "fix login in acme/widgets".into())
+        .await
+        .unwrap();
+    apply(&app, t.id, branch()).await;
+    apply(&app, t.id, checks(false, &["test_login fails"])).await;
+    apply(&app, t.id, completed()).await;
+    let texts = delegated_texts(&w, t.id).await;
+    let rework = texts.last().unwrap();
+    assert!(
+        rework.contains("```request\nHi\n\n[next message]\nfix login in acme/widgets\n```"),
+        "{rework}"
+    );
+    let job = app.get_thread(&alice(), t.id).await.unwrap().job;
+    assert_eq!(
+        job.task.as_deref(),
+        Some("Hi\n\n[next message]\nfix login in acme/widgets")
+    );
+}
+
 #[tokio::test]
 async fn a_failed_check_reworks_and_the_job_follows_the_thread() {
     let w = World::new();
@@ -131,6 +208,12 @@ async fn a_failed_check_reworks_and_the_job_follows_the_thread() {
     let texts = delegated_texts(&w, t.id).await;
     assert_eq!(texts.len(), 2, "the task, then the rework");
     assert!(texts[1].contains("test_login fails"), "{}", texts[1]);
+    // The next attempt is a new task: the delegation carries the person's request itself.
+    assert!(
+        texts[1].contains("```request\nmake it pass\n```"),
+        "{}",
+        texts[1]
+    );
     let ev = events(&app, &alice(), t.id).await;
     assert!(kinds(&ev).contains(&orch_core::EventKind::Rework));
     assert!(kinds(&ev).contains(&orch_core::EventKind::CheckResult));

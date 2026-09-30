@@ -77,6 +77,26 @@ the rework divider and the verifier subagent, and one CI result card per report 
 name, the short commit and a link to the run), which is also where the scripts assert them. The badge, counter and cards come back after a reload: the page replays
 the log.
 
+### Share a chat with a developer
+
+When something goes wrong in a thread (a card that looks wrong, a job that ended where you did not expect), send the developer
+the whole thread as one file. In the chat, **Export JSON** in the thread's header downloads `thread-<id>.json`. From a
+terminal, with the stack up:
+
+```sh
+dev/export-thread.sh <thread-id>              # writes thread-<thread-id>.json here; the id is in the address bar, /threads/<id>
+dev/export-thread.sh <thread-id> chat.json    # or name the file ("-" writes it to stdout)
+```
+
+The file is `GET /api/threads/{id}/export` ([`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml), operation `exportThread`): a
+versioned document (`format` `another-agentic-system/thread-export`, `version` 1) with the thread, its **full job** (the gate, the
+attempt, the pushed commit, what each check said), the agent binding and **every event of the log in order**: your messages, every agent
+status and artifact, the check, CI and verifier cards, each rework and the state changes. Every card of the chat is drawn from that log.
+**Read it before you send it.** It holds what you and the agents wrote in the thread, and your e-mail address as the author of your
+messages; it never holds a credential of the orchestrator (no bearer token, webhook secret or database URL is ever written to the log), but a
+person can paste anything into a chat. Only the owner of a thread can export it (another identity gets a 404, as when reading it).
+`coder-e2e.sh` and `verify-e2e.sh` export the thread they drive and check what is in the file.
+
 ### Run the scenarios
 
 Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary:
@@ -490,7 +510,7 @@ table wins.
 
 | Keyword in the text | `SendStreamingMessage` answers with | Thread ends |
 |---|---|---|
-| `red-once` | `submitted`, `working`, artifacts `branch` and `checks` (failing, commit `1111111…`), `completed`; **with "this is attempt 2" or later in the text** (the gate's rework prompt, which quotes the findings, so it still says `red-once`) the same with passing checks on commit `2222222…`. See [Verification](#verification-the-gate) | `done` under a gate, at attempt 2 |
+| `red-once` | `submitted`, `working`, artifacts `branch` and `checks` (failing, commit `1111111…`), `completed`; **with "this is attempt 2" or later in the text** (the gate's rework prompt, which carries the task and quotes the findings, so it still says `red-once`) the same with passing checks on commit `2222222…`. See [Verification](#verification-the-gate) | `done` under a gate, at attempt 2 |
 | `red-always` | as the failing `red-once` (commit `3333333…`), on every attempt | `failed` under a gate, after 3 attempts |
 | `error` | JSON-RPC error `-32602` (HTTP 200): a permanent rejection, no retry | `failed`, `error` event |
 | `reject` | task `submitted`, then `rejected` with a message | `failed` |
@@ -550,7 +570,9 @@ the checks say:
 
 - `red-once fix the login`: attempt 1 reports failing checks with one finding; the orchestrator sends the agent
   back (a `rework` event, then a **new A2A task in the same context** whose text starts "Your work did not pass
-  verification (attempt 1 of 3); this is attempt 2" and quotes the finding as untrusted data); attempt 2 reports
+  verification (attempt 1 of 3); this is attempt 2", carries **the person's messages in their own words** (every one of the thread, in order, in a fenced
+  block labelled `request`: each attempt is a new task, and an agent need not remember the one before) and quotes the finding as
+  untrusted data); attempt 2 reports
   passing checks on another commit. The thread ends `done`, `job.attempt` 2.
 - `red-always fix the login`: every attempt fails; after the third (`maxAttempts` 3 unless configured) the thread
   ends `failed` and the run ends with `RUN_ERROR` `code: "checks_failed"`.
@@ -619,8 +641,8 @@ a run that removes the required source, asks for more attempts than `ORCH_MAX_AT
 (the artifacts and how the rework prompt changes the answer) on its own.
 
 To gate every agent instead of one, set `ORCH_GATE=agent-checks` on the `orchestrator` service; the mocks that
-report no `checks` would then be sent back three times and fail, which is the fail-closed reading of "no checks
-reported".
+report no `checks`, or no `branch` (the checks count only on the commit the agent pushed, [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)),
+would then be sent back three times and fail, which is the fail-closed reading of "no checks reported" and of "no pushed commit".
 
 ### Verifier (the verifier agent of the gate)
 

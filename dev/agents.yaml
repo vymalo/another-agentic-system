@@ -19,7 +19,8 @@
   # names the checks that count (`ci.required`): a report of any other name is a card and nothing else,
   # so no first report can pass a red commit. The scripted model (dev/coder/wiremock) runs the checks in
   # both variants, so both reach `done`; a real model that skips `run_checks` is sent back, three attempts
-  # in all, with "no checks reported" (dev/agents.live.yaml says how to loosen that).
+  # in all, with "no checks reported", and one that pushed nothing with "no pushed commit" (dev/agents.live.yaml
+  # says how to loosen that).
   gate:
     require: [agent-checks, ci]
     ci:

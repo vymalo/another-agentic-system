@@ -7,9 +7,11 @@
 # the CI deadline and end blocked. Here the coder is gated on its own checks only:
 #
 #   * `agent-checks`: the coder runs the checks of the repository (`run_checks`) and reports them as a `checks`
-#     artifact bound to the commit it pushed. A job is done when they passed on that commit. A model that
-#     skips `run_checks` is sent back with "no checks reported", three attempts in all; to accept such a
-#     coder, empty the gate (`gate: {}`; an agent with no gate is done when it says so).
+#     artifact bound to the commit it pushed. A job is done when they passed on THAT commit: a coder that
+#     pushed nothing ("Hi" answered in plain text, or checks run on an unchanged worktree) is sent back with
+#     "no pushed commit", and one that skips `run_checks` with "no checks reported", three attempts in all.
+#     To accept a coder that only talks, empty the gate (`gate: {}`; an agent with no gate is done when it
+#     says so).
 #   * `ci`, opt-in: add it once the repository's GitHub webhook reaches the orchestrator (smee, dev/README.md)
 #     AND you know the exact NAME of the check run that counts (GitHub shows it on the pull request, for
 #     example `build` or `ci / test`). A gate that requires `ci` must name it, or the orchestrator refuses

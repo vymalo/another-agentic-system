@@ -1591,7 +1591,8 @@ fn busy_job() -> Job {
         gate,
         attempt: 2,
         verification: 3,
-        task: Some("make the tests pass".into()),
+        task: Some("make the tests pass\n\n[next message]\nin acme/widgets".into()),
+        branch_problem: Some("`commit` is not a full commit hash".into()),
         summary: Some("Done: the fix is on the branch".into()),
         pushed: Some(PushedRef {
             repository: "github.com/vymalo/repo".into(),

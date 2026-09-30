@@ -243,12 +243,129 @@ async fn other_users_threads_are_not_found() {
         app.event_stream(&bob(), t.id, 0).await,
         Err(AppError::NotFound)
     ));
+    assert!(matches!(
+        app.export_thread(&bob(), t.id).await,
+        Err(AppError::NotFound)
+    ));
     assert!(app.list_threads(&bob(), None, 50).await.unwrap().is_empty());
     let random = ThreadId(Uuid::from_u128(5));
     assert!(matches!(
         app.get_thread(&alice(), random).await,
         Err(AppError::NotFound)
     ));
+    assert!(matches!(
+        app.export_thread(&alice(), random).await,
+        Err(AppError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn an_export_is_the_thread_its_binding_and_the_whole_log_in_order() {
+    let w = World::new();
+    let app = w.app();
+    let t = create(&app, &alice(), "plain", "first").await;
+    // More than one page of the store's reads (500 events each): the export joins them.
+    for i in 0..1200 {
+        app.post_message(&alice(), t.id, format!("message {i}"))
+            .await
+            .unwrap();
+    }
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(export.thread.id, t.id);
+    assert_eq!(export.thread.last_seq, 1201);
+    assert_eq!(export.events.len(), 1201);
+    let seqs: Vec<i64> = export.events.iter().map(|e| e.seq).collect();
+    assert_eq!(
+        seqs,
+        (1..=1201).collect::<Vec<i64>>(),
+        "whole, in order, no repeats"
+    );
+    assert!(!export.truncated);
+    let binding = export
+        .binding
+        .expect("a thread has its binding from the start");
+    assert_eq!(binding.agent_id, AgentId::new("plain"));
+    assert_eq!(binding.context_id, t.id.to_string());
+    // It is the same log a list of events reads.
+    let listed = app.list_events(&alice(), t.id, 0, 2000).await.unwrap();
+    assert_eq!(listed, export.events);
+}
+
+#[tokio::test]
+async fn an_export_stops_at_its_bound_and_says_so() {
+    let w = World::new();
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_events: 3,
+        ..orch_app::AppConfig::default()
+    });
+    let t = create(&app, &alice(), "plain", "first").await;
+    for i in 0..4 {
+        app.post_message(&alice(), t.id, format!("message {i}"))
+            .await
+            .unwrap();
+    }
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(
+        export.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(export.truncated, "the log has 5 events");
+    assert_eq!(export.thread.last_seq, 5);
+    // At exactly the bound nothing is cut, so nothing is flagged.
+    let exact = w.app_with(orch_app::AppConfig {
+        max_export_events: 5,
+        ..orch_app::AppConfig::default()
+    });
+    let export = exact.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(export.events.len(), 5);
+    assert!(!export.truncated);
+}
+
+#[tokio::test]
+async fn an_export_stops_at_its_byte_budget_and_keeps_the_head() {
+    let w = World::new();
+    let t = create(&w.app(), &alice(), "plain", "first").await;
+    for i in 0..4 {
+        w.app()
+            .post_message(&alice(), t.id, format!("message {i} {}", "x".repeat(200)))
+            .await
+            .unwrap();
+    }
+    let all = w.app().export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(all.events.len(), 5);
+    assert!(!all.truncated);
+    let sizes: Vec<usize> = all
+        .events
+        .iter()
+        .map(|e| serde_json::to_vec(e).unwrap().len() + 1)
+        .collect();
+    // A budget of the first three events and one byte short of a fourth: the head, flagged.
+    let budget = sizes[..3].iter().sum::<usize>() + sizes[3] - 1;
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_bytes: budget,
+        ..orch_app::AppConfig::default()
+    });
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(
+        export.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(export.truncated);
+    // The whole log fits a budget of exactly its size: nothing is cut, nothing is flagged.
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_bytes: sizes.iter().sum(),
+        ..orch_app::AppConfig::default()
+    });
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(export.events.len(), 5);
+    assert!(!export.truncated);
+    // A budget too small for the first event leaves an empty, flagged export.
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_bytes: 10,
+        ..orch_app::AppConfig::default()
+    });
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert!(export.events.is_empty() && export.truncated);
 }
 
 #[tokio::test]

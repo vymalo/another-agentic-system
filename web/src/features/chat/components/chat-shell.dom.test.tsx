@@ -20,6 +20,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 
 // The app in jsdom against the mock orchestrator: the shell, the runtime, the agent and LiveRuns.
 let ChatShell: typeof import("./chat-shell").ChatShell;
+let REVOKE_AFTER_MS: number;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
 let base = "";
@@ -72,6 +73,7 @@ beforeAll(async () => {
   }) as typeof fetch;
   // the API client binds fetch and Request when it is created: import the app after the patch
   ({ ChatShell } = await import("./chat-shell"));
+  ({ REVOKE_AFTER_MS } = await import("@/features/chat/lib/export-thread"));
 });
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -180,6 +182,124 @@ describe("ChatShell over AG-UI", () => {
     expect(calls.filter((c) => c.includes("/connect"))).toEqual([
       `GET /agui/threads/${id}/connect 200`,
     ]);
+  });
+
+  it("Export JSON downloads the whole thread as a file, through the API client", async () => {
+    const id = await makeThread("Implement the thing");
+    const blobs: Blob[] = [];
+    const revoked: string[] = [];
+    const downloads: string[] = [];
+    const createObjectURL = vi.fn((b: Blob) => {
+      blobs.push(b);
+      return "blob:export";
+    });
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = (u: string) => void revoked.push(u);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloads.push(`${this.download} ${this.href}`);
+    });
+    // The object URL must outlive a slow download: it is revoked REVOKE_AFTER_MS later, not at once.
+    const revokers: Array<() => void> = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (ms === REVOKE_AFTER_MS && typeof fn === "function") {
+        revokers.push(fn as () => void);
+        return 0;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+    try {
+      shell(id);
+      await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+      fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+      await waitFor(() => expect(downloads).toEqual([`thread-${id}.json blob:export`]));
+      expect(calls).toContain(`GET /api/threads/${id}/export 200`);
+      const [file] = blobs;
+      if (!file) throw new Error("nothing was downloaded");
+      const doc = JSON.parse(await file.text());
+      expect(doc.format).toBe("another-agentic-system/thread-export");
+      expect(doc.version).toBe(1);
+      expect(doc.thread.id).toBe(id);
+      expect(doc.events.length).toBe(doc.thread.lastSeq);
+      expect(doc.events[0].kind).toBe("user_message");
+      expect(REVOKE_AFTER_MS).toBeGreaterThanOrEqual(30_000);
+      expect(revokers).toHaveLength(1);
+      expect(revoked).toEqual([]);
+      revokers[0]?.();
+      expect(revoked).toEqual(["blob:export"]);
+      // the button is ready for another one, and nothing went wrong
+      expect(
+        (screen.getByRole("button", { name: "Export JSON" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+      expect(screen.queryByText(/Could not export/)).toBeNull();
+    } finally {
+      click.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it("a refused export says why and downloads nothing", async () => {
+    const id = await makeThread("Implement the thing");
+    const createObjectURL = vi.fn(() => "blob:never");
+    URL.createObjectURL = createObjectURL;
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    failing = {
+      key: `GET /api/threads/${id}/export`,
+      status: 503,
+      detail: "storage is unavailable",
+    };
+    fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not export the thread: storage is unavailable");
+    expect(createObjectURL).not.toHaveBeenCalled();
+    // another try works once the server does
+    failing = undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Export JSON" }));
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.queryByText(/Could not export/)).toBeNull());
+    } finally {
+      click.mockRestore();
+    }
+  });
+
+  it("a failed export is not shown under the next thread the header is reused for", async () => {
+    const first = await makeThread("Implement the thing");
+    const second = await makeThread("Implement the other thing");
+    const { rerender } = shell(first);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    failing = {
+      key: `GET /api/threads/${first}/export`,
+      status: 503,
+      detail: "storage is unavailable",
+    };
+    fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+    await screen.findByRole("alert");
+    // The same component instance now shows another thread: the failure is about the first.
+    rerender(
+      <TooltipProvider>
+        <ChatShell threadId={second} />
+      </TooltipProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText(/Could not export/)).toBeNull());
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(screen.queryByRole("alert")).toBeNull();
+    // and it does not come back when the person returns to the first
+    rerender(
+      <TooltipProvider>
+        <ChatShell threadId={first} />
+      </TooltipProvider>,
+    );
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(screen.queryByText(/Could not export/)).toBeNull();
   });
 
   it("a blocked thread offers the question, and the answer is a resume, not a message", async () => {

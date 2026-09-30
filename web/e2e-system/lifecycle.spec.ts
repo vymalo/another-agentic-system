@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import {
   actorLabel,
@@ -49,4 +50,33 @@ test("agent text renders once, with the actor", async ({ page }) => {
   await startThread(page, "talk please", "Coder");
   await expect(badge(page)).toHaveText("Done");
   await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("coder · coder-r47");
+});
+
+test("Export JSON: the real orchestrator's whole log in one downloaded file", async ({ page }) => {
+  await startThread(page, "echo hello", "Plain");
+  await expect(badge(page)).toHaveText("Done");
+  const id = threadId(page);
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Export JSON" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(`thread-${id}.json`);
+  const doc = JSON.parse(await readFile(await download.path(), "utf8"));
+  expect(doc.format).toBe("another-agentic-system/thread-export");
+  expect(doc.version).toBe(1);
+  expect(doc.thread.id).toBe(id);
+  expect(doc.binding.agentId).toBe("plain");
+  expect(doc.eventsTruncated).toBe(false);
+  const log: { seq: number; kind: string }[] = doc.events;
+  expect(log.map((e) => e.kind)).toEqual([
+    "user_message",
+    "agent_status",
+    "artifact",
+    "agent_status",
+    "thread_state",
+  ]);
+  expect(log.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+  // the same log the connect stream replays
+  expect(seqs(await framesOf(page.request, id))).toEqual(log.map((e) => e.seq));
 });

@@ -30,6 +30,8 @@
 #     and the orchestrator's GitHub webhook). When the thread does not end `done`, the last lines of the
 #     orchestrator's and mock-ci's logs are printed (the watch key of the pushed commit and of the report,
 #     for a mismatch of repository spelling or commit);
+#   * the thread exports (dev/export-thread.sh, GET /api/threads/{id}/export): a version 1 `thread-export` whose
+#     job holds the pushed commit and the agent's checks passed on it, and whose log is not empty;
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
 #   * git-server has the branch, and hello.txt on it is `hello`.
@@ -245,6 +247,23 @@ if [ -n "$commit" ] && [ "$ci_cards" = "mock-ci/build=success@$commit" ]; then
 else
   bad "the vymalo.ci cards are '${ci_cards:-none}', want exactly mock-ci/build=success@${commit:-<commit>}"
   dump_logs
+fi
+
+# --- the export: what the owner sends a developer (GET /api/threads/{id}/export) -------------------
+# dev/export-thread.sh is the script a person runs; it also checks the document's format, version and that its
+# log has no gap. The job in it is the whole ledger: the pushed commit and what each source said about it.
+if BASE_URL=$base AUTH_EMAIL=$email sh "$root/dev/export-thread.sh" "$thread" "$tmp/export.json" 2>"$tmp/export.err"; then
+  ok "dev/export-thread.sh saved the thread ($(tail -n 1 "$tmp/export.err" | sed 's/^thread [0-9a-f-]*: //'))"
+  export_facts=$(jq -r '[.format, "v\(.version)", "events>0=\(.events | length > 0)", "state=\(.thread.state)",
+    "pushed=\(.job.pushed.commit // "none")",
+    "checks=\([.job.results[]? | select(.source == "agent_checks") | "\(.status)@\(.commit)"] | join(","))"] | join(" ")' "$tmp/export.json" 2>/dev/null || true)
+  if [ -n "$commit" ] && [ "$export_facts" = "another-agentic-system/thread-export v1 events>0=true state=done pushed=$commit checks=passed@$commit" ]; then
+    ok "the export is a v1 thread-export: done, the pushed commit, the passed checks on it, a non-empty log"
+  else
+    bad "the export says '${export_facts:-nothing}', want a v1 thread-export, done, pushed=${commit:-<commit>}, checks=passed@${commit:-<commit>}"
+  fi
+else
+  bad "dev/export-thread.sh failed: $(head -c 300 "$tmp/export.err")"
 fi
 
 # --- mock-github's journal ------------------------------------------------------------------

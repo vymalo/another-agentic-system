@@ -39,7 +39,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 | Run (create a thread, send a message, answer an interrupt, send an A2UI action) | `POST /agui/agents/{agentId}` | Yes: HTTP + SSE binding | Built |
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built |
-| Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
+| Agent list, thread list and details, export, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/export`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
 | Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Removed on 2026-09-30 | Gone |
 
 The default, and the only surface, is `ORCH_SURFACES=agui`: the AG-UI routes and the resource API. The four
@@ -218,7 +218,7 @@ sequenceDiagram
   O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying (job attempt 1)
   O-->>U: ACTIVITY_SNAPSHOT vymalo.check check-1-1-agent_checks (failed, findings)
   O-->>U: ACTIVITY_SNAPSHOT vymalo.rework rework-2
-  O->>W: a new task in the same context, with the findings quoted as untrusted data
+  O->>W: a new task in the same context, with the person's request and the findings quoted as untrusted data
   O-->>U: SUBAGENT_STARTED (attempt 2), STATE_SNAPSHOT queued (job attempt 2)
   W-->>O: artifacts branch and checks (passed), completed
   O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying

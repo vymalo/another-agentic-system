@@ -13,7 +13,8 @@
 #      findings (a new A2A task in the same context), the second attempt passes. One run, two
 #      subagents, a `vymalo.check` that failed and one that passed, a `vymalo.rework`, and the run
 #      ends `RUN_FINISHED` success with `job.attempt` 2 in the final `STATE_SNAPSHOT`; the thread
-#      of the resource API is `done` and carries the same job.
+#      of the resource API is `done` and carries the same job, and its export (GET /api/threads/{id}/export)
+#      holds the whole job with the commit that passed and the rework in the log.
 #   2. `red-always`: three attempts (the default), then `RUN_ERROR` with `code: "checks_failed"`;
 #      the thread is `failed`.
 #   3. A run may lower the attempts in `forwardedProps["vymalo.gate"]`: `maxAttempts: 2` ends after two.
@@ -110,6 +111,9 @@ expect "the job at the end: done, attempt 2 of 3, the gate, the second commit" \
 wait_state "$THREAD" "done"
 expect "the thread of the resource API: done, and the job with it" \
   "$(api "/api/threads/$THREAD" | jq -r '[.state, .job.attempt, .job.maxAttempts, (.job.gate | join("+"))] | join(" ")')" "done 2 3 agent_checks"
+expect "its export (dev/export-thread.sh): the whole job, the commit that passed, and a log with the rework in it" \
+  "$(api "/api/threads/$THREAD/export" | jq -r '[.format, .version, .job.attempt, .job.pushed.commit[0:7], (.events | length > 0), ([.events[] | select(.kind == "rework")] | length)] | join(" ")')" \
+  "another-agentic-system/thread-export 1 2 2222222 true 1"
 
 echo "== red-always: three attempts, then checks_failed"
 run 'red-always fix the login'

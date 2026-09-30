@@ -680,6 +680,29 @@ message abandons a verification without using an attempt, so the next one has th
 and verdicts name the `verification` they belong to, which is how a leftover of the abandoned one is
 recognised as stale.
 
+**What each source needs** (`verify.rs`, pure functions of the job; [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)).
+Git is the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)), so every source judges the
+commit the agent pushed, and none passes without one:
+
+| Source | Passes when | Otherwise it is **failed** with |
+|---|---|---|
+| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit | "no checks reported" (no artifact); "no pushed commit" (no `branch` artifact; if the checks themselves failed, their findings follow it; when a `branch` artifact was sent and refused, "the `branch` artifact was not usable: <reason>" instead); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
+| `ci` | every named check reported `success`, `neutral` or `skipped` for the pushed commit | "no pushed commit" (or the reason the `branch` artifact was refused); a failing report's findings; pending while a named check has not reported |
+| `verifier` | a `verdict` with `passed: true` for the current attempt and verification | "no pushed commit" (or the reason the `branch` artifact was refused); the verdict's findings; pending until it answers |
+
+A failed source reworks while attempts are left: **the rework prompt** (`rework_prompt`, written by the core) opens with
+"Your work did not pass verification (attempt N of M); this is attempt N+1", then carries **the person's messages in their
+own words** (the job's `task`: every user message of the job in order, each later one after a `[next message]` line, in a
+fence labelled `request`), then the findings of each failed source, quoted as untrusted data. Each attempt is a new A2A
+task, and an agent need not remember the one before, so the prompt has to carry the task itself, and all of it: the first
+message alone would lose the answer to a question the agent asked. `note_task` adds each message under every **active**
+gate (whichever sources it requires; a job with no gate has no ledger). The whole is capped at 8 KiB: a lone message is
+cut there, and with several the first message and as many of the newest as fit are kept, the ones between replaced by a
+line `[… earlier messages omitted …]`, and a message that had to be cut ends in ` [cut]`. The fences follow CommonMark (an
+opening line of N backticks and a label, `request` or `untrusted`, closed by a line of at least N; N is longer than any run
+of backticks inside what they hold, so it is often more than 3 and neither text can close its own; findings are bullets
+indented two spaces on continuation lines): [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit) writes the grammar down for agents that read the prompt.
+
 `completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
 anything. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
 diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
@@ -824,6 +847,68 @@ stateDiagram-v2
 - **The chat.** The verifier is a subagent of its own (`sub-verify-<n>`, named after the agent); its verdict is a
   `vymalo.check` card with source `verifier` ([`api/agui.md`](api/agui.md#verification-the-gate)).
 
+### Exporting a thread
+
+**Built** (2026-09-30). `GET /api/threads/{id}/export` ([`api/chat-api.yaml`](api/chat-api.yaml), `exportThread`) returns one
+thread as a versioned JSON file, so its owner can send it to a developer. It is a read of what the orchestrator already holds:
+no new port and no new store query, because `ThreadStore::list_events` pages the log (`after`, `limit`) and `get_thread` and
+`get_binding` return the rest.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser or dev/export-thread.sh
+  participant A as orch-api (identity layer)
+  participant S as App::export_thread
+  participant T as ThreadStore
+  B->>A: GET /api/threads/{id}/export (X-Auth-Request-Email)
+  A->>S: export_thread(user, id)
+  S->>T: get_thread(Some(user), id)
+  T-->>S: the thread with its job, or none (404, also for another owner's thread)
+  loop pages of 500 while seq < thread.last_seq
+    S->>T: list_events(id, after, 500)
+    T-->>S: events in order
+  end
+  S->>T: get_binding(id)
+  S-->>A: ThreadExport { thread, binding, events, truncated, exported_at }
+  A-->>B: 200 application/json, Content-Disposition: attachment, Cache-Control: no-store
+```
+
+The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module):
+
+| Member | What |
+|---|---|
+| `exportedAt` | when the snapshot was taken, by the application clock |
+| `thread` | the contract `Thread`, what `GET /api/threads/{id}` answers |
+| `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task` (the person's messages), `branchProblem`, `pushed`, every `results` entry of the attempt, any `hold` |
+| `binding` | the A2A `agentId`, `contextId`, `taskId`, `taskState` and `revision`; `null` when none |
+| `events` | the log in order from `seq` 1, each exactly as the contract `Event` and the store serialise it. Every card of the chat is derived from it |
+| `eventsTruncated` | `true` when the log is longer than `events`: either bound of the read cut it (below); the events that are there are the first ones, `seq` 1 to the last, with no gap |
+
+**Bounds.** The read stops at `AppConfig::max_export_events` events (default 50 000) or `AppConfig::max_export_bytes` bytes of
+serialized events (default 32 MiB, compact JSON, counted event by event without building the text), whichever comes first,
+and keeps the head of the log. The count alone does not bound memory: an event may carry up to 100 000 characters of text.
+Both are settings of the thread service (`AppConfig`, set by whoever composes it; the binary uses the defaults). The file is
+written straight from the thread and its events, borrowed, through one serialisation (pretty-printed, so a person can open it and a
+developer can diff it: it is larger than the budget by the indentation), with no copy of the log as a JSON value in between.
+
+`events` stop at `thread.last_seq`, read before them, so the ledger and the log agree even on a thread that is moving. The
+AG-UI frames the chat is drawn from are **not** in the file: they are a pure, deterministic fold of `events`
+(`orch-agui-projection`), so a developer who has the events has them, and carrying both would double the file and let them
+disagree. The open outbox rows are not in it either: their last error is the operator's chain, which the log
+deliberately leaves out (`give_up` in the dispatcher keeps it on the row and tells the user a short reason).
+
+**Authorisation** is that of reading the thread, by construction: the route sits behind the same identity layer
+(`X-Auth-Request-Email`, fail closed, 401), and `App::export_thread` starts with `get_thread(Some(user), id)`, so another
+owner's thread, an unknown one and an id that is not a UUID are the same 404, never a 403. **Secrets:** the log holds
+only what the core appends from users, agents, CI reports and its own findings (*verified 2026-09-30 by reading
+`EventBody`, the dispatcher and the A2A adapter*): an agent's bearer token lives only in `AgentTransport::A2a`, whose
+`Debug` redacts it and which no event carries (what the dispatcher tells the thread about a failed delivery is `AgentError::public_detail`, "never transport text (URLs, proxy bodies)", pinned by `public_detail_never_carries_transport_text`; the full chain goes to the outbox row only); webhook secrets and MCP tokens are checked at the edge and
+never stored; the database URL is not in the store. The file does contain what people and agents wrote (a person can paste a
+secret into a chat, and an agent can print one into an artifact or a finding), and the owner's e-mail address as the `actor`
+of their messages (`ThreadRecord.owner` itself is never serialised). The owner is told to read it before sharing; the API test
+`the_export_holds_the_log_in_order_and_no_credential_of_the_orchestrator` fails if the agent's configured token ever appears.
+The web's **Export JSON** button and [`dev/export-thread.sh`](../dev/export-thread.sh) call this route.
+
 ## Core types
 
 **Built.** A separate crate with no async, no sqlx and no HTTP, so purity is enforced by the
@@ -922,7 +1007,8 @@ The gate policy is copied into `Job` at thread creation, so a configuration chan
 job. Pure functions of the core recognise the agent's `branch` artifact (sets `pushed`, emits
 `Watch { ci:<repo-key>@<sha> }`) and `checks` artifact (`recognise_artifact`), and normalise repository
 keys (`repo_key`). Findings are capped at 20 items and 16 KiB per source (`cap_findings`) and quoted as
-untrusted data in the rework prompt, which the core writes. `Job::default()` (the `{}` a row gets from the
+untrusted data in the rework prompt, which the core writes (after the person's request, see
+[Thread state and transitions](#thread-state-and-transitions)). `Job::default()` (the `{}` a row gets from the
 database) has no gate. There is still no wildcard arm anywhere. Where the code differs from the ADR's
 sketch: the `verification` counter, the `task` (the user's request) and the `summary` (what the agent said
 about its work), both kept for the verifier's prompt, are additions, so is `VerifierFailed` (slice 10), and a
