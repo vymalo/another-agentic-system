@@ -293,10 +293,12 @@ services:
 
   # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
   # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.
-  # Verified 2026-09-30 (ghcr API, anonymous pull): coder:sha-ae540e9 and its digest below; the image adds the `checks` artifact.
+  # Verified 2026-09-30 (ghcr API, anonymous pull): coder:sha-e9bfea3 and its digest below. Since adam-rs e9bfea3 a stop
+  # without a pull request is a question (the task is `input-required`, the thread waits for you) and the coder works
+  # only on a repository the person named; since ae540e9 it reports its checks as a `checks` artifact.
   coder:
     profiles: [app]
-    image: ghcr.io/vymalo/another-adam-rs/coder:sha-ae540e9@sha256:da22019eeba3a53b01a5124fe560b0bf0bf5df78da270c772977bdd6ec644b2b
+    image: ghcr.io/vymalo/another-adam-rs/coder:sha-e9bfea3@sha256:79b0afd3a27be661f83ed5f5a2704eacd177eccfbd2b940a400738292f6da442
     # The image has no arm64 variant: name the platform so an ARM machine runs it under emulation
     # instead of refusing to pull.
     platform: linux/amd64
