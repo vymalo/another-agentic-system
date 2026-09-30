@@ -364,12 +364,26 @@ async fn answer_continues_a_blocked_job_and_says_it_came_from_mcp() {
         ]
     );
 
-    // A message to a finished job is refused, as in the chat, and writes nothing.
-    let count = events(&h, &job).await.len();
+    // A message to a finished job starts the thread's next job (ADR 0020), as in the chat.
+    let first = call(&client, "get_job", json!({"job_id": job})).await;
+    assert_eq!(first.value["job"], 1);
     let late = call(&client, "answer", json!({"job_id": job, "text": "more"})).await;
-    assert!(late.is_error);
-    assert!(late.text.contains("finished"), "{}", late.text);
-    assert_eq!(events(&h, &job).await.len(), count);
+    assert!(!late.is_error, "{late:?}");
+    assert_eq!(late.value["job_id"], job.as_str());
+    assert_eq!(late.value["state"], "queued");
+    assert_eq!(late.value["job"], 2);
+    wait_state(&client, &job, "done").await;
+    let second = call(&client, "get_job", json!({"job_id": job})).await;
+    assert_eq!(second.value["job"], 2);
+    assert_eq!(second.value.get("attempt"), None);
+    let kinds: Vec<_> = events(&h, &job).await.iter().map(|e| e.kind()).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == EventKind::JobStarted)
+            .count(),
+        1
+    );
     // Empty text is refused too.
     let empty = call(&client, "answer", json!({"job_id": job, "text": " "})).await;
     assert!(empty.is_error);

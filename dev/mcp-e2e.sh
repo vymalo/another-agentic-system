@@ -16,8 +16,8 @@
 #   * `get_job`, polled, ends `done` and names the pull request the mock agent opened;
 #   * the chat's resource API shows the same thread `done` for the token's user, so the job is in
 #     the chat too;
-#   * an unknown job is "no such job", a message to the finished job is refused and a cancel of it
-#     is a no-op;
+#   * an unknown job is "no such job", a message to the finished job starts its next job (job 2, the
+#     same job_id) and a cancel of the finished job is a no-op;
 #   * `wait_for_job` with a progress token, on the mock agent's `slow` script (8 s): the response is an
 #     event stream, `notifications/progress` come with a counter that only increases, one per event of
 #     the job, and the last message is the finished job with its pull request;
@@ -202,9 +202,28 @@ if [ "$is_error" = true ] && [ "$(printf '%s' "$missing" | jq -r '.text')" = "no
 else
   bad "an unknown job: error=$is_error $missing"
 fi
+# A message to the finished job starts the thread's next job (ADR 0020): same job_id, job 2.
 call answer "$(jq -cn --arg job "$job" '{job_id: $job, text: "one more thing"}')"
 late=$result
-if [ "$is_error" = true ]; then ok "answer to the finished job is refused ($(printf '%s' "$late" | jq -r '.text'))"; else bad "answer to the finished job: $late"; fi
+if [ "$is_error" = false ] && [ "$(printf '%s' "$late" | jq -r '.job')" = 2 ] && [ "$(printf '%s' "$late" | jq -r '.job_id')" = "$job" ]; then
+  ok "answer to the finished job starts job 2 of the same thread"
+else
+  bad "answer to the finished job: error=$is_error $late"
+fi
+deadline=$(( $(date +%s) + timeout ))
+while :; do
+  call get_job "$(jq -cn --arg job "$job" '{job_id: $job}')"
+  summary=$result
+  state=$(printf '%s' "$summary" | jq -r '.state // empty')
+  case $state in done | blocked | failed | cancelled) break ;; esac
+  if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
+  sleep 1
+done
+if [ "$state" = "done" ] && [ "$(printf '%s' "$summary" | jq -r '.job')" = 2 ]; then
+  ok "get_job: job 2 ended done"
+else
+  bad "get_job: job 2 is '${state:-unknown}': $summary"
+fi
 call cancel_job "$(jq -cn --arg job "$job" '{job_id: $job}')"
 cancelled=$result
 if [ "$is_error" = false ] && [ "$(printf '%s' "$cancelled" | jq -r '.state')" = "done" ]; then
