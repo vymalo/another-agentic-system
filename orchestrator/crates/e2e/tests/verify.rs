@@ -342,12 +342,17 @@ async fn a_request_that_weakens_the_gate_or_asks_too_much_is_a_400(backend: Back
         ("coder", json!({"maxAttempts": 11}), "1..=10"),
         ("coder", json!({"maxAttempts": 0}), "1..=10"),
         ("plain", json!({"require": ["ci"]}), "slice 5"),
+        // The verifier is honoured, but a thread may not choose it, and `plain` has none.
         (
             "plain",
             json!({"require": ["agent-checks", "verifier"]}),
-            "slice 10",
+            "no verifier agent is configured",
         ),
-        ("plain", json!({"verifier": "coder"}), "slice 10"),
+        (
+            "plain",
+            json!({"verifier": "coder"}),
+            "cannot be set per thread",
+        ),
         ("plain", json!({"ci": {"required": ["build"]}}), "slice 5"),
         (
             "plain",

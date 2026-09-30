@@ -1,0 +1,48 @@
+{
+  "name": "mock-verifier",
+  "description": "WireMock stand-in for an A2A 1.0 verifier agent (local development only). It reviews a pushed commit and answers with a `verdict` artifact.",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "verify",
+      "name": "Verify",
+      "description": "Reviews a commit and answers with a verdict: findings for a commit of forty `a`, a pass for any other.",
+      "tags": [
+        "mock",
+        "verify"
+      ],
+      "examples": [
+        "Check that commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, pushed as described below, does what the task asks."
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

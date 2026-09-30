@@ -23,6 +23,24 @@
   # keywords `red-once` (fails once, then passes) and `red-always` (dev/README.md, "Verification").
   gate:
     require: [agent-checks]
+- id: verifier
+  name: Mock verifier
+  cardUrl: http://mock-verifier:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # The verifier agent of the gate (ADR 0018), a WireMock stand-in: it reviews the commit an agent
+  # pushed and answers with a `verdict` artifact, findings for a commit of forty `a` and a pass for
+  # any other. It is a configured agent like the others, so it can also be chatted with.
+- id: mock-coder-verified
+  name: Mock coder (verified)
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # The same mock as `mock-coder`, under a gate that asks the verifier (dev/README.md, "Verifier"): its
+  # work is not done until `verifier` passes the commit it pushed, or the agent is sent back with the
+  # findings, three attempts in all. The keywords `push-flawed` (the verifier finds something, the
+  # rework is passed) and `push-clean` (passed at once) choose what the agent pushes.
+  gate:
+    require: [verifier]
+    verifier: verifier
 - id: mock-coder-releases
   name: Mock coder (releases)
   cardUrl: http://mock-agent-releases:8080/.well-known/agent-card.json

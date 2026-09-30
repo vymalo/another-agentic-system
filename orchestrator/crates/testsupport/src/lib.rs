@@ -15,7 +15,7 @@ mod instance;
 mod sse;
 mod wait;
 
-pub use fake::{Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases};
+pub use fake::{Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases, VerifierScript};
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
 pub use wait::{DEFAULT_TIMEOUT, eventually, eventually_within};

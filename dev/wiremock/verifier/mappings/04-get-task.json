@@ -1,0 +1,28 @@
+{
+  "name": "GetTask: task not found (the mock keeps no state, so a verification whose stream broke cannot be followed: the thread is held, never passed)",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "GetTask"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "error-task-not-found.json"
+  }
+}

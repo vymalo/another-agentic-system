@@ -28,6 +28,13 @@
 //! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
 //! | `verify-red` | as `verify-pass`, but `checks` always fails |
 //! | `verify-ci` | `working`, only the `branch` artifact (a commit named by [`verify_commit`] in [`VERIFY_REPOSITORY`]), `completed`: an agent that pushed and leaves the checking to CI |
+//! | `verify-reviewed` | as `verify-ci`, and an agent `Message` ([`VERIFY_SUMMARY`]) before the artifact: an agent that pushed, says what it did and leaves the checking to a verifier |
+//!
+//! An agent that plays the **verifier** ([`FakeAgentOptions::verifier`], a [`VerifierScript`]) does
+//! not read the first word: every message it gets is a request to review a commit (the prompt of
+//! ADR 0018, which names the commit), and it answers with a `verdict` artifact `{passed, findings}`
+//! as the script says (or with none, or never). [`Call::text`] holds the prompt and
+//! [`Call::context_id`] the verifier's context.
 //!
 //! A rework prompt (the message the gate sends an agent whose work failed, ADR 0018: it starts
 //! with "Your work did not pass verification" and says "this is attempt N") is answered as the
@@ -87,10 +94,43 @@ pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
 /// The repository the `verify-*` scripts report in their `branch` artifact.
 pub const VERIFY_REPOSITORY: &str = "https://github.com/acme/demo.git";
 
+/// What the `verify-reviewed` script says about its work.
+pub const VERIFY_SUMMARY: &str = "I pushed the fix: the empty password is rejected now.";
+
 /// The commit the `verify-*` scripts report at `attempt` (1 for the first delegation).
 pub fn verify_commit(attempt: u32) -> String {
     format!("{attempt:040x}")
 }
+
+/// How a fake agent that plays the verifier answers a request to review a commit.
+///
+/// The commit the prompt names decides where a script depends on it: the `verify-*` scripts of
+/// the worker push [`verify_commit`]`(attempt)`, so the first attempt is the commit `1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifierScript {
+    /// Rejects the first attempt's commit with one finding and passes any other: a verifier that
+    /// finds something, and is satisfied by the rework.
+    FindingsThenPass,
+    /// Rejects every commit, with one finding.
+    AlwaysFail,
+    /// Passes every commit.
+    AlwaysPass,
+    /// `working`, `completed`, and no `verdict` artifact.
+    NoVerdict,
+    /// A `verdict` artifact whose `passed` is not a boolean, then `completed`.
+    Garbled,
+    /// A `verdict` with more findings than the core keeps, each one long.
+    Flood,
+    /// `working`, then nothing until the task is cancelled.
+    Hang,
+    /// `working`, then waits for [`FakeAgent::release_gate`], then passes.
+    GatedPass,
+    /// `failed("scripted failure")`: a verifier that cannot do its job.
+    Broken,
+}
+
+/// The finding of [`VerifierScript::FindingsThenPass`] and [`VerifierScript::AlwaysFail`].
+pub const VERIFIER_FINDING: &str = "src/login.rs: the empty password is accepted";
 
 /// Release channels the fake card declares.
 #[derive(Debug, Clone)]
@@ -162,6 +202,9 @@ pub struct FakeAgentOptions {
     pub bind: Option<SocketAddr>,
     /// URIs the card lists as A2UI extensions (empty: the card does not mention A2UI).
     pub ui_extensions: Vec<String>,
+    /// Play the verifier: every message is answered as this script says (see the module
+    /// documentation). `None` (the default): the scripts chosen by the first word.
+    pub verifier: Option<VerifierScript>,
 }
 
 impl Default for FakeAgentOptions {
@@ -172,6 +215,7 @@ impl Default for FakeAgentOptions {
             resubscribe: true,
             bind: None,
             ui_extensions: Vec::new(),
+            verifier: None,
         }
     }
 }
@@ -245,6 +289,8 @@ struct Shared {
     /// The `verify-*` script each context started with, so that its rework prompts (which do
     /// not repeat the word) run the same one.
     verifying: Mutex<HashMap<String, String>>,
+    /// The verifier script, when this agent plays the verifier.
+    verifier: Option<VerifierScript>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -284,6 +330,7 @@ impl FakeAgent {
             releases: opts.releases.clone(),
             ui_extensions: Mutex::new(opts.ui_extensions.clone()),
             verifying: Mutex::new(HashMap::new()),
+            verifier: opts.verifier,
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -664,8 +711,14 @@ impl TaskCtx {
 
     /// An agent `Message` frame of the task, with a fixed id (a replay carries the same one).
     fn message(&self, n: u32, text: &str) -> StreamResponse {
+        self.message_named(&format!("{}-msg-{n}", self.task_id), text)
+    }
+
+    /// An agent `Message` frame of the task with the id `id`, for a script whose transcript is a
+    /// golden: a task id is random, so an id built from it would differ on every run.
+    fn message_named(&self, id: &str, text: &str) -> StreamResponse {
         let mut m = Message::new(Role::Agent, vec![Part::text(text)]);
-        m.message_id = format!("{}-msg-{n}", self.task_id);
+        m.message_id = id.to_owned();
         m.task_id = Some(self.task_id.clone());
         m.context_id = Some(self.context_id.clone());
         m.metadata = self.metadata.clone();
@@ -857,6 +910,81 @@ fn echo_parts(text: &str) -> Vec<Part> {
     vec![Part::text(text), Part::url(PR_URL)]
 }
 
+/// The commit a review request names ("Check that commit <sha>, pushed as described below ...").
+fn commit_in(prompt: &str) -> Option<&str> {
+    let (_, rest) = prompt.split_once("commit ")?;
+    let sha = rest
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(|c: char| !c.is_ascii_hexdigit());
+    (sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())).then_some(sha)
+}
+
+/// One `verdict` artifact.
+async fn verdict(
+    shared: &Shared,
+    tx: &mpsc::Sender<Result<StreamResponse, A2AError>>,
+    ctx: &TaskCtx,
+    data: Value,
+) -> Option<()> {
+    let id = shared.next_artifact_id();
+    emit(
+        tx,
+        ctx.artifact(&id, "verdict", vec![Part::data(data)], false, Some(true)),
+    )
+    .await
+}
+
+/// The script of an agent that plays the verifier. The task has said `working` already.
+async fn verifier_script(
+    shared: &Shared,
+    tx: &mpsc::Sender<Result<StreamResponse, A2AError>>,
+    ctx: &TaskCtx,
+    script: VerifierScript,
+    prompt: &str,
+    cancel: Arc<Notify>,
+) -> Option<()> {
+    let first_attempt = commit_in(prompt) == Some(verify_commit(1).as_str());
+    let pass = json!({"passed": true, "findings": []});
+    let fail = json!({"passed": false, "findings": [VERIFIER_FINDING]});
+    match script {
+        VerifierScript::FindingsThenPass => {
+            verdict(shared, tx, ctx, if first_attempt { fail } else { pass }).await?;
+        }
+        VerifierScript::AlwaysFail => verdict(shared, tx, ctx, fail).await?,
+        VerifierScript::AlwaysPass => verdict(shared, tx, ctx, pass).await?,
+        VerifierScript::NoVerdict => {}
+        VerifierScript::Garbled => {
+            verdict(shared, tx, ctx, json!({"passed": "yes", "findings": []})).await?;
+        }
+        VerifierScript::Flood => {
+            let findings: Vec<String> = (0..60)
+                .map(|n| format!("finding {n}: {}", "x".repeat(2000)))
+                .collect();
+            verdict(
+                shared,
+                tx,
+                ctx,
+                json!({"passed": false, "findings": findings}),
+            )
+            .await?;
+        }
+        VerifierScript::Hang => {
+            // Runs until CancelTask; the handler publishes the Canceled status itself.
+            cancel.notified().await;
+            return Some(());
+        }
+        VerifierScript::GatedPass => {
+            shared.gate.notified().await;
+            verdict(shared, tx, ctx, pass).await?;
+        }
+        VerifierScript::Broken => {
+            return emit(tx, ctx.status(TaskState::Failed, Some("scripted failure"))).await;
+        }
+    }
+    emit(tx, ctx.status(TaskState::Completed, None)).await
+}
+
 async fn script(
     shared: Arc<Shared>,
     tx: mpsc::Sender<Result<StreamResponse, A2AError>>,
@@ -866,6 +994,9 @@ async fn script(
     cancel: Arc<Notify>,
 ) -> Option<()> {
     emit(&tx, ctx.status(TaskState::Working, None)).await?;
+    if let Some(verifier) = shared.verifier {
+        return verifier_script(&shared, &tx, &ctx, verifier, &text, cancel).await;
+    }
     // The answer to an `ask` continues the `ask` script whatever it says.
     let answering = resuming && lock(&shared.asking).remove(&ctx.task_id);
     let reworking = !answering && text.starts_with(REWORK_PREFIX);
@@ -890,7 +1021,7 @@ async fn script(
     };
     match word {
         "fail" => emit(&tx, ctx.status(TaskState::Failed, Some("scripted failure"))).await?,
-        "verify-pass" | "verify-red-once" | "verify-red" | "verify-ci" => {
+        "verify-pass" | "verify-red-once" | "verify-red" | "verify-ci" | "verify-reviewed" => {
             let attempt = if reworking { attempt_of(&text) } else { 1 };
             let passes = match word {
                 "verify-pass" => true,
@@ -913,11 +1044,16 @@ async fn script(
                     "findings": ["tests::login fails: expected 200, got 500"],
                 })
             };
-            let reported = if word == "verify-ci" {
+            let reported = if word == "verify-ci" || word == "verify-reviewed" {
                 vec![("branch", branch)]
             } else {
                 vec![("branch", branch), ("checks", checks)]
             };
+            if word == "verify-reviewed" {
+                // Named by the attempt, not by the task: the goldens hold this id.
+                let said = format!("said-{attempt}");
+                emit(&tx, ctx.message_named(&said, VERIFY_SUMMARY)).await?;
+            }
             for (name, data) in reported {
                 let id = shared.next_artifact_id();
                 emit(

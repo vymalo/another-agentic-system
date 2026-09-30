@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use orch_testsupport::{Chat, FakeAgent, FakeAgentOptions, Frame, eventually};
+use orch_testsupport::{Chat, FakeAgent, FakeAgentOptions, Frame, VerifierScript, eventually};
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
 #[path = "../../../crates/store-postgres/tests/support/mod.rs"]
@@ -313,8 +313,9 @@ fn every_setting_is_read_from_its_variable() {
     }
 }
 
-/// A gate the build cannot honour is refused before anything connects: exit 78, the message
-/// names the setting and the slice that will enable it. It never falls back to no gate.
+/// A gate the build cannot honour (CI, until its slices land) or cannot run (the verifier with
+/// nobody to ask) is refused before anything connects: exit 78, the message names the setting and
+/// says why. It never falls back to no gate.
 #[test]
 fn a_gate_this_build_cannot_honour_is_fatal_in_every_layer() {
     let scratch = Scratch::new();
@@ -330,7 +331,7 @@ fn a_gate_this_build_cannot_honour_is_fatal_in_every_layer() {
     .unwrap();
     // (the AGENTS_FILE, extra variables, what the message says, the slice it names)
     type Case<'a> = (&'a Path, &'a [(&'a str, &'a str)], &'a str, &'a str);
-    let cases: [Case; 3] = [
+    let cases: [Case; 4] = [
         (
             &plain,
             &[("ORCH_GATE", "ci")],
@@ -339,11 +340,18 @@ fn a_gate_this_build_cannot_honour_is_fatal_in_every_layer() {
         ),
         (
             &plain,
-            &[("ORCH_VERIFIER", "fake")],
-            "ORCH_VERIFIER is invalid",
-            "slice 10",
+            &[("ORCH_GATE", "verifier,ci"), ("ORCH_VERIFIER", "fake")],
+            "ORCH_GATE is invalid",
+            "slice 6",
         ),
         (&gated, &[], "AGENTS_FILE: ", "slice 6"),
+        // The verifier is honoured, but a gate that requires it needs an agent to ask.
+        (
+            &plain,
+            &[("ORCH_GATE", "verifier")],
+            "AGENTS_FILE: ",
+            "no verifier agent is configured",
+        ),
     ];
     for (n, (agents, extra, says, slice)) in cases.into_iter().enumerate() {
         // The database is unreachable on purpose: configuration is validated first.
@@ -1821,4 +1829,117 @@ async fn a_due_timer_waits_for_a_worker_process_and_is_applied_by_it() {
         let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
         assert!(status.success(), "log:\n{}", replica.run.borrow().log());
     }
+}
+
+/// The verifier through the real process: the deployment requires it (`ORCH_GATE`, `ORCH_VERIFIER`,
+/// `ORCH_VERIFIER_TIMEOUT_SECS`), the worker pushes, the verifier agent finds something and is
+/// satisfied by the rework, and the run ends once, in success. The verifier's own entry leaves the
+/// source out for itself (an agent cannot verify its own work).
+#[tokio::test]
+async fn a_verifier_gate_runs_through_the_real_binary() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let agent = |verifier| async move {
+        FakeAgent::spawn(FakeAgentOptions {
+            bearer: Some(TOKEN.to_owned()),
+            verifier,
+            ..FakeAgentOptions::default()
+        })
+        .await
+    };
+    let worker = agent(None).await;
+    let reviewer = agent(Some(VerifierScript::FindingsThenPass)).await;
+    let scratch = Scratch::new();
+    let agents = write_agents(
+        &scratch,
+        &format!(
+            "- id: fake\n  name: Fake agent\n  cardUrl: {}\n  tokenEnv: SMOKE_AGENT_TOKEN\n\
+             - id: reviewer\n  name: Reviewer\n  cardUrl: {}\n  tokenEnv: SMOKE_AGENT_TOKEN\n  \
+             gate: {{require: []}}\n",
+            worker.card_url(),
+            reviewer.card_url()
+        ),
+    );
+    let url = database_url_of(&db);
+    let replica = Replica::start(
+        &scratch,
+        "verifier.log",
+        &url,
+        &agents,
+        &[
+            ("ORCH_GATE", "verifier"),
+            ("ORCH_VERIFIER", "reviewer"),
+            ("ORCH_VERIFIER_TIMEOUT_SECS", "60"),
+            ("OUTBOX_LEASE_SECS", "5"),
+        ],
+    );
+    replica.wait_ready().await;
+    let chat = replica.chat();
+    let id = uuid::Uuid::now_v7().to_string();
+    let input = Chat::agui_input(
+        &id,
+        "run-1",
+        &[("msg-1", "verify-reviewed fix the login")],
+        serde_json::json!({}),
+    );
+    let mut sse = chat.agui_run("fake", &input).await;
+    let frames = sse.collect_frames(Duration::from_secs(30)).await;
+    let last = &frames.last().unwrap().event;
+    assert_eq!(last["type"], "RUN_FINISHED", "{last}");
+    assert_eq!(last["outcome"], serde_json::json!({"type": "success"}));
+    let started: Vec<&str> = frames
+        .iter()
+        .filter(|f| f.event["type"] == "SUBAGENT_STARTED")
+        .map(|f| f.event["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        started,
+        ["fake", "reviewer", "fake", "reviewer"],
+        "{started:?}"
+    );
+    let cards: Vec<(&str, &str)> = frames
+        .iter()
+        .filter(|f| f.event["activityType"] == "vymalo.check")
+        .map(|f| {
+            (
+                f.event["content"]["source"].as_str().unwrap(),
+                f.event["content"]["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        cards,
+        [
+            ("verifier", "pending"),
+            ("verifier", "failed"),
+            ("verifier", "pending"),
+            ("verifier", "passed")
+        ]
+    );
+    chat.wait_state(&id, "done").await;
+    assert_eq!(
+        chat.thread(&id).await["job"]["gate"],
+        serde_json::json!(["verifier"])
+    );
+    assert_eq!(worker.executions().len(), 2, "the work, then the rework");
+    let asked = reviewer.executions();
+    assert_eq!(asked.len(), 2, "one verification per attempt");
+    assert!(
+        asked[0].context_id.ends_with("-verify-1-1")
+            && asked[1].context_id.ends_with("-verify-2-2"),
+        "{} {}",
+        asked[0].context_id,
+        asked[1].context_id
+    );
+    assert_eq!(
+        asked[0].authorization.as_deref(),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+
+    let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = replica.run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(!log.contains(TOKEN), "a secret leaked into the log");
 }

@@ -37,10 +37,28 @@ pub fn gate() -> GatePolicy {
     GatePolicy::requiring([CheckSource::AgentChecks])
 }
 
-/// The events a legal log of `actions` makes, and the thread they belong to: with the gate when
-/// `gated`, without it otherwise.
-pub fn world(gated: bool, actions: &[Action]) -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
-    let gate = if gated { gate() } else { GatePolicy::default() };
+/// A gate that requires a verifier agent (`reviewer`), three attempts.
+pub fn verifier_gate() -> GatePolicy {
+    let mut gate = GatePolicy::requiring([CheckSource::Verifier]);
+    gate.verifier = Some(AgentId::new("reviewer"));
+    gate
+}
+
+/// A gate that requires both the agent's own checks and the verifier.
+pub fn both_gate() -> GatePolicy {
+    let mut gate = GatePolicy::requiring([CheckSource::AgentChecks, CheckSource::Verifier]);
+    gate.verifier = Some(AgentId::new("reviewer"));
+    gate
+}
+
+/// The events a legal log of `actions` makes, and the thread they belong to, under the gate
+/// `gating` names: 0 none, 1 the agent's own checks, 2 those and a verifier.
+pub fn world(gating: u8, actions: &[Action]) -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
+    let gate = match gating {
+        0 => GatePolicy::default(),
+        1 => gate(),
+        _ => both_gate(),
+    };
     (build_under(actions, &gate), meta_under(gate))
 }
 
@@ -93,6 +111,16 @@ pub enum Action {
         passed: bool,
         commit: u8,
     },
+    /// The verifier answers the verification in progress.
+    Verdict {
+        passed: bool,
+    },
+    /// The verifier answers a verification that is not the one in progress (a late one).
+    StaleVerdict,
+    /// The verifier cannot be used (for the verification in progress).
+    VerifierDown,
+    /// The verifier's deadline (of the verification in progress) comes due.
+    VerifierDeadline,
 }
 
 /// One operation of surface `s<surface>`, in the shapes of the A2UI spec.
@@ -135,6 +163,10 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         2 => any::<bool>().prop_map(|ids| Action::UiAct { ids }),
         3 => (0u8..3).prop_map(|commit| Action::Branch { commit }),
         3 => (any::<bool>(), 0u8..3).prop_map(|(passed, commit)| Action::Checks { passed, commit }),
+        3 => any::<bool>().prop_map(|passed| Action::Verdict { passed }),
+        1 => Just(Action::StaleVerdict),
+        1 => Just(Action::VerifierDown),
+        1 => Just(Action::VerifierDeadline),
     ]
 }
 
@@ -268,6 +300,35 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                            "findings": if *passed { json!([]) } else { json!(["it fails"]) }})
                     .to_string(),
                 ),
+            }),
+            Action::Verdict { passed } => Input::VerifierReported {
+                attempt: state.job.attempt,
+                verification: state.job.verification,
+                verdict: orch_core::Verdict {
+                    passed: *passed,
+                    findings: if *passed {
+                        Vec::new()
+                    } else {
+                        vec!["it is wrong".to_owned()]
+                    },
+                },
+            },
+            Action::StaleVerdict => Input::VerifierReported {
+                attempt: state.job.attempt,
+                verification: state.job.verification + 1,
+                verdict: orch_core::Verdict {
+                    passed: true,
+                    findings: Vec::new(),
+                },
+            },
+            Action::VerifierDown => Input::VerifierFailed {
+                attempt: state.job.attempt,
+                verification: state.job.verification,
+                reason: "the agent could not be reached".to_owned(),
+            },
+            Action::VerifierDeadline => Input::TimerFired(orch_core::Timer::VerifierDeadline {
+                attempt: state.job.attempt,
+                verification: state.job.verification,
             }),
             Action::UiAct { ids } => {
                 users += 1;

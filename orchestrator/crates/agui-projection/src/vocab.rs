@@ -35,6 +35,9 @@ pub const PROBLEM_KEY: &str = "vymalo.problem";
 pub const CODE_AGENT_FAILED: &str = "agent_failed";
 /// `RUN_ERROR.code` for a delegation that could not be delivered.
 pub const CODE_DELIVERY_FAILED: &str = "delivery_failed";
+/// `SUBAGENT_ERROR.code` of the verifier's invocation when the verification is held because the
+/// verifier could not be used or did not answer in time.
+pub const CODE_VERIFIER_FAILED: &str = "verifier_failed";
 /// `RUN_ERROR.code` for a job whose work did not pass the verification gate in its last attempt.
 pub const CODE_CHECKS_FAILED: &str = "checks_failed";
 

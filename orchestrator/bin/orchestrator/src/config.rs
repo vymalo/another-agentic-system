@@ -23,7 +23,9 @@ use orch_app::{
     AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules,
     InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, known_sources,
 };
-use orch_core::{AgentId, CheckSource, DEFAULT_MAX_ATTEMPTS, GatePolicy, UserId};
+use orch_core::{
+    AgentId, CheckSource, DEFAULT_MAX_ATTEMPTS, DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, UserId,
+};
 use orch_ports::AgentEndpoint;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
@@ -33,6 +35,7 @@ const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_DISPATCHER_CONCURRENCY: usize = 32;
 const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
+const DEFAULT_VERIFIER_WATCH_SECS: u64 = 5;
 #[cfg(feature = "agent-local")]
 const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
@@ -553,8 +556,9 @@ pub struct Args {
     pub surfaces: Option<String>,
 
     /// Sources every job's work must pass before it is done, comma separated: ci, agent-checks,
-    /// verifier (default none: an agent that completes is done). This build honours only
-    /// agent-checks; ci and verifier are refused until their slices land.
+    /// verifier (default none: an agent that completes is done). This build honours agent-checks
+    /// and verifier; ci is refused until its slices land. `verifier` needs ORCH_VERIFIER (or a
+    /// `gate.verifier` in AGENTS_FILE).
     #[arg(long, env = "ORCH_GATE", value_name = "LIST")]
     pub gate: Option<String>,
 
@@ -566,8 +570,8 @@ pub struct Args {
     #[arg(long, env = "ORCH_MAX_ATTEMPTS_CAP", value_name = "N")]
     pub max_attempts_cap: Option<String>,
 
-    /// The agent that verifies (an id in AGENTS_FILE). Refused until the verifier dispatch is
-    /// built.
+    /// The agent that verifies the pushed work (an id in AGENTS_FILE; another agent than the
+    /// one being verified). Needed when the gate requires `verifier`.
     #[arg(long, env = "ORCH_VERIFIER", value_name = "AGENT")]
     pub verifier: Option<String>,
     /// YAML list of `{user, tokenEnv}` for the surface `mcp` (required when it is mounted): the
@@ -607,6 +611,18 @@ pub struct Args {
     /// are not affected. Default: none.
     #[arg(long, env = "MCP_ALLOWED_ORIGINS", value_name = "LIST")]
     pub mcp_allowed_origins: Option<String>,
+
+    /// Seconds the verifier has to answer before the thread waits for the user, at least 1
+    /// (default 1800). Waiting does not use an attempt.
+    #[arg(long, env = "ORCH_VERIFIER_TIMEOUT_SECS", value_name = "SECS")]
+    pub verifier_timeout_secs: Option<String>,
+
+    /// Seconds between a verification's looks at its thread while it waits for the verifier, at
+    /// least 1 (default 5). When the thread has moved on (a timeout, a cancel, a message from
+    /// the user) the verifier is told to stop and the row ends, so a verifier that hangs does
+    /// not hold a worker; this is how late that happens.
+    #[arg(long, env = "ORCH_VERIFIER_WATCH_SECS", value_name = "SECS")]
+    pub verifier_watch_secs: Option<String>,
 
     /// E-mail served for requests without X-Auth-Request-Email. Development only.
     #[arg(long, env = "AUTH_DEV_USER", value_name = "EMAIL")]
@@ -676,7 +692,7 @@ pub struct Config {
     /// `AGENTS_FILE`, resolved: bearer tokens already read from their environment variables.
     pub agents: Vec<AgentEntry>,
     /// The gate new threads start under before an agent's entry or a request changes it:
-    /// `ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_VERIFIER`.
+    /// `ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_VERIFIER`, `ORCH_VERIFIER_TIMEOUT_SECS`.
     pub gate: GatePolicy,
     /// What a target or a thread may ask of the gate: this build's sources and
     /// `ORCH_MAX_ATTEMPTS_CAP`.
@@ -702,6 +718,8 @@ pub struct Config {
     pub agent_local_concurrency: usize,
     /// `OUTBOX_LEASE_SECS`: how long a crashed replica's claim blocks others.
     pub outbox_lease: Duration,
+    /// `ORCH_VERIFIER_WATCH_SECS`: how often a verification looks at its thread while it waits.
+    pub verifier_watch: Duration,
     /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the
     /// inbox worker (timers and reports).
     pub inbox: InboxConfig,
@@ -728,6 +746,7 @@ impl fmt::Debug for Config {
             .field("database_max_connections", &self.database_max_connections)
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
             .field("outbox_lease", &self.outbox_lease)
+            .field("verifier_watch", &self.verifier_watch)
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace);
@@ -781,6 +800,7 @@ impl Config {
                 max_attempts: clean(args.max_attempts),
                 max_attempts_cap: clean(args.max_attempts_cap),
                 verifier: clean(args.verifier),
+                verifier_timeout_secs: clean(args.verifier_timeout_secs),
             },
             &agents,
             &target_gates,
@@ -881,6 +901,12 @@ impl Config {
             DEFAULT_OUTBOX_LEASE_SECS,
             3,
         )?;
+        let verifier_watch_secs = number(
+            clean(args.verifier_watch_secs),
+            "ORCH_VERIFIER_WATCH_SECS",
+            DEFAULT_VERIFIER_WATCH_SECS,
+            1,
+        )?;
         let inbox = InboxConfig {
             lease: Duration::from_secs(number(
                 clean(args.inbox_lease_secs),
@@ -938,6 +964,7 @@ impl Config {
             #[cfg(feature = "agent-local")]
             agent_local_concurrency,
             outbox_lease: Duration::from_secs(outbox_lease_secs),
+            verifier_watch: Duration::from_secs(verifier_watch_secs),
             inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
@@ -982,6 +1009,7 @@ struct GateVars {
     max_attempts: Option<String>,
     max_attempts_cap: Option<String>,
     verifier: Option<String>,
+    verifier_timeout_secs: Option<String>,
 }
 
 fn gate_var(var: &'static str, e: impl fmt::Display) -> ConfigError {
@@ -1058,6 +1086,15 @@ fn parse_gate(
         }
         policy.verifier = Some(AgentId::new(verifier));
     }
+    // The wait for the verifier is the deployment's to set; it bounds how long a thread waits
+    // for a verdict, whatever the agent (ADR 0018).
+    let verifier_timeout = number(
+        vars.verifier_timeout_secs,
+        "ORCH_VERIFIER_TIMEOUT_SECS",
+        DEFAULT_VERIFIER_TIMEOUT_SECS,
+        1,
+    )?;
+    policy.set_verifier_timeout_secs(verifier_timeout);
 
     // Each target's entry on top of the deployment, then every agent's verifier against the
     // configured agents. Both name the agent at fault.
@@ -1501,6 +1538,8 @@ mod tests {
                 "MCP_WAIT_MAX_CONCURRENT" => &mut args.mcp_wait_max_concurrent,
                 "MCP_WAIT_MAX_PER_USER" => &mut args.mcp_wait_max_per_user,
                 "MCP_ALLOWED_ORIGINS" => &mut args.mcp_allowed_origins,
+                "ORCH_VERIFIER_TIMEOUT_SECS" => &mut args.verifier_timeout_secs,
+                "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
                 "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
@@ -1557,6 +1596,7 @@ mod tests {
         assert_eq!(cfg.database_max_connections, 10);
         assert_eq!(cfg.dispatcher_concurrency, 32);
         assert_eq!(cfg.outbox_lease, Duration::from_secs(30));
+        assert_eq!(cfg.verifier_watch, Duration::from_secs(5));
         assert_eq!(cfg.inbox.lease, Duration::from_secs(30));
         assert_eq!(cfg.inbox.poll_interval, Duration::from_secs(2));
         assert_eq!(cfg.inbox.parked_ttl, Duration::from_secs(86_400));
@@ -1899,6 +1939,8 @@ mod tests {
             ("DATABASE_MAX_CONNECTIONS", "many"),
             ("DISPATCHER_CONCURRENCY", "0"),
             ("OUTBOX_LEASE_SECS", "2"),
+            ("ORCH_VERIFIER_WATCH_SECS", "0"),
+            ("ORCH_VERIFIER_WATCH_SECS", "often"),
             ("INBOX_LEASE_SECS", "2"),
             ("INBOX_POLL_SECS", "0"),
             ("INBOX_PARKED_TTL_SECS", "0"),
@@ -2219,6 +2261,8 @@ mod tests {
             "MCP_WAIT_MAX_CONCURRENT",
             "MCP_WAIT_MAX_PER_USER",
             "MCP_ALLOWED_ORIGINS",
+            "ORCH_VERIFIER_TIMEOUT_SECS",
+            "ORCH_VERIFIER_WATCH_SECS",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",
@@ -2304,7 +2348,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_and_the_verifier_are_refused_at_startup_naming_the_slice() {
+    fn ci_is_refused_at_startup_naming_the_slice() {
         for (pairs, var, slice) in [
             (vec![("ORCH_GATE", "ci")], "ORCH_GATE", "slice 5"),
             (
@@ -2312,11 +2356,10 @@ mod tests {
                 "ORCH_GATE",
                 "slice 6",
             ),
-            (vec![("ORCH_GATE", "verifier")], "ORCH_GATE", "slice 10"),
             (
-                vec![("ORCH_VERIFIER", "plain")],
-                "ORCH_VERIFIER",
-                "slice 10",
+                vec![("ORCH_GATE", "verifier,ci"), ("ORCH_VERIFIER", "coder")],
+                "ORCH_GATE",
+                "slice 6",
             ),
         ] {
             let err = load(&with(&pairs), AGENTS).unwrap_err();
@@ -2324,10 +2367,106 @@ mod tests {
             assert_eq!(got, var);
             assert!(reason.contains(slice), "{pairs:?}: {reason}");
             assert!(
-                reason.contains("only agent-checks can be required"),
+                reason.contains("only agent-checks, verifier can be required"),
                 "{reason}"
             );
         }
+    }
+
+    #[test]
+    fn the_verifier_comes_from_the_environment_with_its_own_timeout() {
+        // The deployment requires the verifier of everyone; `plain` is the verifier, and its own
+        // entry leaves the source out for itself, the one removal allowed.
+        let agents = "\
+- id: coder
+  name: Coder
+  cardUrl: https://coder.example.com/.well-known/agent-card.json
+  tokenEnv: CODER_A2A_TOKEN
+- id: plain
+  name: Plain
+  cardUrl: http://plain.internal:9000/.well-known/agent-card.json
+  gate: {require: []}
+";
+        let cfg = load(
+            &with(&[
+                ("ORCH_GATE", "verifier"),
+                ("ORCH_VERIFIER", "plain"),
+                ("ORCH_VERIFIER_TIMEOUT_SECS", "90"),
+                ("ORCH_VERIFIER_WATCH_SECS", "2"),
+            ]),
+            agents,
+        )
+        .unwrap();
+        assert_eq!(cfg.verifier_watch, Duration::from_secs(2));
+        assert_eq!(cfg.gate.require, [CheckSource::Verifier].into());
+        assert_eq!(cfg.gate.verifier, Some(AgentId::new("plain")));
+        assert_eq!(cfg.gate.verifier_timeout.as_secs(), 90);
+        assert_eq!(cfg.app_config().gate, cfg.gate);
+
+        // The default wait is half an hour, with or without a verifier.
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert_eq!(cfg.gate.verifier_timeout.as_secs(), 1800);
+        assert!(cfg.gate.verifier.is_none());
+        // A verifier that is named but not required is fine, and is not a self-verification.
+        let cfg = load(&with(&[("ORCH_VERIFIER", "plain")]), AGENTS).unwrap();
+        assert_eq!(cfg.gate.verifier, Some(AgentId::new("plain")));
+        assert!(!cfg.gate.is_active());
+    }
+
+    #[test]
+    fn a_verifier_that_cannot_work_is_refused_at_startup() {
+        for (pairs, var, says) in [
+            (
+                vec![("ORCH_GATE", "verifier")],
+                None,
+                "no verifier agent is configured",
+            ),
+            (
+                vec![("ORCH_GATE", "verifier"), ("ORCH_VERIFIER", "ghost")],
+                Some("ORCH_VERIFIER"),
+                "not a configured agent",
+            ),
+            (
+                vec![("ORCH_VERIFIER", "ghost")],
+                Some("ORCH_VERIFIER"),
+                "not a configured agent",
+            ),
+            (
+                vec![("ORCH_VERIFIER_TIMEOUT_SECS", "0")],
+                Some("ORCH_VERIFIER_TIMEOUT_SECS"),
+                "at least 1",
+            ),
+            (
+                vec![("ORCH_VERIFIER_TIMEOUT_SECS", "soon")],
+                Some("ORCH_VERIFIER_TIMEOUT_SECS"),
+                "not a number",
+            ),
+        ] {
+            let err = load(&with(&pairs), AGENTS).unwrap_err();
+            match (var, err) {
+                (Some(var), err) => {
+                    let (got, reason) = invalid_var(err);
+                    assert_eq!(got, var, "{pairs:?}");
+                    assert!(reason.contains(says), "{pairs:?}: {reason}");
+                }
+                (None, ConfigError::Gate { reason, .. }) => {
+                    assert!(reason.contains(says), "{pairs:?}: {reason}");
+                }
+                (None, other) => panic!("{pairs:?}: {other}"),
+            }
+        }
+        // The deployment requires the verifier of everyone, the verifier included: it would
+        // verify its own work, and the message says how to fix it.
+        let err = load(
+            &with(&[("ORCH_GATE", "verifier"), ("ORCH_VERIFIER", "plain")]),
+            AGENTS,
+        )
+        .unwrap_err();
+        let ConfigError::Gate { reason, .. } = &err else {
+            panic!("{err}");
+        };
+        assert!(reason.contains("would verify its own work"), "{reason}");
+        assert!(reason.contains("leaves out `verifier`"), "{reason}");
     }
 
     #[test]
@@ -2401,8 +2540,6 @@ mod tests {
         for (gate, slice) in [
             ("{require: [ci]}", "slice 5"),
             ("{require: [agent-checks, ci]}", "slice 6"),
-            ("{require: [verifier], verifier: plain}", "slice 10"),
-            ("{verifier: plain}", "slice 10"),
             ("{ci: {required: [build], timeoutSecs: 60}}", "slice 5"),
         ] {
             let err = load(&base(), &agents_with_gate(gate)).unwrap_err();

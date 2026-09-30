@@ -109,6 +109,13 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 verification,
                 verdict: Verdict { passed, findings }
             }),
+        3 => (small.clone(), small.clone(), "[a-z]{0,5}").prop_map(
+            |(attempt, verification, reason)| Input::VerifierFailed {
+                attempt,
+                verification,
+                reason
+            }
+        ),
         4 => (small.clone(), small, any::<bool>()).prop_map(|(attempt, verification, ci)| {
             Input::TimerFired(if ci {
                 Timer::CiDeadline { attempt, verification }
@@ -181,6 +188,11 @@ fn stale_probes(job: &Job) -> Vec<Input> {
                 passed: false,
                 findings: vec!["x".into()],
             },
+        });
+        probes.push(Input::VerifierFailed {
+            attempt,
+            verification,
+            reason: "down".into(),
         });
         probes.push(Input::TimerFired(Timer::CiDeadline {
             attempt,

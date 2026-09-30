@@ -2,8 +2,9 @@ import { expect, test } from "@playwright/test";
 import { badge, conversation, expectNoHorizontalScroll, startThread } from "./helpers";
 
 /*
- * The verification gate (ADR 0018), against the mock, which plays the goldens verify-green and
- * verify-red of docs/api/examples. `Reviewer` is the agent without releases.
+ * The verification gate (ADR 0018), against the mock, which plays the goldens verify-green,
+ * verify-red and the two verify-verifier-* of docs/api/examples. `Reviewer` is the agent without
+ * releases.
  */
 
 const counter = (page: import("@playwright/test").Page) =>
@@ -68,6 +69,50 @@ test("waiting for CI: a pending card while the thread is verifying; Cancel ends 
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(badge(page)).toHaveText("Cancelled");
   await expect(checks(page)).toHaveCount(2);
+});
+
+test("a verifier agent: its findings send the agent back, its pass finishes the thread; a reload shows the same", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await startThread(page, "verify-reviewed fix the login", "Reviewer");
+
+  const failed = conversation(page).getByRole("region", {
+    name: "Check: Verifier, attempt 1, failed",
+  });
+  await expect(failed).toBeVisible();
+  await expect(failed.getByText("src/login.rs: the empty password is accepted")).toBeVisible();
+  await expect(
+    conversation(page).getByText("Attempt 2 of 3: sent back with 1 finding"),
+  ).toBeVisible();
+
+  await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+  await expect(counter(page)).toContainText("Attempt 2 of 3");
+  await expect(checks(page)).toHaveCount(2);
+  await expect(
+    conversation(page).getByRole("region", { name: "Check: Verifier, attempt 2, passed" }),
+  ).toBeVisible();
+  await expectNoHorizontalScroll(page);
+  await page.reload();
+  await expect(badge(page)).toHaveText("Done");
+  await expect(checks(page)).toHaveCount(2);
+});
+
+test("waiting for the verifier: a pending card; Cancel ends it", async ({ page }) => {
+  await startThread(page, "verify-reviewed-wait ship it", "Reviewer");
+
+  await expect(badge(page)).toHaveText("Verifying");
+  await expect(
+    conversation(page).getByRole("region", { name: "Check: Verifier, attempt 1, pending" }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(badge(page)).toHaveText("Verifying");
+  await expect(checks(page)).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(badge(page)).toHaveText("Cancelled");
+  await expect(checks(page)).toHaveCount(1);
+  await expectNoHorizontalScroll(page);
 });
 
 test("a thread without a gate shows no counter", async ({ page }) => {

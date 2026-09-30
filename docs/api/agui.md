@@ -25,7 +25,9 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **The verification gate is projected** (2026-09-30, [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md),
 > MVP slice 3): a run stays open while the work is verified, `vymalo.check` and `vymalo.rework` activities,
 > `job` in the `STATE_SNAPSHOT`, `RUN_ERROR` `checks_failed`, and the gate a run asks for in
-> `forwardedProps["vymalo.gate"]`; see [Verification](#verification-the-gate). The web renders it since MVP slice 4 (2026-09-30).
+> `forwardedProps["vymalo.gate"]`; see [Verification](#verification-the-gate). **A verifier agent appears as a
+> subagent of its own** (2026-09-30, MVP slice 10): see [The verifier as a subagent](#the-verifier-as-a-subagent).
+> The web renders it since MVP slice 4 (2026-09-30).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -128,6 +130,10 @@ gets everything.
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | Status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
+| `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
+| `check_result{source:"verifier", status:"passed"\|"failed"}` | The verdict | The `vymalo.check` snapshot (same id, `replace:true`) → `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{passed}}` |
+| A verification that ends without a verdict: `rework` (another source failed the round), a `user_message` or `ui_action` (abandoned), `thread_state{cancelled}`, `done`/`failed`, or `thread_state{blocked}` after `error{retryable:true}` when CI is also required (a timeout or a failure whose source the log does not name) | The verifier's subagent is still open | `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{status:"canceled"}}`, before the frames of the event that ended it |
+| `thread_state{blocked}` after `error{retryable:true}` (a timeout, or a verifier that could not be used) | The verifier's subagent is still open, and the gate does not require CI, so the hold can only be the verifier's | `SUBAGENT_ERROR{subagentRunId:"sub-verify-<verification>", message:<the error's>, code:"verifier_failed"}`, before the interrupt that closes the run |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
@@ -175,7 +181,7 @@ gets everything.
 | `resume` `cancelled` plus a new user message | `Input::UserMessage` with the new text |
 | `resume` `cancelled`, nothing new | `Input::Cancel` |
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
-| `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`, `verifier`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
+| `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
 | `a2uiAction` that is not an action, or names a surface the thread does not have (never had, or deleted), or is sent for a new thread | 422 before the stream; nothing is written or sent |
@@ -249,6 +255,7 @@ stateDiagram-v2
   `vymalo.error` activity, then `RUN_FINISHED` with an `interrupt` outcome (id `int-<seq of the thread_state>`, reason
   `input_required`, the error's text as its message) that the user answers with a message or a `resume`. It is not
   `delivery_failed`.
+- **The verifier** is a subagent of its own while its verdict is awaited: [below](#the-verifier-as-a-subagent).
 - **`job.sha`** is the commit the agent pushed (its last `branch` artifact of the attempt), the same as `Thread.job.sha`.
   A check's own `commit` (in `vymalo.check`) is the commit the check ran on, and is not used for it.
 - **Rendering rules** (what the web does, and what another consumer should): a `vymalo.check` card is replaced in place
@@ -278,13 +285,68 @@ refuse is a 400 whatever the thread.
 |---|---|---|
 | The agent's own checks (its `checks` artifact) | `agent-checks` | **Honoured** |
 | CI on the pushed commit | `ci` | Refused: it needs the CI webhook (slice 6); the inbox and timers it rests on (MVP slice 5) are built. Startup exits 78; a request is a 400 whose `detail` says so |
-| A verifier agent | `verifier` | Refused: it needs the verifier dispatch (MVP slice 10). The `verifier` and `ci` settings are refused with their sources |
+| A verifier agent | `verifier` | **Honoured** since MVP slice 10: the dispatcher asks the verifier agent and its `verdict` artifact decides. The deployment or the agent's entry names it (`ORCH_VERIFIER`, `gate.verifier`); a thread may require the source but not choose the agent |
 
-The refusal is deliberate and fail-closed. Until those slices exist the application drops the commands a `ci` or
-`verifier` source needs, so a gate that required either would wait for a verdict that can never come; refusing it is
-the only way not to end a job "done" without the check the operator asked for. `pending_reason` in `orch-app`'s `gate_config.rs` says which sources those are and why. A slice that makes one real
+The refusal of `ci` is deliberate and fail-closed. Until the CI webhook exists nothing writes the reports a `ci` source waits for, so a
+gate that required it would wait for a verdict that can never come; refusing it is the only way not to end a job "done"
+without the check the operator asked for. `pending_reason` in `orch-app`'s `gate_config.rs` says which sources those are and why. A slice that makes one real
 changes its arm, and also owns what that source needs beyond it: its own settings, its checks in
-`GateRules::check_verifier`, and its cards in the projection.
+`GateRules::check_verifier`, and its cards in the projection. (The verifier was refused the same way until slice 10.)
+
+### The verifier as a subagent
+
+*Built 2026-09-30 (MVP slice 10).* When the gate requires the verifier, the orchestrator asks another configured agent
+to review the commit the worker pushed. The consumer sees that agent as a subagent of its own, named after it, for exactly
+as long as its verdict is awaited:
+
+```mermaid
+sequenceDiagram
+  participant O as Orchestrator
+  participant V as Verifier agent (A2A)
+  participant U as AG-UI consumer
+  O-->>U: SUBAGENT_FINISHED (the worker), STATE_SNAPSHOT verifying
+  O-->>U: SUBAGENT_STARTED sub-verify-1 reviewer, ACTIVITY_SNAPSHOT vymalo.check check-1-1-verifier (pending)
+  O->>V: the review request, in a context of its own
+  V-->>O: artifact verdict, then completed
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.check check-1-1-verifier (failed, findings)
+  O-->>U: SUBAGENT_FINISHED sub-verify-1 (result passed false)
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.rework rework-2, SUBAGENT_STARTED (the worker, attempt 2)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Out: the pending vymalo.check of the verifier source (SUBAGENT_STARTED)
+  Out --> Answered: a verdict, passed or failed (SUBAGENT_FINISHED with result passed)
+  Out --> Abandoned: another source failed the round, the user wrote, the thread was cancelled (SUBAGENT_FINISHED with result status canceled)
+  Out --> Unavailable: the thread was held and only the verifier can have caused it (SUBAGENT_ERROR verifier_failed)
+  Answered --> [*]
+  Abandoned --> [*]
+  Unavailable --> [*]
+```
+
+- **Id and name.** The id is `sub-verify-<verification>` (the job's verification counter, which is unique per job), so
+  every replica and every replay says the same, and two verifications of one attempt have two subagents. The name is the
+  verifier's agent id (the gate's `verifier`), and `metadata["vymalo.actor"]` is an agent actor of that name.
+- **Not the worker.** The verifier's own words never appear as the worker's text, status or artifacts: the orchestrator
+  reads its stream and keeps only the verdict. Its `SUBAGENT_FINISHED` carries `result: {passed: true|false}`; a finding
+  is a finding, not a failure of the subagent, so a verdict is never a `SUBAGENT_ERROR`; a verifier that could not be used
+  or was too slow is (see *Unavailable*).
+- **Abandoned** covers everything that ends a verification before its verdict: the subagent ends with
+  `result: {status: "canceled"}` (the same spelling as a cancelled worker), in the same response as the event that ended
+  it. When CI is a required source too, a hold (a timeout, a failure) ends it this way as well, and the interrupt that
+  closes the run says why: the log cannot tell which of the two sources the hold was about.
+- **Unavailable.** With no CI required, a thread that is held while the verifier is out was held for the verifier: it
+  failed, refused the request, asked for input nobody can give, or did not answer in time. The subagent ends with
+  `SUBAGENT_ERROR` (`code: "verifier_failed"`, the hold's message), before the interrupt that asks the user what to do.
+- **A client that joins** while the verifier is out gets its `SUBAGENT_STARTED` in the preamble (after the worker's, if it
+  is open), so the `SUBAGENT_FINISHED` that follows closes something the client knows.
+- **The verdict** is the `vymalo.check` card with `source: "verifier"`; `findings` are the verifier's words, untrusted,
+  capped at 20 items and 16 KiB, and rendered as text.
+
+The goldens [`verify-verifier-green`](examples/agui/verify-verifier-green.agui.json) (findings once, then green: attempt
+2 of 3, four subagents) and [`verify-verifier-red`](examples/agui/verify-verifier-red.agui.json) (three attempts, then
+`checks_failed`), with their `run-` and `connect-` variants, are this section as streams; the reference client reads all of
+them in CI.
 
 Example run input, three attempts lowered to two:
 

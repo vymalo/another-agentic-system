@@ -17,7 +17,8 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp`: the AG-UI routes the web and the scripts here run on, beside the resource API, and the [MCP server](#the-mcp-server) at `/mcp`. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp`: the AG-UI routes the web and the scripts here run on, beside the resource API, and the [MCP server](#the-mcp-server) at `/mcp`. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -310,6 +311,8 @@ table wins.
 | `fail` | `submitted`, `working`, `failed` with a message | `failed` |
 | `ask` | `submitted`, `working`, `input-required` ("Which branch should I base the change on?") | `blocked` |
 | `slow` | the default script, dribbled over 8 s in 16 chunks (frames split mid-line) | `done`, after 8 s |
+| `push-flawed` | `submitted`, `working`, artifact `branch` (commit `aaaa…`, which `mock-verifier` finds fault with), `completed`; **with "this is attempt 2" or later and the heading "### the verifier" in the text** (the gate's rework prompt after the verifier's findings) the same on commit `bbbb…`, which it passes. See [Verifier](#verifier-the-verifier-agent-of-the-gate) | `done` under the verifier's gate, at attempt 2 |
+| `push-clean` | as `push-flawed`, on commit `cccc…`, which `mock-verifier` passes | `done` under the verifier's gate, at attempt 1 |
 | none | `submitted`, `working`, artifact "Pull request" with the URL `https://github.com/example/sandbox/pull/1`, `completed` | `done` |
 
 A **follow-up** message on an existing task (the message carries a `taskId`, which is what the
@@ -425,6 +428,76 @@ To gate every agent instead of one, set `ORCH_GATE=agent-checks` on the `orchest
 report no `checks` would then be sent back three times and fail, which is the fail-closed reading of "no checks
 reported".
 
+### Verifier (the verifier agent of the gate)
+
+`mock-coder-verified` in [`agents.yaml`](agents.yaml) is the same mock agent under
+`gate: {require: [verifier], verifier: verifier}` ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md),
+slice 10): an agent that says `completed` is not done until **another agent**, `verifier` (the `mock-verifier` service),
+has passed the commit it pushed. The mock coder reports only a `branch` artifact (`{repository, branch, commit}`), like an
+agent that leaves the checking to someone else; the keywords choose the commit, and `mock-verifier` judges by it:
+
+- `push-flawed fix the login`: attempt 1 pushes commit `aaaa…`; the verifier answers with a `verdict` whose `passed` is
+  false and one finding; the orchestrator sends the coder back (a `rework` event, then a **new A2A task in the same
+  context** whose text starts "Your work did not pass verification (attempt 1 of 3); this is attempt 2", has the heading
+  "### the verifier" and quotes the finding as untrusted data); attempt 2 pushes `bbbb…`, which the verifier passes. The
+  thread ends `done`, `job.attempt` 2, and the chat shows the verifier as a subagent of its own, twice.
+- `push-clean fix the login`: pushes `cccc…`, passed at once, attempt 1.
+- `push-flawed` with `forwardedProps["vymalo.gate"] = {"maxAttempts": 1}`: the findings are final, `RUN_ERROR`
+  `checks_failed`.
+
+```mermaid
+sequenceDiagram
+  actor U as Browser or dev/verifier-e2e.sh
+  participant O as orchestrator
+  participant M as mock-agent (push-flawed)
+  participant V as mock-verifier
+  U->>O: POST /agui/agents/mock-coder-verified "push-flawed fix the login"
+  O->>M: SendStreamingMessage (new task, context C)
+  M-->>O: working, branch aaaa, completed
+  O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying, SUBAGENT_STARTED verifier, vymalo.check pending
+  O->>V: SendStreamingMessage (context C-verify-1-1, "Check that commit aaaa... ", the task and the summary quoted)
+  V-->>O: working, artifact verdict (passed false, one finding), completed
+  O-->>U: vymalo.check failed, SUBAGENT_FINISHED verifier, vymalo.rework, SUBAGENT_STARTED
+  O->>M: SendStreamingMessage (a new task in context C, "this is attempt 2", "### the verifier" and the finding)
+  M-->>O: working, branch bbbb, completed
+  O->>V: SendStreamingMessage (context C-verify-2-2, "Check that commit bbbb... ")
+  V-->>O: working, artifact verdict (passed true), completed
+  O-->>U: vymalo.check passed, STATE_SNAPSHOT done, RUN_FINISHED success
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: push-flawed or push-clean
+  Working --> Verifying: completed, branch pushed
+  Verifying --> Done: the verifier passed the commit (cccc, or bbbb after a rework)
+  Verifying --> Working: the verifier found fault, attempts left (rework, attempt + 1)
+  Verifying --> Failed: the verifier found fault on the last attempt (maxAttempts 1)
+  Done --> [*]
+  Failed --> [*]
+```
+
+`mock-verifier` (`wiremock/verifier/`) matches the request the dispatcher really sends: a JSON-RPC `SendStreamingMessage` whose
+`params.message.contextId` is the verification context, `messageId` the outbox row and `parts[0].text` the prompt, which says
+"Check that commit `<sha>`". A `commit aaaa…` (forty `a`) gets the failing `verdict` and any other commit the passing one;
+`GetTask` answers *task not found* on purpose, so a verification whose stream breaks is held (`blocked`) rather than passed, and
+`SubscribeToTask`, `CancelTask` and `ListTasks` answer like the other mocks.
+
+`dev/verifier-e2e.sh` drives all of it over AG-UI and asserts what a user sees: one run across both attempts with four
+subagents (the coder twice, the verifier twice, named after it); the verifier's cards (pending and failed at attempt 1,
+pending and passed at attempt 2) and the finding; the `vymalo.rework`; the final `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate
+`verifier`, the second commit) and the thread of the resource API with the same `job`; `maxAttempts: 1` ending in
+`checks_failed` with the finding in the message; `push-clean` done at attempt 1 with no rework; **what the verifier was
+sent**, read from the mock's own request journal (`/__admin/requests`: the contexts `<thread>-verify-1-1` and
+`<thread>-verify-2-2`, never the thread's own, the commits, the attempt and the task quoted as untrusted); and the three refusals
+(a 400 problem, no thread created) for a run that chooses another verifier, drops the required source or requires `ci`. CI runs it
+in the `Coder E2E` workflow. `dev/check-mocks.sh` checks the mocks' side (the `verdict` for each commit, the coder's commits, and
+how the rework prompt changes the coder's answer) on its own.
+
+To make every agent need a verifier, set `ORCH_GATE=verifier` and `ORCH_VERIFIER=verifier` on the `orchestrator` service and give
+the `verifier` entry a `gate: {require: []}`: an agent cannot verify its own work, and the orchestrator refuses to start when one
+would (exit 78, naming the agent and the fix). Mocks that push no `branch` would then be sent back three times and fail, which is
+the fail-closed reading of "no pushed commit".
+
 ### Release channels (`mock-agent-releases`)
 
 Its card declares `https://agents.vymalo.com/a2a/extensions/release-channels/v1` with the example of
@@ -467,6 +540,8 @@ dev/try-thread.sh "fail please"                                  # failed
 AGENT_ID=mock-coder-releases RELEASE=staging dev/try-thread.sh "ship it"   # events carry [coder-r51]
 AGENT_ID=mock-coder-gated dev/try-thread.sh "red-once fix the login"       # checks fail, sent back, done at attempt 2
 dev/verify-e2e.sh                                                          # asserts that, red-always and the refusals
+AGENT_ID=mock-coder-verified dev/try-thread.sh "push-flawed fix the login" # the verifier finds fault, sent back, done at attempt 2
+dev/verifier-e2e.sh                                                        # asserts that, what the verifier was sent, and the refusals
 ```
 
 The script runs the thread with `POST /agui/agents/{agentId}` (a UUID it mints as the thread id; `THREAD_ID`
@@ -524,15 +599,18 @@ To run the image with the feature: `docker build --build-arg ORCH_FEATURES=agent
 
 `orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real dispatcher and A2A adapter (driven over the AG-UI run route of the test instance: `Chat::create_thread`, `Chat::follow_up`)
 against the mocks: the default script, `ask` and its answer, `fail`, `error` and `reject`, cancelling
-a blocked thread, the release echo, and the verification scenarios (`red-once` sent back and done at attempt 2,
-`red-always` failed after three; through `AppConfig.target_gates`, as `dev/agents.yaml` gates `mock-coder-gated`).
+a blocked thread, the release echo, the verification scenarios (`red-once` sent back and done at attempt 2,
+`red-always` failed after three; through `AppConfig.target_gates`, as `dev/agents.yaml` gates `mock-coder-gated`) and the
+verifier's (`push-flawed` judged by `mock-verifier`, sent back and done at attempt 2, `push-clean` done at once; as
+`dev/agents.yaml` gates `mock-coder-verified`), so that what the orchestrator really sends a verifier is matched against the WireMock mappings.
 It skips unless told where the mocks are:
 
 ```sh
-docker compose up -d --wait mock-agent mock-agent-releases
+docker compose up -d --wait mock-agent mock-agent-releases mock-verifier
 cd orchestrator
 ORCH_TEST_MOCK_AGENT_URL=http://127.0.0.1:8081 \
 ORCH_TEST_MOCK_AGENT_RELEASES_URL=http://127.0.0.1:8082 \
+ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
   cargo test -p orch-e2e --test wiremock_agent
 ```
 
@@ -543,9 +621,9 @@ ORCH_TEST_MOCK_AGENT_RELEASES_URL=http://127.0.0.1:8082 \
 
 Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
 lower `priority` wins) and `wiremock/<mock>/__files/*` (bodies; JSON-RPC frames use Handlebars
-templates, see WireMock's response templating). The two mocks are separate directories so each can
-diverge; a change to a shared behaviour goes into both. The directories are mounted read-only, so
-after editing run `docker compose restart mock-agent mock-agent-releases`, or reload the stubs with
+templates, see WireMock's response templating). The three mocks are separate directories so each can
+diverge; a change to a shared behaviour goes into all of them. The directories are mounted read-only, so
+after editing run `docker compose restart mock-agent mock-agent-releases mock-verifier`, or reload the stubs with
 `curl -X POST http://127.0.0.1:8081/__admin/mappings/reset`. To see what a client actually sent:
 `curl http://127.0.0.1:8081/__admin/requests` and, for requests no stub matched,
 `/__admin/requests/unmatched`.
@@ -572,6 +650,20 @@ orchestrator's side of the gate and the mappings' matching logic as the stand-in
 *Unverified*: `red-once` and `red-always` running in the `wiremock/wiremock:3.13.2` image (the regular expressions of
 the body patterns and the templates are the ones the other stubs use); the first run is the `Compose` workflow
 (`check-mocks.sh`, `wiremock_agent.rs`) and the `Coder E2E` workflow (`verify-e2e.sh`).
+
+The verifier (`mock-verifier`, `push-flawed`, `push-clean`, `mock-coder-verified`, `dev/verifier-e2e.sh`):
+
+*Verified 2026-09-30*: the `wiremock-standalone-3.13.2.jar` (the version compose pins, run with
+`--global-response-templating --disable-banner` and the directories of `dev/wiremock/agent`, `agent-releases` and `verifier`, on three
+ports) against `dev/check-mocks.sh` (every check `ok`, including the verifier's section and the coder's new keywords); the real
+`orchestrator` binary (debug build) on Postgres 16, with `dev/agents.local.yaml` moved to those ports, against `dev/verifier-e2e.sh`
+(every check `ok`, exit 0, including the request journal of the mock verifier) and `dev/verify-e2e.sh` (still `ok`);
+`wiremock_agent.rs` with the three URLs set (10 tests). `shellcheck dev/*.sh dev/coder/*.sh` and `docker compose --profile '*' config -q`
+are clean. This is WireMock itself, not its container image.
+
+*Unverified*: the `mock-verifier` service running in the `wiremock/wiremock:3.13.2` image and the healthcheck of its service, and
+the `Coder E2E` step that runs `dev/verifier-e2e.sh` inside the `app` profile; the first runs are the `Compose` and `Coder E2E`
+workflows.
 
 *Unverified*: `docker compose up` itself, that is the containers, the image healthchecks, the two
 image builds and the WireMock image's argument handling. The machine that wrote this had no Docker

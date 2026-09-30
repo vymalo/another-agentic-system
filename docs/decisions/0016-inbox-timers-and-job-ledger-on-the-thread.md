@@ -287,7 +287,7 @@ it is explicit.
   a doubling backoff until `INBOX_MAX_ATTEMPTS` counted claims. Permanent errors (a missing thread, an unreadable
   payload) dead-letter the row at once. On shutdown it finishes the row in hand and releases its
   claims. `tick()` runs one pass so tests can drive it without timing.
-- **`RequestVerification` is still dropped** by the application until slice 10 (its TODO stays).
+- **`RequestVerification` was dropped** by the application until slice 10, which turns it into an outbox row of kind `verify` (see [ADR 0018, Built (slice 10)](0018-verification-gate-and-rework-loop.md#built-slice-10)).
 - **Not decided here, and now open:** how long applied, expired and dead rows are kept (they are
   what makes a redelivery a duplicate, so purging them is a retention decision;
   [open question 29](../open-questions.md#open)), and what a watch key shared by two threads

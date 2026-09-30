@@ -16,10 +16,14 @@
 #             (ORCH_GATE, ORCH_MAX_ATTEMPTS). A job is not done until the required sources pass; a
 #             failure sends the agent back with the findings, up to `maxAttempts` in all.
 #               require       sources that must pass; at least the deployment's. This build honours
-#                             only `agent-checks` (the agent's own `checks` artifact); `ci` and
-#                             `verifier` are refused at startup until their slices are built.
+#                             `agent-checks` (the agent's own `checks` artifact) and `verifier`
+#                             (another agent reviews the pushed commit); `ci` is refused at startup
+#                             until its slices are built.
 #               maxAttempts   1..=ORCH_MAX_ATTEMPTS_CAP (default 3, cap 10, at most 100)
-#               verifier, ci  refused for now (they belong to `verifier` and `ci`)
+#               verifier      the id of the agent that verifies this agent's work (required when
+#                             `require` has `verifier`, unless ORCH_VERIFIER names one): another
+#                             configured agent, never this one
+#               ci            refused for now
 #             Unknown keys are errors.
 - id: coder
   name: Coder
@@ -28,6 +32,23 @@
   # gate:
   #   require: [agent-checks]
   #   maxAttempts: 3
+
+# A verifier (ADR 0018): `builder`'s work is not done until `reviewer`, another agent, passes the
+# commit it pushed. `reviewer` has its own card and its own token, and is never sent the builder's.
+# Its entry may also leave `verifier` out of `require` when the deployment requires it of every
+# agent (ORCH_GATE=verifier ORCH_VERIFIER=reviewer): an agent cannot verify its own work.
+#
+# - id: builder
+#   name: Builder
+#   cardUrl: https://builder.example.com/.well-known/agent-card.json
+#   tokenEnv: BUILDER_A2A_TOKEN
+#   gate:
+#     require: [verifier]
+#     verifier: reviewer
+# - id: reviewer
+#   name: Reviewer
+#   cardUrl: https://reviewer.example.com/.well-known/agent-card.json
+#   tokenEnv: REVIEWER_A2A_TOKEN
 
 # An agent hosted in-process (ADR 0015). It needs a build with the Cargo feature `agent-local`
 # (`cargo run -p orchestrator --features agent-local`); without it the orchestrator refuses to

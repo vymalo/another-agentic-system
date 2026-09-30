@@ -121,8 +121,11 @@ async function startThread(
   agent = "coder",
   extra: { forwardedProps?: Record<string, unknown> } = {},
 ) {
-  // A run that waits (slow, verify-wait) never ends its response: read up to RUN_STARTED.
-  const untilStarted = text.startsWith("slow") || text.startsWith("verify-wait");
+  // A run that waits (slow, verify-wait, verify-reviewed-wait) never ends its response: read up to RUN_STARTED.
+  const untilStarted =
+    text.startsWith("slow") ||
+    text.startsWith("verify-wait") ||
+    text.startsWith("verify-reviewed-wait");
   const threadId = newId();
   const res = await postRun(base, agent, {
     threadId,
@@ -419,6 +422,87 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     });
     const thread = await waitForState(threadId, ["failed"]);
     expect(thread.job).toMatchObject({ attempt: 3, maxAttempts: 3 });
+  });
+
+  it("verify-reviewed (the verifier agent of the gate): the verifier is a subagent of its own, with its verdict as the result", async () => {
+    const { threadId, body } = await startThread("verify-reviewed fix the login", "reviewer");
+    const events = body.map((f) => f.event);
+    const started = events.filter(
+      (e) => e.type === "SUBAGENT_STARTED" && String(e.subagentRunId).startsWith("sub-verify-"),
+    );
+    // one per verification, named after the verifier agent, the id the real projection gives it
+    expect(started.map((e) => [e.subagentRunId, e.name])).toEqual([
+      ["sub-verify-1", "verifier"],
+      ["sub-verify-2", "verifier"],
+    ]);
+    const finished = events.filter(
+      (e) => e.type === "SUBAGENT_FINISHED" && String(e.subagentRunId).startsWith("sub-verify-"),
+    );
+    expect(finished.map((e) => [e.subagentRunId, e.result])).toEqual([
+      ["sub-verify-1", { passed: false }],
+      ["sub-verify-2", { passed: true }],
+    ]);
+    // it starts on its pending card and ends on its verdict, never before or after
+    const at = (type: string, run: string) =>
+      events.findIndex((e) => e.type === type && e.subagentRunId === run);
+    const card = (status: string, attempt: number) =>
+      events.findIndex(
+        (e) =>
+          e.activityType === "vymalo.check" &&
+          (e.content as { status?: string; attempt?: number }).status === status &&
+          (e.content as { attempt?: number }).attempt === attempt,
+      );
+    expect(at("SUBAGENT_STARTED", "sub-verify-1")).toBe(card("pending", 1) - 1);
+    expect(at("SUBAGENT_FINISHED", "sub-verify-1")).toBe(card("failed", 1) + 1);
+    expect(at("SUBAGENT_FINISHED", "sub-verify-2")).toBe(card("passed", 2) + 1);
+    const thread = await waitForState(threadId, ["done"]);
+    expect(thread.job).toMatchObject({ attempt: 2, maxAttempts: 3, gate: ["verifier"] });
+  });
+
+  it("verify-reviewed-red: three verdicts of findings, RUN_ERROR checks_failed, every verifier subagent closed", async () => {
+    const { threadId, body } = await startThread("verify-reviewed-red fix the login", "reviewer");
+    expect(body.at(-1)?.event).toMatchObject({ type: "RUN_ERROR", code: "checks_failed" });
+    const results = body
+      .map((f) => f.event)
+      .filter(
+        (e) => e.type === "SUBAGENT_FINISHED" && String(e.subagentRunId).startsWith("sub-verify-"),
+      )
+      .map((e) => e.result);
+    expect(results).toEqual([{ passed: false }, { passed: false }, { passed: false }]);
+    expect((await waitForState(threadId, ["failed"])).job).toMatchObject({ attempt: 3 });
+  });
+
+  it("verify-reviewed-wait (mock only): a client that joins is told about the verifier, and Cancel ends it as canceled", async () => {
+    const { threadId } = await startThread("verify-reviewed-wait ship it", "reviewer");
+    for (let i = 0; i < 200; i++) {
+      const t = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+      if (t.lastSeq >= 6) break; // the verifier's pending card is the 6th event: the script now waits
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const ac = new AbortController();
+    const live = frames(await connect(base, threadId, { lastEventId: 6, signal: ac.signal }), (f) =>
+      isTerminal(f),
+    );
+    expect((await post(`/api/threads/${threadId}/cancel`)).status).toBe(202);
+    const list = await live;
+    ac.abort();
+    expect(list.slice(0, 3).map((f) => f.event.type)).toEqual([
+      "RUN_STARTED",
+      "SUBAGENT_STARTED",
+      "STATE_SNAPSHOT",
+    ]);
+    expect(list[1]?.event).toMatchObject({ subagentRunId: "sub-verify-1", name: "verifier" });
+    expect(list.slice(0, 3).every((f) => f.id === undefined)).toBe(true);
+    const finished = list.find((f) => f.event.type === "SUBAGENT_FINISHED");
+    expect(finished?.event).toMatchObject({
+      subagentRunId: "sub-verify-1",
+      result: { status: "canceled" },
+    });
+    expect(list.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "cancelled" },
+    });
+    await waitForState(threadId, ["cancelled"]);
   });
 
   it("verify-wait (mock only): the thread stays verifying with a pending CI check; Cancel ends it", async () => {

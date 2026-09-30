@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use common::*;
 use orch_app::GateLayer;
 use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId};
-use orch_testsupport::{Chat, FakeAgentOptions};
+use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript};
 use serde_json::{Value, json};
 
 fn examples_dir() -> PathBuf {
@@ -117,13 +117,26 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
                 .await,
             "failed",
         ),
+        // The verifier agent in the gate (ADR 0018): `plain` runs under `gate: {require:
+        // [verifier], verifier: reviewer}` (`world_for`) and pushes without checking itself.
+        // `verify-verifier-green`: the verifier finds something in attempt 1 and is satisfied by
+        // the rework. `verify-verifier-red`: it never is.
+        "verify-verifier-green" | "verify-verifier-red" => (
+            chat.seed_thread("plain", "verify-reviewed fix the login", None)
+                .await,
+            if name == "verify-verifier-green" {
+                "done"
+            } else {
+                "failed"
+            },
+        ),
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 9] = [
+const SCENARIOS: [&str; 11] = [
     "echo",
     "ask",
     "cancel",
@@ -133,6 +146,8 @@ const SCENARIOS: [&str; 9] = [
     "a2ui",
     "verify-green",
     "verify-red",
+    "verify-verifier-green",
+    "verify-verifier-red",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -163,6 +178,14 @@ async fn world_for(name: &str) -> World {
                 },
             )
             .await
+        }
+        "verify-verifier-green" | "verify-verifier-red" => {
+            let script = if name == "verify-verifier-green" {
+                VerifierScript::FindingsThenPass
+            } else {
+                VerifierScript::AlwaysFail
+            };
+            World::with(Backend::Memory, verified_by_reviewer(script)).await
         }
         _ => World::start(Backend::Memory).await,
     }

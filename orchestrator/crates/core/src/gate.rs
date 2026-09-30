@@ -14,7 +14,7 @@ use jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::AgentId;
+use crate::ids::{AgentId, ThreadId};
 use crate::thread::ThreadState;
 
 /// Most findings a source keeps, and so most the rework prompt quotes (ADR 0018).
@@ -23,6 +23,8 @@ pub const MAX_FINDINGS: usize = 20;
 pub const MAX_FINDINGS_BYTES: usize = 16 * 1024;
 /// Most bytes of the user's task the ledger keeps, for the verifier's prompt.
 pub const MAX_TASK_BYTES: usize = 8 * 1024;
+/// Most bytes of the agent's own summary of its work the ledger keeps, for the verifier's prompt.
+pub const MAX_SUMMARY_BYTES: usize = 4 * 1024;
 /// Attempts when nothing else is configured.
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// Seconds CI may take before the thread blocks, when nothing else is configured.
@@ -148,6 +150,11 @@ impl GatePolicy {
         }
     }
 
+    /// Sets how long the verifier may take, in whole seconds (clamped to at least one).
+    pub fn set_verifier_timeout_secs(&mut self, secs: i64) {
+        self.verifier_timeout = SignedDuration::from_secs(secs.max(1));
+    }
+
     /// Whether any source is required. When not, the job is never touched.
     pub fn is_active(&self) -> bool {
         !self.require.is_empty()
@@ -257,6 +264,11 @@ pub struct Job {
     /// The user's task, kept (capped) for the verifier's prompt. Only kept under an active gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// What the agent said about its work in this attempt (its last final message, or the text
+    /// of its `completed`), kept (capped) for the verifier's prompt as untrusted data. Only kept
+    /// under a gate that requires the verifier; a rework forgets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// The commit the agent pushed, once it said so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pushed: Option<PushedRef>,
@@ -275,6 +287,7 @@ impl Default for Job {
             attempt: 1,
             verification: 0,
             task: None,
+            summary: None,
             pushed: None,
             results: Vec::new(),
             hold: None,
@@ -462,6 +475,66 @@ pub struct Verdict {
     pub findings: Vec<String>,
 }
 
+impl Verdict {
+    /// The verdict of a verifier that finished without giving one: a failed check
+    /// (fail closed, ADR 0018).
+    pub fn missing() -> Self {
+        Verdict {
+            passed: false,
+            findings: vec![
+                "no verdict: the verifier finished without reporting a `verdict` artifact"
+                    .to_owned(),
+            ],
+        }
+    }
+
+    /// The verdict of a verifier whose `verdict` artifact cannot be used (`reason` says why): a
+    /// failed check as well.
+    pub fn unusable(reason: &str) -> Self {
+        Verdict {
+            passed: false,
+            findings: cap_findings([format!(
+                "no verdict: the verifier's `verdict` artifact cannot be used: {reason}"
+            )]),
+        }
+    }
+}
+
+/// Reads a `verdict` artifact `{passed, findings[]}` from its inline JSON text (an A2A data part
+/// arrives as JSON text). Pure. The verifier is another agent and its words are untrusted, so
+/// the findings are bounded here ([`cap_findings`]: at most [`MAX_FINDINGS`] items and
+/// [`MAX_FINDINGS_BYTES`] bytes); a `findings` that is not a list, or a `passed` that is not a
+/// boolean, makes the artifact unusable rather than guessed at.
+///
+/// ```
+/// # use orch_core::parse_verdict;
+/// let v = parse_verdict(Some(r#"{"passed": false, "findings": ["no tests"]}"#)).unwrap();
+/// assert!(!v.passed);
+/// assert_eq!(v.findings, ["no tests"]);
+/// assert!(parse_verdict(Some(r#"{"findings": []}"#)).is_err());
+/// ```
+pub fn parse_verdict(text: Option<&str>) -> Result<Verdict, String> {
+    let Some(text) = text else {
+        return Err("it carries no data".to_owned());
+    };
+    let value: Value = serde_json::from_str(text).map_err(|e| format!("it is not JSON: {e}"))?;
+    let Some(object) = value.as_object() else {
+        return Err("it is not a JSON object".to_owned());
+    };
+    let Some(passed) = object.get("passed").and_then(Value::as_bool) else {
+        return Err("`passed` is missing or not a boolean".to_owned());
+    };
+    let findings = match object.get("findings") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => cap_findings(items.iter().map(|item| match item {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })),
+        Some(_) => return Err("`findings` is not a list".to_owned()),
+    };
+    Ok(Verdict { passed, findings })
+}
+
 /// A deadline the application arms and feeds back as [`Input::TimerFired`](crate::Input::TimerFired).
 /// It names the verification it belongs to, so one that fires late is recognised as stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -481,6 +554,14 @@ pub enum Timer {
         /// The verification it was armed in.
         verification: u32,
     },
+}
+
+/// The A2A context a verification runs in: `<thread>-verify-<attempt>-<verification>`. It is the
+/// verifier's own, separate from the worker's (the thread's context), and it is new for every
+/// verification, so a verification that repeats within one attempt (the user answered a hold, the
+/// agent finished again) never lands in the context of one that is over (ADR 0018).
+pub fn verifier_context(thread: ThreadId, attempt: u32, verification: u32) -> String {
+    format!("{thread}-verify-{attempt}-{verification}")
 }
 
 /// The key an inbound CI report is matched by: `ci:<repo-key>@<sha>`.
@@ -605,6 +686,46 @@ fn drop_default_port<'a>(host: &'a str, scheme: Option<&str>) -> &'a str {
     } else {
         host.strip_suffix(default).unwrap_or(host)
     }
+}
+
+/// The longest branch name taken from an artifact.
+pub const MAX_BRANCH_BYTES: usize = 255;
+
+/// Whether `name` is a branch name `git check-ref-format --branch` accepts (which also refuses a
+/// name that starts with `-`, since a command line would read it as an option). The name comes
+/// from the worker and is repeated to other agents and to users, so what git forbids is
+/// forbidden here: no whitespace or control characters, none of
+/// `` ` `` `~` `^` `:` `?` `*` `[` `\`, no `..` or `@{`, no empty component (`//`, a leading or
+/// trailing `/`), no component that starts with `.` or ends with `.lock`, no trailing `.`, not
+/// `@`, at most [`MAX_BRANCH_BYTES`] bytes.
+///
+/// ```
+/// # use orch_core::is_branch_name;
+/// assert!(is_branch_name("agent/fix-login"));
+/// assert!(!is_branch_name("agent/fix login"));
+/// assert!(!is_branch_name("a..b"));
+/// ```
+pub fn is_branch_name(name: &str) -> bool {
+    if name.is_empty()
+        || name.len() > MAX_BRANCH_BYTES
+        || name == "@"
+        || name.starts_with('-')
+        || name.ends_with('.')
+        || name.contains("..")
+        || name.contains("@{")
+        || name.contains("//")
+    {
+        return false;
+    }
+    if name.chars().any(|c| {
+        c.is_control()
+            || c.is_whitespace()
+            || matches!(c, '`' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+    }) {
+        return false;
+    }
+    name.split('/')
+        .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 /// Whether `s` is a full commit hash: 40 or 64 lower-case hex digits.
@@ -734,12 +855,15 @@ pub fn recognise_artifact(name: &str, text: Option<&str>) -> Recognised {
             let Some(repository) = string("repository").and_then(repo_key) else {
                 return malformed("`repository` is missing or not a repository address".to_owned());
             };
-            let Some(branch) = string("branch")
-                .map(str::trim)
-                .filter(|b| !b.is_empty() && !b.chars().any(char::is_control))
-            else {
+            let Some(branch) = string("branch").map(str::trim).filter(|b| !b.is_empty()) else {
                 return malformed("`branch` is missing".to_owned());
             };
+            if !is_branch_name(branch) {
+                return malformed(
+                    "`branch` is not a name git accepts for a branch (git check-ref-format)"
+                        .to_owned(),
+                );
+            }
             let Some(commit) = string("commit").map(str::to_lowercase) else {
                 return malformed("`commit` is missing".to_owned());
             };

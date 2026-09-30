@@ -1,0 +1,12 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{{#assign 'msgId'}}{{jsonPath request.body '$.params.message.messageId' default='msg-local'}}{{/assign}}{{#assign 'ctxId'}}{{jsonPath request.body '$.params.message.contextId' default='ctx-local'}}{{/assign}}{{#assign 'taskId'}}task-{{msgId}}{{/assign}}id: 1
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"task":{"id":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_SUBMITTED","timestamp":"{{now}}"}}}}
+
+id: 2
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-working","role":"ROLE_AGENT","parts":[{"text":"Reviewing the commit."}]}}}}}
+
+id: 3
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"artifactUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","artifact":{"artifactId":"verdict-{{msgId}}","name":"verdict","parts":[{"data":{"passed":true,"findings":[]},"mediaType":"application/json"}]},"lastChunk":true}}}
+
+id: 4
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-completed","role":"ROLE_AGENT","parts":[{"text":"Reviewed: it does what the task asks."}]}}}}}
+

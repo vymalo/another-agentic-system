@@ -78,6 +78,7 @@ pub fn fast_dispatcher() -> DispatcherConfig {
         max_poll_failures: 10,
         max_cancel_attempts: 10,
         cancel_retry_delay: Duration::from_millis(50),
+        verify_watch: Duration::from_millis(50),
     }
 }
 

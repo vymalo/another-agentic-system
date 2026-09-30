@@ -7,8 +7,11 @@
 //! ```sh
 //! ORCH_TEST_MOCK_AGENT_URL=http://127.0.0.1:8081 \
 //! ORCH_TEST_MOCK_AGENT_RELEASES_URL=http://127.0.0.1:8082 \
+//! ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
 //!   cargo test -p orch-e2e --test wiremock_agent
 //! ```
+//!
+//! (`mock-verifier` too, for the tests of the verifier agent of the gate.)
 //!
 //! The store is the in-memory one: the mocks, not persistence, are under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
@@ -26,6 +29,7 @@ use orch_testsupport::{Chat, TestInstance, fast_dispatcher, shape};
 
 const MOCK_URL: &str = "ORCH_TEST_MOCK_AGENT_URL";
 const RELEASES_URL: &str = "ORCH_TEST_MOCK_AGENT_RELEASES_URL";
+const VERIFIER_URL: &str = "ORCH_TEST_MOCK_VERIFIER_URL";
 /// Any non-empty bearer token is accepted by the mocks; this one is what `dev/agents.yaml` uses.
 const DUMMY_TOKEN: &str = "dev-mock-token";
 const PR_URL: &str = "https://github.com/example/sandbox/pull/1";
@@ -74,13 +78,24 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
             AgentDirectory::new(entries),
             AppConfig {
                 stream_poll: Duration::from_millis(100),
-                // `dev/agents.yaml` gates `mock-coder-gated`: its own checks must pass.
-                target_gates: [(
-                    AgentId::new("mock-coder-gated"),
-                    GateLayer::from_json(&serde_json::json!({"require": ["agent-checks"]}))
+                // `dev/agents.yaml` gates `mock-coder-gated` (its own checks must pass) and
+                // `mock-coder-verified` (the agent `verifier` must pass its commit).
+                target_gates: [
+                    (
+                        AgentId::new("mock-coder-gated"),
+                        GateLayer::from_json(&serde_json::json!({"require": ["agent-checks"]}))
+                            .unwrap()
+                            .unwrap(),
+                    ),
+                    (
+                        AgentId::new("mock-coder-verified"),
+                        GateLayer::from_json(
+                            &serde_json::json!({"require": ["verifier"], "verifier": "verifier"}),
+                        )
                         .unwrap()
                         .unwrap(),
-                )]
+                    ),
+                ]
                 .into(),
                 ..AppConfig::default()
             },
@@ -325,4 +340,66 @@ async fn red_always_runs_out_of_attempts_and_fails_the_thread() {
     );
     assert_eq!(kinds.last().unwrap(), "thread_state:failed");
     assert_eq!(rig.chat.thread(&id).await["job"]["attempt"], 3);
+}
+
+#[tokio::test]
+async fn the_mock_verifier_finds_fault_once_and_passes_the_rework() {
+    let (Some(agent), Some(verifier)) = (mock(MOCK_URL), mock(VERIFIER_URL)) else {
+        return;
+    };
+    let rig = rig(&[("mock-coder-verified", &agent), ("verifier", &verifier)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder-verified", "push-flawed fix the login", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    let kinds = shape(&events);
+    assert_eq!(
+        kinds.iter().filter(|k| *k == "rework").count(),
+        1,
+        "{kinds:?}"
+    );
+    let answers: Vec<(&str, &str)> = events
+        .iter()
+        .filter(|e| e["kind"] == "check_result" && e["data"]["status"] != "pending")
+        .map(|e| {
+            (
+                e["data"]["source"].as_str().unwrap(),
+                e["data"]["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(answers, [("verifier", "failed"), ("verifier", "passed")]);
+    let rework = events.iter().find(|e| e["kind"] == "rework").unwrap();
+    assert_eq!(
+        rework["data"]["findings"][0]["findings"][0],
+        "src/login.rs: the empty password is accepted; add a test that covers it"
+    );
+    let record = rig.chat.thread(&id).await;
+    assert_eq!(record["job"]["attempt"], 2);
+    assert_eq!(record["job"]["sha"], "b".repeat(40));
+    assert!(
+        events
+            .iter()
+            .all(|e| e["kind"] != "agent_status" || e["actor"]["name"] == "mock-coder-verified"),
+        "nothing the verifier said became the coder's"
+    );
+}
+
+#[tokio::test]
+async fn a_clean_push_is_passed_by_the_mock_verifier_at_once() {
+    let (Some(agent), Some(verifier)) = (mock(MOCK_URL), mock(VERIFIER_URL)) else {
+        return;
+    };
+    let rig = rig(&[("mock-coder-verified", &agent), ("verifier", &verifier)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder-verified", "push-clean fix the login", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    let kinds = shape(&events);
+    assert!(!kinds.contains(&"rework".to_owned()), "{kinds:?}");
+    assert_eq!(rig.chat.thread(&id).await["job"]["attempt"], 1);
 }

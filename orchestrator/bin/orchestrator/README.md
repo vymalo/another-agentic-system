@@ -53,6 +53,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `DATABASE_MAX_CONNECTIONS` | `10` | at least 2 |
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | also the lease of a local agent's run |
+| `ORCH_VERIFIER_WATCH_SECS` | `5` | at least 1 (`--verifier-watch-secs`); how often a verification looks at its thread while it waits for the verifier. When the thread has moved on (the deadline held it, it was cancelled, the user wrote) the verifier is told to stop and the row ends: this is how late |
 | `INBOX_LEASE_SECS` | `30` | at least 3; how long a crashed replica's claim on an inbox row blocks others |
 | `INBOX_POLL_SECS` | `2` | at least 1; the inbox worker's safety poll, and so the latest a timer fires after its time |
 | `INBOX_PARKED_TTL_SECS` | `86400` | at least 1; how long a report that no thread watches yet waits before it expires |
@@ -60,10 +61,11 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
 | `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), `agui` and `mcp`, as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
-| `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **Only `agent-checks` is accepted by this build**; `ci` and `verifier` are a startup error (78) naming the slice that enables them |
+| `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **`agent-checks` and `verifier` are accepted by this build**; `ci` is a startup error (78) naming the slices that enable it. `verifier` needs a verifier agent (`ORCH_VERIFIER`, or `gate.verifier` in an entry) |
 | `ORCH_MAX_ATTEMPTS` | `3` | attempts a gated job's agent gets, the first included (`--max-attempts`); at least 1 and at most the cap |
 | `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most an `AGENTS_FILE` entry or a run may set the attempts to (`--max-attempts-cap`); at most `100`. When only the cap is set below `3`, the default attempts are lowered to it; an explicit `ORCH_MAX_ATTEMPTS` above the cap is a startup error |
-| `ORCH_VERIFIER` | none | the verifier agent's id (`--verifier`). Refused (78) until the verifier dispatch is built |
+| `ORCH_VERIFIER` | none | the verifier agent's id (`--verifier`): another configured agent than the ones it verifies (startup error otherwise, naming the agent and how to fix it). Used when the gate requires `verifier` |
+| `ORCH_VERIFIER_TIMEOUT_SECS` | `1800` | how long a verification may wait for the verifier's verdict before the thread waits for the user (`--verifier-timeout-secs`); at least 1. Waiting does not use an attempt |
 | `MCP_TOKENS_FILE` | required with `mcp` | YAML list of `{user, tokenEnv}` (`--mcp-tokens-file`): who each bearer token is; read by the roles that serve HTTP only. A `tokenEnv` variable that is unset or empty is `McpTokenEnvMissing` and an unreadable file `McpTokensFileRead` (both 78) |
 | `MCP_TOKEN_<NAME>` | required by the file | the variable a `tokenEnv` names: the bearer token (a `SecretString`, never logged), at least 32 bytes (shorter is `Invalid`, 78) |
 | `MCP_ALLOWED_HOSTS` | required with `mcp` | comma-separated `Host` values the MCP server accepts (`--mcp-allowed-hosts`), each `host` or `host:port`: a URL, `*` or a port that is not a number is `Invalid` (78) |
@@ -77,7 +79,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 ### The verification gate
 
 [ADR 0018](../../../docs/decisions/0018-verification-gate-and-rework-loop.md). Three layers (sources can only be added, attempts set anywhere
-within the cap): the deployment (`ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP`, `ORCH_VERIFIER`), an agent's
+within the cap): the deployment (`ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP`, `ORCH_VERIFIER`, `ORCH_VERIFIER_TIMEOUT_SECS`), an agent's
 `gate:` in `AGENTS_FILE`, and the run that creates a thread (`forwardedProps["vymalo.gate"]`, see
 [`docs/api/agui.md`](../../../docs/api/agui.md#verification-the-gate)). The result is copied into the thread's job when
 it is created, so a change of configuration never reaches a running job.
@@ -89,14 +91,32 @@ it is created, so a change of configuration never reaches a running job.
   gate:
     require: [agent-checks]   # the agent's own `checks` artifact must pass, or it is sent back
     maxAttempts: 2            # 1..=ORCH_MAX_ATTEMPTS_CAP
+- id: builder
+  name: Builder
+  cardUrl: https://builder.example.com/.well-known/agent-card.json
+  gate:
+    require: [verifier]       # another agent reviews the pushed commit; its `verdict` artifact decides
+    verifier: reviewer        # a configured agent (below), never this one
+- id: reviewer
+  name: Reviewer
+  cardUrl: https://reviewer.example.com/.well-known/agent-card.json
+  tokenEnv: REVIEWER_A2A_TOKEN   # its own credentials: it never receives the worker's
 ```
 
 Startup validates all of it and exits **78** with a message naming the variable or the agent: an unknown source; a
 `maxAttempts` outside `1..=cap`; an entry whose `require` leaves out a source the deployment requires; a `verifier`
-that is not another configured agent; an unknown member of `gate`. **`ci` and `verifier`, as sources or as settings
-(`ci:`, `verifier:`), are refused in every layer**: the application drops `RequestVerification` until the verifier dispatch (slice 10) exists, and no surface writes CI reports until the CI webhook
-(slice 6) exists (the inbox and timers, MVP slice 5, are built), so a gate that required
-them could never pass. The message says which slice enables them. A run that asks for the same is a 400.
+that is not another configured agent; a gate that requires `verifier` with no verifier configured; an agent whose own
+gate requires the verifier and that is the verifier itself (its entry must leave `verifier` out of its `require`, the one
+removal a layer may make); an unknown member of `gate`. **`ci`, as a source or as a setting (`ci:`), is refused in every
+layer**: no surface writes CI reports until the CI webhook (slice 6) exists (the inbox and timers, MVP slice 5, are built),
+so a gate that required it could never pass. The message says which slices enable it. A run that asks for the same is a 400.
+
+**The verifier** (slice 10): when the worker completes under a gate that requires it, the dispatcher asks the verifier agent
+over A2A, in a context of its own (`<thread>-verify-<attempt>-<verification>`), to review the commit the worker pushed, and
+its `verdict` artifact `{passed, findings[]}` decides like any other source: findings send the worker back (quoted as
+untrusted data), a pass counts toward done. No verdict is a failed check. A verifier that cannot be used (its task fails, it
+cannot be reached, it does not answer within `ORCH_VERIFIER_TIMEOUT_SECS`) leaves the thread waiting for the user, `blocked`,
+without spending an attempt. A thread may require the verifier in its run but not choose which agent it is.
 
 ### Logs and metrics
 
@@ -199,8 +219,9 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
 
 ## Tests
 
-* Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the four variables, `ci` and
-  `verifier` refused in `ORCH_GATE`, `ORCH_VERIFIER` and an `AGENTS_FILE` entry naming the slice, strict parsing of `gate:`, a
+* Unit tests in `src/config.rs`: no database, no environment (the gate: the defaults, the variables, `ci` refused in
+  `ORCH_GATE` and an `AGENTS_FILE` entry naming the slice, the verifier read from `ORCH_GATE`, `ORCH_VERIFIER` and
+  `ORCH_VERIFIER_TIMEOUT_SECS` (a missing or unknown verifier, a self-verifying one, a bad timeout refused), strict parsing of `gate:`, a
   target that weakens the deployment or exceeds the cap; defaults, the
   environment/flag mapping, unknown, empty and repeated surfaces, the removed
   `chat-api` refused with an error naming it and AG-UI (`RemovedSurface`, from the variable and from the
@@ -215,7 +236,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   process starts and completes it. Unit tests in `src/config.rs` cover the flavours: without the feature a local agent is
   refused naming `agent-local`, with it it is accepted, and `AGENT_LOCAL_CONCURRENCY` defaults to 4.
 * `tests/smoke.rs`: the built executable as a process. Without the feature, `transport: local` exits 78 naming `agent-local`. Configuration-error
-  tests always run (including a gate this build cannot honour, in the environment and in `AGENTS_FILE`: exit 78, the slice named; the unreachable-database one waits out sqlx's 30 s
+  tests always run (including a gate this build cannot honour (CI) or cannot run (the verifier with no agent to ask), in the environment and in `AGENTS_FILE`: exit 78, the slice named; the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, the removed
   `chat-api` (`the_removed_chat_api_surface_is_a_config_error_pointing_to_agui`: from the variable,
@@ -223,7 +244,10 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   removed on 2026-09-30 and points to AG-UI, nothing connects first), and the default serving `agui`
   and the resource API only (the AG-UI route answers 400 to `{}` and 401 without identity; the
   four removed legacy routes answer 404, or 405 for `POST /api/threads`, while the thread list, an
-  unknown thread and cancel answer as resources). With a database: `/healthz`, `/readyz`, 401 without
+  unknown thread and cancel answer as resources). With a database: a gate that requires the verifier (`ORCH_GATE`,
+  `ORCH_VERIFIER`, `ORCH_VERIFIER_TIMEOUT_SECS`) through two fake agents, the verifier finding something once
+  (one run, the verifier a subagent of its own, two verifications in contexts of their own, its own credentials);
+  `/healthz`, `/readyz`, 401 without
   identity, a thread run and completed over AG-UI (the default surface) through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
   database with a SIGKILL mid-task. The MCP surface (`mcp_without_its_tokens_or_hosts_is_a_config_error`: each missing piece is

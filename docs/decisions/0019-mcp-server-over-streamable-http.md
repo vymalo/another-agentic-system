@@ -328,7 +328,9 @@ A review of slices 11 and 12 found no blocker; these changes followed it. The de
 - **`start_job.gate`.** `{require?, maxAttempts?}`, the per-thread layer of
   [ADR 0018](0018-verification-gate-and-rework-loop.md), is checked by `App::resolve_gate`; a gate the deployment
   cannot honour is a tool error that names the reason (in this build only `agent-checks` can be required, so `ci` and
-  `verifier` are refused until their slices are built). A gate of the wrong shape, or with another member, is refused as
+  `verifier` are refused until their slices are built). *(Update 2026-09-30, MVP slice 10: `verifier` is built. The tool
+  refuses it, by the same `App::resolve_gate`, when no verifier agent is configured or when the job's own agent is the
+  verifier; `ci` is still refused.)* A gate of the wrong shape, or with another member, is refused as
   invalid params. The gate is fixed when the job is created: a retry with the same `client_request_id` and a gate that
   would change it is refused (`App::gate_request_changes`); a retry that leaves the gate out is a retry.
 - **A retry says what the first request said.** The same `client_request_id` with another text, agent, title or gate is

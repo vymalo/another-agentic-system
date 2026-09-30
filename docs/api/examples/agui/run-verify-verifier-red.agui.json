@@ -1,0 +1,831 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "messageId": "said-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "I pushed the fix: the empty password is rejected now.",
+      "messageId": "said-1",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "said-1",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000001"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "reviewer",
+          "type": "agent"
+        }
+      },
+      "name": "reviewer",
+      "subagentRunId": "sub-verify-1",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "source": "verifier",
+        "status": "pending"
+      },
+      "messageId": "check-1-1-verifier",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "src/login.rs: the empty password is accepted"
+        ],
+        "source": "verifier",
+        "status": "failed"
+      },
+      "messageId": "check-1-1-verifier",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "passed": false
+      },
+      "subagentRunId": "sub-verify-1",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "src/login.rs: the empty password is accepted"
+            ],
+            "source": "verifier"
+          }
+        ],
+        "maxAttempts": 3
+      },
+      "messageId": "rework-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "messageId": "said-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-8",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "I pushed the fix: the empty password is rejected now.",
+      "messageId": "said-2",
+      "subagentRunId": "sub-8",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "said-2",
+      "subagentRunId": "sub-8",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-12",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000002"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 12
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "reviewer",
+          "type": "agent"
+        }
+      },
+      "name": "reviewer",
+      "subagentRunId": "sub-verify-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "source": "verifier",
+        "status": "pending"
+      },
+      "messageId": "check-2-2-verifier",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 13
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "findings": [
+          "src/login.rs: the empty password is accepted"
+        ],
+        "source": "verifier",
+        "status": "failed"
+      },
+      "messageId": "check-2-2-verifier",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "passed": false
+      },
+      "subagentRunId": "sub-verify-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 14
+  },
+  {
+    "event": {
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 3,
+        "findings": [
+          {
+            "findings": [
+              "src/login.rs: the empty password is accepted"
+            ],
+            "source": "verifier"
+          }
+        ],
+        "maxAttempts": 3
+      },
+      "messageId": "rework-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-15",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 15
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-16",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-15",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 16
+  },
+  {
+    "event": {
+      "messageId": "said-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-15",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "I pushed the fix: the empty password is rejected now.",
+      "messageId": "said-3",
+      "subagentRunId": "sub-15",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "said-3",
+      "subagentRunId": "sub-15",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 17
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000003\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-18",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-15",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 18
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-19",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-15",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-15",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000003"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 19
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "reviewer",
+          "type": "agent"
+        }
+      },
+      "name": "reviewer",
+      "subagentRunId": "sub-verify-3",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 3,
+        "commit": "0000000000000000000000000000000000000003",
+        "source": "verifier",
+        "status": "pending"
+      },
+      "messageId": "check-3-3-verifier",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 20
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 3,
+        "commit": "0000000000000000000000000000000000000003",
+        "findings": [
+          "src/login.rs: the empty password is accepted"
+        ],
+        "source": "verifier",
+        "status": "failed"
+      },
+      "messageId": "check-3-3-verifier",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "passed": false
+      },
+      "subagentRunId": "sub-verify-3",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 21
+  },
+  {
+    "event": {
+      "activityType": "vymalo.error",
+      "content": {
+        "message": "the work did not pass verification after 3 attempts; the verifier: src/login.rs: the empty password is accepted",
+        "retryable": false
+      },
+      "messageId": "evt-22",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 22
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 3,
+          "gate": [
+            "verifier"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000003"
+        },
+        "thread": {
+          "state": "failed",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-reviewed fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "code": "checks_failed",
+      "message": "the work did not pass verification after 3 attempts; the verifier: src/login.rs: the empty password is accepted",
+      "metadata": {
+        "vymalo.problem": {
+          "detail": "the work did not pass verification after 3 attempts; the verifier: src/login.rs: the empty password is accepted",
+          "title": "Checks failed",
+          "type": "about:blank"
+        }
+      },
+      "type": "RUN_ERROR"
+    },
+    "id": 23
+  }
+]

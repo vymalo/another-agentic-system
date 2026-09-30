@@ -1,0 +1,267 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "error:checks_failed"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-verify-1",
+      "name": "reviewer",
+      "end": "success",
+      "result": {
+        "passed": false
+      }
+    },
+    {
+      "id": "sub-8",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-verify-2",
+      "name": "reviewer",
+      "end": "success",
+      "result": {
+        "passed": false
+      }
+    },
+    {
+      "id": "sub-15",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-verify-3",
+      "name": "reviewer",
+      "end": "success",
+      "result": {
+        "passed": false
+      }
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "verify-reviewed fix the login"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "I pushed the fix: the empty password is rejected now."
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-1-1-verifier",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "src/login.rs: the empty password is accepted"
+        ],
+        "source": "verifier",
+        "status": "failed"
+      }
+    },
+    {
+      "id": "rework-2",
+      "role": "activity",
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "src/login.rs: the empty password is accepted"
+            ],
+            "source": "verifier"
+          }
+        ],
+        "maxAttempts": 3
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-10",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-8",
+      "text": "I pushed the fix: the empty password is rejected now."
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-12",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-2-2-verifier",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "findings": [
+          "src/login.rs: the empty password is accepted"
+        ],
+        "source": "verifier",
+        "status": "failed"
+      }
+    },
+    {
+      "id": "rework-3",
+      "role": "activity",
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 3,
+        "findings": [
+          {
+            "findings": [
+              "src/login.rs: the empty password is accepted"
+            ],
+            "source": "verifier"
+          }
+        ],
+        "maxAttempts": 3
+      }
+    },
+    {
+      "id": "evt-16",
+      "role": "activity",
+      "subagentRunId": "sub-15",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-17",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-15",
+      "text": "I pushed the fix: the empty password is rejected now."
+    },
+    {
+      "id": "evt-18",
+      "role": "activity",
+      "subagentRunId": "sub-15",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000003\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      }
+    },
+    {
+      "id": "evt-19",
+      "role": "activity",
+      "subagentRunId": "sub-15",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    },
+    {
+      "id": "check-3-3-verifier",
+      "role": "activity",
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 3,
+        "commit": "0000000000000000000000000000000000000003",
+        "findings": [
+          "src/login.rs: the empty password is accepted"
+        ],
+        "source": "verifier",
+        "status": "failed"
+      }
+    },
+    {
+      "id": "evt-22",
+      "role": "activity",
+      "activityType": "vymalo.error",
+      "content": {
+        "message": "the work did not pass verification after 3 attempts; the verifier: src/login.rs: the empty password is accepted",
+        "retryable": false
+      }
+    }
+  ],
+  "state": {
+    "job": {
+      "attempt": 3,
+      "gate": [
+        "verifier"
+      ],
+      "maxAttempts": 3,
+      "sha": "0000000000000000000000000000000000000003"
+    },
+    "thread": {
+      "state": "failed",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "verify-reviewed fix the login"
+    }
+  },
+  "pendingInterrupts": []
+}

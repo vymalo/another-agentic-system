@@ -35,6 +35,8 @@ struct Inner {
     commit_faults: std::collections::VecDeque<StoreError>,
     /// Failures the next `create_thread`s return instead of running (fault injection).
     create_faults: std::collections::VecDeque<StoreError>,
+    /// Commits refused because the outbox or inbox claim they carried was no longer held.
+    fenced_commits: usize,
 }
 
 /// A [`ThreadStore`] in process memory. Clones share the data, which lets tests run two
@@ -74,6 +76,12 @@ impl MemoryStore {
         for _ in 0..n {
             inner.create_faults.push_back(error());
         }
+    }
+
+    /// How many commits have been refused so far because the claim they carried was lost: what
+    /// a test waits for to know that a worker whose claim was taken over has tried to write.
+    pub fn fenced_commits(&self) -> usize {
+        self.lock().fenced_commits
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -187,6 +195,7 @@ fn write_commit(
             status: OutboxStatus::Pending,
             attempts: 0,
             sent_at: None,
+            task_id: None,
             next_attempt_at: commit.now,
             lease_owner: None,
             lease_until: None,
@@ -358,11 +367,13 @@ impl ThreadStore for MemoryStore {
                 .iter()
                 .any(|r| r.thread_id == thread && holds(r, lease))
         {
+            inner.fenced_commits += 1;
             return Ok(CommitOutcome::Fenced);
         }
         if let Some(lease) = &commit.inbox
             && !inner.inbox.iter().any(|r| inbox_holds(r, lease))
         {
+            inner.fenced_commits += 1;
             return Ok(CommitOutcome::Fenced);
         }
         if entry.record.version != expected_version {
@@ -466,7 +477,7 @@ impl ThreadStore for MemoryStore {
                 continue;
             }
             let blocked = match row.kind {
-                OutboxKind::Cancel => false,
+                OutboxKind::Cancel | OutboxKind::Verify => false,
                 OutboxKind::Delegate => inner.outbox[..i].iter().any(|older| {
                     older.thread_id == row.thread_id
                         && older.kind == OutboxKind::Delegate
@@ -509,6 +520,21 @@ impl ThreadStore for MemoryStore {
             apply_binding(&mut entry.binding, &binding);
         }
         Ok(true)
+    }
+
+    async fn mark_verify_sent(
+        &self,
+        lease: &Lease,
+        task_id: String,
+        now: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock();
+        Ok(leased(&mut inner, lease)
+            .map(|row| {
+                row.sent_at = Some(now);
+                row.task_id = Some(task_id);
+            })
+            .is_some())
     }
 
     async fn retry_outbox(

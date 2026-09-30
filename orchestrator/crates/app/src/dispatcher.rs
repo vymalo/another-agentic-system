@@ -28,6 +28,8 @@ use tracing::Instrument as _;
 
 use crate::{App, AppError, ApplyOutcome};
 
+mod verify;
+
 /// Tunables of the dispatcher.
 #[derive(Debug, Clone)]
 pub struct DispatcherConfig {
@@ -55,6 +57,10 @@ pub struct DispatcherConfig {
     pub max_cancel_attempts: u32,
     /// Delay before re-checking a cancel that raced a delegation.
     pub cancel_retry_delay: Duration,
+    /// How often a verification in flight looks at its thread to see that it is still wanted
+    /// (a timeout, a cancel or a message from the user ends it); a verifier that hangs is
+    /// dropped within this long of that.
+    pub verify_watch: Duration,
 }
 
 impl Default for DispatcherConfig {
@@ -72,6 +78,7 @@ impl Default for DispatcherConfig {
             max_poll_failures: 10,
             max_cancel_attempts: 10,
             cancel_retry_delay: Duration::from_secs(1),
+            verify_watch: Duration::from_secs(5),
         }
     }
 }
@@ -266,6 +273,7 @@ impl<P: Ports> Dispatcher<P> {
         match row.kind {
             OutboxKind::Delegate => self.delegate(row).await,
             OutboxKind::Cancel => self.cancel(row).await,
+            OutboxKind::Verify => self.verify(row).await,
         }
     }
 
@@ -376,7 +384,7 @@ impl<P: Ports> Dispatcher<P> {
                 at,
                 release,
             } => (SendContent::UiAction { action, at }, release),
-            OutboxPayload::Cancel => {
+            OutboxPayload::Cancel | OutboxPayload::Verify { .. } => {
                 return self
                     .finish(
                         &row,

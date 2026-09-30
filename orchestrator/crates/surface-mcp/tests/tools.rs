@@ -3,7 +3,7 @@
 
 mod support;
 
-use orch_core::{AgentId, AgentUpdate, EventBody, EventKind, Input, Origin};
+use orch_core::{AgentId, AgentUpdate, EventBody, EventKind, GatePolicy, Input, Origin};
 use orch_ports::ThreadStore;
 use serde_json::{Value, json};
 use support::*;
@@ -537,6 +537,61 @@ async fn start_job_takes_a_gate_and_refuses_one_it_cannot_honour() {
         );
     }
     assert_eq!(h.threads_of(ALICE).await.len(), written);
+}
+
+#[tokio::test]
+async fn start_job_may_require_the_verifier_only_where_there_is_one_to_ask() {
+    // With no verifier configured the request is refused, whatever the agent.
+    let none = Harness::start().await;
+    let client = none.client(ALICE_TOKEN).await;
+    for agent in ["plain", "coder"] {
+        let out = call(
+            &client,
+            "start_job",
+            json!({"text": "echo v", "agent": agent, "gate": {"require": ["verifier"]}}),
+        )
+        .await;
+        assert!(out.is_error, "{agent}: {out:?}");
+        assert!(out.text.contains("verifier"), "{agent}: {}", out.text);
+    }
+    none.assert_nothing_written().await;
+
+    // With `plain` as the deployment's verifier: the first agent is the verifier itself and may
+    // not be verified by itself; another agent may.
+    let h = Harness::start_with(Options {
+        gate: GatePolicy {
+            verifier: Some(AgentId::new("plain")),
+            ..GatePolicy::default()
+        },
+        ..Options::default()
+    })
+    .await;
+    let client = h.client(ALICE_TOKEN).await;
+    let own = call(
+        &client,
+        "start_job",
+        json!({"text": "echo v", "gate": {"require": ["verifier"]}}),
+    )
+    .await;
+    assert!(own.is_error, "{own:?}");
+    assert!(own.text.contains("verifier"), "{}", own.text);
+    assert!(h.threads_of(ALICE).await.is_empty(), "nothing was written");
+
+    let other = call(
+        &client,
+        "start_job",
+        json!({"text": "echo v", "agent": "coder", "gate": {"require": ["verifier"]}}),
+    )
+    .await;
+    assert!(!other.is_error, "{other:?}");
+    let threads = h.threads_of(ALICE).await;
+    assert_eq!(threads.len(), 1);
+    let gate = &threads[0].job.gate;
+    assert!(
+        gate.require.contains(&orch_core::CheckSource::Verifier),
+        "{gate:?}"
+    );
+    assert_eq!(gate.verifier, Some(AgentId::new("plain")));
 }
 
 #[tokio::test]

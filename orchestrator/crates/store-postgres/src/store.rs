@@ -737,7 +737,7 @@ impl ThreadStore for PgStore {
                SELECT o.id FROM outbox o \
                WHERE ((o.status = 'pending' AND o.next_attempt_at <= $1) \
                    OR (o.status = 'inflight' AND o.lease_until <= $1)) \
-                 AND (o.kind = 'cancel' OR NOT EXISTS ( \
+                 AND (o.kind IN ('cancel', 'verify') OR NOT EXISTS ( \
                        SELECT 1 FROM outbox p \
                        WHERE p.thread_id = o.thread_id AND p.kind = 'delegate' \
                          AND p.ord < o.ord AND p.status IN ('pending', 'inflight'))) \
@@ -804,6 +804,27 @@ impl ThreadStore for PgStore {
         update_binding(&mut tx, thread, &binding, now).await?;
         tx.commit().await.map_err(store_err)?;
         Ok(true)
+    }
+
+    async fn mark_verify_sent(
+        &self,
+        lease: &Lease,
+        task_id: String,
+        now: Timestamp,
+    ) -> Result<bool, StoreError> {
+        sqlx::query(
+            "UPDATE outbox SET sent_at = $4, task_id = $5, updated_at = $4 \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
+        .bind(to_db(now))
+        .bind(task_id)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .map_err(store_err)
     }
 
     async fn retry_outbox(

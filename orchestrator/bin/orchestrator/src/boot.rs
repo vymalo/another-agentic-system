@@ -291,6 +291,7 @@ fn dispatcher(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<Dispatcher<Stack>> {
         concurrency: cfg.dispatcher_concurrency,
         lease: cfg.outbox_lease,
         heartbeat: cfg.outbox_lease / 3,
+        verify_watch: cfg.verifier_watch,
         ..DispatcherConfig::default()
     };
     Dispatcher::new(Arc::clone(app), dispatcher_cfg, cfg.instance_id.clone())

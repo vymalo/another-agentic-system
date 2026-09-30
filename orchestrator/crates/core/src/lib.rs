@@ -25,8 +25,9 @@ pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,
     CiReport, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS, DEFAULT_VERIFIER_TIMEOUT_SECS,
     GatePolicy, Hold, Job, JobView, KnownArtifact, MAX_FINDINGS, MAX_FINDINGS_BYTES,
-    MAX_TASK_BYTES, PushedRef, Recognised, ReworkData, Snapshot, SourceFindings, Timer, Verdict,
-    WatchKey, cap_findings, is_commit_hash, recognise_artifact, repo_key,
+    MAX_SUMMARY_BYTES, MAX_TASK_BYTES, PushedRef, Recognised, ReworkData, Snapshot, SourceFindings,
+    Timer, Verdict, WatchKey, cap_findings, is_branch_name, is_commit_hash, parse_verdict,
+    recognise_artifact, repo_key, verifier_context,
 };
 pub use ids::{AgentId, ThreadId, UserId};
 pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
