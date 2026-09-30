@@ -56,7 +56,7 @@ pull request on the mock GitHub); the text only has to name the seeded repositor
 1. **Working**, with the coder's status lines and its artifacts as cards: the coder's `checks` (twice: the run
    of the checks, then the same result bound to the commit it pushed), the `branch` it pushed and the `pull_request` it
    opened (JSON, not a link).
-2. The badge turns to **Verifying** with **Attempt 1/3** beside it: the coder is gated on two things, its own checks and CI
+2. The pill turns to **Checking the work…**: the coder is gated on two things, its own checks and CI
    ([`agents.yaml`](agents.yaml)). A card **Passed · Agent checks** shows at once, with the short commit and the summary.
 3. A second card **Passed · CI** follows within a few seconds: `mock-ci` saw the pushed branch on `git-server` and reported
    `mock-ci/build` for that commit through the webhook. The badge ends **Done**.
@@ -65,11 +65,11 @@ Which gate, badge and card each agent shows (pick the agent in the chat, send th
 
 | Agent | Send | What the chat shows | Script |
 |---|---|---|---|
-| **Coder** | the message above | the steps above: checks, **Verifying**, **Attempt 1/3**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
-| **Mock coder (gated)** | `red-once fix the login` | **Verifying**, a card **Failed · Agent checks** with the finding, a **rework divider** ("Attempt 2 of 3: sent back with 1 finding"), **Attempt 2/3**, a second card **Passed · Agent checks**, **Done** | `verify-e2e.sh` |
-| **Mock coder (gated)** | `red-always fix the login` | three failed cards, two dividers, **Attempt 3/3**, the badge **Failed** and "Checks failed after 3 attempts" | `verify-e2e.sh` |
+| **Coder** | the message above | the steps above: checks, **Checking the work…**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
+| **Mock coder (gated)** | `red-once fix the login` | **Checking the work…**, a card **Failed · Agent checks** with the finding, a **rework divider** ("Attempt 2 of 3: sent back with 1 finding"), a second card **Passed · Agent checks**, **Done** | `verify-e2e.sh` |
+| **Mock coder (gated)** | `red-always fix the login` | three failed cards, two dividers, the pill **Failed** and "Checks failed after 3 attempts" | `verify-e2e.sh` |
 | **Mock coder (verified)** | `push-flawed fix the login` | the coder, then the **Verifier** as a subagent of its own (a pending card, then **Failed · Verifier** with its findings), the divider, the coder again, the verifier again, **Passed · Verifier**, **Done** | `verifier-e2e.sh` |
-| **Mock coder (CI gated)** | `red-once fix the login`, then play CI from a terminal ([CI](#ci-the-gate-by-webhook)) | **Verifying** until a signed report arrives; a red one sends the agent back, a green one for the new commit ends the job | `ci-e2e.sh` |
+| **Mock coder (CI gated)** | `red-once fix the login`, then play CI from a terminal ([CI](#ci-the-gate-by-webhook)) | **Checking the work…** until a signed report arrives; a red one sends the agent back, a green one for the new commit ends the job | `ci-e2e.sh` |
 | **Mock coder** | anything, or `slow` | no gate: **Working**, then **Done** with a pull-request artifact; `slow` takes 8 s | `mcp-e2e.sh` (over MCP) |
 
 The web draws the gate's verdicts (`vymalo.check`: a **CI** card is the gate's verdict on the check it required),
@@ -605,20 +605,19 @@ stateDiagram-v2
 **What the chat shows** (the web of the `app` profile at http://127.0.0.1:8080, pick **Mock coder (gated)** and send
 `red-once fix the login`; MVP slice 4):
 
-1. The badge reads **Verifying** as soon as the agent says `completed`, with **Attempt 1/3** beside it (the counter
-   is there only for a gated agent; the other mocks show none). The composer says "The work is being checked…" and
-   offers Cancel.
+1. The pill reads **Checking the work…** as soon as the agent says `completed` (there is no attempt counter in the
+   header: the attempts are in the divider). The composer stays open for drafting ("Send a follow-up…") and the
+   button is **Stop**.
 2. A card **Failed · Agent checks** appears in the conversation with the attempt, the short commit, the summary
    ("1 test failed") and the finding as plain text. Then a divider, **Attempt 2 of 3: sent back with 1 finding**,
-   and the badge goes back to Queued and Working, the counter to **Attempt 2/3**: the next attempt is a new
+   and the pill goes back to **Starting…** and **Working…**: the next attempt is a new
    subagent in the same run, its status lines and artifacts under the divider.
-3. A second card, **Passed · Agent checks**, on the new commit; the badge ends **Done**, the counter stays
-   **Attempt 2/3**.
+3. A second card, **Passed · Agent checks**, on the new commit; the pill ends **Done**.
 
-`red-always fix the login` ends on **Attempt 3/3** with three failed cards, two dividers, the badge **Failed** and
+`red-always fix the login` ends with three failed cards, two dividers, the pill **Failed** and
 the notice **Checks failed after 3 attempts** (not "This thread is failed": the agent did its work and the work did
 not pass). Findings are text from a tool: a finding with `<script>` or markdown shows those characters, and a long
-one is cut with **Show more**. Reload the page mid-verification and the same badge, counter and cards come back
+one is cut with **Show more**. Reload the page mid-verification and the same pill and cards come back
 (the page replays the log). The web's own mock (`pnpm dev:mock`, [`web/README.md`](../web/README.md#mock-server)) plays
 the same story with `verify-red-once` and `verify-red`, and three scenarios for CI and the wait: `verify-ci` (the orchestrator's `ci` golden: a red `ci/build`, a rework, a green one), `verify-ci-stale` (a pending
 card replaced by its answer, a late report of an older push and a stale answer shown apart) and `verify-wait` (stays Verifying until cancelled).

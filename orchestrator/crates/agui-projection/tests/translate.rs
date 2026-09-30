@@ -448,7 +448,7 @@ fn a_run_id_is_never_reused_for_new_input() {
 }
 
 #[test]
-fn a_finished_thread_takes_a_message_as_its_next_job_and_refuses_an_action_or_a_stop() {
+fn a_finished_thread_takes_a_message_as_its_next_job_and_refuses_an_action() {
     for state in [
         ThreadState::Done,
         ThreadState::Failed,
@@ -474,9 +474,12 @@ fn a_finished_thread_takes_a_message_as_its_next_job_and_refuses_an_action_or_a_
         let e = err(&action, view.clone());
         assert_eq!(e, InputError::ThreadFinished { state });
         assert_eq!(e.http_status(), 409);
+        // a stop with nothing running is nothing to run (422), as for any thread that waits for
+        // no one: a finished thread has no interrupt to cancel
         let stop = request(json!({"resume": [{"interruptId": "int-3", "status": "cancelled"}]}));
         let e = err(&stop, view);
-        assert_eq!(e, InputError::ThreadFinished { state });
+        assert!(matches!(e, InputError::NothingToRun { .. }), "{e:?}");
+        assert_eq!(e.http_status(), 422);
     }
 }
 

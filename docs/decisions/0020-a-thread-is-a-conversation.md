@@ -1,6 +1,7 @@
 # ADR 0020 — A thread is a conversation: a message on a finished thread starts its next job
 
-- **Status:** accepted (2026-09-30). Amends [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md)
+- **Status:** accepted (2026-09-30). **Built (2026-09-30):** the core, the dispatcher, migration 0005, the AG-UI
+  projection, the MCP server and the web; one race is left open (question 33). Amends [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md)
   (section 1: one thread holds one job), [ADR 0018](0018-verification-gate-and-rework-loop.md) (the
   gate applies to each job; verifications are counted per thread),
   [ADR 0012](0012-ag-ui-user-facing-protocol.md) (a message on a finished thread is no longer a 409) and

@@ -1,6 +1,7 @@
 # ADR 0021 — Context across A2A tasks: same context, `referenceTaskIds`
 
-- **Status:** accepted (2026-09-30). Refines [ADR 0014](0014-adam-coder-default-agent-over-a2a.md) (how the
+- **Status:** accepted (2026-09-30). **Built (2026-09-30)** on the orchestrator side (the port, both adapters, the
+  dispatcher); the agent side is adam-rs's. Refines [ADR 0014](0014-adam-coder-default-agent-over-a2a.md) (how the
   default agent is driven) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (the rework). Builds on
   [ADR 0020](0020-a-thread-is-a-conversation.md), which is what makes a thread start more than one task.
 

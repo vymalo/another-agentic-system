@@ -243,7 +243,8 @@ async fn refusals_are_problems_before_the_stream(backend: Backend) {
     );
     assert_eq!(post(&chat, "coder", more.clone()).await, 409, "other agent");
     chat.wait_state(&thread_id(6), "done").await;
-    assert_eq!(post(&chat, "plain", more).await, 409, "finished thread");
+    // (a message on the finished thread is served, not refused: it starts the next job, ADR 0020;
+    // `followup.rs` and the surface's `refusals.rs` run it)
 
     // 401: no identity.
     let anonymous = chat.anonymous();

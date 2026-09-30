@@ -87,6 +87,7 @@ stateDiagram-v2
   Open --> Reconnecting: the stream ends or breaks (frames after the last id: are discarded)
   Reconnecting --> Connecting: after the backoff, with Last-Event-ID
   Open --> Paused: the thread is finished and everything is loaded
+  Paused --> Open: a message starts the next job (the accepted run opens the stream again)
   Paused --> [*]: stop() (unmount)
   Open --> [*]: stop() (unmount)
 ```

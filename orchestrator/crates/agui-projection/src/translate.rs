@@ -149,10 +149,11 @@ pub enum InputError {
     /// A run is already open on the thread (409).
     #[error("a run is already open on this thread; wait for it to finish")]
     RunInProgress,
-    /// An action (or a stop) on a finished thread (409): the card belongs to a request that ended.
-    /// A message is not refused: it starts the thread's next job (ADR 0020).
+    /// An action on a finished thread (409): the card belongs to a request that ended. A message
+    /// is not refused: it starts the thread's next job (ADR 0020). (A stop has nothing to stop on
+    /// a finished thread, which holds no interrupt: that is `NothingToRun`.)
     #[error(
-        "this card belongs to a finished request ({state:?}); a stop or an action no longer applies to it, write a message to start the next one"
+        "this card belongs to a finished request ({state:?}); write a message to start the next one"
     )]
     ThreadFinished {
         /// The terminal state.
@@ -487,7 +488,7 @@ fn finish(
             });
         }
         // A message on a finished thread starts its next job (ADR 0020); an action belongs to
-        // the finished job, and there is nothing left to stop.
+        // the finished job.
         let is_message = inputs
             .iter()
             .all(|i| matches!(i, Input::UserMessage { .. }));

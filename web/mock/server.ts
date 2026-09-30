@@ -631,7 +631,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         res,
         409,
         "Conflict",
-        `this card belongs to a finished request (${thread.state}); a stop or an action no longer applies to it, write a message to start the next one`,
+        `this card belongs to a finished request (${thread.state}); write a message to start the next one`,
       );
     }
     if (thread.state !== "blocked") {

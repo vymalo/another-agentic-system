@@ -64,7 +64,7 @@ Authorised exactly like `GET /api/threads/{id}`: behind the identity layer (401 
 thread as the caller, so another owner's thread, an unknown one and an id that is not a UUID are the same 404. The answer is
 `200 application/json` with `Content-Disposition: attachment; filename="thread-<id>.json"` and `Cache-Control: no-store`,
 pretty-printed: `{format, version: 1, exportedAt, thread, job, binding, events, eventsTruncated}`. `thread` is the contract `Thread`; `job` is the
-whole ledger (which `Thread.job` only summarises); `events` is the log in order from `seq` 1 exactly as stored, and stops at
+whole ledger (which `Thread.job` only summarises), with its `number` (which job of the thread this is, [ADR 0020](../../../docs/decisions/0020-a-thread-is-a-conversation.md)); `events` is the log in order from `seq` 1 exactly as stored, and stops at
 `thread.lastSeq`, or earlier when a bound of the read cuts it (`eventsTruncated`; the head is kept, with no gap). No credential of the orchestrator is in a log (the bearer token of an agent is held by
 `AgentTransport::A2a` only); the file does hold what people and agents wrote, and the owner's e-mail as the actor of their
 messages. Built in `src/export.rs`; unit-free (a `Serialize` struct that borrows the `ThreadExport` the application returns and is written straight to the body, with no `serde_json::Value` copy of the log).
