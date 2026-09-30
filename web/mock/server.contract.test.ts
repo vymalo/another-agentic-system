@@ -121,8 +121,8 @@ async function startThread(
   agent = "coder",
   extra: { forwardedProps?: Record<string, unknown> } = {},
 ) {
-  // A run that waits (slow) never ends its response: read up to RUN_STARTED.
-  const untilStarted = text.startsWith("slow");
+  // A run that waits (slow, verify-wait) never ends its response: read up to RUN_STARTED.
+  const untilStarted = text.startsWith("slow") || text.startsWith("verify-wait");
   const threadId = newId();
   const res = await postRun(base, agent, {
     threadId,
@@ -381,6 +381,72 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     await waitForState(threadId, ["blocked"]);
     expect(body.at(-1)?.event).toMatchObject({ type: "RUN_ERROR", code: "delivery_failed" });
     expect(JSON.stringify(body)).toContain('"activityType":"vymalo.error"');
+  });
+
+  it("verify-red-once (the gate): the run stays open across the attempts, and the thread says where its job stands", async () => {
+    const { threadId, body } = await startThread("verify-red-once fix the login", "reviewer");
+    // one run, from RUN_STARTED to RUN_FINISHED success; the agent finishing twice does not end it
+    expect(types(body).filter((t) => t === "RUN_STARTED")).toHaveLength(1);
+    expect(types(body).filter((t) => t === "SUBAGENT_FINISHED")).toHaveLength(2);
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    const thread = await waitForState(threadId, ["done"]);
+    expect(thread.job).toEqual({
+      attempt: 2,
+      maxAttempts: 3,
+      gate: ["agent_checks"],
+      sha: "0000000000000000000000000000000000000002",
+    });
+    // the list carries the job too, and a thread without a gate has none
+    const listed = (await expectDocumented(
+      "/api/threads",
+      "get",
+      await fetch(`${base}/api/threads?limit=100`),
+    )) as Thread[];
+    expect(listed.find((t) => t.id === threadId)?.job?.attempt).toBe(2);
+    const plain = await startThread("echo hi", "reviewer");
+    expect((await waitForState(plain.threadId, ["done"])).job).toBeUndefined();
+  });
+
+  it("verify-red: RUN_ERROR checks_failed after the last attempt, thread failed on attempt 3 of 3", async () => {
+    const { threadId, body } = await startThread("verify-red fix the login", "reviewer");
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_ERROR",
+      code: "checks_failed",
+      metadata: { "vymalo.problem": { title: "Checks failed" } },
+    });
+    const thread = await waitForState(threadId, ["failed"]);
+    expect(thread.job).toMatchObject({ attempt: 3, maxAttempts: 3 });
+  });
+
+  it("verify-wait (mock only): the thread stays verifying with a pending CI check; Cancel ends it", async () => {
+    const { threadId } = await startThread("verify-wait ship it", "reviewer");
+    await waitForState(threadId, ["verifying"]);
+    for (let i = 0; i < 200; i++) {
+      const t = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+      if (t.lastSeq >= 7) break; // the pending CI check is the 7th event: the script now waits
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // a message while a run is open is refused, verifying included
+    const busy = await postRun(base, "reviewer", {
+      threadId,
+      runId: "run-2",
+      messages: [{ id: "m-2", role: "user", content: "hello?" }],
+    });
+    expect(busy.status).toBe(409);
+    await expectDocumented("/agui/agents/{agentId}", "post", busy);
+    expect((await post(`/api/threads/${threadId}/cancel`)).status).toBe(202);
+    const cancelled = await waitForState(threadId, ["cancelled"]);
+    expect(cancelled.job).toMatchObject({ attempt: 1, gate: ["ci", "agent_checks"] });
+    const list = await frames(await connect(base, threadId, { mode: "run" }));
+    const cards = list.filter((f) => f.event.activityType === "vymalo.check");
+    expect(cards.map((f) => f.event.messageId)).toEqual(["check-1-1-agent_checks", "check-1-1-ci"]);
+    expect(list.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "cancelled" },
+    });
   });
 
   it("ui (mock only, the orchestrator's a2ui story): a surface, then an action that continues the scenario", async () => {

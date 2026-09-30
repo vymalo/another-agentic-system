@@ -19,7 +19,7 @@ test("the proxy identity reaches the orchestrator", async ({ page }) => {
   // /api/agents answered 200 through the app's rewrite, with the identity header
   const agent = page.getByLabel("Agent");
   await expect(agent).toBeVisible();
-  await expect(agent.locator("option")).toHaveText(["Coder", "Plain"]);
+  await expect(agent.locator("option")).toHaveText(["Coder", "Plain", "Gated"]);
 
   await page.getByLabel("Agent").selectOption({ label: "Plain" });
   await page.getByLabel("Message").fill("echo hello");

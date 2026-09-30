@@ -15,11 +15,19 @@ const LABELS: Record<ThreadState, string> = {
 const TONE: Record<ThreadState, string> = {
   queued: "text-primary",
   working: "text-primary",
-  verifying: "text-primary",
+  verifying: "text-verifying",
   blocked: "text-warning",
   done: "text-success",
   failed: "text-destructive",
   cancelled: "text-muted-foreground",
+};
+
+/**
+ * What a screen reader hears after "Thread state:" when the label alone says too little. Under a
+ * verification gate (ADR 0018) the agent is done and the orchestrator is checking its work.
+ */
+const SPOKEN: Partial<Record<ThreadState, string>> = {
+  verifying: "Verifying the agent's work",
 };
 
 /** Text label first, colour second: state is never conveyed by colour alone. */
@@ -29,7 +37,7 @@ export function StateBadge({ state }: { state: ThreadState | undefined }) {
     <Badge
       variant="outline"
       role="status"
-      aria-label={`Thread state: ${LABELS[state]}`}
+      aria-label={`Thread state: ${SPOKEN[state] ?? LABELS[state]}`}
       className={cn(
         "h-6 gap-1.5 border-current px-2.5 text-[0.8125rem] font-semibold",
         TONE[state],

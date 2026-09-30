@@ -13,7 +13,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import type { components } from "../src/lib/api/schema";
 import { AGENTS, DEV_USER } from "./fixtures";
-import { type Audience, type Frame, Projector, surfacesOf } from "./projection";
+import { type Audience, type Frame, type GateInfo, Projector, surfacesOf } from "./projection";
 import { cancelSteps, type Step, scriptFor } from "./scripts";
 
 type Thread = components["schemas"]["Thread"];
@@ -55,6 +55,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const events = new Map<string, Event[]>();
   const viewers = new Map<string, Set<Viewer>>();
   const runs = new Map<string, Run>();
+  /** The gate each verified thread's job runs under (from its script); absent: none. */
+  const gates = new Map<string, GateInfo>();
   let cutNextConnectAfter: number | undefined;
 
   const reset = () => {
@@ -64,6 +66,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     events.clear();
     viewers.clear();
     runs.clear();
+    gates.clear();
     cutNextConnectAfter = undefined;
   };
 
@@ -111,7 +114,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       agentId: t.target.agentId,
       ...(t.target.release ? { release: t.target.release } : {}),
     },
+    ...(gates.has(t.id) ? { gate: gates.get(t.id) } : {}),
   });
+
+  /** The thread as the resource API shows it: under a gate, with where its job stands (`job`). */
+  const viewOf = (t: Thread): Thread => {
+    if (!gates.has(t.id)) return t;
+    const projector = new Projector(infoOf(t));
+    for (const e of events.get(t.id) ?? []) projector.apply(e);
+    const job = projector.job();
+    return job ? { ...t, job } : t;
+  };
 
   // ---- streams -------------------------------------------------------------------------
 
@@ -293,7 +306,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const sub = m[2];
       const thread = threads.get(id);
       if (!thread) return problem(res, 404, "Thread not found");
-      if (!sub && method === "GET") return sendJson(res, 200, thread);
+      if (!sub && method === "GET") return sendJson(res, 200, viewOf(thread));
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
     }
     return problem(res, 404, "Not found");
@@ -307,7 +320,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const i = all.findIndex((t) => t.id === before);
       all = i >= 0 ? all.slice(i + 1) : [];
     }
-    sendJson(res, 200, all.slice(0, limit));
+    sendJson(res, 200, all.slice(0, limit).map(viewOf));
   }
 
   function capabilities(res: http.ServerResponse, agentId: string) {
@@ -444,6 +457,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         { text, messageId: first.id as string, runId },
       );
       const script = scriptFor(text);
+      if (script.gate) gates.set(created.id, script.gate);
       runs.set(created.id, { timer: undefined, pending: [], resume: script.resume });
       play(created, script.start);
       return startViewer(res, created, {
@@ -476,7 +490,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         `the thread is finished (${thread.state}); start a new thread`,
       );
     }
-    if (thread.state === "queued" || thread.state === "working") {
+    if (thread.state === "queued" || thread.state === "working" || thread.state === "verifying") {
       return problem(
         res,
         409,
@@ -598,11 +612,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 
   function cancel(res: http.ServerResponse, thread: Thread) {
     const active =
-      thread.state === "queued" || thread.state === "working" || thread.state === "blocked";
+      thread.state === "queued" ||
+      thread.state === "working" ||
+      thread.state === "verifying" ||
+      thread.state === "blocked";
     if (active) {
       const run = runs.get(thread.id);
       if (run) clearTimeout(run.timer);
-      play(thread, cancelSteps);
+      // no agent task is open while the work is verified: the thread is cancelled and nothing else
+      play(thread, thread.state === "verifying" ? cancelSteps.slice(1) : cancelSteps);
     }
     res.writeHead(202).end();
   }

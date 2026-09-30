@@ -75,6 +75,61 @@ const EXPECTED: Record<string, Summary> = {
       parts: ["action", ACTOR, "status:working", "artifact", "status:completed"],
     },
   ],
+  // the verification gate (ADR 0018): ONE run for every attempt (one assistant message), the check
+  // card of each attempt, the divider that sends the agent back, and the next attempt's parts
+  "verify-green": [
+    USER("verify-red-once fix the login"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [
+        ACTOR,
+        "status:working",
+        "artifact",
+        "artifact",
+        "status:completed",
+        "check:failed",
+        "rework",
+        ACTOR,
+        "status:working",
+        "artifact",
+        "artifact",
+        "status:completed",
+        "check:passed",
+      ],
+    },
+  ],
+  // out of attempts: the run ends in RUN_ERROR checks_failed, after the last failed check
+  "verify-red": [
+    USER("verify-red fix the login"),
+    {
+      role: "assistant",
+      status: "incomplete:error",
+      parts: [
+        ACTOR,
+        "status:working",
+        "artifact",
+        "artifact",
+        "status:completed",
+        "check:failed",
+        "rework",
+        ACTOR,
+        "status:working",
+        "artifact",
+        "artifact",
+        "status:completed",
+        "check:failed",
+        "rework",
+        ACTOR,
+        "status:working",
+        "artifact",
+        "artifact",
+        "status:completed",
+        "check:failed",
+        "error",
+      ],
+    },
+  ],
   // the outcome of a run stopped on purpose: neither success nor failure (patch: cancelled outcome)
   cancel: [
     USER("slow work"),
@@ -95,7 +150,7 @@ const EXPECTED: Record<string, Summary> = {
 };
 
 /** The scenarios the orchestrator's e2e tests also record over real HTTP (connect-<name>). */
-const CONNECT = ["echo", "ask", "cancel"];
+const CONNECT = ["echo", "ask", "cancel", "verify-green", "verify-red"];
 
 async function play(name: string) {
   const stream = new LiveStream();
@@ -179,5 +234,43 @@ describe("the goldens through the runtime", () => {
     const texts = messages().flatMap((m) => m.content.filter((p) => p.type === "text"));
     expect(texts.map((p) => p.text)).toEqual(["talk to me", "Plan: add a test"]);
     agent.stop();
+  });
+
+  it("verify-green: the agent holds the job (attempt 2 of 3, the commit) and no failure", async () => {
+    const { agent } = await play("verify-green");
+    expect(agent.getSnapshot()).toMatchObject({
+      state: "done",
+      job: {
+        attempt: 2,
+        maxAttempts: 3,
+        gate: ["agent_checks"],
+        sha: "0000000000000000000000000000000000000002",
+      },
+      failure: null,
+    });
+    agent.stop();
+  });
+
+  it("verify-red: the run error 'checks_failed' is kept, on attempt 3 of 3", async () => {
+    const { agent } = await play("verify-red");
+    expect(agent.getSnapshot()).toMatchObject({
+      state: "failed",
+      job: { attempt: 3, maxAttempts: 3 },
+      failure: { code: "checks_failed" },
+    });
+    expect(agent.getSnapshot().failure?.message).toContain("after 3 attempts");
+    agent.stop();
+  });
+
+  it("a thread without a gate has no job, and an agent failure is not checks_failed", async () => {
+    const echo = await play("echo");
+    expect(echo.agent.getSnapshot().job).toBeNull();
+    echo.agent.stop();
+    const fail = await play("fail");
+    expect(fail.agent.getSnapshot()).toMatchObject({
+      job: null,
+      failure: { code: "agent_failed" },
+    });
+    fail.agent.stop();
   });
 });

@@ -7,12 +7,16 @@ import {
   activityPartName,
   parseAction,
   parseArtifact,
+  parseCheck,
   parseError,
+  parseRework,
   parseStatus,
 } from "@/features/chat/lib/agui/vymalo";
 import { ActionLine } from "./parts/action-line";
 import { ArtifactCard } from "./parts/artifact-card";
+import { CheckCard } from "./parts/check-card";
 import { ErrorLine } from "./parts/error-line";
+import { ReworkDivider } from "./parts/rework-divider";
 import { StatusLine } from "./parts/status-line";
 import { SurfaceActivity } from "./surface/surface-activity";
 
@@ -63,6 +67,24 @@ const ActionDataUI = makeAssistantDataUI<unknown>({
   },
 });
 
+/** `vymalo.check`: a source of the verification gate answered for an attempt (ADR 0018). */
+const CheckDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.check),
+  render: ({ data }) => {
+    const check = parseCheck(data);
+    return check ? <CheckCard data={check} /> : null;
+  },
+});
+
+/** `vymalo.rework`: the gate failed and the agent is sent back (ADR 0018), a divider. */
+const ReworkDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.rework),
+  render: ({ data }) => {
+    const rework = parseRework(data);
+    return rework ? <ReworkDivider data={rework} /> : null;
+  },
+});
+
 /**
  * An A2UI surface (ADR 0013). `ThreadAgent` hands it over as this activity type, untouched, so
  * that it is validated (lib/a2ui/prepare.ts) before anything converts it.
@@ -81,6 +103,8 @@ export function DataUIs() {
       <ErrorDataUI />
       <ActorDataUI />
       <ActionDataUI />
+      <CheckDataUI />
+      <ReworkDataUI />
       <SurfaceDataUI />
     </>
   );

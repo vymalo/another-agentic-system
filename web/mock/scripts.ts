@@ -3,6 +3,7 @@ import type { components } from "../src/lib/api/schema";
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
 type EventData = components["schemas"]["EventData"];
+type CheckSource = components["schemas"]["CheckSource"];
 
 /** One scripted agent action, played `stepMs` apart. */
 export type Step =
@@ -50,6 +51,95 @@ const uiComponents = {
 
 const working: Step = { kind: "agent_status", data: { status: "working" }, setState: "working" };
 
+/** The gate of a verification scenario (ADR 0018): the sources that must pass and the attempts. */
+export type Gate = { require: CheckSource[]; maxAttempts: number };
+
+const GATE_CHECKS: Gate = { require: ["agent_checks"], maxAttempts: 3 };
+const REPOSITORY = "https://github.com/acme/demo.git";
+const FINDING = "tests::login fails: expected 200, got 500";
+
+/** The fake agent's commit of an attempt: the attempt as 40 hex digits. */
+const commitOf = (attempt: number): string => attempt.toString(16).padStart(40, "0");
+
+/** The agent's `branch` and `checks` artifacts (keys in the order the orchestrator's JSON has). */
+function pushed(attempt: number, passes: boolean): Step[] {
+  const commit = commitOf(attempt);
+  const checks = passes
+    ? { commit, passed: true, summary: "3 tests passed" }
+    : { commit, findings: [FINDING], passed: false, summary: "1 test failed" };
+  return [
+    {
+      kind: "artifact",
+      data: {
+        name: "branch",
+        mimeType: "application/json",
+        text: JSON.stringify({ branch: "agent/fix", commit, repository: REPOSITORY }),
+      },
+    },
+    {
+      kind: "artifact",
+      data: { name: "checks", mimeType: "application/json", text: JSON.stringify(checks) },
+    },
+  ];
+}
+
+/** The agent finished; under the gate the thread is now verified. */
+const completedAndVerifying: Step = {
+  kind: "agent_status",
+  data: { status: "completed" },
+  setState: "verifying",
+};
+
+/** The orchestrator's answer of the agent-checks source for an attempt. */
+function checked(attempt: number, passes: boolean): Step {
+  return {
+    kind: "check_result",
+    system: true,
+    data: passes
+      ? {
+          attempt,
+          commit: commitOf(attempt),
+          source: "agent_checks",
+          status: "passed",
+          summary: "3 tests passed",
+        }
+      : {
+          attempt,
+          commit: commitOf(attempt),
+          findings: [FINDING],
+          source: "agent_checks",
+          status: "failed",
+          summary: "1 test failed",
+        },
+  };
+}
+
+/** The gate failed and the agent is sent back: `attempt` is the one that starts. */
+function reworked(attempt: number): Step {
+  return {
+    kind: "rework",
+    system: true,
+    setState: "queued",
+    data: {
+      attempt,
+      findings: [{ findings: [FINDING], source: "agent_checks" }],
+      maxAttempts: GATE_CHECKS.maxAttempts,
+    },
+  };
+}
+
+/** One attempt: the agent works, pushes and finishes; the checks answer. */
+function attemptSteps(attempt: number, passes: boolean): Step[] {
+  return [working, ...pushed(attempt, passes), completedAndVerifying, checked(attempt, passes)];
+}
+
+const done: Step = {
+  kind: "thread_state",
+  data: { state: "done" },
+  setState: "done",
+  system: true,
+};
+
 /** The agent's result, its `completed` status and the orchestrator's `done`. */
 function finish(artifactText: string): Step[] {
   return [
@@ -74,6 +164,8 @@ const nextMessageId = (() => {
  * - `ask`: asks "Which branch?" and blocks; the follow-up resumes to done.
  * - `ui`: sends an A2UI surface (a title and a button) with the question "Pick one" and blocks; the
  *   owner's action on the surface (`forwardedProps.a2uiAction`) resumes to done, as `ui-action <name>`.
+ * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
+ *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `slow`: works until cancelled.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
@@ -81,11 +173,94 @@ const nextMessageId = (() => {
  *
  * Mock-only, not produced by the current orchestrator:
  * - `ui-bad`: an A2UI surface the renderer refuses, then the result and done.
+ * - `verify-ci`: a gate on CI and the agent's checks. CI answers pending, then a stale answer of an
+ *   older push, then passes (`check_result` cards replaced in place, a stale one of its own).
+ * - `verify-wait`: the same gate, and CI never answers: the thread stays `verifying` until cancelled.
  * - `partial`: streams a partial `agent_message` and replaces it by its final version.
  * - `unreachable`: the delivery was dead-lettered: an `error` event, thread blocked.
  */
-export function scriptFor(text: string): { start: Step[]; resume?: (answer: string) => Step[] } {
-  switch (text.split(/\s+/).find((w) => w !== "")) {
+export function scriptFor(text: string): {
+  start: Step[];
+  resume?: (answer: string) => Step[];
+  /** The gate the thread's job runs under; absent: none, and the run ends at `completed`. */
+  gate?: Gate;
+} {
+  const word = text.split(/\s+/).find((w) => w !== "");
+  switch (word) {
+    case "verify-pass":
+      return { gate: GATE_CHECKS, start: [...attemptSteps(1, true), done] };
+    case "verify-red-once":
+      return {
+        gate: GATE_CHECKS,
+        start: [...attemptSteps(1, false), reworked(2), ...attemptSteps(2, true), done],
+      };
+    case "verify-red":
+      return {
+        gate: GATE_CHECKS,
+        start: [
+          ...attemptSteps(1, false),
+          reworked(2),
+          ...attemptSteps(2, false),
+          reworked(3),
+          ...attemptSteps(3, false),
+          {
+            kind: "error",
+            system: true,
+            data: {
+              message: `the work did not pass verification after ${GATE_CHECKS.maxAttempts} attempts; the agent's own checks: ${FINDING}`,
+              retryable: false,
+            },
+          },
+          { kind: "thread_state", data: { state: "failed" }, setState: "failed", system: true },
+        ],
+      };
+    case "verify-ci":
+    case "verify-wait": {
+      // mock only: the CI source is not honoured by the orchestrator yet (MVP slices 5 and 6)
+      const commit = commitOf(1);
+      const ci = { attempt: 1, name: "build", source: "ci" as const };
+      const checkedOnCi: Step[] = [
+        {
+          kind: "check_result",
+          system: true,
+          data: {
+            attempt: 1,
+            commit,
+            source: "agent_checks",
+            status: "passed",
+            summary: "3 tests passed",
+          },
+        },
+        { kind: "check_result", system: true, data: { ...ci, commit, status: "pending" } },
+      ];
+      const gate: Gate = { require: ["ci", "agent_checks"], maxAttempts: 3 };
+      const head = [working, ...pushed(1, true), completedAndVerifying, ...checkedOnCi];
+      if (word === "verify-wait") return { gate, start: [...head, { pause: "cancel" }] };
+      return {
+        gate,
+        start: [
+          ...head,
+          {
+            kind: "check_result",
+            system: true,
+            data: {
+              ...ci,
+              commit: commitOf(0),
+              findings: ["the build of an older push failed"],
+              stale: true,
+              status: "failed",
+              summary: "answered for a commit that is no longer the current one",
+            },
+          },
+          {
+            kind: "check_result",
+            system: true,
+            data: { ...ci, commit, status: "passed", summary: "build passed" },
+          },
+          done,
+        ],
+      };
+    }
     case "ask":
       return {
         start: [

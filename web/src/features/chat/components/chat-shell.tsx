@@ -9,6 +9,7 @@ import { NewThreadPanel } from "@/features/agents/components/new-thread-panel";
 import { useAgents } from "@/features/agents/hooks/use-agents";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
+import { parseJob } from "@/features/chat/lib/agui/vymalo";
 import { ThreadSidebar, ThreadsSheet } from "@/features/threads/components/thread-sidebar";
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { problemMessage } from "@/lib/api/client";
@@ -69,6 +70,9 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
 
   // What the server says the thread is doing: the stream's newest snapshot, else the fetch.
   const state = snapshot.state ?? meta.thread?.state;
+  // Where the job stands under a verification gate (ADR 0018): the stream's newest snapshot says
+  // so, else the fetch; a thread without a gate has none.
+  const job = snapshot.state !== undefined ? snapshot.job : parseJob(meta.thread?.job);
 
   // The conversation moved on: the title and lastSeq of the resource move with it.
   const { refetchSoon } = meta;
@@ -87,6 +91,8 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
   const composer = (
     <Composer
       state={state}
+      job={job}
+      failure={snapshot.failure}
       isNew={threadId === null}
       sendError={sendError}
       onCancel={cancel}
@@ -129,6 +135,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                   <ThreadHeader
                     thread={meta.thread}
                     state={state}
+                    job={job}
                     connection={snapshot.connection}
                   />
                   {meta.error ? (

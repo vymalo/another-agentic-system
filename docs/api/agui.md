@@ -25,7 +25,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **The verification gate is projected** (2026-09-30, [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md),
 > MVP slice 3): a run stays open while the work is verified, `vymalo.check` and `vymalo.rework` activities,
 > `job` in the `STATE_SNAPSHOT`, `RUN_ERROR` `checks_failed`, and the gate a run asks for in
-> `forwardedProps["vymalo.gate"]`; see [Verification](#verification-the-gate). The web renders it in slice 4.
+> `forwardedProps["vymalo.gate"]`; see [Verification](#verification-the-gate). The web renders it since MVP slice 4 (2026-09-30).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -251,6 +251,12 @@ stateDiagram-v2
   `delivery_failed`.
 - **`job.sha`** is the commit the agent pushed (its last `branch` artifact of the attempt), the same as `Thread.job.sha`.
   A check's own `commit` (in `vymalo.check`) is the commit the check ran on, and is not used for it.
+- **Rendering rules** (what the web does, and what another consumer should): a `vymalo.check` card is replaced in place
+  by its message id; a `stale` one is muted and marked as stale, because it decided nothing; the status is words first
+  (passed, failed, pending), colour second. `findings`, `summary`, `name` and `commit` are drawn as plain text, never
+  as markdown or HTML, and a long finding is cut with a control to read the rest. An unknown field is ignored, and a
+  payload without a `source`, an `attempt` and a known `status` (or, for `vymalo.rework`, an `attempt` and
+  `maxAttempts`) draws nothing. The counter "attempt/maxAttempts" is shown only while `job` is present.
 - **Running out of attempts** is `RUN_ERROR` with `code: "checks_failed"`; the message names the source and the last
   findings. It is not `agent_failed`: the agent did its work, and the work did not pass.
 

@@ -56,6 +56,38 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: a thread being verified (pending check, counter) has no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "verify-wait ship it", "Reviewer");
+      await expect(badge(page)).toHaveText("Verifying");
+      await expect(
+        page.getByRole("region", { name: "Check: CI, attempt 1, pending" }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a finished thread with a replaced and a stale check has no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "verify-ci ship it", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(
+        page.getByRole("region", { name: "Check: CI, attempt 1, failed, stale" }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a thread that failed its checks (findings, stale-free) has no serious violations", async ({
+      page,
+    }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "verify-red fix the login", "Reviewer");
+      await expect(badge(page)).toHaveText("Failed", { timeout: 30_000 });
+      await expect(page.getByText("Checks failed after 3 attempts")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a refused A2UI surface has no serious violations", async ({ page }) => {
       await startThread(page, "ui-bad now", "Reviewer");
       await expect(badge(page)).toHaveText("Done");
