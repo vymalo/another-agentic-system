@@ -95,6 +95,23 @@ fn cancel_row(n: u128) -> NewOutbox {
     }
 }
 
+fn verify_row(n: u128) -> NewOutbox {
+    NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Verify {
+            attempt: 1,
+            verification: 1,
+            verifier: AgentId::new("reviewer"),
+            pushed: PushedRef {
+                repository: "github.com/acme/demo".to_owned(),
+                branch: "agent/fix".to_owned(),
+                commit: "a".repeat(40),
+            },
+            text: "review it".to_owned(),
+        },
+    }
+}
+
 fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> Commit {
     Commit {
         new_state: state,
@@ -1082,6 +1099,124 @@ pub async fn delegate_ordering_per_thread<S: ThreadStore>(store: S) {
     );
 }
 
+/// A `verify` row (ADR 0018) is not a delegation: it is not held back by the delegate of its
+/// own thread (which is still being finished when the verification is requested), and it does
+/// not hold back the next delegate. Its task is on the row, fenced by its claim, and the
+/// thread's binding is left alone.
+pub async fn verify_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    // The delegate is claimed and still in flight when the verification is requested.
+    assert_eq!(claim(&store, "a", t0()).await.len(), 1);
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Verifying, vec![], vec![verify_row(101)]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Verify);
+    assert_eq!(stored.task_id, None);
+    assert!(matches!(
+        &stored.payload,
+        OutboxPayload::Verify { attempt: 1, verification: 1, verifier, text, .. }
+            if verifier.as_str() == "reviewer" && text == "review it"
+    ));
+    let got = claim(&store, "v", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(101)],
+        "not held back by the inflight delegate"
+    );
+    assert_eq!(got[0].kind, OutboxKind::Verify);
+
+    // A later delegate (a rework) still waits for the first one, not for the verification.
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(ThreadState::Queued, vec![], vec![delegate(102)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(claim(&store, "a", t0()).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", t0())
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(102)],
+        "the verification is still inflight and does not hold the delegate back"
+    );
+
+    // Recording the send: fenced by the claim, on the row, and the binding stays the worker's.
+    let binding_before = store.get_binding(thread_id(1)).await.unwrap().unwrap();
+    assert!(
+        !store
+            .mark_verify_sent(&lease(101, "other", 1), "t-v".into(), at(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .mark_verify_sent(&lease(101, "v", 2), "t-v".into(), at(1))
+            .await
+            .unwrap(),
+        "a stale attempt of the same owner"
+    );
+    let untouched = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(
+        (untouched.sent_at, untouched.task_id.as_deref()),
+        (None, None)
+    );
+    assert!(
+        store
+            .mark_verify_sent(&lease(101, "v", 1), "t-v".into(), at(1))
+            .await
+            .unwrap()
+    );
+    let sent = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(sent.sent_at, Some(at(1)));
+    assert_eq!(sent.task_id.as_deref(), Some("t-v"));
+    assert_eq!(sent.status, OutboxStatus::Inflight);
+    assert_eq!(
+        store.get_binding(thread_id(1)).await.unwrap().unwrap(),
+        binding_before,
+        "the verifier's task is not the thread's"
+    );
+
+    // A crashed claimant's row is claimed again with its task on it; finishing it is fenced.
+    let again = claim(&store, "w", at(60)).await;
+    let row = again.iter().find(|r| r.id == outbox_id(101)).unwrap();
+    assert_eq!(row.attempts, 2);
+    assert_eq!(row.task_id.as_deref(), Some("t-v"));
+    assert!(row.sent_at.is_some());
+    assert!(
+        !store
+            .complete_outbox(&lease(101, "v", 1), OutboxFinal::Delivered, at(61))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_outbox(&lease(101, "w", 2), OutboxFinal::Delivered, at(61))
+            .await
+            .unwrap()
+    );
+}
+
 pub async fn retry_not_claimable_before_due<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     claim(&store, "a", t0()).await;
@@ -1457,6 +1592,7 @@ fn busy_job() -> Job {
         attempt: 2,
         verification: 3,
         task: Some("make the tests pass".into()),
+        summary: Some("Done: the fix is on the branch".into()),
         pushed: Some(PushedRef {
             repository: "github.com/vymalo/repo".into(),
             branch: "agent/x".into(),

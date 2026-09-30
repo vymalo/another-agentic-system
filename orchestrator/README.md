@@ -13,9 +13,10 @@ the process itself keeps nothing, so a restart mid-task loses nothing. Design:
 > durable dispatcher, the A2A adapter, the Postgres store and the runnable
 > binary and image. The legacy chat API interaction routes were removed on 2026-09-30. Since MVP slice 5 the
 > inbox, watches and timers are built: the inbox worker applies timers (the CI and verifier deadlines the
-> gate schedules) and the reports that `App::receive` stores. The MCP server (`start_job`,
+> gate schedules) and the reports that `App::receive` stores. Since slice 10 a verifier agent can be part of the verify/rework
+> gate: the dispatcher asks it over A2A and its verdict decides. The MCP server (`start_job`,
 > `get_job`, `wait_for_job` with progress notifications, `answer`, `cancel_job`, `list_agents` with bearer tokens, slices
-> 11 and 12 of [`docs/mvp.md`](../docs/mvp.md)) is built and off unless `ORCH_SURFACES` names `mcp`. The planner, verify/rework, reviewers and the webhook
+> 11 and 12 of [`docs/mvp.md`](../docs/mvp.md)) is built and off unless `ORCH_SURFACES` names `mcp`. The planner, reviewers, CI results and the webhook
 > inputs come in later steps ([`docs/mvp.md`](../docs/mvp.md)).
 
 ## Run it locally
@@ -87,9 +88,10 @@ An empty value counts as unset.
 | `INBOX_PARKED_TTL_SECS` | `86400` | At least 1. How long a report that no thread watches yet waits (parked) before it expires. |
 | `INBOX_MAX_ATTEMPTS` | `10` | At least 1. Claims of one inbox row before it is dead-lettered (a row that keeps failing retryably, or keeps killing its worker: one claimed more often than this without being finished is given up on before it is delivered). A claim handed back at shutdown, or one that only parked the row, is not counted. |
 | `SHUTDOWN_GRACE_SECS` | `15` | Bound of each graceful-shutdown step. |
-| `ORCH_GATE` | none | The sources every job must pass before it is `done`: a comma list of `ci`, `agent-checks`, `verifier` (flag `--gate`; [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)). None is no gate. This build honours only `agent-checks`; `ci` and `verifier` are a startup error (78) naming the slice that enables them. |
+| `ORCH_GATE` | none | The sources every job must pass before it is `done`: a comma list of `ci`, `agent-checks`, `verifier` (flag `--gate`; [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)). None is no gate. This build honours `agent-checks` and `verifier`; `ci` is a startup error (78) naming the slices that enable it. |
 | `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP` | `3`, `10` | Attempts a gated job's agent gets (the first included), and the most an `AGENTS_FILE` entry or a run may set them to (at most 100; a smaller cap lowers the default attempts). |
-| `ORCH_VERIFIER` | none | The verifier agent's id. Refused (78) until the verifier dispatch is built. |
+| `ORCH_VERIFIER` | none | The verifier agent's id: another configured agent than the ones it verifies (startup error otherwise). Used when the gate requires `verifier`. |
+| `ORCH_VERIFIER_TIMEOUT_SECS` | `1800` | At least 1. How long a verification waits for the verifier's verdict before the thread waits for the user (no attempt is spent). |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | Names this replica in leases. |
 | `RUST_LOG` / `LOG_FORMAT` | `info,rmcp=warn` / `json` | `LOG_FORMAT=text` for humans. The MCP library logs a line per request at `info`, so its default is `warn`; `RUST_LOG` replaces the default whole. |
 
@@ -297,7 +299,8 @@ the service stopped or panicked, 1 anything else.
   the dispatcher and the SSE streams also poll, so a lost notification only
   costs latency.
 - **One agent per thread, no planner.** A thread delegates to the agent chosen
-  at creation; verify/rework, reviewers and other inputs are later MVP steps.
+  at creation; the planner, reviewers and other inputs are later MVP steps (the verify/rework gate is built: the
+  agent's own checks and a verifier agent).
 - **Follow-ups on a `done` thread are refused (409)** rather than starting a new
   task; start a new thread.
 

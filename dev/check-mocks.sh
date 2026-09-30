@@ -2,17 +2,22 @@
 # Exercises the WireMock stand-in agents of compose.yaml over plain HTTP, one call per scenario,
 # so the mocks cannot rot unnoticed. CI runs it after `docker compose up -d --wait`.
 #
-#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL]]     # defaults: http://127.0.0.1:8081, :8082
+#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL]]]   # defaults: http://127.0.0.1:8081, :8082, :8083
 #
 # It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
 # "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
 # rework prompt of the gate (which says "this is attempt N" and quotes the findings) changes the answer.
+#
+# The verifier mock (`mock-verifier`, ADR 0018) and the coder's `push-flawed` / `push-clean` scenarios
+# that go with it are played as well: the `verdict` artifact a verifier answers with for a commit of forty
+# `a` and for any other, and what the rework prompt that quotes the verifier's findings does to the coder.
 #
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
 
 AGENT=${1:-http://127.0.0.1:8081}
 RELEASES=${2:-http://127.0.0.1:8082}
+VERIFIER=${3:-http://127.0.0.1:8083}
 EXT=https://agents.vymalo.com/a2a/extensions/release-channels/v1
 fail=0
 
@@ -105,6 +110,55 @@ check "red-always: every rework fails again" \
   "$(artifact "$AGENT" "$(rework 3 red-always)" checks '[.passed, .commit[0:7]] | join(" ")')" "false 3333333"
 check "red-always: the stream is branch, checks, completed like the others" \
   "$(frames "$AGENT" "$(rework 2 red-always)")" "submitted,working,artifact,artifact,completed"
+
+# The prompt the gate sends a verifier (orch-core, verify.rs), naming `sha`, with the task quoted.
+review() { # review SHA
+  # shellcheck disable=SC2016 # the backticks are the prompt's own (Markdown), not command substitution
+  printf 'You verify another agent'"'"'s work. Do not change anything. Check that commit %s, pushed as described below, does what the task asks and works. This is attempt 1 of 3.\n\nWhere the agent says it pushed the commit:\n```untrusted\nrepository: github.com/example/sandbox\nbranch: agent/verified\n```\n\nThe task, as the user wrote it:\n```untrusted\npush-flawed fix the login\n```\n' "$1"
+}
+# The prompt that sends the coder back after the verifier's findings.
+rework_after_review() {
+  # shellcheck disable=SC2016 # the backticks are the prompt's own (Markdown), not command substitution
+  printf 'Your work did not pass verification (attempt 1 of 3); this is attempt 2. Fix what is reported below, push the fix and finish again.\n\n### the verifier\n```untrusted\n- src/login.rs: the empty password is accepted; add a test that covers it\n```\n'
+}
+A40=$(printf 'a%.0s' $(seq 40))
+B40=$(printf 'b%.0s' $(seq 40))
+C40=$(printf 'c%.0s' $(seq 40))
+check "push-flawed: the coder pushes the commit the mock verifier finds fault with" \
+  "$(artifact "$AGENT" 'push-flawed fix the login' branch '[.branch, .commit] | join(" ")')" "agent/verified $A40"
+check "push-flawed: it reports no checks of its own, so only a verifier can judge it" \
+  "$(frames "$AGENT" 'push-flawed fix the login')" "submitted,working,artifact,completed"
+check "push-flawed: the rework prompt that quotes the verifier's findings gets the commit it passes" \
+  "$(artifact "$AGENT" "$(rework_after_review)" branch '.commit')" "$B40"
+check "push-clean: the coder pushes a commit the mock verifier passes" \
+  "$(artifact "$AGENT" 'push-clean fix the login' branch '.commit')" "$C40"
+
+echo "== $VERIFIER (the verifier)"
+card=$(curl -fsS "$VERIFIER/.well-known/agent-card.json")
+check "card: streaming, JSONRPC interface on the same host" \
+  "$(printf '%s' "$card" | jq -r '[.capabilities.streaming, (.supportedInterfaces[0].url | startswith("'"$VERIFIER"'/")), .supportedInterfaces[0].protocolVersion] | join(",")')" \
+  "true,true,1.0"
+check "card: a verifier, with a bearer security scheme" \
+  "$(printf '%s' "$card" | jq -r '[.name, .securitySchemes.bearer.httpAuthSecurityScheme.scheme] | join(" ")')" "mock-verifier Bearer"
+check "no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$VERIFIER/a2a" -d '{}')" "401"
+check "a review streams submitted, working, the verdict, completed" \
+  "$(frames "$VERIFIER" "$(review "$C40")")" "submitted,working,artifact,completed"
+check "a commit of forty a: the verdict fails, with a finding" \
+  "$(artifact "$VERIFIER" "$(review "$A40")" verdict '[.passed, .findings[0]] | join(" ")')" \
+  "false src/login.rs: the empty password is accepted; add a test that covers it"
+check "any other commit: the verdict passes, with no findings" \
+  "$(artifact "$VERIFIER" "$(review "$B40")" verdict '[.passed, (.findings | length)] | join(" ")')" "true 0"
+check "the verdict is JSON in a data part, named verdict" \
+  "$(rpc "$VERIFIER" SendStreamingMessage "$(review "$B40")" | sed -n 's/^data: //p' | jq -r 'select(.result.artifactUpdate) | .result.artifactUpdate | [.artifact.name, .artifact.parts[0].mediaType, .lastChunk] | join(" ")')" \
+  "verdict application/json true"
+check "the context of the request is the context of the answer" \
+  "$(rpc "$VERIFIER" SendStreamingMessage "$(review "$B40")" | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "check-ctx"
+check "GetTask: task not found, so a verification that lost its stream is held, never passed" \
+  "$(rpc "$VERIFIER" GetTask | jq -r .error.code)" "-32001"
+check "CancelTask -> canceled" "$(rpc "$VERIFIER" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
+check "SubscribeToTask -> task not found (-32001)" "$(rpc "$VERIFIER" SubscribeToTask | jq -r .error.code)" "-32001"
+check "ListTasks -> an empty page" "$(rpc "$VERIFIER" ListTasks | jq -r '.result.tasks | length')" "0"
+check "SendMessage -> -32601 (only streaming is implemented)" "$(rpc "$VERIFIER" SendMessage hello | jq -r .error.code)" "-32601"
 
 echo "== $RELEASES (release-channels extension)"
 check "card declares the extension with channels and revisions" \

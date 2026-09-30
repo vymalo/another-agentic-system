@@ -1,0 +1,35 @@
+{
+  "name": "SendStreamingMessage: the gate's rework prompt after the verifier's findings (\"this is attempt 2\" or later, under the heading \"### the verifier\") -> branch on commit b (what the mock verifier passes), completed",
+  "priority": 1,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "(?is).*this is attempt [2-9].*### the verifier.*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-push-bbbb.sse"
+  }
+}

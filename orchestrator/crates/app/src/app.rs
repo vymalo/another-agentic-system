@@ -442,6 +442,11 @@ impl<P: Ports> App<P> {
             policy = rules
                 .apply(&policy, request, &Layer::Thread)
                 .map_err(|e| AppError::Invalid(e.to_string()))?;
+            // A thread may require the verifier but not choose it: what it asked for must have
+            // one, and it must be another agent than the one being verified.
+            rules
+                .check_verifier(&policy, agent, &self.agents, &Layer::Thread)
+                .map_err(|e| AppError::Invalid(e.to_string()))?;
         }
         Ok(policy)
     }
@@ -589,7 +594,10 @@ impl<P: Ports> App<P> {
             // Machine inputs (a CI report, the verifier's verdict, a timer) come from the
             // inbox and the dispatcher through `apply`, never from a user's request: a user
             // must not be able to forge a check result.
-            Input::CiReported(_) | Input::VerifierReported { .. } | Input::TimerFired(_) => {
+            Input::CiReported(_)
+            | Input::VerifierReported { .. }
+            | Input::VerifierFailed { .. }
+            | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
                 ));
@@ -671,19 +679,24 @@ impl<P: Ports> App<P> {
                     after,
                     timer,
                 }),
-                // TODO(MVP slice 10): `RequestVerification` becomes an outbox row of kind
-                // `verify`. Until then it is dropped, loudly: a gate that requires the
-                // verifier is not configurable before slice 3 rejects it, so with the default
-                // (empty) gate it is never produced.
+                // The request is an outbox row in this commit, so it cannot be lost or made
+                // twice; the dispatcher asks the verifier and feeds the verdict back.
                 Command::RequestVerification {
-                    attempt, verifier, ..
-                } => {
-                    tracing::warn!(
+                    attempt,
+                    verification,
+                    verifier,
+                    pushed,
+                    text,
+                } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Verify {
                         attempt,
-                        %verifier,
-                        "dropping a verification request: the verifier path is not built yet"
-                    );
-                }
+                        verification,
+                        verifier,
+                        pushed,
+                        text,
+                    },
+                }),
             }
         }
         Commit {

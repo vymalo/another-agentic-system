@@ -15,7 +15,12 @@ type Ev = Record<string, unknown> & { type: string };
 export type Frame = { id?: number; event: Ev };
 
 /** The verification gate a thread's job runs under (ADR 0018): `require` is in the order of the sources. */
-export type GateInfo = { require: CheckSource[]; maxAttempts: number };
+export type GateInfo = {
+  require: CheckSource[];
+  maxAttempts: number;
+  /** The agent that verifies, when `verifier` is required (`meta.gate.verifier` of the real projection). */
+  verifier?: string;
+};
 
 export type ThreadInfo = {
   threadId: string;
@@ -43,6 +48,9 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 
 type Invocation = { id: string; event: Event };
 type Open = { runId: string };
+
+/** How the verifier's subagent ends: with its verdict, or without one (the round ended elsewhere). */
+type VerifierClose = { passed: boolean } | "abandoned";
 
 const SURFACE_OPS = ["createSurface", "updateComponents", "updateDataModel", "deleteSurface"];
 
@@ -103,6 +111,8 @@ export class Projector {
   private state: ThreadState | undefined;
   private run: Open | null = null;
   private invocation: Invocation | null = null;
+  /** The verifier's invocation, while a verification waits for its verdict (ADR 0018). */
+  private verifier: Invocation | null = null;
   /** A suspended invocation continues under the same id when the thread does. */
   private suspended: Invocation | null = null;
   private interrupt: { id: string; reason: string; message?: string; sub: string } | null = null;
@@ -170,8 +180,36 @@ export class Projector {
       },
     ];
     if (this.invocation) out.push(this.startedEvent(this.invocation));
+    if (this.verifier) out.push(this.startedEvent(this.verifier));
     out.push(this.snapshot());
     return out.map((event) => ({ event }));
+  }
+
+  /**
+   * The verifier starts: a subagent named after the verifier agent, with an id derived from the
+   * verification (`sub-verify-<n>`), open from its `pending` card until its verdict.
+   */
+  private openVerifier(e: Event, out: Ev[]) {
+    if (this.verifier) return;
+    const name = this.info.gate?.verifier ?? "verifier";
+    const inv: Invocation = {
+      id: `sub-verify-${Math.max(1, this.verification)}`,
+      event: { ...e, actor: { type: "agent", name } },
+    };
+    this.verifier = inv;
+    out.push(this.startedEvent(inv));
+  }
+
+  /** The verifier's invocation ends, when one is open. */
+  private closeVerifier(how: VerifierClose, out: Ev[]) {
+    const inv = this.verifier;
+    if (!inv) return;
+    this.verifier = null;
+    out.push({
+      type: "SUBAGENT_FINISHED",
+      subagentRunId: inv.id,
+      result: how === "abandoned" ? { status: "canceled" } : { passed: how.passed },
+    });
   }
 
   private startedEvent(inv: Invocation): Ev {
@@ -257,6 +295,7 @@ export class Projector {
       case "user_message": {
         if (!this.run) this.openRun(e, out);
         // a message during a verification abandons it
+        this.closeVerifier("abandoned", out);
         if (this.state === "verifying") this.state = "queued";
         this.checksFailed = false;
         this.lastWasError = false;
@@ -414,7 +453,8 @@ export class Projector {
       case "ui_action": {
         // like a user message it answers a blocked thread; unlike one it says nothing in the
         // transcript but a `vymalo.action` activity, and no invocation is open for it
-        if (this.state === "blocked") this.state = "queued";
+        this.closeVerifier("abandoned", out);
+        if (this.state === "blocked" || this.state === "verifying") this.state = "queued";
         this.interrupt = null;
         this.failure = null;
         const { surfaceId, name, sourceComponentId, context } = e.data;
@@ -439,6 +479,10 @@ export class Projector {
           }
           messageId = `check-${attempt}-${Math.max(1, this.verification)}-${String(e.data.source)}`;
         }
+        // the verifier is a subagent of its own for as long as its answer is awaited: it starts
+        // with its pending card and ends with its verdict
+        const verifier = !stale && e.data.source === "verifier";
+        if (verifier && e.data.status === "pending") this.openVerifier(e, out);
         out.push({
           type: "ACTIVITY_SNAPSHOT",
           messageId,
@@ -447,11 +491,14 @@ export class Projector {
           replace: true,
           metadata: actorMeta(e),
         });
+        if (verifier && e.data.status === "passed") this.closeVerifier({ passed: true }, out);
+        if (verifier && e.data.status === "failed") this.closeVerifier({ passed: false }, out);
         break;
       }
       case "rework": {
         // the gate failed and the agent is sent back: the divider, then the next attempt's
         // invocation (the delegation is already on its way, so the run shows it working)
+        this.closeVerifier("abandoned", out);
         this.attempt = Number(e.data.attempt) || this.attempt + 1;
         this.sha = undefined;
         this.checksFailed = false;
@@ -504,6 +551,9 @@ export class Projector {
       case "thread_state": {
         if (!this.run) this.openRun(e, out);
         this.state = e.data.state as ThreadState;
+        // a verifier still waited for when the run ends never answered (a timeout, a cancel, or
+        // another source decided the round); the run's success is its pass
+        this.closeVerifier(this.state === "done" ? { passed: true } : "abandoned", out);
         out.push(this.snapshot());
         const threadId = this.info.threadId;
         const runId = this.run?.runId ?? "";

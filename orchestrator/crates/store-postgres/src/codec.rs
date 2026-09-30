@@ -25,7 +25,7 @@ macro_rules! thread_cols {
 macro_rules! outbox_cols {
     () => {
         "id, thread_id, kind, payload, status, attempts, next_attempt_at, lease_owner, \
-         lease_until, sent_at, last_error, created_at"
+         lease_until, sent_at, task_id, last_error, created_at"
     };
 }
 
@@ -151,6 +151,7 @@ pub(crate) fn outbox_from_row(row: &PgRow) -> Result<OutboxItem, StoreError> {
         status: parse_enum("outbox status", &status)?,
         attempts: u32::try_from(attempts).unwrap_or(0),
         sent_at: get_ts_opt(row, "sent_at")?,
+        task_id: get(row, "task_id")?,
         next_attempt_at: get_ts(row, "next_attempt_at")?,
         lease_owner: get(row, "lease_owner")?,
         lease_until: get_ts_opt(row, "lease_until")?,

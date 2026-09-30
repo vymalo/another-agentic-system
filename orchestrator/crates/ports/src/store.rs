@@ -4,7 +4,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    EventKind, Job, ThreadId, ThreadRecord, ThreadState, UserId, WatchKey,
+    EventKind, Job, PushedRef, ThreadId, ThreadRecord, ThreadState, UserId, WatchKey,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -62,6 +62,9 @@ pub enum OutboxKind {
     Delegate,
     /// Cancel the running task.
     Cancel,
+    /// Ask the verifier agent to review the pushed commit (ADR 0018). Its task is the row's own
+    /// ([`OutboxItem::task_id`]), never the thread's binding: the verifier is not the worker.
+    Verify,
 }
 
 /// Payload of an outbox row (stored as JSON).
@@ -87,6 +90,21 @@ pub enum OutboxPayload {
     },
     /// Cancel.
     Cancel,
+    /// Ask `verifier` to review `pushed` (ADR 0018). `attempt` and `verification` say which
+    /// verification of the job this answers: a row whose verification is over is dropped, and
+    /// the verdict it produces carries them, so the core can tell a stale one.
+    Verify {
+        /// The attempt the request was made in.
+        attempt: u32,
+        /// The verification it was made in.
+        verification: u32,
+        /// The agent that reviews.
+        verifier: AgentId,
+        /// What it reviews (for the operator: the prompt is `text`).
+        pushed: PushedRef,
+        /// The prompt, written by the core.
+        text: String,
+    },
 }
 
 impl OutboxPayload {
@@ -95,6 +113,7 @@ impl OutboxPayload {
         match self {
             OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
             OutboxPayload::Cancel => OutboxKind::Cancel,
+            OutboxPayload::Verify { .. } => OutboxKind::Verify,
         }
     }
 }
@@ -285,6 +304,10 @@ pub struct OutboxItem {
     pub attempts: u32,
     /// Set once the A2A message reached the agent and a task id is known.
     pub sent_at: Option<Timestamp>,
+    /// The verifier's A2A task, for a `verify` row once its message reached the verifier
+    /// ([`ThreadStore::mark_verify_sent`]); `None` for every other row, whose task is on the
+    /// thread's binding.
+    pub task_id: Option<String>,
     /// Earliest next claim.
     pub next_attempt_at: Timestamp,
     /// Current lease holder.
@@ -506,7 +529,9 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Claims up to `limit` rows (oldest first): `pending` and due, or `inflight` with an
     /// expired lease (`lease_until <= now`). A delegate row is claimable only if no older
     /// `pending`/`inflight` delegate row exists for the same thread (per-thread ordering,
-    /// including rows claimed earlier in the same call); cancel rows are unrestricted.
+    /// including rows claimed earlier in the same call); cancel and verify rows are
+    /// unrestricted (a verification runs while the delegation that caused it is still being
+    /// finished, and never waits for a later delegation).
     /// Sets `inflight`, owner, `lease_until = now + lease`, `attempts += 1`. Concurrent
     /// claimers never get the same row.
     fn claim_outbox(
@@ -530,6 +555,16 @@ pub trait ThreadStore: Send + Sync + 'static {
         &self,
         lease: &Lease,
         binding: BindingUpdate,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// For a `verify` row: sets `sent_at` and the row's [`task_id`](OutboxItem::task_id) (the
+    /// message reached the verifier and its task is known), and nothing on the thread's
+    /// binding, which is the worker's. `false` if `lease` is no longer the row's current claim.
+    fn mark_verify_sent(
+        &self,
+        lease: &Lease,
+        task_id: String,
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 

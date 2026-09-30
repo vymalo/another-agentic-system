@@ -67,6 +67,17 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: a thread waiting for its verifier agent has no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "verify-reviewed-wait ship it", "Reviewer");
+      await expect(badge(page)).toHaveText("Verifying");
+      await expect(
+        page.getByRole("region", { name: "Check: Verifier, attempt 1, pending" }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a finished thread with a replaced and a stale check has no serious violations", async ({
       page,
     }) => {

@@ -1055,6 +1055,8 @@ impl ThreadStore for RacyStore {
         renew_lease(lease: &orch_ports::Lease, until: Timestamp) -> Result<bool, StoreError>;
         mark_sent(lease: &orch_ports::Lease, binding: orch_ports::BindingUpdate, now: Timestamp)
             -> Result<bool, StoreError>;
+        mark_verify_sent(lease: &orch_ports::Lease, task_id: String, now: Timestamp)
+            -> Result<bool, StoreError>;
         retry_outbox(lease: &orch_ports::Lease, next_attempt_at: Timestamp, error: String)
             -> Result<bool, StoreError>;
         complete_outbox(lease: &orch_ports::Lease, outcome: orch_ports::OutboxFinal, now: Timestamp)

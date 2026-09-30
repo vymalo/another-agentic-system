@@ -14,6 +14,9 @@
 //!   *producer-initiated* run) and closes at the event that ends it;
 //! - the **invocation** (AG-UI subagent) that is open: one per stretch of the agent working on
 //!   the thread, closed as finished, suspended (it waits for input), cancelled or failed;
+//! - the **verifier's invocation**, when the gate asks a verifier agent (ADR 0018): a subagent of
+//!   its own, named after the verifier, open from the `pending` `check_result` of the verifier
+//!   source to its verdict (or to whatever ends the verification first);
 //! - the **text message** that is open (an agent message streamed as partials);
 //! - the **thread state** implied by the log, the pending **interrupt**, and the last failure.
 //!
@@ -44,9 +47,9 @@ use orch_agui_proto::{
 };
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData,
-    CheckResult, ErrorData, Event, EventBody, GatePolicy, JobView, MAX_SURFACE_BYTES, Recognised,
-    ReworkData, SurfaceOp, ThreadId, ThreadState, UiActionData, UiSurfaceData, UiVersion, UserId,
-    UserMessageData, inspect, recognise_artifact, serialized_len,
+    CheckResult, CheckSource, CheckStatus, ErrorData, Event, EventBody, GatePolicy, JobView,
+    MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId, ThreadState, UiActionData,
+    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -55,7 +58,8 @@ use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
     ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED, CODE_CHECKS_FAILED,
-    CODE_DELIVERY_FAILED, actor_metadata, problem_metadata, response_schema, status_content,
+    CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED, actor_metadata, problem_metadata, response_schema,
+    status_content,
 };
 
 /// What the projection knows about the thread besides its log: the parts of the thread record
@@ -140,6 +144,20 @@ enum RunClose {
     Error(Failure),
 }
 
+/// How the verifier's invocation ends.
+#[derive(Debug, Clone)]
+enum VerifierClose {
+    /// It answered: `passed` is its verdict. Either way it did its job.
+    Verdict { passed: bool },
+    /// The verification ended without its answer (another source failed the round, the user
+    /// wrote, the thread was cancelled, or a hold whose cause the log does not name).
+    Abandoned,
+    /// The thread was held while the verifier was out, and the verifier is the only source that
+    /// can have caused it: it could not be used or did not answer in time. Carries the reason
+    /// the hold gave.
+    Unavailable(String),
+}
+
 /// How an invocation ends.
 #[derive(Debug, Clone)]
 enum InvocationClose {
@@ -156,6 +174,8 @@ pub struct Projector {
     state: ThreadState,
     run: Option<RunId>,
     invocation: Option<Invocation>,
+    /// The verifier's invocation, while a verification waits for its verdict.
+    verifier: Option<Invocation>,
     /// The invocation that suspended and will reappear when the thread continues.
     suspended: Option<SubagentRunId>,
     open_text: Option<OpenText>,
@@ -203,6 +223,7 @@ impl Projector {
             state: ThreadState::Queued,
             run: None,
             invocation: None,
+            verifier: None,
             suspended: None,
             open_text: None,
             texts: BTreeMap::new(),
@@ -266,6 +287,9 @@ impl Projector {
         let mut out: Vec<agui::Event> =
             vec![RunStartedEvent::new(self.meta.thread_id.to_string(), run.clone()).into()];
         if let Some(inv) = &self.invocation {
+            out.push(Self::subagent_started(inv).into());
+        }
+        if let Some(inv) = &self.verifier {
             out.push(Self::subagent_started(inv).into());
         }
         out.push(self.state_snapshot());
@@ -342,6 +366,9 @@ impl Projector {
             .unwrap_or_else(|| format!("evt-{}", ev.seq));
         // The thread leaves `blocked` when the user answers, and abandons a verification when
         // the user writes during one; an answer clears the wait.
+        if self.run.is_some() {
+            self.close_verifier(VerifierClose::Abandoned, out);
+        }
         if matches!(self.state, ThreadState::Blocked | ThreadState::Verifying) {
             self.state = ThreadState::Queued;
         }
@@ -638,6 +665,9 @@ impl Projector {
     /// run when none is open (the run id is the one the surface named, else `run-<seq>`); unlike
     /// one it says nothing in the transcript but a `vymalo.action` activity.
     fn on_ui_action(&mut self, ev: &Event, d: &UiActionData, out: &mut Vec<agui::Event>) {
+        if self.run.is_some() {
+            self.close_verifier(VerifierClose::Abandoned, out);
+        }
         if matches!(self.state, ThreadState::Blocked | ThreadState::Verifying) {
             self.state = ThreadState::Queued;
         }
@@ -699,6 +729,12 @@ impl Projector {
                 d.source.as_str()
             )
         };
+        // The verifier is a subagent of its own for as long as its answer is awaited: it starts
+        // with its pending card and ends with its verdict.
+        let verifier = !d.stale && d.source == CheckSource::Verifier;
+        if verifier && d.status == CheckStatus::Pending {
+            self.open_verifier(out);
+        }
         let content = match serde_json::to_value(d) {
             Ok(Value::Object(map)) => map,
             Ok(_) | Err(_) => Metadata::new(),
@@ -708,9 +744,66 @@ impl Projector {
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
         self.message_ids.insert(id);
         out.push(snapshot.into());
+        if verifier {
+            match d.status {
+                CheckStatus::Passed => {
+                    self.close_verifier(VerifierClose::Verdict { passed: true }, out);
+                }
+                CheckStatus::Failed => {
+                    self.close_verifier(VerifierClose::Verdict { passed: false }, out);
+                }
+                CheckStatus::Pending => {}
+            }
+        }
         if opened {
             self.settle(ev, out);
         }
+    }
+
+    /// The verifier starts: a subagent named after the verifier agent, with an id derived from
+    /// the verification (`sub-verify-<n>`), so every replica and every replay says the same.
+    fn open_verifier(&mut self, out: &mut Vec<agui::Event>) {
+        if self.verifier.is_some() {
+            return;
+        }
+        let actor = match &self.meta.gate.verifier {
+            Some(agent) => Actor::agent(agent, None),
+            None => Actor::system(),
+        };
+        let name = self
+            .meta
+            .gate
+            .verifier
+            .as_ref()
+            .map_or_else(|| "verifier".to_owned(), ToString::to_string);
+        let inv = Invocation {
+            id: SubagentRunId::new(format!("sub-verify-{}", self.verification.max(1))),
+            name,
+            actor,
+        };
+        out.push(Self::subagent_started(&inv).into());
+        self.verifier = Some(inv);
+    }
+
+    /// The verifier's invocation ends, when one is open.
+    fn close_verifier(&mut self, how: VerifierClose, out: &mut Vec<agui::Event>) {
+        let Some(inv) = self.verifier.take() else {
+            return;
+        };
+        let result = match how {
+            VerifierClose::Verdict { passed } => json!({"passed": passed}),
+            VerifierClose::Abandoned => json!({"status": "canceled"}),
+            VerifierClose::Unavailable(message) => {
+                out.push(
+                    SubagentErrorEvent::new(inv.id, message, Some(CODE_VERIFIER_FAILED.to_owned()))
+                        .into(),
+                );
+                return;
+            }
+        };
+        let mut finished = SubagentFinishedEvent::new(inv.id, None);
+        finished.result = Some(result);
+        out.push(finished.into());
     }
 
     /// The gate failed and the agent is sent back to work: a `vymalo.rework` activity, then the
@@ -718,6 +811,8 @@ impl Projector {
     /// already on its way, so the run shows it working.
     fn on_rework(&mut self, ev: &Event, d: &ReworkData, out: &mut Vec<agui::Event>) {
         let opened = self.ensure_run(ev, out);
+        // The round ended at a source other than the verifier's (or before its answer).
+        self.close_verifier(VerifierClose::Abandoned, out);
         self.attempt = d.attempt;
         self.sha = None;
         self.checks_failed = false;
@@ -845,6 +940,15 @@ impl Projector {
             // thread: its run ends in an interrupt the user can answer, with the reason as the
             // message, not in a delivery failure.
             ThreadState::Blocked if was_verifying && pending_error.is_some() => {
+                // With no CI to wait for, the only thing that can hold a verification while the
+                // verifier is out is the verifier: it failed, or it was too slow. (With CI as a
+                // source too, the hold may be CI's, and the log does not say which.)
+                if let Some(message) = &pending_error
+                    && self.verifier.is_some()
+                    && !self.meta.gate.requires(CheckSource::Ci)
+                {
+                    self.close_verifier(VerifierClose::Unavailable(message.clone()), out);
+                }
                 self.interrupt = Some(PendingInterrupt {
                     id: format!("int-{}", ev.seq),
                     reason: "input_required",
@@ -974,6 +1078,15 @@ impl Projector {
     /// `STATE_SNAPSHOT` and the terminal event.
     fn close_run(&mut self, close: RunClose, seq: i64, out: &mut Vec<agui::Event>) {
         self.close_text(out);
+        // A verifier still waited for when the run ends never answered: a timeout or a failure
+        // held the thread, or another source decided the round.
+        let verdictless = match &close {
+            RunClose::Success => VerifierClose::Verdict { passed: true },
+            RunClose::Cancelled | RunClose::Interrupt | RunClose::Error(_) => {
+                VerifierClose::Abandoned
+            }
+        };
+        self.close_verifier(verdictless, out);
         match &close {
             RunClose::Success => self.close_invocation(InvocationClose::Finished, out),
             RunClose::Cancelled => self.close_invocation(InvocationClose::Canceled, out),

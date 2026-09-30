@@ -1,6 +1,7 @@
 # AGENTS_FILE for running the orchestrator on the host (`cargo run -p orchestrator`) against the
-# compose mocks' published ports (defaults of compose.yaml; keep in step with MOCK_AGENT_PORT and
-# MOCK_AGENT_RELEASES_PORT if you change them). Needs MOCK_AGENT_TOKEN=<anything> in the environment.
+# compose mocks' published ports (defaults of compose.yaml; keep in step with MOCK_AGENT_PORT,
+# MOCK_AGENT_RELEASES_PORT and MOCK_VERIFIER_PORT if you change them). Needs MOCK_AGENT_TOKEN=<anything>
+# in the environment.
 #
 # The coder (the default agent of dev/agents.yaml) is deliberately not listed: its agent card
 # advertises PUBLIC_URL, which in compose must be http://coder:8080/, a name a host-run orchestrator
@@ -16,6 +17,17 @@
   tokenEnv: MOCK_AGENT_TOKEN
   gate:
     require: [agent-checks]
+- id: verifier
+  name: Mock verifier
+  cardUrl: http://127.0.0.1:8083/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-coder-verified
+  name: Mock coder (verified)
+  cardUrl: http://127.0.0.1:8081/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  gate:
+    require: [verifier]
+    verifier: verifier
 - id: mock-coder-releases
   name: Mock coder (releases)
   cardUrl: http://127.0.0.1:8082/.well-known/agent-card.json

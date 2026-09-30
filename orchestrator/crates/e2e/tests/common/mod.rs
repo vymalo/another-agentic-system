@@ -27,7 +27,8 @@ use orch_ports::{
 };
 use orch_store_postgres::{PgStore, PgWakeup};
 use orch_testsupport::{
-    Chat, FakeAgent, FakeAgentOptions, FakeReleases, Frame, TestInstance, fast_dispatcher,
+    Chat, FakeAgent, FakeAgentOptions, FakeReleases, Frame, TestInstance, VerifierScript,
+    fast_dispatcher,
 };
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -112,10 +113,13 @@ pub const FIVE: [&str; 5] = [
     "thread_state:done",
 ];
 
-/// How to set up the two agents (`coder` offers release channels, `plain` does not).
+/// How to set up the agents (`coder` offers release channels, `plain` does not; `reviewer`, the
+/// verifier of ADR 0018, exists only when a script is given).
 pub struct Setup {
     pub coder: FakeAgentOptions,
     pub plain: FakeAgentOptions,
+    /// The script of the `reviewer` agent, which plays the verifier; `None`: no such agent.
+    pub reviewer: Option<VerifierScript>,
     /// Bearer tokens the orchestrator is configured with.
     pub coder_token: Option<String>,
     pub plain_token: Option<String>,
@@ -136,12 +140,26 @@ impl Default for Setup {
                 ..FakeAgentOptions::default()
             },
             plain: FakeAgentOptions::default(),
+            reviewer: None,
             coder_token: None,
             plain_token: None,
             gate: GatePolicy::default(),
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
         }
+    }
+}
+
+/// `plain` requires the verifier `reviewer` (its `AGENTS_FILE` entry says so), which answers as
+/// `script` says: the world of the verifier goldens.
+pub fn verified_by_reviewer(script: VerifierScript) -> Setup {
+    let gate = GateLayer::from_json(&json!({"require": ["verifier"], "verifier": "reviewer"}))
+        .unwrap()
+        .unwrap();
+    Setup {
+        reviewer: Some(script),
+        target_gates: BTreeMap::from([(AgentId::new("plain"), gate)]),
+        ..Setup::default()
     }
 }
 
@@ -162,6 +180,8 @@ pub struct World {
     pub agents: A2aAgentClient,
     pub coder: FakeAgent,
     pub plain: FakeAgent,
+    /// The verifier, when the setup has one (agent id `reviewer`).
+    pub reviewer: Option<FakeAgent>,
     coder_token: Option<String>,
     plain_token: Option<String>,
     gate: GatePolicy,
@@ -197,6 +217,16 @@ impl World {
             .unwrap(),
             coder: FakeAgent::spawn(setup.coder).await,
             plain: FakeAgent::spawn(setup.plain).await,
+            reviewer: match setup.reviewer {
+                Some(script) => Some(
+                    FakeAgent::spawn(FakeAgentOptions {
+                        verifier: Some(script),
+                        ..FakeAgentOptions::default()
+                    })
+                    .await,
+                ),
+                None => None,
+            },
             coder_token: setup.coder_token,
             plain_token: setup.plain_token,
             gate: setup.gate,
@@ -210,7 +240,7 @@ impl World {
             endpoint,
             name: name.to_owned(),
         };
-        AgentDirectory::new(vec![
+        let mut entries = vec![
             entry(
                 "Coder",
                 self.coder.endpoint("coder", self.coder_token.as_deref()),
@@ -219,7 +249,11 @@ impl World {
                 "Plain",
                 self.plain.endpoint("plain", self.plain_token.as_deref()),
             ),
-        ])
+        ];
+        if let Some(reviewer) = &self.reviewer {
+            entries.push(entry("Reviewer", reviewer.endpoint("reviewer", None)));
+        }
+        AgentDirectory::new(entries)
     }
 
     /// A new orchestrator process (app state is per process; the database is shared).
@@ -542,6 +576,11 @@ impl Node {
 
     pub async fn inbox_row(&self, source: &str, key: &str) -> Option<InboxItem> {
         on_node!(self, app => app.ports().store().find_inbox(source, key).await.unwrap())
+    }
+
+    /// The thread's `pending` and `inflight` outbox rows, oldest first.
+    pub async fn open_outbox(&self, thread: ThreadId) -> Vec<orch_ports::OutboxItem> {
+        on_node!(self, app => app.ports().store().list_open_outbox(thread).await.unwrap())
     }
 
     pub async fn watch(&self, key: &str) -> Option<ThreadId> {

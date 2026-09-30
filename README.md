@@ -83,7 +83,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0015](docs/decisions/0015-control-plane-and-workers-on-adam-rs.md) | Control plane and workers on adam-rs (`Role` enum, git rev); in-process agents behind a feature; amends 0001 and 0007 |
 | [0016](docs/decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md) | Inbox, timers and the job ledger on the thread (`threads.job`); unsolicited machine input only. *Slices 2 and 5 built* |
 | [0017](docs/decisions/0017-ci-results-by-webhook.md) | CI results by webhook: a GitHub adapter and a generic signed shape. *Planned* |
-| [0018](docs/decisions/0018-verification-gate-and-rework-loop.md) | Configurable verification gate (CI, agent checks, verifier agent) and a bounded rework loop; refines 0002. *Built for the agent's own checks (slices 2, 3); CI and the verifier planned* |
+| [0018](docs/decisions/0018-verification-gate-and-rework-loop.md) | Configurable verification gate (CI, agent checks, verifier agent) and a bounded rework loop; refines 0002. *Built for the agent's own checks (slices 2, 3) and the verifier agent (slice 10); CI planned* |
 | [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Tools, bearer tokens and `wait_for_job` built; OIDC planned* |
 
 ## Local development
@@ -115,7 +115,7 @@ dev/split-e2e.sh                                     # kills the worker that hol
 
 | Profile | Services | Ports on 127.0.0.1 |
 |---|---|---|
-| default | `postgres`, `mock-agent`, `mock-agent-releases` | 5432, 8081, 8082 |
+| default | `postgres`, `mock-agent`, `mock-agent-releases`, `mock-verifier` | 5432, 8081, 8082, 8083 |
 | `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
 | `split` | + `orchestrator-worker-1`, `orchestrator-worker-2` (dispatcher only; beside `app`, with `ORCHESTRATOR_ROLE=control-plane`) | none published |
 | `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
@@ -128,11 +128,11 @@ To run the code you are changing against the mocks (compose supplies only the in
 | Variable | Value | For |
 |---|---|---|
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/orch` | the orchestrator |
-| `AGENTS_FILE` | `dev/agents.local.yaml` (agents on `127.0.0.1:8081`/`8082`) | the orchestrator |
+| `AGENTS_FILE` | `dev/agents.local.yaml` (agents on `127.0.0.1:8081`/`8082`/`8083`) | the orchestrator |
 | `MOCK_AGENT_TOKEN` | `dev-mock-token` (any non-empty value; the mocks only require a bearer) | the orchestrator, named by `tokenEnv` |
 | `AUTH_DEV_USER` | `dev@example.com` | the orchestrator without the edge proxy |
 | `ORCH_TEST_DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/orch_test` | `cargo test --workspace` |
-| `ORCH_TEST_MOCK_AGENT_URL`, `ORCH_TEST_MOCK_AGENT_RELEASES_URL` | `http://127.0.0.1:8081`, `http://127.0.0.1:8082` | `cargo test -p orch-e2e --test wiremock_agent` |
+| `ORCH_TEST_MOCK_AGENT_URL`, `ORCH_TEST_MOCK_AGENT_RELEASES_URL`, `ORCH_TEST_MOCK_VERIFIER_URL` | `http://127.0.0.1:8081`, `http://127.0.0.1:8082`, `http://127.0.0.1:8083` | `cargo test -p orch-e2e --test wiremock_agent` |
 
 The mock agent picks its script from a word in your message:
 
@@ -145,7 +145,7 @@ The mock agent picks its script from a word in your message:
 
 `mock-agent-releases` declares the release-channels extension, so only it shows the release
 dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
-`POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `EDGE_PORT`, `CODER_PORT`,
+`POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `MOCK_VERIFIER_PORT`, `EDGE_PORT`, `CODER_PORT`,
 `MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT` and `GIT_SERVER_PORT`. CI keeps the mocks
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
 [`dev/check-mocks.sh`](dev/check-mocks.sh) and the real orchestrator client against them, and

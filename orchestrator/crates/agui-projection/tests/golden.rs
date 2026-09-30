@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 9] = [
+const SCENARIOS: [&str; 11] = [
     "echo",
     "ask",
     "cancel",
@@ -32,6 +32,8 @@ const SCENARIOS: [&str; 9] = [
     "a2ui",
     "verify-green",
     "verify-red",
+    "verify-verifier-green",
+    "verify-verifier-red",
 ];
 
 fn examples_dir() -> PathBuf {
@@ -48,9 +50,15 @@ fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
         EventBody::UserMessage(m) => m.text.lines().next().unwrap_or("").to_owned(),
         _ => String::new(),
     };
-    // The verification scenarios ran under the gate that requires the agent's own checks.
+    // The verification scenarios ran under the gate that requires the agent's own checks, or
+    // the verifier `reviewer`.
     let gate = match name {
         "verify-green" | "verify-red" => GatePolicy::requiring([CheckSource::AgentChecks]),
+        "verify-verifier-green" | "verify-verifier-red" => {
+            let mut gate = GatePolicy::requiring([CheckSource::Verifier]);
+            gate.verifier = Some(AgentId::new("reviewer"));
+            gate
+        }
         _ => GatePolicy::default(),
     };
     ThreadMeta {

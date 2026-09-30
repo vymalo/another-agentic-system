@@ -53,14 +53,15 @@ jobs:
           docker compose --profile split config -q
           docker compose --profile app --profile split config -q
       - name: Start the infrastructure and the mocks
-        run: docker compose up -d --wait postgres mock-agent mock-agent-releases
+        run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier
       - name: Every mock scenario answers as documented
-        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082
+        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083
       - name: The real orchestrator client against the mocks
         run: |
           cd orchestrator
           ORCH_TEST_MOCK_AGENT_URL=http://127.0.0.1:8081 \
           ORCH_TEST_MOCK_AGENT_RELEASES_URL=http://127.0.0.1:8082 \
+          ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
             cargo test -p orch-e2e --test wiremock_agent --locked
       - name: Logs
         if: failure()

@@ -23,9 +23,9 @@ use crate::event::{
     Origin, ThreadStateData, UserMessageData,
 };
 use crate::gate::{
-    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_TASK_BYTES, PushedRef,
-    Recognised, Snapshot, Timer, Verdict, WatchKey, cap_findings, recognise_artifact, repo_key,
-    truncate_to,
+    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_SUMMARY_BYTES, MAX_TASK_BYTES,
+    PushedRef, Recognised, Snapshot, Timer, Verdict, WatchKey, cap_findings, recognise_artifact,
+    repo_key, truncate_to,
 };
 use crate::ids::{AgentId, UserId};
 use crate::thread::ThreadState;
@@ -103,6 +103,20 @@ pub enum Input {
         /// The verdict.
         verdict: Verdict,
     },
+    /// The verifier could not be used for the request made for `attempt` in `verification`: its
+    /// agent is gone from the configuration, cannot be reached, refused the request or ended its
+    /// task without answering. The thread waits for the user ([`Hold::VerifierFailed`]) and no
+    /// attempt is spent: the verifier being down is not the code's fault. The dispatcher builds
+    /// it when it gives up on a `verify` row; one for a verification that is over changes
+    /// nothing.
+    VerifierFailed {
+        /// The attempt the verification was requested in.
+        attempt: u32,
+        /// The verification it was requested in.
+        verification: u32,
+        /// Why, worded for the people who see the thread (no transport detail, no secret).
+        reason: String,
+    },
     /// A deadline armed by [`Command::Schedule`] passed.
     TimerFired(Timer),
 }
@@ -120,6 +134,7 @@ impl Input {
             Input::CancelRejected { .. } => "cancel rejection",
             Input::CiReported(_) => "ci report",
             Input::VerifierReported { .. } => "verifier report",
+            Input::VerifierFailed { .. } => "verifier failure",
             Input::TimerFired(_) => "timer",
         }
     }
@@ -170,10 +185,8 @@ pub enum Command {
         timer: Timer,
     },
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
-    /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and `verification`.
-    ///
-    /// The application does not execute it yet: the verifier path arrives with slice 10 of the
-    /// MVP plan.
+    /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
+    /// `verification`, or with [`Input::VerifierFailed`] when it cannot get an answer.
     RequestVerification {
         /// The attempt it belongs to.
         attempt: u32,
@@ -313,11 +326,23 @@ pub fn transition(
     Ok((Snapshot { state, job }, commands))
 }
 
+/// Most bytes of a verifier failure's reason that reach the log.
+const MAX_HOLD_REASON_BYTES: usize = 512;
+
 /// Keeps the user's task for the verifier, under an active gate only (an empty gate never
 /// touches the job).
 fn note_task(job: &mut Job, text: &str) {
     if job.gate.is_active() && job.task.is_none() {
         job.task = Some(truncate_to(text, MAX_TASK_BYTES).to_owned());
+    }
+}
+
+/// Keeps what the agent said about its work, for the verifier's prompt: only under a gate that
+/// requires the verifier (nothing else reads it), capped, the latest word replacing the earlier.
+fn note_summary(job: &mut Job, text: &str) {
+    let text = text.trim();
+    if job.gate.requires(CheckSource::Verifier) && !text.is_empty() {
+        job.summary = Some(truncate_to(text, MAX_SUMMARY_BYTES).to_owned());
     }
 }
 
@@ -445,6 +470,11 @@ fn decide(
             *verification,
             verdict,
         )),
+        Input::VerifierFailed {
+            attempt,
+            verification,
+            reason,
+        } => Ok(verifier_failed(state, job, *attempt, *verification, reason)),
         Input::TimerFired(timer) => Ok(timer_fired(state, job, *timer)),
     }
 }
@@ -518,17 +548,32 @@ fn agent_input(
             message_id,
             text,
             is_final,
-        } => Ok((
-            state,
-            vec![append(
-                actor,
-                EventBody::AgentMessage(AgentMessageData {
-                    text: text.clone(),
-                    message_id: message_id.clone(),
-                    is_final: *is_final,
-                }),
-            )],
-        )),
+        } => {
+            // What the agent says about its work is what the verifier is shown (as data), until
+            // the work is being verified: the ledger is frozen then.
+            match state {
+                ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
+                    if *is_final {
+                        note_summary(job, text);
+                    }
+                }
+                ThreadState::Verifying
+                | ThreadState::Done
+                | ThreadState::Failed
+                | ThreadState::Cancelled => {}
+            }
+            Ok((
+                state,
+                vec![append(
+                    actor,
+                    EventBody::AgentMessage(AgentMessageData {
+                        text: text.clone(),
+                        message_id: message_id.clone(),
+                        is_final: *is_final,
+                    }),
+                )],
+            ))
+        }
         AgentUpdate::Status {
             state: task,
             detail,
@@ -651,6 +696,9 @@ fn completed(
     let status = agent_status(actor, AgentStatus::Completed, detail.clone());
     if !job.gate.is_active() {
         return (ThreadState::Done, vec![status, entered(ThreadState::Done)]);
+    }
+    if let Some(detail) = detail {
+        note_summary(job, detail);
     }
     job.verification += 1;
     job.hold = None;
@@ -894,6 +942,42 @@ fn verifier_reported(
     }
     job.results.push(entry);
     verify::conclude(job, false, &[CheckSource::Verifier])
+}
+
+/// The verifier could not be used. Only the verification in progress, still waiting for the
+/// verifier, is held; a failure reported for any other (an abandoned verification, one already
+/// answered, a finished thread) changes nothing. Holding does not use an attempt.
+fn verifier_failed(
+    state: ThreadState,
+    job: &mut Job,
+    attempt: u32,
+    verification: u32,
+    reason: &str,
+) -> (ThreadState, Vec<Command>) {
+    let waiting = match state {
+        ThreadState::Verifying => {
+            attempt == job.attempt
+                && verification == job.verification
+                && job.gate.requires(CheckSource::Verifier)
+                && verify::status_of(job, CheckSource::Verifier) == CheckStatus::Pending
+        }
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Blocked
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => false,
+    };
+    if !waiting {
+        return (state, vec![]);
+    }
+    let reason = truncate_to(reason.trim(), MAX_HOLD_REASON_BYTES);
+    let message = if reason.is_empty() {
+        "the verifier could not be used".to_owned()
+    } else {
+        format!("the verifier could not be used: {reason}")
+    };
+    verify::hold(job, Hold::VerifierFailed, &message)
 }
 
 /// A deadline. It blocks the thread only if the verification it was armed for is still waiting

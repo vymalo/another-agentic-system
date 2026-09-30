@@ -152,6 +152,28 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "failed" };
     },
+    // the verifier agent of the gate (ADR 0018, MVP slice 10): findings once, then a pass; the
+    // verifier is a subagent of its own. Both goldens have the same first message, which the mock
+    // cannot tell apart, so the red one is spelled `verify-reviewed-red` (normalise puts it back)
+    "verify-verifier-green": async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "verify-reviewed fix the login" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
+    // three attempts the verifier never passes: the run ends in RUN_ERROR checks_failed
+    "verify-verifier-red": async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "verify-reviewed-red fix the login" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "failed" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,
@@ -169,7 +191,10 @@ function normalise(list: Frame[], threadId: string): Frame[] {
   const text = JSON.stringify(list)
     .replaceAll(threadId, "<thread-id>")
     .replaceAll("dev@example.com", "alice@example.com")
-    .replaceAll('"reviewer"', '"plain"');
+    .replaceAll('"reviewer"', '"plain"')
+    // the verifier agent of the mock is `verifier`, the golden's is named `reviewer`
+    .replaceAll('"name":"verifier"', '"name":"reviewer"')
+    .replaceAll("verify-reviewed-red fix", "verify-reviewed fix");
   const out = JSON.parse(text) as Frame[];
   // the mock names agent messages m-<n>; the golden msg-<seq of the END frame>
   const seqOf = new Map<string, number>();

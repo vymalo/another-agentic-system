@@ -10,20 +10,21 @@
 //!   anywhere within `1..=cap`**, lower or higher than the layer above's. The one removal allowed
 //!   is for the verifier itself: the entry of the agent that is the verifier may leave the
 //!   `verifier` source out for itself, because an agent cannot verify its own work.
-//! * **This build honours only some sources** ([`GateRules::honours`]). Until the inbox and the
-//!   timers (slice 5), the CI results (slice 6) and the verifier dispatch (slice 10) exist, the
-//!   application drops the commands a `ci` or `verifier` source needs (`Watch`, `Schedule`,
-//!   `RequestVerification`), so a gate that required either would wait for a verdict that can
-//!   never come. Configuration therefore refuses them in every layer, and fails closed: the
-//!   binary exits 78, a request is a 400. [`pending_reason`] says which sources those are and
-//!   why; [`GateRules::honouring`] is how a build (or a test) that has them says so. A slice that
-//!   makes a source real changes that arm, and then also owns what the source needs on top of the
-//!   rules here (its own settings, its own checks in [`GateRules::check_verifier`]).
+//! * **This build honours only some sources** ([`GateRules::honours`]). Until the CI results
+//!   (slice 6) exist, a gate that required `ci` would wait for a report that can never come.
+//!   Configuration therefore refuses it (and the `ci` settings) in every layer, and fails
+//!   closed: the binary exits 78, a request is a 400. [`pending_reason`] says which sources those
+//!   are and why; [`GateRules::honouring`] is how a build (or a test) that has them says so. A
+//!   slice that makes a source real changes that arm, and then also owns what the source needs
+//!   on top of the rules here (its own settings, its own checks in
+//!   [`GateRules::check_verifier`]). The verifier has been real since slice 10: the dispatcher
+//!   asks it and the core times it out.
 //! * **The verifier is another agent**, and only the deployment and a target choose it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use orch_core::{AgentId, CheckSource, CiPolicy, GatePolicy};
+use orch_ports::{AgentEndpoint, AgentTransport};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -52,9 +53,7 @@ pub fn pending_reason(source: CheckSource) -> Option<&'static str> {
             "CI results need the inbox and timers (MVP slice 5) and the CI webhook (MVP slice 6), \
              which are not built yet",
         ),
-        CheckSource::Verifier => {
-            Some("the verifier needs its dispatch (MVP slice 10), which is not built yet")
-        }
+        CheckSource::Verifier => None,
     }
 }
 
@@ -217,17 +216,32 @@ pub enum GateError {
         /// The id as written.
         verifier: String,
     },
-    /// An agent cannot verify its own work.
+    /// An agent cannot verify its own work: the verifier is the agent itself, or another id for
+    /// the same endpoint.
     #[error(
-        "{layer}: agent {agent:?} would verify its own work; the verifier must be another configured \
-         agent. Give the entry of {agent:?} in AGENTS_FILE a `gate` whose `require` leaves out `verifier`"
+        "{layer}: agent {agent:?} would verify its own work{via}; the verifier must be another \
+         configured agent. Give the entry of {agent:?} in AGENTS_FILE a `gate` whose `require` leaves out `verifier`"
     )]
     SelfVerifier {
         /// The layer.
         layer: Layer,
-        /// The agent.
+        /// The agent whose work it is.
         agent: String,
+        /// What the message adds when the ids differ: which id is the same endpoint.
+        via: String,
     },
+}
+
+/// Whether two configured remote agents are one endpoint: the same card URL (a trailing `/`
+/// aside, and whatever bearer each is given). Local agents are told apart by id alone: two of one
+/// kind may be configured differently.
+fn same_endpoint(a: &AgentEndpoint, b: &AgentEndpoint) -> bool {
+    match (&a.transport, &b.transport) {
+        (AgentTransport::A2a { card_url: x, .. }, AgentTransport::A2a { card_url: y, .. }) => {
+            x.trim_end_matches('/') == y.trim_end_matches('/')
+        }
+        _ => false,
+    }
 }
 
 fn honoured_names() -> String {
@@ -437,11 +451,27 @@ impl GateRules {
                         verifier: verifier.to_string(),
                     });
                 }
-                if policy.requires(CheckSource::Verifier) && verifier == target {
-                    return Err(GateError::SelfVerifier {
-                        layer: at.clone(),
-                        agent: verifier.to_string(),
-                    });
+                if policy.requires(CheckSource::Verifier) {
+                    // The same id, or another id for the same endpoint: an alias is no second pair of eyes.
+                    let same = verifier == target
+                        || matches!(
+                            (agents.get(verifier), agents.get(target)),
+                            (Some(v), Some(t)) if same_endpoint(&v.endpoint, &t.endpoint)
+                        );
+                    if same {
+                        return Err(GateError::SelfVerifier {
+                            layer: at.clone(),
+                            agent: target.to_string(),
+                            via: if verifier == target {
+                                String::new()
+                            } else {
+                                format!(
+                                    " (the verifier {:?} is the same endpoint)",
+                                    verifier.to_string()
+                                )
+                            },
+                        });
+                    }
                 }
             }
         }

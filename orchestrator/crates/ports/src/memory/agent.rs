@@ -60,6 +60,32 @@ pub enum Call {
     },
 }
 
+/// How a [`ScriptedAgent`] that plays the verifier answers whatever it is asked
+/// ([`ScriptedAgent::set_verifier`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerdictScript {
+    /// `working`, a `verdict` artifact `{passed: true}`, `completed`.
+    Pass,
+    /// `working`, a `verdict` artifact `{passed: false, findings: [..]}`, `completed`.
+    Fail(Vec<String>),
+    /// `working`, a `verdict` artifact whose `passed` is not a boolean, `completed`.
+    Garbled,
+    /// `working`, other artifacts, `completed`: no `verdict`.
+    Silent,
+    /// `working`, then nothing until cancelled.
+    Hang,
+    /// `working`, then waits for [`ScriptedAgent::release_gate`], then passes.
+    Gated,
+    /// `working`, a `verdict` artifact `{passed: true}` at once, then waits for
+    /// [`ScriptedAgent::release_gate`], then `completed`: a verdict that is on the task before a
+    /// client that comes late subscribes.
+    VerdictThenGate,
+    /// `working`, then `failed("scripted failure")`.
+    Broken,
+    /// `working`, then `input-required`: a verifier that wants to talk.
+    Asks,
+}
+
 struct TaskRec {
     context_id: String,
     state: AgentTaskState,
@@ -79,6 +105,10 @@ struct State {
     unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
     no_resubscribe: bool,
+    /// How many lookups by message id still fail as `Unreachable` (`usize::MAX`: all of them).
+    find_failures: usize,
+    /// Agents that play the verifier: every message is answered by the script.
+    verifiers: HashMap<AgentId, VerdictScript>,
 }
 
 struct Shared {
@@ -184,6 +214,17 @@ impl ScriptedAgent {
         for _ in 0..n {
             st.fail_sends.push_back(error());
         }
+    }
+
+    /// Makes `agent` play the verifier: whatever it is sent, it answers as `script` says.
+    pub fn set_verifier(&self, agent: &str, script: VerdictScript) {
+        self.state().verifiers.insert(AgentId::new(agent), script);
+    }
+
+    /// The next `n` lookups by message id (`find_task_by_message`) fail as `Unreachable`; with
+    /// `usize::MAX` every one does. A lookup that fails says nothing about the message.
+    pub fn fail_next_finds(&self, n: usize) {
+        self.state().find_failures = n;
     }
 
     /// `false` makes `resubscribe` answer `Unsupported`, forcing the `get_task` polling path.
@@ -370,6 +411,61 @@ fn ui_components(surface: &str) -> serde_json::Value {
     ]}})
 }
 
+/// The script of an agent that plays the verifier.
+async fn verify(shared: Arc<Shared>, task: String, script: VerdictScript) {
+    use AgentTaskState::{Completed, Failed, InputRequired, Working};
+    shared.push_status(&task, Working, None);
+    let verdict = |data: serde_json::Value| {
+        shared.push(
+            &task,
+            None,
+            None,
+            IdemKey::Task(format!("a2a:{task}:artifact:verdict")),
+            Some(AgentUpdate::Artifact {
+                name: "verdict".to_owned(),
+                mime_type: Some("application/json".to_owned()),
+                uri: None,
+                text: Some(data.to_string()),
+            }),
+        );
+    };
+    match script {
+        VerdictScript::Pass => {
+            verdict(serde_json::json!({"passed": true, "findings": []}));
+            shared.push_status(&task, Completed, None);
+        }
+        VerdictScript::Fail(findings) => {
+            verdict(serde_json::json!({"passed": false, "findings": findings}));
+            shared.push_status(&task, Completed, None);
+        }
+        VerdictScript::Garbled => {
+            verdict(serde_json::json!({"passed": "maybe"}));
+            shared.push_status(&task, Completed, None);
+        }
+        VerdictScript::Silent => {
+            shared.push_artifact(&task, "notes", "looks fine to me".to_owned());
+            shared.push_status(&task, Completed, None);
+        }
+        VerdictScript::Hang => {
+            shared.wait_until(&task, |t| t.state.is_terminal()).await;
+        }
+        VerdictScript::Gated => {
+            shared.gate.notified().await;
+            verdict(serde_json::json!({"passed": true, "findings": []}));
+            shared.push_status(&task, Completed, None);
+        }
+        VerdictScript::VerdictThenGate => {
+            verdict(serde_json::json!({"passed": true, "findings": []}));
+            shared.gate.notified().await;
+            shared.push_status(&task, Completed, None);
+        }
+        VerdictScript::Broken => shared.push_status(&task, Failed, Some("scripted failure")),
+        VerdictScript::Asks => {
+            shared.push_status(&task, InputRequired, Some("Which tests?"));
+        }
+    }
+}
+
 async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
     use AgentTaskState::{Completed, Failed, InputRequired, Working};
     let script = text.split_whitespace().next().unwrap_or("").to_owned();
@@ -488,7 +584,15 @@ impl AgentClient for ScriptedAgent {
                 .push_status(&task, AgentTaskState::Submitted, None);
         }
         // Execution continues even if the client goes away (like a real agent host).
-        tokio::spawn(drive(Arc::clone(&self.shared), task.clone(), text, resumed));
+        let verifier = self.state().verifiers.get(&req.endpoint.id).cloned();
+        match verifier {
+            Some(script) => {
+                tokio::spawn(verify(Arc::clone(&self.shared), task.clone(), script));
+            }
+            None => {
+                tokio::spawn(drive(Arc::clone(&self.shared), task.clone(), text, resumed));
+            }
+        }
         let limit = (script == "drop").then_some(2);
         Ok(self.shared.follow(task, from, limit))
     }
@@ -588,6 +692,12 @@ impl AgentClient for ScriptedAgent {
         });
         if st.unreachable.contains(&ep.id) {
             return Err(AgentError::unreachable("agent unreachable"));
+        }
+        if st.find_failures > 0 {
+            if st.find_failures != usize::MAX {
+                st.find_failures -= 1;
+            }
+            return Err(AgentError::unreachable("lookup unavailable"));
         }
         Ok(st
             .tasks

@@ -26,8 +26,8 @@ proptest! {
     /// queued, working or verifying (under a gate). (Inside one, between an event and the `thread_state` it announces,
     /// the run is still open: the `thread_state` is what closes it.)
     #[test]
-    fn the_stream_is_well_formed_at_every_prefix(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn the_stream_is_well_formed_at_every_prefix(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         let mut projector = Projector::new(meta.clone());
         let mut checker = verify::Checker::new();
         for (index, event) in events.iter().enumerate() {
@@ -58,8 +58,8 @@ proptest! {
 
     /// Nothing is left open when a run ends, and a finished log ends outside any run.
     #[test]
-    fn nothing_is_open_at_a_terminal_event(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn nothing_is_open_at_a_terminal_event(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         let frames = flatten(&support::project_each_with(&events, meta.clone()));
         let mut checker = verify::Checker::new();
         for frame in &frames {
@@ -86,8 +86,8 @@ proptest! {
     /// projector from the events up to the cursor and continuing produces the same suffix, and
     /// the preamble plus that suffix is a well-formed stream that starts with `RUN_STARTED`.
     #[test]
-    fn resuming_from_any_resume_point_gives_exactly_the_suffix(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn resuming_from_any_resume_point_gives_exactly_the_suffix(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         let per_event = support::project_each_with(&events, meta.clone());
         let full = flatten(&per_event);
         for (index, frames) in per_event.iter().enumerate() {
@@ -135,8 +135,8 @@ proptest! {
     /// Every resume point is a whole log event: ids strictly increase and each names the event
     /// that produced the frame.
     #[test]
-    fn resume_ids_are_log_sequence_numbers_in_order(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn resume_ids_are_log_sequence_numbers_in_order(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         let per_event = support::project_each_with(&events, meta.clone());
         let mut last = 0;
         for (event, frames) in events.iter().zip(&per_event) {
@@ -154,8 +154,8 @@ proptest! {
     /// The requester's stream is the viewer's without the user messages it holds; nothing else
     /// differs (the state of the projection does not depend on the audience).
     #[test]
-    fn the_requester_differs_from_the_viewer_only_in_the_messages_it_holds(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn the_requester_differs_from_the_viewer_only_in_the_messages_it_holds(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         let held: BTreeSet<String> = events
             .iter()
             .filter_map(|e| match &e.body {
@@ -195,16 +195,16 @@ proptest! {
 
     /// The projection is a function of the log: the same events give the same frames.
     #[test]
-    fn the_projection_is_a_function_of_the_log(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn the_projection_is_a_function_of_the_log(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         prop_assert_eq!(support::project_each_with(&events, meta.clone()), support::project_each_with(&events, meta.clone()));
     }
 
     /// Every frame passes the conformance testkit (`assert_conforms`: valid against the vendored
     /// schema). The stream checker applies the same oracle; stated alone so a failure names it.
     #[test]
-    fn every_frame_conforms_to_the_schema(actions in arb_actions(), gated in any::<bool>()) {
-        let (events, meta) = world(gated, &actions);
+    fn every_frame_conforms_to_the_schema(actions in arb_actions(), gating in 0_u8..3) {
+        let (events, meta) = world(gating, &actions);
         let events: Vec<Event> = events;
         for frame in flatten(&support::project_each_with(&events, meta.clone())) {
             orch_agui_proto::testkit::assert_conforms(&frame.event);

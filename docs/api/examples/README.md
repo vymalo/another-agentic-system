@@ -16,6 +16,8 @@ the log itself, which the AG-UI streams below project.)
 | `release.events.json` | `echo` with release `staging`: the revision on every agent actor | `done` |
 | `verify-green.events.json` | `verify-red-once`, on the fake agent and under a gate that requires the agent's own checks (the test world gives `plain` `gate: {require: [agent-checks]}`, like an `AGENTS_FILE` entry): the checks fail, `check_result` and `rework`, the agent goes again in a new task, the checks pass (ADR 0018) | `done`, attempt 2 of 3 |
 | `verify-red.events.json` | `verify-red`, the same gate: three attempts whose checks all fail, two `rework`s, then the `error` and `thread_state: failed` | `failed`, `checks_failed` |
+| `verify-verifier-green.events.json` | `verify-reviewed`, under a gate that requires a **verifier agent** (the test world gives `plain` `gate: {require: [verifier], verifier: reviewer}`, and `reviewer` is a fake verifier): the worker pushes and finishes, the verifier's `verdict` has findings (`check_result` pending then failed, `rework`), the worker goes again in a new task, the verifier passes it (ADR 0018, slice 10) | `done`, attempt 2 of 3 |
+| `verify-verifier-red.events.json` | `verify-reviewed`, the same gate, a verifier that rejects every commit: three attempts, two `rework`s, then the `error` and `thread_state: failed` | `failed`, `checks_failed` |
 | `a2ui.events.json` | `ui`, on an agent whose card lists the A2UI extension: a surface in two artifacts (`ui_surface` twice), the question, then the user's action through the AG-UI run route (`ui_action`) and the answer | `done` |
 
 Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>` and an agent
@@ -29,8 +31,8 @@ message's `messageId` is `<message-id>`.
 - **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
   and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the
   same story, `a2ui` included (a surface, the question, and the action that answers it through
-  `forwardedProps.a2uiAction`) and the two `verify-*` scenarios (the gate; the web renders their cards since MVP
-  slice 4). The web renders the AG-UI goldens, not these event logs: see the next section.
+  `forwardedProps.a2uiAction`) and the four `verify-*` scenarios (the gate, with the agent's own checks and with a
+  verifier agent; the web renders their cards since MVP slice 4, and the mock plays the verifier as a subagent). The web renders the AG-UI goldens, not these event logs: see the next section.
 
 ## AG-UI streams
 
@@ -60,6 +62,13 @@ The `verify-green.agui.json` and `verify-red.agui.json` goldens are the verifica
 produced with the fake agent's `verify-*` scripts, whose commits are `<attempt as 40 hex digits>`. The reference client's
 `expected/verify-green.json` shows the last state it holds: `done`, attempt 2, and one card per source and attempt.
 
+The `verify-verifier-green.agui.json` and `verify-verifier-red.agui.json` goldens are the same story with a **verifier agent**
+([`../agui.md`](../agui.md#the-verifier-as-a-subagent)): the verifier is a subagent of its own (`sub-verify-<verification>`,
+named after the agent), started by the `pending` card of the `verifier` source and ended by its verdict
+(`SUBAGENT_FINISHED` with `result: {"passed": …}`), so the green one has four subagents (the worker, the verifier, the worker,
+the verifier). Their event logs are produced with the fake agent's `verify-reviewed` script (a worker that pushes and says what it
+did) and the fake verifier's scripts `FindingsThenPass` and `AlwaysFail`.
+
 The `a2ui.agui.json` golden is the A2UI story a viewer reads: the surface as **two snapshots of one
 activity** (`a2ui-3`, `replace: true`, the second carrying both payloads), the question, then the run of the
 user's action (`vymalo.action`, no text message) and the answer. It goes through the reference client
@@ -83,6 +92,8 @@ responses in order, one run each. The consumer's thread id is `<thread-id>`; its
 | `run-release.agui.json` | `echo ship it` on `coder`, release `staging` in `forwardedProps` | success |
 | `run-verify-green.agui.json` | `verify-red-once fix the login` with `forwardedProps["vymalo.gate"] = {"require": ["agent-checks"]}`: **one** response for two attempts | success, `job.attempt` 2 |
 | `run-verify-red.agui.json` | `verify-red fix the login`, the same gate | `RUN_ERROR` `checks_failed` |
+| `run-verify-verifier-green.agui.json` | `verify-reviewed fix the login`, `plain` requires the verifier in its own entry, so the run asks for nothing: **one** response for two attempts and two verifications | success, `job.attempt` 2 |
+| `run-verify-verifier-red.agui.json` | the same, against a verifier that never passes | `RUN_ERROR` `checks_failed` |
 
 - **Producer:** `orchestrator/crates/e2e/tests/agui_run.rs` (`run_responses_match_docs_api_examples`);
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_run` regenerates them; review the diff.
@@ -102,6 +113,8 @@ everything, including the user messages the requester holds already. The consume
 | `connect-cancel.agui.json` | `slow work`, cancelled | the replay of a cancelled run |
 | `connect-verify-green.agui.json` | `verify-red-once fix the login` under the gate | the replay of one run across two attempts: `verifying`, `vymalo.check` (failed), `vymalo.rework`, the second subagent, `vymalo.check` (passed), success |
 | `connect-verify-red.agui.json` | `verify-red fix the login` under the gate | the same over three attempts, ending in `RUN_ERROR` `checks_failed` |
+| `connect-verify-verifier-green.agui.json` | `verify-reviewed fix the login` under a gate that requires the verifier | the replay of one run: the verifier as a subagent (findings, then a pass), two attempts, success |
+| `connect-verify-verifier-red.agui.json` | the same, against a verifier that never passes | three attempts and three verifier subagents, ending in `RUN_ERROR` `checks_failed` |
 | `connect-cursor.agui.json` | `gate hold`, the client held log event 2 and reconnects with `Last-Event-ID: 2` | the **preamble** (`RUN_STARTED` of the same run, `SUBAGENT_STARTED`, `STATE_SNAPSHOT`, none with an `id:`), then the rest of the run |
 
 [`agui/capabilities-<agent>.json`](agui/) is the `AgentCapabilities` document

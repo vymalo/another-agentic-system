@@ -48,6 +48,8 @@ x-orchestrator: &orchestrator
       condition: service_healthy
     mock-agent-releases:
       condition: service_healthy
+    mock-verifier:
+      condition: service_healthy
 
 x-orchestrator-env: &orchestrator-env
   DATABASE_URL: postgres://postgres:postgres@postgres:5432/orch
@@ -98,6 +100,17 @@ services:
     volumes:
       - ./dev/wiremock/agent-releases/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/agent-releases/__files:/home/wiremock/__files:ro
+
+  # A fake A2A 1.0 verifier agent (ADR 0018): it answers a request to review a commit with a `verdict`
+  # artifact, findings for a commit of forty `a` and a pass for any other. `verifier` and
+  # `mock-coder-verified` in dev/agents.yaml use it; dev/verifier-e2e.sh drives it.
+  mock-verifier:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_VERIFIER_PORT:-8083}:8080"
+    volumes:
+      - ./dev/wiremock/verifier/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/verifier/__files:/home/wiremock/__files:ro
 
   orchestrator:
     <<: *orchestrator

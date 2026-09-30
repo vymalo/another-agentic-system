@@ -35,6 +35,7 @@ macro_rules! thread_store_conformance {
             create_thread_arms_timers_and_watches watches_are_first_come
             inbox_counts_only_the_claims_that_failed
             inbox_only_commit_finishes_the_row_and_leaves_the_thread_alone
+            verify_rows_are_unordered_and_keep_their_task_on_the_row
         );
     };
     (@cases $make:path; $($case:ident)*) => {

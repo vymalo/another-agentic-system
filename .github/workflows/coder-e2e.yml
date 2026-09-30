@@ -108,6 +108,11 @@ jobs:
         run: dev/verify-e2e.sh
       - name: An MCP client starts a job and follows it to done (bearer token, no identity header)
         run: dev/mcp-e2e.sh
+      - name: The verifier agent of the gate (findings send the agent back, then the verifier passes it; a run may not choose or drop the verifier)
+        # The mock agent behind `mock-coder-verified` and the WireMock `verifier` (dev/agents.yaml), not the
+        # coder: the gate and the verification are the orchestrator's, so scripted agents are enough. The
+        # script also reads the mock verifier's request journal, to see what the orchestrator really sent it.
+        run: dev/verifier-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.
@@ -125,7 +130,7 @@ jobs:
         run: |
           docker compose ps --all || true
           docker compose logs --no-color || true
-          for m in 8091 8092; do
+          for m in 8091 8092 8083; do
             echo "== journal of the mock on port $m"
             curl -s "http://127.0.0.1:$m/__admin/requests" | jq -c '.requests[] | {method: .request.method, url: .request.url, status: .response.status, body: (.request.body // "" | .[0:300])}' || true
           done

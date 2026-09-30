@@ -8,11 +8,11 @@ mod support;
 use std::collections::BTreeMap;
 
 use orch_app::{
-    App, AppConfig, AppError, Creation, GateError, GateLayer, GateRules, Inbound, Layer, NewThread,
-    THREAD_GATE_KEY, known_sources, pending_reason,
+    AgentDirectory, AgentEntry, App, AppConfig, AppError, Creation, GateError, GateLayer,
+    GateRules, Inbound, Layer, NewThread, THREAD_GATE_KEY, known_sources, pending_reason,
 };
 use orch_core::{AgentId, CheckSource, Classify, ErrorClass, GatePolicy, ThreadId};
-use orch_ports::{PortSet, SystemClock};
+use orch_ports::{AgentEndpoint, PortSet, SystemClock};
 use serde_json::json;
 use support::*;
 
@@ -24,39 +24,35 @@ fn agent(id: &str) -> AgentId {
     AgentId::new(id)
 }
 
-/// The rules of a build that honours CI and the verifier too, for the rules those slices add.
+/// The rules of a build that honours CI too, for the rules that slice adds (the verifier is
+/// honoured by every build since slice 10).
 fn everything() -> GateRules {
     GateRules::new(10).honouring(CheckSource::ALL)
 }
 
 #[test]
-fn this_build_honours_agent_checks_and_nothing_else() {
+fn this_build_honours_agent_checks_and_the_verifier_but_not_ci() {
     let rules = GateRules::default();
     assert!(rules.honours(CheckSource::AgentChecks));
+    assert!(rules.honours(CheckSource::Verifier));
     assert!(!rules.honours(CheckSource::Ci));
-    assert!(!rules.honours(CheckSource::Verifier));
-    // Every source that is not honoured says which slice enables it; the one that is says
+    // Every source that is not honoured says which slice enables it; the ones that are say
     // nothing.
     assert!(pending_reason(CheckSource::AgentChecks).is_none());
+    assert!(pending_reason(CheckSource::Verifier).is_none());
     assert!(pending_reason(CheckSource::Ci).unwrap().contains("slice 5"));
     assert!(pending_reason(CheckSource::Ci).unwrap().contains("slice 6"));
-    assert!(
-        pending_reason(CheckSource::Verifier)
-            .unwrap()
-            .contains("slice 10")
-    );
     assert_eq!(known_sources(), "ci, agent-checks, verifier");
 }
 
 #[test]
-fn ci_and_the_verifier_are_refused_in_every_layer_and_the_message_names_the_slice() {
+fn ci_is_refused_in_every_layer_and_the_message_names_the_slice() {
     let rules = GateRules::default();
     let above = GatePolicy::default();
     let refused = [
         (json!({"require": ["ci"]}), "slice 5"),
         (json!({"require": ["agent-checks", "ci"]}), "slice 6"),
-        (json!({"require": ["verifier"]}), "slice 10"),
-        (json!({"verifier": "reviewer"}), "slice 10"),
+        (json!({"require": ["verifier", "ci"]}), "slice 6"),
         (json!({"ci": {"required": ["build"]}}), "slice 5"),
         (json!({"ci": {"timeoutSecs": 60}}), "slice 6"),
     ];
@@ -72,19 +68,51 @@ fn ci_and_the_verifier_are_refused_in_every_layer_and_the_message_names_the_slic
             let message = err.to_string();
             assert!(message.contains(slice), "{at} {value}: {message}");
             assert!(
-                message.contains("only agent-checks can be required"),
+                message.contains("only agent-checks, verifier can be required"),
                 "{message}"
             );
         }
     }
-    // The one source this build honours passes in every layer.
+    // The sources this build honours pass in every layer.
     for at in &layers {
         let policy = rules
             .apply(&above, &layer(json!({"require": ["agent-checks"]})), at)
             .unwrap();
         assert_eq!(policy.require.len(), 1);
         assert!(policy.requires(CheckSource::AgentChecks));
+        let policy = rules
+            .apply(&above, &layer(json!({"require": ["verifier"]})), at)
+            .unwrap();
+        assert_eq!(policy.require, [CheckSource::Verifier].into());
     }
+    // The verifier setting passes where a thread is not the one choosing it.
+    for at in [Layer::Deployment, Layer::Target(agent("coder"))] {
+        let policy = rules
+            .apply(
+                &above,
+                &layer(json!({"require": ["verifier"], "verifier": "reviewer"})),
+                &at,
+            )
+            .unwrap();
+        assert_eq!(policy.verifier, Some(agent("reviewer")));
+    }
+    let err = rules
+        .apply(
+            &above,
+            &layer(json!({"verifier": "reviewer"})),
+            &Layer::Thread,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            GateError::NotPerThread {
+                setting: "verifier",
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 #[test]
@@ -295,6 +323,54 @@ fn the_verifier_must_be_another_configured_agent() {
 }
 
 #[test]
+fn another_id_for_the_same_endpoint_is_no_second_pair_of_eyes() {
+    let rules = everything();
+    let entry = |id: &str, url: &str, bearer: Option<&str>| AgentEntry {
+        endpoint: AgentEndpoint::a2a(AgentId::new(id), url, bearer.map(str::to_owned)),
+        name: id.to_owned(),
+    };
+    let card = "https://coder.example.com/.well-known/agent-card.json";
+    let agents = AgentDirectory::new(vec![
+        entry("coder", card, Some("one")),
+        // the same card behind another id, another token and a stray slash
+        entry("alias", &format!("{card}/"), Some("two")),
+        entry(
+            "reviewer",
+            "https://reviewer.example.com/.well-known/agent-card.json",
+            None,
+        ),
+        AgentEntry {
+            endpoint: AgentEndpoint::local(AgentId::new("local-a"), "adam"),
+            name: "a".into(),
+        },
+        AgentEntry {
+            endpoint: AgentEndpoint::local(AgentId::new("local-b"), "adam"),
+            name: "b".into(),
+        },
+    ]);
+    let check = |verifier: &str, target: &str| {
+        let mut policy = GatePolicy::requiring([CheckSource::Verifier]);
+        policy.verifier = Some(agent(verifier));
+        rules.check_verifier(&policy, &agent(target), &agents, &Layer::Deployment)
+    };
+    let err = check("alias", "coder").unwrap_err();
+    assert!(matches!(err, GateError::SelfVerifier { .. }), "{err}");
+    assert!(
+        err.to_string().contains("\"alias\" is the same endpoint"),
+        "the message names the alias: {err}"
+    );
+    assert!(matches!(
+        check("coder", "alias"),
+        Err(GateError::SelfVerifier { .. })
+    ));
+    assert!(check("reviewer", "coder").is_ok());
+    assert!(
+        check("local-b", "local-a").is_ok(),
+        "two local agents of one kind are told apart by id"
+    );
+}
+
+#[test]
 fn startup_validation_resolves_every_agent() {
     let rules = everything();
     let agents = directory(); // coder, plain
@@ -351,11 +427,14 @@ fn startup_validation_resolves_every_agent() {
     let err = GateRules::default()
         .validate(
             &deployment,
-            &BTreeMap::from([(agent("plain"), layer(json!({"verifier": "coder"})))]),
+            &BTreeMap::from([(
+                agent("plain"),
+                layer(json!({"ci": {"required": ["build"]}})),
+            )]),
             &agents,
         )
         .unwrap_err();
-    assert!(err.to_string().contains("slice 10"), "{err}");
+    assert!(err.to_string().contains("slice 5"), "{err}");
 }
 
 #[test]
@@ -547,8 +626,8 @@ async fn a_request_that_weakens_or_overreaches_is_a_400_and_writes_nothing() {
         (json!({"maxAttempts": 11}), "1..=10"),
         (json!({"maxAttempts": 0}), "1..=10"),
         (json!({"require": ["agent-checks", "ci"]}), "slice 5"),
-        (json!({"require": ["verifier"]}), "slice 10"),
-        (json!({"verifier": "plain"}), "slice 10"),
+        // A thread may require the verifier, but not choose it: the target configures that.
+        (json!({"verifier": "plain"}), "cannot be set per thread"),
     ];
     for (request, why) in refused {
         let err = create_with(&app, "coder", Some(layer(request.clone())))
@@ -562,6 +641,54 @@ async fn a_request_that_weakens_or_overreaches_is_a_400_and_writes_nothing() {
             .await
             .unwrap()
             .is_empty(),
+        "a refused request creates no thread"
+    );
+}
+
+/// A thread may require the verifier, but it cannot choose it: the source it asks for must have
+/// an agent behind it (named by the deployment or the agent's entry), and never the agent itself.
+#[tokio::test]
+async fn a_thread_may_require_the_verifier_only_where_there_is_one_to_ask() {
+    let w = World::new();
+    let app = w.app_with(AppConfig {
+        // `coder` names `plain` as its verifier but does not require it; `plain` names none.
+        target_gates: BTreeMap::from([(agent("coder"), layer(json!({"verifier": "plain"})))]),
+        ..AppConfig::default()
+    });
+    let require = || Some(layer(json!({"require": ["verifier"]})));
+
+    let t = create_with(&app, "coder", require()).await.unwrap();
+    assert_eq!(t.job.gate.verifier, Some(agent("plain")));
+    assert!(t.job.gate.requires(CheckSource::Verifier));
+
+    let err = create_with(&app, "plain", require()).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Invalid);
+    assert!(
+        err.to_string().contains("no verifier agent is configured"),
+        "{err}"
+    );
+
+    // The deployment names `plain` as the verifier of everyone; `plain` cannot verify itself.
+    let app = w.app_with(AppConfig {
+        gate: GatePolicy {
+            verifier: Some(agent("plain")),
+            ..GatePolicy::default()
+        },
+        ..AppConfig::default()
+    });
+    assert!(create_with(&app, "coder", require()).await.is_ok());
+    let err = create_with(&app, "plain", require()).await.unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Invalid);
+    assert!(
+        err.to_string().contains("would verify its own work"),
+        "{err}"
+    );
+    assert!(
+        app.list_threads(&alice(), None, 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|t| t.target.agent_id == agent("coder")),
         "a refused request creates no thread"
     );
 }
@@ -605,13 +732,39 @@ fn the_constructor_refuses_a_gate_that_could_never_pass() {
     assert!(says.contains("coder") && says.contains("slice 5"), "{says}");
     let says = refused(AppConfig {
         gate: GatePolicy {
-            verifier: Some(agent("plain")),
+            ci: orch_core::CiPolicy {
+                required: ["build".to_owned()].into(),
+                ..orch_core::CiPolicy::default()
+            },
             ..GatePolicy::default()
         },
         ..AppConfig::default()
     })
     .unwrap();
-    assert!(says.contains("slice 10"), "{says}");
+    assert!(
+        says.contains("slice 5") && says.contains("ci settings"),
+        "{says}"
+    );
+    // The verifier is honoured: naming one is fine, and a typo in its id is still caught.
+    assert!(
+        refused(AppConfig {
+            gate: GatePolicy {
+                verifier: Some(agent("plain")),
+                ..GatePolicy::default()
+            },
+            ..AppConfig::default()
+        })
+        .is_none()
+    );
+    let says = refused(AppConfig {
+        gate: GatePolicy {
+            verifier: Some(agent("ghost")),
+            ..GatePolicy::default()
+        },
+        ..AppConfig::default()
+    })
+    .unwrap();
+    assert!(says.contains("ghost"), "{says}");
     let says = refused(AppConfig {
         gate: GatePolicy {
             max_attempts: 11,

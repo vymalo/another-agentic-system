@@ -25,9 +25,11 @@ change.
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
 >
 > **Partly built (design accepted 2026-09-30).** The job ledger and the gate in the core (MVP slice 2), the
-> gate's configuration and its AG-UI projection (slice 3), and the inbox, watches and timers (slice 5) are built,
-> with the agent's own checks as the only source the build honours ([The gate's configuration](#the-gates-configuration-and-its-projection-mvp-slice-3)).
-> The rest, CI webhooks, the verifier and the MCP server, is planned. They are all designed in
+> gate's configuration and its AG-UI projection (slice 3), the inbox, watches and timers (slice 5) and the
+> verifier agent (slice 10) are built, with the agent's own checks and the verifier as the sources the build honours
+> ([The gate's configuration](#the-gates-configuration-and-its-projection-mvp-slice-3),
+> [The verifier's dispatch](#the-verifiers-dispatch-mvp-slice-10)).
+> The rest, CI webhooks and the MCP server, is planned. They are all designed in
 > [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 > [ADR 0017](decisions/0017-ci-results-by-webhook.md),
 > [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) and
@@ -584,19 +586,21 @@ event names the state the thread entered, and that `completed` reaches `done` fr
 rows for the new inputs. With an empty gate the table above is unchanged, and the tests that pin it
 run against the same expectations as before. The application executes `Watch` and `Schedule` since
 slice 5 (see [Inbox, timers and watches](#inbox-timers-and-watches)), and the inbox worker produces
-`TimerFired`; it drops `RequestVerification` until slice 10. Nothing yet produces `CiReported`
-(slice 6: the webhook surface calls `App::receive`) or `VerifierReported` (slice 10); the core decides
-them already (`crates/core/tests/gate.rs` has a row for each).
+`TimerFired`; since slice 10 it turns `RequestVerification` into an outbox row and the dispatcher produces
+`VerifierReported` and `VerifierFailed` ([The verifier's dispatch](#the-verifiers-dispatch-mvp-slice-10)).
+Nothing yet produces `CiReported` (slice 6: the webhook surface calls `App::receive`); the core decides
+it already (`crates/core/tests/gate.rs` has a row for each).
 
 | Input | `verifying` |
 |---|---|
 | `CiReported` | The report is recorded as a `ci_result`. If it is about the pushed commit, CI is required and the report counts, it also settles the source: all required sources passed → `done`; a failure with `attempt < max` → `queued`, `attempt + 1`, a `rework` event and a `Delegate` with the findings; a failure on the last attempt → `failed`. A report for another commit or repository: the card only, nothing else changes |
 | `VerifierReported` | Same, for the verifier source. Only the answer to the current `(attempt, verification)` counts; any other is recorded as a `check_result` marked `stale` and changes nothing |
+| `VerifierFailed` | The verifier cannot be used. The current verification, still waiting for the verifier: → `blocked` (hold `verifier_failed`), an error event that says why, no attempt spent. Any other (another attempt or verification, already answered, another state): nothing |
 | `TimerFired(CiDeadline)` | Current (`attempt` and `verification` match, CI still pending): → `blocked` (`ci_timeout`), no attempt spent. Stale: nothing |
 | `TimerFired(VerifierDeadline)` | Current: → `blocked` (`verifier_timeout`). Stale: nothing |
 | `UserMessage`, `UiAction` | The verification is abandoned; → `queued`, `Delegate`; no attempt counted. The facts about the pushed commit stay, so a CI result for it still counts in the next verification |
 | `Cancel` | → `cancelled` at once (the agent's task is over, so there is nothing to ask it to cancel) |
-| `DeliveryFailed`, retryable | → `blocked` (hold `verifier_failed`); permanent → `failed` |
+| `DeliveryFailed`, retryable | → `blocked` (hold `verifier_failed`); permanent → `failed`. (The dispatcher reports a verifier that cannot be used as `VerifierFailed`, which names its verification; `DeliveryFailed` is for the worker's delegations) |
 | Agent artifact or message | Appended; the ledger is frozen (what is checked is what was pushed when the agent finished) |
 | Agent status other than `failed`, `rejected`, `canceled` | Nothing: a repeat or a late update of a task that is over |
 | `CiReported` on `done` / `failed` / `cancelled` | Only the `ci_result` card is appended |
@@ -620,7 +624,7 @@ for a request, so the same thing is refused in the same words everywhere.
 
 | Layer | Where | Members |
 |---|---|---|
-| Deployment | `ORCH_GATE` (comma list of `ci`, `agent-checks`, `verifier`; default none: today's behaviour), `ORCH_MAX_ATTEMPTS` (3), `ORCH_MAX_ATTEMPTS_CAP` (10, at most 100), `ORCH_VERIFIER` | the base policy |
+| Deployment | `ORCH_GATE` (comma list of `ci`, `agent-checks`, `verifier`; default none: today's behaviour), `ORCH_MAX_ATTEMPTS` (3), `ORCH_MAX_ATTEMPTS_CAP` (10, at most 100), `ORCH_VERIFIER`, `ORCH_VERIFIER_TIMEOUT_SECS` (1800) | the base policy |
 | Target | the `gate` key of an `AGENTS_FILE` entry, `deny_unknown_fields` | `require`, `maxAttempts`, `verifier`, `ci: {required, timeoutSecs}` |
 | Thread | AG-UI `forwardedProps["vymalo.gate"]` on the run that creates the thread | `require`, `maxAttempts` |
 
@@ -642,7 +646,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Layer: a layer arrives (env, file entry or request)
-  Layer --> Refused: names a source or setting this build cannot honour (ci, verifier)
+  Layer --> Refused: names a source or setting this build cannot honour (ci)
   Layer --> Refused: leaves out a source the layer above requires
   Layer --> Refused: maxAttempts outside 1..=cap, or verifier / ci set per thread
   Layer --> Applied: adds sources, changes attempts
@@ -652,13 +656,12 @@ stateDiagram-v2
 
 - **What this build honours is listed in one place, and is checked in two.** `pending_reason` (a `match` over `CheckSource`,
   no wildcard) says why a source cannot be honoured yet; `GateRules::new` honours the rest. The binary applies the rules
-  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. The application
-  executes `Watch` and `Schedule` since the inbox and timers (slice 5), but drops `RequestVerification` until the verifier dispatch (slice 10) exists, and no surface writes CI reports into the inbox until the CI webhook (slice 6) exists, so a gate that
-  required `ci` or `verifier` would wait for a verdict that can never come. Configuration therefore **refuses** them in
-  every layer, naming the slice that enables them: at startup with exit 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an
-  `AGENTS_FILE` entry, including its `ci` and `verifier` keys), and as a 400 for a request. Slices 6 and 10 change
-  their arm of `pending_reason`, and each owns what its source needs beyond that (the verifier's checks in
-  `GateRules::check_verifier`, the `ci` settings, the cards).
+  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. Until
+  the CI webhook (slice 6) exists no surface writes CI reports into the inbox, so a gate that required `ci` would wait for a
+  report that can never come; configuration therefore **refuses** it, and the `ci` settings, in every layer, naming the slice
+  that enables them: at startup with exit 78 (`ORCH_GATE`, an `AGENTS_FILE` entry, including its `ci` key), and as a 400 for
+  a request. The same was true of `verifier` until slice 10, which changed its arm of `pending_reason`; each slice owns
+  what its source needs beyond that (the verifier's checks in `GateRules::check_verifier`, the `ci` settings, the cards).
 - **Sources: a layer adds, never removes; attempts: anywhere within the cap.** The requested `require` is the whole list
   and must contain the layer above's (`ci.required` names add up; the verifier's own entry may leave the `verifier`
   source out for itself); `maxAttempts` may be anything in `1..=ORCH_MAX_ATTEMPTS_CAP` (at most 100); a thread cannot choose the verifier or the CI
@@ -673,6 +676,83 @@ stateDiagram-v2
 - **A rework is a new A2A task in the same context.** The first task is `completed` and cannot be continued, so the
   dispatcher delegates the rework prompt without a task id (it continues a task only while it waits for the user); the
   agent sees the same `contextId`. `orch-e2e` (`verify.rs`) pins it.
+
+### The verifier's dispatch (MVP slice 10)
+
+**Built** (2026-09-30; what differs from the design: [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#built-slice-10)).
+When the worker completes under a gate that requires the verifier, the core moves the thread to `verifying` and emits,
+in the same commit, `RequestVerification` and `Schedule(VerifierDeadline)`. `App` turns the first into an outbox row of
+kind `verify` and the second into a timer; the dispatcher does the rest. The verifier is an ordinary configured A2A agent
+behind the same `AgentClient` port: there is no new port.
+
+```mermaid
+sequenceDiagram
+  participant W as Worker agent (A2A)
+  participant D as Dispatcher
+  participant O as App and core (transition, pure)
+  participant S as Store (outbox, inbox)
+  participant V as Verifier agent (A2A)
+  participant U as Chat
+  W-->>D: artifact branch{sha1}, then completed
+  D->>O: apply(Input::Agent, fenced with the delegate's claim)
+  O->>S: one commit: Verifying, check_result pending, outbox verify, timer VerifierDeadline
+  O-->>U: SUBAGENT_FINISHED (worker), SUBAGENT_STARTED (verifier), vymalo.check pending
+  D->>S: claim the verify row (unordered, a lease)
+  D->>V: SendStreamingMessage, context thread-verify-1-1, the prompt (the commit and the attempt, then quoted: where it was pushed, the task and the summary)
+  D->>S: mark_verify_sent (the task is on the row, fenced)
+  V-->>D: artifact verdict{passed: false, findings}, then completed
+  D->>O: apply(VerifierReported, key verdict:row, fenced)
+  O->>S: one commit: check_result failed, rework, outbox delegate with the findings, attempt 2
+  O-->>U: vymalo.check failed, vymalo.rework, SUBAGENT_STARTED (worker)
+  Note over D,V: the worker's second attempt is a new task in the same context, and its completion starts verification 2 in context thread-verify-2-2
+  D->>V: SendStreamingMessage, context thread-verify-2-2
+  V-->>D: artifact verdict{passed: true}, then completed
+  D->>O: apply(VerifierReported)
+  O-->>U: vymalo.check passed, thread_state done, RUN_FINISHED success
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: RequestVerification (the commit of Verifying)
+  Pending --> Inflight: claimed (unordered)
+  Inflight --> Skipped: the verification is no longer the one in progress (a timeout, a cancel, a user message or another source failed), the verifier is told to stop
+  Inflight --> Pending: the request failed and may be retried (backoff, as a delegation)
+  Inflight --> Inflight: sent with the task on the row, and after a crash the next claim follows that task
+  Inflight --> Delivered: completed, one VerifierReported applied
+  Inflight --> Dead: the verifier cannot be used, one VerifierFailed applied (the thread is held)
+  Pending --> Skipped: the verification is over before the row is served
+  Delivered --> [*]
+  Skipped --> [*]
+  Dead --> [*]
+```
+
+- **The row.** `OutboxPayload::Verify` carries the attempt, the verification, the verifier's id, what was pushed and the
+  prompt. It is claimed like any row (a lease, renewed by a heartbeat, fenced) but is **not ordered** behind the thread's
+  delegations: the delegate whose completion caused it is still being finished when it becomes due.
+- **One input out.** The dispatcher reads the verifier's envelopes and never applies them as the worker's
+  (`Input::Agent`): its `completed` must not complete the job. It keeps the latest `verdict` artifact (`parse_verdict` in
+  the core: `{passed, findings[]}`, findings capped at 20 items and 16 KiB) and, when the task ends its turn, applies
+  exactly one input: `VerifierReported` (no verdict, or an unusable one, is a failed verdict that says "no verdict"), or
+  `VerifierFailed` when the verifier cannot be used (its task failed, it asked for input, it cannot be reached after the
+  delegation's retries, it refused the request, it is no longer configured). Both carry the attempt and the verification.
+- **Crash safety and fencing.** The claim is the fence of every write: `mark_verify_sent`, the retries, the input, the end
+  of the row. The verdict is applied under the key `verdict:<row>`. A re-claimed row with a task re-attaches to it
+  (`resubscribe`, else `get_task`; a task that completes on the resubscribed stream without a verdict is read with
+  `get_task` before "no verdict" is concluded, because a resubscription gives the rest of the stream and a verdict
+  streamed before the crash is not in it); one without a task looks the message up by id (`find_task_by_message`, tried
+  again when the lookup itself fails) and sends the request again only when the lookup says there is no such task. The
+  verifier is asked at most once when it supports `ListTasks`; when the lookup cannot be answered the row is retried and
+  the thread is held in the end, and the unique context and `messageId` let a verifier that saw the request twice tell.
+  There is one verdict event.
+- **Time.** The verifier deadline is the core's timer (`ORCH_VERIFIER_TIMEOUT_SECS`, 1800): when it fires the thread is
+  `blocked` (no attempt spent), and the row, looking at its thread every `ORCH_VERIFIER_WATCH_SECS` (5 s) while it waits
+  for the verifier, stops the verifier and ends. The look is between two envelopes or two polls, never in the middle of
+  a write: a request that was sent is recorded first, and a verdict being committed is finished, not cancelled.
+- **The verifier's context** is `<thread>-verify-<attempt>-<verification>`, never the worker's, so a verification that
+  repeats in one attempt does not land in the context of one that is over. The verifier is another configured agent with
+  its own credentials; it never receives the worker's.
+- **The chat.** The verifier is a subagent of its own (`sub-verify-<n>`, named after the agent); its verdict is a
+  `vymalo.check` card with source `verifier` ([`api/agui.md`](api/agui.md#verification-the-gate)).
 
 ## Core types
 
@@ -750,6 +830,7 @@ pub fn transition(s: &Snapshot, i: &Input) -> Result<(Snapshot, Vec<Command>), T
 
 pub struct Job {
     gate: GatePolicy, attempt: u32, verification: u32, task: Option<String>,
+    summary: Option<String> /* what the agent said, for the verifier */,
     pushed: Option<PushedRef>, results: Vec<CheckResult>, hold: Option<Hold>,
 }
 pub struct GatePolicy {
@@ -759,7 +840,8 @@ pub struct GatePolicy {
 pub enum CheckSource { Ci, AgentChecks, Verifier }
 
 ThreadState += Verifying
-Input       += CiReported(CiReport) | VerifierReported { attempt, verification, verdict } | TimerFired(Timer)
+Input       += CiReported(CiReport) | VerifierReported { attempt, verification, verdict }
+             | VerifierFailed { attempt, verification, reason } | TimerFired(Timer)
 Timer        = CiDeadline { attempt, verification } | VerifierDeadline { attempt, verification }
 Command     += Watch { key } | Schedule { after: SignedDuration, timer }
              | RequestVerification { attempt, verification, verifier, pushed, text }
@@ -772,8 +854,9 @@ job. Pure functions of the core recognise the agent's `branch` artifact (sets `p
 keys (`repo_key`). Findings are capped at 20 items and 16 KiB per source (`cap_findings`) and quoted as
 untrusted data in the rework prompt, which the core writes. `Job::default()` (the `{}` a row gets from the
 database) has no gate. There is still no wildcard arm anywhere. Where the code differs from the ADR's
-sketch: the `verification` counter and the `task` (the user's request, kept for the verifier's prompt)
-are additions, and a `check_result` may carry `stale: true`.
+sketch: the `verification` counter, the `task` (the user's request) and the `summary` (what the agent said
+about its work), both kept for the verifier's prompt, are additions, so is `VerifierFailed` (slice 10), and a
+`check_result` may carry `stale: true`.
 
 **Planned, not yet specified** (in the earlier design): an `Origin` on every input (user, A2A, webhook,
 timer; MCP's is `user_message.origin`, above), inputs for `Approval` and `ToolResult`, and the commands
@@ -1032,7 +1115,7 @@ now so that parallel slices do not collide:
   `state` under the same `version` compare-and-swap (`Commit.job`); the `threads.state` and `events.kind`
   `CHECK`s widened once to every new value (`verifying`; `ci_result`, `check_result`, `rework`);
   `outbox.kind` gains `verify` and `outbox` gains a nullable `task_id`. The port types for the `verify`
-  outbox kind come with the dispatcher's verifier path (slice 10).
+  outbox kind came with the dispatcher's verifier path (slice 10, built).
 - **`0004` (slice 5, built):** the `inbox` and `watches` tables, with the partial indexes the claim,
   the re-arm and the expiry use (`inbox_pending`, `inbox_inflight`, `inbox_parked_correlation`,
   `inbox_parked_at`).
@@ -1076,7 +1159,7 @@ erDiagram
 | `threads.job` | The job ledger: the gate policy copied at creation, the attempt, the pushed commit, the check results, a hold | One thread, one job for steps 2 to 6; step 4's child jobs get a separate table later |
 | `inbox` | Webhook reports and timers | `UNIQUE (source, idempotency_key)` dedupes; timers are rows with `source = 'timer'` and `available_at = now + after`; a row that matches no watch is `parked` and expires after `INBOX_PARKED_TTL_SECS`; claimed with `SKIP LOCKED` under a lease fenced like an outbox lease |
 | `watches` | Which thread waits for which key | Inserted by a commit that carries `Watch { key }`, in the same transaction that re-arms parked rows with that key |
-| `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task | The dispatcher never turns a verifier's envelopes into `Input::Agent` |
+| `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task (**built**, slice 10) | The dispatcher never turns a verifier's envelopes into `Input::Agent`; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; a `verify` row is not ordered behind the thread's delegations |
 
 **Built:** `Commit` gains `watches`, `timers` and `inbox: Option<InboxLease>`, and the inbox methods
 (`receive`, `claim_inbox`, `park_inbox`, `retry_inbox`, `complete_inbox`, and `expire_parked_inbox`,

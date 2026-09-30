@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use common::*;
 use orch_agui_proto::testkit::assert_json_conforms;
-use orch_testsupport::{Chat, Frame, SseClient};
+use orch_testsupport::{Chat, Frame, SseClient, VerifierScript};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -491,7 +491,45 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
                 .await,
             ]
         }
+        // The verifier agent in the gate: `plain` requires it in its own entry, so the run asks
+        // for nothing, and one response still covers every attempt and every verification.
+        "verify-verifier-green" | "verify-verifier-red" => {
+            vec![
+                run(
+                    &chat,
+                    "plain",
+                    &input(
+                        thread,
+                        "run-1",
+                        &[("msg-1", "verify-reviewed fix the login")],
+                        json!({}),
+                    ),
+                )
+                .await,
+            ]
+        }
         other => panic!("unknown scenario {other}"),
+    }
+}
+
+/// The world a scenario runs in.
+async fn world_for(name: &str) -> World {
+    match name {
+        "verify-verifier-green" => {
+            World::with(
+                Backend::Memory,
+                verified_by_reviewer(VerifierScript::FindingsThenPass),
+            )
+            .await
+        }
+        "verify-verifier-red" => {
+            World::with(
+                Backend::Memory,
+                verified_by_reviewer(VerifierScript::AlwaysFail),
+            )
+            .await
+        }
+        _ => World::start(Backend::Memory).await,
     }
 }
 
@@ -507,11 +545,13 @@ async fn run_responses_match_docs_api_examples() {
         "release",
         "verify-green",
         "verify-red",
+        "verify-verifier-green",
+        "verify-verifier-red",
     ]
     .into_iter()
     .enumerate()
     {
-        let world = World::start(Backend::Memory).await;
+        let world = world_for(name).await;
         let thread = thread_id(100 + u32::try_from(n).unwrap());
         let text = render(&responses_of(&world, name, &thread).await, &thread);
         let path = dir.join(format!("run-{name}.agui.json"));

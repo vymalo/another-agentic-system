@@ -155,6 +155,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::CancelRejected { .. }
         | Input::CiReported(_)
         | Input::VerifierReported { .. }
+        | Input::VerifierFailed { .. }
         | Input::TimerFired(_) => None,
     }
 }

@@ -52,9 +52,12 @@ const uiComponents = {
 const working: Step = { kind: "agent_status", data: { status: "working" }, setState: "working" };
 
 /** The gate of a verification scenario (ADR 0018): the sources that must pass and the attempts. */
-export type Gate = { require: CheckSource[]; maxAttempts: number };
+export type Gate = { require: CheckSource[]; maxAttempts: number; verifier?: string };
 
 const GATE_CHECKS: Gate = { require: ["agent_checks"], maxAttempts: 3 };
+/** The verifier agent of the verifier scenarios (`VERIFIER` in fixtures.ts), the only source required. */
+const GATE_VERIFIER: Gate = { require: ["verifier"], maxAttempts: 3, verifier: "verifier" };
+const VERIFIER_FINDING = "src/login.rs: the empty password is accepted";
 const REPOSITORY = "https://github.com/acme/demo.git";
 const FINDING = "tests::login fails: expected 200, got 500";
 
@@ -133,6 +136,70 @@ function attemptSteps(attempt: number, passes: boolean): Step[] {
   return [working, ...pushed(attempt, passes), completedAndVerifying, checked(attempt, passes)];
 }
 
+/** The verifier's `pending` card: the orchestrator asked, and the verifier's subagent starts. */
+function asked(attempt: number): Step {
+  return {
+    kind: "check_result",
+    system: true,
+    data: { attempt, commit: commitOf(attempt), source: "verifier", status: "pending" },
+  };
+}
+
+/** The verifier's verdict on an attempt, as the orchestrator records it. */
+function verdict(attempt: number, passes: boolean): Step {
+  return {
+    kind: "check_result",
+    system: true,
+    data: passes
+      ? { attempt, commit: commitOf(attempt), source: "verifier", status: "passed" }
+      : {
+          attempt,
+          commit: commitOf(attempt),
+          findings: [VERIFIER_FINDING],
+          source: "verifier",
+          status: "failed",
+        },
+  };
+}
+
+/** The gate failed on the verifier's findings and the agent is sent back: `attempt` is the one that starts. */
+function reworkedByVerifier(attempt: number): Step {
+  return {
+    kind: "rework",
+    system: true,
+    setState: "queued",
+    data: {
+      attempt,
+      findings: [{ findings: [VERIFIER_FINDING], source: "verifier" }],
+      maxAttempts: GATE_VERIFIER.maxAttempts,
+    },
+  };
+}
+
+/**
+ * One attempt under the verifier: the agent works, says what it did, pushes and finishes (it runs
+ * no checks of its own), and the verifier answers. `answers: false` leaves the verifier asked and
+ * silent.
+ */
+function verifiedSteps(attempt: number, passes: boolean, answers = true): Step[] {
+  const [branch] = pushed(attempt, passes);
+  return [
+    working,
+    {
+      kind: "agent_message",
+      data: {
+        messageId: nextMessageId(),
+        final: true,
+        text: "I pushed the fix: the empty password is rejected now.",
+      },
+    },
+    branch as Step,
+    completedAndVerifying,
+    asked(attempt),
+    ...(answers ? [verdict(attempt, passes)] : []),
+  ];
+}
+
 const done: Step = {
   kind: "thread_state",
   data: { state: "done" },
@@ -166,6 +233,10 @@ const nextMessageId = (() => {
  *   owner's action on the surface (`forwardedProps.a2uiAction`) resumes to done, as `ui-action <name>`.
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
+ * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
+ *   attempts): the verifier finds something in attempt 1, the agent is sent back, and the verifier
+ *   passes attempt 2. `verify-reviewed-red`: the verifier never passes it (`checks_failed`). The
+ *   verifier is a subagent of its own, `sub-verify-<n>`.
  * - `slow`: works until cancelled.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
@@ -176,6 +247,8 @@ const nextMessageId = (() => {
  * - `verify-ci`: a gate on CI and the agent's checks. CI answers pending, then a stale answer of an
  *   older push, then passes (`check_result` cards replaced in place, a stale one of its own).
  * - `verify-wait`: the same gate, and CI never answers: the thread stays `verifying` until cancelled.
+ * - `verify-reviewed-wait`: the verifier is asked and never answers: its subagent stays open (and is
+ *   told to a client that joins) until the thread is cancelled.
  * - `partial`: streams a partial `agent_message` and replaces it by its final version.
  * - `unreachable`: the delivery was dead-lettered: an `error` event, thread blocked.
  */
@@ -213,6 +286,37 @@ export function scriptFor(text: string): {
           },
           { kind: "thread_state", data: { state: "failed" }, setState: "failed", system: true },
         ],
+      };
+    case "verify-reviewed":
+      return {
+        gate: GATE_VERIFIER,
+        start: [...verifiedSteps(1, false), reworkedByVerifier(2), ...verifiedSteps(2, true), done],
+      };
+    case "verify-reviewed-red":
+      return {
+        gate: GATE_VERIFIER,
+        start: [
+          ...verifiedSteps(1, false),
+          reworkedByVerifier(2),
+          ...verifiedSteps(2, false),
+          reworkedByVerifier(3),
+          ...verifiedSteps(3, false),
+          {
+            kind: "error",
+            system: true,
+            data: {
+              message: `the work did not pass verification after ${GATE_VERIFIER.maxAttempts} attempts; the verifier: ${VERIFIER_FINDING}`,
+              retryable: false,
+            },
+          },
+          { kind: "thread_state", data: { state: "failed" }, setState: "failed", system: true },
+        ],
+      };
+    case "verify-reviewed-wait":
+      // mock only: the verifier is asked and never answers
+      return {
+        gate: GATE_VERIFIER,
+        start: [...verifiedSteps(1, true, false), { pause: "cancel" }],
       };
     case "verify-ci":
     case "verify-wait": {

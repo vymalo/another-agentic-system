@@ -14,7 +14,7 @@ use orch_core::{
     UserId, UserMessageData,
 };
 use serde_json::{Value, json};
-use support::log::{Action, build_under, gate, meta_under};
+use support::log::{Action, both_gate, build_under, gate, meta_under, verifier_gate};
 use support::{lines, verify};
 
 const WORKING: Action = Action::Status(AgentTaskState::Working, None);
@@ -596,4 +596,366 @@ fn a_hold_ends_the_run_in_an_interrupt_the_user_can_answer() {
             .unwrap()
             .starts_with("RUN_ERROR delivery_failed")
     );
+}
+
+// ---- the verifier (ADR 0018, slice 10) -------------------------------------------------------
+
+/// The lines about the subagents, the verifier's cards and the run, in order. A card is shown as
+/// its id and status.
+fn verifier_story(frames: &[Frame]) -> Vec<String> {
+    lines(frames)
+        .into_iter()
+        .filter(|l| {
+            l.starts_with("SUBAGENT_")
+                || l.contains("check-")
+                || l.starts_with("RUN_")
+                || l.starts_with("STATE_SNAPSHOT")
+        })
+        .map(|l| {
+            let l = l.split("  id:").next().unwrap().to_owned();
+            match l.split_once(" vymalo.check ") {
+                Some((head, content)) => {
+                    let json = content.split(" @").next().unwrap();
+                    let status = serde_json::from_str::<Value>(json)
+                        .ok()
+                        .and_then(|v| v["status"].as_str().map(str::to_owned))
+                        .unwrap_or_default();
+                    format!("{head} {status}")
+                }
+                None => l,
+            }
+        })
+        .collect()
+}
+
+fn verified(actions: &[Action]) -> (Vec<Frame>, Projector) {
+    let (_, frames, projector) = project(actions, &verifier_gate());
+    let all = flat(&frames);
+    all_conform(&all);
+    (all, projector)
+}
+
+#[test]
+fn the_verifier_is_a_subagent_of_its_own_from_its_pending_card_to_its_verdict() {
+    let (all, projector) = verified(&[
+        user(),
+        WORKING,
+        Action::Branch { commit: 1 },
+        COMPLETED,
+        Action::Verdict { passed: true },
+    ]);
+    assert!(!projector.run_open());
+    assert_eq!(
+        verifier_story(&all),
+        [
+            "RUN_STARTED r-1",
+            "STATE_SNAPSHOT queued",
+            "SUBAGENT_STARTED sub-2 plain",
+            "STATE_SNAPSHOT working",
+            "SUBAGENT_FINISHED sub-2 success",
+            "STATE_SNAPSHOT verifying",
+            "SUBAGENT_STARTED sub-verify-1 reviewer",
+            "ACTIVITY_SNAPSHOT check-1-1-verifier pending",
+            "ACTIVITY_SNAPSHOT check-1-1-verifier passed",
+            "SUBAGENT_FINISHED sub-verify-1 success result={\"passed\":true}",
+            "STATE_SNAPSHOT done",
+            "RUN_FINISHED r-1 success",
+        ]
+    );
+    // The verifier's invocation carries the verifier's own actor, not the worker's.
+    let started: Vec<Value> = all
+        .iter()
+        .filter(|f| {
+            matches!(&f.event, orch_agui_proto::Event::SubagentStarted(s) if s.name == "reviewer")
+        })
+        .map(|f| serde_json::to_value(&f.event).unwrap())
+        .collect();
+    assert_eq!(started.len(), 1);
+    let actor = &started[0]["metadata"]["vymalo.actor"];
+    assert_eq!(
+        (&actor["name"], &actor["type"]),
+        (&json!("reviewer"), &json!("agent")),
+        "{started:?}"
+    );
+}
+
+#[test]
+fn a_rework_after_the_verifiers_findings_starts_a_verifier_subagent_per_verification() {
+    let (all, _) = verified(&[
+        user(),
+        WORKING,
+        Action::Branch { commit: 1 },
+        COMPLETED,
+        Action::Verdict { passed: false },
+        WORKING,
+        Action::Branch { commit: 2 },
+        COMPLETED,
+        Action::Verdict { passed: true },
+    ]);
+    let story = verifier_story(&all);
+    let starts: Vec<&String> = story
+        .iter()
+        .filter(|l| l.starts_with("SUBAGENT_STARTED"))
+        .collect();
+    assert_eq!(
+        starts,
+        [
+            "SUBAGENT_STARTED sub-2 plain",
+            "SUBAGENT_STARTED sub-verify-1 reviewer",
+            "SUBAGENT_STARTED sub-7 plain",
+            "SUBAGENT_STARTED sub-verify-2 reviewer",
+        ]
+    );
+    assert!(
+        story.contains(
+            &"SUBAGENT_FINISHED sub-verify-1 success result={\"passed\":false}".to_owned()
+        )
+    );
+    assert!(story.contains(&"ACTIVITY_SNAPSHOT check-2-2-verifier passed".to_owned()));
+    assert_eq!(story.last().unwrap(), "RUN_FINISHED r-1 success");
+}
+
+#[test]
+fn out_of_attempts_on_the_verifiers_findings_ends_the_run_in_checks_failed() {
+    let mut actions = vec![user()];
+    for commit in 1..=3 {
+        actions.extend([
+            WORKING,
+            Action::Branch { commit },
+            COMPLETED,
+            Action::Verdict { passed: false },
+        ]);
+    }
+    let (all, projector) = verified(&actions);
+    assert!(!projector.run_open());
+    let story = verifier_story(&all);
+    assert_eq!(
+        story
+            .iter()
+            .filter(|l| l.starts_with("SUBAGENT_STARTED") && l.contains("reviewer"))
+            .count(),
+        3
+    );
+    let last = lines(&all).pop().unwrap();
+    assert!(
+        last.starts_with("RUN_ERROR") && last.contains("checks_failed"),
+        "{last}"
+    );
+}
+
+#[test]
+fn a_verifier_that_timed_out_or_broke_ends_its_subagent_in_an_error_when_the_run_is_interrupted() {
+    for (hold, says) in [
+        (
+            Action::VerifierDeadline,
+            "the verifier did not answer in time",
+        ),
+        (Action::VerifierDown, "the verifier could not be used"),
+    ] {
+        let (all, projector) = verified(&[
+            user(),
+            WORKING,
+            Action::Branch { commit: 1 },
+            COMPLETED,
+            hold,
+        ]);
+        assert!(!projector.run_open());
+        let story = verifier_story(&all);
+        let n = story.len();
+        assert_eq!(
+            story[n - 3..],
+            [
+                format!(
+                    "SUBAGENT_ERROR sub-verify-1 verifier_failed {:?}",
+                    story_message(&story, says)
+                ),
+                "STATE_SNAPSHOT blocked".to_owned(),
+                "RUN_FINISHED r-1 interrupt[int-7:input_required]".to_owned(),
+            ],
+            "{says}"
+        );
+        // The wait is an answerable interrupt with the reason, never a delivery failure.
+        let json = serde_json::to_value(&all.last().unwrap().event).unwrap();
+        assert_eq!(json["outcome"]["type"], "interrupt");
+        assert!(lines(&all).iter().any(|l| l.contains(says)), "{says}");
+    }
+}
+
+/// The message of the `SUBAGENT_ERROR` line that says `says`.
+fn story_message(story: &[String], says: &str) -> String {
+    let line = story
+        .iter()
+        .find(|l| l.starts_with("SUBAGENT_ERROR") && l.contains(says))
+        .unwrap_or_else(|| panic!("a SUBAGENT_ERROR that says {says:?}: {story:?}"));
+    let start = line.find('"').unwrap();
+    serde_json::from_str(&line[start..]).unwrap()
+}
+
+#[test]
+fn with_ci_required_too_the_hold_may_be_ci_s_so_the_verifier_is_only_cancelled() {
+    // The log does not say which source held the thread: a verifier that is out while CI is
+    // waited for too is not blamed.
+    let mut gate = verifier_gate();
+    gate.require.insert(CheckSource::Ci);
+    let (_, frames, projector) = project(
+        &[
+            user(),
+            WORKING,
+            Action::Branch { commit: 1 },
+            COMPLETED,
+            Action::VerifierDeadline,
+        ],
+        &gate,
+    );
+    let all = flat(&frames);
+    all_conform(&all);
+    assert!(!projector.run_open());
+    let story = verifier_story(&all);
+    assert!(
+        story.contains(
+            &"SUBAGENT_FINISHED sub-verify-1 success result={\"status\":\"canceled\"}".to_owned()
+        ),
+        "{story:?}"
+    );
+    assert!(
+        story.iter().all(|l| !l.starts_with("SUBAGENT_ERROR")),
+        "{story:?}"
+    );
+}
+
+#[test]
+fn a_user_who_writes_abandons_the_verification_and_its_subagent() {
+    let again = Action::User {
+        text: "wait, the logout too".to_owned(),
+        ids: true,
+    };
+    let (all, projector) = verified(&[
+        user(),
+        WORKING,
+        Action::Branch { commit: 1 },
+        COMPLETED,
+        again.clone(),
+    ]);
+    assert!(projector.run_open(), "the same run goes on");
+    assert_eq!(
+        verifier_story(&all).last().unwrap(),
+        "SUBAGENT_FINISHED sub-verify-1 success result={\"status\":\"canceled\"}"
+    );
+    // The verification that follows is a subagent of its own, in the same attempt.
+    let (all, _) = verified(&[
+        user(),
+        WORKING,
+        Action::Branch { commit: 1 },
+        COMPLETED,
+        again,
+        WORKING,
+        COMPLETED,
+        Action::Verdict { passed: true },
+    ]);
+    let story = verifier_story(&all);
+    assert!(
+        story.contains(&"SUBAGENT_STARTED sub-verify-2 reviewer".to_owned()),
+        "{story:?}"
+    );
+    assert!(
+        story.contains(&"ACTIVITY_SNAPSHOT check-1-2-verifier passed".to_owned()),
+        "{story:?}"
+    );
+    assert_eq!(story.last().unwrap(), "RUN_FINISHED r-1 success");
+}
+
+#[test]
+fn another_source_failing_the_round_abandons_the_verifier_that_was_still_out() {
+    // The agent's own checks fail while the verifier has not answered: the round is decided, the
+    // agent goes back, and the verifier's subagent ends with it.
+    let (_, frames, projector) = project(
+        &[
+            user(),
+            WORKING,
+            Action::Branch { commit: 1 },
+            Action::Checks {
+                passed: false,
+                commit: 1,
+            },
+            COMPLETED,
+        ],
+        &both_gate(),
+    );
+    let all = flat(&frames);
+    all_conform(&all);
+    assert!(projector.run_open(), "reworking: the run goes on");
+    let story = verifier_story(&all);
+    let started = story
+        .iter()
+        .position(|l| l == "SUBAGENT_STARTED sub-verify-1 reviewer")
+        .expect("the verifier started with its pending card");
+    let abandoned = story
+        .iter()
+        .position(|l| {
+            l == "SUBAGENT_FINISHED sub-verify-1 success result={\"status\":\"canceled\"}"
+        })
+        .expect("and ended when the round was decided elsewhere");
+    assert!(started < abandoned);
+    assert!(
+        lines(&all).iter().any(|l| l.contains("vymalo.rework")),
+        "the rework follows"
+    );
+}
+
+#[test]
+fn a_late_verdict_is_a_card_and_no_subagent() {
+    let (all, projector) = verified(&[
+        user(),
+        WORKING,
+        Action::Branch { commit: 1 },
+        COMPLETED,
+        Action::StaleVerdict,
+    ]);
+    assert!(projector.run_open(), "still verifying");
+    let story = verifier_story(&all);
+    assert_eq!(
+        story
+            .iter()
+            .filter(|l| l.starts_with("SUBAGENT_STARTED sub-verify"))
+            .count(),
+        1
+    );
+    assert!(
+        story
+            .iter()
+            .all(|l| !l.starts_with("SUBAGENT_FINISHED sub-verify")),
+        "the verifier that is out is still out: {story:?}"
+    );
+}
+
+#[test]
+fn a_client_that_joins_while_the_verifier_is_out_is_told_about_its_subagent() {
+    let until_the_request = [user(), WORKING, Action::Branch { commit: 1 }, COMPLETED];
+    let events = build_under(&until_the_request, &verifier_gate());
+    let mut projector = Projector::new(meta_under(verifier_gate()));
+    for e in &events {
+        projector.apply(e, Audience::Viewer);
+    }
+    assert_eq!(projector.thread_state(), ThreadState::Verifying);
+    let preamble = projector.resume_preamble();
+    assert_eq!(
+        lines(&preamble)
+            .iter()
+            .map(|l| l.split("  id:").next().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        [
+            "RUN_STARTED r-1",
+            "SUBAGENT_STARTED sub-verify-1 reviewer",
+            "STATE_SNAPSHOT verifying",
+        ]
+    );
+    // What follows closes it, so the stream the client holds is balanced.
+    let mut stream = preamble;
+    let mut answered = until_the_request.to_vec();
+    answered.push(Action::Verdict { passed: true });
+    let all = build_under(&answered, &verifier_gate());
+    for event in &all[events.len()..] {
+        stream.extend(projector.apply(event, Audience::Viewer));
+    }
+    verify::check(&stream).unwrap();
 }

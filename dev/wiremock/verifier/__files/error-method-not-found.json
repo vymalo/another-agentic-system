@@ -1,0 +1,1 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{"jsonrpc":"2.0","id":"{{rpcId}}","error":{"code":-32601,"message":"method not found: the mock verifier implements SendStreamingMessage, GetTask, CancelTask, ListTasks and SubscribeToTask"}}

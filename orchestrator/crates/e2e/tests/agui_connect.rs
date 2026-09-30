@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use common::*;
 use orch_agui_proto::testkit::{assert_capabilities_json_conforms, assert_json_conforms};
-use orch_testsupport::{Chat, Frame, SseClient, eventually};
+use orch_testsupport::{Chat, Frame, SseClient, VerifierScript, eventually};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -415,9 +415,46 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             .await;
             chat.wait_state(thread, last).await;
         }
+        // The verifier agent in the gate: `plain` requires it in its own entry.
+        "verify-verifier-green" | "verify-verifier-red" => {
+            run(input(
+                thread,
+                "run-1",
+                &[("msg-1", "verify-reviewed fix the login")],
+                json!({}),
+            ))
+            .await;
+            let last = if name == "verify-verifier-green" {
+                "done"
+            } else {
+                "failed"
+            };
+            chat.wait_state(thread, last).await;
+        }
         other => panic!("unknown scenario {other}"),
     }
     vec![whole(chat.agui_connect(thread, None, true).await).await]
+}
+
+/// The world a scenario runs in.
+async fn world_for(name: &str) -> World {
+    match name {
+        "verify-verifier-green" => {
+            World::with(
+                Backend::Memory,
+                verified_by_reviewer(VerifierScript::FindingsThenPass),
+            )
+            .await
+        }
+        "verify-verifier-red" => {
+            World::with(
+                Backend::Memory,
+                verified_by_reviewer(VerifierScript::AlwaysFail),
+            )
+            .await
+        }
+        _ => World::start(Backend::Memory).await,
+    }
 }
 
 #[tokio::test]
@@ -431,11 +468,13 @@ async fn connect_streams_match_docs_api_examples() {
         "cursor",
         "verify-green",
         "verify-red",
+        "verify-verifier-green",
+        "verify-verifier-red",
     ]
     .into_iter()
     .enumerate()
     {
-        let world = World::start(Backend::Memory).await;
+        let world = world_for(name).await;
         let thread = thread_id(100 + u32::try_from(n).unwrap());
         let text = render(&viewer_frames(&world, name, &thread).await, &thread);
         stale.extend(check_golden(
