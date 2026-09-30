@@ -13,15 +13,25 @@ use std::time::Duration;
 
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_api::ApiConfig;
-use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, GateLayer};
-use orch_core::{AgentId, GatePolicy};
+use orch_app::{
+    AgentDirectory, AgentEntry, App, AppConfig, ApplyOutcome, GateLayer, GateRules, InboxConfig,
+    InboxWorker, NewThread, Received,
+};
+use orch_core::{
+    AgentId, AgentTarget, CiReport, Event, GatePolicy, Input, ThreadId, ThreadRecord, UserId,
+};
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
-use orch_ports::{AgentEndpoint, PortSet, SystemClock, ThreadStore, UuidV7Ids, Wakeup};
+use orch_ports::{
+    AgentEndpoint, InboxItem, InboxLease, InboxPayload, PortSet, Ports, SystemClock, ThreadStore,
+    UuidV7Ids, Wakeup,
+};
 use orch_store_postgres::{PgStore, PgWakeup};
 use orch_testsupport::{
     Chat, FakeAgent, FakeAgentOptions, FakeReleases, Frame, TestInstance, fast_dispatcher,
 };
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 #[allow(unused_imports)]
 pub use orch_testsupport::{eventually, shape};
@@ -113,6 +123,9 @@ pub struct Setup {
     pub gate: GatePolicy,
     /// The `gate` key of an agent's `AGENTS_FILE` entry, by agent id.
     pub target_gates: BTreeMap<AgentId, GateLayer>,
+    /// Which sources the instances honour (the build's rules by default; a test of a machinery
+    /// underneath a source this build still refuses, such as the inbox under `ci`, widens it).
+    pub gate_rules: GateRules,
 }
 
 impl Default for Setup {
@@ -127,6 +140,7 @@ impl Default for Setup {
             plain_token: None,
             gate: GatePolicy::default(),
             target_gates: BTreeMap::new(),
+            gate_rules: GateRules::default(),
         }
     }
 }
@@ -152,6 +166,7 @@ pub struct World {
     plain_token: Option<String>,
     gate: GatePolicy,
     target_gates: BTreeMap<AgentId, GateLayer>,
+    gate_rules: GateRules,
 }
 
 impl World {
@@ -186,6 +201,7 @@ impl World {
             plain_token: setup.plain_token,
             gate: setup.gate,
             target_gates: setup.target_gates,
+            gate_rules: setup.gate_rules,
         }
     }
 
@@ -222,11 +238,30 @@ impl World {
                     stream_poll: Duration::from_millis(100),
                     gate: self.gate.clone(),
                     target_gates: self.target_gates.clone(),
+                    gate_rules: self.gate_rules.clone(),
                     ..AppConfig::default()
                 },
             )
             .expect("a valid gate"),
         )
+    }
+
+    /// An application instance with no HTTP server and no dispatcher, on the shared database:
+    /// what a worker process that only runs the inbox worker looks like, and the handle a test
+    /// uses to play the surfaces that do not exist yet (a webhook) and the agent.
+    pub async fn node(&self, owner: &str) -> Node {
+        match &self.db {
+            Db::Memory { store, wakeup } => Node::Memory(self.app(store.clone(), wakeup.clone())),
+            Db::Postgres(db) => {
+                let pool = db.pool(owner, 8).await;
+                let wakeup = PgWakeup::start(pool.clone());
+                assert!(
+                    wakeup.wait_listening(Duration::from_secs(10)).await,
+                    "the wakeup listener did not attach"
+                );
+                Node::Postgres(self.app(PgStore::from_pool(pool), wakeup))
+            }
+        }
     }
 
     /// Starts an orchestrator instance (API + dispatcher) named `owner`.
@@ -338,5 +373,148 @@ pub fn check_golden(path: &std::path::Path, text: &str) -> Option<String> {
             path.display()
         )),
         Err(e) => Some(format!("{}: {e}", path.display())),
+    }
+}
+
+// ---- an application instance without HTTP --------------------------------------------------
+
+type MemoryApp = App<Stack<MemoryStore, MemoryWakeup>>;
+type PgApp = App<Stack<PgStore, PgWakeup>>;
+
+/// The application of one orchestrator process, whichever store it runs on.
+pub enum Node {
+    Memory(Arc<MemoryApp>),
+    Postgres(Arc<PgApp>),
+}
+
+macro_rules! on_node {
+    ($node:expr, $app:ident => $body:expr) => {
+        match $node {
+            Node::Memory($app) => $body,
+            Node::Postgres($app) => $body,
+        }
+    };
+}
+
+/// A running inbox worker.
+pub struct InboxRun {
+    handle: Option<JoinHandle<()>>,
+    token: CancellationToken,
+}
+
+impl InboxRun {
+    /// The process dies: the future is dropped, nothing is released.
+    pub fn kill(&self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    /// The process is told to stop and does, releasing its claims.
+    pub async fn shutdown(mut self) {
+        self.token.cancel();
+        if let Some(handle) = self.handle.take() {
+            handle.await.unwrap();
+        }
+    }
+}
+
+impl Drop for InboxRun {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Inbox timings that make leases, polls and retries happen in milliseconds.
+pub fn fast_inbox() -> InboxConfig {
+    InboxConfig {
+        lease: Duration::from_millis(800),
+        poll_interval: Duration::from_millis(50),
+        backoff_base: Duration::from_millis(30),
+        backoff_max: Duration::from_millis(200),
+        ..InboxConfig::default()
+    }
+}
+
+impl Node {
+    pub fn alice() -> UserId {
+        UserId::new(ALICE)
+    }
+
+    /// Starts an inbox worker named `owner` on this instance's application.
+    pub fn spawn_inbox(&self, cfg: InboxConfig, owner: &str) -> InboxRun {
+        on_node!(self, app => {
+            let token = CancellationToken::new();
+            let worker = InboxWorker::new(Arc::clone(app), cfg, owner);
+            InboxRun { handle: Some(tokio::spawn(worker.run(token.clone()))), token }
+        })
+    }
+
+    /// Creates a thread for Alice on `agent`; no dispatcher of this node delegates it.
+    pub async fn create_thread(&self, agent: &str, text: &str) -> ThreadRecord {
+        let req = NewThread {
+            title: None,
+            target: AgentTarget {
+                agent_id: AgentId::new(agent),
+                release: None,
+            },
+            text: text.to_owned(),
+        };
+        on_node!(self, app => app.create_thread(&Self::alice(), req).await.unwrap())
+    }
+
+    /// Plays the agent: applies what it would report.
+    pub async fn apply(&self, thread: ThreadId, input: Input) {
+        let outcome =
+            on_node!(self, app => app.apply(thread, input, None, None, None).await.unwrap());
+        assert!(
+            matches!(outcome, ApplyOutcome::Applied { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    /// Plays a webhook surface: stores a CI report as `source` under the sender's delivery id.
+    pub async fn receive(&self, source: &str, delivery: &str, report: CiReport) -> Received {
+        on_node!(self, app => app
+            .receive(source, delivery, InboxPayload::CiReport(report))
+            .await
+            .unwrap())
+    }
+
+    pub async fn thread(&self, id: ThreadId) -> ThreadRecord {
+        on_node!(self, app => app.get_thread(&Self::alice(), id).await.unwrap())
+    }
+
+    pub async fn events(&self, id: ThreadId) -> Vec<Event> {
+        on_node!(self, app => app.list_events(&Self::alice(), id, 0, 500).await.unwrap())
+    }
+
+    /// A worker that claims one due row and then dies: the claim, for a late write to be tried
+    /// against.
+    pub async fn claim_and_die(&self, owner: &str, lease: Duration) -> InboxLease {
+        let claimed = on_node!(self, app => {
+            let now = orch_ports::Clock::now(app.ports().clock());
+            app.ports().store().claim_inbox(owner, now, lease, 1).await.unwrap()
+        });
+        assert_eq!(claimed.len(), 1, "a row was due");
+        claimed[0].lease().unwrap()
+    }
+
+    /// A worker that woke up after its claim was taken over and applies what it read.
+    pub async fn apply_from_inbox_late(
+        &self,
+        thread: ThreadId,
+        input: Input,
+        lease: &InboxLease,
+    ) -> ApplyOutcome {
+        on_node!(self, app => app.apply_from_inbox(thread, input, lease).await.unwrap())
+    }
+
+    pub async fn inbox_row(&self, source: &str, key: &str) -> Option<InboxItem> {
+        on_node!(self, app => app.ports().store().find_inbox(source, key).await.unwrap())
+    }
+
+    pub async fn watch(&self, key: &str) -> Option<ThreadId> {
+        on_node!(self, app => app.ports().store().get_watch(key).await.unwrap())
     }
 }

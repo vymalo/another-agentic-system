@@ -11,7 +11,9 @@ the process itself keeps nothing, so a restart mid-task loses nothing. Design:
 > **Status:** MVP steps 1–2 of issue #9 are implemented: the AG-UI surface (run,
 > connect, capabilities; A2UI surfaces and actions), the resource API, the
 > durable dispatcher, the A2A adapter, the Postgres store and the runnable
-> binary and image. The legacy chat API interaction routes were removed on 2026-09-30. The planner, verify/rework, reviewers and the MCP/webhook
+> binary and image. The legacy chat API interaction routes were removed on 2026-09-30. Since MVP slice 5 the
+> inbox, watches and timers are built: the inbox worker applies timers (the CI and verifier deadlines the
+> gate schedules) and the reports that `App::receive` stores. The planner, verify/rework, reviewers and the MCP/webhook
 > inputs come in later steps ([`docs/mvp.md`](../docs/mvp.md)).
 
 ## Run it locally
@@ -64,13 +66,17 @@ An empty value counts as unset.
 | `DATABASE_URL` | required | Postgres connection string. Never logged. |
 | `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}` (`gate` is the entry's verification gate, see the `ORCH_GATE` rows below and [`bin/orchestrator`](bin/orchestrator/README.md#the-verification-gate); `transport` is `a2a`, the default, which needs `cardUrl`; `local` is an in-process agent named by `agent`, served only by a build with the Cargo feature `agent-local` and refused at startup otherwise), see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. The first entry is the default agent the chat UI preselects ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)). |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | Control plane: the API. Worker: the probes only. |
-| `ORCH_ROLE` | `all` | What this process runs: `all`, `control-plane` (server, API and surfaces; no dispatcher) or `worker` (dispatcher, and a router with only `/healthz` and `/readyz`). Flag `--role`; the enum is `adam_host::Role` ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)). The role table is in [`bin/orchestrator`](bin/orchestrator/README.md#roles). An unknown value is a startup error. |
+| `ORCH_ROLE` | `all` | What this process runs: `all`, `control-plane` (server, API and surfaces; no dispatcher, no inbox worker) or `worker` (dispatcher, inbox worker, and a router with only `/healthz` and `/readyz`). Flag `--role`; the enum is `adam_host::Role` ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)). The role table is in [`bin/orchestrator`](bin/orchestrator/README.md#roles). An unknown value is a startup error. |
 | `ORCH_SURFACES` | `agui` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `agui`, the AG-UI routes `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect` and `GET /agui/agents/{agentId}/capabilities` ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md), [`docs/api/agui.md`](../docs/api/agui.md)). The legacy `chat-api` surface (`createThread`, `postMessage`, `listEvents`, `streamEvents`) was **removed on 2026-09-30**: naming it fails closed (exit 78, an error that says it was removed and points to AG-UI, see [`bin/orchestrator`](bin/orchestrator/README.md#surfaces)). An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-agui`) is not in the build is a startup error. The resource API and health are always mounted. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |
 | `DISPATCHER_CONCURRENCY` | `32` | Delegations processed at the same time by this replica. |
 | `OUTBOX_LEASE_SECS` | `30` | How long after a crash another replica waits before taking a delegation over (a graceful shutdown hands over at once). Also the lease of a local agent's run. |
 | `AGENT_LOCAL_CONCURRENCY` | `4` | Only in a build with the Cargo feature `agent-local`: runs of local agents stepped at once by this replica (at least 1). The local agents open a pool of their own, this plus 4 connections, on top of `DATABASE_MAX_CONNECTIONS`. |
+| `INBOX_LEASE_SECS` | `30` | At least 3. How long after a crash another replica waits before taking over an inbox row (a timer or a stored report) its worker had claimed (a graceful shutdown hands over at once). |
+| `INBOX_POLL_SECS` | `2` | At least 1. Safety poll of the inbox worker when no wakeup arrives; a timer fires at most this late, because timers coming due are not announced. |
+| `INBOX_PARKED_TTL_SECS` | `86400` | At least 1. How long a report that no thread watches yet waits (parked) before it expires. |
+| `INBOX_MAX_ATTEMPTS` | `10` | At least 1. Claims of one inbox row before it is dead-lettered (a row that keeps failing retryably, or keeps killing its worker: one claimed more often than this without being finished is given up on before it is delivered). A claim handed back at shutdown, or one that only parked the row, is not counted. |
 | `SHUTDOWN_GRACE_SECS` | `15` | Bound of each graceful-shutdown step. |
 | `ORCH_GATE` | none | The sources every job must pass before it is `done`: a comma list of `ci`, `agent-checks`, `verifier` (flag `--gate`; [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)). None is no gate. This build honours only `agent-checks`; `ci` and `verifier` are a startup error (78) naming the slice that enables them. |
 | `ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP` | `3`, `10` | Attempts a gated job's agent gets (the first included), and the most an `AGENTS_FILE` entry or a run may set them to (at most 100; a smaller cap lowers the default attempts). |
@@ -176,7 +182,7 @@ change of the composition root, never a runtime plugin.
 | [`crates/ports`](crates/ports/README.md) | `orch-ports` | Traits `ThreadStore`, `Wakeup`, `AgentClient`, `Clock`, `IdGen`, and `ByTransport` (routes an endpoint to the A2A or the local client); feature `testkit` adds in-memory implementations, a scripted fake agent and the conformance testkit. |
 | [`crates/agui-proto`](crates/agui-proto/README.md) | `orch-agui-proto` | AG-UI 1.0 wire types as closed serde enums (all 31 events, `RunAgentInput`), the vendored official JSON Schema, and a `testkit` that validates against it. No `orch-*` dependencies. |
 | [`crates/agui-projection`](crates/agui-projection/README.md) | `orch-agui-projection` | Pure: the AG-UI view of the event log (`Projector`: events to frames, audiences, resume preamble) and the translation of a `RunAgentInput` to core inputs. Depends on `orch-core` and `orch-agui-proto` only; no async, no I/O. |
-| [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams) and the durable outbox `Dispatcher`, written against the ports. |
+| [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams), the durable outbox `Dispatcher` and the `InboxWorker` (timers and stored reports), written against the ports. |
 | [`crates/api`](crates/api/README.md) | `orch-api` | The always-mounted HTTP edge: proxy-identity auth (fail closed), RFC 9457 problems, the resource API (agents, threads, cancel), health, and `SurfaceRoutes`, the mounting point of interaction surfaces. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
@@ -203,11 +209,15 @@ only `bin/orchestrator` depends on all of them.
 - **`thread_state` events** are appended only when a thread *enters* `blocked`,
   `done`, `failed` or `cancelled`; entering `queued`/`working` is implied by
   `user_message` / `agent_status`.
-- **No inbox table.** A surface (the AG-UI run route)
+- **The inbox is for machine input only.** A surface a person uses (the AG-UI run route)
   runs the transition inside the request and writes the events and the outbox
-  row in one transaction, so redeliveries cannot happen on this path (a retried
-  AG-UI run carries an idempotency key on the event and attaches). The inbox of `docs/orchestrator.md` arrives with
-  the webhook/MCP inputs.
+  row in one transaction, so redeliveries cannot happen on this path (a retried AG-UI run
+  carries an idempotency key on the event and attaches). What nobody asked for goes through the
+  `inbox` table: `App::receive` stores a report (the same delivery id twice is one row) and the
+  `InboxWorker` applies it in the thread's own commit; a report that no thread watches yet is
+  parked, and the commit that starts the watch wakes it. A `Schedule` from the core is an inbox
+  row too, due at the commit's time plus its delay, which the worker polls for. No webhook route
+  calls `receive` yet (slice 6 of the MVP plan).
 - **Durability.** A delegation is an outbox row claimed under a lease. A worker
   that dies leaves the row to be re-claimed; `sent_at` tells the next worker to
   resume the agent's task (resubscribe, then poll) rather than send again, and

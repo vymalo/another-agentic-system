@@ -466,6 +466,9 @@ async fn the_event_stream_survives_a_missing_wakeup_via_the_safety_poll() {
                 binding: None,
                 now: jiff::Timestamp::now(),
                 lease: None,
+                watches: vec![],
+                timers: vec![],
+                inbox: None,
             },
         )
         .await

@@ -27,6 +27,7 @@
 //! | `verify-pass` | `working`, artifacts `branch` (a commit) and `checks` (`passed: true`), `completed` |
 //! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
 //! | `verify-red` | as `verify-pass`, but `checks` always fails |
+//! | `verify-ci` | `working`, only the `branch` artifact (a commit named by [`verify_commit`] in [`VERIFY_REPOSITORY`]), `completed`: an agent that pushed and leaves the checking to CI |
 //!
 //! A rework prompt (the message the gate sends an agent whose work failed, ADR 0018: it starts
 //! with "Your work did not pass verification" and says "this is attempt N") is answered as the
@@ -82,6 +83,14 @@ pub const A2UI_MEDIA_TYPE: &str = "application/a2ui+json";
 
 /// The URL every finished script reports as its artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
+
+/// The repository the `verify-*` scripts report in their `branch` artifact.
+pub const VERIFY_REPOSITORY: &str = "https://github.com/acme/demo.git";
+
+/// The commit the `verify-*` scripts report at `attempt` (1 for the first delegation).
+pub fn verify_commit(attempt: u32) -> String {
+    format!("{attempt:040x}")
+}
 
 /// Release channels the fake card declares.
 #[derive(Debug, Clone)]
@@ -881,16 +890,16 @@ async fn script(
     };
     match word {
         "fail" => emit(&tx, ctx.status(TaskState::Failed, Some("scripted failure"))).await?,
-        "verify-pass" | "verify-red-once" | "verify-red" => {
+        "verify-pass" | "verify-red-once" | "verify-red" | "verify-ci" => {
             let attempt = if reworking { attempt_of(&text) } else { 1 };
             let passes = match word {
                 "verify-pass" => true,
                 "verify-red-once" => attempt >= 2,
                 _ => false,
             };
-            let commit = format!("{attempt:040x}");
+            let commit = verify_commit(attempt);
             let branch = json!({
-                "repository": "https://github.com/acme/demo.git",
+                "repository": VERIFY_REPOSITORY,
                 "branch": "agent/fix",
                 "commit": commit,
             });
@@ -904,7 +913,12 @@ async fn script(
                     "findings": ["tests::login fails: expected 200, got 500"],
                 })
             };
-            for (name, data) in [("branch", branch), ("checks", checks)] {
+            let reported = if word == "verify-ci" {
+                vec![("branch", branch)]
+            } else {
+                vec![("branch", branch), ("checks", checks)]
+            };
+            for (name, data) in reported {
                 let id = shared.next_artifact_id();
                 emit(
                     &tx,

@@ -10,6 +10,9 @@ pub enum Topic {
     Thread(ThreadId),
     /// There may be new outbox rows to claim.
     Outbox,
+    /// There may be new inbox rows to claim (a report was received, or a parked one re-armed).
+    /// A timer that becomes due is not announced: the inbox worker polls for those.
+    Inbox,
     /// The subscriber missed notifications: re-read everything.
     Resync,
 }

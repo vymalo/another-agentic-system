@@ -20,10 +20,17 @@ use crate::error::wakeup_err;
 pub(crate) const CHANNEL_THREAD: &str = "orch_thread";
 /// Channel carrying `Topic::Outbox`; the payload is empty.
 pub(crate) const CHANNEL_OUTBOX: &str = "orch_outbox";
+/// Channel carrying `Topic::Inbox`; the payload is empty.
+pub(crate) const CHANNEL_INBOX: &str = "orch_inbox";
 /// Channel carrying `Topic::Resync`; the payload is empty.
 pub(crate) const CHANNEL_RESYNC: &str = "orch_resync";
 
-const CHANNELS: [&str; 3] = [CHANNEL_THREAD, CHANNEL_OUTBOX, CHANNEL_RESYNC];
+const CHANNELS: [&str; 4] = [
+    CHANNEL_THREAD,
+    CHANNEL_OUTBOX,
+    CHANNEL_INBOX,
+    CHANNEL_RESYNC,
+];
 const CAPACITY: usize = 1024;
 const BACKOFF_START: Duration = Duration::from_millis(200);
 const BACKOFF_MAX: Duration = Duration::from_secs(10);
@@ -32,6 +39,7 @@ fn encode(topic: &Topic) -> (&'static str, String) {
     match topic {
         Topic::Thread(id) => (CHANNEL_THREAD, id.to_string()),
         Topic::Outbox => (CHANNEL_OUTBOX, String::new()),
+        Topic::Inbox => (CHANNEL_INBOX, String::new()),
         Topic::Resync => (CHANNEL_RESYNC, String::new()),
     }
 }
@@ -44,6 +52,7 @@ fn decode(channel: &str, payload: &str) -> Topic {
             .parse::<ThreadId>()
             .map_or(Topic::Resync, Topic::Thread),
         CHANNEL_OUTBOX => Topic::Outbox,
+        CHANNEL_INBOX => Topic::Inbox,
         _ => Topic::Resync,
     }
 }

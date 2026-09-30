@@ -7,18 +7,25 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
-    Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UserId, report, transition,
+    Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UserId, WatchKey, is_commit_hash,
+    repo_key, report, transition,
 };
+pub use orch_ports::Received;
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock, Commit,
-    CommitOutcome, IdGen, Lease, NewEvent, NewOutbox, NewThreadRecord, OutboxPayload, OutboxStats,
-    Ports, StoreError, ThreadStore, Topic, Wakeup,
+    CommitOutcome, IdGen, InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox,
+    NewOutbox, NewThreadRecord, NewTimer, OutboxPayload, OutboxStats, Ports, StoreError,
+    TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
 use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer};
 
 const MAX_TEXT_CHARS: usize = 100_000;
+const MAX_SOURCE_CHARS: usize = 64;
+const MAX_INBOX_KEY_CHARS: usize = 256;
+/// Most bytes of text a stored CI report may carry (its summary is the bulk of it).
+const MAX_REPORT_BYTES: usize = 64 * 1024;
 const MAX_TITLE_CHARS: usize = 200;
 const DEFAULT_TITLE_CHARS: usize = 80;
 
@@ -602,6 +609,8 @@ impl<P: Ports> App<P> {
     ) -> Commit {
         let mut events = Vec::new();
         let mut outbox = Vec::new();
+        let mut watches = Vec::new();
+        let mut timers = Vec::new();
         for cmd in cmds {
             match cmd {
                 Command::Append(draft) => {
@@ -635,22 +644,19 @@ impl<P: Ports> App<P> {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel,
                 }),
-                // TODO(MVP slice 5): `Watch` and `Schedule` become rows of the inbox tables
-                // (`watches`, and an inbox row with `source = 'timer'`) written in this commit.
+                // Both are written in this commit: the watch also re-arms the reports that
+                // were parked waiting for it, and the timer becomes an inbox row that the
+                // store makes due `after` this commit's `now` (the core never reads a clock).
+                Command::Watch { key } => watches.push(key),
+                Command::Schedule { after, timer } => timers.push(NewTimer {
+                    id: InboxId(self.ports.ids().new_id()),
+                    after,
+                    timer,
+                }),
                 // TODO(MVP slice 10): `RequestVerification` becomes an outbox row of kind
-                // `verify`. Until then they are dropped, loudly: a gate that requires CI or the
+                // `verify`. Until then it is dropped, loudly: a gate that requires the
                 // verifier is not configurable before slice 3 rejects it, so with the default
-                // (empty) gate none of them is ever produced.
-                Command::Watch { key } => {
-                    tracing::warn!(%key, "dropping a watch: the inbox is not built yet");
-                }
-                Command::Schedule { after, timer } => {
-                    tracing::warn!(
-                        ?after,
-                        ?timer,
-                        "dropping a timer: the inbox is not built yet"
-                    );
-                }
+                // (empty) gate it is never produced.
                 Command::RequestVerification {
                     attempt, verifier, ..
                 } => {
@@ -670,6 +676,9 @@ impl<P: Ports> App<P> {
             binding,
             now,
             lease: None,
+            watches,
+            timers,
+            inbox: None,
         }
     }
 
@@ -685,6 +694,37 @@ impl<P: Ports> App<P> {
         key: Option<String>,
         binding: Option<BindingUpdate>,
         lease: Option<&Lease>,
+    ) -> Result<ApplyOutcome, AppError> {
+        self.apply_fenced(thread, input, key, binding, lease, None)
+            .await
+    }
+
+    /// Applies an input the inbox delivered (a timer, a CI report) under the worker's claim on
+    /// the inbox row `lease`. The idempotency key is `inbox:<row id>`. The row is marked
+    /// `applied` in the same commit as the thread's change, so the two cannot come apart; when
+    /// the input changes nothing (or is a repeat) the row is completed on its own. Either way
+    /// [`ApplyOutcome::Applied`] or [`ApplyOutcome::Duplicate`] means the row is finished.
+    /// Once another worker has claimed the row the result is [`ApplyOutcome::Fenced`] and
+    /// nothing was written.
+    pub async fn apply_from_inbox(
+        &self,
+        thread: ThreadId,
+        input: Input,
+        lease: &InboxLease,
+    ) -> Result<ApplyOutcome, AppError> {
+        let key = format!("inbox:{}", lease.id);
+        self.apply_fenced(thread, input, Some(key), None, None, Some(lease))
+            .await
+    }
+
+    async fn apply_fenced(
+        &self,
+        thread: ThreadId,
+        input: Input,
+        key: Option<String>,
+        binding: Option<BindingUpdate>,
+        lease: Option<&Lease>,
+        inbox: Option<&InboxLease>,
     ) -> Result<ApplyOutcome, AppError> {
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
@@ -707,11 +747,19 @@ impl<P: Ports> App<P> {
                 now,
             );
             commit.lease = lease.cloned();
+            commit.inbox = inbox.cloned();
             if commit.events.is_empty()
                 && commit.outbox.is_empty()
                 && commit.binding.is_none()
                 && commit.job.is_none()
+                && commit.watches.is_empty()
+                && commit.timers.is_empty()
                 && next == record.state
+                // An inbox row is still owed its completion. That is a commit of its own
+                // (it carries the claim and nothing else), not a bare `complete_inbox`: the
+                // store checks the version too, so a "nothing to do" that was decided on a
+                // thread that has moved since is decided again, not written as final.
+                && inbox.is_none()
             {
                 return Ok(ApplyOutcome::Applied {
                     thread: record,
@@ -719,6 +767,7 @@ impl<P: Ports> App<P> {
                 });
             }
             let has_outbox = !commit.outbox.is_empty();
+            let has_watches = !commit.watches.is_empty();
             match self
                 .ports
                 .store()
@@ -732,15 +781,141 @@ impl<P: Ports> App<P> {
                     if has_outbox {
                         self.notify(Topic::Outbox).await;
                     }
+                    if has_watches {
+                        // The commit may have re-armed parked reports.
+                        self.notify(Topic::Inbox).await;
+                    }
                     return Ok(ApplyOutcome::Applied { thread: t, events });
                 }
-                Ok(CommitOutcome::Duplicate) => return Ok(ApplyOutcome::Duplicate),
+                Ok(CommitOutcome::Duplicate) => {
+                    return match inbox {
+                        Some(inbox) => self.finish_inbox(inbox, ApplyOutcome::Duplicate).await,
+                        None => Ok(ApplyOutcome::Duplicate),
+                    };
+                }
                 Ok(CommitOutcome::Fenced) => return Ok(ApplyOutcome::Fenced),
                 Err(StoreError::VersionConflict) => {}
                 Err(e) => return Err(e.into()),
             }
         }
         Err(AppError::Contended)
+    }
+
+    /// Completes the inbox row whose input was applied already (its events are in the log under
+    /// the row's key). `outcome` is what to answer when the row was still ours; a lost claim is
+    /// [`ApplyOutcome::Fenced`].
+    async fn finish_inbox(
+        &self,
+        lease: &InboxLease,
+        outcome: ApplyOutcome,
+    ) -> Result<ApplyOutcome, AppError> {
+        let done = self
+            .ports
+            .store()
+            .complete_inbox(lease, InboxFinal::Applied, self.ports.clock().now())
+            .await?;
+        Ok(if done { outcome } else { ApplyOutcome::Fenced })
+    }
+
+    /// Stores an unsolicited report for the inbox worker to apply, and returns at once: the entry
+    /// point of the surfaces that take input from machines (the webhooks, ADR 0017). `source`
+    /// says who sent it and `idempotency_key` is the sender's id of this delivery; a repeat of
+    /// the pair is [`Received::Duplicate`] and stores nothing, so a redelivery is harmless.
+    ///
+    /// The caller has authenticated the delivery and normalised it to a payload; a payload is
+    /// data, and nothing here trusts it beyond its shape. Which thread a CI report is about is
+    /// not for the sender to say: its correlation is always the watch key of its repository and
+    /// commit ([`WatchKey::ci`](orch_core::WatchKey::ci)), built here from the report after both
+    /// are put in the form the watches use ([`repo_key`], a lower-case full hash), so a report
+    /// can reach only a thread that asked for that very commit. A report whose watch does not
+    /// exist yet waits (parked) until a thread starts watching, or expires.
+    ///
+    /// # Errors
+    /// [`AppError::Invalid`] for a `source` or key that is empty, longer than 64 or 256
+    /// characters, or not printable ASCII (they reach logs and spans); for the reserved source
+    /// `timer`; for a payload that a surface may not send (a timer: only the core arms those);
+    /// for an oversized report; and for a report whose repository is not a repository address or
+    /// whose `sha` is not a full commit hash (such a report could never match a watch, so it is
+    /// refused rather than parked until it expires).
+    pub async fn receive(
+        &self,
+        source: &str,
+        idempotency_key: &str,
+        payload: InboxPayload,
+    ) -> Result<Received, AppError> {
+        let bounded = |what: &str, value: &str, max: usize| -> Result<(), AppError> {
+            if value.trim().is_empty() || value.chars().count() > max {
+                return Err(AppError::Invalid(format!(
+                    "{what} must be 1 to {max} characters"
+                )));
+            }
+            if !value.chars().all(|c| (' '..='~').contains(&c)) {
+                return Err(AppError::Invalid(format!("{what} must be printable ASCII")));
+            }
+            Ok(())
+        };
+        bounded("source", source, MAX_SOURCE_CHARS)?;
+        bounded("idempotency key", idempotency_key, MAX_INBOX_KEY_CHARS)?;
+        if source == TIMER_SOURCE {
+            return Err(AppError::Invalid(format!(
+                "the source {TIMER_SOURCE} is reserved for the orchestrator's own timers"
+            )));
+        }
+        let (payload, correlation) = match payload {
+            InboxPayload::Timer { .. } => {
+                return Err(AppError::Invalid(
+                    "timers are armed by the orchestrator and cannot be received".to_owned(),
+                ));
+            }
+            InboxPayload::CiReport(mut report) => {
+                let text = report.repository.len()
+                    + report.sha.len()
+                    + report.name.len()
+                    + [&report.branch, &report.url, &report.summary]
+                        .into_iter()
+                        .flatten()
+                        .map(String::len)
+                        .sum::<usize>();
+                if text > MAX_REPORT_BYTES {
+                    return Err(AppError::Invalid(format!(
+                        "a CI report may carry at most {MAX_REPORT_BYTES} bytes of text"
+                    )));
+                }
+                // The form a watch key is built from (`transition` builds it from the pushed
+                // ref, which is normalised the same way).
+                let Some(repository) = repo_key(&report.repository) else {
+                    return Err(AppError::Invalid(
+                        "the repository of a CI report must be a repository address".to_owned(),
+                    ));
+                };
+                let sha = report.sha.trim().to_lowercase();
+                if !is_commit_hash(&sha) {
+                    return Err(AppError::Invalid(
+                        "the sha of a CI report must be a full commit hash".to_owned(),
+                    ));
+                }
+                report.repository = repository;
+                report.sha = sha;
+                let correlation = WatchKey::ci(&report.repository, &report.sha).to_string();
+                (InboxPayload::CiReport(report), correlation)
+            }
+        };
+        let row = NewInbox {
+            id: InboxId(self.ports.ids().new_id()),
+            source: source.to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+            payload,
+            correlation: Some(correlation),
+        };
+        let received = self
+            .ports
+            .store()
+            .receive(row, self.ports.clock().now())
+            .await?;
+        if matches!(received, Received::Stored { .. }) {
+            self.notify(Topic::Inbox).await;
+        }
+        Ok(received)
     }
 
     /// Persists binding fields (task id, state, revision) without changing the thread. `lease`
@@ -766,6 +941,9 @@ impl<P: Ports> App<P> {
                 binding: Some(binding.clone()),
                 now: self.ports.clock().now(),
                 lease: lease.cloned(),
+                watches: Vec::new(),
+                timers: Vec::new(),
+                inbox: None,
             };
             match self
                 .ports
@@ -852,7 +1030,7 @@ impl<P: Ports> App<P> {
                         topic = st.wake.next(), if st.wake_open => match topic {
                             Some(Topic::Thread(t)) if t == st.id => break,
                             Some(Topic::Resync) => break,
-                            Some(Topic::Thread(_) | Topic::Outbox) => {}
+                            Some(Topic::Thread(_) | Topic::Outbox | Topic::Inbox) => {}
                             None => st.wake_open = false,
                         },
                         () = &mut tick => break,

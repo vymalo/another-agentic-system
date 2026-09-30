@@ -207,7 +207,7 @@ impl<P: Ports> Dispatcher<P> {
                 () = shutdown.cancelled() => break,
                 topic = wake.next(), if wake_open => match topic {
                     Some(Topic::Outbox | Topic::Resync) => {}
-                    Some(Topic::Thread(_)) => continue,
+                    Some(Topic::Thread(_) | Topic::Inbox) => continue,
                     None => wake_open = false,
                 },
                 () = tokio::time::sleep(self.cfg.poll_interval) => {}
