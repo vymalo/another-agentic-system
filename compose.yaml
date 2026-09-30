@@ -293,12 +293,14 @@ services:
 
   # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
   # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.
-  # Verified 2026-09-30 (ghcr API, anonymous pull): coder:sha-e9bfea3 and its digest below. Since adam-rs e9bfea3 a stop
-  # without a pull request is a question (the task is `input-required`, the thread waits for you) and the coder works
-  # only on a repository the person named; since ae540e9 it reports its checks as a `checks` artifact.
+  # Verified 2026-09-30 (ghcr API, anonymous pull): coder:sha-31df660 and its digest below. Since adam-rs 31df660 a new
+  # task continues the task it references (A2A referenceTaskIds: the coder keeps its repositories and branch), the
+  # coder has `run_command` (look around without using a check cycle), bash, a default base branch and a
+  # missing-toolchain report; since e9bfea3 a stop without a pull request is a question and it works only on a
+  # repository the person named; since ae540e9 it reports its checks as a `checks` artifact.
   coder:
     profiles: [app]
-    image: ghcr.io/vymalo/another-adam-rs/coder:sha-e9bfea3@sha256:79b0afd3a27be661f83ed5f5a2704eacd177eccfbd2b940a400738292f6da442
+    image: ghcr.io/vymalo/another-adam-rs/coder:sha-31df660@sha256:dafa562b861f37f8effcb888412a52a1ad2f0fe596d6e4b43dbf06c51f113da0
     # The image has no arm64 variant: name the platform so an ARM machine runs it under emulation
     # instead of refusing to pull.
     platform: linux/amd64
