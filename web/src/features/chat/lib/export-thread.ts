@@ -29,6 +29,9 @@ export async function fetchThreadExport(threadId: string): Promise<ThreadExportF
   };
 }
 
+/** How long the object URL of a download stays valid. */
+export const REVOKE_AFTER_MS = 40_000;
+
 /** Hands `file` to the browser as a download. */
 export function saveFile({ blob, filename }: ThreadExportFile): void {
   const url = URL.createObjectURL(blob);
@@ -40,6 +43,7 @@ export function saveFile({ blob, filename }: ThreadExportFile): void {
   document.body.append(link);
   link.click();
   link.remove();
-  // The download has started by the time the click returns; give the browser a moment anyway.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // The click only starts the download: Firefox and Safari abort a large one whose object URL is
+  // revoked too early, so it lives as long as FileSaver.js keeps it (40 s).
+  setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
 }

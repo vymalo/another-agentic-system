@@ -24,8 +24,31 @@ use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRule
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
 /// log is exported up to here and says so.
 pub const DEFAULT_MAX_EXPORT_EVENTS: usize = 50_000;
+/// Most bytes of serialized events (compact JSON) an export reads unless
+/// [`AppConfig::max_export_bytes`] says otherwise. The event count alone does not bound memory:
+/// an event may carry up to 100 000 characters of text.
+pub const DEFAULT_MAX_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 /// Events read from the store per page when exporting.
 const EXPORT_PAGE: u32 = 500;
+
+/// The bytes `value` takes as compact JSON, counted without building the text.
+fn serialized_len(value: &impl serde::Serialize) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    // An event serialises without failing (strings, numbers and enums); were it to, the part
+    // counted so far is what there is.
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
 const MAX_TEXT_CHARS: usize = 100_000;
 const MAX_SOURCE_CHARS: usize = 64;
 const MAX_INBOX_KEY_CHARS: usize = 256;
@@ -44,8 +67,13 @@ pub struct AppConfig {
     /// Attempts of the optimistic commit loop.
     pub max_commit_attempts: u32,
     /// Most events [`App::export_thread`] reads; a longer log is exported up to here, flagged
-    /// as truncated. Bounds the memory and the time of one export.
+    /// as truncated. Bounds the time of one export, and with `max_export_bytes` its memory.
     pub max_export_events: usize,
+    /// Most bytes of serialized events (compact JSON, one comma per event) an export reads; a log
+    /// that would take more is exported up to the last event that fits, flagged as truncated.
+    /// Either bound cuts, and either keeps the head of the log: `seq` 1 to the last event read,
+    /// with no gap.
+    pub max_export_bytes: usize,
     /// The verification gate a new thread starts under; it is copied into the thread's job, so
     /// changing it never affects a running job (ADR 0016). The default requires nothing: an
     /// agent finishing is enough, as before the gate existed.
@@ -66,6 +94,7 @@ impl Default for AppConfig {
             stream_poll: Duration::from_secs(5),
             max_commit_attempts: 8,
             max_export_events: DEFAULT_MAX_EXPORT_EVENTS,
+            max_export_bytes: DEFAULT_MAX_EXPORT_BYTES,
             gate: GatePolicy::default(),
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
@@ -94,9 +123,10 @@ pub struct ThreadExport {
     pub thread: ThreadRecord,
     /// The A2A side: agent, context and task; `None` for a thread with none.
     pub binding: Option<AgentBinding>,
-    /// The event log in order, from `seq` 1, at most [`AppConfig::max_export_events`].
+    /// The event log in order, from `seq` 1, within [`AppConfig::max_export_events`] and
+    /// [`AppConfig::max_export_bytes`].
     pub events: Vec<Event>,
-    /// `true` when the log is longer than `events`.
+    /// `true` when the log is longer than `events` (either bound cut it).
     pub truncated: bool,
     /// When the snapshot was taken, by the application clock.
     pub exported_at: Timestamp,
@@ -537,7 +567,9 @@ impl<P: Ports> App<P> {
     /// binding and its whole event log. Someone else's thread is `NotFound`, like every read.
     ///
     /// The log is read in pages through [`ThreadStore::list_events`]; nothing new is asked of the
-    /// store. The read is bounded by [`MAX_EXPORT_EVENTS`].
+    /// store. The read stops at [`AppConfig::max_export_events`] events or
+    /// [`AppConfig::max_export_bytes`] bytes of serialized events, whichever comes first, and
+    /// says so (`truncated`): what is read is always the head of the log.
     pub async fn export_thread(
         &self,
         user: &UserId,
@@ -546,15 +578,27 @@ impl<P: Ports> App<P> {
         let thread = self.get_thread(user, id).await?;
         let store = self.ports.store();
         let mut events: Vec<Event> = Vec::new();
+        let mut bytes = 0_usize;
         let mut after = 0;
-        let max = self.cfg.max_export_events;
-        while after < thread.last_seq && events.len() < max {
+        'pages: while after < thread.last_seq {
             let page = store.list_events(id, after, EXPORT_PAGE).await?;
             let Some(last) = page.last() else { break };
             after = last.seq;
-            events.extend(page.into_iter().take_while(|e| e.seq <= thread.last_seq));
+            for event in page {
+                if event.seq > thread.last_seq {
+                    break 'pages;
+                }
+                // The comma between two events counts too.
+                let size = serialized_len(&event).saturating_add(1);
+                if events.len() >= self.cfg.max_export_events
+                    || bytes.saturating_add(size) > self.cfg.max_export_bytes
+                {
+                    break 'pages;
+                }
+                bytes += size;
+                events.push(event);
+            }
         }
-        events.truncate(max);
         let truncated = events
             .last()
             .map_or(thread.last_seq > 0, |e| e.seq < thread.last_seq);

@@ -5,15 +5,16 @@
 //! adding a member does not move it, so a reader ignores what it does not know.
 
 use orch_app::ThreadExport;
-use orch_core::Event;
-use serde_json::{Value, json};
+use orch_core::{AgentId, AgentTaskState, Event, Job, ThreadRecord, Timestamp};
+use serde::Serialize;
 
 /// The `format` member: what kind of file this is.
 pub const FORMAT: &str = "another-agentic-system/thread-export";
 /// The `version` member: the document's shape, from 1.
 pub const VERSION: u32 = 1;
 
-/// The document for `export`.
+/// The document for an export, borrowed from it: serialising it writes the file straight from the
+/// thread and its events, with no copy of the log in between.
 ///
 /// * `thread`: the contract `Thread` (what `GET /api/threads/{id}` answers), so a reader that
 ///   knows the API knows this member.
@@ -24,30 +25,51 @@ pub const VERSION: u32 = 1;
 /// * `binding`: the A2A agent, context and task the thread is bound to.
 /// * `events`: the append-only log in order, each exactly as the contract `Event` and the store
 ///   serialise it. Every card and line of the chat is derived from it.
-/// * `eventsTruncated`: `true` when the log was longer than the export reads.
+/// * `eventsTruncated`: `true` when the log was longer than the export reads (it reads the head
+///   of the log, up to a count of events and a number of bytes).
 ///
 /// The owner's identity is not a member. It is in the log, as the `actor.name` of the owner's
 /// messages.
-pub fn document(export: &ThreadExport) -> Value {
-    json!({
-        "format": FORMAT,
-        "version": VERSION,
-        "exportedAt": export.exported_at,
-        "thread": export.thread,
-        "job": export.thread.job,
-        "binding": export.binding.as_ref().map(|b| json!({
-            "agentId": b.agent_id,
-            "contextId": b.context_id,
-            "taskId": b.task_id,
-            "taskState": b.task_state,
-            "revision": b.revision,
-        })),
-        "events": export.events.iter().map(event).collect::<Vec<_>>(),
-        "eventsTruncated": export.truncated,
-    })
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Document<'a> {
+    format: &'static str,
+    version: u32,
+    exported_at: &'a Timestamp,
+    thread: &'a ThreadRecord,
+    job: &'a Job,
+    binding: Option<Binding<'a>>,
+    events: &'a [Event],
+    events_truncated: bool,
 }
 
-fn event(e: &Event) -> Value {
-    // `Event` serialises as the contract says; it cannot fail (plain strings, numbers and enums).
-    serde_json::to_value(e).unwrap_or(Value::Null)
+/// The `binding` member.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Binding<'a> {
+    agent_id: &'a AgentId,
+    context_id: &'a str,
+    task_id: Option<&'a str>,
+    task_state: Option<AgentTaskState>,
+    revision: Option<&'a str>,
+}
+
+/// The document for `export`.
+pub fn document(export: &ThreadExport) -> Document<'_> {
+    Document {
+        format: FORMAT,
+        version: VERSION,
+        exported_at: &export.exported_at,
+        thread: &export.thread,
+        job: &export.thread.job,
+        binding: export.binding.as_ref().map(|b| Binding {
+            agent_id: &b.agent_id,
+            context_id: &b.context_id,
+            task_id: b.task_id.as_deref(),
+            task_state: b.task_state,
+            revision: b.revision.as_deref(),
+        }),
+        events: &export.events,
+        events_truncated: export.truncated,
+    }
 }

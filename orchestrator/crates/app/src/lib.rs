@@ -10,8 +10,8 @@ mod gate_config;
 mod inbox;
 
 pub use app::{
-    AgentDescription, App, AppConfig, ApplyOutcome, Creation, DEFAULT_MAX_EXPORT_EVENTS, Inbound,
-    NewThread, Received, ThreadExport,
+    AgentDescription, App, AppConfig, ApplyOutcome, Creation, DEFAULT_MAX_EXPORT_BYTES,
+    DEFAULT_MAX_EXPORT_EVENTS, Inbound, NewThread, Received, ThreadExport,
 };
 pub use directory::{AgentDirectory, AgentEntry};
 pub use dispatcher::{Dispatcher, DispatcherConfig};

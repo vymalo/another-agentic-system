@@ -324,11 +324,15 @@ components:
             revision: { type: [string, "null"], description: "The agent revision that served it" }
         events:
           type: array
-          description: "The thread's append-only event log, in order from `seq` 1, at most 50000; the last `seq` equals `thread.lastSeq` unless `eventsTruncated`"
+          description: |
+            The thread's append-only event log, in order from `seq` 1 with no gap: the head of
+            the log, cut at a number of events and at a number of bytes of serialized events, both
+            configurable (defaults 50000 events and 32 MiB). The last `seq` equals
+            `thread.lastSeq` unless `eventsTruncated`.
           items: { $ref: "#/components/schemas/Event" }
         eventsTruncated:
           type: boolean
-          description: "True when the log is longer than `events`"
+          description: "True when the log is longer than `events`: either bound cut it"
     ThreadState:
       type: string
       description: |

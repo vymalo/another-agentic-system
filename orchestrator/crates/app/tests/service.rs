@@ -322,6 +322,53 @@ async fn an_export_stops_at_its_bound_and_says_so() {
 }
 
 #[tokio::test]
+async fn an_export_stops_at_its_byte_budget_and_keeps_the_head() {
+    let w = World::new();
+    let t = create(&w.app(), &alice(), "plain", "first").await;
+    for i in 0..4 {
+        w.app()
+            .post_message(&alice(), t.id, format!("message {i} {}", "x".repeat(200)))
+            .await
+            .unwrap();
+    }
+    let all = w.app().export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(all.events.len(), 5);
+    assert!(!all.truncated);
+    let sizes: Vec<usize> = all
+        .events
+        .iter()
+        .map(|e| serde_json::to_vec(e).unwrap().len() + 1)
+        .collect();
+    // A budget of the first three events and one byte short of a fourth: the head, flagged.
+    let budget = sizes[..3].iter().sum::<usize>() + sizes[3] - 1;
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_bytes: budget,
+        ..orch_app::AppConfig::default()
+    });
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(
+        export.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(export.truncated);
+    // The whole log fits a budget of exactly its size: nothing is cut, nothing is flagged.
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_bytes: sizes.iter().sum(),
+        ..orch_app::AppConfig::default()
+    });
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(export.events.len(), 5);
+    assert!(!export.truncated);
+    // A budget too small for the first event leaves an empty, flagged export.
+    let app = w.app_with(orch_app::AppConfig {
+        max_export_bytes: 10,
+        ..orch_app::AppConfig::default()
+    });
+    let export = app.export_thread(&alice(), t.id).await.unwrap();
+    assert!(export.events.is_empty() && export.truncated);
+}
+
+#[tokio::test]
 async fn threads_list_newest_first_with_a_cursor() {
     let w = World::new();
     let app = w.app();

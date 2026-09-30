@@ -20,6 +20,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 
 // The app in jsdom against the mock orchestrator: the shell, the runtime, the agent and LiveRuns.
 let ChatShell: typeof import("./chat-shell").ChatShell;
+let REVOKE_AFTER_MS: number;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
 let base = "";
@@ -72,6 +73,7 @@ beforeAll(async () => {
   }) as typeof fetch;
   // the API client binds fetch and Request when it is created: import the app after the patch
   ({ ChatShell } = await import("./chat-shell"));
+  ({ REVOKE_AFTER_MS } = await import("@/features/chat/lib/export-thread"));
 });
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -198,6 +200,20 @@ describe("ChatShell over AG-UI", () => {
     ) {
       downloads.push(`${this.download} ${this.href}`);
     });
+    // The object URL must outlive a slow download: it is revoked REVOKE_AFTER_MS later, not at once.
+    const revokers: Array<() => void> = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (ms === REVOKE_AFTER_MS && typeof fn === "function") {
+        revokers.push(fn as () => void);
+        return 0;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
     try {
       shell(id);
       await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
@@ -212,7 +228,11 @@ describe("ChatShell over AG-UI", () => {
       expect(doc.thread.id).toBe(id);
       expect(doc.events.length).toBe(doc.thread.lastSeq);
       expect(doc.events[0].kind).toBe("user_message");
-      await waitFor(() => expect(revoked).toEqual(["blob:export"]));
+      expect(REVOKE_AFTER_MS).toBeGreaterThanOrEqual(30_000);
+      expect(revokers).toHaveLength(1);
+      expect(revoked).toEqual([]);
+      revokers[0]?.();
+      expect(revoked).toEqual(["blob:export"]);
       // the button is ready for another one, and nothing went wrong
       expect(
         (screen.getByRole("button", { name: "Export JSON" }) as HTMLButtonElement).disabled,
@@ -220,6 +240,7 @@ describe("ChatShell over AG-UI", () => {
       expect(screen.queryByText(/Could not export/)).toBeNull();
     } finally {
       click.mockRestore();
+      setTimeoutSpy.mockRestore();
     }
   });
 
@@ -248,6 +269,37 @@ describe("ChatShell over AG-UI", () => {
     } finally {
       click.mockRestore();
     }
+  });
+
+  it("a failed export is not shown under the next thread the header is reused for", async () => {
+    const first = await makeThread("Implement the thing");
+    const second = await makeThread("Implement the other thing");
+    const { rerender } = shell(first);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    failing = {
+      key: `GET /api/threads/${first}/export`,
+      status: 503,
+      detail: "storage is unavailable",
+    };
+    fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+    await screen.findByRole("alert");
+    // The same component instance now shows another thread: the failure is about the first.
+    rerender(
+      <TooltipProvider>
+        <ChatShell threadId={second} />
+      </TooltipProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText(/Could not export/)).toBeNull());
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(screen.queryByRole("alert")).toBeNull();
+    // and it does not come back when the person returns to the first
+    rerender(
+      <TooltipProvider>
+        <ChatShell threadId={first} />
+      </TooltipProvider>,
+    );
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    expect(screen.queryByText(/Could not export/)).toBeNull();
   });
 
   it("a blocked thread offers the question, and the answer is a resume, not a message", async () => {

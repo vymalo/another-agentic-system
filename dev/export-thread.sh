@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # Saves one chat thread as a JSON file, to send to a developer: the same file the web's
-# "Export JSON" button downloads (GET /api/threads/{id}/export, docs/api/chat-api.yaml, "Sharing a chat").
+# "Export JSON" button downloads (GET /api/threads/{id}/export, docs/api/chat-api.yaml; dev/README.md,
+# section "Share a chat with a developer").
 #
 #   dev/export-thread.sh 0190a1b2-...                 # writes thread-0190a1b2-....json in the current directory
 #   dev/export-thread.sh 0190a1b2-... chat.json       # writes chat.json
@@ -64,7 +65,7 @@ summary=$(jq -er '
 if [ "$out" = - ]; then
   cat "$tmp/export.json"
 else
-  cp "$tmp/export.json" "$out"
+  cp -- "$tmp/export.json" "$out"
   echo "wrote $out" >&2
 fi
 echo "thread $id: $summary" >&2

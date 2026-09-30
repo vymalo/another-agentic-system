@@ -882,7 +882,14 @@ The document (`format` `another-agentic-system/thread-export`, `version` 1, buil
 | `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task` (the person's messages), `branchProblem`, `pushed`, every `results` entry of the attempt, any `hold` |
 | `binding` | the A2A `agentId`, `contextId`, `taskId`, `taskState` and `revision`; `null` when none |
 | `events` | the log in order from `seq` 1, each exactly as the contract `Event` and the store serialise it. Every card of the chat is derived from it |
-| `eventsTruncated` | `true` when the log is longer than `AppConfig::max_export_events` (50 000); the events that are there are the first ones |
+| `eventsTruncated` | `true` when the log is longer than `events`: either bound of the read cut it (below); the events that are there are the first ones, `seq` 1 to the last, with no gap |
+
+**Bounds.** The read stops at `AppConfig::max_export_events` events (default 50 000) or `AppConfig::max_export_bytes` bytes of
+serialized events (default 32 MiB, compact JSON, counted event by event without building the text), whichever comes first,
+and keeps the head of the log. The count alone does not bound memory: an event may carry up to 100 000 characters of text.
+Both are settings of the thread service (`AppConfig`, set by whoever composes it; the binary uses the defaults). The file is
+written straight from the thread and its events, borrowed, through one serialisation (pretty-printed, so a person can open it and a
+developer can diff it: it is larger than the budget by the indentation), with no copy of the log as a JSON value in between.
 
 `events` stop at `thread.last_seq`, read before them, so the ledger and the log agree even on a thread that is moving. The
 AG-UI frames the chat is drawn from are **not** in the file: they are a pure, deterministic fold of `events`
