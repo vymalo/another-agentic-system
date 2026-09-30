@@ -54,7 +54,8 @@ tokio::spawn(async move { agents.run(stop).await });
   other's tasks. A new task's id comes from `task_id_for(kind, caller, context, message id)`: sending the same
   message twice reaches one task, and `find_task_by_message` recomputes the id and answers `Some` only if that task
   exists.
-* **`send_stream`** submits the message (a follow-up to an `input-required` task when the request names a task),
+* **`send_stream`** submits the message (a follow-up to an `input-required` task when the request names a task; the
+  message's `referenceTaskIds` are the request's, [ADR 0021](../../../docs/decisions/0021-context-across-a2a-tasks.md)),
   then subscribes: the first frame is a snapshot, then status and artifact events; the stream ends after the event
   that finishes the task or leaves it waiting for its caller, and after the first error. A stream that closes
   without an event is a `Protocol` error. A selected release, or an A2UI action, is `Rejected` (fail closed).

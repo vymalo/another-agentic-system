@@ -107,6 +107,7 @@ mod tests {
             message_id: message.to_owned(),
             context_id: "ctx".to_owned(),
             task_id: None,
+            reference_task_ids: Vec::new(),
             content: SendContent::Text("echo hi".to_owned()),
             release: None,
         }

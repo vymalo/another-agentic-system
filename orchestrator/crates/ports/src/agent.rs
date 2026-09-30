@@ -145,6 +145,12 @@ pub struct SendRequest {
     pub context_id: String,
     /// Continue this task (a follow-up to an `input-required` task).
     pub task_id: Option<String>,
+    /// The earlier tasks of the thread this new task is about (A2A `referenceTaskIds`, ADR 0021):
+    /// the previous task, for a rework, a follow-up after the turn ended and the first task of a
+    /// new job. Empty for a thread's first task, for a message that continues `task_id`, and for
+    /// the verifier, which is asked in a context of its own and is told nothing of the author's
+    /// tasks (ADR 0002).
+    pub reference_task_ids: Vec<String>,
     /// The message, or the action.
     pub content: SendContent,
     /// Selected release channel or revision (only sent when the card offers releases).

@@ -354,6 +354,10 @@ fn user_message(req: &SendRequest, ui: Option<&UiSupport>) -> Message {
     message.message_id = req.message_id.clone();
     message.context_id = Some(req.context_id.clone());
     message.task_id = req.task_id.clone();
+    // A2A `referenceTaskIds`: the earlier tasks this one is about (ADR 0021)
+    if !req.reference_task_ids.is_empty() {
+        message.reference_task_ids = Some(req.reference_task_ids.clone());
+    }
     let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
     if let Some(release) = &req.release {
         metadata.insert(

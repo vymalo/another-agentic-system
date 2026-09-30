@@ -98,6 +98,7 @@ async fn blocked_then_follow_up_continues_the_same_task() {
             Call::Send { task_id: None, .. },
             Call::Send {
                 task_id: Some(t2),
+                reference_task_ids,
                 text,
                 context_id,
                 ..
@@ -106,6 +107,8 @@ async fn blocked_then_follow_up_continues_the_same_task() {
             assert_eq!(t2, "task-1");
             assert_eq!(text, "main");
             assert_eq!(context_id, &t.id.to_string());
+            // the answer continues the task: it is not a new task, so it references none
+            assert!(reference_task_ids.is_empty());
         }
         other => panic!("{other:?}"),
     }
@@ -320,18 +323,26 @@ async fn a_follow_up_after_done_is_a_new_task_in_the_same_context() {
         (
             Call::Send {
                 task_id: None,
+                reference_task_ids: first_refs,
                 context_id: c1,
                 ..
             },
             Call::Send {
                 task_id: None,
+                reference_task_ids,
                 text,
                 context_id: c2,
                 ..
             },
         ) => {
+            assert!(
+                first_refs.is_empty(),
+                "a thread's first task references nothing"
+            );
             assert_eq!(text, "echo again");
             assert_eq!(c1, c2, "the same context");
+            // a new task of the thread names the one before it (ADR 0021)
+            assert_eq!(reference_task_ids, &["task-1".to_owned()]);
         }
         other => panic!("{other:?}"),
     }

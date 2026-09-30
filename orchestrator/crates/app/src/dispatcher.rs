@@ -474,11 +474,19 @@ impl<P: Ports> Dispatcher<P> {
                 .task_state
                 .is_some_and(AgentTaskState::is_interrupted)
         });
+        // A task that does not continue one waiting for the user is a new task of the thread (a
+        // rework, a follow-up after the turn ended, the first task of a new job): it names the
+        // previous task, so the agent can tell what the message is about (ADR 0021).
+        let reference_task_ids = match (&continues, &binding.task_id) {
+            (None, Some(previous)) => vec![previous.clone()],
+            (Some(_) | None, _) => Vec::new(),
+        };
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             message_id: row.id.to_string(),
             context_id: binding.context_id.clone(),
             task_id: continues.clone(),
+            reference_task_ids,
             content,
             release,
         };

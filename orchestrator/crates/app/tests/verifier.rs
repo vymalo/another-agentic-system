@@ -227,6 +227,7 @@ async fn a_passing_verdict_finishes_the_job_and_is_never_the_workers_update() {
         message_id,
         context_id,
         task_id,
+        reference_task_ids,
         text,
         release,
         ..
@@ -238,6 +239,8 @@ async fn a_passing_verdict_finishes_the_job_and_is_never_the_workers_update() {
     assert_eq!(context_id, &verifier_context(t.id, 1, 1));
     assert_ne!(context_id, &t.id.to_string(), "not the worker's context");
     assert_eq!((task_id, release), (&None, &None));
+    // never a reference to the author's tasks: the verifier is told nothing of them (ADR 0002)
+    assert!(reference_task_ids.is_empty());
     assert!(text.contains(&format!("commit {SHA}")), "{text}");
 
     // Its task is the row's, not the thread's.
@@ -692,6 +695,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             message_id: row.id.to_string(),
             context_id: verifier_context(t.id, 1, 1),
             task_id: None,
+            reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
             release: None,
         },
@@ -788,6 +792,7 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
             message_id: row.id.to_string(),
             context_id: verifier_context(t.id, 1, 1),
             task_id: None,
+            reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
             release: None,
         },

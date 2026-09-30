@@ -36,6 +36,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         message_id: format!("msg-{}", text.replace(' ', "-")),
         context_id: "ctx-1".to_owned(),
         task_id: None,
+        reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
         release: None,
     }
@@ -318,6 +319,30 @@ async fn echo_streams_working_artifact_completed_with_stable_keys() {
         !calls[0].activates_release_channels(),
         "no release, no extension header"
     );
+}
+
+#[tokio::test]
+async fn a_new_task_names_the_tasks_it_is_about_in_its_message() {
+    // A2A `referenceTaskIds` (ADR 0021): the message carries them, and an agent sees them.
+    let fake = agent().await;
+    let ep = fake.endpoint("plain", None);
+    let first = drain(
+        client()
+            .send_stream(request(&ep, "echo one"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let task = first[0].task_id.clone();
+    let mut second = request(&ep, "echo two");
+    second.message_id = "msg-two".to_owned();
+    second.reference_task_ids = vec![task.clone()];
+    drain(client().send_stream(second).await.unwrap()).await;
+    let calls = fake.executions();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].reference_task_ids.is_empty());
+    assert_eq!(calls[1].reference_task_ids, [task]);
+    assert_ne!(calls[1].task_id, calls[0].task_id);
 }
 
 #[tokio::test]

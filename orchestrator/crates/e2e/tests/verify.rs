@@ -213,6 +213,9 @@ async fn a_failed_check_sends_the_agent_back_and_the_second_attempt_is_green(bac
     assert_ne!(calls[0].task_id, calls[1].task_id, "a new task");
     assert!(!calls[1].resuming, "the first task had completed");
     assert_eq!(calls[0].text, "verify-red-once fix the login");
+    // ... that names the previous task (A2A `referenceTaskIds`, ADR 0021); the first names none
+    assert!(calls[0].reference_task_ids.is_empty());
+    assert_eq!(calls[1].reference_task_ids, [calls[0].task_id.clone()]);
     let rework = &calls[1].text;
     assert!(rework.contains("attempt 2"), "{rework}");
     assert!(

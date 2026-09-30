@@ -242,6 +242,8 @@ pub struct Call {
     pub message_id: Option<String>,
     /// The user message's text.
     pub text: String,
+    /// `referenceTaskIds` of the message: the earlier tasks it says it is about (ADR 0021).
+    pub reference_task_ids: Vec<String>,
     /// The task was waiting for input and this message continues it.
     pub resuming: bool,
     /// Values of the `A2A-Extensions` request header.
@@ -831,6 +833,11 @@ impl Shared {
             context_id: ctx.context_id.clone(),
             message_id: ctx.message.as_ref().map(|m| m.message_id.clone()),
             text: text_of(ctx.message.as_ref()),
+            reference_task_ids: ctx
+                .message
+                .as_ref()
+                .and_then(|m| m.reference_task_ids.clone())
+                .unwrap_or_default(),
             resuming,
             extensions_header: header("a2a-extensions"),
             release: requested_release(ctx.message.as_ref()),
