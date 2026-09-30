@@ -27,6 +27,14 @@ macro_rules! thread_store_conformance {
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
             job_roundtrip job_is_written_with_the_state gate_events_roundtrip
+            inbox_dedupes_by_source_and_key inbox_claims_are_leases_and_lapse
+            inbox_claimers_never_share_a_row inbox_parks_and_rearms_in_one_commit
+            inbox_park_finds_a_watch_that_appeared inbox_commit_is_fenced_and_marks_applied
+            inbox_stale_lease_writes_nothing parked_rows_expire timer_is_claimed_only_when_due
+            a_replayed_commit_arms_no_second_timer inbox_retry_complete_and_release
+            create_thread_arms_timers_and_watches watches_are_first_come
+            inbox_counts_only_the_claims_that_failed
+            inbox_only_commit_finishes_the_row_and_leaves_the_thread_alone
         );
     };
     (@cases $make:path; $($case:ident)*) => {
@@ -50,6 +58,13 @@ macro_rules! wakeup_conformance {
         async fn wakeup_delivers_thread_topic() {
             match $make().await {
                 Some(w) => $crate::testkit::wakeup::delivers_thread_topic(w).await,
+                None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn wakeup_delivers_inbox_topic() {
+            match $make().await {
+                Some(w) => $crate::testkit::wakeup::delivers_inbox_topic(w).await,
                 None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
             }
         }

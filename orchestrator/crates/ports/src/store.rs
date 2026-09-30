@@ -4,10 +4,14 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    Job, ThreadId, ThreadRecord, ThreadState, UserId,
+    Job, ThreadId, ThreadRecord, ThreadState, UserId, WatchKey,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::inbox::{
+    InboxFinal, InboxId, InboxItem, InboxLease, NewInbox, NewTimer, Parking, Received,
+};
 
 /// Identifier of an outbox row. It doubles as the A2A `messageId` of the delegated message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -139,6 +143,47 @@ pub struct Commit {
     /// [`ThreadStore::create_thread`] ignores it: a thread that does not exist yet has no
     /// outbox row to be claimed.
     pub lease: Option<Lease>,
+    /// Watches to insert for this thread ([`Command::Watch`](orch_core::Command::Watch)). In
+    /// the same transaction the store re-arms every `parked` inbox row whose correlation is one
+    /// of these keys (`pending`, due at `now`), so a report that arrived before its watch is
+    /// not lost. Inserting a key that is watched already is a no-op: the first thread keeps it
+    /// (a store may log that another thread asked for it).
+    pub watches: Vec<WatchKey>,
+    /// Timers to arm ([`Command::Schedule`](orch_core::Command::Schedule)): each becomes an
+    /// inbox row with `source = "timer"`, due `after` this commit's `now`, and a key derived
+    /// from the thread and the timer ([`NewTimer::idempotency_key`]), so arming the same timer
+    /// twice is one row.
+    pub timers: Vec<NewTimer>,
+    /// The inbox claim this commit is made under, for a commit that applies an inbox row to the
+    /// thread; `None` otherwise. When set, the store applies the commit only while the row is
+    /// still `inflight` under exactly this claim (otherwise it writes nothing and answers
+    /// [`CommitOutcome::Fenced`]) and marks the row `applied` in the same transaction.
+    /// [`ThreadStore::create_thread`] ignores it.
+    ///
+    /// A commit that carries this and nothing else (see
+    /// [`only_finishes_inbox`](Self::only_finishes_inbox)) is how an input that changes nothing
+    /// finishes its row. It is checked against `expected_version` like any commit, so a "nothing
+    /// to do" decided on a thread that has moved since is refused
+    /// ([`StoreError::VersionConflict`]) and decided again, and the input is never dropped
+    /// behind the thread's back. It leaves the thread as it is: no version bump, no
+    /// `updated_at`, no wakeup.
+    pub inbox: Option<InboxLease>,
+}
+
+impl Commit {
+    /// Whether this commit writes nothing to the thread but the completion of its inbox row:
+    /// an `inbox` claim and no events, outbox rows, binding update, job, watches or timers.
+    /// (A store also requires `new_state` to be the thread's current state before it leaves the
+    /// thread untouched.)
+    pub fn only_finishes_inbox(&self) -> bool {
+        self.inbox.is_some()
+            && self.events.is_empty()
+            && self.outbox.is_empty()
+            && self.binding.is_none()
+            && self.job.is_none()
+            && self.watches.is_empty()
+            && self.timers.is_empty()
+    }
 }
 
 /// Result of [`ThreadStore::commit`].
@@ -378,12 +423,16 @@ impl Classify for StoreError {
     }
 }
 
-/// Threads, their append-only event logs, the agent binding and the outbox.
+/// Threads, their append-only event logs, the agent binding, the outbox, the watches and the
+/// inbox.
 ///
 /// Every mutating method is atomic. Outbox methods that take a [`Lease`] only act on a row
 /// that is `inflight`, held by the lease's owner at the lease's attempt, and return `false`
 /// otherwise (a lost lease); [`commit`](Self::commit) does the same for its `lease` field and
-/// answers [`CommitOutcome::Fenced`].
+/// answers [`CommitOutcome::Fenced`]. The inbox methods that take an [`InboxLease`] work the
+/// same way, and so does `commit` for its `inbox` field. The inbox is part of this trait and
+/// not a port of its own because a commit must be atomic across the thread and the inbox row
+/// it applies (ADR 0016).
 pub trait ThreadStore: Send + Sync + 'static {
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
@@ -420,8 +469,10 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// [`StoreError::VersionConflict`] (nothing written); an idempotency key already present
     /// in the thread's log gives [`CommitOutcome::Duplicate`] (nothing written); otherwise
     /// appends the events with `seq = last_seq + 1..`, sets state (and the job, when the commit
-    /// carries one), bumps version, `last_seq` and `updated_at`, inserts the outbox rows and
-    /// applies the binding update.
+    /// carries one), bumps version, `last_seq` and `updated_at`, inserts the outbox rows,
+    /// applies the binding update, inserts the watches and re-arms the parked inbox rows they
+    /// match, arms the timers and marks the commit's inbox row `applied`. The `inbox` claim is
+    /// checked like the `lease` one, before the version.
     fn commit(
         &self,
         thread: ThreadId,
@@ -526,6 +577,99 @@ pub trait ThreadStore: Send + Sync + 'static {
         &self,
         thread: ThreadId,
     ) -> impl Future<Output = Result<Vec<OutboxItem>, StoreError>> + Send;
+
+    // ---------------------------------------------------------------- inbox
+
+    /// Stores an inbound report as a `pending` row, due at `now`. A row with the same
+    /// `(source, idempotency_key)` (in any status) makes this [`Received::Duplicate`] and
+    /// writes nothing.
+    fn receive(
+        &self,
+        row: NewInbox,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<Received, StoreError>> + Send;
+
+    /// Claims up to `limit` rows, earliest `available_at` first (then by id): `pending` and
+    /// due (`available_at <= now`), or `inflight` with an expired lease (`lease_until <= now`).
+    /// Sets `inflight`, owner, `lease_until = now + lease` and `attempts += 1`. Concurrent
+    /// claimers never get the same row. A timer whose time has not come is not claimed.
+    fn claim_inbox(
+        &self,
+        owner: &str,
+        now: Timestamp,
+        lease: Duration,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<InboxItem>, StoreError>> + Send;
+
+    /// Sets a claimed row aside until its watch exists: `inflight` becomes `parked`, stamped
+    /// `now`. If the watch for the row's correlation exists by then (a commit added it since
+    /// the worker looked), the row goes back to `pending`, due at `now`, and the answer is
+    /// [`Parking::Rearmed`]; the check and the write are one step that a concurrent commit
+    /// adding the watch cannot interleave with, so a parked row is never left behind a watch.
+    /// Either way the claim ends without having failed: the row's claims so far are refunded
+    /// ([`InboxItem::refunded`](crate::InboxItem::refunded)), so parking and re-arming never use
+    /// up the attempt limit.
+    fn park_inbox(
+        &self,
+        lease: &InboxLease,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<Parking, StoreError>> + Send;
+
+    /// Puts the claimed row back to `pending`, due at `available_at`, and records the error.
+    /// `false` if `lease` is no longer the row's current claim.
+    fn retry_inbox(
+        &self,
+        lease: &InboxLease,
+        available_at: Timestamp,
+        error: String,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Finishes the claimed row without a thread commit. `false` if `lease` is no longer the
+    /// row's current claim (a commit under it already marked the row `applied`, or another
+    /// worker holds it now).
+    fn complete_inbox(
+        &self,
+        lease: &InboxLease,
+        outcome: InboxFinal,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Marks `parked` rows whose `parked_at <= parked_at_or_before` as `expired`. Returns the
+    /// count. A worker calls it with `now - INBOX_PARKED_TTL_SECS`.
+    fn expire_parked_inbox(
+        &self,
+        parked_at_or_before: Timestamp,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    /// On shutdown: sets `lease_until = now` for inbox rows leased to `owner` so another
+    /// replica claims them immediately, and refunds the released claim (it did not fail, so it
+    /// does not count against the attempt limit). Returns the count.
+    fn release_inbox_leases(
+        &self,
+        owner: &str,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    /// The thread that watches `key` (a [`WatchKey`] as text, which is what a row's
+    /// `correlation` holds), if any.
+    fn get_watch(
+        &self,
+        key: &str,
+    ) -> impl Future<Output = Result<Option<ThreadId>, StoreError>> + Send;
+
+    /// Inspection: one inbox row, whatever its status.
+    fn get_inbox(
+        &self,
+        id: InboxId,
+    ) -> impl Future<Output = Result<Option<InboxItem>, StoreError>> + Send;
+
+    /// Inspection: the inbox row of `(source, idempotency_key)`, whatever its status.
+    fn find_inbox(
+        &self,
+        source: &str,
+        idempotency_key: &str,
+    ) -> impl Future<Output = Result<Option<InboxItem>, StoreError>> + Send;
 }
 
 #[cfg(test)]

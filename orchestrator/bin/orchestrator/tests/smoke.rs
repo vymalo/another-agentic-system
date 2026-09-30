@@ -1438,3 +1438,84 @@ async fn a_worker_stopped_with_a_running_task_hands_it_over_at_once() {
         assert!(status.success(), "log:\n{}", replica.run.borrow().log());
     }
 }
+
+/// The inbox worker is a worker component: a control plane alone leaves a due timer where it is,
+/// and a worker process (which polls, since a timer coming due is not announced) applies it. The
+/// timer is seeded with SQL because nothing schedules one from outside; it is for a thread the
+/// gate is not watching, which the core takes as a stale deadline and changes nothing for.
+#[tokio::test]
+async fn a_due_timer_waits_for_a_worker_process_and_is_applied_by_it() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (agent, agents) = agent_and_list(&scratch).await;
+    let url = database_url_of(&db);
+
+    let cp = Replica::start_with(
+        &scratch,
+        "cp.log",
+        &url,
+        &agents,
+        &["--role", "control-plane"],
+        &[],
+    );
+    cp.wait_ready().await;
+    let chat = cp.chat();
+    let id = chat.create_thread("fake", "gate inbox split", None).await;
+
+    let pool = db.pool("smoke-inbox", 2).await;
+    let row = uuid::Uuid::now_v7();
+    let payload = serde_json::json!({
+        "kind": "timer",
+        "thread": id,
+        "timer": {"kind": "ci_deadline", "attempt": 1, "verification": 1},
+    });
+    sqlx::query(
+        "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
+         created_at, updated_at) VALUES ($1, 'timer', 'smoke', 'timer', $2, 'pending', now(), \
+         now(), now())",
+    )
+    .bind(row)
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = || async {
+        sqlx::query_as::<_, (String, i32)>("SELECT status, attempts FROM inbox WHERE id = $1")
+            .bind(row)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    // A control plane runs no inbox worker: the row is due and stays so.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(state().await, ("pending".to_owned(), 0));
+
+    let worker = Replica::start_with(
+        &scratch,
+        "worker.log",
+        &url,
+        &agents,
+        &[],
+        &[
+            ("ORCH_ROLE", "worker"),
+            ("ORCH_INSTANCE_ID", "w1"),
+            ("INBOX_POLL_SECS", "1"),
+        ],
+    );
+    worker.wait_ready().await;
+    eventually("the worker applies the timer", || async {
+        (state().await.0 == "applied").then_some(())
+    })
+    .await;
+    assert_eq!(state().await.1, 1, "claimed once");
+    agent.release_gate();
+
+    for replica in [&worker, &cp] {
+        let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
+        assert!(status.success(), "log:\n{}", replica.run.borrow().log());
+    }
+}

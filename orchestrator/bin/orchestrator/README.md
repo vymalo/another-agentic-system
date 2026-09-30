@@ -1,7 +1,7 @@
 # orchestrator (binary)
 
 The orchestrator service: the composition root that wires the Postgres store,
-the A2A adapter (and, with the feature `agent-local`, the local agents), the dispatcher, the resource API and the interaction surfaces
+the A2A adapter (and, with the feature `agent-local`, the local agents), the dispatcher, the inbox worker, the resource API and the interaction surfaces
 chosen by `ORCH_SURFACES` into one stateless process. `ORCH_ROLE` says which
 halves the process runs: the control plane, a worker, or both
 ([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)).
@@ -37,7 +37,7 @@ Running it, the container image, configuration and shutdown are documented in
 | `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
 | `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far; compiled in with the feature `agent-local`; `needs_model()` says whether a kind calls a model), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
 | `src/local.rs` | the one place that knows `orch-agent-adam`, in two variants of one surface. With the feature `agent-local`: `Local::start` builds the local agents' own pool on `DATABASE_URL` and migrates their journal (only when `AGENTS_FILE` lists a local agent), `compose` builds `ByTransport<A2aAgentClient, LocalAgentClient>`, `Local::register` adds the agents' worker as a worker component in the roles that run workers, `is_unavailable` maps a transient failure to exit 69. Without it: `Agents` is the A2A client alone and `Local` cannot be built |
-| `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher as a worker component, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher releases its leases as it stops). Readiness flips first, so probes answer 503 for the whole drain |
+| `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher and the inbox worker (timers and stored reports, `orch_app::InboxWorker`) as worker components, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher and the inbox worker release their leases as they stop). Readiness flips first, so probes answer 503 for the whole drain |
 
 ## Environment
 
@@ -53,6 +53,10 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `DATABASE_MAX_CONNECTIONS` | `10` | at least 2 |
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | also the lease of a local agent's run |
+| `INBOX_LEASE_SECS` | `30` | at least 3; how long a crashed replica's claim on an inbox row blocks others |
+| `INBOX_POLL_SECS` | `2` | at least 1; the inbox worker's safety poll, and so the latest a timer fires after its time |
+| `INBOX_PARKED_TTL_SECS` | `86400` | at least 1; how long a report that no thread watches yet waits before it expires |
+| `INBOX_MAX_ATTEMPTS` | `10` | at least 1; claims of one inbox row before it is dead-lettered (a row claimed more often without being finished is dead-lettered undelivered; claims handed back at shutdown or ended by a park are not counted) |
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
 | `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
@@ -83,8 +87,8 @@ it is created, so a change of configuration never reaches a running job.
 Startup validates all of it and exits **78** with a message naming the variable or the agent: an unknown source; a
 `maxAttempts` outside `1..=cap`; an entry whose `require` leaves out a source the deployment requires; a `verifier`
 that is not another configured agent; an unknown member of `gate`. **`ci` and `verifier`, as sources or as settings
-(`ci:`, `verifier:`), are refused in every layer**: the application drops the commands they need until the inbox and
-timers (MVP slice 5), the CI webhook (slice 6) and the verifier dispatch (slice 10) exist, so a gate that required
+(`ci:`, `verifier:`), are refused in every layer**: the application drops `RequestVerification` until the verifier dispatch (slice 10) exists, and no surface writes CI reports until the CI webhook
+(slice 6) exists (the inbox and timers, MVP slice 5, are built), so a gate that required
 them could never pass. The message says which slice enables them. A run that asks for the same is a 400.
 
 ### Logs and metrics
@@ -112,9 +116,9 @@ host (adam-coder reads its own `ROLE`). Every role runs the migrations, needs `D
 
 | Role | Starts | Serves on `LISTEN_ADDR` | Ready when |
 |---|---|---|---|
-| `all` (default) | HTTP server and dispatcher, as before the role existed | health, resource API, surfaces | the database is migrated and answers |
-| `control-plane` | HTTP server; **no dispatcher**, so nothing is delivered to an agent from this process | health, resource API, surfaces | the database is migrated and answers |
-| `worker` | dispatcher, and a router with only `/healthz` and `/readyz` | health only: every other path is 404, with or without an identity | the database answers and the dispatcher has started |
+| `all` (default) | HTTP server, dispatcher and inbox worker, as before the role existed | health, resource API, surfaces | the database is migrated and answers |
+| `control-plane` | HTTP server; **no dispatcher and no inbox worker**, so nothing is delivered to an agent and no timer fires from this process (a report received here is stored, and applied by a worker) | health, resource API, surfaces | the database is migrated and answers |
+| `worker` | dispatcher, inbox worker, and a router with only `/healthz` and `/readyz` | health only: every other path is 404, with or without an identity | the database answers and the dispatcher has started |
 
 The two halves share nothing but Postgres (outbox, thread version compare-and-swap, `LISTEN/NOTIFY`;
 [ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)), so a control plane
@@ -216,7 +220,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` answers 404 on
   `/api/...` and `/metrics` with role and instance on every log line; a `control-plane` process serves the API but the thread stays
   `queued` and the agent is never called until a worker process starts (its `/metrics` shows one
-  due row meanwhile), then it completes and the backlog reads zero; one control plane and two workers, where the worker that holds
+  due row meanwhile), then it completes and the backlog reads zero; a due timer row that a control plane alone leaves pending and a worker process applies (`INBOX_POLL_SECS=1`); one control plane and two workers, where the worker that holds
   the delegation is SIGKILLed and the other finishes it (message delivered once,
   events once each); a worker stopped on SIGTERM within its grace hands a running
   task over at once.

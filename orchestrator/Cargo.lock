@@ -2128,6 +2128,7 @@ name = "orch-e2e"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "jiff",
  "orch-agent-a2a",
  "orch-agent-adam",
  "orch-agui-proto",

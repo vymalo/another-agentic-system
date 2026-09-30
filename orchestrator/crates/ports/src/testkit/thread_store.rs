@@ -7,14 +7,16 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
     CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, EventBody,
-    GatePolicy, Hold, Job, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState, UserId,
-    UserMessageData,
+    GatePolicy, Hold, Job, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState, Timer,
+    UserId, UserMessageData, WatchKey,
 };
 use uuid::Uuid;
 
 use crate::{
-    BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal,
-    OutboxId, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, StoreError, ThreadStore,
+    BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxLease, InboxPayload,
+    InboxStatus, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
+    OutboxId, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, Parking, Received, StoreError,
+    TIMER_SOURCE, ThreadStore,
 };
 
 /// The class of the error, if any: cases assert classes, never concrete variants or sources.
@@ -102,6 +104,9 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         binding: None,
         now: t0(),
         lease: None,
+        watches: Vec::new(),
+        timers: Vec::new(),
+        inbox: None,
     }
 }
 
@@ -1586,4 +1591,926 @@ pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(read, stored);
     let read_bodies: Vec<EventBody> = read.into_iter().map(|e| e.body).collect();
     assert_eq!(read_bodies, bodies);
+}
+
+// ---------------------------------------------------------------------------------- inbox
+
+fn inbox_id(n: u128) -> InboxId {
+    InboxId(Uuid::from_u128(
+        0x0190_0000_0000_7000_a000_0000_0000_0000 + n,
+    ))
+}
+
+const REPO: &str = "github.com/o/r";
+
+/// The watch key of CI on the commit whose hash is `n` repeated.
+fn watch(n: u8) -> WatchKey {
+    WatchKey::ci(REPO, &format!("{n:02x}").repeat(20))
+}
+
+fn report(n: u8) -> CiReport {
+    CiReport {
+        provider: CiProvider::Github,
+        repository: REPO.to_owned(),
+        sha: format!("{n:02x}").repeat(20),
+        branch: Some("agent/x".to_owned()),
+        name: "build".to_owned(),
+        conclusion: CiConclusion::Success,
+        url: None,
+        summary: Some("green".to_owned()),
+    }
+}
+
+/// A CI report row from `github` under `key`, matched by the watch `n`.
+fn ci_row(id: u128, key: &str, n: u8) -> NewInbox {
+    NewInbox {
+        id: inbox_id(id),
+        source: "github".to_owned(),
+        idempotency_key: key.to_owned(),
+        payload: InboxPayload::CiReport(report(n)),
+        correlation: Some(watch(n).as_str().to_owned()),
+    }
+}
+
+fn ilease(id: u128, owner: &str, attempt: u32) -> InboxLease {
+    InboxLease {
+        id: inbox_id(id),
+        owner: owner.to_owned(),
+        attempt,
+    }
+}
+
+async fn iclaim<S: ThreadStore>(store: &S, owner: &str, now: Timestamp) -> Vec<crate::InboxItem> {
+    store.claim_inbox(owner, now, LEASE, 100).await.unwrap()
+}
+
+fn ids(items: &[crate::InboxItem]) -> Vec<InboxId> {
+    items.iter().map(|i| i.id).collect()
+}
+
+fn ci_deadline(id: u128, after_secs: i64, attempt: u32, verification: u32) -> NewTimer {
+    NewTimer {
+        id: inbox_id(id),
+        after: SignedDuration::from_secs(after_secs),
+        timer: Timer::CiDeadline {
+            attempt,
+            verification,
+        },
+    }
+}
+
+/// The same `(source, key)` twice is one row and the second receive says so, in whatever status
+/// the row has become; another source with the same key is another delivery.
+pub async fn inbox_dedupes_by_source_and_key<S: ThreadStore>(store: S) {
+    let first = ci_row(1, "delivery-1", 1);
+    assert_eq!(
+        store.receive(first.clone(), t0()).await.unwrap(),
+        Received::Stored { id: inbox_id(1) }
+    );
+    let redelivery = NewInbox {
+        id: inbox_id(2),
+        ..first.clone()
+    };
+    assert_eq!(
+        store.receive(redelivery.clone(), at(5)).await.unwrap(),
+        Received::Duplicate
+    );
+    assert!(store.get_inbox(inbox_id(2)).await.unwrap().is_none());
+    let other_source = NewInbox {
+        id: inbox_id(3),
+        source: "generic".to_owned(),
+        ..first.clone()
+    };
+    assert_eq!(
+        store.receive(other_source, t0()).await.unwrap(),
+        Received::Stored { id: inbox_id(3) }
+    );
+
+    let row = store
+        .find_inbox("github", "delivery-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.id, inbox_id(1));
+    assert_eq!(row.status, InboxStatus::Pending);
+    assert_eq!(
+        (row.available_at, row.created_at, row.attempts),
+        (t0(), t0(), 0)
+    );
+    assert_eq!(row.kind, "ci_report");
+    assert_eq!(row.correlation.as_deref(), Some(watch(1).as_str()));
+    assert_eq!(row.decode().unwrap(), first.payload);
+    assert!(row.lease().is_none());
+    assert_eq!(store.get_inbox(inbox_id(1)).await.unwrap().unwrap(), row);
+
+    // Two rows to claim, not three; and finishing a row does not free its key.
+    let got = iclaim(&store, "a", t0()).await;
+    assert_eq!(ids(&got), vec![inbox_id(1), inbox_id(3)]);
+    assert!(
+        store
+            .complete_inbox(&ilease(1, "a", 1), InboxFinal::Applied, at(1))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.receive(redelivery, at(9)).await.unwrap(),
+        Received::Duplicate
+    );
+}
+
+/// A claim is a lease: nobody else gets the row while it is valid, another worker gets it once
+/// it lapsed (with a larger `attempts`), and the first worker's every write is then refused.
+pub async fn inbox_claims_are_leases_and_lapse<S: ThreadStore>(store: S) {
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    let got = iclaim(&store, "a", t0()).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].status, InboxStatus::Inflight);
+    assert_eq!(got[0].attempts, 1);
+    assert_eq!(got[0].lease_owner.as_deref(), Some("a"));
+    assert_eq!(got[0].lease_until, Some(at(30)));
+    assert_eq!(got[0].lease(), Some(ilease(1, "a", 1)));
+    assert!(
+        iclaim(&store, "b", at(29)).await.is_empty(),
+        "lease still valid"
+    );
+
+    let again = iclaim(&store, "b", at(31)).await;
+    assert_eq!(ids(&again), vec![inbox_id(1)]);
+    assert_eq!(again[0].attempts, 2);
+    assert_eq!(again[0].lease_owner.as_deref(), Some("b"));
+
+    let stale = ilease(1, "a", 1);
+    assert!(
+        !store
+            .retry_inbox(&stale, at(40), "late".into())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .complete_inbox(&stale, InboxFinal::Applied, at(32))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.park_inbox(&stale, at(32)).await.unwrap(),
+        Parking::Lost
+    );
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        (row.status, row.lease_owner.as_deref(), row.attempts),
+        (InboxStatus::Inflight, Some("b"), 2),
+        "the late worker changed nothing"
+    );
+    assert_eq!(row.last_error, None);
+
+    // The same owner claiming again is a new claim: its old token is stale too.
+    let third = iclaim(&store, "b", at(62)).await;
+    assert_eq!(third[0].attempts, 3);
+    assert!(
+        !store
+            .complete_inbox(&ilease(1, "b", 2), InboxFinal::Applied, at(63))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_inbox(&ilease(1, "b", 3), InboxFinal::Applied, at(63))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .complete_inbox(&ilease(1, "b", 3), InboxFinal::Applied, at(64))
+            .await
+            .unwrap(),
+        "a finished row has no claim"
+    );
+    assert!(iclaim(&store, "c", at(1000)).await.is_empty());
+}
+
+/// Concurrent claimers get disjoint rows, and together they get all of them.
+pub async fn inbox_claimers_never_share_a_row<S: ThreadStore>(store: S) {
+    for n in 1..=20 {
+        store
+            .receive(ci_row(n, &format!("d{n}"), 1), t0())
+            .await
+            .unwrap();
+    }
+    let store = Arc::new(store);
+    let mut tasks = Vec::new();
+    for w in 0..4 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            let owner = format!("w{w}");
+            let mut mine = Vec::new();
+            loop {
+                let got = store.claim_inbox(&owner, t0(), LEASE, 3).await.unwrap();
+                if got.is_empty() {
+                    return mine;
+                }
+                mine.extend(got.into_iter().map(|r| r.id));
+            }
+        }));
+    }
+    let mut all = Vec::new();
+    for t in tasks {
+        all.extend(t.await.unwrap());
+    }
+    assert_eq!(all.len(), 20);
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 20, "a row was claimed twice");
+}
+
+/// A report that finds no watch is parked; a commit that adds the watch re-arms it in the same
+/// transaction. A commit that is refused adds neither the watch nor the re-arm.
+pub async fn inbox_parks_and_rearms_in_one_commit<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let key = watch(1);
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    let got = iclaim(&store, "a", t0()).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(store.get_watch(key.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.park_inbox(&ilease(1, "a", 1), at(1)).await.unwrap(),
+        Parking::Parked
+    );
+    let parked = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(parked.status, InboxStatus::Parked);
+    assert_eq!(parked.parked_at, Some(at(1)));
+    assert!(parked.lease().is_none() && parked.lease_until.is_none());
+    assert!(
+        iclaim(&store, "a", at(100)).await.is_empty(),
+        "a parked row is not claimable"
+    );
+
+    // Refused commits: the version is wrong, or the idempotency key was used.
+    let mut wrong_version = commit(ThreadState::Working, vec![], vec![]);
+    wrong_version.watches = vec![key.clone()];
+    assert_eq!(
+        class_of(&store.commit(thread_id(1), 99, wrong_version).await),
+        Some(ErrorClass::Conflict)
+    );
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![user_event("k", Some("k"))],
+                    vec![],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let mut repeat = commit(
+        ThreadState::Working,
+        vec![user_event("k again", Some("k"))],
+        vec![],
+    );
+    repeat.watches = vec![key.clone()];
+    assert_eq!(
+        store.commit(thread_id(1), 2, repeat).await.unwrap(),
+        CommitOutcome::Duplicate
+    );
+    assert_eq!(store.get_watch(key.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.get_inbox(inbox_id(1)).await.unwrap().unwrap().status,
+        InboxStatus::Parked,
+        "a refused commit re-arms nothing"
+    );
+
+    // The commit that lands inserts the watch and re-arms the row, together.
+    let mut adds = commit(ThreadState::Working, vec![], vec![]);
+    adds.watches = vec![key.clone()];
+    adds.now = at(200);
+    applied(store.commit(thread_id(1), 2, adds).await.unwrap());
+    assert_eq!(
+        store.get_watch(key.as_str()).await.unwrap(),
+        Some(thread_id(1))
+    );
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, InboxStatus::Pending);
+    assert_eq!((row.available_at, row.parked_at), (at(200), None));
+    assert!(iclaim(&store, "a", at(199)).await.is_empty());
+    let again = iclaim(&store, "a", at(200)).await;
+    assert_eq!(ids(&again), vec![inbox_id(1)]);
+    assert_eq!(again[0].attempts, 2);
+
+    // Watching again is harmless.
+    let mut repeat = commit(ThreadState::Working, vec![], vec![]);
+    repeat.watches = vec![key.clone()];
+    applied(store.commit(thread_id(1), 3, repeat).await.unwrap());
+    assert_eq!(
+        store.get_watch(key.as_str()).await.unwrap(),
+        Some(thread_id(1))
+    );
+}
+
+/// A worker that looked for a watch, found none, and parks after a commit added it: the row is
+/// not left parked behind its watch, it goes back to `pending`.
+pub async fn inbox_park_finds_a_watch_that_appeared<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    // A row with no correlation cannot be matched by any watch.
+    store
+        .receive(
+            NewInbox {
+                correlation: None,
+                ..ci_row(2, "d2", 1)
+            },
+            t0(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(iclaim(&store, "a", t0()).await.len(), 2);
+
+    // The row is inflight, so the commit that adds the watch does not see it as parked.
+    let mut adds = commit(ThreadState::Working, vec![], vec![]);
+    adds.watches = vec![watch(1)];
+    adds.now = at(10);
+    applied(store.commit(thread_id(1), 1, adds).await.unwrap());
+    assert_eq!(
+        store.get_inbox(inbox_id(1)).await.unwrap().unwrap().status,
+        InboxStatus::Inflight
+    );
+
+    assert_eq!(
+        store.park_inbox(&ilease(1, "a", 1), at(11)).await.unwrap(),
+        Parking::Rearmed
+    );
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, InboxStatus::Pending);
+    assert_eq!(row.available_at, at(11));
+    assert!(row.lease().is_none() && row.parked_at.is_none());
+    assert_eq!(ids(&iclaim(&store, "b", at(11)).await), vec![inbox_id(1)]);
+
+    assert_eq!(
+        store.park_inbox(&ilease(2, "a", 1), at(11)).await.unwrap(),
+        Parking::Parked
+    );
+}
+
+/// A commit under an inbox claim marks the row `applied` in the same transaction; once the
+/// claim is gone (finished or taken over) the commit is `Fenced`, before the version is looked at.
+pub async fn inbox_commit_is_fenced_and_marks_applied<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    iclaim(&store, "a", t0()).await;
+
+    let mut c = commit(
+        ThreadState::Working,
+        vec![user_event("from the inbox", Some("inbox:1"))],
+        vec![],
+    );
+    c.inbox = Some(ilease(1, "a", 1));
+    c.now = at(3);
+    let (record, events) = applied(store.commit(thread_id(1), 1, c.clone()).await.unwrap());
+    assert_eq!((record.version, events.len()), (2, 1));
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, InboxStatus::Applied);
+    assert!(row.lease().is_none() && row.lease_until.is_none());
+
+    // The row is finished: the same claim is gone, even with a version that would have matched,
+    // and even with a wrong one (fenced is decided first, like the outbox claim).
+    assert_eq!(
+        store.commit(thread_id(1), 2, c.clone()).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+    assert_eq!(
+        store.commit(thread_id(1), 99, c).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+    assert!(iclaim(&store, "b", at(1000)).await.is_empty());
+    let thread = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(thread.version, 2, "fenced commits wrote nothing");
+}
+
+/// A commit under a stale inbox claim writes nothing at all: no event, no state, no watch, no
+/// timer, no binding, no outbox row, and the row stays with its current holder.
+pub async fn inbox_stale_lease_writes_nothing<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    iclaim(&store, "a", t0()).await;
+    // The same owner name claims it again after the lease lapsed: (a, 1) is stale though the
+    // owner matches.
+    let again = iclaim(&store, "a", at(31)).await;
+    assert_eq!(again[0].attempts, 2);
+
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let events = store.list_events(thread_id(1), 0, 100).await.unwrap();
+    let binding = store.get_binding(thread_id(1)).await.unwrap().unwrap();
+    let open = store.list_open_outbox(thread_id(1)).await.unwrap();
+    let mut late = commit(
+        ThreadState::Done,
+        vec![user_event("late", Some("inbox:1"))],
+        vec![delegate(900)],
+    );
+    late.inbox = Some(ilease(1, "a", 1));
+    late.watches = vec![watch(7)];
+    late.timers = vec![ci_deadline(50, 10, 1, 1)];
+    late.binding = Some(BindingUpdate {
+        task_id: Some("late-task".into()),
+        ..BindingUpdate::default()
+    });
+    assert_eq!(
+        store
+            .commit(thread_id(1), before.version, late.clone())
+            .await
+            .unwrap(),
+        CommitOutcome::Fenced
+    );
+    assert_eq!(
+        store.get_thread(None, thread_id(1)).await.unwrap().unwrap(),
+        before
+    );
+    assert_eq!(
+        store.list_events(thread_id(1), 0, 100).await.unwrap(),
+        events
+    );
+    assert_eq!(
+        store.get_binding(thread_id(1)).await.unwrap().unwrap(),
+        binding
+    );
+    assert_eq!(store.list_open_outbox(thread_id(1)).await.unwrap(), open);
+    assert_eq!(store.get_watch(watch(7).as_str()).await.unwrap(), None);
+    assert!(store.get_inbox(inbox_id(50)).await.unwrap().is_none());
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!((row.status, row.attempts), (InboxStatus::Inflight, 2));
+
+    // The current claim commits the same thing.
+    late.inbox = Some(ilease(1, "a", 2));
+    applied(
+        store
+            .commit(thread_id(1), before.version, late)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        store.get_watch(watch(7).as_str()).await.unwrap(),
+        Some(thread_id(1))
+    );
+    assert!(store.get_inbox(inbox_id(50)).await.unwrap().is_some());
+    assert_eq!(
+        store.get_inbox(inbox_id(1)).await.unwrap().unwrap().status,
+        InboxStatus::Applied
+    );
+}
+
+/// Parked rows expire once they were parked for long enough; an expired row is not re-armed by
+/// a watch that comes later.
+pub async fn parked_rows_expire<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    store.receive(ci_row(2, "d2", 2), t0()).await.unwrap();
+    iclaim(&store, "a", t0()).await;
+    assert_eq!(
+        store.park_inbox(&ilease(1, "a", 1), at(1)).await.unwrap(),
+        Parking::Parked
+    );
+    assert_eq!(
+        store.park_inbox(&ilease(2, "a", 1), at(50)).await.unwrap(),
+        Parking::Parked
+    );
+
+    assert_eq!(store.expire_parked_inbox(at(0), at(100)).await.unwrap(), 0);
+    assert_eq!(store.expire_parked_inbox(at(10), at(100)).await.unwrap(), 1);
+    let expired = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(expired.status, InboxStatus::Expired);
+    assert_eq!(
+        store.get_inbox(inbox_id(2)).await.unwrap().unwrap().status,
+        InboxStatus::Parked
+    );
+    assert_eq!(store.expire_parked_inbox(at(10), at(101)).await.unwrap(), 0);
+
+    // The watch for the expired row comes late: the row stays expired.
+    let mut adds = commit(ThreadState::Working, vec![], vec![]);
+    adds.watches = vec![watch(1), watch(2)];
+    adds.now = at(60);
+    applied(store.commit(thread_id(1), 1, adds).await.unwrap());
+    assert_eq!(
+        store.get_inbox(inbox_id(1)).await.unwrap().unwrap().status,
+        InboxStatus::Expired
+    );
+    assert_eq!(
+        store.get_inbox(inbox_id(2)).await.unwrap().unwrap().status,
+        InboxStatus::Pending,
+        "the row that did not expire was re-armed"
+    );
+    assert!(store.receive(ci_row(3, "d1", 1), at(70)).await.unwrap() == Received::Duplicate);
+}
+
+/// A timer is an inbox row due `after` the commit's time; it is not claimed before that, and is
+/// claimed from then on.
+pub async fn timer_is_claimed_only_when_due<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let timer = ci_deadline(10, 60, 1, 1);
+    let key = timer.idempotency_key(thread_id(1));
+    let mut c = commit(ThreadState::Working, vec![], vec![]);
+    c.timers = vec![timer.clone(), ci_deadline(11, 0, 1, 2)];
+    c.now = at(5);
+    applied(store.commit(thread_id(1), 1, c).await.unwrap());
+
+    let row = store.find_inbox(TIMER_SOURCE, &key).await.unwrap().unwrap();
+    assert_eq!(row.id, inbox_id(10));
+    assert_eq!(
+        (row.status, row.available_at),
+        (InboxStatus::Pending, at(65))
+    );
+    assert_eq!((row.source.as_str(), row.kind.as_str()), ("timer", "timer"));
+    assert_eq!(row.correlation, None);
+    assert_eq!(
+        row.decode().unwrap(),
+        InboxPayload::Timer {
+            thread: thread_id(1),
+            timer: timer.timer,
+        }
+    );
+
+    // The timer with no delay is due at once; the other one is not.
+    assert_eq!(ids(&iclaim(&store, "a", at(5)).await), vec![inbox_id(11)]);
+    assert!(
+        store
+            .complete_inbox(&ilease(11, "a", 1), InboxFinal::Applied, at(6))
+            .await
+            .unwrap()
+    );
+    assert!(iclaim(&store, "a", at(64)).await.is_empty(), "not due yet");
+    let due = iclaim(&store, "a", at(65)).await;
+    assert_eq!(ids(&due), vec![inbox_id(10)]);
+    assert_eq!(due[0].attempts, 1);
+}
+
+/// Replaying a commit arms no second timer: the replay is a duplicate, and a commit that arms
+/// the same timer again by another route is one row.
+pub async fn a_replayed_commit_arms_no_second_timer<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let mut c = commit(
+        ThreadState::Verifying,
+        vec![user_event("start", Some("k"))],
+        vec![],
+    );
+    c.timers = vec![ci_deadline(10, 60, 1, 1)];
+    applied(store.commit(thread_id(1), 1, c.clone()).await.unwrap());
+
+    // The replay: same key, timer under another id.
+    let mut replay = c.clone();
+    replay.timers = vec![ci_deadline(11, 60, 1, 1)];
+    assert_eq!(
+        store.commit(thread_id(1), 2, replay).await.unwrap(),
+        CommitOutcome::Duplicate
+    );
+    assert!(store.get_inbox(inbox_id(11)).await.unwrap().is_none());
+
+    // The same timer armed by a commit that carries no key is still the same row.
+    let mut second = commit(ThreadState::Verifying, vec![], vec![]);
+    second.timers = vec![ci_deadline(12, 60, 1, 1), ci_deadline(13, 60, 1, 2)];
+    applied(store.commit(thread_id(1), 2, second).await.unwrap());
+    assert!(store.get_inbox(inbox_id(12)).await.unwrap().is_none());
+    assert!(
+        store.get_inbox(inbox_id(13)).await.unwrap().is_some(),
+        "another verification is another timer"
+    );
+
+    let due = iclaim(&store, "a", at(60)).await;
+    assert_eq!(ids(&due), vec![inbox_id(10), inbox_id(13)]);
+}
+
+/// Retry puts a row back with a delay and the error; complete finishes it; a dead row stays
+/// dead; releasing a worker's leases makes its rows claimable at once.
+pub async fn inbox_retry_complete_and_release<S: ThreadStore>(store: S) {
+    for n in 1..=3 {
+        store
+            .receive(ci_row(n, &format!("d{n}"), 1), t0())
+            .await
+            .unwrap();
+    }
+    assert_eq!(iclaim(&store, "a", t0()).await.len(), 3);
+
+    assert!(
+        store
+            .retry_inbox(&ilease(1, "a", 1), at(10), "boom".into())
+            .await
+            .unwrap()
+    );
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        (row.status, row.available_at, row.last_error.as_deref()),
+        (InboxStatus::Pending, at(10), Some("boom"))
+    );
+    assert!(row.lease().is_none() && row.lease_until.is_none());
+
+    assert!(
+        store
+            .complete_inbox(
+                &ilease(2, "a", 1),
+                InboxFinal::Dead {
+                    error: "bad payload".into()
+                },
+                at(1)
+            )
+            .await
+            .unwrap()
+    );
+    let dead = store.get_inbox(inbox_id(2)).await.unwrap().unwrap();
+    assert_eq!(
+        (dead.status, dead.last_error.as_deref()),
+        (InboxStatus::Dead, Some("bad payload"))
+    );
+
+    // Only what `a` still holds is released.
+    assert_eq!(store.release_inbox_leases("a", at(3)).await.unwrap(), 1);
+    assert_eq!(
+        store.release_inbox_leases("nobody", at(3)).await.unwrap(),
+        0
+    );
+    assert_eq!(ids(&iclaim(&store, "b", at(3)).await), vec![inbox_id(3)]);
+    assert!(iclaim(&store, "b", at(9)).await.is_empty());
+    let retried = iclaim(&store, "b", at(10)).await;
+    assert_eq!(ids(&retried), vec![inbox_id(1)]);
+    assert_eq!(retried[0].attempts, 2);
+    assert!(
+        iclaim(&store, "c", at(100_000))
+            .await
+            .iter()
+            .all(|r| r.id != inbox_id(2)),
+        "a dead row is never claimed"
+    );
+}
+
+/// A thread's first commit can arm timers and watches, and re-arms what was parked for them.
+pub async fn create_thread_arms_timers_and_watches<S: ThreadStore>(store: S) {
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    iclaim(&store, "a", t0()).await;
+    store.park_inbox(&ilease(1, "a", 1), at(1)).await.unwrap();
+
+    let mut first = commit(ThreadState::Queued, vec![user_event("hi", None)], vec![]);
+    first.watches = vec![watch(1)];
+    first.timers = vec![ci_deadline(10, 30, 1, 1)];
+    first.now = at(2);
+    store
+        .create_thread(new_thread(&alice(), 1), first)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_watch(watch(1).as_str()).await.unwrap(),
+        Some(thread_id(1))
+    );
+    assert_eq!(
+        store.get_inbox(inbox_id(1)).await.unwrap().unwrap().status,
+        InboxStatus::Pending
+    );
+    let timer = store.get_inbox(inbox_id(10)).await.unwrap().unwrap();
+    assert_eq!(timer.available_at, at(32));
+}
+
+/// A key is watched by one thread: the first to insert it keeps it.
+pub async fn watches_are_first_come<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    let mut one = commit(ThreadState::Working, vec![], vec![]);
+    one.watches = vec![watch(1), watch(1)];
+    applied(store.commit(thread_id(1), 1, one).await.unwrap());
+    let mut two = commit(ThreadState::Working, vec![], vec![]);
+    two.watches = vec![watch(1), watch(2)];
+    applied(store.commit(thread_id(2), 1, two).await.unwrap());
+    assert_eq!(
+        store.get_watch(watch(1).as_str()).await.unwrap(),
+        Some(thread_id(1))
+    );
+    assert_eq!(
+        store.get_watch(watch(2).as_str()).await.unwrap(),
+        Some(thread_id(2))
+    );
+    assert_eq!(store.get_watch(watch(3).as_str()).await.unwrap(), None);
+}
+
+/// Only claims that failed count against the attempt limit. `attempts` is a fencing token and
+/// only goes up; `refunded` gives back a claim handed back at shutdown, and every claim up to
+/// the one that parked the row (or found the watch there), so neither uses up the limit. A lapse
+/// and a retry are failures: they stay counted.
+pub async fn inbox_counts_only_the_claims_that_failed<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+
+    // A claim handed back at shutdown, over and over (a rolling deploy): never counted.
+    store.receive(ci_row(1, "d1", 1), t0()).await.unwrap();
+    let first = iclaim(&store, "a", t0()).await;
+    assert_eq!(
+        (
+            first[0].attempts,
+            first[0].refunded,
+            first[0].counted_attempts()
+        ),
+        (1, 0, 1)
+    );
+    let mut holder = "a".to_owned();
+    for round in 1..=5_u32 {
+        assert_eq!(
+            store.release_inbox_leases(&holder, at(1)).await.unwrap(),
+            1,
+            "round {round}"
+        );
+        let released = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+        assert_eq!(released.counted_attempts(), 0, "round {round}");
+        holder = format!("r{round}");
+        let next = iclaim(&store, &holder, at(1)).await;
+        assert_eq!(next.len(), 1, "round {round}");
+        assert_eq!(next[0].attempts, round + 1, "a token that only goes up");
+        assert_eq!(
+            next[0].counted_attempts(),
+            1,
+            "handed-back claims are not counted"
+        );
+    }
+    // Only the owner's own claims are refunded.
+    assert_eq!(
+        store.release_inbox_leases("nobody", at(2)).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .get_inbox(inbox_id(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .counted_attempts(),
+        1
+    );
+
+    // A lapse is a failure, and so is a retry: both stay counted.
+    store.receive(ci_row(2, "d2", 2), at(10)).await.unwrap();
+    let a = iclaim(&store, "a", at(10)).await;
+    let a = a.iter().find(|r| r.id == inbox_id(2)).unwrap();
+    assert_eq!(a.counted_attempts(), 1);
+    let b = iclaim(&store, "b", at(41)).await;
+    let b = b.iter().find(|r| r.id == inbox_id(2)).unwrap();
+    assert_eq!((b.attempts, b.counted_attempts()), (2, 2), "a lapse counts");
+    assert!(
+        store
+            .retry_inbox(&ilease(2, "b", 2), at(50), "boom".into())
+            .await
+            .unwrap()
+    );
+    let c = iclaim(&store, "c", at(50)).await;
+    let c = c.iter().find(|r| r.id == inbox_id(2)).unwrap();
+    assert_eq!((c.attempts, c.counted_attempts()), (3, 3), "a retry counts");
+
+    // Parking is a wait, not a failure: the claims so far are refunded, and a later re-arm by
+    // a commit that adds the watch starts the row afresh.
+    store.receive(ci_row(3, "d3", 3), at(60)).await.unwrap();
+    let a = iclaim(&store, "a", at(60)).await;
+    assert_eq!(a.iter().find(|r| r.id == inbox_id(3)).unwrap().attempts, 1);
+    let b = iclaim(&store, "b", at(91)).await;
+    let b = b.iter().find(|r| r.id == inbox_id(3)).unwrap();
+    assert_eq!((b.attempts, b.counted_attempts()), (2, 2));
+    assert_eq!(
+        store.park_inbox(&ilease(3, "b", 2), at(92)).await.unwrap(),
+        Parking::Parked
+    );
+    let parked = store.get_inbox(inbox_id(3)).await.unwrap().unwrap();
+    assert_eq!((parked.attempts, parked.counted_attempts()), (2, 0));
+    let mut adds = commit(ThreadState::Queued, vec![], vec![]);
+    adds.watches = vec![watch(3)];
+    adds.now = at(100);
+    applied(store.commit(thread_id(1), 1, adds).await.unwrap());
+    let again = iclaim(&store, "c", at(100)).await;
+    let again = again.iter().find(|r| r.id == inbox_id(3)).unwrap();
+    assert_eq!(
+        (again.attempts, again.counted_attempts()),
+        (3, 1),
+        "parked and re-armed: counted from the start"
+    );
+    // The same for a park that finds the watch already there.
+    store.receive(ci_row(4, "d4", 3), at(110)).await.unwrap();
+    let got = iclaim(&store, "a", at(110)).await;
+    assert_eq!(
+        got.iter().find(|r| r.id == inbox_id(4)).unwrap().attempts,
+        1
+    );
+    let got = iclaim(&store, "b", at(141)).await;
+    assert_eq!(
+        got.iter()
+            .find(|r| r.id == inbox_id(4))
+            .unwrap()
+            .counted_attempts(),
+        2
+    );
+    assert_eq!(
+        store.park_inbox(&ilease(4, "b", 2), at(142)).await.unwrap(),
+        Parking::Rearmed
+    );
+    let row = store.get_inbox(inbox_id(4)).await.unwrap().unwrap();
+    assert_eq!((row.attempts, row.counted_attempts()), (2, 0));
+}
+
+/// A commit that carries an inbox claim and nothing else finishes the row and leaves the thread
+/// alone, but it is still a commit: the claim and the version are checked, so a "nothing to do"
+/// decided on a thread that has moved since is refused, not written down as final.
+pub async fn inbox_only_commit_finishes_the_row_and_leaves_the_thread_alone<S: ThreadStore>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await;
+    for n in 1..=3 {
+        store
+            .receive(ci_row(n, &format!("d{n}"), 1), t0())
+            .await
+            .unwrap();
+    }
+    assert_eq!(iclaim(&store, "a", t0()).await.len(), 3);
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let events = store.list_events(thread_id(1), 0, 100).await.unwrap();
+
+    // A thread that moved since the decision: refused, the row keeps its claim.
+    let mut only = commit(before.state, vec![], vec![]);
+    only.inbox = Some(ilease(1, "a", 1));
+    only.now = at(5);
+    assert_eq!(
+        class_of(
+            &store
+                .commit(thread_id(1), before.version + 1, only.clone())
+                .await
+        ),
+        Some(ErrorClass::Conflict)
+    );
+    assert_eq!(
+        store.get_inbox(inbox_id(1)).await.unwrap().unwrap().status,
+        InboxStatus::Inflight
+    );
+
+    // A claim that is gone: fenced, before the version is looked at.
+    let mut lost = only.clone();
+    lost.inbox = Some(ilease(1, "someone else", 1));
+    assert_eq!(
+        store.commit(thread_id(1), 99, lost).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+
+    // The right version and the claim: the row is applied, the thread is as it was.
+    let (record, written) = applied(
+        store
+            .commit(thread_id(1), before.version, only)
+            .await
+            .unwrap(),
+    );
+    assert!(written.is_empty());
+    assert_eq!(record, before, "no version bump, no new updated_at");
+    assert_eq!(
+        store.get_thread(None, thread_id(1)).await.unwrap().unwrap(),
+        before
+    );
+    assert_eq!(
+        store.list_events(thread_id(1), 0, 100).await.unwrap(),
+        events
+    );
+    let row = store.get_inbox(inbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, InboxStatus::Applied);
+    assert!(row.lease().is_none() && row.lease_until.is_none());
+
+    // The claim is spent: the same commit again is fenced.
+    let mut again = commit(before.state, vec![], vec![]);
+    again.inbox = Some(ilease(1, "a", 1));
+    assert_eq!(
+        store
+            .commit(thread_id(1), before.version, again)
+            .await
+            .unwrap(),
+        CommitOutcome::Fenced
+    );
+
+    // Not the same state: it is a state change like any other, written and versioned.
+    let mut moves = commit(ThreadState::Working, vec![], vec![]);
+    moves.inbox = Some(ilease(2, "a", 1));
+    moves.now = at(7);
+    let (moved, _) = applied(
+        store
+            .commit(thread_id(1), before.version, moves)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        (moved.state, moved.version),
+        (ThreadState::Working, before.version + 1)
+    );
+    assert_eq!(
+        store.get_inbox(inbox_id(2)).await.unwrap().unwrap().status,
+        InboxStatus::Applied
+    );
+
+    // A commit with anything else in it is a full commit.
+    let mut full = commit(
+        ThreadState::Working,
+        vec![user_event("more", Some("inbox:3"))],
+        vec![],
+    );
+    full.inbox = Some(ilease(3, "a", 1));
+    let (record, written) = applied(
+        store
+            .commit(thread_id(1), moved.version, full)
+            .await
+            .unwrap(),
+    );
+    assert_eq!((record.version, written.len()), (moved.version + 1, 1));
 }

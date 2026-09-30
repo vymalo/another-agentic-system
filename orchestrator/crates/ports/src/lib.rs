@@ -1,6 +1,8 @@
 //! Ports of the orchestrator (ADR 0009): one trait per infrastructure boundary.
 //!
 //! - [`ThreadStore`]: threads, per-thread events with a strictly increasing `seq`, an outbox;
+//! - the inbox (unsolicited webhook reports and timers) is part of [`ThreadStore`]: a thread commit
+//!   must be atomic with the inbox row it applies;
 //! - [`Wakeup`]: notify/listen hints;
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
 //!   and [`ByTransport`], which serves one endpoint set from two clients (remote A2A, in-process);
@@ -13,6 +15,7 @@
 mod agent;
 mod bundle;
 mod clock;
+mod inbox;
 mod route;
 mod store;
 mod wakeup;
@@ -28,6 +31,10 @@ pub use agent::{
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
+pub use inbox::{
+    InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
+    Parking, Received, TIMER_SOURCE, UndecodablePayload,
+};
 pub use route::ByTransport;
 pub use store::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,

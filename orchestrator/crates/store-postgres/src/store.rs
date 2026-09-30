@@ -3,20 +3,21 @@
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, Job, ThreadId, ThreadRecord, UserId};
+use orch_core::{Event, Job, ThreadId, ThreadRecord, UserId, WatchKey};
 use orch_ports::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,
-    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxStats, StoreError, ThreadStore,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxItem, InboxLease,
+    Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId,
+    OutboxItem, OutboxStats, Parking, Received, StoreError, TIMER_SOURCE, ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::codec::{
-    binding_from_row, enum_str, event_from_row, get_ts_opt, outbox_cols, outbox_from_row,
-    thread_cols, thread_from_row, to_db, ts,
+    binding_from_row, enum_str, event_from_row, get_ts_opt, inbox_cols, inbox_from_row,
+    outbox_cols, outbox_from_row, thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
-use crate::wakeup::{CHANNEL_OUTBOX, CHANNEL_THREAD};
+use crate::wakeup::{CHANNEL_INBOX, CHANNEL_OUTBOX, CHANNEL_THREAD};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -27,7 +28,8 @@ const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 ///
 /// Every write that other processes should react to also sends a `NOTIFY` inside its own
 /// transaction (delivered only if it commits): `orch_thread` with the thread id after a
-/// commit, `orch_outbox` after new or freed outbox rows. Pair it with
+/// commit, `orch_outbox` after new or freed outbox rows, `orch_inbox` after a received or
+/// re-armed inbox row. Pair it with
 /// [`PgWakeup`](crate::PgWakeup) to hear them.
 #[derive(Clone, Debug)]
 pub struct PgStore {
@@ -113,6 +115,144 @@ async fn notify_outbox<'e, E: sqlx::PgExecutor<'e>>(exec: E) -> Result<(), Store
     sqlx::query("SELECT pg_notify($1, '')")
         .bind(CHANNEL_OUTBOX)
         .execute(exec)
+        .await
+        .map(|_| ())
+        .map_err(store_err)
+}
+
+async fn notify_inbox<'e, E: sqlx::PgExecutor<'e>>(exec: E) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_notify($1, '')")
+        .bind(CHANNEL_INBOX)
+        .execute(exec)
+        .await
+        .map(|_| ())
+        .map_err(store_err)
+}
+
+/// `attempts` columns are `integer`; a lease past `i32::MAX` matches no row.
+fn inbox_attempt(lease: &InboxLease) -> i32 {
+    i32::try_from(lease.attempt).unwrap_or(i32::MAX)
+}
+
+/// Inserts the commit's watches and, in the same transaction, re-arms the parked inbox rows
+/// they match; then inserts its timers. Returns whether any inbox row became claimable now.
+///
+/// Each watch key is locked (a transaction-scoped advisory lock) before it is inserted, and
+/// `park_inbox` takes the same lock before it looks for the watch: of a commit adding a watch
+/// and a worker parking a row for it, one goes first, and the second sees the first's
+/// committed result. Without the lock both could read "no watch" / "no parked row" from their
+/// own snapshots and leave the row parked behind a watch until it expires. Keys are locked in
+/// sorted order, so two commits that both add several watches do not deadlock on the keys.
+///
+/// That is not a proof that nothing here can deadlock. A stale `park_inbox` (its claim was taken
+/// over) holds the lock of key K and may wait on its inbox row, which the commit of the worker
+/// that took the row over holds while that commit wants K. Postgres detects such a cycle, aborts
+/// one of the two (`40P01`) and the store maps it to a transient error, which the caller
+/// retries: the aborted transaction wrote nothing.
+///
+/// The re-arm locks the parked rows it changes in id order and skips a row that another
+/// transaction holds (`FOR UPDATE SKIP LOCKED`), so it never waits for a row lock. Skipping is
+/// safe: a parked row can only be locked by an expiry (which ends it as `expired`, where a
+/// watch does not concern it any more), and the rows a `park_inbox` of the same key is
+/// locking are `inflight`, not parked.
+async fn insert_watches_and_timers(
+    tx: &mut Tx,
+    thread: ThreadId,
+    watches: &[WatchKey],
+    timers: Vec<NewTimer>,
+    now: Timestamp,
+) -> Result<bool, StoreError> {
+    let mut rearmed = false;
+    if !watches.is_empty() {
+        let mut keys: Vec<&str> = watches.iter().map(WatchKey::as_str).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        for key in &keys {
+            lock_watch(tx, key).await?;
+            let inserted = sqlx::query(
+                "INSERT INTO watches (key, thread_id, created_at) VALUES ($1, $2, $3) \
+                 ON CONFLICT (key) DO NOTHING",
+            )
+            .bind(*key)
+            .bind(thread.0)
+            .bind(to_db(now))
+            .execute(&mut **tx)
+            .await
+            .map_err(store_err)?
+            .rows_affected()
+                == 1;
+            if !inserted {
+                warn_if_watched_by_another(tx, key, thread).await?;
+            }
+        }
+        // A parked report was waiting, not failing: its claims so far are refunded.
+        rearmed = sqlx::query(
+            "WITH c AS ( \
+               SELECT id FROM inbox WHERE status = 'parked' AND correlation = ANY($1) \
+               ORDER BY id FOR UPDATE SKIP LOCKED) \
+             UPDATE inbox SET status = 'pending', available_at = $2, parked_at = NULL, \
+               refunded = attempts, updated_at = $2 \
+             WHERE id IN (SELECT id FROM c)",
+        )
+        .bind(&keys)
+        .bind(to_db(now))
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?
+        .rows_affected()
+            > 0;
+    }
+    for timer in timers {
+        let payload = serde_json::to_value(timer.payload(thread))
+            .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
+        sqlx::query(
+            "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, \
+             available_at, created_at, updated_at) \
+             VALUES ($1, $2, $3, 'timer', $4, 'pending', $5, $6, $6) \
+             ON CONFLICT (source, idempotency_key) DO NOTHING",
+        )
+        .bind(timer.id.0)
+        .bind(TIMER_SOURCE)
+        .bind(timer.idempotency_key(thread))
+        .bind(payload)
+        .bind(to_db(timer.due(now)))
+        .bind(to_db(now))
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    }
+    Ok(rearmed)
+}
+
+/// A key that is watched already stays with its first thread. When the thread that asked for it
+/// now is another one, the reports for the key will never reach it: say so.
+async fn warn_if_watched_by_another(
+    tx: &mut Tx,
+    key: &str,
+    thread: ThreadId,
+) -> Result<(), StoreError> {
+    let owner: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT thread_id FROM watches WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_err)?;
+    if let Some(owner) = owner.filter(|owner| *owner != thread.0) {
+        tracing::warn!(
+            watch = key,
+            watched_by = %ThreadId(owner),
+            asked_by = %thread,
+            "a watch key is owned by another thread; this thread will not hear its reports"
+        );
+    }
+    Ok(())
+}
+
+/// Takes the transaction-scoped lock that serialises adding a watch and parking for it.
+async fn lock_watch(tx: &mut Tx, key: &str) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("orch:watch:{key}"))
+        .execute(&mut **tx)
         .await
         .map(|_| ())
         .map_err(store_err)
@@ -209,6 +349,24 @@ async fn update_binding(
     .map_err(store_err)
 }
 
+/// Marks the inbox row `applied` (the caller holds it: its claim was checked `FOR UPDATE`).
+async fn finish_inbox_row(
+    tx: &mut Tx,
+    lease: &InboxLease,
+    now: Timestamp,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "UPDATE inbox SET status = 'applied', lease_owner = NULL, lease_until = NULL, \
+         updated_at = $2 WHERE id = $1",
+    )
+    .bind(lease.id.0)
+    .bind(to_db(now))
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+    .map_err(store_err)
+}
+
 async fn rollback(tx: Tx) {
     // The transaction is abandoned either way; a failed ROLLBACK closes the connection.
     let _ = tx.rollback().await;
@@ -268,6 +426,9 @@ impl ThreadStore for PgStore {
         let has_outbox = !first.outbox.is_empty();
         let events = insert_events(&mut tx, new.id, 1, first.events).await?;
         insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
+        let rearmed =
+            insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
+                .await?;
         let last_seq = i64::try_from(events.len()).unwrap_or(i64::MAX);
         let row = sqlx::query(concat!(
             "UPDATE threads SET last_seq = $2, updated_at = $3 WHERE id = $1 RETURNING ",
@@ -283,6 +444,9 @@ impl ThreadStore for PgStore {
         notify_thread(&mut tx, new.id).await?;
         if has_outbox {
             notify_outbox(&mut *tx).await?;
+        }
+        if rearmed {
+            notify_inbox(&mut *tx).await?;
         }
         tx.commit().await.map_err(store_err)?;
         Ok((record, events))
@@ -351,11 +515,12 @@ impl ThreadStore for PgStore {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         // The row lock serialises every writer of this thread: the seq counter below cannot
         // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
-        let locked = sqlx::query("SELECT version, last_seq FROM threads WHERE id = $1 FOR UPDATE")
-            .bind(thread.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_err)?;
+        let locked =
+            sqlx::query("SELECT version, last_seq, state FROM threads WHERE id = $1 FOR UPDATE")
+                .bind(thread.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
         let Some(locked) = locked else {
             rollback(tx).await;
             return Err(StoreError::NotFound);
@@ -383,11 +548,59 @@ impl ThreadStore for PgStore {
                 return Ok(CommitOutcome::Fenced);
             }
         }
+        if let Some(lease) = &commit.inbox {
+            // FOR UPDATE: the row is marked applied below, so its claim must not move before
+            // this transaction ends. Lock order is thread, outbox row, inbox row. The inbox
+            // statements outside a commit lock one inbox row (claim with SKIP LOCKED, retry,
+            // complete, release, expiry) or a watch key and then a row (`park_inbox`), never a
+            // thread, so no cycle through the thread lock exists. One does through the watch
+            // key: a stale `park_inbox` holding key K waits for this row while this commit,
+            // holding the row, wants K in `insert_watches_and_timers`. Postgres detects such a
+            // cycle (`40P01`), aborts one side, and the store maps that to a transient error.
+            let held = sqlx::query(
+                "SELECT 1 FROM inbox WHERE id = $1 AND lease_owner = $2 AND attempts = $3 \
+                 AND status = 'inflight' FOR UPDATE",
+            )
+            .bind(lease.id.0)
+            .bind(&lease.owner)
+            .bind(inbox_attempt(lease))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            if held.is_none() {
+                rollback(tx).await;
+                return Ok(CommitOutcome::Fenced);
+            }
+        }
         let version: i64 = locked.try_get("version").map_err(store_err)?;
         let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
+        let state: String = locked.try_get("state").map_err(store_err)?;
         if version != expected_version {
             rollback(tx).await;
             return Err(StoreError::VersionConflict);
+        }
+        if commit.only_finishes_inbox() && enum_str(&commit.new_state)? == state {
+            // Nothing to write to the thread. The claim and the version were checked above (a
+            // "nothing to do" is only as good as the thread it was decided on); the row is
+            // finished and the thread is left alone: no version bump, no wakeup.
+            if let Some(lease) = &commit.inbox {
+                finish_inbox_row(&mut tx, lease, commit.now).await?;
+            }
+            let row = sqlx::query(concat!(
+                "SELECT ",
+                thread_cols!(),
+                " FROM threads WHERE id = $1"
+            ))
+            .bind(thread.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            let record = thread_from_row(&row)?;
+            tx.commit().await.map_err(store_err)?;
+            return Ok(CommitOutcome::Applied {
+                thread: record,
+                events: Vec::new(),
+            });
         }
         let keys: Vec<&str> = commit
             .events
@@ -432,9 +645,18 @@ impl ThreadStore for PgStore {
         if let Some(update) = &commit.binding {
             update_binding(&mut tx, thread, update, commit.now).await?;
         }
+        let rearmed =
+            insert_watches_and_timers(&mut tx, thread, &commit.watches, commit.timers, commit.now)
+                .await?;
+        if let Some(lease) = &commit.inbox {
+            finish_inbox_row(&mut tx, lease, commit.now).await?;
+        }
         notify_thread(&mut tx, thread).await?;
         if has_outbox {
             notify_outbox(&mut *tx).await?;
+        }
+        if rearmed {
+            notify_inbox(&mut *tx).await?;
         }
         tx.commit().await.map_err(store_err)?;
         Ok(CommitOutcome::Applied {
@@ -713,5 +935,266 @@ impl ThreadStore for PgStore {
         .iter()
         .map(outbox_from_row)
         .collect()
+    }
+
+    async fn receive(&self, row: NewInbox, now: Timestamp) -> Result<Received, StoreError> {
+        let payload = serde_json::to_value(&row.payload)
+            .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
+        let stored = sqlx::query(
+            "INSERT INTO inbox (id, source, idempotency_key, kind, payload, correlation, status, \
+             available_at, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $7, $7) \
+             ON CONFLICT (source, idempotency_key) DO NOTHING",
+        )
+        .bind(row.id.0)
+        .bind(&row.source)
+        .bind(&row.idempotency_key)
+        .bind(row.payload.kind())
+        .bind(payload)
+        .bind(row.correlation.as_deref())
+        .bind(to_db(now))
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .map_err(store_err)?;
+        if !stored {
+            return Ok(Received::Duplicate);
+        }
+        notify_inbox(&self.pool).await?;
+        Ok(Received::Stored { id: row.id })
+    }
+
+    async fn claim_inbox(
+        &self,
+        owner: &str,
+        now: Timestamp,
+        lease: Duration,
+        limit: u32,
+    ) -> Result<Vec<InboxItem>, StoreError> {
+        // One statement, as `claim_outbox`: candidates are picked earliest first under
+        // `FOR UPDATE SKIP LOCKED`, so concurrent claimers get disjoint rows, and a timer
+        // whose `available_at` is still ahead of `now` is not a candidate.
+        let mut items = sqlx::query(concat!(
+            "WITH c AS ( \
+               SELECT id FROM inbox \
+               WHERE (status = 'pending' AND available_at <= $1) \
+                  OR (status = 'inflight' AND lease_until <= $1) \
+               ORDER BY available_at, id LIMIT $4 FOR UPDATE SKIP LOCKED) \
+             UPDATE inbox SET status = 'inflight', lease_owner = $2, lease_until = $3, \
+               attempts = attempts + 1, updated_at = $1 \
+             WHERE id IN (SELECT id FROM c) RETURNING ",
+            inbox_cols!()
+        ))
+        .bind(to_db(now))
+        .bind(owner)
+        .bind(to_db(plus(ts(now), lease)))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?
+        .iter()
+        .map(inbox_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        items.sort_by_key(|i| (i.available_at, i.id));
+        Ok(items)
+    }
+
+    async fn park_inbox(&self, lease: &InboxLease, now: Timestamp) -> Result<Parking, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(store_err)?;
+        // The correlation never changes, so it can be read before the row is locked: the lock
+        // order is the watch key, then the row (see `insert_watches_and_timers`).
+        let row = sqlx::query(
+            "SELECT correlation FROM inbox WHERE id = $1 AND lease_owner = $2 AND attempts = $3 \
+             AND status = 'inflight'",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(inbox_attempt(lease))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let Some(row) = row else {
+            rollback(tx).await;
+            return Ok(Parking::Lost);
+        };
+        let correlation: Option<String> = row.try_get("correlation").map_err(store_err)?;
+        if let Some(key) = &correlation {
+            lock_watch(&mut tx, key).await?;
+        }
+        // Under the lock: a watch committed before it is seen here (each statement takes a
+        // fresh snapshot), and one that commits after finds this row parked and re-arms it.
+        let watched = match &correlation {
+            Some(key) => sqlx::query("SELECT 1 FROM watches WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?
+                .is_some(),
+            None => false,
+        };
+        let moved = sqlx::query(
+            "UPDATE inbox SET status = CASE WHEN $4 THEN 'pending' ELSE 'parked' END, \
+             available_at = CASE WHEN $4 THEN $5 ELSE available_at END, \
+             parked_at = CASE WHEN $4 THEN NULL ELSE $5 END, \
+             refunded = attempts, \
+             lease_owner = NULL, lease_until = NULL, updated_at = $5 \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(inbox_attempt(lease))
+        .bind(watched)
+        .bind(to_db(now))
+        .execute(&mut *tx)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .map_err(store_err)?;
+        if !moved {
+            rollback(tx).await;
+            return Ok(Parking::Lost);
+        }
+        if watched {
+            notify_inbox(&mut *tx).await?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(if watched {
+            Parking::Rearmed
+        } else {
+            Parking::Parked
+        })
+    }
+
+    async fn retry_inbox(
+        &self,
+        lease: &InboxLease,
+        available_at: Timestamp,
+        error: String,
+    ) -> Result<bool, StoreError> {
+        sqlx::query(
+            "UPDATE inbox SET status = 'pending', available_at = $4, lease_owner = NULL, \
+             lease_until = NULL, last_error = $5, updated_at = clock_timestamp() \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(inbox_attempt(lease))
+        .bind(to_db(available_at))
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .map_err(store_err)
+    }
+
+    async fn complete_inbox(
+        &self,
+        lease: &InboxLease,
+        outcome: InboxFinal,
+        now: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let (status, error) = match outcome {
+            InboxFinal::Applied => ("applied", None),
+            InboxFinal::Dead { error } => ("dead", Some(error)),
+        };
+        sqlx::query(
+            "UPDATE inbox SET status = $4, last_error = COALESCE($5, last_error), \
+             lease_owner = NULL, lease_until = NULL, updated_at = $6 \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(inbox_attempt(lease))
+        .bind(status)
+        .bind(error)
+        .bind(to_db(now))
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .map_err(store_err)
+    }
+
+    async fn expire_parked_inbox(
+        &self,
+        parked_at_or_before: Timestamp,
+        now: Timestamp,
+    ) -> Result<u32, StoreError> {
+        // Rows are locked in id order and a row somebody else holds is left for the next pass,
+        // so this statement never waits for a row lock and cannot be part of a deadlock. (A
+        // row held by a re-arm is not expired anyway: it is not parked any more.)
+        sqlx::query(
+            "WITH c AS ( \
+               SELECT id FROM inbox WHERE status = 'parked' AND parked_at <= $1 \
+               ORDER BY id FOR UPDATE SKIP LOCKED) \
+             UPDATE inbox SET status = 'expired', updated_at = $2 \
+             WHERE id IN (SELECT id FROM c)",
+        )
+        .bind(to_db(parked_at_or_before))
+        .bind(to_db(now))
+        .execute(&self.pool)
+        .await
+        .map(|r| u32::try_from(r.rows_affected()).unwrap_or(u32::MAX))
+        .map_err(store_err)
+    }
+
+    async fn release_inbox_leases(&self, owner: &str, now: Timestamp) -> Result<u32, StoreError> {
+        let n = sqlx::query(
+            "UPDATE inbox SET lease_until = $2, refunded = refunded + 1, updated_at = $2 \
+             WHERE status = 'inflight' AND lease_owner = $1",
+        )
+        .bind(owner)
+        .bind(to_db(now))
+        .execute(&self.pool)
+        .await
+        .map(|r| u32::try_from(r.rows_affected()).unwrap_or(u32::MAX))
+        .map_err(store_err)?;
+        if n > 0 {
+            notify_inbox(&self.pool).await?;
+        }
+        Ok(n)
+    }
+
+    async fn get_watch(&self, key: &str) -> Result<Option<ThreadId>, StoreError> {
+        let row = sqlx::query("SELECT thread_id FROM watches WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_err)?;
+        row.map(|r| r.try_get("thread_id").map(ThreadId).map_err(store_err))
+            .transpose()
+    }
+
+    async fn get_inbox(&self, id: InboxId) -> Result<Option<InboxItem>, StoreError> {
+        sqlx::query(concat!(
+            "SELECT ",
+            inbox_cols!(),
+            " FROM inbox WHERE id = $1"
+        ))
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_err)?
+        .as_ref()
+        .map(inbox_from_row)
+        .transpose()
+    }
+
+    async fn find_inbox(
+        &self,
+        source: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<InboxItem>, StoreError> {
+        sqlx::query(concat!(
+            "SELECT ",
+            inbox_cols!(),
+            " FROM inbox WHERE source = $1 AND idempotency_key = $2"
+        ))
+        .bind(source)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_err)?
+        .as_ref()
+        .map(inbox_from_row)
+        .transpose()
     }
 }

@@ -41,3 +41,12 @@ pub async fn delivers_outbox_to_every_subscriber<W: Wakeup>(wakeup: W) {
     expect(&mut a, &Topic::Outbox).await;
     expect(&mut b, &Topic::Outbox).await;
 }
+
+/// The inbox topic is delivered like the others (it is its own channel in a listener-based
+/// implementation).
+pub async fn delivers_inbox_topic<W: Wakeup>(wakeup: W) {
+    let mut sub = wakeup.subscribe();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    wakeup.notify(Topic::Inbox).await.unwrap();
+    expect(&mut sub, &Topic::Inbox).await;
+}

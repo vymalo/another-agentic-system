@@ -11,8 +11,9 @@
 //!   directory and the [`App`], everything every role needs;
 //! * **the control plane** ([`control_plane_router`], [`serve`]): the HTTP server (health, the
 //!   resource API and the configured surfaces), which serves user inputs and event streams;
-//! * **the worker** ([`dispatcher`], and for a worker-only process [`serve`] over the
-//!   health-only router): the dispatcher, which delivers the outbox to agents.
+//! * **the worker** ([`dispatcher`], [`inbox_worker`], and for a worker-only process [`serve`]
+//!   over the health-only router): the dispatcher, which delivers the outbox to agents, and the
+//!   inbox worker, which applies timers and reports to their threads.
 //!
 //! Every component is a future that ends when its `CancellationToken` is cancelled. [`run`]
 //! registers them with [`adam_host::Host`], the supervisor every adam-rs host shares: it starts
@@ -30,7 +31,7 @@ use anyhow::Context;
 use axum::Router;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
-use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig};
+use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig, InboxWorker};
 use orch_core::BoxError;
 use orch_ports::{AgentTransport, PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
@@ -235,6 +236,12 @@ fn dispatcher(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<Dispatcher<Stack>> {
     Dispatcher::new(Arc::clone(app), dispatcher_cfg, cfg.instance_id.clone())
 }
 
+/// The worker's inbox worker over `app`: it applies the timers that came due and the reports
+/// that webhooks stored. It runs until its token is cancelled, then releases its leases.
+fn inbox_worker(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<InboxWorker<Stack>> {
+    InboxWorker::new(Arc::clone(app), cfg.inbox.clone(), cfg.instance_id.clone())
+}
+
 /// Marks the process as stopping: `/healthz` and `/readyz` turn 503 and open event streams end
 /// once caught up, so clients reconnect elsewhere. Idempotent.
 fn mark_stopping(app: &App<Stack>) {
@@ -259,15 +266,15 @@ impl Drop for MarkStopping {
 ///
 /// 1. `/healthz` and `/readyz` turn 503 (see [`mark_stopping`]);
 /// 2. the control plane is drained, then the workers are stopped, each for at most
-///    `cfg.shutdown_grace` and aborted after that (the dispatcher releases its leases as it
-///    stops); this is the `Host` stop order, and the server always goes first;
+///    `cfg.shutdown_grace` and aborted after that (the dispatcher and the inbox worker
+///    release their leases as they stop); this is the `Host` stop order, and the server always goes first;
 /// 3. the pool closes last.
 ///
 /// | role | components |
 /// |---|---|
-/// | `all` | the HTTP server (control plane), the dispatcher and the local agents' worker (worker) |
-/// | `control-plane` | the HTTP server; no dispatcher, no local agents' worker |
-/// | `worker` | the dispatcher, the local agents' worker, and the health-only router on `LISTEN_ADDR` |
+/// | `all` | the HTTP server (control plane), the dispatcher, the inbox worker and the local agents' worker (workers) |
+/// | `control-plane` | the HTTP server; no dispatcher, no inbox worker, no local agents' worker |
+/// | `worker` | the dispatcher, the inbox worker, the local agents' worker, and the health-only router on `LISTEN_ADDR` |
 ///
 /// The local agents' worker exists only in a build with the feature `agent-local`, and only
 /// when `AGENTS_FILE` lists a `transport: local` agent (see [`crate::local`]).
@@ -324,6 +331,14 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
             app.set_ready(true);
         }
         dispatcher.run(stop).await;
+        Ok(())
+    });
+
+    let inbox = inbox_worker(&cfg, &app);
+    let mark = MarkStopping(Arc::clone(&app));
+    let host = host.worker("the inbox worker", move |stop| async move {
+        let _mark = mark;
+        inbox.run(stop).await;
         Ok(())
     });
 

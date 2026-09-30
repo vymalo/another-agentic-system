@@ -4,7 +4,9 @@ use jiff::{Timestamp, Unit};
 use orch_core::{
     Actor, AgentId, AgentTarget, Event, EventBody, Job, ThreadId, ThreadRecord, UserId,
 };
-use orch_ports::{AgentBinding, OutboxId, OutboxItem, OutboxPayload, StoreError};
+use orch_ports::{
+    AgentBinding, InboxId, InboxItem, OutboxId, OutboxItem, OutboxPayload, StoreError,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
@@ -27,7 +29,15 @@ macro_rules! outbox_cols {
     };
 }
 
-pub(crate) use {outbox_cols, thread_cols};
+/// Column list of `inbox`.
+macro_rules! inbox_cols {
+    () => {
+        "id, source, idempotency_key, kind, payload, correlation, status, available_at, \
+         attempts, refunded, lease_owner, lease_until, parked_at, last_error, created_at"
+    };
+}
+
+pub(crate) use {inbox_cols, outbox_cols, thread_cols};
 
 /// Postgres stores microseconds; rounding up front makes what we return equal what we stored.
 pub(crate) fn ts(t: Timestamp) -> Timestamp {
@@ -144,6 +154,30 @@ pub(crate) fn outbox_from_row(row: &PgRow) -> Result<OutboxItem, StoreError> {
         next_attempt_at: get_ts(row, "next_attempt_at")?,
         lease_owner: get(row, "lease_owner")?,
         lease_until: get_ts_opt(row, "lease_until")?,
+        last_error: get(row, "last_error")?,
+        created_at: get_ts(row, "created_at")?,
+    })
+}
+
+pub(crate) fn inbox_from_row(row: &PgRow) -> Result<InboxItem, StoreError> {
+    let status: String = get(row, "status")?;
+    let attempts: i32 = get(row, "attempts")?;
+    let refunded: i32 = get(row, "refunded")?;
+    Ok(InboxItem {
+        id: InboxId(get(row, "id")?),
+        source: get(row, "source")?,
+        idempotency_key: get(row, "idempotency_key")?,
+        kind: get(row, "kind")?,
+        // Left as JSON: a row this build cannot read must not fail the claim of its batch.
+        payload: get(row, "payload")?,
+        correlation: get(row, "correlation")?,
+        status: parse_enum("inbox status", &status)?,
+        available_at: get_ts(row, "available_at")?,
+        attempts: u32::try_from(attempts).unwrap_or(0),
+        refunded: u32::try_from(refunded).unwrap_or(0),
+        lease_owner: get(row, "lease_owner")?,
+        lease_until: get_ts_opt(row, "lease_until")?,
+        parked_at: get_ts_opt(row, "parked_at")?,
         last_error: get(row, "last_error")?,
         created_at: get_ts(row, "created_at")?,
     })

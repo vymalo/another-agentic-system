@@ -6,8 +6,9 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{Event, Job, ThreadId, ThreadRecord, UserId};
 
 use crate::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewThreadRecord, OutboxFinal,
-    OutboxId, OutboxItem, OutboxKind, OutboxStats, OutboxStatus, StoreError, ThreadStore,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxItem, InboxLease,
+    InboxStatus, Lease, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind,
+    OutboxStats, OutboxStatus, Parking, Received, StoreError, TIMER_SOURCE, ThreadStore,
 };
 
 struct StoredEvent {
@@ -26,6 +27,10 @@ struct Inner {
     threads: HashMap<ThreadId, ThreadEntry>,
     /// Insertion order is the `ord` of the Postgres outbox.
     outbox: Vec<OutboxItem>,
+    /// Insertion order is the order the inbox is claimed in among rows due at the same time.
+    inbox: Vec<InboxItem>,
+    /// `watches.key` to the thread; the first thread to watch a key keeps it.
+    watches: HashMap<String, ThreadId>,
     /// Failures the next `commit`s return instead of running (fault injection).
     commit_faults: std::collections::VecDeque<StoreError>,
     /// Failures the next `create_thread`s return instead of running (fault injection).
@@ -129,6 +134,50 @@ fn write_commit(
         apply_binding(&mut entry.binding, update);
     }
     let record = entry.record.clone();
+    for key in commit.watches {
+        inner
+            .watches
+            .entry(key.as_str().to_owned())
+            .or_insert(thread);
+        // The same step re-arms what arrived before the watch existed.
+        for row in inner.inbox.iter_mut().filter(|r| {
+            r.status == InboxStatus::Parked && r.correlation.as_deref() == Some(key.as_str())
+        }) {
+            row.status = InboxStatus::Pending;
+            row.available_at = commit.now;
+            row.parked_at = None;
+            // Parking was a wait, not a failure: the claims so far do not count.
+            row.refunded = row.attempts;
+        }
+    }
+    for timer in commit.timers {
+        let key = timer.idempotency_key(thread);
+        if inner
+            .inbox
+            .iter()
+            .any(|r| r.source == TIMER_SOURCE && r.idempotency_key == key)
+        {
+            continue;
+        }
+        inner.inbox.push(new_row(
+            NewInbox {
+                id: timer.id,
+                source: TIMER_SOURCE.to_owned(),
+                idempotency_key: key,
+                payload: timer.payload(thread),
+                correlation: None,
+            },
+            timer.due(commit.now),
+            commit.now,
+        ));
+    }
+    if let Some(lease) = &commit.inbox
+        && let Some(row) = held_inbox(inner, lease)
+    {
+        row.status = InboxStatus::Applied;
+        row.lease_owner = None;
+        row.lease_until = None;
+    }
     for row in commit.outbox {
         inner.outbox.push(OutboxItem {
             id: row.id,
@@ -156,6 +205,39 @@ fn holds(row: &OutboxItem, lease: &Lease) -> bool {
         && row.attempts == lease.attempt
 }
 
+/// Whether `lease` is the current claim of `row`.
+fn inbox_holds(row: &InboxItem, lease: &InboxLease) -> bool {
+    row.id == lease.id
+        && row.status == InboxStatus::Inflight
+        && row.lease_owner.as_deref() == Some(lease.owner.as_str())
+        && row.attempts == lease.attempt
+}
+
+fn held_inbox<'a>(inner: &'a mut Inner, lease: &InboxLease) -> Option<&'a mut InboxItem> {
+    inner.inbox.iter_mut().find(|r| inbox_holds(r, lease))
+}
+
+/// A new `pending` row, due at `available_at`.
+fn new_row(new: NewInbox, available_at: Timestamp, now: Timestamp) -> InboxItem {
+    InboxItem {
+        id: new.id,
+        source: new.source,
+        idempotency_key: new.idempotency_key,
+        kind: new.payload.kind().to_owned(),
+        payload: serde_json::to_value(&new.payload).unwrap_or(serde_json::Value::Null),
+        correlation: new.correlation,
+        status: InboxStatus::Pending,
+        available_at,
+        attempts: 0,
+        refunded: 0,
+        lease_owner: None,
+        lease_until: None,
+        parked_at: None,
+        last_error: None,
+        created_at: now,
+    }
+}
+
 fn leased<'a>(inner: &'a mut Inner, lease: &Lease) -> Option<&'a mut OutboxItem> {
     inner.outbox.iter_mut().find(|r| holds(r, lease))
 }
@@ -170,6 +252,11 @@ impl ThreadStore for MemoryStore {
         new: NewThreadRecord,
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+        // A thread that does not exist yet has no inbox row to be applied.
+        let first = Commit {
+            inbox: None,
+            ..first
+        };
         let mut inner = self.lock();
         if let Some(fault) = inner.create_faults.pop_front() {
             return Err(fault);
@@ -273,6 +360,11 @@ impl ThreadStore for MemoryStore {
         {
             return Ok(CommitOutcome::Fenced);
         }
+        if let Some(lease) = &commit.inbox
+            && !inner.inbox.iter().any(|r| inbox_holds(r, lease))
+        {
+            return Ok(CommitOutcome::Fenced);
+        }
         if entry.record.version != expected_version {
             return Err(StoreError::VersionConflict);
         }
@@ -283,6 +375,21 @@ impl ThreadStore for MemoryStore {
             .any(|key| entry.events.iter().any(|s| s.key.as_deref() == Some(key)));
         if duplicate {
             return Ok(CommitOutcome::Duplicate);
+        }
+        if commit.only_finishes_inbox() && entry.record.state == commit.new_state {
+            // Nothing to write to the thread: the row is finished and the thread left alone.
+            let record = entry.record.clone();
+            if let Some(lease) = &commit.inbox
+                && let Some(row) = held_inbox(&mut inner, lease)
+            {
+                row.status = InboxStatus::Applied;
+                row.lease_owner = None;
+                row.lease_until = None;
+            }
+            return Ok(CommitOutcome::Applied {
+                thread: record,
+                events: Vec::new(),
+            });
         }
         let (thread, events) =
             write_commit(&mut inner, thread, commit).ok_or(StoreError::NotFound)?;
@@ -497,5 +604,170 @@ impl ThreadStore for MemoryStore {
             .filter(|r| r.thread_id == thread && r.status.is_open())
             .cloned()
             .collect())
+    }
+
+    async fn receive(&self, row: NewInbox, now: Timestamp) -> Result<Received, StoreError> {
+        let mut inner = self.lock();
+        if inner
+            .inbox
+            .iter()
+            .any(|r| r.source == row.source && r.idempotency_key == row.idempotency_key)
+        {
+            return Ok(Received::Duplicate);
+        }
+        let id = row.id;
+        inner.inbox.push(new_row(row, now, now));
+        Ok(Received::Stored { id })
+    }
+
+    async fn claim_inbox(
+        &self,
+        owner: &str,
+        now: Timestamp,
+        lease: Duration,
+        limit: u32,
+    ) -> Result<Vec<InboxItem>, StoreError> {
+        let mut inner = self.lock();
+        let mut due: Vec<usize> = (0..inner.inbox.len())
+            .filter(|&i| {
+                let row = &inner.inbox[i];
+                match row.status {
+                    InboxStatus::Pending => row.available_at <= now,
+                    InboxStatus::Inflight => row.lease_until.is_some_and(|until| until <= now),
+                    InboxStatus::Parked
+                    | InboxStatus::Applied
+                    | InboxStatus::Expired
+                    | InboxStatus::Dead => false,
+                }
+            })
+            .collect();
+        due.sort_by_key(|&i| (inner.inbox[i].available_at, inner.inbox[i].id));
+        let mut claimed = Vec::new();
+        for i in due.into_iter().take(limit as usize) {
+            let row = &mut inner.inbox[i];
+            row.status = InboxStatus::Inflight;
+            row.lease_owner = Some(owner.to_owned());
+            row.lease_until = Some(add(now, lease));
+            row.attempts += 1;
+            claimed.push(row.clone());
+        }
+        Ok(claimed)
+    }
+
+    async fn park_inbox(&self, lease: &InboxLease, now: Timestamp) -> Result<Parking, StoreError> {
+        let mut inner = self.lock();
+        let Some(index) = inner.inbox.iter().position(|r| inbox_holds(r, lease)) else {
+            return Ok(Parking::Lost);
+        };
+        let watched = inner.inbox[index]
+            .correlation
+            .as_ref()
+            .is_some_and(|key| inner.watches.contains_key(key));
+        let row = &mut inner.inbox[index];
+        row.lease_owner = None;
+        row.lease_until = None;
+        // Either way the claim ends without a failure: it does not count against the limit.
+        row.refunded = row.attempts;
+        if watched {
+            row.status = InboxStatus::Pending;
+            row.available_at = now;
+            Ok(Parking::Rearmed)
+        } else {
+            row.status = InboxStatus::Parked;
+            row.parked_at = Some(now);
+            Ok(Parking::Parked)
+        }
+    }
+
+    async fn retry_inbox(
+        &self,
+        lease: &InboxLease,
+        available_at: Timestamp,
+        error: String,
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock();
+        Ok(held_inbox(&mut inner, lease)
+            .map(|r| {
+                r.status = InboxStatus::Pending;
+                r.available_at = available_at;
+                r.lease_owner = None;
+                r.lease_until = None;
+                r.last_error = Some(error);
+            })
+            .is_some())
+    }
+
+    async fn complete_inbox(
+        &self,
+        lease: &InboxLease,
+        outcome: InboxFinal,
+        _now: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock();
+        Ok(held_inbox(&mut inner, lease)
+            .map(|r| {
+                match outcome {
+                    InboxFinal::Applied => r.status = InboxStatus::Applied,
+                    InboxFinal::Dead { error } => {
+                        r.status = InboxStatus::Dead;
+                        r.last_error = Some(error);
+                    }
+                }
+                r.lease_owner = None;
+                r.lease_until = None;
+            })
+            .is_some())
+    }
+
+    async fn expire_parked_inbox(
+        &self,
+        parked_at_or_before: Timestamp,
+        _now: Timestamp,
+    ) -> Result<u32, StoreError> {
+        let mut inner = self.lock();
+        let mut n = 0;
+        for row in inner.inbox.iter_mut().filter(|r| {
+            r.status == InboxStatus::Parked
+                && r.parked_at.is_some_and(|at| at <= parked_at_or_before)
+        }) {
+            row.status = InboxStatus::Expired;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    async fn release_inbox_leases(&self, owner: &str, now: Timestamp) -> Result<u32, StoreError> {
+        let mut inner = self.lock();
+        let mut n = 0;
+        for row in inner.inbox.iter_mut().filter(|r| {
+            r.status == InboxStatus::Inflight && r.lease_owner.as_deref() == Some(owner)
+        }) {
+            row.lease_until = Some(now);
+            // Handed back, not failed: this claim does not count against the attempt limit.
+            row.refunded += 1;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    async fn get_watch(&self, key: &str) -> Result<Option<ThreadId>, StoreError> {
+        Ok(self.lock().watches.get(key).copied())
+    }
+
+    async fn get_inbox(&self, id: InboxId) -> Result<Option<InboxItem>, StoreError> {
+        Ok(self.lock().inbox.iter().find(|r| r.id == id).cloned())
+    }
+
+    async fn find_inbox(
+        &self,
+        source: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<InboxItem>, StoreError> {
+        Ok(self
+            .lock()
+            .inbox
+            .iter()
+            .find(|r| r.source == source && r.idempotency_key == idempotency_key)
+            .cloned())
     }
 }

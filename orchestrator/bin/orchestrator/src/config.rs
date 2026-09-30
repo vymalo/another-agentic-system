@@ -20,8 +20,8 @@ use std::time::Duration;
 use adam_host::Role;
 use clap::Parser;
 use orch_app::{
-    AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules, Layer,
-    MAX_ATTEMPTS_CAP_CEILING, known_sources,
+    AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules,
+    InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, known_sources,
 };
 use orch_core::{AgentId, CheckSource, DEFAULT_MAX_ATTEMPTS, GatePolicy, UserId};
 use orch_ports::AgentEndpoint;
@@ -514,6 +514,24 @@ pub struct Args {
     #[arg(long, env = "OUTBOX_LEASE_SECS", value_name = "SECS")]
     pub outbox_lease_secs: Option<String>,
 
+    /// Seconds an inbox worker's claim on a row lasts, at least 3 (default 30).
+    #[arg(long, env = "INBOX_LEASE_SECS", value_name = "SECS")]
+    pub inbox_lease_secs: Option<String>,
+
+    /// Seconds between the inbox worker's polls, at least 1 (default 2). A timer fires at most
+    /// this late.
+    #[arg(long, env = "INBOX_POLL_SECS", value_name = "SECS")]
+    pub inbox_poll_secs: Option<String>,
+
+    /// Seconds a report that matches no watch waits before it expires, at least 1 (default
+    /// 86400).
+    #[arg(long, env = "INBOX_PARKED_TTL_SECS", value_name = "SECS")]
+    pub inbox_parked_ttl_secs: Option<String>,
+
+    /// Claims of one inbox row before it is given up on, at least 1 (default 10).
+    #[arg(long, env = "INBOX_MAX_ATTEMPTS", value_name = "N")]
+    pub inbox_max_attempts: Option<String>,
+
     /// Seconds a graceful shutdown may take, at least 1 (default 15).
     #[arg(long, env = "SHUTDOWN_GRACE_SECS", value_name = "SECS")]
     pub shutdown_grace_secs: Option<String>,
@@ -563,6 +581,9 @@ pub struct Config {
     pub agent_local_concurrency: usize,
     /// `OUTBOX_LEASE_SECS`: how long a crashed replica's claim blocks others.
     pub outbox_lease: Duration,
+    /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the
+    /// inbox worker (timers and reports).
+    pub inbox: InboxConfig,
     /// `ORCH_INSTANCE_ID`: names this replica in outbox leases.
     pub instance_id: String,
     /// `SHUTDOWN_GRACE_SECS`: how long a graceful shutdown may take.
@@ -585,6 +606,7 @@ impl fmt::Debug for Config {
             .field("database_max_connections", &self.database_max_connections)
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
             .field("outbox_lease", &self.outbox_lease)
+            .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace);
         #[cfg(feature = "agent-local")]
@@ -693,6 +715,33 @@ impl Config {
             DEFAULT_OUTBOX_LEASE_SECS,
             3,
         )?;
+        let inbox = InboxConfig {
+            lease: Duration::from_secs(number(
+                clean(args.inbox_lease_secs),
+                "INBOX_LEASE_SECS",
+                orch_app::DEFAULT_LEASE_SECS,
+                3,
+            )?),
+            poll_interval: Duration::from_secs(number(
+                clean(args.inbox_poll_secs),
+                "INBOX_POLL_SECS",
+                orch_app::DEFAULT_POLL_SECS,
+                1,
+            )?),
+            parked_ttl: Duration::from_secs(number(
+                clean(args.inbox_parked_ttl_secs),
+                "INBOX_PARKED_TTL_SECS",
+                orch_app::DEFAULT_PARKED_TTL_SECS,
+                1,
+            )?),
+            max_attempts: number(
+                clean(args.inbox_max_attempts),
+                "INBOX_MAX_ATTEMPTS",
+                orch_app::DEFAULT_MAX_ATTEMPTS,
+                1,
+            )?,
+            ..InboxConfig::default()
+        };
         let shutdown_grace_secs = number(
             clean(args.shutdown_grace_secs),
             "SHUTDOWN_GRACE_SECS",
@@ -722,6 +771,7 @@ impl Config {
             #[cfg(feature = "agent-local")]
             agent_local_concurrency,
             outbox_lease: Duration::from_secs(outbox_lease_secs),
+            inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
         })
@@ -1115,6 +1165,10 @@ mod tests {
                 #[cfg(feature = "agent-local")]
                 "AGENT_LOCAL_CONCURRENCY" => &mut args.agent_local_concurrency,
                 "OUTBOX_LEASE_SECS" => &mut args.outbox_lease_secs,
+                "INBOX_LEASE_SECS" => &mut args.inbox_lease_secs,
+                "INBOX_POLL_SECS" => &mut args.inbox_poll_secs,
+                "INBOX_PARKED_TTL_SECS" => &mut args.inbox_parked_ttl_secs,
+                "INBOX_MAX_ATTEMPTS" => &mut args.inbox_max_attempts,
                 "SHUTDOWN_GRACE_SECS" => &mut args.shutdown_grace_secs,
                 "ORCH_INSTANCE_ID" => &mut args.instance_id,
                 "LOG_FORMAT" => &mut args.log_format,
@@ -1161,6 +1215,10 @@ mod tests {
         assert_eq!(cfg.database_max_connections, 10);
         assert_eq!(cfg.dispatcher_concurrency, 32);
         assert_eq!(cfg.outbox_lease, Duration::from_secs(30));
+        assert_eq!(cfg.inbox.lease, Duration::from_secs(30));
+        assert_eq!(cfg.inbox.poll_interval, Duration::from_secs(2));
+        assert_eq!(cfg.inbox.parked_ttl, Duration::from_secs(86_400));
+        assert_eq!(cfg.inbox.max_attempts, 10);
         assert_eq!(cfg.shutdown_grace, Duration::from_secs(15));
         assert!(cfg.auth_dev_user.is_none());
         assert!(cfg.instance_id.starts_with("orchestrator-"));
@@ -1499,6 +1557,11 @@ mod tests {
             ("DATABASE_MAX_CONNECTIONS", "many"),
             ("DISPATCHER_CONCURRENCY", "0"),
             ("OUTBOX_LEASE_SECS", "2"),
+            ("INBOX_LEASE_SECS", "2"),
+            ("INBOX_POLL_SECS", "0"),
+            ("INBOX_PARKED_TTL_SECS", "0"),
+            ("INBOX_MAX_ATTEMPTS", "0"),
+            ("INBOX_MAX_ATTEMPTS", "ten"),
             ("SHUTDOWN_GRACE_SECS", "0"),
         ] {
             let err = with(var, value).unwrap_err();
@@ -1811,6 +1874,10 @@ mod tests {
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",
             "OUTBOX_LEASE_SECS",
+            "INBOX_LEASE_SECS",
+            "INBOX_POLL_SECS",
+            "INBOX_PARKED_TTL_SECS",
+            "INBOX_MAX_ATTEMPTS",
             "SHUTDOWN_GRACE_SECS",
             "ORCH_INSTANCE_ID",
             "LOG_FORMAT",

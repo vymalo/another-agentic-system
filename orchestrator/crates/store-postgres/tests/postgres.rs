@@ -10,12 +10,13 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::Timestamp;
 use orch_core::{
-    Actor, AgentId, AgentTarget, Classify, ErrorClass, EventBody, ThreadId, ThreadState, UserId,
-    UserMessageData,
+    Actor, AgentId, AgentTarget, CiConclusion, CiProvider, CiReport, Classify, ErrorClass,
+    EventBody, ThreadId, ThreadState, UserId, UserMessageData, WatchKey,
 };
 use orch_ports::{
-    BindingUpdate, Commit, CommitOutcome, NewEvent, NewOutbox, NewThreadRecord, OutboxId,
-    OutboxPayload, StoreError, ThreadStore, Topic, Wakeup,
+    BindingUpdate, Commit, CommitOutcome, InboxId, InboxPayload, InboxStatus, NewEvent, NewInbox,
+    NewOutbox, NewThreadRecord, OutboxId, OutboxPayload, Parking, Received, StoreError,
+    ThreadStore, Topic, Wakeup,
 };
 use orch_store_postgres::{PgStore, PgWakeup};
 use support::TestDb;
@@ -61,6 +62,9 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         binding: None,
         now: t0(),
         lease: None,
+        watches: Vec::new(),
+        timers: Vec::new(),
+        inbox: None,
     }
 }
 
@@ -644,4 +648,439 @@ async fn migration_0003_upgrades_a_database_that_holds_threads() {
     };
     insert_outbox("verify").await.unwrap();
     assert!(insert_outbox("nonsense").await.is_err());
+}
+
+/// A CI report row whose correlation is the watch of commit `n`.
+fn ci_row(n: u8) -> (NewInbox, WatchKey) {
+    let sha = format!("{n:02x}").repeat(20);
+    let key = WatchKey::ci("github.com/o/r", &sha);
+    let row = NewInbox {
+        id: InboxId(Uuid::now_v7()),
+        source: "github".into(),
+        idempotency_key: format!("delivery-{n}"),
+        payload: InboxPayload::CiReport(CiReport {
+            provider: CiProvider::Github,
+            repository: "github.com/o/r".into(),
+            sha,
+            branch: None,
+            name: "build".into(),
+            conclusion: CiConclusion::Success,
+            url: None,
+            summary: None,
+        }),
+        correlation: Some(key.as_str().to_owned()),
+    };
+    (row, key)
+}
+
+#[tokio::test]
+async fn receiving_and_rearming_wake_an_inbox_worker_in_another_process() {
+    let db = db_or_skip!();
+    let wakeup = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
+    let mut sub = wakeup.subscribe();
+    let store = db.store().await;
+
+    let (row, key) = ci_row(1);
+    let duplicate = NewInbox {
+        id: InboxId(Uuid::now_v7()),
+        ..row.clone()
+    };
+    assert!(matches!(
+        store.receive(row, t0()).await.unwrap(),
+        Received::Stored { .. }
+    ));
+    expect(&mut sub, Topic::Inbox).await;
+    // A worker parks it (no watch yet); a commit that adds the watch re-arms it and says so.
+    let got = store
+        .claim_inbox("a", t0(), Duration::from_secs(30), 10)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 1);
+    let lease = got[0].lease().unwrap();
+    assert_eq!(
+        store.park_inbox(&lease, t0()).await.unwrap(),
+        Parking::Parked
+    );
+    while tokio::time::timeout(Duration::from_millis(300), sub.next())
+        .await
+        .is_ok()
+    {}
+    let id = create(&store, vec![]).await;
+    let mut adds = commit(ThreadState::Working, vec![], vec![]);
+    adds.watches = vec![key];
+    store.commit(id, 1, adds).await.unwrap();
+    expect(&mut sub, Topic::Inbox).await;
+    // A redelivery is a duplicate and stores nothing.
+    assert_eq!(
+        store.receive(duplicate, t0()).await.unwrap(),
+        Received::Duplicate
+    );
+}
+
+/// A CI report row whose watch key is unique to the call, so that a test can tell its own
+/// advisory lock from the ones other tests (in other schemas of the same database) take.
+fn unique_ci_row() -> (NewInbox, WatchKey) {
+    let hex = Uuid::now_v7().simple().to_string();
+    let sha = format!("{hex}{}", &hex[..8]);
+    let key = WatchKey::ci("github.com/o/r", &sha);
+    let (mut row, _) = ci_row(0);
+    if let InboxPayload::CiReport(report) = &mut row.payload {
+        report.sha = sha;
+    }
+    row.idempotency_key = format!("delivery-{hex}");
+    row.correlation = Some(key.as_str().to_owned());
+    (row, key)
+}
+
+/// The SQL of the store's per-key lock (`lock_watch`), which this test takes by hand to hold the
+/// place of one side of the race.
+const LOCK_WATCH: &str = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))";
+
+fn watch_lock_name(key: &WatchKey) -> String {
+    format!("orch:watch:{key}")
+}
+
+/// Waits until some backend is blocked on the advisory lock of `key`, straight from
+/// `pg_locks`: the proof that a call is waiting where the test wants it, with no sleep standing
+/// in for it. (The sleeps below only pace the polling.)
+async fn wait_until_blocked_on_watch(pool: &sqlx::PgPool, key: &WatchKey) {
+    for _ in 0..500 {
+        let blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+             AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0))",
+        )
+        .bind(watch_lock_name(key))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if blocked {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("nothing ever blocked on the watch lock of {key}");
+}
+
+/// The worker looked for a watch, found none, and parks; a commit that adds the watch is in
+/// flight, holding the key. The park must wait for it and then see its watch: the row ends
+/// `pending`, never `parked` behind a watch that nobody will re-arm it for.
+#[tokio::test]
+async fn a_park_waits_for_the_commit_that_is_adding_its_watch() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (row, key) = unique_ci_row();
+    let inbox = row.id;
+    store.receive(row, t0()).await.unwrap();
+    let lease = store
+        .claim_inbox("a", t0(), Duration::from_secs(30), 10)
+        .await
+        .unwrap()
+        .iter()
+        .find(|r| r.id == inbox)
+        .and_then(orch_ports::InboxItem::lease)
+        .unwrap();
+    let thread = create(&store, vec![]).await;
+
+    // The commit, as far as it has got: it holds the key and has inserted the watch.
+    let mut commit_tx = store.pool().begin().await.unwrap();
+    sqlx::query(LOCK_WATCH)
+        .bind(watch_lock_name(&key))
+        .execute(&mut *commit_tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO watches (key, thread_id, created_at) VALUES ($1, $2, now())")
+        .bind(key.as_str())
+        .bind(thread.0)
+        .execute(&mut *commit_tx)
+        .await
+        .unwrap();
+
+    let parker = {
+        let (store, lease) = (store.clone(), lease.clone());
+        tokio::spawn(async move { store.park_inbox(&lease, t0()).await })
+    };
+    wait_until_blocked_on_watch(store.pool(), &key).await;
+    assert!(!parker.is_finished(), "the park is waiting for the key");
+    assert_eq!(
+        store.get_inbox(inbox).await.unwrap().unwrap().status,
+        InboxStatus::Inflight,
+        "and has written nothing"
+    );
+
+    commit_tx.commit().await.unwrap();
+    let parking = tokio::time::timeout(Duration::from_secs(10), parker)
+        .await
+        .expect("the park never finished")
+        .unwrap()
+        .unwrap();
+    assert_eq!(parking, Parking::Rearmed);
+    let row = store.get_inbox(inbox).await.unwrap().unwrap();
+    assert_eq!(row.status, InboxStatus::Pending);
+    assert!(row.parked_at.is_none());
+}
+
+/// The other order: the worker's park holds the key and has set the row aside, and the commit
+/// that adds the watch arrives. It must wait for the park and then find the row parked, and
+/// re-arm it.
+#[tokio::test]
+async fn a_commit_adding_a_watch_waits_for_a_park_and_re_arms_its_row() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (row, key) = unique_ci_row();
+    let inbox = row.id;
+    store.receive(row, t0()).await.unwrap();
+    store
+        .claim_inbox("a", t0(), Duration::from_secs(30), 10)
+        .await
+        .unwrap();
+    let thread = create(&store, vec![]).await;
+
+    // The park, as far as it has got: it holds the key and has parked the row.
+    let mut park_tx = store.pool().begin().await.unwrap();
+    sqlx::query(LOCK_WATCH)
+        .bind(watch_lock_name(&key))
+        .execute(&mut *park_tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE inbox SET status = 'parked', parked_at = now(), lease_owner = NULL, \
+         lease_until = NULL WHERE id = $1",
+    )
+    .bind(inbox.0)
+    .execute(&mut *park_tx)
+    .await
+    .unwrap();
+
+    let committer = {
+        let (store, key) = (store.clone(), key.clone());
+        tokio::spawn(async move {
+            let mut adds = commit(ThreadState::Working, vec![], vec![]);
+            adds.watches = vec![key];
+            store.commit(thread, 1, adds).await
+        })
+    };
+    wait_until_blocked_on_watch(store.pool(), &key).await;
+    assert!(
+        !committer.is_finished(),
+        "the commit is waiting for the key"
+    );
+
+    park_tx.commit().await.unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(10), committer)
+        .await
+        .expect("the commit never finished")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(outcome, CommitOutcome::Applied { .. }));
+    let row = store.get_inbox(inbox).await.unwrap().unwrap();
+    assert_eq!(
+        row.status,
+        InboxStatus::Pending,
+        "the row the park set aside is re-armed by the commit that came second"
+    );
+    assert_eq!(store.get_watch(key.as_str()).await.unwrap(), Some(thread));
+}
+
+/// Expiry takes the rows it changes in id order and passes by one that another transaction
+/// holds instead of waiting for it, so it cannot be a link in a chain of waits.
+#[tokio::test]
+async fn expiry_passes_by_a_row_somebody_holds_instead_of_waiting() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let mut ids = Vec::new();
+    for n in 1..=2_u8 {
+        let (row, _) = ci_row(n);
+        ids.push(row.id);
+        store.receive(row, t0()).await.unwrap();
+    }
+    for lease in store
+        .claim_inbox("a", t0(), Duration::from_secs(30), 10)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(orch_ports::InboxItem::lease)
+    {
+        assert_eq!(
+            store.park_inbox(&lease, t0()).await.unwrap(),
+            Parking::Parked
+        );
+    }
+
+    let mut holder = store.pool().begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM inbox WHERE id = $1 FOR UPDATE")
+        .bind(ids[0].0)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let expired = tokio::time::timeout(
+        Duration::from_secs(10),
+        store.expire_parked_inbox(t0(), t0()),
+    )
+    .await
+    .expect("expiry waited for a row lock")
+    .unwrap();
+    assert_eq!(expired, 1, "only the row nobody holds");
+    assert_eq!(
+        store.get_inbox(ids[0]).await.unwrap().unwrap().status,
+        InboxStatus::Parked
+    );
+    assert_eq!(
+        store.get_inbox(ids[1]).await.unwrap().unwrap().status,
+        InboxStatus::Expired
+    );
+
+    holder.rollback().await.unwrap();
+    assert_eq!(store.expire_parked_inbox(t0(), t0()).await.unwrap(), 1);
+    assert_eq!(
+        store.get_inbox(ids[0]).await.unwrap().unwrap().status,
+        InboxStatus::Expired
+    );
+}
+
+/// Migration 0004 on a database that has run 0001 to 0003 and holds a thread: the old thread
+/// is untouched, the new tables take rows, refuse nonsense and dedupe, and a thread takes its
+/// watches with it.
+#[tokio::test]
+async fn migration_0004_upgrades_a_database_that_holds_threads() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, created_at, updated_at) \
+         VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        sqlx::query("SELECT 1 FROM inbox")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    let old = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.state, ThreadState::Working);
+
+    let insert = |id: Uuid, kind: &'static str, status: &'static str, key: &'static str| {
+        sqlx::query(
+            "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
+             created_at, updated_at) VALUES ($1, 'github', $4, $2, '{}', $3, now(), now(), now())",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(status)
+        .bind(key)
+        .execute(store.pool())
+    };
+    insert(Uuid::now_v7(), "ci_report", "pending", "d1")
+        .await
+        .unwrap();
+    assert!(
+        insert(Uuid::now_v7(), "ci_report", "pending", "d1")
+            .await
+            .is_err(),
+        "unique"
+    );
+    assert!(
+        insert(Uuid::now_v7(), "nonsense", "pending", "d2")
+            .await
+            .is_err(),
+        "kind"
+    );
+    assert!(
+        insert(Uuid::now_v7(), "timer", "nonsense", "d3")
+            .await
+            .is_err(),
+        "status"
+    );
+    for status in ["inflight", "parked", "applied", "expired", "dead"] {
+        insert(Uuid::now_v7(), "timer", status, status)
+            .await
+            .unwrap();
+    }
+
+    sqlx::query("INSERT INTO watches (key, thread_id, created_at) VALUES ('ci:x@y', $1, now())")
+        .bind(thread)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM threads WHERE id = $1")
+        .bind(thread)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM watches")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "a thread takes its watches with it");
+}
+
+/// A row this build cannot read (written by a newer build, or damaged) is handed out like any
+/// other and fails on its own when decoded: it does not fail the claim of the rows beside it.
+#[tokio::test]
+async fn a_row_this_build_cannot_read_does_not_spoil_its_batch() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (good, _) = ci_row(1);
+    let good_id = good.id;
+    store.receive(good, t0()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
+         created_at, updated_at) \
+         VALUES ($1, 'github', 'odd', 'ci_report', '{\"kind\": \"from_the_future\"}', 'pending', \
+         $2, $2, $2)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(jiff_sqlx::Timestamp::from(t0()))
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    let claimed = store
+        .claim_inbox("a", t0(), Duration::from_secs(30), 10)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 2);
+    let (readable, odd): (Vec<_>, Vec<_>) = claimed.iter().partition(|r| r.decode().is_ok());
+    assert_eq!(readable.len(), 1);
+    assert_eq!(readable[0].id, good_id);
+    let err = odd[0].decode().unwrap_err();
+    assert_eq!(err.id, odd[0].id);
+    assert!(
+        !err.to_string().contains("from_the_future"),
+        "the payload is not echoed: {err}"
+    );
 }

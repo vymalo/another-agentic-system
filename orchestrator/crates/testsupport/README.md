@@ -27,8 +27,9 @@ Its helpers panic on failure, by design.
 The fake agent's behaviour is chosen by the first word of the user's message
 (`echo` or anything else, `ask`, `gate`, `slow`, `chunks`, `fail`, `talk`,
 `messages`, `auth`, and for the verification gate `verify-pass`, `verify-red-once` and `verify-red`, which report a
-`branch` and a `checks` artifact and answer the gate's rework prompt as a new task of the same context); the table is
-in `src/fake.rs`.
+`branch` and a `checks` artifact and answer the gate's rework prompt as a new task of the same context, and `verify-ci`,
+which reports only the `branch` artifact, like an agent that pushed and leaves the checking to CI); the table is
+in `src/fake.rs`. `VERIFY_REPOSITORY` and `verify_commit(attempt)` name what the `branch` artifact holds.
 
 ```rust
 use orch_testsupport::{FakeAgent, FakeAgentOptions};

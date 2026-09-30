@@ -271,7 +271,7 @@ refuse is a 400 whatever the thread.
 | Source | In `require` as | This build |
 |---|---|---|
 | The agent's own checks (its `checks` artifact) | `agent-checks` | **Honoured** |
-| CI on the pushed commit | `ci` | Refused: it needs the inbox and timers (MVP slice 5) and the CI webhook (slice 6). Startup exits 78; a request is a 400 whose `detail` says so |
+| CI on the pushed commit | `ci` | Refused: it needs the CI webhook (slice 6); the inbox and timers it rests on (MVP slice 5) are built. Startup exits 78; a request is a 400 whose `detail` says so |
 | A verifier agent | `verifier` | Refused: it needs the verifier dispatch (MVP slice 10). The `verifier` and `ci` settings are refused with their sources |
 
 The refusal is deliberate and fail-closed. Until those slices exist the application drops the commands a `ci` or

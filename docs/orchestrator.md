@@ -17,17 +17,17 @@ change.
 > **What is built.** Facts in this page are marked **Built** (present in
 > `orchestrator/` and checked against the code on 2026-09-30) or **Planned**
 > (design only). Today: the pure core, the Postgres store, the durable dispatcher,
-> the A2A client adapter, and one interaction surface over `App`: AG-UI
+> the inbox worker (timers and stored reports), the A2A client adapter, and one interaction surface over `App`: AG-UI
 > (the wire types, the pure projection, and the run, connect and capabilities
 > routes, with A2UI surfaces and actions). The legacy chat API surface was
-> removed on 2026-09-30. Not yet: an A2A or MCP server, webhooks,
-> timers, an inbox, MCP tools, and the model endpoint. The
+> removed on 2026-09-30. Not yet: an A2A or MCP server, webhook routes (the inbox
+> that would take their reports is built), MCP tools, and the model endpoint. The
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
 >
-> **Partly built (design accepted 2026-09-30).** The job ledger and the gate in the core (MVP slice 2), and the
-> gate's configuration and its AG-UI projection (slice 3) are built, with the agent's own checks as the only
-> source the build honours ([The gate's configuration](#the-gates-configuration-and-its-projection-mvp-slice-3)).
-> The rest, the inbox, timers, CI webhooks, the verifier and the MCP server, is planned. They are all designed in
+> **Partly built (design accepted 2026-09-30).** The job ledger and the gate in the core (MVP slice 2), the
+> gate's configuration and its AG-UI projection (slice 3), and the inbox, watches and timers (slice 5) are built,
+> with the agent's own checks as the only source the build honours ([The gate's configuration](#the-gates-configuration-and-its-projection-mvp-slice-3)).
+> The rest, CI webhooks, the verifier and the MCP server, is planned. They are all designed in
 > [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 > [ADR 0017](decisions/0017-ci-results-by-webhook.md),
 > [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) and
@@ -46,8 +46,8 @@ protocol:
 | MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | **Planned**: the server as `orch-surface-mcp`, over streamable HTTP with bearer tokens, going straight to `App` and not through the inbox ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); the client side is not designed yet |
 | AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
 | Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
-| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)) |
-| Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | **Planned**: timers are inbox rows ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)) |
+| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The inbox it writes to is **built**: `App::receive` stores a report and the `InboxWorker` applies it |
+| Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | **Built** (MVP slice 5): timers are inbox rows, armed by `Schedule` in the commit that asks for it and applied by the `InboxWorker` as `TimerFired` ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). Only the CI and verifier deadlines exist; reminders and cron are not designed |
 
 The chat's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
 small REST resource API beside it (agents, threads, cancel, health: always mounted) ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
@@ -78,7 +78,7 @@ flowchart TB
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
   subgraph G_PORTS["Ports: traits only"]
-    ports["<b>orch-ports</b><br/>ThreadStore, Wakeup, AgentClient,<br/>Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
+    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
   end
   subgraph G_ADAPT["Adapters: implement the ports"]
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
@@ -89,7 +89,7 @@ flowchart TB
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
   end
   subgraph G_APP["Application: written against the ports"]
-    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream<br/>Dispatcher: durable outbox worker"]
+    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, receive<br/>Dispatcher: durable outbox worker<br/>InboxWorker: timers and stored reports"]
   end
   subgraph G_EDGE["HTTP edge"]
     api["<b>orch-api</b><br/>identity, RFC 9457 problems, resource API,<br/>health, SurfaceRoutes"]
@@ -220,8 +220,9 @@ is not built (see the status note in [ADR 0009](decisions/0009-swappable-impleme
 
 ## Event flow
 
-**Design (planned, [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)).** This is
-the flow for **unsolicited machine input**: webhooks and timers. The inbox exists to answer fast, to
+**Design ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)); the inbox, the
+watches and the timers are built (MVP slice 5), the webhook adapters that write reports are not.**
+This is the flow for **unsolicited machine input**: webhooks and timers. The inbox exists to answer fast, to
 dedupe redeliveries and to park a report that cannot be matched to a thread yet. Requests from an
 authenticated caller who waits for the answer do **not** go through it: the chat (AG-UI, the legacy
 chat API) keeps its idempotency key on the event, and **MCP goes straight to `App`**
@@ -247,12 +248,12 @@ sequenceDiagram
   D->>DB: delivered | retry with backoff
 ```
 
-**Built today** differs in four places, all consequences of having one input path (a person in the chat, over AG-UI) and one output (an A2A
+**Built today** differs in four places, all consequences of having one input path a person can use (the chat, over AG-UI) and one output (an A2A
 agent):
 
 | Design | Built |
 |---|---|
-| Inbound adapters write an `inbox` row; a worker claims it and runs the transition | No inbox table. The request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. The inbox arrives with the webhook and timer inputs (planned); MCP does not use it |
+| Inbound adapters write an `inbox` row; a worker claims it and runs the transition | Machine input does: `App::receive` writes the row (no adapter calls it yet, the webhook surface is slice 6) and timers are written by the commit that schedules them; the `InboxWorker` claims them and applies them. A person's request does not: the request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. MCP does not use the inbox |
 | Inbound events are deduplicated by `UNIQUE (source, idempotency_key)` | Events carry an optional `idempotency_key`, unique per thread (`events_idempotency`); the dispatcher derives keys from the agent's own ids, so a resumed or replayed stream never duplicates an event |
 | The job row holds the state as `jsonb` | The `threads` row holds `state` as text with a `CHECK`; the state has no payload |
 | Async results re-enter as new inbound events | The dispatcher turns everything the agent reports into `Input::Agent` and calls `App::apply`, the same entry point every surface uses |
@@ -262,6 +263,97 @@ their own state diagram in [ADR 0017](decisions/0017-ci-results-by-webhook.md#di
 rows that become due at `available_at`, so the core never reads a clock
 ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). The `InboxWorker` lives in
 `orch-app` and runs wherever the dispatcher runs (`worker`, `all`).
+
+### Inbox, timers and watches
+
+**Built** (MVP slice 5; checked against `orch-ports`, `orch-store-postgres` and `orch-app` on
+2026-09-30). A commit that carries `Watch { key }` inserts a `watches` row, and a commit that carries
+`Schedule { after, timer }` inserts an inbox row with `source = 'timer'` and
+`available_at = commit time + after`; both are part of the thread's own transaction, next to the
+state, the job, the events and the outbox rows. The `InboxWorker` claims the rows that are due and
+applies each to its thread. A CI report that no thread watches yet is parked, and the commit that
+adds the watch re-arms it:
+
+```mermaid
+sequenceDiagram
+  participant S as A surface (webhook, later)
+  participant DB as Postgres
+  participant W as InboxWorker
+  participant A as App and transition (pure)
+  S->>DB: App::receive: INSERT inbox (source, key), pending, duplicate = no-op
+  W->>DB: claim due rows: pending and available_at <= now, or inflight with a lapsed lease
+  W->>DB: a CI report: look up watches[correlation]
+  alt no watch yet
+    W->>DB: park_inbox: parked, unless the watch appeared meanwhile (then pending again)
+  else the watch names a thread
+    W->>A: apply_from_inbox(thread, CiReported, key inbox:id)
+    A->>DB: ONE txn: state + job (CAS), events, outbox, watches, timers, inbox row applied (lease fenced)
+  end
+  Note over A,DB: later, the agent's branch artifact commits Watch{key}
+  A->>DB: same txn as that commit: INSERT watches, parked rows with the key become pending
+  W->>DB: claim the re-armed row, apply as above
+  Note over W,DB: a timer row is applied the same way: its payload names the thread, so no watch is looked up
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: received, or a timer armed (available_at = commit time + after)
+  Pending --> Inflight: claimed when due (SKIP LOCKED), lease
+  Inflight --> Inflight: lease lapsed, claimed again (attempts + 1, counted)
+  Inflight --> Inflight: released at shutdown (the lease ends now, the claim is refunded)
+  Inflight --> Applied: the thread's commit under the lease marks it (when the input changes nothing, a commit that carries only the lease)
+  Inflight --> Parked: a CI report with no watch
+  Parked --> Pending: a commit adds the watch (available_at = that commit's time)
+  Inflight --> Pending: the watch appeared while parking
+  Parked --> Expired: parked for INBOX_PARKED_TTL_SECS
+  Inflight --> Pending: retryable error, doubling backoff
+  Inflight --> Dead: permanent error, INBOX_MAX_ATTEMPTS counted claims, or one more than that (its workers kept dying), before delivery
+  Applied --> [*]
+  Expired --> [*]
+  Dead --> [*]
+```
+
+What the diagrams do not say:
+
+- **Time is data.** The core asks for a delay with `Schedule`; the store adds it to the commit's
+  `now`. A timer that is not due is not claimed, and the worker learns of a due timer by polling
+  (`INBOX_POLL_SECS`), not by a notification. `TimerFired` for a verification that has moved on
+  changes nothing (the core compares `attempt` and `verification`), and the row is applied all the same.
+- **A commit is fenced by the inbox claim** exactly as by an outbox claim: a worker paused past its
+  lease, whose row another worker took over, is refused and writes nothing. The event the input
+  produces carries the key `inbox:<row id>`, so a repeat could add no second event.
+- **Parking is race-free.** A worker that found no watch and a commit that adds it at the same time
+  take one advisory lock per watch key in Postgres; `park_inbox` looks again under it. Without the
+  lock the row is left parked behind its watch. Two tests hold the lock by hand in a transaction,
+  start the other side (a real `park_inbox`, then a real commit), wait until `pg_locks` shows it
+  blocked on the lock, and let go, once for each order; each failed with the lock taken out
+  (verified 2026-09-30). The memory store's version of the window, between the worker's `get_watch`
+  and its park, is tested at the application level with a store that lands a commit in it.
+  This is not a proof that nothing can deadlock: a stale `park_inbox` holds a key and can wait for a
+  row that the commit of the worker that took the row over holds, while that commit wants the key.
+  Postgres detects the cycle and aborts one side (`40P01`, a transient error the caller retries). The
+  statements that lock several parked rows (the re-arm in a commit, and the expiry) take them in id
+  order with `FOR UPDATE SKIP LOCKED`, so they never wait for a row lock.
+- **Attempts.** `attempts` counts claims and only goes up: it is the fence. A claim does not count
+  against `INBOX_MAX_ATTEMPTS` if it was handed back at shutdown or ended in a park (the row keeps
+  the claims it was refunded, `refunded`); a lapse and a retry do. Before delivering a row the
+  worker gives up on one that has been claimed more often than that (`counted > max`): a worker
+  that panics or is killed with the row in hand has no error path, so the count of lapsed claims is
+  the only trace it leaves.
+- **What `receive` accepts.** The `source` and the key are printable ASCII (they reach spans and
+  logs). A CI report's correlation is always `ci:<repo-key>@<sha>` from its own repository and sha,
+  put through `repo_key` and lower case first; one that cannot be made to fit that form is refused
+  (`Invalid`), not parked until it expires. A sender cannot name another thread's key.
+- **An input that changes nothing** (a deadline of a verification that is over) still finishes its
+  row through the store's commit, carrying the lease and nothing else: the version is checked, so a
+  "nothing to do" decided on a thread that has moved is decided again. The thread is left alone (no
+  new version).
+- **Dedupe** is `UNIQUE (source, idempotency_key)`: the second `receive` of a delivery is a
+  duplicate whatever became of the first. A timer's key is derived from the thread, the timer
+  kind, the attempt and the verification, so a replayed commit arms nothing twice. Finished rows
+  are kept, which keeps that true and makes retention an open question (#29).
+- **Wakeups.** `NOTIFY orch_inbox` (`Topic::Inbox`) on a received or re-armed row; the worker also
+  polls, so a lost notification costs latency only.
 
 The turn as the code runs it, step by step, is a sequence diagram in
 [Architecture: a chat turn](architecture.md#a-chat-turn).
@@ -489,10 +581,11 @@ event names the state the thread entered, and that `completed` reaches `done` fr
 **Built in the core** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and
 rows for the new inputs. With an empty gate the table above is unchanged, and the tests that pin it
-run against the same expectations as before. The application does not yet execute `Watch`,
-`Schedule` and `RequestVerification` (slices 5 and 10), and nothing yet produces `CiReported`,
-`VerifierReported` or `TimerFired` (slices 5, 6 and 10); the core decides them already
-(`crates/core/tests/gate.rs` has a row for each).
+run against the same expectations as before. The application executes `Watch` and `Schedule` since
+slice 5 (see [Inbox, timers and watches](#inbox-timers-and-watches)), and the inbox worker produces
+`TimerFired`; it drops `RequestVerification` until slice 10. Nothing yet produces `CiReported`
+(slice 6: the webhook surface calls `App::receive`) or `VerifierReported` (slice 10); the core decides
+them already (`crates/core/tests/gate.rs` has a row for each).
 
 | Input | `verifying` |
 |---|---|
@@ -558,8 +651,8 @@ stateDiagram-v2
 
 - **What this build honours is listed in one place, and is checked in two.** `pending_reason` (a `match` over `CheckSource`,
   no wildcard) says why a source cannot be honoured yet; `GateRules::new` honours the rest. The binary applies the rules
-  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. The application drops `Watch`, `Schedule` and
-  `RequestVerification` until the inbox and timers (slice 5) and the verifier dispatch (slice 10) exist, so a gate that
+  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. The application
+  executes `Watch` and `Schedule` since the inbox and timers (slice 5), but drops `RequestVerification` until the verifier dispatch (slice 10) exists, and no surface writes CI reports into the inbox until the CI webhook (slice 6) exists, so a gate that
   required `ci` or `verifier` would wait for a verdict that can never come. Configuration therefore **refuses** them in
   every layer, naming the slice that enables them: at startup with exit 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an
   `AGENTS_FILE` entry, including its `ci` and `verifier` keys), and as a 400 for a request. Slices 6 and 10 change
@@ -697,7 +790,7 @@ dependency pinned to a commit sha); this repository adds no role and no supervis
 | Role | Runs | Serves on `LISTEN_ADDR` |
 |---|---|---|
 | `control-plane` | migrations, the HTTP server: the resource API, the surfaces in `ORCH_SURFACES`, health. No dispatcher | the full API |
-| `worker` | migrations, the dispatcher (including the transitions for agent updates), and in a build with `agent-local` the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
+| `worker` | migrations, the dispatcher (including the transitions for agent updates), the inbox worker (timers and stored reports) and, in a build with `agent-local`, the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
 | `all` (default) | both, as before the role existed (with the local agents' worker in a build with `agent-local`) | the full API |
 
 The halves are already decoupled: the only things they share are the outbox, the thread version
@@ -713,7 +806,7 @@ sequenceDiagram
   participant B as boot::run
   participant H as adam_host::Host
   participant C as HTTP server (control plane)
-  participant W as Dispatcher (worker)
+  participant W as Dispatcher and inbox worker (workers)
   participant P as Health router (worker role only)
   B->>H: register every component, Host starts those the role asks for
   S-->>B: shutdown
@@ -738,7 +831,8 @@ stateDiagram-v2
   StoppingWorkers --> [*]: dispatcher stopped (exit 0 after a signal, 70 after a failure)
 ```
 
-A worker is ready when the store answers and its dispatcher has started; the other roles are ready
+A worker is ready when the store answers and its dispatcher has started (the inbox worker is a
+second worker component beside it, and ends the process like the dispatcher if it stops on its own); the other roles are ready
 once the database is migrated and answers. The probe router of a worker is a worker component that
 ends after the dispatcher, so a draining worker answers 503 rather than refusing connections.
 
@@ -861,10 +955,10 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
   per-thread `events.idempotency_key` (unique index) and, towards the agent, by the A2A `messageId`,
   which is the outbox row id. The AG-UI run route keys the event it writes
   `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with no message id of its own), so a
-  retried POST is a no-op and attaches to the run instead. The inbox table with
-  `UNIQUE (source, idempotency_key)` is *planned* with webhooks and timers
-  ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)); the AG-UI, chat API and MCP
-  paths keep their keys on the event (MCP: the thread id is derived from `client_request_id`).
+  retried POST is a no-op and attaches to the run instead. Machine input has the inbox table with
+  `UNIQUE (source, idempotency_key)` (**built**, [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md));
+  the AG-UI, chat API and MCP paths keep their keys on the event (MCP: the thread id is derived from
+  `client_request_id`).
 - **Optimistic concurrency on threads. Built.** `threads.version`; `ThreadStore::commit` takes the
   expected version, and `App::apply` re-reads and retries a lost race up to `max_commit_attempts`
   (8), then answers 503 (`Conflict`).
@@ -938,7 +1032,9 @@ now so that parallel slices do not collide:
   `CHECK`s widened once to every new value (`verifying`; `ci_result`, `check_result`, `rework`);
   `outbox.kind` gains `verify` and `outbox` gains a nullable `task_id`. The port types for the `verify`
   outbox kind come with the dispatcher's verifier path (slice 10).
-- **`0004` (slice 5, planned):** the `inbox` and `watches` tables.
+- **`0004` (slice 5, built):** the `inbox` and `watches` tables, with the partial indexes the claim,
+  the re-arm and the expiry use (`inbox_pending`, `inbox_inflight`, `inbox_parked_correlation`,
+  `inbox_parked_at`).
 
 ```mermaid
 erDiagram
@@ -961,14 +1057,16 @@ erDiagram
     text correlation "watch key"
     text status "pending inflight parked applied expired dead"
     timestamptz available_at "timers: now + after"
-    int attempts
+    int attempts "claims so far: the fencing token"
+    int refunded "claims not counted against the limit"
     text lease_owner
     timestamptz lease_until
+    timestamptz parked_at "the time-to-live counts from here"
     text last_error
   }
   watches {
     text key PK "ci:host/owner/name@sha"
-    uuid thread_id
+    uuid thread_id "REFERENCES threads, ON DELETE CASCADE"
   }
 ```
 
@@ -979,9 +1077,10 @@ erDiagram
 | `watches` | Which thread waits for which key | Inserted by a commit that carries `Watch { key }`, in the same transaction that re-arms parked rows with that key |
 | `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task | The dispatcher never turns a verifier's envelopes into `Input::Agent` |
 
-`Commit` gains `watches`, `timers` and `inbox: Option<Lease>`, and the inbox methods (`receive`,
-`claim_inbox`, `park_inbox`, `retry_inbox`, `complete_inbox`) go on `ThreadStore` so that the commit stays
-one transaction; the conformance cases join `thread_store_conformance!`. `user_message` gains an `origin`
+**Built:** `Commit` gains `watches`, `timers` and `inbox: Option<InboxLease>`, and the inbox methods
+(`receive`, `claim_inbox`, `park_inbox`, `retry_inbox`, `complete_inbox`, and `expire_parked_inbox`,
+`release_inbox_leases`, `get_watch`, `get_inbox`, `find_inbox`) are on `ThreadStore` so that the commit stays
+one transaction; the conformance cases are in `thread_store_conformance!`. `user_message` gains an `origin`
 field (no column; it is in the event's `data`). The chat needs none of this when the gate is empty.
 
 ### Live updates
@@ -1074,7 +1173,10 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
   `/agui/*` operations.
 - **Conformance testkit per port:** `thread_store_conformance!` and `wakeup_conformance!` run
   against the in-memory implementations and against Postgres, so "does my store behave" is a test,
-  not a reading exercise (ADR 0009, rule 3). `agent_client_conformance!` does the same for
+  not a reading exercise (ADR 0009, rule 3). The inbox cases: dedupe, claims that lapse, disjoint
+  concurrent claimers, park and re-arm in one commit (and none when the commit is refused), a park
+  that finds a watch that appeared, fencing and the stale claim that writes nothing, expiry, a timer
+  not yet due, a replayed commit that arms no second timer, retry and release, first-come watches. `agent_client_conformance!` does the same for
   `AgentClient`: twelve cases (a live card and a transient failure for an unreachable one; the first
   envelope names the task; unique idempotency keys; `get_task` agrees with the stream; a follow-up
   continues an `input-required` task; `resubscribe` yields the rest under the same keys, or says
@@ -1088,7 +1190,10 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
   `<name>::postgres` (the AG-UI run route and connect stream, the resource API, dispatcher, A2A adapter, a
   fake agent): restart mid-stream with no gap and no duplicate, several replicas on one database,
   resume of the connect stream, blocked and follow-up, cancel, releases, agent auth, a connect stream reconnected to
-  another replica after the first is killed, A2UI surfaces and actions. The binary is also tested as a process, including a SIGKILL of one of two
+  another replica after the first is killed, A2UI surfaces and actions, and the inbox (a deadline
+  scheduled by a gated completion fires and blocks the thread, a row claimed by a process that died
+  is applied once by the next and the late one is fenced, a report received before its watch is
+  applied after a later commit; `inbox.rs`). The binary is also tested as a process, including a SIGKILL of one of two
   replicas mid-task.
 - **Golden transcripts:** [`api/examples`](api/examples/README.md) pin what the orchestrator emits;
   the web and its mock replay them, and `orch-agui-projection` projects them to AG-UI streams that

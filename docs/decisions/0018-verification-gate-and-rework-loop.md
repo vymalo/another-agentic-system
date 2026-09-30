@@ -181,8 +181,8 @@ last findings in its `error` event.
   the verifier. A thread may set only `require` and `maxAttempts`, and spells a source `agent-checks` or
   `agent_checks`. A default `ORCH_MAX_ATTEMPTS` is lowered to a smaller `ORCH_MAX_ATTEMPTS_CAP`; one that is set must fit.
   The verifier of every agent's resolved gate must be a configured agent.
-- **This build honours only `agent-checks`.** The application still drops `Watch`, `Schedule` and
-  `RequestVerification` (slices 5 and 10), so a gate that required `ci` or `verifier` would wait for a verdict
+- **This build honours only `agent-checks`.** The application still drops `RequestVerification` (slice 10; `Watch` and `Schedule` are executed since slice 5, but no
+  surface writes CI reports until slice 6), so a gate that required `ci` or `verifier` would wait for a verdict
   that never comes. Configuration **refuses** those sources, and the `ci` and `verifier` settings, in every layer,
   and says which slice enables them: startup exits 78 (`ORCH_GATE`, `ORCH_VERIFIER`, an `AGENTS_FILE`
   entry), a request is a 400. This is fail-closed: a job is never "done" without a check the operator required.

@@ -1,7 +1,10 @@
 # ADR 0016 — Inbox, timers and the job ledger on the thread
 
-- **Status:** accepted (2026-09-30). **Planned, not built:** this ADR is the design for MVP slices 2
-  and 5 ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). Refines
+- **Status:** accepted (2026-09-30). This ADR is the design for MVP slices 2 and 5
+  ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). **Amended (2026-09-30):** slice 2 (the
+  job ledger and the gate in the core) and slice 5 (the inbox, watches and timers) are built; the
+  code differs from the sketches below in a few named places, listed under
+  [Built in slice 5](#built-in-slice-5). Refines
   [ADR 0001](0001-rust-state-machine-on-postgres.md) (the transactional inbox it named, and its
   one ledger). Gives the inbox its first user, the CI webhooks of
   [ADR 0017](0017-ci-results-by-webhook.md); the gate that uses the ledger is
@@ -203,7 +206,92 @@ it is explicit.
 | Variable | Default | Meaning |
 |---|---|---|
 | `INBOX_PARKED_TTL_SECS` | `86400` | How long a report that matches no watch waits before it expires. |
-| other `INBOX_*` (lease, poll interval) | set in slice 5 | The plan names only the parked TTL; slice 5 documents the rest beside the code. |
+| `INBOX_LEASE_SECS` | `30` | How long an inbox worker's claim on a row lasts (at least 3). A worker that dies holds its rows this long. |
+| `INBOX_POLL_SECS` | `2` | Safety poll of the inbox worker when no wakeup arrives (at least 1). Timers coming due are not announced, so a timer fires at most this late. |
+| `INBOX_MAX_ATTEMPTS` | `10` | Counted claims of one row before it is dead-lettered (at least 1). A row that keeps failing retryably, or keeps killing its worker (its lease lapses and it is claimed again), ends here; a claim handed back at shutdown, or one that only parked the row, is not counted. |
+
+## Built in slice 5
+
+*Verified 2026-09-30* against the code of this repository (`orchestrator/crates/ports`,
+`store-postgres`, `app`; migration `0004_inbox.sql`). Where it differs from the sketch above:
+
+- **The inbox claim is its own type.** `Commit.inbox` is an `Option<InboxLease>` (`id: InboxId`,
+  `owner`, `attempt`), not the outbox's `Lease`, so an outbox claim can never be presented as an
+  inbox one. The fence is the same: the row must be `inflight`, held by `owner`, at exactly
+  `attempt`; a commit under any other claim writes nothing and answers `Fenced`, before the
+  version is looked at. The commit marks the row `applied` in the same transaction.
+- **A payload is a closed enum.** `InboxPayload` is `Timer { thread, timer }` or `CiReport(..)`,
+  stored as JSON tagged by `kind` (which the table's `kind` column repeats, with a `CHECK`).
+  `App::receive(source, idempotency_key, payload)` takes the payload and derives the kind. A CI
+  report's correlation is never the caller's: it is always the watch key `ci:<repo-key>@<sha>`,
+  built from the report's own repository and sha after `repo_key` and lower case, the form a watch
+  is written in (`https://github.com/O/R.git` and an upper-case hash reach the watch of
+  `github.com/o/r`). Otherwise a surface could route a report, and the untrusted summary in it, to
+  any thread. `receive` refuses (`Invalid`) the source `timer`, a timer payload (only the store
+  makes timers), an empty or oversized field, a `source` or key that is not printable ASCII (both
+  reach spans and logs), and a report whose repository or sha cannot make a watch key: it could
+  never match, so it is refused instead of parked until it expires.
+  A claimed row hands the worker the payload as JSON; the worker decodes it, so a row this build
+  cannot read is dead-lettered on its own and never spoils the batch it was claimed with.
+- **Parking re-checks the watch.** `park_inbox` answers `Parked`, `Rearmed` or `Lost`. Between a
+  worker finding no watch and parking, a commit may add the watch; that commit sees only `parked`
+  rows, so it would leave this one behind. In Postgres both take a transaction-scoped advisory
+  lock on the watch key (adding a watch, and parking) and `park_inbox` looks again under it, so
+  the row goes back to `pending` (`Rearmed`) instead. Two tests take the lock by hand in a
+  transaction, start the real call on the other side (the park, then the commit), wait until
+  `pg_locks` shows it blocked on the key, and let go, once for each order; each failed with the lock
+  taken out (verified 2026-09-30). The random 40-round race they replace proved less. The window
+  between the worker's `get_watch` and its park is tested at the application level with a store
+  that lands a commit in it.
+  This is not a proof that nothing here can deadlock, and the code no longer says so: a stale
+  `park_inbox` holds a key and can wait for a row that the commit of the worker that took the row
+  over holds, while that commit wants the key. Postgres detects the cycle and aborts one side
+  (`40P01`, mapped to a transient error the caller retries). The statements that lock several
+  parked rows (the re-arm in a commit, and the expiry) take them in id order with
+  `FOR UPDATE SKIP LOCKED`, so they never wait for a row lock.
+- **More port methods than the five named:** `expire_parked_inbox` (the worker calls it with
+  `now - INBOX_PARKED_TTL_SECS`), `release_inbox_leases` (shutdown), `get_watch`, and the
+  inspection pair `get_inbox` and `find_inbox`. The store computes a timer's `available_at` from
+  the commit's `now` plus `after`; the timer's key is `<thread>:<kind>:<attempt>:<verification>`
+  under source `timer`, and inserting it twice (a replayed commit, or the same deadline armed by
+  another commit) is one row.
+- **Columns beyond the sketch:** `inbox.parked_at` (the time-to-live counts from parking, not
+  from receipt), `refunded` (see *Attempts*), `created_at`, `updated_at`; `watches.created_at`,
+  and `watches.thread_id` references `threads` (a thread takes its watches with it). A key already
+  watched by another thread keeps that thread: the first to watch it wins, and the Postgres store
+  logs a warning naming both threads (the memory store logs nothing; the ports crate has no
+  logger).
+- **Attempts.** `attempts` is the fencing token and only goes up. `INBOX_MAX_ATTEMPTS` limits the
+  *counted* claims, `attempts - refunded`. A claim handed back at shutdown
+  (`release_inbox_leases`) is refunded, and so is every claim up to the one that ended in a park
+  (or found the watch there, `Rearmed`), or up to the re-arm of a parked row by a commit: waiting for
+  a watch is not failing. A lapse and a retry stay counted. Retryable failures are counted when the
+  worker sees them, but a worker that panics or is killed with the row in hand sees nothing, so
+  before delivering a row the worker gives up on it if `counted > max_attempts` (dead-lettered
+  with the number of claims that ended without an answer). Both stores keep the same semantics
+  (`inbox_counts_only_the_claims_that_failed`).
+- **An input that changes nothing** still finishes its row through `ThreadStore::commit`: a commit
+  that carries the inbox claim and nothing else (`Commit::only_finishes_inbox`) and the thread's
+  current state checks the claim and `expected_version`, marks the row `applied` and leaves the
+  thread alone (no version bump, no `updated_at`, no wakeup). A bare `complete_inbox` there would
+  have written "nothing to do" as final on a thread that may have moved since, and a later input
+  kind could have been dropped silently. `complete_inbox` remains for `Dead`, and for a repeat
+  (`Duplicate`: the input's event is in the log already).
+- **Wakeups.** A received or re-armed row sends `NOTIFY orch_inbox` (`Topic::Inbox`) inside its
+  transaction. A timer is not announced when it comes due: the worker polls.
+- **The worker** is `InboxWorker` in `orch-app`, registered as its own worker component
+  (`the inbox worker`) next to the dispatcher in the `worker` and `all` roles. It expires old
+  parked rows, claims a batch, and for each row builds the `Input` (`TimerFired` from the payload's
+  thread; `CiReported` from the thread the watch names, or parks), applies it with
+  `App::apply_from_inbox` (key `inbox:<id>`), and on a retryable error puts the row back with
+  a doubling backoff until `INBOX_MAX_ATTEMPTS` counted claims. Permanent errors (a missing thread, an unreadable
+  payload) dead-letter the row at once. On shutdown it finishes the row in hand and releases its
+  claims. `tick()` runs one pass so tests can drive it without timing.
+- **`RequestVerification` is still dropped** by the application until slice 10 (its TODO stays).
+- **Not decided here, and now open:** how long applied, expired and dead rows are kept (they are
+  what makes a redelivery a duplicate, so purging them is a retention decision;
+  [open question 29](../open-questions.md#open)), and what a watch key shared by two threads
+  should do ([open question 30](../open-questions.md#open)).
 
 ## Security notes
 
