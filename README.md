@@ -59,6 +59,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [MVP](docs/mvp.md) | Build order, smallest working loop first, with what is built |
 | [API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health), the AG-UI operations and the deprecated REST interaction endpoints (off by default) |
 | [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
+| [Webhooks](docs/api/webhooks.md) | Planned: CI results by webhook, the generic signed shape and the GitHub adapter (headers, HMAC, body, conclusions, response codes, a worked signature) |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
 | [Lessons from Agent Canvas](docs/lessons-from-agent-canvas.md) | What running OpenHands Agent Canvas taught us, as requirements |
 
@@ -80,6 +81,10 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0013](docs/decisions/0013-a2ui-generative-ui.md) | A2UI for generative UI, end to end over A2A and AG-UI |
 | [0014](docs/decisions/0014-adam-coder-default-agent-over-a2a.md) | adam-coder is the default agent (first `AGENTS_FILE` entry), over plain A2A |
 | [0015](docs/decisions/0015-control-plane-and-workers-on-adam-rs.md) | Control plane and workers on adam-rs (`Role` enum, git rev); in-process agents behind a feature; amends 0001 and 0007 |
+| [0016](docs/decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md) | Inbox, timers and the job ledger on the thread (`threads.job`); unsolicited machine input only. *Planned* |
+| [0017](docs/decisions/0017-ci-results-by-webhook.md) | CI results by webhook: a GitHub adapter and a generic signed shape. *Planned* |
+| [0018](docs/decisions/0018-verification-gate-and-rework-loop.md) | Configurable verification gate (CI, agent checks, verifier agent) and a bounded rework loop; refines 0002. *Planned* |
+| [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Planned* |
 
 ## Local development
 

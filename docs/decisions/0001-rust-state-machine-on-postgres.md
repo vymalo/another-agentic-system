@@ -4,6 +4,10 @@
   [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md): the job ledger also holds the journal of
   an in-process (local) agent, in `orch_agent_*` tables of the same Postgres. Processes stay
   stateless; the orchestrator now runs as a control plane and workers over this one database.
+  Status note (2026-09-30): [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md) makes the
+  "transactional inbox" and timers of this decision concrete (planned, not built): the job ledger is
+  a `threads.job` column committed with the state, the inbox carries webhooks and timers only, and MCP
+  bypasses it ([ADR 0019](0019-mcp-server-over-streamable-http.md)). The decision stands.
 
 ## Context
 

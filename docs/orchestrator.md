@@ -23,6 +23,15 @@ change.
 > chat API (off unless mounted). Not yet: an A2A or MCP server, webhooks,
 > timers, an inbox, MCP tools, and the model endpoint. The
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
+>
+> **Planned (design accepted 2026-09-30, not built).** The inbox, timers, the job ledger on the
+> thread, CI webhooks, the verification gate and the MCP server are designed in
+> [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+> [ADR 0017](decisions/0017-ci-results-by-webhook.md),
+> [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) and
+> [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md), and built in the slices of
+> [`mvp.md`](mvp.md#the-slices-of-steps-2-3-and-6). Every passage below marked **Planned** for those
+> features describes that design; none of it is in the code.
 
 ## It is symmetric
 
@@ -32,11 +41,11 @@ protocol:
 | Protocol | As a server (input) | As a client (output) | Status |
 |---|---|---|---|
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
-| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `answer` | Calls tools: GitHub, docs, search, … | **Planned** |
+| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | **Planned**: the server as `orch-surface-mcp`, over streamable HTTP with bearer tokens, going straight to `App` and not through the inbox ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); the client side is not designed yet |
 | AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
 | Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Serves the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Built** (`orch-surface-chat-api`), deprecated, off by default (`ORCH_SURFACES=agui,chat-api` mounts it) |
-| Webhooks | GitHub, CI, Slack events | Slack posts, outgoing webhooks | **Planned** |
-| Timers | Scheduled events (timeouts, reminders, cron) | Schedules new timers | **Planned** |
+| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)) |
+| Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | **Planned**: timers are inbox rows ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)) |
 
 The chat's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
 small REST resource API beside it (agents, threads, cancel, health: always mounted) ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
@@ -48,7 +57,9 @@ stream and the capabilities document) and the deprecated `chat-api` surface. **P
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
-gets MCP progress notifications; one started in the chat gets chat messages. Today every log event
+gets MCP progress notifications; one started in the chat gets chat messages. The first step toward it is
+planned: `user_message` gains `origin: agui | chat_api | mcp`
+([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). Today every log event
 records an `Actor` (`user`, `agent` or `system`), and the only reply channel is the thread's own
 event log, which every surface reads.
 
@@ -83,6 +94,8 @@ flowchart TB
   subgraph G_SURF["Interaction surfaces: mounted by ORCH_SURFACES"]
     chat["<b>orch-surface-chat-api</b><br/>legacy createThread, postMessage,<br/>listEvents, streamEvents"]
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
+    surfwh["<b>orch-surface-webhook</b> (planned)<br/>POST /webhooks/github, /webhooks/ci<br/>machine routes, HMAC"]:::planned
+    surfmcp["<b>orch-surface-mcp</b> (planned)<br/>/mcp, streamable HTTP<br/>machine route, bearer"]:::planned
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
@@ -118,6 +131,12 @@ flowchart TB
   surfagui --> app
   surfagui --> proj
   surfagui --> proto
+  surfwh -.-> api
+  surfwh -.-> app
+  surfmcp -.-> api
+  surfmcp -.-> app
+  bin -.-> surfwh
+  bin -.-> surfmcp
   ts --> api
   ts --> app
   ts --> chat
@@ -168,7 +187,9 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
 | `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
-| MCP client and server, webhook, timer, GitHub and Slack adapters | The other rows of the table above | **Planned** |
+| `orch-surface-webhook` | `POST /webhooks/github` and `POST /webhooks/ci`: HMAC on the raw body, normalise to a `CiReport`, `App::receive`; feature `surface-webhook`, on by default | **Planned** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
+| `orch-surface-mcp` | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Planned** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)) |
+| MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root | **Built** |
 
@@ -181,6 +202,10 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
 
+Planned, not built: the features `surface-webhook` (on by default; selects `orch-surface-webhook`, whose
+surfaces are the `ORCH_SURFACES` names `webhook-github` and `webhook-generic`) and a feature for the MCP
+surface. Its name is left to slice 11; `surface-mcp` by analogy.
+
 There is no Cargo feature that selects the store or the A2A client: the binary depends on
 `orch-store-postgres` and `orch-agent-a2a` unconditionally, because there is one implementation of
 each. ADR 0009 says the built-in implementations are features of the default binary; that switch
@@ -188,25 +213,30 @@ is not built (see the status note in [ADR 0009](decisions/0009-swappable-impleme
 
 ## Event flow
 
-**Design.** This is the flow for every input, including webhooks and MCP, which need the inbox to
-dedupe redeliveries:
+**Design (planned, [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)).** This is
+the flow for **unsolicited machine input**: webhooks and timers. The inbox exists to answer fast, to
+dedupe redeliveries and to park a report that cannot be matched to a thread yet. Requests from an
+authenticated caller who waits for the answer do **not** go through it: the chat (AG-UI, the legacy
+chat API) keeps its idempotency key on the event, and **MCP goes straight to `App`**
+([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). The earlier text of this page said
+"every input goes through the inbox"; that is withdrawn.
 
 ```mermaid
 sequenceDiagram
-  participant In as Inbound adapters<br/>(A2A · chat · MCP · webhooks · timers)
+  participant In as Inbound adapters<br/>(webhooks · timers)
   participant DB as Postgres
   participant C as Core (pure fn, no I/O)
   participant D as Dispatcher
   participant Out as Outbound adapters<br/>(A2A · MCP · chat · Slack · GitHub · webhooks)
-  In->>In: authenticate (A2A auth, MCP OAuth, HMAC webhook signature, OIDC user)
+  In->>In: authenticate (HMAC webhook signature on the raw body)
   In-->>In: unverified → 401, never enqueued (fail closed)
   In->>DB: INSERT inbox (source, idempotency_key UNIQUE) — redeliveries dedupe here
-  DB->>C: claim job (SKIP LOCKED), load state
-  C->>C: transition(&state, &input) → (next, commands)
-  C->>DB: ONE txn: update job (version+1), INSERT outbox, append chat events, mark inbox applied
+  DB->>C: InboxWorker claims the row (SKIP LOCKED), resolves the thread through watches, loads the snapshot
+  C->>C: transition(&snapshot, &input) → (next, commands)
+  C->>DB: ONE txn: update state + job (version+1), INSERT outbox, watches, timers, append chat events, mark inbox applied
   D->>DB: claim outbox rows (SKIP LOCKED)
   D->>Out: execute command (match on variant)
-  Out-->>In: async results come back as NEW inbound events (correlated by id)
+  Out-->>In: async results come back as NEW inbound events (correlated by id or watch key)
   D->>DB: delivered | retry with backoff
 ```
 
@@ -215,10 +245,16 @@ agent):
 
 | Design | Built |
 |---|---|
-| Inbound adapters write an `inbox` row; a worker claims it and runs the transition | No inbox table. The request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. The inbox arrives with the webhook and MCP inputs |
+| Inbound adapters write an `inbox` row; a worker claims it and runs the transition | No inbox table. The request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. The inbox arrives with the webhook and timer inputs (planned); MCP does not use it |
 | Inbound events are deduplicated by `UNIQUE (source, idempotency_key)` | Events carry an optional `idempotency_key`, unique per thread (`events_idempotency`); the dispatcher derives keys from the agent's own ids, so a resumed or replayed stream never duplicates an event |
 | The job row holds the state as `jsonb` | The `threads` row holds `state` as text with a `CHECK`; the state has no payload |
 | Async results re-enter as new inbound events | The dispatcher turns everything the agent reports into `Input::Agent` and calls `App::apply`, the same entry point every surface uses |
+
+The rows of the inbox have their own lifecycle (pending, inflight, applied, parked, expired, dead) and
+their own state diagram in [ADR 0017](decisions/0017-ci-results-by-webhook.md#diagrams); timers are inbox
+rows that become due at `available_at`, so the core never reads a clock
+([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). The `InboxWorker` lives in
+`orch-app` and runs wherever the dispatcher runs (`worker`, `all`).
 
 The turn as the code runs it, step by step, is a sequence diagram in
 [Architecture: a chat turn](architecture.md#a-chat-turn).
@@ -357,6 +393,25 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 property test (`tests/properties.rs`) checks that terminal states absorb, that a `thread_state`
 event names the state the thread entered, and that `completed` reaches `done` from every open state.
 
+**Planned** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and
+rows for the new inputs. With an empty gate the table above is unchanged.
+
+| Input | `verifying` |
+|---|---|
+| `CiReported` | The report is recorded as a `ci_result` and a `check_result`; if it settles a required source: all passed → `done`; a failure with `attempt < max` → `queued`, `attempt + 1`, a `rework` event and a `Delegate` with the findings; a failure on the last attempt → `failed`. A report for an older SHA or attempt: recorded, nothing else changes |
+| `VerifierReported` | Same, for the verifier source |
+| `TimerFired(CiDeadline)` | Current: → `blocked` (`ci_timeout`), no attempt spent. Stale: recorded, nothing changes |
+| `TimerFired(VerifierDeadline)` | Current: → `blocked`. Stale: as above |
+| `UserMessage` | The verification is abandoned; → `queued`, `Delegate`; no attempt counted |
+| `Cancel` | → `cancelled` |
+| `CiReported` on `done` / `failed` / `cancelled` | Only the `ci_result` card is appended |
+
+`completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
+anything. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
+diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
+lifecycle in [Architecture](architecture.md#job-lifecycle).
+
 ## Core types
 
 **Built.** A separate crate with no async, no sqlx and no HTTP, so purity is enforced by the
@@ -422,11 +477,36 @@ the JSON. A release selection travels as
 `AgentTarget.release` and is only accepted when the *live* card advertises the release-channels
 extension (ADR 0008).
 
-**Planned** (in the earlier design, not in the code): an `Origin` on every input (user, A2A, MCP,
-webhook, timer), inputs for `Approval`, `CheckCompleted`, `ToolResult` and `TimerFired`, and the
-commands `CallTool`, `Reply`, `Notify` and `Schedule`. They arrive with the MCP, webhook and timer
-steps ([MVP](mvp.md)); the closed enums make the compiler list every `match` that must handle them
-(ADR 0004). The AG-UI work has added `ui_surface` and `ui_action` events ([ADR 0013](decisions/0013-a2ui-generative-ui.md), built), with the agent update `AgentUpdate::Ui` / `UiRejected`, the input `Input::UiAction` and the command `DelegateAction`.
+**Planned, specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): the core moves from
+`transition(&ThreadState, &Input)` to a snapshot that carries the job ledger, and the enums grow. Not in
+the code; the shapes are the design and may differ in detail:
+
+```rust
+pub struct Snapshot { pub state: ThreadState, pub job: Job }
+pub fn transition(s: &Snapshot, i: &Input) -> Result<(Snapshot, Vec<Command>), TransitionError>;
+
+pub struct Job { gate: GatePolicy, attempt: u32, pushed: Option<PushedRef>,
+                 results: Vec<CheckResult>, hold: Option<Hold> }
+pub enum CheckSource { Ci, AgentChecks, Verifier }
+
+ThreadState += Verifying
+Input       += CiReported(CiReport) | VerifierReported { attempt, verdict } | TimerFired(Timer)
+Timer        = CiDeadline { attempt } | VerifierDeadline { attempt }
+Command     += Watch { key } | Schedule { after: SignedDuration, timer }
+             | RequestVerification { attempt, verifier, pushed, text }
+EventBody   += CiResult | CheckResult { source, attempt, status, findings } | Rework { attempt, max_attempts, findings }
+```
+
+The gate policy is copied into `Job` at thread creation, so a configuration change never touches a running
+job. A pure function of the core recognises the agent's `branch` artifact (sets `pushed`, emits
+`Watch { ci:<repo-key>@<sha> }`) and `checks` artifact. There is still no wildcard arm anywhere.
+
+**Planned, not yet specified** (in the earlier design): an `Origin` on every input (user, A2A, webhook,
+timer; MCP's is `user_message.origin`, above), inputs for `Approval` and `ToolResult`, and the commands
+`CallTool`, `Reply` and `Notify`. `CheckCompleted` is replaced by `CiReported` and `VerifierReported`;
+`TimerFired` and `Schedule` are the ones above. They arrive with the later steps ([MVP](mvp.md)); the
+closed enums make the compiler list every `match` that must handle them (ADR 0004). The AG-UI work has added `ui_surface` and `ui_action` events ([ADR 0013](decisions/0013-a2ui-generative-ui.md), built), with the agent update `AgentUpdate::Ui` / `UiRejected`, the input `Input::UiAction` and the command `DelegateAction`.
 
 ## Process roles
 
@@ -583,11 +663,16 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
   route. The core half is **partly built**: `App` scopes every read and write to the owner (someone
   else's thread is a 404, never a 403), but `transition` does not yet decide by origin, because
   only a signed-in user and the delegated agent can send inputs. *Planned:* a webhook must not be
-  able to approve a PR.
+  able to approve a PR. The planned webhook and MCP routes are **machine routes**
+  (`SurfaceRoutes::machine(router, guard)`), the only routes outside the identity layer; they take a
+  required authenticator (an HMAC check, a bearer check) and never read `X-Auth-Request-Email`
+  ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). A `CiReported` input can only add a check
+  result; it cannot approve or merge.
 - **Request/response protocols return immediately. Built.** `postMessage` answers 202 with the
   `user_message` event and the work continues in the dispatcher; `createThread` answers 201. A2A
   has this built in (`SendStreamingMessage` streams the task; `SubscribeToTask` and `GetTask`
-  resume it). For MCP, *planned*: `start_job` returns a job id at once.
+  resume it). For MCP, *planned*: `start_job` returns a job id at once, and `wait_for_job` follows it with
+  progress notifications ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)).
 - **Optional protocol extensions are capability-detected. Built.** The A2A adapter reads each agent
   card live on every call, never caches it, and offers release selection only when the card declares
   the release-channels extension with well-formed parameters; a selected release is refused, never
@@ -598,7 +683,9 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
   which is the outbox row id. The AG-UI run route keys the event it writes
   `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with no message id of its own), so a
   retried POST is a no-op and attaches to the run instead. The inbox table with
-  `UNIQUE (source, idempotency_key)` is *planned* with webhooks.
+  `UNIQUE (source, idempotency_key)` is *planned* with webhooks and timers
+  ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)); the AG-UI, chat API and MCP
+  paths keep their keys on the event (MCP: the thread id is derived from `client_request_id`).
 - **Optimistic concurrency on threads. Built.** `threads.version`; `ThreadStore::commit` takes the
   expected version, and `App::apply` re-reads and retries a lost race up to `max_commit_attempts`
   (8), then answers 503 (`Conflict`).
@@ -663,9 +750,59 @@ erDiagram
 | `a2a_bindings` | The A2A context id (the thread id), the current task id and state, the serving revision | Written with the commit that causes it, or by `mark_sent` |
 | `outbox` | Commands to dispatch (`delegate`, `cancel`) | Status, attempts, `next_attempt_at`, lease owner and expiry, `sent_at`; two partial indexes over the open rows |
 
-**Planned** tables of the design: `inbox` (received, authenticated events, for webhooks and MCP),
-`timers` (scheduled events) and a job-level snapshot for multi-step jobs. The chat needs none of
-them.
+**Planned, specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)). Not in the code. Two migrations,
+their numbers fixed now so that parallel slices do not collide:
+
+- **`0003` (slice 2):** `threads.job jsonb NOT NULL DEFAULT '{}'`, written in the same commit as `state`
+  under the same `version` compare-and-swap; the `threads.state` and `events.kind` `CHECK`s widened once
+  to every new value (`verifying`; `ci_result`, `check_result`, `rework`); `outbox.kind` gains `verify`
+  and `outbox` gains `task_id`.
+- **`0004` (slice 5):** the `inbox` and `watches` tables.
+
+```mermaid
+erDiagram
+  threads ||--o{ inbox : "correlation, through watches"
+  threads ||--o{ watches : "key to thread"
+  threads {
+    jsonb job "PLANNED 0003: gate, attempt, pushed, results, hold"
+    text state "PLANNED 0003: + verifying"
+  }
+  outbox {
+    text kind "PLANNED 0003: + verify"
+    text task_id "PLANNED 0003"
+  }
+  inbox {
+    uuid id PK
+    text source "github generic timer"
+    text idempotency_key "UNIQUE with source"
+    text kind
+    jsonb payload
+    text correlation "watch key"
+    text status "pending inflight parked applied expired dead"
+    timestamptz available_at "timers: now + after"
+    int attempts
+    text lease_owner
+    timestamptz lease_until
+    text last_error
+  }
+  watches {
+    text key PK "ci:host/owner/name@sha"
+    uuid thread_id
+  }
+```
+
+| Table or column | Holds | Key points |
+|---|---|---|
+| `threads.job` | The job ledger: the gate policy copied at creation, the attempt, the pushed commit, the check results, a hold | One thread, one job for steps 2 to 6; step 4's child jobs get a separate table later |
+| `inbox` | Webhook reports and timers | `UNIQUE (source, idempotency_key)` dedupes; timers are rows with `source = 'timer'` and `available_at = now + after`; a row that matches no watch is `parked` and expires after `INBOX_PARKED_TTL_SECS`; claimed with `SKIP LOCKED` under a lease fenced like an outbox lease |
+| `watches` | Which thread waits for which key | Inserted by a commit that carries `Watch { key }`, in the same transaction that re-arms parked rows with that key |
+| `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task | The dispatcher never turns a verifier's envelopes into `Input::Agent` |
+
+`Commit` gains `watches`, `timers` and `inbox: Option<Lease>`, and the inbox methods (`receive`,
+`claim_inbox`, `park_inbox`, `retry_inbox`, `complete_inbox`) go on `ThreadStore` so that the commit stays
+one transaction; the conformance cases join `thread_store_conformance!`. `user_message` gains an `origin`
+field (no column; it is in the event's `data`). The chat needs none of this when the gate is empty.
 
 ### Live updates
 

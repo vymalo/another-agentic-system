@@ -1,6 +1,9 @@
 # ADR 0002 — Verification over consensus
 
-- **Status:** accepted (2026-09-28)
+- **Status:** accepted (2026-09-28). Status note (2026-09-30): [ADR 0018](0018-verification-gate-and-rework-loop.md)
+  makes the verify step and the attempt budget concrete (planned, not built): a configurable gate over
+  CI, agent-reported checks and a verifier agent, 3 attempts by default. It also answers open question 8
+  and the attempts and wall-clock part of question 6; token budgets stay open. The decision stands.
 
 ## Context
 
