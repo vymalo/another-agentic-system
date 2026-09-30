@@ -341,7 +341,7 @@ class Boundary extends Component<
 function hint(canSend: boolean, finished: boolean): string | null {
   if (canSend) return null;
   return finished
-    ? "This thread is finished: the actions of this interface are off."
+    ? "This request is finished: the actions of this interface are off. Write a message to go on."
     : "The actions of this interface work while the thread waits for you.";
 }
 

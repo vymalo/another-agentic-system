@@ -86,25 +86,21 @@ async function makeThread(text: string, agent = "reviewer"): Promise<string> {
 
 const log = () => screen.getByRole("log", { name: "Conversation" });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
-const counter = () => document.querySelector("[data-slot='attempt-counter']");
 const cards = () => screen.queryAllByRole("region", { name: /^Check: / });
 const dividers = () => [...document.querySelectorAll("[data-slot='rework-divider']")];
 
-/** Every distinct text the badge and the counter show, in order, until the test ends. */
+/** Every distinct text the state pill shows, in order, until the test ends. */
 function recordHistory() {
   const badges: string[] = [];
-  const counters: string[] = [];
   const take = () => {
     const badge = document.querySelector("[role='status'][aria-label^='Thread state:']");
     const text = badge?.textContent ?? "";
     if (text && badges.at(-1) !== text) badges.push(text);
-    const attempt = counter()?.querySelector("[aria-hidden='true']")?.textContent ?? "";
-    if (attempt && counters.at(-1) !== attempt) counters.push(attempt);
   };
   const observer = new MutationObserver(take);
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   take();
-  return { badges, counters, stop: () => observer.disconnect() };
+  return { badges, stop: () => observer.disconnect() };
 }
 
 /** `wanted` appears in `seen` in this order, with anything between. */
@@ -115,20 +111,24 @@ const inOrder = (seen: string[], wanted: string[]): boolean => {
 };
 
 describe("a thread under the verification gate, in the app", () => {
-  it("verify-green: verifying, sent back, working again, verifying, done; the counter goes 1/3 to 2/3", async () => {
+  it("verify-green: checking, sent back, working again, checking, done; the header has no attempt counter", async () => {
     const id = await makeThread("verify-red-once fix the login");
     const seen = recordHistory();
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     seen.stop();
 
-    expect(inOrder(seen.badges, ["Verifying", "Queued", "Working", "Verifying", "Done"])).toBe(
-      true,
-    );
-    expect(seen.counters.at(-1)).toBe("Attempt 2/3");
-    expect(inOrder(seen.counters, ["Attempt 1/3", "Attempt 2/3"])).toBe(true);
-    // kept after the job is over: it is what the job took
-    expect(counter()?.textContent).toContain("Attempt 2 of 3");
+    expect(
+      inOrder(seen.badges, [
+        "Checking the work…",
+        "Starting…",
+        "Working…",
+        "Checking the work…",
+        "Done",
+      ]),
+    ).toBe(true);
+    // attempts show inside the turn, in the divider, and nowhere in the header
+    expect(document.querySelector("[data-slot='attempt-counter']")).toBeNull();
 
     // the cards, the divider and the second attempt, in the order the log has them
     await waitFor(() => expect(cards()).toHaveLength(2));
@@ -150,8 +150,9 @@ describe("a thread under the verification gate, in the app", () => {
       "rework-divider",
       "check-card",
     ]);
-    // a finished job is the ordinary finished thread
-    expect(screen.getByText(/This thread is done\./)).toBeTruthy();
+    // a finished job is not a closed thread: the box is open, and there is nothing to say about it
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByText(/This thread is/)).toBeNull();
     expect(screen.queryByText(/Checks failed/)).toBeNull();
   });
 
@@ -164,17 +165,16 @@ describe("a thread under the verification gate, in the app", () => {
 
     expect(
       inOrder(seen.badges, [
-        "Verifying",
-        "Queued",
-        "Working",
-        "Verifying",
-        "Queued",
-        "Working",
-        "Verifying",
+        "Checking the work…",
+        "Starting…",
+        "Working…",
+        "Checking the work…",
+        "Starting…",
+        "Working…",
+        "Checking the work…",
         "Failed",
       ]),
     ).toBe(true);
-    expect(seen.counters.at(-1)).toBe("Attempt 3/3");
     await waitFor(() => expect(cards()).toHaveLength(3));
     expect(dividers().map((d) => d.textContent)).toEqual([
       "Attempt 2 of 3: sent back with 1 finding",
@@ -183,23 +183,25 @@ describe("a thread under the verification gate, in the app", () => {
     const notice = await screen.findByText("Checks failed after 3 attempts");
     expect(notice.closest("[data-slot='checks-failed']")).not.toBeNull();
     expect(screen.queryByText(/This thread is failed\./)).toBeNull();
-    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.queryByText(/Start a new thread/)).toBeNull();
+    // the thread is not locked: write to go on, tell the agent how
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+    expect(box.placeholder).toBe("Tell the agent how to go on…");
   });
 
-  it("an agent failure is still an ordinary failure, with no counter", async () => {
+  it("an agent failure is an ordinary failure, and the box stays open", async () => {
     const id = await makeThread("fail please");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Failed"));
-    await screen.findByText(/This thread is failed\./);
     expect(screen.queryByText(/Checks failed/)).toBeNull();
-    expect(counter()).toBeNull();
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
   });
 
-  it("a thread without a gate has no counter", async () => {
+  it("a thread without a gate has no cards", async () => {
     const id = await makeThread("echo hi");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
-    expect(counter()).toBeNull();
     expect(cards()).toHaveLength(0);
   });
 
@@ -219,41 +221,39 @@ describe("a thread under the verification gate, in the app", () => {
     expect(screen.queryByText("Pending")).toBeNull();
   });
 
-  it("a reconnect mid-verification shows the same state; a fresh page shows it too; Cancel ends it", async () => {
+  it("a reconnect mid-verification shows the same state; a fresh page shows it too; Stop ends it", async () => {
     const id = await makeThread("verify-wait ship it");
     shell(id);
-    await waitFor(() => expect(stateBadge().textContent).toBe("Verifying"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Checking the work…"));
     await waitFor(() => expect(cards()).toHaveLength(2));
     const before = cards().map((c) => c.getAttribute("aria-label"));
     expect(before).toEqual([
       "Check: Agent checks, attempt 1, passed",
       "Check: CI, attempt 1, pending",
     ]);
-    expect(counter()?.textContent).toContain("Attempt 1 of 3");
-    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe(
-      "The work is being checked…",
-    );
+    // the box is for drafting while the work is checked; Stop is what the button offers
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+    expect(box.placeholder).toBe("Send a follow-up…");
 
     // the network drops: the stream comes back from the last id and nothing is doubled
     expect((await realFetch(`${base}/__mock/drop-streams`, { method: "POST" })).status).toBe(204);
     await waitFor(() => expect(screen.queryByText("Reconnecting…")).not.toBeNull());
     await waitFor(() => expect(screen.queryByText("Reconnecting…")).toBeNull());
-    expect(stateBadge().textContent).toBe("Verifying");
+    expect(stateBadge().textContent).toBe("Checking the work…");
     expect(cards().map((c) => c.getAttribute("aria-label"))).toEqual(before);
-    expect(counter()?.textContent).toContain("Attempt 1 of 3");
 
     // another tab, opened now: the replay ends in the same place
     cleanup();
     shell(id);
     await waitFor(() => expect(cards()).toHaveLength(2));
-    expect(stateBadge().textContent).toBe("Verifying");
+    expect(stateBadge().textContent).toBe("Checking the work…");
     expect(cards().map((c) => c.getAttribute("aria-label"))).toEqual(before);
-    expect(counter()?.textContent).toContain("Attempt 1 of 3");
     expect(document.querySelectorAll("[data-slot='rework-divider']")).toHaveLength(0);
 
-    // Cancel is offered while the work is verified
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(stateBadge().textContent).toBe("Cancelled"));
+    // Stop is offered while the work is verified
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
     expect(cards().map((c) => c.getAttribute("aria-label"))).toEqual(before);
   });
 

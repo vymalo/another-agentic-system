@@ -33,15 +33,38 @@ const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMes
   metadata: { custom: m.actor ? { actor: m.actor } : {} },
 });
 
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+/**
+ * Waits until the transcript `thread.getState()` shows has caught up with what the runtime holds:
+ * the state lags the runtime by a render. `ThreadRuntime.append` hangs a message off the last
+ * message of *that* state, so a run applied before the previous one showed up would start a
+ * branch of its own and replace the earlier runs. A replay delivers every run of a thread at
+ * once, and since a message on a finished thread starts the next job (ADR 0020) a thread has
+ * several runs with nothing between them.
+ */
+async function quiesce(thread: LiveRunsRuntime["thread"]): Promise<void> {
+  let seen = -1;
+  for (let polls = 0; polls < 100; polls++) {
+    await tick();
+    const state = thread.getState();
+    if (!state.isRunning && state.messages.length === seen) return;
+    seen = state.messages.length;
+  }
+}
+
 /** Applies one external run and resolves when the runtime finished it. */
 export async function applyExternalRun(
   agent: ThreadAgent,
   run: ExternalRun,
   runtime: LiveRunsRuntime,
   steerAway: SteerAway,
+  /** A run was applied before this one: the transcript may not show it yet (see `quiesce`). */
+  after = false,
 ): Promise<void> {
   await run.leadIn;
   const thread = runtime.thread;
+  if (after) await quiesce(thread);
   const users = [...run.userMessages];
   const pending = runtime.unstable_getPendingInterrupts();
   agent.adopt(run);
@@ -56,7 +79,13 @@ export async function applyExternalRun(
     }
     return;
   }
-  for (const m of users) await thread.append(userMessage(m, false));
+  // `append` and `startRun` read the transcript `thread.getState()` shows (see `quiesce`): after an
+  // earlier run, let it show what has been appended before each step. The first run has no
+  // transcript to hang off: its parent is the start.
+  for (const m of users) {
+    await thread.append(userMessage(m, false));
+    if (after) await quiesce(thread);
+  }
   const head = thread.getState().messages.at(-1);
   await thread.startRun({ parentId: head?.id ?? null });
 }
@@ -68,11 +97,14 @@ export async function driveExternalRuns(
   steerAway: () => SteerAway,
   signal: AbortSignal,
 ): Promise<void> {
+  let applied = false;
   for (;;) {
     const run = await agent.nextExternalRun(signal);
     if (!run || signal.aborted) return;
     try {
-      await applyExternalRun(agent, run, runtime(), steerAway());
+      const after = applied;
+      applied = true;
+      await applyExternalRun(agent, run, runtime(), steerAway(), after);
     } catch (e) {
       // A run that ended in RUN_ERROR rejects the runtime's run: its transcript is complete.
       if (!isRunFailure(e)) console.warn("Could not apply a run to the transcript", e);

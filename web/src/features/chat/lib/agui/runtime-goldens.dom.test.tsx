@@ -61,6 +61,36 @@ const EXPECTED: Record<string, Summary> = {
       parts: [ACTOR, "status:working", "artifact", "status:completed"],
     },
   ],
+  // a thread is a conversation (ADR 0020): the message after `Done` is the next job, an assistant
+  // message of its own that starts with the `job` marker
+  followup: [
+    USER("echo hi"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [ACTOR, "status:working", "artifact", "status:completed"],
+    },
+    USER("echo now add tests"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
+    },
+  ],
+  "followup-after-cancel": [
+    USER("slow work"),
+    {
+      role: "assistant",
+      status: "incomplete:cancelled",
+      parts: [ACTOR, "status:working", "status:canceled"],
+    },
+    USER("echo never mind, do this"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
+    },
+  ],
   // a surface (one part, its two snapshots replaced in place), the question, then the owner's action
   a2ui: [
     USER("ui pick one"),
@@ -300,6 +330,12 @@ describe("the goldens through the runtime", () => {
       { name: "ci/build", conclusion: "failure", passed: false, actor: { type: "system" } },
       { name: "ci/build", conclusion: "success", passed: true, actor: { type: "system" } },
     ]);
+    agent.stop();
+  });
+
+  it("followup: the agent holds job 2 of the thread, done, and nothing of the first job", async () => {
+    const { agent } = await play("followup");
+    expect(agent.getSnapshot()).toMatchObject({ state: "done", failure: null, job: null });
     agent.stop();
   });
 

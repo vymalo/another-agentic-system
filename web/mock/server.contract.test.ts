@@ -285,11 +285,46 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(other.status).toBe(409);
     await post(`/api/threads/${slow.threadId}/cancel`);
     await waitForState(slow.threadId, ["cancelled"]);
+    // a finished thread is a conversation (ADR 0020): a message starts its next job
     const late = await postRun(base, "reviewer", {
       threadId: slow.threadId,
       runId: "run-4",
       messages: [{ id: "m-4", role: "user", content: "more" }],
     });
+    expect(late.status).toBe(200);
+    await late.text();
+    await waitForState(slow.threadId, ["done"]);
+    const exported = (await (
+      await fetch(`${base}/api/threads/${slow.threadId}/export`)
+    ).json()) as {
+      job: { number: number };
+      events: { kind: string; data: { job?: number } }[];
+    };
+    expect(exported.job.number).toBe(2);
+    expect(exported.events.filter((e) => e.kind === "job_started").map((e) => e.data.job)).toEqual([
+      2,
+    ]);
+  });
+
+  it("answers 409 to an action on a card of a finished request", async () => {
+    const { threadId } = await startThread("ui pick one", "reviewer");
+    await waitForState(threadId, ["blocked"]);
+    const action = (runId: string) =>
+      postRun(base, "reviewer", {
+        threadId,
+        runId,
+        messages: [],
+        forwardedProps: {
+          a2uiAction: {
+            userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+          },
+        },
+      });
+    const first = await action("run-2");
+    expect(first.status).toBe(200);
+    await first.text();
+    await waitForState(threadId, ["done"]);
+    const late = await action("run-3");
     expect(late.status).toBe(409);
     await expectDocumented("/agui/agents/{agentId}", "post", late);
   });

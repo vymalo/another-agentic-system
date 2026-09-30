@@ -135,7 +135,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                   <ThreadHeader
                     thread={meta.thread}
                     state={state}
-                    job={job}
+                    waiting={snapshot.waiting}
                     connection={snapshot.connection}
                   />
                   {meta.error ? (

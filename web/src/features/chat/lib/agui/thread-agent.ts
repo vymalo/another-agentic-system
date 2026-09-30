@@ -90,6 +90,12 @@ export type ThreadSnapshot = {
   failure: { code: string; message: string } | null;
   /** The `runId` of the run that is open according to the delivered frames, if any. */
   openRun: string | null;
+  /**
+   * The newest run ended in an interrupt: the agent asked something and waits for the answer. The
+   * runtime's own interrupt list says the same until a send fails and takes it back; this does
+   * not, so the header can say "Your turn" for as long as the thread waits for the person.
+   */
+  waiting: boolean;
   /** The connect stream answered 404: the thread does not exist for this user. */
   notFound: boolean;
   /** The last connect failure that is not a plain disconnect (401, 5xx). */
@@ -186,6 +192,7 @@ export class ThreadAgent extends AbstractAgent {
     job: null,
     failure: null,
     openRun: null,
+    waiting: false,
     notFound: false,
     error: null,
     sendFailures: 0,
@@ -344,7 +351,7 @@ export class ThreadAgent extends AbstractAgent {
           run.frames.next(event);
           this.waiter?.(this.queue.shift() ?? null);
         }
-        this.patch({ openRun: runId, failure: null });
+        this.patch({ openRun: runId, failure: null, waiting: false });
         return;
       }
       case EventType.STATE_SNAPSHOT: {
@@ -361,7 +368,13 @@ export class ThreadAgent extends AbstractAgent {
         break;
       }
       case EventType.RUN_ERROR:
-        this.patch({ failure: { code: str(event.code) ?? "", message: str(event.message) ?? "" } });
+        this.patch({
+          failure: { code: str(event.code) ?? "", message: str(event.message) ?? "" },
+          waiting: false,
+        });
+        break;
+      case EventType.RUN_FINISHED:
+        this.patch({ waiting: isRecord(event.outcome) && event.outcome.type === "interrupt" });
         break;
       default:
     }
@@ -505,6 +518,13 @@ export class ThreadAgent extends AbstractAgent {
         (started) => {
           accepted = true;
           if (this.posting === abort) this.posting = undefined;
+          // The run's events come by the connect stream, which a finished thread had paused
+          // (nothing more to read): a thread never locks (ADR 0020), so a send on it starts a run
+          // and the stream must follow. The run is open from here, unless the connect stream
+          // already delivered it whole.
+          if (this.claims.has(input.runId) && this.snapshot.openRun === null) {
+            this.patch({ openRun: input.runId });
+          }
           this.options.onAccepted?.({ threadId: this.threadId, runId: input.runId });
           subscriber.next(started);
           inner = sink.subscribe(subscriber);

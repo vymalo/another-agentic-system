@@ -10,8 +10,6 @@ import { badge, callsFor, framesOf, resetDb, shape, startThread, threadId } from
 
 test.beforeEach(resetDb);
 
-const counter = (page: import("@playwright/test").Page) =>
-  page.locator("[data-slot='attempt-counter']");
 const log = (page: import("@playwright/test").Page) =>
   page.getByRole("log", { name: "Conversation" });
 const checks = (page: import("@playwright/test").Page) =>
@@ -21,7 +19,6 @@ test("red once: sent back with the finding, done on attempt 2 of 3", async ({ pa
   await startThread(page, "verify-red-once fix the login", "Gated");
 
   await expect(badge(page)).toHaveText("Done");
-  await expect(counter(page)).toContainText("Attempt 2 of 3");
   await expect(checks(page)).toHaveCount(2);
   const failed = log(page).getByRole("region", { name: "Check: Agent checks, attempt 1, failed" });
   await expect(failed.getByText("tests::login fails: expected 200, got 500")).toBeVisible();
@@ -51,32 +48,27 @@ test("red every time: three attempts, then 'Checks failed after 3 attempts'", as
   await startThread(page, "verify-red fix the login", "Gated");
 
   await expect(badge(page)).toHaveText("Failed");
-  await expect(counter(page)).toContainText("Attempt 3 of 3");
   await expect(page.getByText("Checks failed after 3 attempts")).toBeVisible();
   await expect(page.getByText("This thread is failed.")).toHaveCount(0);
   await expect(checks(page)).toHaveCount(3);
-  await expect(page.getByLabel("Message")).toBeDisabled();
+  await expect(page.getByLabel("Message")).toBeEnabled();
 
   const frames = shape(await framesOf(page.request, threadId(page)));
   expect(frames.filter((f) => f === "ACTIVITY_SNAPSHOT:vymalo.rework")).toHaveLength(2);
   expect(frames.at(-1)).toBe("RUN_ERROR:checks_failed");
 });
 
-test("green the first time: the counter says 1/3 and there is nothing to rework", async ({
-  page,
-}) => {
+test("green the first time: there is nothing to rework", async ({ page }) => {
   await startThread(page, "verify-pass fix the login", "Gated");
 
   await expect(badge(page)).toHaveText("Done");
-  await expect(counter(page)).toContainText("Attempt 1 of 3");
   await expect(checks(page)).toHaveCount(1);
   await expect(log(page).getByText(/sent back with/)).toHaveCount(0);
 });
 
-test("an agent without a gate has no counter and no cards", async ({ page }) => {
+test("an agent without a gate has no cards", async ({ page }) => {
   await startThread(page, "echo hello", "Plain");
 
   await expect(badge(page)).toHaveText("Done");
-  await expect(counter(page)).toHaveCount(0);
   await expect(checks(page)).toHaveCount(0);
 });

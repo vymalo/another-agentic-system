@@ -1,27 +1,35 @@
 import { expect, test } from "@playwright/test";
-import { badge, resetDb, startThread, threadId } from "./helpers";
+import { badge, callsFor, resetDb, startThread, threadId } from "./helpers";
 
 test.beforeEach(resetDb);
 
-test("a finished thread refuses a follow-up with the 409 problem", async ({ page }) => {
+test("a finished thread takes a follow-up as its next job, in the same A2A context", async ({
+  page,
+}) => {
   await startThread(page, "echo done", "Plain");
   await expect(badge(page)).toHaveText("Done");
-  await expect(page.getByLabel("Message")).toBeDisabled();
+  await expect(page.getByLabel("Message")).toBeEnabled();
 
-  const res = await page.request.post("/agui/agents/plain", {
-    headers: { Accept: "text/event-stream" },
-    data: {
-      threadId: threadId(page),
-      runId: crypto.randomUUID(),
-      messages: [{ id: crypto.randomUUID(), role: "user", content: "one more thing" }],
-    },
-  });
-  expect(res.status()).toBe(409);
-  expect(res.headers()["content-type"]).toContain("application/problem+json");
-  expect(await res.json()).toMatchObject({ status: 409 });
-
-  // nothing was appended
+  await page.getByLabel("Message").fill("echo one more thing");
+  await page.getByRole("button", { name: "Send" }).click();
   await expect(
-    page.getByRole("log", { name: "Conversation" }).getByText("one more thing"),
-  ).toHaveCount(0);
+    page
+      .getByRole("log", { name: "Conversation" })
+      .getByText("echo one more thing", { exact: true }),
+  ).toBeVisible();
+  await expect(badge(page)).toHaveText("Done");
+  await expect(
+    page.getByRole("log", { name: "Conversation" }).getByText("echo: echo one more thing"),
+  ).toHaveCount(1);
+
+  // a new A2A task of the same context, not a continuation of the finished one
+  const [first] = await callsFor(page.request, "plain", "echo done");
+  const [second] = await callsFor(page.request, "plain", "echo one more thing");
+  expect(second?.contextId).toBe(first?.contextId);
+  expect(second?.taskId).not.toBe(first?.taskId);
+
+  // the thread is the same, and its log says where the second job began
+  const events = await (await page.request.get(`/api/threads/${threadId(page)}/export`)).json();
+  expect(events.job.number).toBe(2);
+  expect(events.events.filter((e: { kind: string }) => e.kind === "job_started")).toHaveLength(1);
 });

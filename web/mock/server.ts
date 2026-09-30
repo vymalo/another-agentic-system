@@ -321,7 +321,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       version: 1,
       exportedAt: new Date().toISOString(),
       thread: view,
-      job: { attempt: view.job?.attempt ?? 1 },
+      job: {
+        number: (events.get(thread.id) ?? []).filter((e) => e.kind === "job_started").length + 1,
+        attempt: view.job?.attempt ?? 1,
+      },
       binding: { agentId: thread.target.agentId, contextId: thread.id },
       events: events.get(thread.id) ?? [],
       eventsTruncated: false,
@@ -505,12 +508,34 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       });
     }
     if (thread.state === "done" || thread.state === "failed" || thread.state === "cancelled") {
-      return problem(
-        res,
-        409,
-        "Conflict",
-        `the thread is finished (${thread.state}); start a new thread`,
+      // A thread is a conversation (ADR 0020): a message on a finished thread starts its next
+      // job, as a run of its own. Only that: nothing else is for a finished thread to take.
+      if (fresh.length !== 1) {
+        return problem(res, 422, "Unprocessable", "nothing to run, or more than one new message");
+      }
+      const next = messageText(fresh[0] as Record<string, unknown>);
+      const nextId = fresh[0]?.id as string;
+      if (typeof next !== "string" || next === "") {
+        return problem(res, 422, "Unprocessable", "a message without text");
+      }
+      const event = append(
+        thread.id,
+        "user_message",
+        { type: "user", name: DEV_USER },
+        { text: next, messageId: nextId, runId },
       );
+      const job = log.filter((e) => e.kind === "job_started").length + 2;
+      append(thread.id, "job_started", { type: "system", name: "orchestrator" }, { job });
+      setState(thread, "queued");
+      // the thread keeps its gate; the script of the new message plays as the new job
+      const script = scriptFor(next);
+      runs.set(thread.id, { timer: undefined, pending: [], resume: script.resume });
+      play(thread, script.start);
+      return startViewer(res, thread, {
+        fromSeq: event.seq - 1,
+        audience: { skipUserMessageIds: new Set([nextId]) },
+        end: "first-close",
+      });
     }
     if (thread.state === "queued" || thread.state === "working" || thread.state === "verifying") {
       return problem(
@@ -606,7 +631,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         res,
         409,
         "Conflict",
-        `the thread is finished (${thread.state}); start a new thread`,
+        `this card belongs to a finished request (${thread.state}); a stop or an action no longer applies to it, write a message to start the next one`,
       );
     }
     if (thread.state !== "blocked") {

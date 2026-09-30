@@ -47,32 +47,34 @@ test("a rejected new thread shows the problem and keeps the text", async ({ page
 
 test("a failing follow-up shows the problem and keeps the text", async ({ page }) => {
   await startThread(page, "ask pick a branch");
-  await expect(badge(page)).toHaveText("Waiting for you");
+  await expect(badge(page)).toHaveText("Your turn");
 
   await failNext(page, "**/agui/agents/*", "POST", 503, "the store is unavailable");
   await page.getByLabel("Message").fill("main");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(errorLine(page)).toContainText("the store is unavailable");
   await expect(page.getByLabel("Message")).toHaveValue("main");
-  await expect(badge(page)).toHaveText("Waiting for you");
+  await expect(badge(page)).toHaveText("Your turn");
 });
 
 test("an answer the orchestrator refuses with 409 shows its reason and keeps the text", async ({
   page,
 }) => {
   await startThread(page, "ask pick a branch");
-  await expect(badge(page)).toHaveText("Waiting for you");
+  await expect(badge(page)).toHaveText("Your turn");
 
   await failNext(
     page,
     "**/agui/agents/*",
     "POST",
     409,
-    "the thread is finished (Done); start a new thread",
+    "a run is already open on this thread; wait for it to finish",
   );
   await page.getByLabel("Message").fill("late answer");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(errorLine(page)).toContainText("the thread is finished (Done); start a new thread");
+  await expect(errorLine(page)).toContainText(
+    "a run is already open on this thread; wait for it to finish",
+  );
   await expect(page.getByLabel("Message")).toHaveValue("late answer");
   // the refused answer is not left in the transcript
   await expect(conversation(page).getByText("late answer", { exact: true })).toHaveCount(0);

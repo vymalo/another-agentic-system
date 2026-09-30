@@ -10,7 +10,7 @@ test("a surface from the agent is drawn, and its button reaches the agent as an 
   page,
 }) => {
   await startThread(page, "ui pick one", "Plain");
-  await expect(badge(page)).toHaveText("Waiting for you");
+  await expect(badge(page)).toHaveText("Your turn");
 
   const ui = surface(page);
   await expect(ui).toBeVisible();

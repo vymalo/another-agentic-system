@@ -1,6 +1,5 @@
 import { ComposerPrimitive, isMessageNotSentError, useAui, useAuiState } from "@assistant-ui/react";
 import { useAgUiInterrupts, useAgUiSteerAway } from "@assistant-ui/react-ag-ui";
-import Link from "next/link";
 import type { FormEvent, RefObject } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -33,7 +32,7 @@ const attempts = (n: number): string => `${n} ${n === 1 ? "attempt" : "attempts"
 /**
  * The message box. Sending is the runtime's: a message starts a run (`POST /agui/agents/{id}`).
  * Two things are ours: while an interrupt waits, the text is the interrupt's answer (a run that
- * `resume`s it), and Cancel asks the orchestrator, because the runtime's own cancel only detaches
+ * `resume`s it), and Stop asks the orchestrator, because the runtime's own cancel only detaches
  * (AG-UI: a consumer that leaves has a truncated run, not a cancelled one).
  */
 export function Composer({ state, job, failure, isNew, sendError, onCancel, inputRef }: Props) {
@@ -44,25 +43,15 @@ export function Composer({ state, job, failure, isNew, sendError, onCancel, inpu
   const running = isActive(state);
   const finished = !isNew && isTerminal(state);
   const blocked = state === "blocked";
-  const interrupt = interrupts[0];
-  const question = interrupt
-    ? interrupt.reason === "auth_required"
-      ? interrupt.message
-        ? `Authentication required: ${interrupt.message}`
-        : "Authentication required"
-      : interrupt.message
-    : undefined;
+  // A thread never locks (ADR 0020): the box is always there. What the agent says next is
+  // the placeholder's business, not a reason to disable it.
   const placeholder = isNew
     ? "Describe the task…"
     : blocked
-      ? "Answer the agent…"
-      : state === "verifying"
-        ? "The work is being checked…"
-        : running
-          ? "The agent is working…"
-          : finished
-            ? "This thread is finished"
-            : "Send a follow-up…";
+      ? "Reply…"
+      : state === "failed" || state === "cancelled"
+        ? "Tell the agent how to go on…"
+        : "Send a follow-up…";
 
   // With an interrupt open the runtime refuses a plain message; the text answers it instead.
   const answerInterrupt = (e: FormEvent<HTMLFormElement>) => {
@@ -88,10 +77,11 @@ export function Composer({ state, job, failure, isNew, sendError, onCancel, inpu
   return (
     <div className="flex flex-col gap-2 bg-background pt-3 pb-4">
       {blocked ? (
-        <Alert role="status">
-          <AlertTitle>Waiting for your answer.</AlertTitle>
-          {question ? <AlertDescription>{question}</AlertDescription> : null}
-        </Alert>
+        // The question is the agent's last message, in the conversation; the box only says that
+        // the agent waits, for a screen reader.
+        <p role="status" className="sr-only">
+          Waiting for your answer.
+        </p>
       ) : null}
       {finished && state === "failed" && failure?.code === CHECKS_FAILED ? (
         <Alert variant="destructive" role="status" data-slot="checks-failed">
@@ -100,14 +90,7 @@ export function Composer({ state, job, failure, isNew, sendError, onCancel, inpu
           </AlertTitle>
           <AlertDescription>
             The agent finished, but its work did not pass verification and no attempts are left. The
-            findings are in the conversation above. <Link href="/">Start a new thread</Link> to try
-            again.
-          </AlertDescription>
-        </Alert>
-      ) : finished ? (
-        <Alert role="status">
-          <AlertDescription>
-            This thread is {state}. <Link href="/">Start a new thread</Link> to continue.
+            findings are in the conversation above. Write a message to go on.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -128,11 +111,13 @@ export function Composer({ state, job, failure, isNew, sendError, onCancel, inpu
           rows={1}
           maxRows={8}
           cancelOnEscape={false}
-          disabled={finished}
+          // While a run is live the box is for drafting: Enter does not send (the run is open),
+          // and the button says Stop. The next message goes once the run has ended.
+          submitMode={running ? "none" : "enter"}
         />
         {running ? (
           <Button type="button" variant="outline" className="h-10 px-5" onClick={onCancel}>
-            Cancel
+            Stop
           </Button>
         ) : interrupts.length > 0 ? (
           // not ComposerPrimitive.Send: its click would also send the text as a plain message

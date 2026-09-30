@@ -28,7 +28,8 @@ test("echo: user message, Working, PR card, Completed, Done", async ({ page }) =
   const pr = log.getByRole("link", { name: "Pull request acme/demo#1" });
   await expect(pr).toHaveAttribute("href", PR_URL);
   await expect(log.getByText("echo: echo hello")).toHaveCount(1);
-  await expect(page.getByLabel("Message")).toBeDisabled();
+  // a finished thread is not locked (ADR 0020)
+  await expect(page.getByLabel("Message")).toBeEnabled();
 
   // the log behind it: five events, once each (the resume points of the connect stream)
   const frames = await framesOf(page.request, threadId(page));

@@ -97,6 +97,15 @@ const ReworkDataUI = makeAssistantDataUI<unknown>({
 });
 
 /**
+ * `vymalo.job`: a message on a finished thread started the thread's next job (ADR 0020). The
+ * message itself is the boundary a person sees, so the marker draws nothing.
+ */
+const JobDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.job),
+  render: () => null,
+});
+
+/**
  * An A2UI surface (ADR 0013). `ThreadAgent` hands it over as this activity type, untouched, so
  * that it is validated (lib/a2ui/prepare.ts) before anything converts it.
  */
@@ -117,6 +126,7 @@ export function DataUIs() {
       <CheckDataUI />
       <CiDataUI />
       <ReworkDataUI />
+      <JobDataUI />
       <SurfaceDataUI />
     </>
   );

@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { chromium, expect, test } from "@playwright/test";
 import lighthouse from "lighthouse";
 import { uuidv7 } from "../src/lib/uuid";
-import { BASE_URL, badge, startThread } from "./helpers";
+import { BASE_URL, badge, conversation, startThread } from "./helpers";
 
 async function finishedThreadUrl(): Promise<string> {
   // A thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it.
@@ -44,15 +44,30 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
-    test("axe: a finished thread has no serious violations", async ({ page }) => {
+    test("axe: a finished thread (its composer open) has no serious violations", async ({
+      page,
+    }) => {
       await startThread(page, "Implement the thing");
       await expect(badge(page)).toHaveText("Done");
+      // a thread never locks: the box is there to be checked with the rest of the page
+      await expect(page.getByLabel("Message")).toBeEnabled();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a thread on its second job has no serious violations", async ({ page }) => {
+      await startThread(page, "echo first");
+      await expect(badge(page)).toHaveText("Done");
+      await page.getByLabel("Message").fill("echo and now more");
+      await page.getByRole("button", { name: "Send" }).click();
+      await expect(conversation(page).getByText("echo and now more")).toBeVisible();
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.getByLabel("Message")).toBeEnabled();
       expect(await axeViolations(page)).toEqual([]);
     });
 
     test("axe: a blocked thread has no serious violations", async ({ page }) => {
       await startThread(page, "ask which branch");
-      await expect(badge(page)).toHaveText("Waiting for you");
+      await expect(badge(page)).toHaveText("Your turn");
       expect(await axeViolations(page)).toEqual([]);
     });
 
@@ -60,7 +75,7 @@ for (const scheme of ["light", "dark"] as const) {
       page,
     }) => {
       await startThread(page, "verify-wait ship it", "Reviewer");
-      await expect(badge(page)).toHaveText("Verifying");
+      await expect(badge(page)).toHaveText("Checking the work…");
       await expect(
         page.getByRole("region", { name: "Check: CI, attempt 1, pending" }),
       ).toBeVisible();
@@ -71,7 +86,7 @@ for (const scheme of ["light", "dark"] as const) {
       page,
     }) => {
       await startThread(page, "verify-reviewed-wait ship it", "Reviewer");
-      await expect(badge(page)).toHaveText("Verifying");
+      await expect(badge(page)).toHaveText("Checking the work…");
       await expect(
         page.getByRole("region", { name: "Check: Verifier, attempt 1, pending" }),
       ).toBeVisible();
@@ -122,7 +137,7 @@ for (const scheme of ["light", "dark"] as const) {
       page,
     }) => {
       await startThread(page, "ui pick one", "Reviewer");
-      await expect(badge(page)).toHaveText("Waiting for you");
+      await expect(badge(page)).toHaveText("Your turn");
       const ui = page.getByRole("region", { name: "Interface from reviewer" });
       await expect(ui.getByRole("button", { name: "Go" })).toBeEnabled();
       expect(await axeViolations(page)).toEqual([]);

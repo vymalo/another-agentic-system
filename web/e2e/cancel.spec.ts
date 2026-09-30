@@ -4,9 +4,9 @@ import { badge, startThread } from "./helpers";
 test("cancel calls the endpoint and the thread ends cancelled", async ({ page }) => {
   await startThread(page, "slow task");
 
-  const cancel = page.getByRole("button", { name: "Cancel" });
+  const cancel = page.getByRole("button", { name: "Stop" });
   await expect(cancel).toBeVisible();
-  await expect(badge(page)).toHaveText("Working");
+  await expect(badge(page)).toHaveText("Working…");
 
   const request = page.waitForRequest(
     (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/cancel$/.test(r.url()),
@@ -14,9 +14,9 @@ test("cancel calls the endpoint and the thread ends cancelled", async ({ page })
   await cancel.click();
   await request;
 
-  await expect(badge(page)).toHaveText("Cancelled");
+  await expect(badge(page)).toHaveText("Stopped");
   await expect(
     page.getByRole("log").getByText("Cancelled", { exact: false }).first(),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
 });

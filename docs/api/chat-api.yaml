@@ -302,8 +302,11 @@ components:
           additionalProperties: true
           description: |
             The whole job ledger, which `Thread.job` only summarises (and omits without a gate), as
-            the store keeps it: `gate` (the policy: `require`, `maxAttempts`, `ci`, `verifier`,
-            `verifierTimeout`), `attempt`, `verification`, `task` (the person's messages of the
+            the store keeps it: `number` (which job of the thread this is, from 1; a thread is a
+            conversation and a message on a finished thread starts its next job, ADR 0020; earlier
+            jobs are in `events`, between the `job_started` events), `gate` (the policy: `require`,
+            `maxAttempts`, `ci`, `verifier`, `verifierTimeout`), `attempt`, `verification` (counted
+            per thread, never reset by a new job), `task` (the person's messages of the
             job in order, each later one after a line `[next message]`, capped: the first message
             and the newest ones are kept, and a line `[… earlier messages omitted …]` stands for
             the ones left out), `branchProblem` (why the agent's last `branch` artifact could not
@@ -352,7 +355,6 @@ components:
         number:
           type: integer
           minimum: 1
-          default: 1
           description: "Which job of the thread this is. A thread is a conversation: a message on a finished thread starts its next job (ADR 0020). Present from job 2; absent means job 1"
         attempt: { type: integer, minimum: 1, description: "The attempt the agent is on in this job, from 1" }
         maxAttempts: { type: integer, minimum: 1, description: "The attempts there are, the first included" }

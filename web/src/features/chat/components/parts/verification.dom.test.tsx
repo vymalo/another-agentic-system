@@ -10,7 +10,6 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { AttemptCounter } from "@/features/chat/components/attempt-counter";
 import { StateBadge } from "@/features/chat/components/state-badge";
 import { mountSurfaces, stubLayout } from "@/features/chat/components/surface/testing";
 import { type GoldenFrame, loadGolden, THREAD_ID } from "@/features/chat/lib/agui/testing";
@@ -183,31 +182,40 @@ describe("the rework divider", () => {
   });
 });
 
-describe("the attempt counter and the verifying badge", () => {
-  it("shows nothing without a job (no gate)", () => {
-    const { container } = render(<AttemptCounter job={null} />);
-    expect(container.textContent).toBe("");
-  });
-
-  it("shows 2/3, and says 'Attempt 2 of 3' to a screen reader", () => {
-    const { container } = render(
-      <AttemptCounter job={{ attempt: 2, maxAttempts: 3, gate: ["agent_checks"] }} />,
-    );
-    expect(screen.getByText("Attempt 2/3")).toBeTruthy();
-    expect(screen.getByText("Attempt 2 of 3").className).toContain("sr-only");
-    expect(container.querySelector("[aria-hidden='true']")?.textContent).toBe("Attempt 2/3");
-  });
-
-  it("the badge says Verifying, and what that means to a screen reader; it is not the Working colour", () => {
+describe("the state pill", () => {
+  it("says 'Checking the work…' while the work is verified, and what that means to a screen reader; it is not the Working colour", () => {
     const { rerender } = render(<StateBadge state="verifying" />);
     const badge = screen.getByRole("status", { name: /^Thread state:/ });
-    expect(badge.textContent).toBe("Verifying");
-    expect(badge.getAttribute("aria-label")).toBe("Thread state: Verifying the agent's work");
+    expect(badge.textContent).toBe("Checking the work…");
+    expect(badge.getAttribute("aria-label")).toBe("Thread state: Checking the agent's work");
     expect(badge.className).toContain("text-verifying");
     rerender(<StateBadge state="working" />);
     const working = screen.getByRole("status", { name: /^Thread state:/ });
-    expect(working.getAttribute("aria-label")).toBe("Thread state: Working");
+    expect(working.getAttribute("aria-label")).toBe("Thread state: Working…");
     expect(working.className).not.toContain("text-verifying");
+  });
+
+  it("names every state in words a person uses; a blocked thread is 'Your turn' when the agent asked", () => {
+    const words = {
+      queued: "Starting…",
+      working: "Working…",
+      verifying: "Checking the work…",
+      blocked: "Needs attention",
+      done: "Done",
+      failed: "Failed",
+      cancelled: "Stopped",
+    } as const;
+    for (const [state, label] of Object.entries(words)) {
+      const { unmount } = render(<StateBadge state={state as keyof typeof words} />);
+      expect(screen.getByRole("status").textContent).toBe(label);
+      unmount();
+    }
+    render(<StateBadge state="blocked" needsAnswer />);
+    expect(screen.getByRole("status").textContent).toBe("Your turn");
+  });
+
+  it("there is no attempt counter in the header: attempts show inside the turn, in the divider", () => {
+    expect(document.querySelector("[data-slot='attempt-counter']")).toBeNull();
   });
 });
 

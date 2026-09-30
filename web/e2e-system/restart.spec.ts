@@ -20,7 +20,7 @@ test.beforeEach(resetDb);
 test("orchestrator restart mid-thread: the page recovers and finishes", async ({ page }) => {
   await startThread(page, "gate restart", "Plain");
   await waitForExecution(page.request, "plain", "gate restart");
-  await expect(badge(page)).toHaveText("Working");
+  await expect(badge(page)).toHaveText("Working…");
   const id = threadId(page);
 
   // a crash: no graceful shutdown, so the delegation's lease must expire (5 s here)

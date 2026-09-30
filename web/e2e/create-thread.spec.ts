@@ -22,8 +22,10 @@ test("create a thread and watch it finish", async ({ page }) => {
   await expect(log.getByText("echo: Implement the thing")).toHaveCount(1);
 
   await expect(badge(page)).toHaveText("Done");
-  await expect(page.getByLabel("Message")).toBeDisabled();
-  await expect(page.getByText("This thread is done.")).toBeVisible();
+  // a finished thread is a conversation: the box stays open for the next request
+  await expect(page.getByLabel("Message")).toBeEnabled();
+  await expect(page.getByLabel("Message")).toHaveAttribute("placeholder", "Send a follow-up…");
+  await expect(page.getByText("This thread is done.")).toHaveCount(0);
 
   // the thread shows up in the list (on a phone the list is a collapsed disclosure)
   await openThreadList(page);
