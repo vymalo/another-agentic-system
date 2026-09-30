@@ -400,3 +400,7 @@ the thread id) and returns `{job_id, state, job}`, where `job` is the new job's 
 it never shows an earlier job's pull request; `cancel_job` of a finished job is still a no-op. `wait_for_job` is
 unchanged: it returns when the job is finished or blocked, and a client calls it again after an `answer`. The
 tool descriptions say so. The decision stands.
+
+_Status note, 2026-09-30:_ `answer` has no idempotency key (as before). A retry of an `answer` whose reply was lost,
+made after the job it answered has finished, is a message on a finished thread and therefore starts the next job
+(job n+2 if job n+1 had already finished). A client that retries should call `get_job` first.

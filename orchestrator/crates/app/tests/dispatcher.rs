@@ -736,3 +736,173 @@ async fn two_dispatchers_do_not_double_deliver() {
     a.shutdown().await;
     b.shutdown().await;
 }
+
+/// What `cancel` must never do: ask the agent to cancel a task that ended.
+fn cancelled_tasks(w: &World) -> Vec<String> {
+    w.agent
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Cancel { task_id } => Some(task_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A config whose first retry is an hour away: a delegation that failed once stays unsent.
+fn backing_off() -> orch_app::DispatcherConfig {
+    let mut cfg = fast();
+    cfg.backoff_base = Duration::from_secs(3600);
+    cfg.backoff_max = Duration::from_secs(3600);
+    cfg
+}
+
+async fn unsent_delegate_waits(w: &World, id: orch_core::ThreadId) {
+    eventually("the delegation backs off", || async {
+        let open = w.store.list_open_outbox(id).await.unwrap();
+        open.iter()
+            .any(|r| {
+                r.kind == orch_ports::OutboxKind::Delegate
+                    && r.status == OutboxStatus::Pending
+                    && r.attempts == 1
+            })
+            .then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stop_right_after_a_follow_up_on_a_done_thread_ends_cancelled_and_never_cancels_the_old_task()
+ {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, backing_off(), "d1");
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    // Job 2's delegation does not reach the agent yet; the binding still holds job 1's task.
+    w.agent
+        .fail_next_sends(1, || AgentError::unreachable("first try fails"));
+    app.post_message(&alice(), t.id, "echo two".into())
+        .await
+        .unwrap();
+    unsent_delegate_waits(&w, t.id).await;
+    let binding = w.store.get_binding(t.id).await.unwrap().unwrap();
+    assert_eq!(binding.task_id.as_deref(), Some("task-1"));
+
+    app.cancel(&alice(), t.id).await.unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Cancelled).await;
+    assert!(
+        cancelled_tasks(&w).is_empty(),
+        "the agent was asked to cancel {:?}: job 1's task had ended",
+        cancelled_tasks(&w)
+    );
+    let ev = events(&app, &alice(), t.id).await;
+    assert!(shape(&ev).ends_with(&["thread_state:cancelled".to_owned()]));
+    assert!(w.store.list_open_outbox(t.id).await.unwrap().is_empty());
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stop_in_the_window_of_a_rework_ends_cancelled_and_never_cancels_the_task_that_ended() {
+    let w = World::new();
+    let app = w.app_with(orch_app::AppConfig {
+        stream_poll: Duration::from_millis(100),
+        gate: orch_core::GatePolicy::requiring([orch_core::CheckSource::AgentChecks]),
+        ..orch_app::AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, backing_off(), "d1");
+    let t = create(&app, &alice(), "plain", "gate one").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    // The agent finishes without checks: the gate sends it back, and that delegation fails once.
+    w.agent
+        .fail_next_sends(1, || AgentError::unreachable("first try fails"));
+    w.agent.release_gate();
+    unsent_delegate_waits(&w, t.id).await;
+
+    app.cancel(&alice(), t.id).await.unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Cancelled).await;
+    assert!(
+        cancelled_tasks(&w).is_empty(),
+        "the agent was asked to cancel {:?}: the first attempt's task had ended",
+        cancelled_tasks(&w)
+    );
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_new_job_opens_a_new_task_even_when_the_last_one_still_waits_for_input() {
+    // The thread failed while blocked: its answer was dead-lettered, and the binding still says
+    // the task waits for input. The next job must not continue that task (ADR 0021).
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "ask which branch").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
+    w.agent
+        .fail_next_sends(1, || AgentError::Rejected("scripted refusal".to_owned()));
+    app.post_message(&alice(), t.id, "main".into())
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Failed).await;
+    let binding = w.store.get_binding(t.id).await.unwrap().unwrap();
+    assert!(binding.task_state.is_some_and(|s| s.is_interrupted()));
+
+    app.post_message(&alice(), t.id, "echo start over".into())
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let sends = w.agent.sends();
+    let Some(Call::Send {
+        task_id,
+        reference_task_ids,
+        text,
+        ..
+    }) = sends.last()
+    else {
+        panic!("{sends:?}")
+    };
+    assert_eq!(text, "echo start over");
+    assert_eq!(task_id, &None, "a new job never continues a task");
+    assert_eq!(reference_task_ids, &["task-1".to_owned()]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_redelivery_that_dies_at_its_commit_is_redone_once_and_the_message_is_sent_once() {
+    let w = World::new();
+    let app = w.app();
+    // The thread ended while its message was still unsent (no dispatcher has run).
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    app.apply(
+        t.id,
+        orch_core::Input::Agent {
+            agent: AgentId::new("plain"),
+            revision: None,
+            update: orch_core::AgentUpdate::Status {
+                state: orch_core::AgentTaskState::Completed,
+                detail: None,
+            },
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // The worker dies at the redelivery's commit: the row keeps its claim until the lease lapses.
+    w.store.fail_next_commits(1, || {
+        orch_ports::StoreError::unavailable("the process died")
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the redelivered message ran", || async {
+        (w.agent.sends().len() == 1 && state_of(&w, t.id).await == ThreadState::Done).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(shape(&ev).iter().filter(|s| *s == "job_started").count(), 1);
+    assert_eq!(w.agent.sends().len(), 1, "sent once, as the next job's");
+    // and nothing is left to claim: the row ended with the job it started
+    assert!(w.store.list_open_outbox(t.id).await.unwrap().is_empty());
+    run.shutdown().await;
+}

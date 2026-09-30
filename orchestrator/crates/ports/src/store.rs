@@ -67,6 +67,10 @@ pub enum OutboxKind {
     Verify,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Payload of an outbox row (stored as JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +81,11 @@ pub enum OutboxPayload {
         text: String,
         /// Selected release channel or revision.
         release: Option<String>,
+        /// The message starts the thread's next job (ADR 0020): it is sent as a new A2A task
+        /// whatever the binding says of the last one. Absent (`false`) in a row written before
+        /// the field existed.
+        #[serde(default, skip_serializing_if = "is_false")]
+        new_job: bool,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -194,6 +203,12 @@ pub struct Commit {
     /// behind the thread's back. It leaves the thread as it is: no version bump, no
     /// `updated_at`, no wakeup.
     pub inbox: Option<InboxLease>,
+    /// With [`lease`](Self::lease): also finish the claimed outbox row as this, in the same
+    /// transaction (and under the same fence). It is how a row that hands its work on (a
+    /// redelivered message that starts the next job, ADR 0020) ends together with what it did,
+    /// so a crash between the two cannot leave the work done and the row claimable again.
+    /// Ignored without a lease and by [`ThreadStore::create_thread`].
+    pub finishes_outbox: Option<OutboxFinal>,
 }
 
 impl Commit {

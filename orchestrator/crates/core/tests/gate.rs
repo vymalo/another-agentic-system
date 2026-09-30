@@ -2551,3 +2551,27 @@ fn a_cancel_names_the_job_it_stops() {
     let (_, cmds) = step(&two, &Input::Cancel { user: user() });
     assert!(cmds.contains(&Command::RequestCancel { job: 2 }));
 }
+
+#[test]
+fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
+    // An earlier redelivery started job 2; this message waited behind it and is delivered to it.
+    let (open, _) = feed(
+        Snapshot {
+            state: Working,
+            job: Job {
+                number: 2,
+                task: Some("first".into()),
+                ..Job::with_gate(GatePolicy::requiring([CheckSource::AgentChecks]))
+            },
+        },
+        &[Input::Redeliver {
+            text: "second".into(),
+        }],
+    );
+    assert_eq!((open.state, open.job.number), (Working, 2));
+    let task = open.job.task.unwrap();
+    assert!(
+        task.contains("first") && task.contains("second"),
+        "the rework prompt must carry what the person wrote: {task}"
+    );
+}

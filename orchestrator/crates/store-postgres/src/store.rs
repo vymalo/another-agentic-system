@@ -90,6 +90,41 @@ fn plus(t: Timestamp, d: Duration) -> Timestamp {
         .unwrap_or(t)
 }
 
+/// The statement that ends a claimed outbox row: `$1` id, `$2` owner, `$3` attempt, `$4` status,
+/// `$5` the error to keep, `$6` the time.
+const OUTBOX_FINISH: &str = "UPDATE outbox SET status = $4, last_error = COALESCE($5, last_error), \
+     lease_owner = NULL, lease_until = NULL, updated_at = $6 \
+     WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'";
+
+fn outbox_outcome(outcome: OutboxFinal) -> (&'static str, Option<String>) {
+    match outcome {
+        OutboxFinal::Delivered => ("delivered", None),
+        OutboxFinal::Dead { error } => ("dead", Some(error)),
+        OutboxFinal::Skipped => ("skipped", None),
+    }
+}
+
+/// Ends the claimed row inside the commit's transaction (the claim was checked, and is held, above).
+async fn finish_outbox_row(
+    tx: &mut Tx,
+    lease: &Lease,
+    outcome: OutboxFinal,
+    now: Timestamp,
+) -> Result<(), StoreError> {
+    let (status, error) = outbox_outcome(outcome);
+    sqlx::query(OUTBOX_FINISH)
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
+        .bind(status)
+        .bind(error)
+        .bind(to_db(now))
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
 /// `outbox.attempts` is an `integer`; a lease past `i32::MAX` matches no row.
 fn attempt(lease: &Lease) -> i32 {
     i32::try_from(lease.attempt).unwrap_or(i32::MAX)
@@ -621,7 +656,7 @@ impl ThreadStore for PgStore {
                 return Ok(CommitOutcome::Duplicate);
             }
         }
-        let has_outbox = !commit.outbox.is_empty();
+        let has_outbox = !commit.outbox.is_empty() || commit.finishes_outbox.is_some();
         let events = insert_events(&mut tx, thread, last_seq + 1, commit.events).await?;
         let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
         // The job is written with the state, under the same lock and version check; a commit
@@ -650,6 +685,9 @@ impl ThreadStore for PgStore {
                 .await?;
         if let Some(lease) = &commit.inbox {
             finish_inbox_row(&mut tx, lease, commit.now).await?;
+        }
+        if let (Some(lease), Some(outcome)) = (&commit.lease, commit.finishes_outbox.clone()) {
+            finish_outbox_row(&mut tx, lease, outcome, commit.now).await?;
         }
         notify_thread(&mut tx, thread).await?;
         if has_outbox {
@@ -855,26 +893,18 @@ impl ThreadStore for PgStore {
         outcome: OutboxFinal,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
-        let (status, error) = match outcome {
-            OutboxFinal::Delivered => ("delivered", None),
-            OutboxFinal::Dead { error } => ("dead", Some(error)),
-            OutboxFinal::Skipped => ("skipped", None),
-        };
-        let done = sqlx::query(
-            "UPDATE outbox SET status = $4, last_error = COALESCE($5, last_error), \
-             lease_owner = NULL, lease_until = NULL, updated_at = $6 \
-             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
-        )
-        .bind(lease.id.0)
-        .bind(&lease.owner)
-        .bind(attempt(lease))
-        .bind(status)
-        .bind(error)
-        .bind(to_db(now))
-        .execute(&self.pool)
-        .await
-        .map(|r| r.rows_affected() == 1)
-        .map_err(store_err)?;
+        let (status, error) = outbox_outcome(outcome);
+        let done = sqlx::query(OUTBOX_FINISH)
+            .bind(lease.id.0)
+            .bind(&lease.owner)
+            .bind(attempt(lease))
+            .bind(status)
+            .bind(error)
+            .bind(to_db(now))
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected() == 1)
+            .map_err(store_err)?;
         if done {
             // A finished delegate releases the thread's next one.
             notify_outbox(&self.pool).await?;

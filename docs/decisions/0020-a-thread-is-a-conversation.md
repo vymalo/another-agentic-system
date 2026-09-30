@@ -125,9 +125,17 @@ stateDiagram-v2
 - A CI report for an earlier job's commit still adds its card (the thread's watches are not removed) but
   cannot decide job *n+1*, whose pushed commit is its own; two jobs that push the same commit share their CI
   facts (open question 32).
+- **This release must not be rolled out replica by replica.** An older replica cannot decode `job_started` or an
+  outbox `cancel` row that names its job, answers a follow-up on a finished thread with 409, and rewrites
+  `threads.job` without `number` (the thread reads as job 1 again and job 2's ids repeat). Upgrade every replica
+  before new-version traffic reaches one: stop the old ones, or deploy in two steps (first a build that reads the new
+  shapes, then the one that writes them). Migration 0005 only widens a check, so it is safe to run first.
 - Two messages sent while a job is open are two delegations; if the first completes the thread before the
   second is sent, the second starts the next job (redelivery). A residual race remains when the second is
-  *sent* at the instant the task completes (open question 33).
+  *sent* at the instant the task completes (open question 33). A redelivered message that finds the thread already
+  moved on (another redelivery started the next job) joins that job's task and is sent after what that job has been
+  told, so it may reach the agent out of the order it was written in. A redelivery ends its row in the same commit
+  as the job it starts (`Commit.finishes_outbox`), so a crash cannot send the message twice.
 
 ## Alternatives rejected
 

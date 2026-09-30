@@ -409,12 +409,16 @@ fn decide(
             }
         },
         Input::Redeliver { text } => match state {
-            // Still open: the original row is being served, this one only delegates. The
-            // person's words were noted when the message was applied.
+            // The thread moved on while the message waited (an earlier redelivery started the next
+            // job): the message joins that job, as one written during it would, and is sent
+            // after what that job has been told, so it may reach the agent out of the order it
+            // was written in (open question 33).
             ThreadState::Queued | ThreadState::Working => {
+                note_task(job, text);
                 Ok((state, vec![Command::Delegate { text: text.clone() }]))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
+                note_task(job, text);
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
