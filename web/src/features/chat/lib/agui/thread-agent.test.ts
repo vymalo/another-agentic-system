@@ -282,6 +282,51 @@ describe("ThreadAgent.run", () => {
     agent.stop();
   });
 
+  it("keeps a send that stop() finds in flight: the connect stream may finish its run before the POST answers", async () => {
+    // The page pauses the connect stream (stop()) once the thread is finished and caught up. The
+    // run of an answer can be finished on the connect stream while the POST's own RUN_STARTED is
+    // still on its way; the pause must not take the send, and the reply it holds, with it.
+    const connect = new LiveStream();
+    const post = new LiveStream();
+    const { agent } = agentWith((call) =>
+      call.method === "POST" ? sse(post.body) : sse(connect.body),
+    );
+    agent.start();
+    const ask = loadGolden("connect-ask");
+    const second = ask.findIndex(
+      (f) => f.event.type === "RUN_STARTED" && f.event.runId === "run-2",
+    );
+    connect.frames(ask.slice(0, second));
+    await until(() => agent.getSnapshot().lastSeq === 4, "the first run");
+
+    const seen: BaseEvent[] = [];
+    let finished = false;
+    agent
+      .run(
+        input({
+          runId: "run-2",
+          resume: [{ interruptId: "int-3", status: "resolved", payload: { text: "main" } }],
+        }),
+      )
+      .subscribe({ next: (e) => seen.push(e), complete: () => (finished = true) });
+    connect.frames(ask.slice(second));
+    await until(() => agent.getSnapshot().lastSeq === 9, "the second run on the connect stream");
+    expect(agent.getSnapshot()).toMatchObject({ state: "done", openRun: null });
+    agent.stop(); // what the page does now: nothing is left to follow
+
+    post.write(`data: ${JSON.stringify(started("run-2"))}\n\n`);
+    await until(() => finished, "the run to end");
+    expect(seen.at(0)).toMatchObject({ type: "RUN_STARTED", runId: "run-2" });
+    expect(seen).toContainEqual(
+      expect.objectContaining({
+        type: "ACTIVITY_SNAPSHOT",
+        activityType: "vymalo.artifact",
+        content: expect.objectContaining({ text: "answered: main" }),
+      }),
+    );
+    expect(seen.at(-1)?.type).toBe("RUN_FINISHED");
+  });
+
   it("sends the one new user message, or the resume alone, never the history", async () => {
     const sent: unknown[] = [];
     const { agent } = agentWith((call) => {
