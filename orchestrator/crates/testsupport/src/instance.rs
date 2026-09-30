@@ -1,16 +1,21 @@
-//! A running orchestrator (router + dispatcher) on a real TCP port, and a chat API client.
+//! A running orchestrator (router + dispatcher) on a real TCP port, and a client for its HTTP API
+//! (the resource API and the AG-UI routes).
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use orch_api::ApiConfig;
-use orch_app::{App, Dispatcher, DispatcherConfig};
+use orch_app::{App, Dispatcher, DispatcherConfig, NewThread};
+use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
 use orch_ports::Ports;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
+use crate::fake::EXTENSION_URI;
 use crate::sse::SseClient;
 use crate::wait::eventually;
 
@@ -46,6 +51,89 @@ pub struct TestInstance {
     shutdown: CancellationToken,
     /// Cancelled when the process "dies": streaming bodies break.
     crash: CancellationToken,
+    /// The process's own view of the event log (see [`Chat::events`]).
+    log: Arc<dyn LogTap>,
+}
+
+/// The event log seen from inside a test process. No HTTP route returns the log as the core
+/// wrote it (the AG-UI surface returns its projection), and a test that pins what the core and
+/// the A2A adapter wrote needs the events themselves; it reads them here, through the same
+/// [`App`] the routes use.
+#[async_trait]
+trait LogTap: Send + Sync {
+    /// Every event of `thread`, as the JSON of `orch_core::Event`.
+    async fn events(&self, user: &str, thread: &str) -> Vec<Value>;
+    /// Creates a thread through the application, without any surface: the log holds the message
+    /// with no consumer-chosen ids. Returns its id.
+    async fn create_thread(
+        &self,
+        user: &str,
+        agent: &str,
+        text: &str,
+        release: Option<&str>,
+    ) -> String;
+    /// Posts a message to `thread` through the application, as a producer that is not AG-UI.
+    /// Returns the `user_message` event.
+    async fn post_message(&self, user: &str, thread: &str, text: &str) -> Value;
+}
+
+struct AppLog<P: Ports>(Arc<App<P>>);
+
+#[async_trait]
+impl<P: Ports> LogTap for AppLog<P> {
+    async fn events(&self, user: &str, thread: &str) -> Vec<Value> {
+        const PAGE: u32 = 500;
+        let user = UserId::new(user);
+        let id = thread.parse::<ThreadId>().unwrap();
+        let mut all: Vec<Value> = Vec::new();
+        loop {
+            let after = all.last().map_or(0, |e| e["seq"].as_i64().unwrap());
+            let page = self.0.list_events(&user, id, after, PAGE).await.unwrap();
+            let done = page.len() < PAGE as usize;
+            all.extend(page.iter().map(|e| serde_json::to_value(e).unwrap()));
+            if done {
+                return all;
+            }
+        }
+    }
+
+    async fn create_thread(
+        &self,
+        user: &str,
+        agent: &str,
+        text: &str,
+        release: Option<&str>,
+    ) -> String {
+        let thread = self
+            .0
+            .create_thread(
+                &UserId::new(user),
+                NewThread {
+                    title: None,
+                    target: AgentTarget {
+                        agent_id: AgentId::new(agent),
+                        release: release.map(str::to_owned),
+                    },
+                    text: text.to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        thread.id.to_string()
+    }
+
+    async fn post_message(&self, user: &str, thread: &str, text: &str) -> Value {
+        let event = self
+            .0
+            .post_message(
+                &UserId::new(user),
+                thread.parse::<ThreadId>().unwrap(),
+                text.to_owned(),
+            )
+            .await
+            .unwrap();
+        serde_json::to_value(event).unwrap()
+    }
 }
 
 /// Breaks a response body when `crash` is cancelled: the body ends with an I/O error, which
@@ -107,13 +195,11 @@ impl TestInstance {
         });
         let keepalive = api.sse_keepalive;
         let crash = CancellationToken::new();
+        let log: Arc<dyn LogTap> = Arc::new(AppLog(Arc::clone(&app)));
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             api,
-            vec![
-                orch_surface_agui::routes(Arc::clone(&app), keepalive),
-                orch_surface_chat_api::routes(app, keepalive),
-            ],
+            vec![orch_surface_agui::routes(app, keepalive)],
         )
         .layer(axum::middleware::from_fn({
             let crash = crash.clone();
@@ -128,6 +214,16 @@ impl TestInstance {
             dispatcher,
             shutdown,
             crash,
+            log,
+        }
+    }
+
+    /// A client for this instance acting as `user`. Unlike [`Chat::new`], it can also read the
+    /// event log ([`Chat::events`]) and write to it without a surface ([`Chat::seed_thread`]).
+    pub fn chat(&self, user: &str) -> Chat {
+        Chat {
+            log: Some(Arc::clone(&self.log)),
+            ..Chat::new(&self.base_url, user)
         }
     }
 
@@ -158,12 +254,17 @@ impl Drop for TestInstance {
     }
 }
 
-/// A chat API client acting as one user.
+/// A client acting as one user: the resource API, and the AG-UI routes.
+///
+/// Threads are created and continued the way a real consumer does, through
+/// `POST /agui/agents/{agentId}`. The event log as the core wrote it has no HTTP route; a client
+/// obtained from [`TestInstance::chat`] reads it in-process ([`Chat::events`]).
 #[derive(Clone)]
 pub struct Chat {
     base: String,
     user: Option<String>,
     http: reqwest::Client,
+    log: Option<Arc<dyn LogTap>>,
 }
 
 impl Chat {
@@ -173,6 +274,7 @@ impl Chat {
             base: base_url.to_owned(),
             user: Some(user.to_owned()),
             http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            log: None,
         }
     }
 
@@ -225,29 +327,84 @@ impl Chat {
         )
     }
 
-    /// Creates a thread and returns its id; panics unless the API answers 201.
+    /// Creates a thread the way an AG-UI consumer does and returns its id: a run of `text` on
+    /// `agent` under a fresh UUIDv7 thread id, with `release` in `forwardedProps`. Returns once
+    /// the run route has accepted it (the thread exists, and its first message is in the log); the
+    /// run's stream is dropped unread, since the log does not depend on anybody reading it. Panics
+    /// unless the answer is 200.
     pub async fn create_thread(&self, agent: &str, text: &str, release: Option<&str>) -> String {
         let (status, body) = self.try_create_thread(agent, text, release).await;
-        assert_eq!(status, 201, "create thread failed: {body}");
-        body["id"].as_str().unwrap().to_owned()
+        assert_eq!(status, 200, "create thread failed: {body}");
+        body["threadId"].as_str().unwrap().to_owned()
     }
 
-    /// Creates a thread, returning the raw answer.
+    /// [`Chat::create_thread`], returning the raw answer: `(200, {"threadId": …})` when the run
+    /// was accepted, the status and the problem otherwise.
     pub async fn try_create_thread(
         &self,
         agent: &str,
         text: &str,
         release: Option<&str>,
     ) -> (u16, Value) {
-        let mut target = json!({ "agentId": agent });
-        if let Some(r) = release {
-            target["release"] = json!(r);
+        let thread = Uuid::now_v7().to_string();
+        let extra = match release {
+            Some(r) => json!({"forwardedProps": {EXTENSION_URI: {"release": r}}}),
+            None => json!({}),
+        };
+        let body = Self::agui_input(&thread, "run-1", &[("msg-1", text)], extra);
+        let response = self.agui_post(agent, &body).await;
+        let status = response.status().as_u16();
+        if status == 200 {
+            return (status, json!({ "threadId": thread }));
         }
-        self.post(
-            "/api/threads",
-            Some(json!({ "target": target, "text": text })),
+        let bytes = response.bytes().await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
-        .await
+    }
+
+    /// Sends a follow-up message to `thread` (which `agent` runs) as a new AG-UI run: the way a
+    /// consumer answers a question or adds to a thread. Returns the run's stream; panics unless
+    /// the answer is 200.
+    pub async fn follow_up(&self, thread: &str, agent: &str, text: &str) -> SseClient {
+        let n = Uuid::now_v7();
+        let body = Self::agui_input(
+            thread,
+            &format!("run-{n}"),
+            &[(&format!("msg-{n}"), text)],
+            json!({}),
+        );
+        self.agui_run(agent, &body).await
+    }
+
+    /// Creates a thread through the application, with no surface in between: its first message
+    /// carries no consumer-chosen ids, as an input from a producer that is not AG-UI would.
+    /// Needs a client from [`TestInstance::chat`].
+    pub async fn seed_thread(&self, agent: &str, text: &str, release: Option<&str>) -> String {
+        self.tap()
+            .create_thread(self.user_name(), agent, text, release)
+            .await
+    }
+
+    /// Posts `text` to `thread` through the application, with no surface in between; returns the
+    /// `user_message` event. Needs a client from [`TestInstance::chat`].
+    pub async fn seed_message(&self, thread: &str, text: &str) -> Value {
+        self.tap()
+            .post_message(self.user_name(), thread, text)
+            .await
+    }
+
+    fn tap(&self) -> &Arc<dyn LogTap> {
+        self.log
+            .as_ref()
+            .expect("this client cannot reach the event log: build it with TestInstance::chat")
+    }
+
+    fn user_name(&self) -> &str {
+        self.user
+            .as_deref()
+            .expect("the anonymous client has no user to act as")
     }
 
     /// `GET /api/threads/{id}`.
@@ -290,31 +447,10 @@ impl Chat {
         .await
     }
 
-    /// All events of the thread (`GET /events`, paged transparently).
+    /// All events of the thread, as the core wrote them (the JSON of `orch_core::Event`), read
+    /// in-process. Needs a client from [`TestInstance::chat`]; no HTTP route returns the log.
     pub async fn events(&self, id: &str) -> Vec<Value> {
-        let mut all: Vec<Value> = Vec::new();
-        loop {
-            let after = all.last().map_or(0, |e| e["seq"].as_i64().unwrap());
-            let (status, body) = self
-                .get(&format!("/api/threads/{id}/events?after={after}&limit=500"))
-                .await;
-            assert_eq!(status, 200, "{body}");
-            let page = body.as_array().unwrap().clone();
-            let done = page.len() < 500;
-            all.extend(page);
-            if done {
-                return all;
-            }
-        }
-    }
-
-    /// Follow-up message; returns `(status, body)`.
-    pub async fn post_message(&self, id: &str, text: &str) -> (u16, Value) {
-        self.post(
-            &format!("/api/threads/{id}/messages"),
-            Some(json!({ "text": text })),
-        )
-        .await
+        self.tap().events(self.user_name(), id).await
     }
 
     /// `POST /cancel`; returns the status.
@@ -413,15 +549,6 @@ impl Chat {
     pub async fn agui_capabilities(&self, agent: &str) -> (u16, Value) {
         self.get(&format!("/agui/agents/{agent}/capabilities"))
             .await
-    }
-
-    /// Opens the SSE stream, optionally resuming after `Last-Event-ID`.
-    pub async fn stream(&self, id: &str, last_event_id: Option<i64>) -> SseClient {
-        let mut req = self.request(reqwest::Method::GET, &format!("/api/threads/{id}/stream"));
-        if let Some(n) = last_event_id {
-            req = req.header("Last-Event-ID", n.to_string());
-        }
-        SseClient::from_response(req.send().await.unwrap())
     }
 }
 

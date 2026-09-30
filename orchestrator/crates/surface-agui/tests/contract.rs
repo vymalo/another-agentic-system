@@ -219,7 +219,7 @@ impl<'a> Seen<'a> {
         self.seen.entry(op.to_owned()).or_default().insert(status);
     }
 
-    /// A refusal: documented, a problem, and no `Deprecation` (this is not a legacy operation).
+    /// A refusal: documented, and a problem.
     fn problem(&mut self, op: &str, status: u16, r: &Resp) {
         self.note(op, status);
         let p = r.problem(status);
@@ -227,7 +227,6 @@ impl<'a> Seen<'a> {
         assert_eq!(ct, "application/problem+json");
         self.contract
             .validate(&schema, &p, &format!("{op} {status}"));
-        assert!(r.headers.get("deprecation").is_none(), "{op} {status}");
     }
 
     /// A stream: documented as `text/event-stream`, every frame an `AgUiSseFrame`.
@@ -241,7 +240,6 @@ impl<'a> Seen<'a> {
                 .unwrap()
                 .starts_with(&ct)
         );
-        assert!(stream.headers.get("deprecation").is_none(), "{op}");
         let item = item.expect("the stream documents its items (x-itemSchema)");
         assert!(!frames.is_empty(), "{op}: an empty stream proves nothing");
         for frame in frames {
@@ -436,7 +434,6 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     let (ct, schema, _) = contract.body("getAgentCapabilities", 200);
     assert!(r.content_type.starts_with(&ct));
     assert_eq!(r.headers["cache-control"], "no-store");
-    assert!(r.headers.get("deprecation").is_none());
     contract.validate(&schema, &r.json(), "getAgentCapabilities 200");
     seen.note("getAgentCapabilities", 200);
     let r = h.get("/agui/agents/plain/capabilities", None).await;

@@ -334,7 +334,7 @@ async fn the_release_is_selected_through_forwarded_props(backend: Backend) {
     );
 }
 
-async fn a_run_and_the_chat_api_see_one_log(backend: Backend) {
+async fn a_message_from_another_producer_joins_the_same_log(backend: Backend) {
     let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
@@ -351,15 +351,16 @@ async fn a_run_and_the_chat_api_see_one_log(backend: Backend) {
     )
     .await;
     assert_eq!(last(&first)["outcome"]["type"], "interrupt");
-    // The legacy surface answers the question; the AG-UI thread carries on.
-    let (status, _) = chat.post_message(&thread, "main").await;
-    assert_eq!(status, 202);
+    // A producer that is not AG-UI (here: the application itself, as a webhook or another
+    // surface would) answers the question; the AG-UI thread carries on.
+    let posted = chat.seed_message(&thread, "main").await;
+    assert_eq!(posted["kind"], "user_message");
     chat.wait_state(&thread, "done").await;
     let events = chat.events(&thread).await;
     assert_eq!(events[4]["kind"], "user_message");
     assert!(
         events[4]["data"].get("runId").is_none(),
-        "the legacy surface names no run"
+        "a producer that is not AG-UI names no run"
     );
     // A run that attaches to the first one still gets exactly that run.
     let again = run(
@@ -386,7 +387,7 @@ backends!(
     refusals_are_problems_before_the_stream,
     a_thread_id_of_someone_else_is_a_404,
     the_release_is_selected_through_forwarded_props,
-    a_run_and_the_chat_api_see_one_log,
+    a_message_from_another_producer_joins_the_same_log,
 );
 
 // ---- goldens -----------------------------------------------------------------------------

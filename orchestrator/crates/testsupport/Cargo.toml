@@ -14,7 +14,6 @@ orch-ports.workspace = true
 orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui.workspace = true
-orch-surface-chat-api.workspace = true
 a2a-lf.workspace = true
 a2a-server-lf.workspace = true
 async-trait.workspace = true
@@ -24,6 +23,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 bytes = "1"
 

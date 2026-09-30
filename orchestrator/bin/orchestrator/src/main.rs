@@ -132,6 +132,15 @@ mod tests {
         .context("reading the configuration");
         assert_eq!(exit_code(&no_local), 78);
 
+        let removed = anyhow::Error::from(ConfigError::RemovedSurface {
+            name: "chat-api",
+            removed: "2026-09-30",
+            what: "the legacy chat API interaction routes",
+            replacement: "the AG-UI routes",
+        })
+        .context("reading the configuration");
+        assert_eq!(exit_code(&removed), 78);
+
         let db_down = anyhow::Error::from(StoreError::unavailable(io::Error::other("refused")))
             .context("cannot connect to Postgres");
         assert_eq!(exit_code(&db_down), 69);

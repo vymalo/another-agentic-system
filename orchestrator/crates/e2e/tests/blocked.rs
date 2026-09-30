@@ -27,10 +27,9 @@ async fn input_required_blocks_and_the_follow_up_resumes_the_same_task(backend: 
     );
     assert_eq!(events[2]["data"]["detail"], "Which branch?");
 
-    let (status, body) = chat.post_message(&id, "main").await;
-    assert_eq!(status, 202, "{body}");
-    assert_eq!(body["kind"], "user_message");
-    assert_eq!(body["data"]["text"], "main");
+    // The answer is a new AG-UI run on the same thread: a message of the user.
+    let run = chat.follow_up(&id, "plain", "main").await;
+    assert_eq!(run.status, 200);
     chat.wait_state(&id, "done").await;
 
     let events = chat.events(&id).await;
@@ -49,6 +48,7 @@ async fn input_required_blocks_and_the_follow_up_resumes_the_same_task(backend: 
         ]
     );
     assert_contiguous(&events);
+    assert_eq!(events[4]["data"]["text"], "main");
     assert_eq!(events[6]["data"]["text"], "answered: main");
 
     // The agent side: two executions of ONE task; the second continued the blocked task.
@@ -71,8 +71,8 @@ async fn a_follow_up_survives_an_orchestrator_restart_between_the_turns(backend:
 
     let second = world.instance("orch-2").await;
     let chat = world.chat(&second);
-    let (status, _) = chat.post_message(&id, "develop").await;
-    assert_eq!(status, 202);
+    let run = chat.follow_up(&id, "plain", "develop").await;
+    assert_eq!(run.status, 200);
     chat.wait_state(&id, "done").await;
     let calls = world.plain.executions();
     assert_eq!(calls.len(), 2);
@@ -106,8 +106,8 @@ async fn auth_required_blocks_with_its_detail(backend: Backend) {
     );
 
     // The user answers (say, "done, retry"): the same A2A task continues.
-    let (status, body) = chat.post_message(&id, "signed in").await;
-    assert_eq!(status, 202, "{body}");
+    let run = chat.follow_up(&id, "plain", "signed in").await;
+    assert_eq!(run.status, 200);
     chat.wait_state(&id, "done").await;
     let events = chat.events(&id).await;
     assert_eq!(events[6]["data"]["text"], "answered: signed in");

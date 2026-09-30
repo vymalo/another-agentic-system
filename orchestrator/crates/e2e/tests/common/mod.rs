@@ -1,4 +1,4 @@
-//! Shared harness: the real chat API, dispatcher, a store (in memory, or Postgres when
+//! Shared harness: the real resource API and AG-UI routes, dispatcher, a store (in memory, or Postgres when
 //! `ORCH_TEST_DATABASE_URL` is set) and the A2A adapter, talking to in-process fake A2A agents
 //! over real HTTP.
 //!
@@ -242,8 +242,9 @@ impl World {
         }
     }
 
+    /// A client for `instance` acting as [`ALICE`], which can also read the event log.
     pub fn chat(&self, instance: &TestInstance) -> Chat {
-        Chat::new(&instance.base_url, ALICE)
+        instance.chat(ALICE)
     }
 }
 

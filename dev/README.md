@@ -17,7 +17,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is not set, so it is the default `agui`: the AG-UI routes the web and the scripts here run on, beside the resource API. The deprecated chat API routes are not mounted; to get them back add `ORCH_SURFACES: agui,chat-api` to the shared `x-orchestrator-env` of `compose.yaml`. |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the two mocks. `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is not set, so it is the default `agui`: the AG-UI routes the web and the scripts here run on, beside the resource API. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`) and the AG-UI routes (`/agui/*`, streams unbuffered). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -145,8 +145,8 @@ NO_OPENCODE=1 dev/coder-e2e.sh                         # the check command makes
 docker compose down -v                                 # also forgets the pushed branches
 ```
 
-`dev/coder-e2e.sh` goes through the edge and speaks AG-UI, as the web does (the deprecated chat API is not
-mounted by default and the script does not use it): it checks the default agent, runs the thread with one
+`dev/coder-e2e.sh` goes through the edge and speaks AG-UI, as the web does (the legacy chat API was removed on
+2026-09-30): it checks the default agent, runs the thread with one
 `POST /agui/agents/coder` (a UUID it mints as `threadId`), waits for the thread to end `done`,
 and prints one `ok` or `FAIL` line for each check: the run stream ends with `RUN_FINISHED`, the two artifacts
 (the JSON the coder sent is in the `content.text` of the `vymalo.artifact` activities of
@@ -375,7 +375,7 @@ and needs none of this.
 
 ### The Rust test against the mocks
 
-`orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real dispatcher and A2A adapter (driven through the legacy chat API surface of the test instance, which the binary mounts only with `ORCH_SURFACES=agui,chat-api`)
+`orchestrator/crates/e2e/tests/wiremock_agent.rs` runs the real dispatcher and A2A adapter (driven over the AG-UI run route of the test instance: `Chat::create_thread`, `Chat::follow_up`)
 against the mocks: the default script, `ask` and its answer, `fail`, `error` and `reject`, cancelling
 a blocked thread, and the release echo. It skips unless told where the mocks are:
 

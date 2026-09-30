@@ -4,9 +4,9 @@ info:
   version: 0.1.0
   description: |
     The only interface between the chat surface (web/) and the orchestrator
-    (ADR 0009: the UI is swappable). Everything a user sees in a thread is an
-    Event from the thread's append-only event log; the UI renders events, it
-    never invents state.
+    (ADR 0009: the UI is swappable). Everything a user sees in a thread is derived
+    from the thread's append-only event log (an Event, below); the UI renders it,
+    it never invents state.
 
     Authentication: the API sits behind oauth2-proxy. The orchestrator trusts
     `X-Auth-Request-Email` (and `X-Auth-Request-User`) set by the proxy and
@@ -21,15 +21,12 @@ info:
     schemas are the vendored AG-UI 1.0 JSON Schema, referenced by file. The
     thread list, thread details, cancel, the agent list and health stay REST.
 
-    Deprecation: `createThread`, `postMessage`, `listEvents` and `streamEvents`
-    are deprecated in favour of the AG-UI operations. They are served only
-    while `ORCH_SURFACES` includes `chat-api` (off by default: the default is
-    `agui`; set `ORCH_SURFACES=agui,chat-api` to keep them), and every response the
-    operation itself produces carries `Deprecation: @1790640000` (RFC 9745:
-    an sf-date, 2026-09-29T00:00:00Z, the day they were deprecated). A
-    401 comes from the identity layer, which is shared, and carries no
-    `Deprecation`. There is no `Sunset`: removal is tied to the web's
-    migration, not to a date.
+    Removed: the legacy REST interaction operations (`createThread`, `postMessage`,
+    `listEvents`, `streamEvents`) were deprecated on 2026-09-29 and removed on 2026-09-30
+    ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)). `ORCH_SURFACES=chat-api` is
+    now a startup error. No operation returns an `Event` any more; the `Event` schemas below
+    describe the append-only log that AG-UI projects, which the goldens under
+    [`examples/`](examples/README.md) pin.
 servers:
   - url: /
 security:
@@ -82,29 +79,6 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
-    post:
-      operationId: createThread
-      deprecated: true
-      summary: Start a thread with a first message
-      description: |
-        **Deprecated:** use `runAgent` (`POST /agui/agents/{agentId}`) with a new, consumer-minted `threadId`.
-        Served only while `ORCH_SURFACES` includes `chat-api`; responses carry `Deprecation`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/NewThread" }
-      responses:
-        "401": { $ref: "#/components/responses/Problem" }
-        "201":
-          description: Created; the first message is already in the event log
-          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Thread" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "502": { description: "The target agent could not be reached to validate the request (a release is selected and its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
-        "503": { description: "Storage is unavailable, or the target agent is rate limiting; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -118,79 +92,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
         "404": { $ref: "#/components/responses/Problem" }
-  /api/threads/{threadId}/events:
-    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
-    get:
-      operationId: listEvents
-      deprecated: true
-      summary: Event history, oldest first
-      description: |
-        **Deprecated:** use `connectThread` (`GET /agui/threads/{threadId}/connect`, with `?mode=run` for a
-        finite replay). Served only while `ORCH_SURFACES` includes `chat-api`; responses carry
-        `Deprecation`.
-      parameters:
-        - { name: after, in: query, description: "Only events with seq > after", schema: { type: integer, format: int64, minimum: 0 } }
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 200 } }
-      responses:
-        "401": { $ref: "#/components/responses/Problem" }
-        "200":
-          description: Events
-          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
-          content:
-            application/json:
-              schema: { type: array, items: { $ref: "#/components/schemas/Event" } }
-        "404": { $ref: "#/components/responses/Problem" }
-  /api/threads/{threadId}/stream:
-    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
-    get:
-      operationId: streamEvents
-      deprecated: true
-      summary: Live events (Server-Sent Events)
-      description: |
-        **Deprecated:** use `connectThread`, which takes the same `Last-Event-ID` cursor. Served only while
-        `ORCH_SURFACES` includes `chat-api`; responses carry `Deprecation`.
-
-        Each SSE message has `id: <seq>`, `event: <kind>` and `data: <Event JSON>`.
-        On reconnect the browser sends `Last-Event-ID`; the server first
-        replays every event with a greater seq, then streams live ones, so a
-        client never misses or duplicates an event. A comment line
-        (`: keepalive`) is sent at least every 15 s.
-      parameters:
-        - { name: Last-Event-ID, in: header, schema: { type: string } }
-      responses:
-        "401": { $ref: "#/components/responses/Problem" }
-        "200":
-          description: text/event-stream of Event
-          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
-          content:
-            text/event-stream:
-              schema: { type: string }
-        "404": { $ref: "#/components/responses/Problem" }
-  /api/threads/{threadId}/messages:
-    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
-    post:
-      operationId: postMessage
-      deprecated: true
-      summary: Send a user message (a follow-up, or an answer to a blocked job)
-      description: |
-        **Deprecated:** use `runAgent` with the same `threadId` and a new `runId` (an answer to a blocked
-        thread is a `resume`, or simply the next message). Served only while `ORCH_SURFACES` includes
-        `chat-api`; responses carry `Deprecation`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/NewMessage" }
-      responses:
-        "401": { $ref: "#/components/responses/Problem" }
-        "202":
-          description: Accepted; appended to the event log
-          headers: { Deprecation: { $ref: "#/components/headers/Deprecation" } }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Event" }
-        "404": { $ref: "#/components/responses/Problem" }
-        "409": { description: Thread is finished; start a new one, $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/cancel:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     post:
@@ -302,12 +203,6 @@ components:
       required: true
       description: Configuration key of the agent, as listed by `listAgents` (`Agent.id`)
       schema: { type: string }
-  headers:
-    Deprecation:
-      description: |
-        RFC 9745: the operation is deprecated. An sf-date (RFC 9651): `@` and the unix time in seconds
-        of the day it was deprecated. Sent on every response the deprecated operations produce.
-      schema: { type: string, pattern: "^@[0-9]+$", example: "@1790640000" }
   responses:
     Problem:
       description: RFC 9457 problem details
@@ -347,18 +242,6 @@ components:
       properties:
         agentId: { type: string }
         release: { type: string, description: "Channel or exact revision; only valid when the agent has releases" }
-    NewThread:
-      type: object
-      required: [target, text]
-      properties:
-        title: { type: string, maxLength: 200 }
-        target: { $ref: "#/components/schemas/AgentTarget" }
-        text: { type: string, minLength: 1, maxLength: 100000 }
-    NewMessage:
-      type: object
-      required: [text]
-      properties:
-        text: { type: string, minLength: 1, maxLength: 100000 }
     Thread:
       type: object
       required: [id, title, target, state, createdAt, updatedAt, lastSeq]

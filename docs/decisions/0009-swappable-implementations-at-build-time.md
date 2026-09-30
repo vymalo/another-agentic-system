@@ -10,6 +10,9 @@
   (`store-postgres` on by default)" is not built: there is one implementation of each, and a
   second one adds the feature. The testkit covers `ThreadStore` and `Wakeup`, not yet
   `AgentClient`. See [orchestrator: crate layout](../orchestrator.md#crate-layout).
+  Status note (2026-09-30): the interaction surface that selected an implementation by feature,
+  `surface-chat-api`, was removed ([ADR 0012](0012-ag-ui-user-facing-protocol.md)); the only such
+  feature is now `surface-agui`. The rest of the note stands.
 
 ## Context
 

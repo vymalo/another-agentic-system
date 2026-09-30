@@ -11,9 +11,8 @@
 # The script speaks AG-UI, as the UI does (docs/api/agui.md): it runs a thread for the default agent
 # (the first entry of dev/agents.yaml) with one POST /agui/agents/{agentId} whose message names the
 # seeded repository, waits for a terminal state, and checks the whole chain. The agent list and the
-# thread state come from the resource API. The deprecated chat API routes are not used: they are
-# served only with ORCH_SURFACES=agui,chat-api, and compose does not set that. It prints one ok or
-# FAIL line per check and exits 1 if any failed:
+# thread state come from the resource API. (The legacy chat API routes were removed on 2026-09-30.)
+# It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * the default agent of GET /api/agents is `coder`;
 #   * the run stream ends with RUN_FINISHED (success), and the thread ends `done` within TIMEOUT;
 #   * the thread's AG-UI frames (GET /agui/threads/{id}/connect?mode=run) carry the `branch` and

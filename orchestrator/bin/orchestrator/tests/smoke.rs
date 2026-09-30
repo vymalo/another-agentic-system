@@ -1,7 +1,8 @@
 //! The built binary as a process: configuration errors are fatal and readable; against a real
 //! database it serves the resource API and the AG-UI surface (the default), runs a thread to
-//! completion through an A2A agent, and exits cleanly on SIGTERM. The legacy chat API is off by
-//! default: the tests that drive it say `ORCH_SURFACES=agui,chat-api` themselves.
+//! completion through an A2A agent, and exits cleanly on SIGTERM. The legacy chat API surface was
+//! removed (ADR 0012): naming it in `ORCH_SURFACES` is a configuration error, and its routes are
+//! not there.
 //!
 //! The database tests need `ORCH_TEST_DATABASE_URL` (they skip without); the configuration
 //! tests always run.
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use orch_testsupport::{Chat, FakeAgent, FakeAgentOptions, eventually, shape};
+use orch_testsupport::{Chat, FakeAgent, FakeAgentOptions, Frame, eventually};
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
 #[path = "../../../crates/store-postgres/tests/support/mod.rs"]
@@ -280,7 +281,7 @@ fn a_flag_wins_over_its_variable() {
         "flag.log",
         &["--surfaces", "a2a"],
         &[
-            ("ORCH_SURFACES", "chat-api"),
+            ("ORCH_SURFACES", "agui"),
             ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
             ("AGENTS_FILE", path_str(&agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
@@ -331,68 +332,58 @@ fn an_unknown_flag_is_a_usage_error() {
     assert!(run.log().contains("--no-such-flag"), "{}", run.log());
 }
 
-#[tokio::test]
-async fn the_chat_api_surface_is_mounted_by_the_flag() {
-    let Some(db) = pgdb::TestDb::new().await else {
-        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
-        return;
-    };
+/// The legacy `chat-api` surface was removed on 2026-09-30. A deployment that still names it,
+/// in the variable or on the flag, alone or beside `agui`, does not start quietly without the
+/// routes it expects: the process exits 78 (EX_CONFIG) before it connects to anything, and the log
+/// says what was removed and where to go.
+#[test]
+fn the_removed_chat_api_surface_is_a_config_error_pointing_to_agui() {
     let scratch = Scratch::new();
     let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
-    let addr = format!("127.0.0.1:{}", free_port());
-    let database_url = database_url_of(&db);
-    let run = std::cell::RefCell::new(spawn_with_args(
-        &scratch,
-        "surfaces.log",
-        &["--surfaces", "chat-api", "--listen-addr", &addr],
-        &[
-            ("DATABASE_URL", &database_url),
-            ("AGENTS_FILE", path_str(&agents)),
-            ("SMOKE_AGENT_TOKEN", TOKEN),
-            ("NO_PROXY", "127.0.0.1,localhost"),
-        ],
-    ));
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    let base = format!("http://{addr}");
-    eventually("the binary answers /healthz", || async {
+    // The database is unreachable on purpose: configuration is validated first.
+    let base_env = [
+        ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+        ("AGENTS_FILE", path_str(&agents)),
+        ("SMOKE_AGENT_TOKEN", TOKEN),
+    ];
+    // (how it is named, command-line arguments, extra environment)
+    #[allow(clippy::type_complexity)]
+    let cases: [(&str, &[&str], &[(&str, &str)]); 4] = [
+        ("variable", &[], &[("ORCH_SURFACES", "chat-api")]),
+        (
+            "variable, beside agui",
+            &[],
+            &[("ORCH_SURFACES", "agui,chat-api")],
+        ),
+        ("flag", &["--surfaces", "agui,chat-api"], &[]),
+        // The flag decides over a variable that would have been fine.
+        (
+            "flag over variable",
+            &["--surfaces", "chat-api"],
+            &[("ORCH_SURFACES", "agui")],
+        ),
+    ];
+    for (how, args, extra) in cases {
+        let mut env = base_env.to_vec();
+        env.extend_from_slice(extra);
+        let mut run = spawn_with_args(&scratch, "removed.log", args, &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(status.code(), Some(78), "{how}: EX_CONFIG; {log}");
+        for want in [
+            "ORCH_SURFACES is invalid",
+            // The log is JSON: the quotes around the name are escaped in it.
+            "chat-api\\\" was removed on 2026-09-30",
+            "Use AG-UI instead",
+            "POST /agui/agents/{agentId}",
+        ] {
+            assert!(log.contains(want), "{how}: the log lacks {want:?}:\n{log}");
+        }
         assert!(
-            run.borrow_mut().exited().is_none(),
-            "the binary exited early; log:\n{}",
-            run.borrow().log()
+            !log.contains("cannot connect to Postgres"),
+            "{how}: nothing connects before the configuration is accepted: {log}"
         );
-        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
-    })
-    .await;
-    // `createThread` is served (an empty body is a 400, not a 404/405), and so is the
-    // resource API beside it.
-    let post = client
-        .post(format!("{base}/api/threads"))
-        .header("X-Auth-Request-Email", "alice@example.com")
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(post.status().as_u16(), 400);
-    let agents_resp = client
-        .get(format!("{base}/api/agents"))
-        .header("X-Auth-Request-Email", "alice@example.com")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(agents_resp.status().as_u16(), 200);
-    // A surface that is not listed is not there: the AG-UI route is a 404, not a 400.
-    let agui = client
-        .post(format!("{base}/agui/agents/plain"))
-        .header("X-Auth-Request-Email", "alice@example.com")
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(agui.status().as_u16(), 404);
-    let status = run.borrow_mut().terminate(Duration::from_secs(20));
-    let log = run.borrow().log();
-    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
-    assert!(log.contains("\"surfaces\":\"chat-api\""), "{log}");
+    }
 }
 
 /// Starts the binary on a free port with `args` and the agents file of these tests, and waits for
@@ -433,7 +424,7 @@ async fn serve_with(
     (run, base, client)
 }
 
-/// The routes of the deprecated chat API interaction surface, as method and path.
+/// The routes of the removed chat API interaction surface, as method and path.
 const LEGACY_ROUTES: [(&str, &str); 4] = [
     ("POST", "/api/threads"),
     (
@@ -505,8 +496,8 @@ async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
         404,
         "cancel is routed too: it answers about the thread, not the route"
     );
-    // The legacy interaction routes are not mounted. `POST /api/threads` shares its path with
-    // the thread list, so it is a 405; the others match no route at all.
+    // The legacy interaction routes are gone. `POST /api/threads` shares its path with the
+    // thread list, so it is a 405; the others match no route at all.
     for (method, path) in LEGACY_ROUTES {
         let want = if (method, path) == ("POST", "/api/threads") {
             405
@@ -523,55 +514,6 @@ async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
     let log = run.borrow().log();
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
     assert!(log.contains("\"surfaces\":\"agui\""), "{log}");
-}
-
-#[tokio::test]
-async fn the_legacy_routes_come_back_with_agui_and_chat_api_listed() {
-    let Some(db) = pgdb::TestDb::new().await else {
-        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
-        return;
-    };
-    let scratch = Scratch::new();
-    let (run, base, client) = serve_with(
-        &db,
-        &scratch,
-        "both-surfaces.log",
-        &["--surfaces", "agui,chat-api"],
-    )
-    .await;
-    let alice = Some("alice@example.com");
-    // Both interaction routes answer (an empty body is a 400, not a 404/405) ...
-    for path in ["/api/threads", "/agui/agents/plain"] {
-        assert_eq!(
-            status_of(&client, &base, "POST", path, alice).await,
-            400,
-            "{path}"
-        );
-    }
-    // ... and every legacy route answers as itself: with `Deprecation`, which an unknown route
-    // (the 404 of the default) never carries.
-    for (method, path) in LEGACY_ROUTES {
-        let mut req = client
-            .request(method.parse().unwrap(), format!("{base}{path}"))
-            .header("X-Auth-Request-Email", "alice@example.com");
-        if method == "POST" {
-            req = req.json(&serde_json::json!({}));
-        }
-        let resp = req.send().await.unwrap();
-        assert!(
-            resp.headers().contains_key("deprecation"),
-            "{method} {path} ({}) is served by the chat API surface",
-            resp.status()
-        );
-    }
-    assert_eq!(
-        status_of(&client, &base, "GET", "/api/agents", alice).await,
-        200
-    );
-    let status = run.borrow_mut().terminate(Duration::from_secs(20));
-    let log = run.borrow().log();
-    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
-    assert!(log.contains("\"surfaces\":\"agui,chat-api\""), "{log}");
 }
 
 #[test]
@@ -704,7 +646,7 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
     );
     // The thread the consumer named is an ordinary thread of the resource API.
     chat.wait_state(&id, "done").await;
-    // ... and the legacy interaction routes are not there to read its log.
+    // ... and the removed legacy interaction routes are not there to read its log.
     let (legacy, _) = chat.get(&format!("/api/threads/{id}/events")).await;
     assert_eq!(legacy, 404);
     let calls = agent.executions();
@@ -770,10 +712,9 @@ impl Replica {
             ("AGENTS_FILE", path_str(agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
             ("NO_PROXY", "127.0.0.1,localhost"),
-            // The multi-process tests below drive threads through the legacy client of
-            // `orch-testsupport` (create, events, stream), and the chat API is off by default:
-            // they ask for it, so they do not depend on the default.
-            ("ORCH_SURFACES", "agui,chat-api"),
+            // The multi-process tests below drive threads over AG-UI, the default: say so, so
+            // they do not depend on it.
+            ("ORCH_SURFACES", "agui"),
         ];
         env.extend_from_slice(extra);
         Replica {
@@ -817,6 +758,36 @@ async fn agent_and_list(scratch: &Scratch) -> (FakeAgent, PathBuf) {
     .await;
     let agents = write_agents(scratch, &agents_yaml(&agent.card_url()));
     (agent, agents)
+}
+
+/// What a viewer reads of the thread `id` over the AG-UI connect stream, up to the end of its run
+/// (`?mode=run`): the log, projected. There is no route that returns the log as the core wrote
+/// it; this is what the processes under test answer.
+async fn read_run(chat: &Chat, id: &str) -> Vec<Frame> {
+    let mut sse = chat.agui_connect(id, None, true).await;
+    sse.collect_frames(Duration::from_secs(20)).await
+}
+
+/// The resume points of the frames: the `seq` of each log event that ended a frame.
+fn seqs(frames: &[Frame]) -> Vec<i64> {
+    frames.iter().filter_map(|f| f.id).collect()
+}
+
+/// The five events of a plain successful run (a user message, working, one artifact, completed,
+/// done) reached the viewer exactly once and in order: contiguous `seq` 1 to 5, one run, one
+/// artifact, and the run finished with success.
+fn assert_a_clean_run(frames: &[Frame]) {
+    assert_eq!(seqs(frames), [1, 2, 3, 4, 5], "seq stays contiguous");
+    let count = |pred: &dyn Fn(&Frame) -> bool| frames.iter().filter(|f| pred(f)).count();
+    assert_eq!(count(&|f| f.event["type"] == "RUN_STARTED"), 1);
+    assert_eq!(
+        count(&|f| f.event["activityType"] == "vymalo.artifact"),
+        1,
+        "each update exactly once"
+    );
+    let last = &frames.last().unwrap().event;
+    assert_eq!(last["type"], "RUN_FINISHED");
+    assert_eq!(last["outcome"], serde_json::json!({"type": "success"}));
 }
 
 #[tokio::test]
@@ -878,20 +849,7 @@ async fn sigkill_mid_task_then_a_second_process_finishes_it() {
         "the message must reach the agent exactly once"
     );
     assert_eq!(agent.executions().len(), 1);
-    let events = chat.events(&id).await;
-    assert_eq!(
-        shape(&events),
-        [
-            "user_message",
-            "agent_status:working",
-            "artifact",
-            "agent_status:completed",
-            "thread_state:done"
-        ],
-        "each update exactly once"
-    );
-    let seqs: Vec<i64> = events.iter().map(|e| e["seq"].as_i64().unwrap()).collect();
-    assert_eq!(seqs, [1, 2, 3, 4, 5], "seq stays contiguous");
+    assert_a_clean_run(&read_run(&chat, &id).await);
     let status = second.run.borrow_mut().terminate(Duration::from_secs(20));
     assert!(status.success(), "log:\n{}", second.run.borrow().log());
 }
@@ -930,20 +888,19 @@ async fn two_processes_serve_each_others_threads() {
             .any(|t| t["id"] == id.as_str()),
         "B lists A's thread: {listed}"
     );
-    let mut sse = chat_b.stream(&id, None).await;
+    let mut sse = chat_b.agui_connect(&id, None, false).await;
     assert_eq!(sse.status, 200);
     chat_b.wait_state(&id, "working").await;
     agent.release_gate();
     let frames = sse
-        .collect_until(Duration::from_secs(20), |kind, data| {
-            kind == "thread_state" && data["data"]["state"] == "done"
+        .frames_until(Duration::from_secs(20), |f| {
+            f.event["type"] == "RUN_FINISHED"
         })
         .await;
-    let seqs: Vec<i64> = frames.iter().map(|(s, _, _)| *s).collect();
-    assert_eq!(seqs, [1, 2, 3, 4, 5]);
+    assert_a_clean_run(&frames);
     // Whichever process dispatched it, the agent saw the message once, and A reads the same log.
     assert_eq!(agent.executions().len(), 1);
-    assert_eq!(a.chat().events(&id).await, chat_b.events(&id).await);
+    assert_eq!(read_run(&a.chat(), &id).await, read_run(&chat_b, &id).await);
 
     for replica in [&a, &b] {
         assert_eq!(
@@ -1186,7 +1143,7 @@ async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
     worker.wait_ready().await;
     chat.wait_state(&id, "working").await;
     // The stream a user holds open on the control plane carries what the worker committed.
-    let mut sse = chat.stream(&id, None).await;
+    let mut sse = chat.agui_connect(&id, None, false).await;
     assert_eq!(sse.status, 200);
     eventually("the agent executes the task", || async {
         (agent.executions().len() == 1).then_some(())
@@ -1194,23 +1151,12 @@ async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
     .await;
     agent.release_gate();
     let frames = sse
-        .collect_until(Duration::from_secs(20), |kind, data| {
-            kind == "thread_state" && data["data"]["state"] == "done"
+        .frames_until(Duration::from_secs(20), |f| {
+            f.event["type"] == "RUN_FINISHED"
         })
         .await;
-    let seqs: Vec<i64> = frames.iter().map(|(s, _, _)| *s).collect();
-    assert_eq!(seqs, [1, 2, 3, 4, 5]);
+    assert_a_clean_run(&frames);
     chat.wait_state(&id, "done").await;
-    assert_eq!(
-        shape(&chat.events(&id).await),
-        [
-            "user_message",
-            "agent_status:working",
-            "artifact",
-            "agent_status:completed",
-            "thread_state:done"
-        ]
-    );
     assert_eq!(agent.rpc_count("send_streaming_message"), 1);
     // The row is closed with the thread: nothing is due or leased any more.
     eventually("the backlog is empty", || async {
@@ -1323,20 +1269,7 @@ async fn one_control_plane_and_two_workers_survive_a_killed_worker() {
         "the message must reach the agent exactly once"
     );
     assert_eq!(agent.executions().len(), 1);
-    let events = chat.events(&id).await;
-    assert_eq!(
-        shape(&events),
-        [
-            "user_message",
-            "agent_status:working",
-            "artifact",
-            "agent_status:completed",
-            "thread_state:done"
-        ],
-        "each update exactly once"
-    );
-    let seqs: Vec<i64> = events.iter().map(|e| e["seq"].as_i64().unwrap()).collect();
-    assert_eq!(seqs, [1, 2, 3, 4, 5], "seq stays contiguous");
+    assert_a_clean_run(&read_run(&chat, &id).await);
     for replica in [survivor, &cp] {
         let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
         assert!(status.success(), "log:\n{}", replica.run.borrow().log());

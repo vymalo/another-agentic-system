@@ -34,7 +34,8 @@ contract).
 | `POST /api/threads/{id}/cancel` | Cancel (AG-UI has no consumer cancel) |
 
 The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
-`streamEvents`) are deprecated and the web does not call them.
+`streamEvents`) were removed from the contract and the orchestrator on 2026-09-30 (ADR 0012); the web
+never called them after its move to AG-UI.
 
 The browser calls `/api/*` and `/agui/*` on its own origin only. In production oauth2-proxy / the
 ingress routes both to the orchestrator; there are no Next.js API routes, server-side fetches or

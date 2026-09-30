@@ -57,7 +57,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [Orchestrator](docs/orchestrator.md) | Ports & adapters, the crate dependency graph, event flow (design against built), outbox lifecycle, transition table, core types, data model, live updates (how AG-UI streams come from the log), testing |
 | [Orchestrator workspace](orchestrator/README.md) | Running it, configuration, shutdown, error classes; each crate has its own README (role, API, environment, tests) |
 | [MVP](docs/mvp.md) | Build order, smallest working loop first, with what is built |
-| [API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health), the AG-UI operations and the deprecated REST interaction endpoints (off by default) |
+| [API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health), the AG-UI operations (the legacy REST interaction endpoints were removed on 2026-09-30) |
 | [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
 | [Webhooks](docs/api/webhooks.md) | Planned: CI results by webhook, the generic signed shape and the GitHub adapter (headers, HMAC, body, conclusions, response codes, a worked signature) |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |

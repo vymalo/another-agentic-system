@@ -60,6 +60,24 @@
   The "inbox key" of this ADR stays the event's idempotency key: AG-UI does not use the inbox of
   [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md). The decision stands.
 
+  Status note (2026-09-30): the legacy chat API surface is removed; step 3 of "The legacy interaction
+  endpoints are deprecated by the flag" is done, with the owner's approval. Gone: the crate
+  `orch-surface-chat-api`, the Cargo feature `surface-chat-api`, the `Surface::ChatApi` value, the four
+  operations `createThread`, `postMessage`, `listEvents` and `streamEvents` of `chat-api.yaml` with the
+  `Deprecation` header component and the `NewThread` and `NewMessage` schemas, and the tests that
+  existed for them alone (the `Deprecation` tests, the legacy SSE resume tests). What stays: the resource
+  API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`, `POST /api/threads/{id}/cancel`,
+  health), the `Event` schemas of the contract (they describe the log that AG-UI projects and that
+  `docs/api/examples/*.events.json` pin; no operation returns them any more), and `App`'s own
+  methods. The tests that used the legacy routes to set up other scenarios now go through the AG-UI
+  routes, and the resource API's conformance test moved to `orch-api`. A deployment whose
+  `ORCH_SURFACES` still lists `chat-api` **fails closed**: the process exits 78 (`EX_CONFIG`) at
+  startup with an error that names the surface, says it was removed on 2026-09-30 and points to AG-UI,
+  instead of starting without the routes it expects. Clients of the legacy routes must move to
+  `POST /agui/agents/{agentId}` and `GET /agui/threads/{threadId}/connect`
+  ([`api/agui.md`](../api/agui.md)). A breaking change for operators and API clients:
+  `refactor(orchestrator)!`. The decision stands.
+
 ## Context
 
 The owner: "I prefer we use standards. Because the industry might use it in the future."
@@ -252,7 +270,8 @@ The four REST interaction operations are deprecated **by configuration, not by a
    `Deprecation` header (RFC 9745; built, see the status note above).
 2. **When the web runs on AG-UI:** not mounted by default (done, see the status note above). An
    operator who still needs them sets `ORCH_SURFACES=agui,chat-api`.
-3. **Later:** the crate, the feature and the operations are removed in their own PR.
+3. **Later:** the crate, the feature and the operations are removed in their own PR. *Done on
+   2026-09-30, see the status note above.*
 
 ### The web
 

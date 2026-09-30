@@ -86,10 +86,15 @@ impl Edge {
     }
 
     async fn thread(&self) -> String {
+        self.thread_as(ALICE).await
+    }
+
+    /// A thread of `user`, created through the application (the resource API cannot create one).
+    async fn thread_as(&self, user: &str) -> String {
         let record = self
             .app
             .create_thread(
-                &UserId::new(ALICE),
+                &UserId::new(user),
                 NewThread {
                     title: None,
                     target: AgentTarget {
@@ -278,26 +283,50 @@ async fn the_resource_api_is_served_without_any_surface() {
     assert_eq!(cancel.status(), 202);
 }
 
+/// The four operations of the legacy chat API (`createThread`, `postMessage`, `listEvents`,
+/// `streamEvents`) were removed on 2026-09-30 (ADR 0012). The resource API does not serve them,
+/// and only a surface can add interaction routes, so with no surface, or with one that mounts
+/// something else, they match nothing.
 #[tokio::test]
-async fn interaction_routes_exist_only_when_a_surface_mounts_them() {
-    let e = edge(ApiConfig::default(), vec![]).await;
-    let id = e.thread().await;
-    for (method, path) in [
-        (reqwest::Method::GET, format!("/api/threads/{id}/events")),
-        (reqwest::Method::GET, format!("/api/threads/{id}/stream")),
-        (reqwest::Method::POST, format!("/api/threads/{id}/messages")),
-    ] {
-        let r = e.call(method, &path, Some(ALICE)).await;
-        assert_eq!(r.status(), 404, "{path}");
-        let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(body["detail"], "no such route", "{path}");
+async fn the_legacy_interaction_routes_are_gone() {
+    for surfaces in [vec![], vec![test_surface(Duration::ZERO)]] {
+        let mounted = surfaces.len();
+        let e = edge(ApiConfig::default(), surfaces).await;
+        let id = e.thread().await;
+        for (method, path) in [
+            (reqwest::Method::GET, format!("/api/threads/{id}/events")),
+            (reqwest::Method::GET, format!("/api/threads/{id}/stream")),
+            (reqwest::Method::POST, format!("/api/threads/{id}/messages")),
+        ] {
+            let r = e.call(method, &path, Some(ALICE)).await;
+            assert_eq!(r.status(), 404, "{path} ({mounted} surfaces)");
+            assert!(r.headers().get("deprecation").is_none(), "{path}");
+            let body: serde_json::Value = r.json().await.unwrap();
+            assert_eq!(
+                body["detail"], "no such route",
+                "{path} ({mounted} surfaces)"
+            );
+        }
+        // `POST /api/threads` shares its path with the served `GET /api/threads`, so the router
+        // can only say the method is not allowed.
+        let r = e
+            .call(reqwest::Method::POST, "/api/threads", Some(ALICE))
+            .await;
+        assert_eq!(r.status(), 405, "POST /api/threads ({mounted} surfaces)");
+        // The resource API beside them is served.
+        let r = e
+            .call(
+                reqwest::Method::GET,
+                &format!("/api/threads/{id}"),
+                Some(ALICE),
+            )
+            .await;
+        assert_eq!(r.status(), 200);
+        let r = e
+            .call(reqwest::Method::GET, "/api/threads", Some(ALICE))
+            .await;
+        assert_eq!(r.status(), 200);
     }
-    // `POST /api/threads` shares its path with the served `GET /api/threads`, so the router
-    // can only say the method is not allowed.
-    let r = e
-        .call(reqwest::Method::POST, "/api/threads", Some(ALICE))
-        .await;
-    assert_eq!(r.status(), 405);
 }
 
 #[tokio::test]
@@ -377,4 +406,201 @@ async fn several_surfaces_merge_into_one_router() {
             .unwrap(),
         "pong"
     );
+}
+
+// ---- identity and isolation of the resource API -------------------------------------------
+
+#[tokio::test]
+async fn no_identity_is_401_everywhere_except_the_probes() {
+    let e = edge(ApiConfig::default(), vec![test_surface(Duration::ZERO)]).await;
+    let id = e.thread().await;
+    for (method, path) in [
+        (reqwest::Method::GET, "/api/agents".to_owned()),
+        (reqwest::Method::GET, "/api/threads".to_owned()),
+        (reqwest::Method::GET, format!("/api/threads/{id}")),
+        (reqwest::Method::POST, format!("/api/threads/{id}/cancel")),
+        // Unknown paths, wrong methods and a surface's paths are refused the same way: nothing is
+        // reachable anonymously. (The removed legacy routes are among the unknown ones.)
+        (reqwest::Method::POST, "/api/threads".to_owned()),
+        (reqwest::Method::GET, format!("/api/threads/{id}/events")),
+        (reqwest::Method::GET, "/api/unknown".to_owned()),
+        (reqwest::Method::GET, "/x/whoami".to_owned()),
+        (reqwest::Method::GET, "/".to_owned()),
+        (reqwest::Method::DELETE, format!("/api/threads/{id}")),
+        (reqwest::Method::PUT, "/api/threads".to_owned()),
+    ] {
+        let r = e.call(method.clone(), &path, None).await;
+        assert_eq!(r.status(), 401, "{method} {path}");
+        assert_eq!(
+            r.headers()["content-type"],
+            "application/problem+json",
+            "{method} {path}"
+        );
+        let p: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(p["status"], 401);
+        assert_eq!(p["title"], "Unauthorized");
+    }
+    // Nothing was changed by the anonymous requests: the thread is still queued.
+    let record = e
+        .app
+        .get_thread(&UserId::new(ALICE), id.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(record.state.as_str(), "queued");
+}
+
+#[tokio::test]
+async fn blank_or_malformed_identity_is_401() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    for value in ["", "   ", "not-an-email"] {
+        let r = e
+            .call(reqwest::Method::GET, "/api/agents", Some(value))
+            .await;
+        assert_eq!(r.status(), 401, "{value:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_user_cannot_see_another_users_thread() {
+    const BOB: &str = "bob@example.com";
+    const RANDOM: &str = "0190aaaa-0000-7000-8000-000000000123";
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    for (method, path) in [
+        (reqwest::Method::GET, format!("/api/threads/{id}")),
+        (reqwest::Method::POST, format!("/api/threads/{id}/cancel")),
+    ] {
+        let r = e.call(method.clone(), &path, Some(BOB)).await;
+        assert_eq!(r.status(), 404, "{method} {path}");
+        assert!(
+            r.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("application/problem+json")
+        );
+    }
+    // The same answer as for a thread that does not exist.
+    let ghost = e
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{RANDOM}"),
+            Some(BOB),
+        )
+        .await;
+    let foreign = e
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{id}"),
+            Some(BOB),
+        )
+        .await;
+    assert_eq!(ghost.status(), foreign.status());
+    let (ghost, foreign): (serde_json::Value, serde_json::Value) =
+        (ghost.json().await.unwrap(), foreign.json().await.unwrap());
+    assert_eq!(ghost["title"], foreign["title"]);
+    assert_eq!(ghost["detail"], foreign["detail"]);
+    // Bob's list excludes it, and his own threads are his.
+    let list = |user: &'static str| {
+        let e = &e;
+        async move {
+            let r = e
+                .call(reqwest::Method::GET, "/api/threads", Some(user))
+                .await;
+            r.json::<serde_json::Value>().await.unwrap()
+        }
+    };
+    assert!(list(BOB).await.as_array().unwrap().is_empty());
+    let bobs = e.thread_as(BOB).await;
+    let bob_list = list(BOB).await;
+    assert_eq!(bob_list.as_array().unwrap().len(), 1);
+    assert_eq!(bob_list[0]["id"], bobs.as_str());
+    // Alice still has hers untouched (Bob's cancel attempt did nothing).
+    let record = e
+        .app
+        .get_thread(&UserId::new(ALICE), id.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(record.state.as_str(), "queued");
+    assert_eq!(list(ALICE).await.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn identity_is_case_and_space_insensitive() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread_as("Alice@Example.COM").await;
+    let r = e
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{id}"),
+            Some("  alice@example.com "),
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    let events = e
+        .app
+        .list_events(
+            &UserId::new("ALICE@example.com"),
+            id.parse().unwrap(),
+            0,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(events[0].actor.name, "alice@example.com");
+}
+
+#[tokio::test]
+async fn dev_user_applies_only_when_configured() {
+    let cfg = ApiConfig {
+        auth: AuthConfig {
+            dev_user: Some(UserId::new("dev@example.com")),
+        },
+        ..ApiConfig::default()
+    };
+    let with = edge(cfg, vec![]).await;
+    let r = with.call(reqwest::Method::GET, "/api/agents", None).await;
+    assert_eq!(r.status(), 200);
+    // The dev user owns what was created as the dev user and lists it without any header.
+    let id = with.thread_as("dev@example.com").await;
+    let r = with.call(reqwest::Method::GET, "/api/threads", None).await;
+    let list: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(list[0]["id"], id.as_str());
+    // A real identity still wins, and a malformed header is not papered over by the dev user.
+    let r = with
+        .call(
+            reqwest::Method::GET,
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status(), 404);
+    let r = with
+        .call(reqwest::Method::GET, "/api/agents", Some("garbage"))
+        .await;
+    assert_eq!(r.status(), 401);
+
+    let without = edge(ApiConfig::default(), vec![]).await;
+    let r = without
+        .call(reqwest::Method::GET, "/api/agents", None)
+        .await;
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn probes_report_readiness_and_shutdown_while_the_api_keeps_answering() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let status = |path: &'static str, user: Option<&'static str>| {
+        let e = &e;
+        async move { e.call(reqwest::Method::GET, path, user).await.status() }
+    };
+    assert_eq!(status("/readyz", None).await, 200);
+    e.app.set_ready(false);
+    assert_eq!(status("/readyz", None).await, 503);
+    e.app.set_ready(true);
+    assert_eq!(status("/readyz", None).await, 200);
+    assert_eq!(status("/healthz", None).await, 200);
+    e.app.set_shutting_down();
+    assert_eq!(status("/healthz", None).await, 503);
+    // The API keeps answering while draining.
+    assert_eq!(status("/api/agents", Some(ALICE)).await, 200);
 }

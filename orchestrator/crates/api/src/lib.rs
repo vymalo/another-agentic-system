@@ -2,7 +2,7 @@
 //! problems, the resource API (agents, thread list and details, cancel) and health, in
 //! `docs/api/chat-api.yaml`.
 //!
-//! Interaction surfaces (the legacy chat API, later AG-UI) are separate crates. Each builds
+//! Interaction surfaces (AG-UI today) are separate crates. Each builds
 //! [`SurfaceRoutes`], and [`router_with_surfaces`] mounts them behind the same identity layer,
 //! so a surface cannot forget authentication.
 //!

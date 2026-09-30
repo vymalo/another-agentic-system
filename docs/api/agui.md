@@ -6,7 +6,7 @@ How the orchestrator speaks [AG-UI 1.0](https://docs.ag-ui.com/spec/1.0/index.md
 every frame below is a function of the log. The resource API (agents, threads, cancel, health)
 stays in [`chat-api.yaml`](chat-api.yaml).
 
-> Status: **built** (2026-09-29); removing the legacy chat API is a separate, later change. Built: the wire types
+> Status: **built** (2026-09-29); the legacy chat API was removed on 2026-09-30. Built: the wire types
 > (`orch-agui-proto`), both directions of the mapping below as pure code (`orch-agui-projection`), tested against the vendored schema
 > and the reference client, and the three routes of `orch-surface-agui`: the **run route**
 > (`POST /agui/agents/{agentId}`, see [Run binding](#run-binding)), the **connect stream**
@@ -14,8 +14,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **capabilities document** (`GET /agui/agents/{agentId}/capabilities`, see
 > [Capabilities document](#capabilities-document)), all tested end to end, the connect stream also
 > with a replica killed under it. The three routes are operations of [`chat-api.yaml`](chat-api.yaml)
-> ([The contract](#the-contract)), and the four legacy operations it deprecates answer with
-> `Deprecation`. The **web runs on it** (2026-09-29): `@assistant-ui/react-ag-ui` over a `ThreadAgent`
+> ([The contract](#the-contract)); the four legacy operations it used to deprecate are gone. The **web runs on it** (2026-09-29): `@assistant-ui/react-ag-ui` over a `ThreadAgent`
 > that follows the connect stream and sends runs to the run route, see
 > [`web/README.md`](../../web/README.md#the-chat-layer). **A2UI is relayed by the orchestrator**
 > (2026-09-29): surfaces from agents, actions from users, capability detection, see
@@ -33,12 +32,16 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 | Attach, replay, follow across runs, resume | `GET /agui/threads/{threadId}/connect` | No: our extension ([Connect binding](#connect-binding)) | Built |
 | Capabilities | `GET /agui/agents/{agentId}/capabilities` | Shape standard (`AgentCapabilities`), retrieval ours | Built |
 | Agent list, thread list and details, cancel, health | `/api/agents`, `/api/threads`, `/api/threads/{id}`, `/api/threads/{id}/cancel`, `/healthz`, `/readyz` | REST resource API |
-| Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Deprecated (`deprecated: true`, `Deprecation` header); **off by default**, mounted only with `ORCH_SURFACES` including `chat-api` (`ORCH_SURFACES=agui,chat-api` keeps them) |
+| Legacy interaction (`createThread`, `postMessage`, `listEvents`, `streamEvents`) | `/api/threads…` | Removed on 2026-09-30 | Gone |
 
-The default is `ORCH_SURFACES=agui`: the AG-UI routes and the resource API. With it the four legacy
-routes answer 404 (`POST /api/threads` answers 405, because its path also serves the thread list).
-A deployment that still needs them sets `ORCH_SURFACES=agui,chat-api`; see
-[`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#surfaces).
+The default, and the only surface, is `ORCH_SURFACES=agui`: the AG-UI routes and the resource API. The four
+legacy routes (`POST /api/threads`, `POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`
+and `…/stream`) were deprecated on 2026-09-29 and removed on 2026-09-30: they answer 404 (`POST
+/api/threads` answers 405, because its path also serves the thread list), and an `ORCH_SURFACES` that
+still names `chat-api` stops the process at startup with an error that points here
+([`bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#surfaces)). To start a thread and
+send a message, `POST /agui/agents/{agentId}` with a thread id you mint; to read the log,
+`GET /agui/threads/{threadId}/connect`.
 
 All `/agui/*` routes sit behind the edge identity (`X-Auth-Request-Email`, fail closed). Every
 pre-stream rejection is an RFC 9457 `application/problem+json` response; nothing is streamed
@@ -66,19 +69,14 @@ and `getAgentCapabilities`, beside the resource API.
   body and every frame against the contract's schemas (through the reference to the vendored one).
   One status is documented and not driven: a store that fails to read a thread, the 503 of
   `connectThread` (the in-memory store fails commits and creates only).
-- **Deprecation.** `createThread`, `postMessage`, `listEvents` and `streamEvents` are
-  `deprecated: true`. Every response those operations produce, errors included, carries
-  `Deprecation: @1790640000`, and no other response does (a 401 comes from the identity layer that
-  every route shares and does not carry it). The value is an sf-date: `@` and the unix time in seconds
-  of 2026-09-29T00:00:00Z. *Verified 2026-09-29* against
-  [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) section 2.1 (an Item Structured Field whose value
-  MUST be a Date per RFC 9651; the date may be in the past, meaning "deprecated at that date"). There
-  is no `Sunset` (removal follows the web's migration, not a date) and no `Link`: RFC 9745 makes it
-  optional, and the successor of `createThread` is `POST /agui/agents/{agentId}`, a URI template that
-  `Link` cannot carry. The replacements are named in each operation's description.
-  `orch-surface-chat-api`'s `tests/conformance.rs` and `tests/deprecation.rs` check the header against
-  the contract's `deprecated` flags, and `orch-e2e`'s `tests/deprecation.rs` does so on the composed
-  router.
+- **Removed operations.** `createThread`, `postMessage`, `listEvents` and `streamEvents` were
+  `deprecated: true`, and answered with `Deprecation: @1790640000` (RFC 9745, an sf-date; *verified
+  2026-09-29* against [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) section 2.1), from
+  2026-09-29 until they were removed on 2026-09-30 (no `Sunset` and no `Link` were ever sent). The
+  contract has none of them now, nor the `Deprecation` header component or the `NewThread` and
+  `NewMessage` schemas. Its `Event` schemas remain: no operation returns an `Event`, but they describe
+  the log this document projects, and `orch-api`'s `tests/contract.rs` validates real events and the
+  goldens against them.
 - **The web.** `pnpm gen:api` types the operations, and `src/lib/api/contract.typecheck.ts` holds
   deliberate mismatches for them.
 
@@ -88,7 +86,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 
 | Id | Rule |
 |---|---|
-| `threadId` | The thread UUID. Minted by the consumer on its first run (a UUID; 400 otherwise); the legacy `createThread` mints it server-side. The resource API lists threads by id, newest first, so a consumer should mint a time-ordered **UUIDv7**, as the web does: a random v4 would shuffle the list. |
+| `threadId` | The thread UUID. Minted by the consumer on its first run (a UUID; 400 otherwise). The resource API lists threads by id, newest first, so a consumer should mint a time-ordered **UUIDv7**, as the web does: a random v4 would shuffle the list. |
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id). |

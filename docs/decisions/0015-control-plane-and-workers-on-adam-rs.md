@@ -413,5 +413,5 @@ Step 12 is split. These two come first, because they need no adam-rs dependency 
 - *Verified 2026-09-29* (this repository): `cargo test --workspace` against Postgres 16 passes; the generated web types
   make `cardUrl` optional and `pnpm check`, `pnpm typecheck`, `pnpm test` and `pnpm build` in `web/` pass unchanged (no UI code
   reads `cardUrl`); `GET /api/agents` validates against the contract with an agent that has no card URL
-  (`surface-chat-api`'s conformance test lists one from the scripted stack).
+  (`surface-chat-api`'s conformance test lists one from the scripted stack; since 2026-09-30 that test is `orch-api`'s `tests/contract.rs`).
 - *Unverified:* a real deployment reading an agents file with a `local` entry; none can run until the next change.

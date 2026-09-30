@@ -67,14 +67,15 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 |---|---|
 | Wire types with schema conformance (`orch-agui-proto`) | Built |
 | `message_id` and `run_id` in the event log, `auth_required` status | Built |
-| Configuration with clap; surfaces mounted by `ORCH_SURFACES` (the chat API moved into `orch-surface-chat-api`) | Built |
+| Configuration with clap; surfaces mounted by `ORCH_SURFACES` (the chat API moved into `orch-surface-chat-api`, since removed) | Built |
 | The pure projection, both directions (`orch-agui-projection`) | Built |
 | Goldens read through the reference client in CI (`tools/agui-conformance`) | Built |
 | The AG-UI run route (`orch-surface-agui`): `POST /agui/agents/{agentId}` | Built |
 | The AG-UI connect stream and capabilities (`GET /agui/threads/{id}/connect`, `GET /agui/agents/{agentId}/capabilities`) | Built |
-| The AG-UI operations in `chat-api.yaml` (the vendored schema by reference); the four legacy operations `deprecated: true` and answering with `Deprecation` (RFC 9745) | Built |
+| The AG-UI operations in `chat-api.yaml` (the vendored schema by reference); the four legacy operations `deprecated: true` and answering with `Deprecation` (RFC 9745), until they were removed | Built |
 | The web on `@assistant-ui/react-ag-ui` (`ThreadAgent` over the connect stream, live runs, interrupts by `resume`, patched `cancelled` outcome; the REST interaction path removed) | Built |
 | The legacy chat API surface off by default (`ORCH_SURFACES` defaults to `agui`; `agui,chat-api` keeps the legacy routes; compose and the dev scripts run on AG-UI only) | Built |
+| The legacy chat API surface removed (2026-09-30): the crate `orch-surface-chat-api`, its feature `surface-chat-api`, the four operations and their schemas in `chat-api.yaml`; `ORCH_SURFACES` naming `chat-api` fails closed at startup (exit 78) and points to AG-UI; the resource API stays | Built |
 | A2UI on the orchestrator: surfaces from agents, actions from users, capability detection ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Built |
 | A2UI rendering in the web: the validator (64 KiB, 400 components, 2000 nodes after expansion, 100 per template, depth 24, a ten-component vocabulary, http(s) links only), the shadcn vocabulary, actions on a user gesture only, the mock and the system tests ([`web/README.md`](../web/README.md#a2ui-surfaces)) | Built |
 

@@ -2,7 +2,9 @@
 
 What the real orchestrator emits, one file per scripted agent behaviour. They pin the *meaning*
 of the events (kinds, `agent_status` spellings, failure shape, message finality), which
-[`chat-api.yaml`](../chat-api.yaml) cannot: `EventData` is an untyped bag there.
+[`chat-api.yaml`](../chat-api.yaml) cannot: `EventData` is an untyped bag there. (No operation returns
+these events any more: the legacy `listEvents` and `streamEvents` were removed on 2026-09-30. They are
+the log itself, which the AG-UI streams below project.)
 
 | File | Agent script (first word of the message) | Ends in |
 |---|---|---|
@@ -18,8 +20,9 @@ Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>
 message's `messageId` is `<message-id>`.
 
 - **Producer:** `orchestrator/crates/e2e/tests/golden.rs` (`transcripts_match_docs_api_examples`)
-  runs each script through the real chat API (the action of `a2ui`: the AG-UI run route), dispatcher and A2A adapter, and fails when a file
-  differs. After an intended change, regenerate and review the diff:
+  runs each script through the real application (the first message enters through `App`, so the log holds no
+  consumer-chosen ids; the action of `a2ui`: the AG-UI run route), dispatcher and A2A adapter, and fails when a file
+  differs. `orch-api`'s `tests/contract.rs` validates every event of every file against the contract's `Event` schema. After an intended change, regenerate and review the diff:
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden`.
 - **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
   and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the

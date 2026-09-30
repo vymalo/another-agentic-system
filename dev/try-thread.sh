@@ -9,9 +9,8 @@
 # It speaks what the web speaks (docs/api/agui.md): a run is one POST /agui/agents/{agentId} with a
 # thread id the script mints (a UUID), whose response streams until the run ends; the thread's state
 # is read from the resource API (GET /api/threads/{id}); the events printed are the thread's AG-UI
-# frames, replayed by GET /agui/threads/{id}/connect?mode=run. The deprecated chat API routes
-# (POST /api/threads, .../messages, .../events, .../stream) are not used: they are served only with
-# ORCH_SURFACES=agui,chat-api.
+# frames, replayed by GET /agui/threads/{id}/connect?mode=run. The legacy chat API routes
+# (POST /api/threads, .../messages, .../events, .../stream) were removed on 2026-09-30.
 #
 # Environment (all optional):
 #   BASE_URL    where the API is served     (default http://127.0.0.1:8080, the compose `edge`)

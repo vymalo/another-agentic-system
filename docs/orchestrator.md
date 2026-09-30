@@ -15,12 +15,12 @@ Adding a protocol means adding an adapter crate. The state machine does not
 change.
 
 > **What is built.** Facts in this page are marked **Built** (present in
-> `orchestrator/` and checked against the code on 2026-09-29) or **Planned**
+> `orchestrator/` and checked against the code on 2026-09-30) or **Planned**
 > (design only). Today: the pure core, the Postgres store, the durable dispatcher,
-> the A2A client adapter, and two interaction surfaces over one `App`: AG-UI
+> the A2A client adapter, and one interaction surface over `App`: AG-UI
 > (the wire types, the pure projection, and the run, connect and capabilities
-> routes, with A2UI surfaces and actions; the default) and the deprecated legacy
-> chat API (off unless mounted). Not yet: an A2A or MCP server, webhooks,
+> routes, with A2UI surfaces and actions). The legacy chat API surface was
+> removed on 2026-09-30. Not yet: an A2A or MCP server, webhooks,
 > timers, an inbox, MCP tools, and the model endpoint. The
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
 >
@@ -43,17 +43,17 @@ protocol:
 | A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
 | MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | **Planned**: the server as `orch-surface-mcp`, over streamable HTTP with bearer tokens, going straight to `App` and not through the inbox ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); the client side is not designed yet |
 | AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
-| Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Serves the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Built** (`orch-surface-chat-api`), deprecated, off by default (`ORCH_SURFACES=agui,chat-api` mounts it) |
+| Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
 | Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)) |
 | Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | **Planned**: timers are inbox rows ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)) |
 
 The chat's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
 small REST resource API beside it (agents, threads, cancel, health: always mounted) ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
-binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, the legacy chat API, later
+binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
 (`ORCH_SURFACES`, default `agui`). **Built:** the mechanism, the `agui` surface (the run route, the connect
-stream and the capabilities document) and the deprecated `chat-api` surface. **Planned:** `a2a`; removing
-`chat-api` is a separate change ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag)).
+stream and the capabilities document). **Planned:** `a2a`. The legacy `chat-api` surface was removed on
+2026-09-30 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag)).
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
 wherever the request came from: a job started over A2A gets A2A task updates; one started over MCP
@@ -92,7 +92,6 @@ flowchart TB
     api["<b>orch-api</b><br/>identity, RFC 9457 problems, resource API,<br/>health, SurfaceRoutes"]
   end
   subgraph G_SURF["Interaction surfaces: mounted by ORCH_SURFACES"]
-    chat["<b>orch-surface-chat-api</b><br/>legacy createThread, postMessage,<br/>listEvents, streamEvents"]
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
     surfwh["<b>orch-surface-webhook</b> (planned)<br/>POST /webhooks/github, /webhooks/ci<br/>machine routes, HMAC"]:::planned
     surfmcp["<b>orch-surface-mcp</b> (planned)<br/>/mcp, streamable HTTP<br/>machine route, bearer"]:::planned
@@ -102,7 +101,7 @@ flowchart TB
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-chat-api (default)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>feature: surface-agui (default)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -117,15 +116,12 @@ flowchart TB
   app --> ports
   api --> app
   api --> ports
-  chat --> api
-  chat --> app
   proj --> proto
   proj --> core
   bin --> app
   bin --> api
   bin --> pg
   bin --> a2a
-  bin -. "feature surface-chat-api" .-> chat
   bin -. "feature surface-agui" .-> surfagui
   surfagui --> api
   surfagui --> app
@@ -139,7 +135,6 @@ flowchart TB
   bin -.-> surfmcp
   ts --> api
   ts --> app
-  ts --> chat
   ts --> surfagui
   e2e -.-> ts
   e2e -.-> pg
@@ -182,7 +177,6 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
 | `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` | **Built** |
-| `orch-surface-chat-api` (`crates/surface-chat-api`) | Legacy interaction routes; deprecated | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
 | `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
 | `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
@@ -197,8 +191,7 @@ Rules the graph enforces, each checkable in the manifests:
 
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
-| `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities) |
-| `orchestrator` | `surface-chat-api` | yes | Compiles in `orch-surface-chat-api`; it decides what *can* be mounted, `ORCH_SURFACES` what *is* |
+| `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities); it decides what *can* be mounted, `ORCH_SURFACES` what *is*. (`surface-chat-api` and its crate were removed on 2026-09-30.) |
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
 
@@ -816,7 +809,7 @@ dispatcher every 2 s, so a lost notification costs latency, not correctness. The
 by the orchestrator: the web has no server-side code and never touches Postgres. No separate broker.
 
 **How an AG-UI stream is produced.** `App::event_stream` is the only source of live events, and it
-feeds the legacy stream, the AG-UI run response and the AG-UI connect stream alike. It is a read of
+feeds the AG-UI run response and the AG-UI connect stream alike (and fed the legacy stream, removed on 2026-09-30). It is a read of
 the log with a wake-up under it, not a subscription to a message bus, so a stream lives in the log
 and not in the process. What differs per surface is the pure fold applied to the events: for the
 connect stream, `orch_agui_projection::Connect` over a `Projector` in the *viewer* audience; for the
@@ -887,8 +880,11 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
 - **Transition table and properties:** one test per row of the table above; `proptest` over random
   input sequences checks that terminal states absorb, that `thread_state` events mark entry and
   that every open state can reach `done`.
-- **Wire shapes:** `orch-core`'s JSON must match the schemas of [`api/chat-api.yaml`](api/chat-api.yaml);
-  `orch-surface-chat-api` drives every operation and validates each response against them.
+- **Wire shapes:** `orch-core`'s JSON must match the schemas of [`api/chat-api.yaml`](api/chat-api.yaml).
+  `orch-api`'s `tests/contract.rs` drives every operation of the resource API and validates each
+  response against them, and validates the events of a real thread, and the golden transcripts, against
+  the contract's `Event` schema; `orch-surface-agui`'s `tests/contract.rs` does the same for the
+  `/agui/*` operations.
 - **Conformance testkit per port:** `thread_store_conformance!` and `wakeup_conformance!` run
   against the in-memory implementations and against Postgres, so "does my store behave" is a test,
   not a reading exercise (ADR 0009, rule 3). `agent_client_conformance!` does the same for
@@ -902,9 +898,9 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
   against the scripted in-memory agent and against the A2A adapter over real HTTP, with an in-process
   A2A 1.0 agent behind it.
 - **End to end, on both stores:** `orch-e2e` runs each scenario as `<name>::memory` and
-  `<name>::postgres` (the AG-UI run route and connect stream, the chat API, dispatcher, A2A adapter, a
+  `<name>::postgres` (the AG-UI run route and connect stream, the resource API, dispatcher, A2A adapter, a
   fake agent): restart mid-stream with no gap and no duplicate, several replicas on one database,
-  SSE resume, blocked and follow-up, cancel, releases, agent auth, a connect stream reconnected to
+  resume of the connect stream, blocked and follow-up, cancel, releases, agent auth, a connect stream reconnected to
   another replica after the first is killed, A2UI surfaces and actions. The binary is also tested as a process, including a SIGKILL of one of two
   replicas mid-task.
 - **Golden transcripts:** [`api/examples`](api/examples/README.md) pin what the orchestrator emits;
