@@ -303,9 +303,15 @@ components:
           description: |
             The whole job ledger, which `Thread.job` only summarises (and omits without a gate), as
             the store keeps it: `gate` (the policy: `require`, `maxAttempts`, `ci`, `verifier`,
-            `verifierTimeout`), `attempt`, `verification`, `task` (the person's request, capped),
-            `summary`, `pushed` (`repository`, `branch`, `commit`), `results` (what each source
-            said in the current attempt) and `hold`. Members that are empty are absent.
+            `verifierTimeout`), `attempt`, `verification`, `task` (the person's messages of the
+            job in order, each later one after a line `[next message]`, capped: the first message
+            and the newest ones are kept, and a line `[… earlier messages omitted …]` stands for
+            the ones left out), `branchProblem` (why the agent's last `branch` artifact could not
+            be used, when it could not), `summary`, `pushed` (`repository`, `branch`, `commit`),
+            `results` (what each source said in the current attempt) and `hold`. The members
+            of the job itself that are empty (`task`, `branchProblem`, `summary`, `pushed`,
+            `results`, `hold`) are absent; `gate` is always whole, and its `verifier` is `null`
+            when there is none.
         binding:
           type: [object, "null"]
           description: "The A2A side of the thread; null when it has none"

@@ -83,6 +83,9 @@ fn arb_input() -> impl Strategy<Value = Input> {
             )
         ),
         1 => Just(artifact("checks", json!({"passed": "maybe"}))),
+        // a `branch` the gate cannot use: a short hash, and a repository that is no address
+        1 => Just(artifact("branch", json!({"repository": REPOS[0], "branch": "agent/x", "commit": "abc"}))),
+        1 => Just(artifact("branch", json!({"repository": "not a repo", "branch": "agent/x", "commit": SHAS[0]}))),
         1 => Just(artifact("other", json!({}))),
         1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::DeliveryFailed {
             reason,
@@ -250,6 +253,8 @@ proptest! {
                 prop_assert_eq!(reworks, 0);
             }
             prop_assert!(delegations <= 1);
+            // What the person wrote is kept within its cap, and only ever grows by a message.
+            prop_assert!(next.job.task.as_ref().is_none_or(|t| t.len() <= MAX_TASK_BYTES));
             // The gate policy of a running job never changes.
             prop_assert_eq!(&next.job.gate, &gate);
             // (3) The ledger only holds this attempt's answers.
@@ -275,6 +280,24 @@ proptest! {
                         "done while {:?} is not passed", source
                     );
                 }
+            }
+            // (4b) Git is the artifact: a job gated on the agent's checks is done only with a
+            // pushed commit, and the checks of the agent name exactly that commit and passed.
+            if next.state == ThreadState::Done
+                && before.state != ThreadState::Done
+                && gate.requires(CheckSource::AgentChecks)
+            {
+                let pushed = next.job.pushed.as_ref();
+                prop_assert!(pushed.is_some(), "done with no pushed commit");
+                let entry = next
+                    .job
+                    .results
+                    .iter()
+                    .find(|r| r.source == CheckSource::AgentChecks);
+                prop_assert!(entry.is_some(), "done with no agent_checks entry");
+                let entry = entry.unwrap();
+                prop_assert_eq!(entry.status, CheckStatus::Passed);
+                prop_assert_eq!(entry.commit.as_deref(), pushed.map(|p| p.commit.as_str()));
             }
             // A failed source is never left waiting: the thread reworks, fails or is done.
             if next.state == ThreadState::Verifying {

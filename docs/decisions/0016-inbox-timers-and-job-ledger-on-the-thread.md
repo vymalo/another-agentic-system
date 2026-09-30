@@ -4,8 +4,12 @@
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). **Amended (2026-09-30):** slice 2 (the
   job ledger and the gate in the core) and slice 5 (the inbox, watches and timers) are built; the
   code differs from the sketches below in a few named places, listed under
-  [Built in slice 5](#built-in-slice-5). Refines
-  [ADR 0001](0001-rust-state-machine-on-postgres.md) (the transactional inbox it named, and its
+  [Built in slice 5](#built-in-slice-5).
+  **Amended (2026-09-30, the first live run):** the table of the job's rules (section 3) lists the agent's own checks
+  among the sources that fail without a pushed commit, and says what a refused `branch` artifact does
+  (`Job.branch_problem`); `Job.task` holds the person's messages, not only the first
+  ([ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)).
+  Refines [ADR 0001](0001-rust-state-machine-on-postgres.md) (the transactional inbox it named, and its
   one ledger). Gives the inbox its first user, the CI webhooks of
   [ADR 0017](0017-ci-results-by-webhook.md); the gate that uses the ledger is
   [ADR 0018](0018-verification-gate-and-rework-loop.md).
@@ -102,7 +106,7 @@ projection to the chat are [ADR 0018](0018-verification-gate-and-rework-loop.md)
 | Every required source has passed | `Done`. |
 | A source has failed and `attempt < max_attempts` | A `rework` event; `Delegate` with the findings text built in the core; state `Queued`; `attempt + 1`. |
 | A source has failed on the last attempt | `Failed`, with the findings in `error` and in `check_result` events. |
-| CI, the verifier or the agent's own checks are required and there is no pushed SHA | A failed check: "no pushed commit". *(The agent's own checks joined the list on 2026-09-30, [ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit): checks on a tree nobody pushed prove nothing.)* |
+| CI, the verifier or the agent's own checks are required and there is no pushed SHA | A failed check: "no pushed commit". *(The agent's own checks joined the list on 2026-09-30, [ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit): checks on a tree nobody pushed prove nothing; and when the agent did send a `branch` artifact the gate could not use, the finding is its reason, recorded as `Job.branch_problem`.)* |
 | A stale timer, or a CI result for an older SHA or attempt | Its event is recorded; nothing else changes. |
 | A CI result on a finished thread | Only its card is appended. |
 | A user message during `Verifying` | That verification is abandoned and the message is delegated; no attempt is counted. |

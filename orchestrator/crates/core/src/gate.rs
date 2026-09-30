@@ -21,7 +21,8 @@ use crate::thread::ThreadState;
 pub const MAX_FINDINGS: usize = 20;
 /// Most bytes of findings a source keeps (ADR 0018).
 pub const MAX_FINDINGS_BYTES: usize = 16 * 1024;
-/// Most bytes of the user's task the ledger keeps, for the verifier's prompt.
+/// Most bytes of the person's messages (`Job::task`) the ledger keeps, for the rework and the
+/// verifier's prompts: the first message and the newest ones (see [`add_task_message`]).
 pub const MAX_TASK_BYTES: usize = 8 * 1024;
 /// Most bytes of the agent's own summary of its work the ledger keeps, for the verifier's prompt.
 pub const MAX_SUMMARY_BYTES: usize = 4 * 1024;
@@ -262,9 +263,19 @@ pub struct Job {
     /// when the attempt is the same (a user message abandons a verification without using an
     /// attempt).
     pub verification: u32,
-    /// The user's task, kept (capped) for the verifier's prompt. Only kept under an active gate.
+    /// The person's messages of this job, in the order they wrote them, for the prompts the core
+    /// writes (the rework and the verifier's): the first message, then each later one after a
+    /// line `[next message]`, the newest last. Capped at [`MAX_TASK_BYTES`] by keeping the first
+    /// message and the newest ones (the middle goes behind a line `[… earlier messages omitted
+    /// …]`, and a message that had to be cut ends in `[cut]`); see [`add_task_message`]. Only
+    /// kept under an active gate (a job with no gate never has one).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// Why the last `branch` artifact of the agent could not be used, when it could not and no
+    /// earlier one had been: a source with no pushed commit reports this instead of "no pushed
+    /// commit". Cleared by a usable `branch` artifact and by a rework.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_problem: Option<String>,
     /// What the agent said about its work in this attempt (its last final message, or the text
     /// of its `completed`), kept (capped) for the verifier's prompt as untrusted data. Only kept
     /// under a gate that requires the verifier; a rework forgets it.
@@ -288,6 +299,7 @@ impl Default for Job {
             attempt: 1,
             verification: 0,
             task: None,
+            branch_problem: None,
             summary: None,
             pushed: None,
             results: Vec::new(),
@@ -787,6 +799,87 @@ pub(crate) fn truncate_to(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+// ---- the person's messages -----------------------------------------------------------------
+
+/// The line between two of the person's messages in [`Job::task`].
+pub(crate) const MESSAGE_SEPARATOR: &str = "\n\n[next message]\n";
+/// What stands for the messages between the first and the newest ones, when they did not fit.
+pub(crate) const MESSAGES_OMITTED: &str = "[\u{2026} earlier messages omitted \u{2026}]";
+/// What a message that had to be cut ends with.
+const CUT: &str = " [cut]";
+/// Room the separators and the omission line may need when the first and the newest message are
+/// both at their cap.
+const TASK_OVERHEAD: usize = 2 * MESSAGE_SEPARATOR.len() + MESSAGES_OMITTED.len() + 8;
+/// Most bytes of one message once there is more than one.
+const MESSAGE_CAP: usize = (MAX_TASK_BYTES - TASK_OVERHEAD) / 2;
+
+fn cut_to(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let body = s.strip_suffix(CUT).unwrap_or(s);
+    format!("{}{CUT}", truncate_to(body, max.saturating_sub(CUT.len())))
+}
+
+/// `task` (the messages kept so far, see [`Job::task`]) with the person's `text` after them.
+///
+/// Whitespace around a message is dropped and a blank message adds nothing. The whole stays
+/// within [`MAX_TASK_BYTES`]: a lone message is cut there (with `[cut]` at its end); with
+/// several, each is cut to about half, and the first message and as many of the newest as fit are
+/// kept, the ones between them replaced by one [`MESSAGES_OMITTED`] line. Pure: the same
+/// messages give the same text.
+pub(crate) fn add_task_message(task: Option<&str>, text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return task.map(str::to_owned);
+    }
+    let mut omitted = false;
+    let mut messages: Vec<&str> = Vec::new();
+    for (i, m) in task
+        .into_iter()
+        .flat_map(|t| t.split(MESSAGE_SEPARATOR))
+        .enumerate()
+    {
+        if i == 1 && m == MESSAGES_OMITTED {
+            omitted = true;
+        } else {
+            messages.push(m);
+        }
+    }
+    messages.push(text);
+    if messages.len() == 1 {
+        return Some(cut_to(text, MAX_TASK_BYTES));
+    }
+    let cut: Vec<String> = messages.iter().map(|m| cut_to(m, MESSAGE_CAP)).collect();
+    let first = &cut[0];
+    // From the newest back: each one kept needs the room of the omission line unless it is the
+    // oldest of those there are (nothing would be left out).
+    let mut used = first.len();
+    let mut kept = 0_usize;
+    for (i, m) in cut.iter().enumerate().skip(1).rev() {
+        let reserve = if i > 1 || omitted {
+            MESSAGE_SEPARATOR.len() + MESSAGES_OMITTED.len()
+        } else {
+            0
+        };
+        if used + MESSAGE_SEPARATOR.len() + m.len() + reserve > MAX_TASK_BYTES {
+            break;
+        }
+        used += MESSAGE_SEPARATOR.len() + m.len();
+        kept += 1;
+    }
+    let mut out = first.clone();
+    if omitted || kept < cut.len() - 1 {
+        out.push_str(MESSAGE_SEPARATOR);
+        out.push_str(MESSAGES_OMITTED);
+    }
+    for m in &cut[cut.len() - kept..] {
+        out.push_str(MESSAGE_SEPARATOR);
+        out.push_str(m);
+    }
+    Some(out)
 }
 
 // ---- artifact recognition ----------------------------------------------------------------

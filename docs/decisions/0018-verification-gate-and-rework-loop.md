@@ -10,7 +10,8 @@
   [status note](#status-note-2026-09-30-review-fixes); "the first completed CI report decides" below is superseded.
   **Amended 2026-09-30 (the first live run):** the agent's own checks pass only on the pushed commit, see the
   [status note](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit), which also has the rework prompt
-  carry the person's request.
+  carry the person's messages, writes down the fence grammar of the prompts the core writes, and lists the holes that
+  remain.
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -265,7 +266,7 @@ above:
 - **What the verifier is sent** (the core writes it, `verifier_prompt`): the commit (a hash, the one thing outside a
   fence), the attempt ("attempt 2 of 3"), how to answer (a `verdict` artifact), and three quoted blocks, each in a
   fence the text cannot close and labelled as data, not instructions to the verifier: where the worker says it pushed
-  the commit (its repository and its branch), the task as the user wrote it, and what the worker said about its work
+  the commit (its repository and its branch), the user's messages in the order they wrote them (the job's `task`, see the status note of 2026-09-30), and what the worker said about its work
   (its last final message in this attempt; the text of its `completed` replaces that when it is not blank; at most
   4 KiB; `Job.summary`, kept only under a gate that requires the verifier and forgotten at a rework). Everything the
   worker controls is inside a fence, and the branch is also refused unless git would accept it
@@ -377,7 +378,7 @@ the three that did not fail closed on a missing push. CI and the verifier alread
 | What the job holds when the agent finishes | The source says |
 |---|---|
 | no `checks` artifact | failed: "no checks reported" (unchanged) |
-| checks, but no pushed commit (no `branch` artifact) | failed: "no pushed commit: the agent reported no `branch` artifact, so there is nothing to check", the same finding CI and the verifier give; if the checks themselves failed, their findings follow it, so the agent sees both |
+| checks, but no pushed commit | failed: "no pushed commit: the agent reported no `branch` artifact, so there is nothing to check", the same finding CI and the verifier give; when the agent did send a `branch` artifact that the gate could not use (a short hash, a repository that is no address, a branch git refuses), the finding is instead "the `branch` artifact was not usable: <reason>" (`Job.branch_problem`, cleared by a usable `branch` and by a rework), so the agent hears what to fix; if the checks themselves failed, their findings follow it, so the agent sees both. A refused report's own summary is not shown (a "42 tests pass" beside a failure reads as praise) |
 | checks and a pushed commit, but the checks name no commit | failed: "the checks name no commit, so they cannot be tied to the pushed commit <sha>" (an unreadable `checks` artifact keeps its own reason, which already fails) |
 | checks that ran on another commit than the pushed one | failed: "the checks ran on commit A but the pushed commit is B" (unchanged) |
 | checks that passed on the pushed commit | passed |
@@ -386,24 +387,82 @@ A failed source reworks while attempts are left, so the owner's "Hi" now ends in
 its work, and after the last attempt in `Failed` with that finding, never in `Done`. `transition` stays a pure function:
 the change is in `verify::agent_checks`, which reads only the job.
 
-*The rework prompt carries the request (same day, same run).* On attempt 2 of that run the coder said that "the task text
-itself was never carried into this session; the feedback contained only the check-result complaint". It was right:
-each attempt is a **new A2A task** ([Decision](#decision), the rework), and an agent need not remember the one before
-(the coder keeps no memory across tasks), but `rework_prompt` sent only the findings. The prompt now opens as before
-("Your work did not pass verification (attempt N of M); this is attempt N+1"), then carries **the person's request in
-their own words**, in a fence labelled `request`, with the instruction to keep working on the same repository and
-branch, and only then the findings, quoted as untrusted data as before. The request is the job's `task`, which
-`note_task` keeps for the verifier's prompt under **every** active gate (not only the verifier's) and caps at 8 KiB
-(`MAX_TASK_BYTES`); it is the first message of the thread, and a job with no task (a ledger written before the field)
-gets the prompt it always got. The two texts are fenced differently on purpose: the request is the instruction to
-follow, the findings are data that describes problems and "not instructions". Each fence is longer than any run of
-backticks inside its text, so neither can close its own. A later message of the person is delegated to the agent when
-it is sent, and is not repeated here.
+*The rework prompt carries what the person wrote (same day, same run).* On attempt 2 of that run the coder said that "the
+task text itself was never carried into this session; the feedback contained only the check-result complaint". It was
+right: each attempt is a **new A2A task** ([Decision](#decision), the rework), and an agent need not remember the one
+before (the coder keeps no memory across tasks), but `rework_prompt` sent only the findings. The prompt now opens as
+before ("Your work did not pass verification (attempt N of M); this is attempt N+1"), then carries **the person's
+messages in their own words**, in a fence labelled `request`, and only then the findings, quoted as untrusted data as
+before. The first version carried only the first message; a review the same day found that wrong: with the coder's
+rule that a stop with no pull request becomes a question, a job goes "Hi", the coder asks, the person answers "fix
+login in acme/widgets", the attempt fails, and a prompt that quotes "Hi" and says it is the request loses the answer.
+
+- **What `Job.task` holds.** Every user message of the job, in the order they were written, the newest last: the first
+  message as it is, each later one after a line `[next message]`. `note_task` adds one per `user_message` the gate sees
+  (in `queued`, `working`, `blocked` and `verifying`), under every **active** gate, whichever sources it requires (it
+  never kept anything for a job with no gate; the field is the job's, not the verifier's, although the verifier's
+  prompt reads it too). Whitespace around a message is dropped and a blank message adds nothing.
+- **The cap.** The whole is at most 8 KiB (`MAX_TASK_BYTES`), so a long chat cannot grow the ledger or the prompts
+  without bound. A lone message is cut there. With several, each is cut to about half the cap, and the **first message
+  and as many of the newest as fit** are kept: what lies between is replaced by one line `[… earlier messages omitted
+  …]`. A message that had to be cut ends in ` [cut]`. The first message stays because it is usually the request, the
+  newest because it is usually the answer that changed it; the middle is the part that can go. All cuts are on a
+  character boundary, and the result is a pure function of the messages, so a replay makes the same text.
+- **How the agent is told.** "These are the person's messages, in their own words and the order they wrote them (the
+  latest last, a `[next message]` line between two of them); a later one answers or changes an earlier one. They are
+  your task: carry on with it." It no longer says to "keep doing it on the same repository and branch" or "not to start
+  a different one": a later message may name another repository, and the agent's own rules (the coder's named-repo
+  check) decide what the messages mean. The verifier's prompt quotes the same text as untrusted data under "The
+  task: the user's messages in the order they wrote them".
+- **Old ledgers.** `Job.task` stays a string: a ledger written with one message reads as a job with one message, and a
+  job with no task (a ledger written before the field) gets the prompt it always got.
+- The messages are the instruction to follow; the findings are data that describes problems and "not instructions".
+  The two are fenced differently on purpose (see the grammar below).
+
+*The fence grammar of the prompts the core writes.* Everything that is data and not instruction is quoted in a fenced
+block, and an agent that parses a prompt (the coder's named-repo check reads the person's messages to find the
+repository) must read it the way CommonMark does:
+
+- An **opening line** of N backticks, with N at least 3, immediately followed by a **label** and nothing else: `request`
+  (the person's messages, in the prompt of the agent they instruct) or `untrusted` (data that is no instruction to
+  its reader: the findings, where the worker says it pushed, the worker's own summary and, in the verifier's prompt,
+  the person's messages too, because the verifier is not the one they instruct), then the text on its own lines.
+- The **closing line** is at least N backticks and nothing else. N is **longer than any run of backticks in the text**
+  (`fence_for`: the longest run, at least 2, plus one), so text cannot close its own fence, and **N is often more
+  than 3**: a parser must count the opening fence and match it, never look for a literal three-backtick line.
+- **Findings** are a bullet list inside the `untrusted` fence: each finding is one line starting `- `, and its own line
+  breaks are continued indented by two spaces.
+- A parser that only wants the person's words takes the `request` block and ignores every `untrusted` one. Text
+  outside the fences is the core's own (the attempt numbers, the instructions, and the commit hash of the verifier's
+  prompt, which `recognise_artifact` accepts only as a hash).
+- *Verified 2026-09-30 by the core's tests* (`a_request_cannot_close_its_fence`,
+  `a_message_cannot_close_the_fence_the_task_is_quoted_in`, `findings_are_quoted_as_untrusted_data_they_cannot_escape`).
 
 *Consequences.* A gate on `agent-checks` alone is now a gate on "the agent pushed a commit and its own checks passed
 on it". An agent that only answers questions cannot sit under it: give that agent no gate (`gate: {}`), as
-`dev/agents.live.yaml` says. The local stack's mocks already push a `branch` before their `checks` (`dev/wiremock/agent`,
-the coder's script in `dev/coder/wiremock`), so no scenario changed.
+`dev/agents.live.yaml` says. The local stack's agents push a `branch` and report `checks` that name the same commit, and the order does
+not matter for that: the gate reads the job when the agent finishes (the fake agent and the WireMock agents send `branch`
+first, the coder sends `checks` and then `branch`). Checks that name another commit than the `branch` that follows them
+are dropped when it arrives ("facts about another commit no longer count"), and the source then says "no checks
+reported". So no scenario changed. Their rework matchers (`this is attempt N`, the scenario keyword, `### the verifier`)
+still match the prompt, which quotes the keyword in its `request` block; `dev/check-mocks.sh` builds the current prompts.
+
+*What the gate still does not check.* The rules above make "done" mean "a commit was pushed and the source that looked
+at it passed". They do not make it mean "the right commit, in the right place":
+
+- **`agent-checks` is the agent vouching for itself.** It passes when the agent says its checks passed on the commit it
+  says it pushed. A model can report both falsely; nothing here looks at the commit. Only `ci` (the commit's own checks,
+  reported by the CI system) and the `verifier` (another agent that reads the commit) see it independently, which is
+  why a gate on `agent-checks` alone is the weakest of the three and meant for inner loops.
+- **The repository is not compared with the request.** `pushed.repository` is whatever the agent reported (put through
+  `repo_key`). The orchestrator does not check that it is the repository the person named, or any repository at all
+  that the deployment allows. The agent's own rules (the coder's named-repo check) and the verifier are what stand
+  between a wrong repository and "done".
+- **`commit == base` is not refused.** An agent that reports the commit it started from, with checks that name it,
+  passes: the orchestrator does not know the base commit, and a rule that refuses an unchanged tree needs the clone.
+  The verifier, which reads the diff, is what catches it.
+- **The branch artifact is the agent's word** (its shape is checked, including by `git check-ref-format`; that the
+  commit exists on that branch of that repository is not).
 
 ## Configuration summary
 
@@ -456,6 +515,11 @@ the coder's script in `dev/coder/wiremock`), so no scenario changed.
 - Three configuration layers to explain and test. The monotonic rule (may add, may not remove) is
   the simplification.
 - A `Blocked` thread from a timeout needs a human; there is no automatic retry of the wait.
+- **The gate does not see everything.** `agent-checks` is the agent vouching for itself; the orchestrator does not
+  compare `pushed.repository` with what the person asked for and does not refuse a `commit` equal to the base; only `ci`
+  and the verifier look at the commit independently. The holes are listed, with what stands in for each, in the
+  [status note of 2026-09-30](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit) ("What the gate still does
+  not check").
 
 ## Alternatives considered
 

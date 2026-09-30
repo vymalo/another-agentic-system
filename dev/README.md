@@ -570,7 +570,7 @@ the checks say:
 
 - `red-once fix the login`: attempt 1 reports failing checks with one finding; the orchestrator sends the agent
   back (a `rework` event, then a **new A2A task in the same context** whose text starts "Your work did not pass
-  verification (attempt 1 of 3); this is attempt 2", carries **the person's request in their own words** (a fenced
+  verification (attempt 1 of 3); this is attempt 2", carries **the person's messages in their own words** (every one of the thread, in order, in a fenced
   block labelled `request`: each attempt is a new task, and an agent need not remember the one before) and quotes the finding as
   untrusted data); attempt 2 reports
   passing checks on another commit. The thread ends `done`, `job.attempt` 2.

@@ -157,6 +157,32 @@ async fn checks_without_a_pushed_commit_never_end_the_thread_done() {
     assert_eq!(announced, [ThreadState::Failed]);
 }
 
+/// The coder asks what to do, the person answers, the attempt fails: the rework must carry the
+/// answer too, or the agent is told to keep working on "Hi".
+#[tokio::test]
+async fn a_rework_carries_every_message_the_person_wrote() {
+    let w = World::new();
+    let app = w.app_with(gated(&[CheckSource::AgentChecks]));
+    let t = create(&app, &alice(), "plain", "Hi").await;
+    app.post_message(&alice(), t.id, "fix login in acme/widgets".into())
+        .await
+        .unwrap();
+    apply(&app, t.id, branch()).await;
+    apply(&app, t.id, checks(false, &["test_login fails"])).await;
+    apply(&app, t.id, completed()).await;
+    let texts = delegated_texts(&w, t.id).await;
+    let rework = texts.last().unwrap();
+    assert!(
+        rework.contains("```request\nHi\n\n[next message]\nfix login in acme/widgets\n```"),
+        "{rework}"
+    );
+    let job = app.get_thread(&alice(), t.id).await.unwrap().job;
+    assert_eq!(
+        job.task.as_deref(),
+        Some("Hi\n\n[next message]\nfix login in acme/widgets")
+    );
+}
+
 #[tokio::test]
 async fn a_failed_check_reworks_and_the_job_follows_the_thread() {
     let w = World::new();

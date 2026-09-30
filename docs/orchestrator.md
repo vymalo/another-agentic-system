@@ -686,17 +686,22 @@ commit the agent pushed, and none passes without one:
 
 | Source | Passes when | Otherwise it is **failed** with |
 |---|---|---|
-| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit | "no checks reported" (no artifact); "no pushed commit" (no `branch` artifact; if the checks themselves failed, their findings follow it); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
-| `ci` | every named check reported `success`, `neutral` or `skipped` for the pushed commit | "no pushed commit"; a failing report's findings; pending while a named check has not reported |
-| `verifier` | a `verdict` with `passed: true` for the current attempt and verification | "no pushed commit"; the verdict's findings; pending until it answers |
+| `agent_checks` | a `checks` artifact passed **and** a commit was pushed **and** the checks name exactly that commit | "no checks reported" (no artifact); "no pushed commit" (no `branch` artifact; if the checks themselves failed, their findings follow it; when a `branch` artifact was sent and refused, "the `branch` artifact was not usable: <reason>" instead); "the checks name no commit" (a ledger entry without one; an unreadable artifact keeps its own reason); "the checks ran on commit A but the pushed commit is B". *Until 2026-09-30 the first two cases passed: see the status note of ADR 0018* |
+| `ci` | every named check reported `success`, `neutral` or `skipped` for the pushed commit | "no pushed commit" (or the reason the `branch` artifact was refused); a failing report's findings; pending while a named check has not reported |
+| `verifier` | a `verdict` with `passed: true` for the current attempt and verification | "no pushed commit" (or the reason the `branch` artifact was refused); the verdict's findings; pending until it answers |
 
 A failed source reworks while attempts are left: **the rework prompt** (`rework_prompt`, written by the core) opens with
-"Your work did not pass verification (attempt N of M); this is attempt N+1", then carries **the person's request in
-their own words** (the job's `task`, kept under every active gate and capped at 8 KiB like the verifier's copy, in a
-fence labelled `request`, with the instruction to keep working on the same repository and branch), then the findings
-of each failed source, quoted as untrusted data. Each attempt is a new A2A task, and an agent need not remember the
-one before, so the prompt has to carry the task itself. Both fences are longer than any run of backticks inside
-what they hold, so neither text can close its own.
+"Your work did not pass verification (attempt N of M); this is attempt N+1", then carries **the person's messages in their
+own words** (the job's `task`: every user message of the job in order, each later one after a `[next message]` line, in a
+fence labelled `request`), then the findings of each failed source, quoted as untrusted data. Each attempt is a new A2A
+task, and an agent need not remember the one before, so the prompt has to carry the task itself, and all of it: the first
+message alone would lose the answer to a question the agent asked. `note_task` adds each message under every **active**
+gate (whichever sources it requires; a job with no gate has no ledger). The whole is capped at 8 KiB: a lone message is
+cut there, and with several the first message and as many of the newest as fit are kept, the ones between replaced by a
+line `[… earlier messages omitted …]`, and a message that had to be cut ends in ` [cut]`. The fences follow CommonMark (an
+opening line of N backticks and a label, `request` or `untrusted`, closed by a line of at least N; N is longer than any run
+of backticks inside what they hold, so it is often more than 3 and neither text can close its own; findings are bullets
+indented two spaces on continuation lines): [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit) writes the grammar down for agents that read the prompt.
 
 `completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
 anything. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
@@ -874,7 +879,7 @@ The document (`format` `another-agentic-system/thread-export`, `version` 1, buil
 |---|---|
 | `exportedAt` | when the snapshot was taken, by the application clock |
 | `thread` | the contract `Thread`, what `GET /api/threads/{id}` answers |
-| `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task`, `pushed`, every `results` entry of the attempt, any `hold` |
+| `job` | the **whole** ledger that `Thread.job` only summarises (and omits without a gate): the gate policy, `attempt`, `verification`, the `task` (the person's messages), `branchProblem`, `pushed`, every `results` entry of the attempt, any `hold` |
 | `binding` | the A2A `agentId`, `contextId`, `taskId`, `taskState` and `revision`; `null` when none |
 | `events` | the log in order from `seq` 1, each exactly as the contract `Event` and the store serialise it. Every card of the chat is derived from it |
 | `eventsTruncated` | `true` when the log is longer than `AppConfig::max_export_events` (50 000); the events that are there are the first ones |
