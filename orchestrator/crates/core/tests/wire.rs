@@ -164,6 +164,86 @@ fn thread_wire_hides_owner_and_version() {
 }
 
 #[test]
+fn a_thread_under_a_gate_carries_its_job_and_one_without_carries_none() {
+    let mut job = Job::with_gate(GatePolicy::requiring([CheckSource::AgentChecks]));
+    job.attempt = 2;
+    job.pushed = Some(PushedRef {
+        repository: "github.com/acme/demo".to_owned(),
+        branch: "agent/fix".to_owned(),
+        commit: "a".repeat(40),
+    });
+    let t = ThreadRecord {
+        id: tid(),
+        owner: UserId::new("a@b.c"),
+        title: "T".into(),
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: ThreadState::Verifying,
+        job,
+        version: 7,
+        last_seq: 2,
+        created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
+        updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
+    };
+    let v = serde_json::to_value(&t).unwrap();
+    assert_eq!(v["state"], "verifying");
+    assert_eq!(
+        v["job"],
+        json!({"attempt": 2, "maxAttempts": 3, "gate": ["agent_checks"], "sha": "a".repeat(40)})
+    );
+    // Nothing else of the ledger leaks: the task, the results and the policy stay internal.
+    let ungated = ThreadRecord {
+        job: Job::default(),
+        ..t
+    };
+    assert!(serde_json::to_value(&ungated).unwrap().get("job").is_none());
+}
+
+#[test]
+fn the_gate_events_have_the_wire_shape_the_contract_describes() {
+    let check = event(
+        EventBody::CheckResult(CheckResult {
+            source: CheckSource::AgentChecks,
+            name: None,
+            attempt: 1,
+            commit: Some("b".repeat(40)),
+            status: CheckStatus::Failed,
+            summary: Some("1 test failed".to_owned()),
+            stale: false,
+            findings: vec!["login fails".to_owned()],
+        }),
+        Actor::system(),
+    );
+    let v = serde_json::to_value(&check).unwrap();
+    assert_eq!(v["kind"], "check_result");
+    assert_eq!(
+        v["data"],
+        json!({"source": "agent_checks", "attempt": 1, "commit": "b".repeat(40),
+               "status": "failed", "summary": "1 test failed", "findings": ["login fails"]})
+    );
+    let rework = event(
+        EventBody::Rework(ReworkData {
+            attempt: 2,
+            max_attempts: 3,
+            findings: vec![SourceFindings {
+                source: CheckSource::AgentChecks,
+                findings: vec!["login fails".to_owned()],
+            }],
+        }),
+        Actor::system(),
+    );
+    let v = serde_json::to_value(&rework).unwrap();
+    assert_eq!(v["kind"], "rework");
+    assert_eq!(
+        v["data"],
+        json!({"attempt": 2, "maxAttempts": 3,
+               "findings": [{"source": "agent_checks", "findings": ["login fails"]}]})
+    );
+}
+
+#[test]
 fn releases_and_target_wire() {
     let r = Releases {
         default_channel: "stable".into(),

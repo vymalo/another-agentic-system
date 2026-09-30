@@ -9,7 +9,15 @@ use orch_core::Event;
 
 /// Projects every event for a viewer, keeping the frames of each event apart.
 pub fn project_each(events: &[Event]) -> Vec<Vec<Frame>> {
-    let mut projector = Projector::new(log::meta());
+    project_each_with(events, log::meta())
+}
+
+/// [`project_each`] for the thread `meta`.
+pub fn project_each_with(
+    events: &[Event],
+    meta: orch_agui_projection::ThreadMeta,
+) -> Vec<Vec<Frame>> {
+    let mut projector = Projector::new(meta);
     events
         .iter()
         .map(|e| projector.apply(e, Audience::Viewer))

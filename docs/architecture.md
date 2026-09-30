@@ -479,7 +479,8 @@ silent "done".
 
 ### Verifying, the rework loop and attempts
 
-**Planned** (designed 2026-09-30, MVP steps 2 and 3; not built).
+**Partly built** (designed 2026-09-30; the core, the configuration and the AG-UI projection are built for
+the agent's own checks, MVP slices 2 and 3; CI, the verifier and the web are planned).
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) makes the `Verifying` edges above
 concrete for the single-agent thread that exists today, and
 [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md) holds the job ledger they need

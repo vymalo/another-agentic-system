@@ -45,6 +45,9 @@ async function waitForState(id: string, state: Thread["state"]) {
 let n = 0;
 const newThreadId = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
 
+/** Goldens of the orchestrator that the mock does not play yet (MVP slice 4 adds them). */
+const NOT_MOCKED_YET = ["verify-green", "verify-red"];
+
 /** The scenarios of golden.rs, driven through the mock's AG-UI run route. Returns the final state. */
 const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: Thread["state"] }>> =
   {
@@ -168,7 +171,10 @@ describe("the mock server against the AG-UI goldens", () => {
   it("has a scenario for every golden event log", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
-      .map((f) => f.replace(/\.events\.json$/, ""));
+      .map((f) => f.replace(/\.events\.json$/, ""))
+      // The verification gate's goldens (ADR 0018) are the orchestrator's until the web renders
+      // them and the mock replays them (MVP slice 4).
+      .filter((name) => !NOT_MOCKED_YET.includes(name));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

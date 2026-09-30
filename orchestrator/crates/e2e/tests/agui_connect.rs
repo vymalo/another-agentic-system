@@ -398,6 +398,23 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             frames.extend(through_run(&mut resumed).await);
             return vec![frames];
         }
+        // The verification gate (ADR 0018): what a viewer reads of a job that is sent back once
+        // and then passes, and of one that runs out of attempts.
+        "verify-green" | "verify-red" => {
+            let (script, last) = if name == "verify-green" {
+                ("verify-red-once", "done")
+            } else {
+                ("verify-red", "failed")
+            };
+            run(input(
+                thread,
+                "run-1",
+                &[("msg-1", &format!("{script} fix the login"))],
+                json!({"forwardedProps": {"vymalo.gate": {"require": ["agent-checks"]}}}),
+            ))
+            .await;
+            chat.wait_state(thread, last).await;
+        }
         other => panic!("unknown scenario {other}"),
     }
     vec![whole(chat.agui_connect(thread, None, true).await).await]
@@ -407,7 +424,17 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
 async fn connect_streams_match_docs_api_examples() {
     let dir = examples_dir();
     let mut stale = Vec::new();
-    for (n, name) in ["echo", "ask", "cancel", "cursor"].into_iter().enumerate() {
+    for (n, name) in [
+        "echo",
+        "ask",
+        "cancel",
+        "cursor",
+        "verify-green",
+        "verify-red",
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let world = World::start(Backend::Memory).await;
         let thread = thread_id(100 + u32::try_from(n).unwrap());
         let text = render(&viewer_frames(&world, name, &thread).await, &thread);

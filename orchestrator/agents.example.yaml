@@ -12,10 +12,22 @@
 #             The variable must be set and non-empty, or the orchestrator refuses to start.
 #   agent     local only, required: the kind of in-process agent (`echo`). A local agent has no
 #             card and no token: `cardUrl` and `tokenEnv` next to `transport: local` are errors.
+#   gate      optional: the verification gate of this agent (ADR 0018), on top of the deployment's
+#             (ORCH_GATE, ORCH_MAX_ATTEMPTS). A job is not done until the required sources pass; a
+#             failure sends the agent back with the findings, up to `maxAttempts` in all.
+#               require       sources that must pass; at least the deployment's. This build honours
+#                             only `agent-checks` (the agent's own `checks` artifact); `ci` and
+#                             `verifier` are refused at startup until their slices are built.
+#               maxAttempts   1..=ORCH_MAX_ATTEMPTS_CAP (default 3, cap 10)
+#               verifier, ci  refused for now (they belong to `verifier` and `ci`)
+#             Unknown keys are errors.
 - id: coder
   name: Coder
   cardUrl: https://coder.example.com/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
+  # gate:
+  #   require: [agent-checks]
+  #   maxAttempts: 3
 
 # An agent hosted in-process (ADR 0015). It needs a build with the Cargo feature `agent-local`
 # (`cargo run -p orchestrator --features agent-local`); without it the orchestrator refuses to

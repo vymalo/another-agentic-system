@@ -24,6 +24,14 @@
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
 //! | `ui-big` | `working`, an artifact whose A2UI part is larger than the cap, then `completed` |
 //! | `ui-delete` | `working`, an A2UI part that creates surface `s2`, then one that deletes it, `completed` |
+//! | `verify-pass` | `working`, artifacts `branch` (a commit) and `checks` (`passed: true`), `completed` |
+//! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
+//! | `verify-red` | as `verify-pass`, but `checks` always fails |
+//!
+//! A rework prompt (the message the gate sends an agent whose work failed, ADR 0018: it starts
+//! with "Your work did not pass verification" and says "this is attempt N") is answered as the
+//! script the context started with, at attempt N, and is a **new task** of the same context: the
+//! commit is `<N as 40 hex digits>`, so each attempt pushes its own.
 //!
 //! An action arrives as a data part of `application/a2ui+json`; its name becomes the text the
 //! script sees (`ui-action <name>`), and [`Call::actions`] records the messages.
@@ -225,6 +233,9 @@ struct Shared {
     releases: Option<FakeReleases>,
     /// The A2UI extension URIs the card lists right now.
     ui_extensions: Mutex<Vec<String>>,
+    /// The `verify-*` script each context started with, so that its rework prompts (which do
+    /// not repeat the word) run the same one.
+    verifying: Mutex<HashMap<String, String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -263,6 +274,7 @@ impl FakeAgent {
             rpcs: Mutex::new(HashMap::new()),
             releases: opts.releases.clone(),
             ui_extensions: Mutex::new(opts.ui_extensions.clone()),
+            verifying: Mutex::new(HashMap::new()),
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -818,6 +830,20 @@ fn surface_ops(surface: &str) -> Value {
     ])
 }
 
+/// How a rework prompt of the gate starts (`orch_core` writes it; kept literal like the rest of
+/// this file, so test support does not depend on the wording being imported).
+const REWORK_PREFIX: &str = "Your work did not pass verification";
+
+/// The attempt a rework prompt says it is ("this is attempt 2"); 1 for any other message.
+fn attempt_of(text: &str) -> u32 {
+    text.split_once("this is attempt ")
+        .and_then(|(_, rest)| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .unwrap_or(1)
+}
+
 fn echo_parts(text: &str) -> Vec<Part> {
     vec![Part::text(text), Part::url(PR_URL)]
 }
@@ -833,17 +859,61 @@ async fn script(
     emit(&tx, ctx.status(TaskState::Working, None)).await?;
     // The answer to an `ask` continues the `ask` script whatever it says.
     let answering = resuming && lock(&shared.asking).remove(&ctx.task_id);
+    let reworking = !answering && text.starts_with(REWORK_PREFIX);
     let word = if answering {
-        "ask"
+        "ask".to_owned()
+    } else if reworking {
+        // The gate sent the agent back: run the script this context started with.
+        lock(&shared.verifying)
+            .get(&ctx.context_id)
+            .cloned()
+            .unwrap_or_default()
     } else {
-        text.split_whitespace().next().unwrap_or("")
+        text.split_whitespace().next().unwrap_or("").to_owned()
     };
+    let word = word.as_str();
+    if word.starts_with("verify-") && !reworking {
+        lock(&shared.verifying).insert(ctx.context_id.clone(), word.to_owned());
+    }
     let finish = |id: String, body: String| {
         let artifact = ctx.artifact(&id, "result", echo_parts(&body), false, None);
         (artifact, ctx.status(TaskState::Completed, None))
     };
     match word {
         "fail" => emit(&tx, ctx.status(TaskState::Failed, Some("scripted failure"))).await?,
+        "verify-pass" | "verify-red-once" | "verify-red" => {
+            let attempt = if reworking { attempt_of(&text) } else { 1 };
+            let passes = match word {
+                "verify-pass" => true,
+                "verify-red-once" => attempt >= 2,
+                _ => false,
+            };
+            let commit = format!("{attempt:040x}");
+            let branch = json!({
+                "repository": "https://github.com/acme/demo.git",
+                "branch": "agent/fix",
+                "commit": commit,
+            });
+            let checks = if passes {
+                json!({"passed": true, "commit": commit, "summary": "3 tests passed"})
+            } else {
+                json!({
+                    "passed": false,
+                    "commit": commit,
+                    "summary": "1 test failed",
+                    "findings": ["tests::login fails: expected 200, got 500"],
+                })
+            };
+            for (name, data) in [("branch", branch), ("checks", checks)] {
+                let id = shared.next_artifact_id();
+                emit(
+                    &tx,
+                    ctx.artifact(&id, name, vec![Part::data(data)], false, Some(true)),
+                )
+                .await?;
+            }
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
+        }
         "auth" if !answering => {
             lock(&shared.asking).insert(ctx.task_id.clone());
             emit(&tx, ctx.status(TaskState::AuthRequired, Some("github"))).await?;

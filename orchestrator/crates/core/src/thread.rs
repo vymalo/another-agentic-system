@@ -114,8 +114,13 @@ pub struct ThreadRecord {
     pub target: AgentTarget,
     /// Current state.
     pub state: ThreadState,
-    /// The job ledger (never serialised here; surfaces project the parts they show).
-    #[serde(skip)]
+    /// The job ledger. Serialised as the contract `Thread.job`, the part of it clients see, and
+    /// only under an active gate.
+    #[serde(
+        serialize_with = "serialize_job",
+        skip_serializing_if = "job_is_hidden",
+        rename = "job"
+    )]
     pub job: Job,
     /// Optimistic-concurrency version (never serialised).
     #[serde(skip)]
@@ -126,6 +131,14 @@ pub struct ThreadRecord {
     pub created_at: Timestamp,
     /// Last change time.
     pub updated_at: Timestamp,
+}
+
+fn job_is_hidden(job: &Job) -> bool {
+    !job.gate.is_active()
+}
+
+fn serialize_job<S: serde::Serializer>(job: &Job, serializer: S) -> Result<S::Ok, S::Error> {
+    job.view().serialize(serializer)
 }
 
 impl ThreadRecord {

@@ -22,6 +22,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > actions on a user gesture only, see [`web/README.md`](../../web/README.md#a2ui-surfaces). How it is served, as
 > diagrams: [architecture](../architecture.md#ag-ui-how-it-is-served) and
 > [orchestrator: live updates](../orchestrator.md#live-updates).
+> **The verification gate is projected** (2026-09-30, [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md),
+> MVP slice 3): a run stays open while the work is verified, `vymalo.check` and `vymalo.rework` activities,
+> `job` in the `STATE_SNAPSHOT`, `RUN_ERROR` `checks_failed`, and the gate a run asks for in
+> `forwardedProps["vymalo.gate"]`; see [Verification](#verification-the-gate). The web renders it in slice 4.
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -90,8 +94,8 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id). |
-| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface). |
-| `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. |
+| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<source>` (one card per source per attempt, replaced by its later snapshots) and `rework-<attempt>` (the attempt that starts). |
+| `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message is open. |
 
@@ -122,6 +126,11 @@ gets everything.
 | `artifact{name, mimeType?, uri?, text?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.artifact", content:{name, mimeType?, uri?, text?}, subagentRunId}` |
 | `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
+| `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | Status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
+| `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
+| `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
+| `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
+| `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
 
 - **When a run closes.** The core appends `thread_state` when the thread *enters* `blocked`,
@@ -134,7 +143,7 @@ gets everything.
   interrupt (the pending interrupt is raised again under its own id); blocked or finished by an
   error, `RUN_ERROR`; `done`, success; `cancelled`, cancelled. A wait repeated while blocked
   (`input_required` with a new detail) is such a run, and mints a new interrupt. The invariant
-  between transactions: a run is open exactly when the thread is `queued` or `working`.
+  between transactions: a run is open exactly when the thread is `queued`, `working` or `verifying`.
 - **Invocations.** A run closes its open invocation first: `SUBAGENT_FINISHED{}` on success,
   `{result:{status:"canceled"}}` on cancel, `suspended` on an interrupt, `SUBAGENT_ERROR` on an
   error. A suspended invocation reappears under its own `subagentRunId` when the thread
@@ -148,7 +157,7 @@ gets everything.
 - **Thread state** travels as `STATE_SNAPSHOT` under `thread`. It is producer-owned; an echoed
   `RunAgentInput.state` is ignored.
 - **Errors in stream.** `RUN_ERROR.code` is one of `agent_failed`, `agent_rejected`,
-  `delivery_failed`, `unavailable`, `internal`; `metadata["vymalo.problem"]` carries
+  `delivery_failed`, `checks_failed`, `unavailable`, `internal`; `metadata["vymalo.problem"]` carries
   `{type, title, detail?}`.
 
 ## Inbound: AG-UI → core input
@@ -166,6 +175,7 @@ gets everything.
 | `resume` `cancelled` plus a new user message | `Input::UserMessage` with the new text |
 | `resume` `cancelled`, nothing new | `Input::Cancel` |
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
+| `forwardedProps["vymalo.gate"]` (ADR 0018) on a run that creates the thread | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}`. It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`, `verifier`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job; on a run that continues a thread the member is checked for shape and ignored |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
 | `a2uiAction` that is not an action, or names a surface the thread does not have (never had, or deleted), or is sent for a new thread | 422 before the stream; nothing is written or sent |
@@ -183,6 +193,91 @@ gets everything.
 | Non-text content parts | Skipped with a warning; the run does not fail |
 | Idempotency | The event the input writes carries the key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with no message id of its own); a retried POST, even a concurrent one, attaches instead of duplicating. There is no inbox table yet: the key is the log's per-thread `idempotency_key` |
 | Cancel | `POST /api/threads/{id}/cancel`; the outcome arrives as `RUN_FINISHED{outcome:{type:"cancelled"}}` |
+
+## Verification (the gate)
+
+*Built 2026-09-30 (MVP slice 3, [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)).* A thread whose gate
+requires a source is not `done` when the agent says `completed`: the orchestrator checks the work, sends the agent back
+with the findings while attempts are left, and only then finishes. A viewer sees one run across all the attempts.
+
+```mermaid
+sequenceDiagram
+  participant W as Agent (A2A)
+  participant O as Orchestrator
+  participant U as AG-UI consumer
+  W-->>O: artifacts branch and checks (failed), completed
+  O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying (job attempt 1)
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.check check-1-agent_checks (failed, findings)
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.rework rework-2
+  O->>W: a new task in the same context, with the findings quoted as untrusted data
+  O-->>U: SUBAGENT_STARTED (attempt 2), STATE_SNAPSHOT queued (job attempt 2)
+  W-->>O: artifacts branch and checks (passed), completed
+  O-->>U: SUBAGENT_FINISHED, STATE_SNAPSHOT verifying
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.check check-2-agent_checks (passed)
+  O-->>U: STATE_SNAPSHOT done, RUN_FINISHED success
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued
+  Queued --> Working: the agent works
+  Working --> Verifying: completed (SUBAGENT_FINISHED, no RUN_FINISHED)
+  Verifying --> Done: every required source passed (RUN_FINISHED success)
+  Verifying --> Queued: a source failed, attempts left (vymalo.rework, SUBAGENT_STARTED)
+  Verifying --> Failed: a source failed on the last attempt (RUN_ERROR checks_failed)
+  Done --> [*]
+  Failed --> [*]
+```
+
+- **The run stays open** while the thread is `queued`, `working` or `verifying`, so a client that reads until the
+  terminal event sees the whole job. A consumer that treats `SUBAGENT_FINISHED` as the end of the work is wrong under a
+  gate; the reference client does not (it ends on `RUN_FINISHED`).
+- **`STATE_SNAPSHOT`** carries `job` (see [Metadata and state](#metadata-and-state)) whenever the gate requires
+  something; a thread without a gate has no `job` and its stream is exactly what it was before the gate existed.
+  `verifying` is projected from the agent's `completed` on such a thread: the log has no `thread_state` for it.
+- **`vymalo.check`** is one card per source per attempt. Its id is derived from the log (`check-<attempt>-<source>`), and
+  every snapshot of it says `replace: true`, so a `pending` card is replaced by its answer. `findings` and `summary` are
+  text from a tool or a reviewer: a renderer shows them as text, never as markup or instructions.
+- **`vymalo.rework`** is the orchestrator telling the agent to try again; the orchestrator's `SUBAGENT_STARTED` for the
+  next attempt follows at once, because the delegation is already on its way. That delegation is a **new A2A task in the
+  same context** (the first one is completed and cannot be continued); the prompt is written by the core
+  (`orch-core`, `verify.rs`), so it is the same on every replica.
+- **Running out of attempts** is `RUN_ERROR` with `code: "checks_failed"`; the message names the source and the last
+  findings. It is not `agent_failed`: the agent did its work, and the work did not pass.
+
+### What a build honours, and what a request may ask
+
+The gate is configured in three layers, from the widest to the narrowest, and each may only tighten the one above
+([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#configuration)): the deployment (`ORCH_GATE`,
+`ORCH_MAX_ATTEMPTS`, `ORCH_MAX_ATTEMPTS_CAP`, `ORCH_VERIFIER`), an agent's entry in `AGENTS_FILE`
+(`gate: {require, maxAttempts, verifier, ci}`) and the run that creates the thread
+(`forwardedProps["vymalo.gate"]: {require?, maxAttempts?}`). A run may add sources and change the attempts within
+`1..=ORCH_MAX_ATTEMPTS_CAP`; it may not remove what the layers above require, and it may not choose the verifier or the
+CI settings.
+
+| Source | In `require` as | This build |
+|---|---|---|
+| The agent's own checks (its `checks` artifact) | `agent-checks` | **Honoured** |
+| CI on the pushed commit | `ci` | Refused: it needs the inbox and timers (MVP slice 5) and the CI webhook (slice 6). Startup exits 78; a request is a 400 whose `detail` says so |
+| A verifier agent | `verifier` | Refused: it needs the verifier dispatch (MVP slice 10). The `verifier` and `ci` settings are refused with their sources |
+
+The refusal is deliberate and fail-closed. Until those slices exist the application drops the commands a `ci` or
+`verifier` source needs, so a gate that required either would wait for a verdict that can never come; refusing it is
+the only way not to end a job "done" without the check the operator asked for. Configuration keeps the list of what it
+honours in one place (`pending_reason` in `orch-app`'s `gate_config.rs`); a slice that makes a source real changes it
+there.
+
+Example run input, three attempts lowered to two:
+
+```json
+{"threadId": "…", "runId": "…", "messages": [{"id": "…", "role": "user", "content": "fix the login"}],
+ "forwardedProps": {"vymalo.gate": {"require": ["agent-checks"], "maxAttempts": 2}}}
+```
+
+The goldens [`examples/agui/verify-green.agui.json`](examples/agui/verify-green.agui.json) (red once, sent back, green:
+attempt 2 of 3) and [`verify-red.agui.json`](examples/agui/verify-red.agui.json) (three attempts, then `checks_failed`)
+are this section as streams, with the `run-` and `connect-` variants of the other goldens; the reference client reads
+all of them in CI.
 
 ## Run binding
 
@@ -213,7 +308,7 @@ was streamed and nothing was written.
 
 | Status | When |
 |---|---|
-| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008) |
+| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018) |
 | 401 | No edge identity |
 | 404 | The `agentId` is not configured; the thread belongs to someone else (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
@@ -566,6 +661,44 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "sourceComponentId": { "type": "string" },
         "context": { "type": "object" }
       }
+    },
+    "vymalo.check": {
+      "type": "object",
+      "description": "One source of the verification gate answered for one attempt (ADR 0018). Findings are untrusted text.",
+      "required": ["source", "attempt", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "enum": ["ci", "agent_checks", "verifier"] },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["pending", "passed", "failed"] },
+        "name": { "type": "string", "description": "The CI check this is, when the source is CI" },
+        "commit": { "type": "string", "description": "The commit the answer is about" },
+        "summary": { "type": "string" },
+        "stale": { "const": true, "description": "The answer belongs to a verification that is no longer the current one; it decided nothing" },
+        "findings": { "type": "array", "maxItems": 20, "items": { "type": "string" }, "description": "What is wrong; at most 20 items and 16 KiB in all" }
+      }
+    },
+    "vymalo.rework": {
+      "type": "object",
+      "description": "The gate failed and the agent is sent back to work (ADR 0018).",
+      "required": ["attempt", "maxAttempts", "findings"],
+      "additionalProperties": false,
+      "properties": {
+        "attempt": { "type": "integer", "minimum": 2, "description": "The attempt that starts now" },
+        "maxAttempts": { "type": "integer", "minimum": 1 },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source", "findings"],
+            "additionalProperties": false,
+            "properties": {
+              "source": { "enum": ["ci", "agent_checks", "verifier"] },
+              "findings": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -581,7 +714,8 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
-| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}}` |
+| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}}` |
+| `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `attempt` is the one the agent is on, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |
 | Interrupt `responseSchema` | — | `{type:"object", required:["text"], properties:{text:{type:"string"}}}` |
 
 ## Worked example

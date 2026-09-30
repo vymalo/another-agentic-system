@@ -300,6 +300,56 @@ fn every_setting_is_read_from_its_variable() {
     }
 }
 
+/// A gate the build cannot honour is refused before anything connects: exit 78, the message
+/// names the setting and the slice that will enable it. It never falls back to no gate.
+#[test]
+fn a_gate_this_build_cannot_honour_is_fatal_in_every_layer() {
+    let scratch = Scratch::new();
+    let plain = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let gated = scratch.file("gated.yaml");
+    fs::write(
+        &gated,
+        format!(
+            "{}  gate: {{require: [agent-checks, ci]}}\n",
+            agents_yaml("https://a.example.com/card")
+        ),
+    )
+    .unwrap();
+    // (the AGENTS_FILE, extra variables, what the message says, the slice it names)
+    type Case<'a> = (&'a Path, &'a [(&'a str, &'a str)], &'a str, &'a str);
+    let cases: [Case; 3] = [
+        (
+            &plain,
+            &[("ORCH_GATE", "ci")],
+            "ORCH_GATE is invalid",
+            "slice 5",
+        ),
+        (
+            &plain,
+            &[("ORCH_VERIFIER", "fake")],
+            "ORCH_VERIFIER is invalid",
+            "slice 10",
+        ),
+        (&gated, &[], "AGENTS_FILE: ", "slice 6"),
+    ];
+    for (n, (agents, extra, says, slice)) in cases.into_iter().enumerate() {
+        // The database is unreachable on purpose: configuration is validated first.
+        let mut env = vec![
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ];
+        env.extend_from_slice(extra);
+        let mut run = spawn_logging_to(&scratch, &format!("gate-{n}.log"), &env);
+        let status = run.wait(Duration::from_secs(10));
+        assert_eq!(status.code(), Some(78), "EX_CONFIG: {}", run.log());
+        let log = run.log();
+        assert!(log.contains(says), "{says}: {log}");
+        assert!(log.contains(slice), "{slice}: {log}");
+        assert!(!log.contains(TOKEN), "a secret leaked into the log");
+    }
+}
+
 #[test]
 fn a_flag_wins_over_its_variable() {
     let scratch = Scratch::new();

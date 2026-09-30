@@ -14,6 +14,15 @@
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json
   tokenEnv: MOCK_AGENT_TOKEN
+- id: mock-coder-gated
+  name: Mock coder (gated)
+  cardUrl: http://mock-agent:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # The same mock as `mock-coder`, under the verification gate (ADR 0018): its own `checks` artifact
+  # must pass, or the agent is sent back with the findings, three attempts in all. Try it with the
+  # keywords `red-once` (fails once, then passes) and `red-always` (dev/README.md, "Verification").
+  gate:
+    require: [agent-checks]
 - id: mock-coder-releases
   name: Mock coder (releases)
   cardUrl: http://mock-agent-releases:8080/.well-known/agent-card.json

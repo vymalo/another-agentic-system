@@ -14,6 +14,8 @@ the log itself, which the AG-UI streams below project.)
 | `fail.events.json` | `fail`: `agent_status: failed` with `detail`, no `error` event | `failed` |
 | `talk.events.json` | `talk`: status text, one final `agent_message`, the artifact | `done` |
 | `release.events.json` | `echo` with release `staging`: the revision on every agent actor | `done` |
+| `verify-green.events.json` | `verify-red-once`, on the fake agent and under a gate that requires the agent's own checks (the test world gives `plain` `gate: {require: [agent-checks]}`, like an `AGENTS_FILE` entry): the checks fail, `check_result` and `rework`, the agent goes again in a new task, the checks pass (ADR 0018) | `done`, attempt 2 of 3 |
+| `verify-red.events.json` | `verify-red`, the same gate: three attempts whose checks all fail, two `rework`s, then the `error` and `thread_state: failed` | `failed`, `checks_failed` |
 | `a2ui.events.json` | `ui`, on an agent whose card lists the A2UI extension: a surface in two artifacts (`ui_surface` twice), the question, then the user's action through the AG-UI run route (`ui_action`) and the answer | `done` |
 
 Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>` and an agent
@@ -21,13 +23,14 @@ message's `messageId` is `<message-id>`.
 
 - **Producer:** `orchestrator/crates/e2e/tests/golden.rs` (`transcripts_match_docs_api_examples`)
   runs each script through the real application (the first message enters through `App`, so the log holds no
-  consumer-chosen ids; the action of `a2ui`: the AG-UI run route), dispatcher and A2A adapter, and fails when a file
+  consumer-chosen ids; the action of `a2ui` and the `verify-*` runs: the AG-UI run route), dispatcher and A2A adapter, and fails when a file
   differs. `orch-api`'s `tests/contract.rs` validates every event of every file against the contract's `Event` schema. After an intended change, regenerate and review the diff:
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden`.
 - **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
   and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the
   same story, `a2ui` included (a surface, the question, and the action that answers it through
-  `forwardedProps.a2uiAction`). The web renders the AG-UI goldens, not these event logs: see the next section.
+  `forwardedProps.a2uiAction`). The two `verify-*` scenarios are not played by the mock yet (they are listed in
+  `NOT_MOCKED_YET` there, and the web renders their cards in MVP slice 4). The web renders the AG-UI goldens, not these event logs: see the next section.
 
 ## AG-UI streams
 
@@ -48,6 +51,14 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
   server to produce them, and `web/src/features/chat/lib/agui/runtime-goldens.dom.test.tsx` runs them
   (and the `connect-*` ones) through the runtime the chat surface uses, `@assistant-ui/react-ag-ui`
   with `web/patches` applied, and checks the transcript.
+
+The `verify-green.agui.json` and `verify-red.agui.json` goldens are the verification gate a viewer reads (ADR 0018,
+[`../agui.md`](../agui.md#verification-the-gate)): **one run** for all the attempts, `SUBAGENT_FINISHED` at each
+`completed` and never `RUN_FINISHED` until the job is done or out of attempts, the `job` of every `STATE_SNAPSHOT`
+(`attempt`, `maxAttempts`, `gate`, `sha`), the `vymalo.check` card of each source and attempt (`check-<attempt>-<source>`),
+`vymalo.rework` (`rework-<attempt>`) and the subagent of the next attempt (`sub-<seq of the rework>`). Their event logs are
+produced with the fake agent's `verify-*` scripts, whose commits are `<attempt as 40 hex digits>`. The reference client's
+`expected/verify-green.json` shows the last state it holds: `done`, attempt 2, and one card per source and attempt.
 
 The `a2ui.agui.json` golden is the A2UI story a viewer reads: the surface as **two snapshots of one
 activity** (`a2ui-3`, `replace: true`, the second carrying both payloads), the question, then the run of the
@@ -70,6 +81,8 @@ responses in order, one run each. The consumer's thread id is `<thread-id>`; its
 | `run-fail.agui.json` | `fail please` | `RUN_ERROR` `agent_failed` |
 | `run-cancel.agui.json` | `slow work`, cancelled through `POST /api/threads/{id}/cancel` | cancelled |
 | `run-release.agui.json` | `echo ship it` on `coder`, release `staging` in `forwardedProps` | success |
+| `run-verify-green.agui.json` | `verify-red-once fix the login` with `forwardedProps["vymalo.gate"] = {"require": ["agent-checks"]}`: **one** response for two attempts | success, `job.attempt` 2 |
+| `run-verify-red.agui.json` | `verify-red fix the login`, the same gate | `RUN_ERROR` `checks_failed` |
 
 - **Producer:** `orchestrator/crates/e2e/tests/agui_run.rs` (`run_responses_match_docs_api_examples`);
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_run` regenerates them; review the diff.
@@ -87,6 +100,8 @@ everything, including the user messages the requester holds already. The consume
 | `connect-echo.agui.json` | `echo hi` | the replay of one finished run (`?mode=run`, so the stream ends) |
 | `connect-ask.agui.json` | `ask about branches`, answered `main` | the replay of two runs on one stream: interrupt, then success |
 | `connect-cancel.agui.json` | `slow work`, cancelled | the replay of a cancelled run |
+| `connect-verify-green.agui.json` | `verify-red-once fix the login` under the gate | the replay of one run across two attempts: `verifying`, `vymalo.check` (failed), `vymalo.rework`, the second subagent, `vymalo.check` (passed), success |
+| `connect-verify-red.agui.json` | `verify-red fix the login` under the gate | the same over three attempts, ending in `RUN_ERROR` `checks_failed` |
 | `connect-cursor.agui.json` | `gate hold`, the client held log event 2 and reconnects with `Last-Event-ID: 2` | the **preamble** (`RUN_STARTED` of the same run, `SUBAGENT_STARTED`, `STATE_SNAPSHOT`, none with an `id:`), then the rest of the run |
 
 [`agui/capabilities-<agent>.json`](agui/) is the `AgentCapabilities` document

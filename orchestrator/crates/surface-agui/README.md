@@ -44,7 +44,10 @@ Mounted by `orch-api`, the route sits behind the identity layer like every route
    `forwardedProps[<release-channels URI>].release`, validated against the live card); otherwise the
    input goes through `App::submit`. The event carries the message id and run id of the request and the
    idempotency key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with
-   no message id). A concurrent request with the same ids loses the race and attaches.
+   no message id). A concurrent request with the same ids loses the race and attaches. The gate a run
+   asks for, `forwardedProps["vymalo.gate"]`, is read before anything else (a malformed one is a 400 whatever
+   the thread) and applies when the run creates the thread: `App` resolves it on top of the deployment's and the
+   agent's and refuses (400, before the stream) what weakens the gate or this build cannot honour.
 5. **Stream.** From the first event the input caused (or, for an attach, from that run's `RUN_STARTED`)
    to the first terminal event of the run: `RUN_FINISHED` or `RUN_ERROR`, then EOF. Frames carry `id:
    <seq>` on resume points. Keepalive comments every `sse_keepalive`.

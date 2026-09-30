@@ -43,6 +43,30 @@ pub enum CheckSource {
 }
 
 impl CheckSource {
+    /// Every source, in the order of the enum.
+    pub const ALL: [CheckSource; 3] = [
+        CheckSource::Ci,
+        CheckSource::AgentChecks,
+        CheckSource::Verifier,
+    ];
+
+    /// The spelling configuration uses (`ORCH_GATE`, `AGENTS_FILE`, `forwardedProps`): the wire
+    /// spelling of [`as_str`](Self::as_str) with dashes.
+    pub fn config_name(self) -> &'static str {
+        match self {
+            CheckSource::Ci => "ci",
+            CheckSource::AgentChecks => "agent-checks",
+            CheckSource::Verifier => "verifier",
+        }
+    }
+
+    /// The source a configuration spelling names.
+    pub fn from_config_name(name: &str) -> Option<CheckSource> {
+        CheckSource::ALL
+            .into_iter()
+            .find(|source| source.config_name() == name)
+    }
+
     /// The wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -262,6 +286,47 @@ impl Job {
             gate,
             ..Job::default()
         }
+    }
+}
+
+/// What a client is told about a job: `Thread.job` of the resource API and `job` in the AG-UI
+/// `STATE_SNAPSHOT`. Only a job under an active gate has one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobView {
+    /// The attempt the agent is on, from 1.
+    pub attempt: u32,
+    /// The attempts there are.
+    pub max_attempts: u32,
+    /// The sources the gate requires, in the order of [`CheckSource`].
+    pub gate: Vec<CheckSource>,
+    /// The commit the agent pushed in this attempt, once it said so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+}
+
+impl JobView {
+    /// The view of a job under `gate`, on `attempt`, that pushed `sha`.
+    pub fn new(gate: &GatePolicy, attempt: u32, sha: Option<String>) -> Self {
+        JobView {
+            attempt,
+            max_attempts: gate.max(),
+            gate: gate.require.iter().copied().collect(),
+            sha,
+        }
+    }
+}
+
+impl Job {
+    /// What clients are told about this job; `None` when the gate requires nothing.
+    pub fn view(&self) -> Option<JobView> {
+        self.gate.is_active().then(|| {
+            JobView::new(
+                &self.gate,
+                self.attempt,
+                self.pushed.as_ref().map(|p| p.commit.clone()),
+            )
+        })
     }
 }
 

@@ -470,6 +470,27 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
                 .await,
             ]
         }
+        // The verification gate (ADR 0018): one response, one run, however many attempts.
+        "verify-green" | "verify-red" => {
+            let script = if name == "verify-green" {
+                "verify-red-once"
+            } else {
+                "verify-red"
+            };
+            vec![
+                run(
+                    &chat,
+                    "plain",
+                    &input(
+                        thread,
+                        "run-1",
+                        &[("msg-1", &format!("{script} fix the login"))],
+                        json!({"forwardedProps": {"vymalo.gate": {"require": ["agent-checks"]}}}),
+                    ),
+                )
+                .await,
+            ]
+        }
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -478,9 +499,17 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
 async fn run_responses_match_docs_api_examples() {
     let dir = examples_dir();
     let mut stale = Vec::new();
-    for (n, name) in ["echo", "ask", "fail", "cancel", "release"]
-        .into_iter()
-        .enumerate()
+    for (n, name) in [
+        "echo",
+        "ask",
+        "fail",
+        "cancel",
+        "release",
+        "verify-green",
+        "verify-red",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let world = World::start(Backend::Memory).await;
         let thread = thread_id(100 + u32::try_from(n).unwrap());

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 const LABELS: Record<ThreadState, string> = {
   queued: "Queued",
   working: "Working",
+  verifying: "Verifying",
   blocked: "Waiting for you",
   done: "Done",
   failed: "Failed",
@@ -14,6 +15,7 @@ const LABELS: Record<ThreadState, string> = {
 const TONE: Record<ThreadState, string> = {
   queued: "text-primary",
   working: "text-primary",
+  verifying: "text-primary",
   blocked: "text-warning",
   done: "text-success",
   failed: "text-destructive",

@@ -30,7 +30,7 @@ use anyhow::Context;
 use axum::Router;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
-use orch_app::{AgentDirectory, App, AppConfig, Dispatcher, DispatcherConfig};
+use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig};
 use orch_core::BoxError;
 use orch_ports::{AgentTransport, PortSet, SystemClock, UuidV7Ids};
 use orch_store_postgres::{PgStore, PgWakeup};
@@ -148,7 +148,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
             ids: UuidV7Ids,
         },
         AgentDirectory::new(cfg.agents.clone()),
-        AppConfig::default(),
+        cfg.app_config(),
     ));
     Ok(Shared { store, app, local })
 }

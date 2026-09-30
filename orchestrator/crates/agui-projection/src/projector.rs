@@ -43,18 +43,19 @@ use orch_agui_proto::{
     TextMessageStartEvent,
 };
 use orch_core::{
-    Actor, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData, ErrorData,
-    Event, EventBody, MAX_SURFACE_BYTES, SurfaceOp, ThreadId, ThreadState, UiActionData,
-    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, serialized_len,
+    Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData,
+    CheckResult, ErrorData, Event, EventBody, GatePolicy, JobView, MAX_SURFACE_BYTES, Recognised,
+    ReworkData, SurfaceOp, ThreadId, ThreadState, UiActionData, UiSurfaceData, UiVersion, UserId,
+    UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
 use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
-    A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ERROR,
-    ACTIVITY_STATUS, CODE_AGENT_FAILED, CODE_DELIVERY_FAILED, actor_metadata, problem_metadata,
-    response_schema, status_content,
+    A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
+    ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED, CODE_CHECKS_FAILED,
+    CODE_DELIVERY_FAILED, actor_metadata, problem_metadata, response_schema, status_content,
 };
 
 /// What the projection knows about the thread besides its log: the parts of the thread record
@@ -67,6 +68,10 @@ pub struct ThreadMeta {
     pub title: String,
     /// The agent (and release) the thread targets.
     pub target: AgentTarget,
+    /// The gate the thread's job runs under (`Job.gate`, fixed when the thread was created). A
+    /// gate that requires something keeps the run open while the work is verified and adds
+    /// `job` to every `STATE_SNAPSHOT` (ADR 0018); the default requires nothing.
+    pub gate: GatePolicy,
 }
 
 /// A subagent invocation that is open.
@@ -164,6 +169,17 @@ pub struct Projector {
     run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now (a deleted surface is gone).
     surfaces: BTreeMap<String, Surface>,
+    /// The attempt the agent is on (`job.attempt` of the snapshot); from the `check_result` and
+    /// `rework` events.
+    attempt: u32,
+    /// The commit the agent pushed in this attempt (`job.sha`); from its `branch` artifact.
+    sha: Option<String>,
+    /// A source of the gate failed and nothing has answered it yet: an `error` that follows is
+    /// the gate running out of attempts.
+    checks_failed: bool,
+    /// The actor of the agent's last event, so that a rework can start the next attempt's
+    /// invocation under the same name and revision.
+    last_agent: Option<Actor>,
 }
 
 fn is_active(state: ThreadState) -> bool {
@@ -193,6 +209,10 @@ impl Projector {
             message_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
+            attempt: 1,
+            sha: None,
+            checks_failed: false,
+            last_agent: None,
         }
     }
 
@@ -286,10 +306,11 @@ impl Projector {
             EventBody::Error(d) => self.on_error(event, d, &mut out),
             EventBody::UiSurface(d) => self.on_ui_surface(event, d, &mut out),
             EventBody::UiAction(d) => self.on_ui_action(event, d, &mut out),
-            // TODO(MVP slice 3): the gate's events become `vymalo.check` / `vymalo.rework`
-            // activities and a `vymalo.ci` card (ADR 0018, ADR 0017). Nothing is projected yet:
-            // with the default (empty) gate none of them is ever logged.
-            EventBody::CiResult(_) | EventBody::CheckResult(_) | EventBody::Rework(_) => {}
+            EventBody::CheckResult(d) => self.on_check_result(event, d, &mut out),
+            EventBody::Rework(d) => self.on_rework(event, d, &mut out),
+            // TODO(MVP slice 7): a CI report becomes a `vymalo.ci` card (ADR 0017). With the
+            // gates this build honours none is ever logged.
+            EventBody::CiResult(_) => {}
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -315,12 +336,14 @@ impl Projector {
             .message_id
             .clone()
             .unwrap_or_else(|| format!("evt-{}", ev.seq));
-        // The thread leaves `blocked` when the user answers; an answer clears the wait.
-        if self.state == ThreadState::Blocked {
+        // The thread leaves `blocked` when the user answers, and abandons a verification when
+        // the user writes during one; an answer clears the wait.
+        if matches!(self.state, ThreadState::Blocked | ThreadState::Verifying) {
             self.state = ThreadState::Queued;
         }
         self.interrupt = None;
         self.failure = None;
+        self.checks_failed = false;
         if self.run.is_none() {
             let run_id = d
                 .run_id
@@ -487,7 +510,15 @@ impl Projector {
                     self.close_run(RunClose::Interrupt, ev.seq, out);
                 }
             }
-            AgentStatus::Completed => self.close_invocation(InvocationClose::Finished, out),
+            AgentStatus::Completed => {
+                self.close_invocation(InvocationClose::Finished, out);
+                // Under a gate the agent finishing is not the end: the thread is verified, the
+                // run stays open, and the `check_result` events that follow say how it went.
+                if self.meta.gate.is_active() {
+                    self.state = ThreadState::Verifying;
+                    out.push(self.state_snapshot());
+                }
+            }
             AgentStatus::Failed => {
                 let failure = Failure {
                     message: d
@@ -506,6 +537,14 @@ impl Projector {
     fn on_artifact(&mut self, ev: &Event, d: &ArtifactData, out: &mut Vec<agui::Event>) {
         let opened = self.ensure_run(ev, out);
         self.ensure_invocation(ev, out);
+        // What is verified is what the agent had pushed when it finished: the ledger is frozen
+        // while the thread is verified, and so is `job.sha`.
+        if self.meta.gate.is_active()
+            && self.state != ThreadState::Verifying
+            && let Recognised::Branch(pushed) = recognise_artifact(&d.name, d.text.as_deref())
+        {
+            self.sha = Some(pushed.commit);
+        }
         let mut content = Metadata::new();
         content.insert("name".to_owned(), Value::from(d.name.clone()));
         for (key, value) in [
@@ -594,11 +633,12 @@ impl Projector {
     /// run when none is open (the run id is the one the surface named, else `run-<seq>`); unlike
     /// one it says nothing in the transcript but a `vymalo.action` activity.
     fn on_ui_action(&mut self, ev: &Event, d: &UiActionData, out: &mut Vec<agui::Event>) {
-        if self.state == ThreadState::Blocked {
+        if matches!(self.state, ThreadState::Blocked | ThreadState::Verifying) {
             self.state = ThreadState::Queued;
         }
         self.interrupt = None;
         self.failure = None;
+        self.checks_failed = false;
         if self.run.is_none() {
             let run_id = d
                 .run_id
@@ -621,6 +661,82 @@ impl Projector {
             &ev.actor,
             false,
         ));
+    }
+
+    /// A source of the gate answered (ADR 0018): a `vymalo.check` activity. The card of one source
+    /// in one attempt keeps its id, so a `pending` card is replaced by the answer; an answer
+    /// that arrived for a verification that is no longer the current one (`stale`) is a card of
+    /// its own and changes nothing else.
+    fn on_check_result(&mut self, ev: &Event, d: &CheckResult, out: &mut Vec<agui::Event>) {
+        let opened = self.ensure_run(ev, out);
+        let id = if d.stale {
+            format!("evt-{}", ev.seq)
+        } else {
+            self.attempt = d.attempt.max(1);
+            if let Some(commit) = &d.commit {
+                self.sha = Some(commit.clone());
+            }
+            if d.status == orch_core::CheckStatus::Failed {
+                self.checks_failed = true;
+            }
+            // The `completed` that started the verification says so already under a gate; a log
+            // written under another gate is verified from its first answer.
+            if self.state != ThreadState::Verifying && !self.state.is_terminal() {
+                self.state = ThreadState::Verifying;
+                out.push(self.state_snapshot());
+            }
+            format!("check-{}-{}", d.attempt, d.source.as_str())
+        };
+        let content = match serde_json::to_value(d) {
+            Ok(Value::Object(map)) => map,
+            Ok(_) | Err(_) => Metadata::new(),
+        };
+        let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_CHECK, content);
+        snapshot.replace = Some(true);
+        snapshot.base.metadata = Some(actor_metadata(&ev.actor));
+        self.message_ids.insert(id);
+        out.push(snapshot.into());
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The gate failed and the agent is sent back to work: a `vymalo.rework` activity, then the
+    /// invocation of the next attempt. The agent has not answered yet, but the delegation is
+    /// already on its way, so the run shows it working.
+    fn on_rework(&mut self, ev: &Event, d: &ReworkData, out: &mut Vec<agui::Event>) {
+        let opened = self.ensure_run(ev, out);
+        self.attempt = d.attempt;
+        self.sha = None;
+        self.checks_failed = false;
+        self.state = ThreadState::Queued;
+        let id = format!("rework-{}", d.attempt);
+        let content = match serde_json::to_value(d) {
+            Ok(Value::Object(map)) => map,
+            Ok(_) | Err(_) => Metadata::new(),
+        };
+        let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_REWORK, content);
+        snapshot.replace = Some(true);
+        snapshot.base.metadata = Some(actor_metadata(&ev.actor));
+        self.message_ids.insert(id);
+        out.push(snapshot.into());
+        if self.invocation.is_none() {
+            let actor = self
+                .last_agent
+                .clone()
+                .unwrap_or_else(|| Actor::agent(&self.meta.target.agent_id, None));
+            let inv = Invocation {
+                id: SubagentRunId::new(format!("sub-{}", ev.seq)),
+                name: actor.name.clone(),
+                actor,
+            };
+            out.push(Self::subagent_started(&inv).into());
+            self.invocation = Some(inv);
+        }
+        out.push(self.state_snapshot());
+        if opened {
+            self.settle(ev, out);
+        }
     }
 
     /// The `a2ui-surface` snapshot of a whole surface.
@@ -668,9 +784,16 @@ impl Projector {
             &ev.actor,
             false,
         ));
+        // An `error` right after a failed check is the gate running out of attempts; any other
+        // is a delivery.
+        let code = if self.checks_failed && !d.retryable {
+            CODE_CHECKS_FAILED
+        } else {
+            CODE_DELIVERY_FAILED
+        };
         let failure = Failure {
             message: d.message.clone(),
-            code: CODE_DELIVERY_FAILED,
+            code,
         };
         self.failure = Some(failure.clone());
         if was_open || is_active(self.state) {
@@ -764,6 +887,9 @@ impl Projector {
             name: ev.actor.name.clone(),
             actor: ev.actor.clone(),
         };
+        if ev.actor.r#type == ActorType::Agent {
+            self.last_agent = Some(ev.actor.clone());
+        }
         out.push(Self::subagent_started(&inv).into());
         self.invocation = Some(inv);
     }
@@ -866,6 +992,7 @@ impl Projector {
                 let title = match failure.code {
                     CODE_AGENT_FAILED => "Agent failed",
                     CODE_DELIVERY_FAILED => "Delivery failed",
+                    CODE_CHECKS_FAILED => "Checks failed",
                     _ => "Error",
                 };
                 let mut error =
@@ -915,14 +1042,19 @@ impl Projector {
 
     fn state_snapshot(&self) -> agui::Event {
         let target = serde_json::to_value(&self.meta.target).unwrap_or(Value::Null);
-        StateSnapshotEvent::new(json!({
+        let mut snapshot = json!({
             "thread": {
                 "state": self.state.as_str(),
                 "title": self.meta.title,
                 "target": target,
             }
-        }))
-        .into()
+        });
+        // A job with a gate says where it stands; one without says nothing more than before.
+        if self.meta.gate.is_active() {
+            let job = JobView::new(&self.meta.gate, self.attempt, self.sha.clone());
+            snapshot["job"] = serde_json::to_value(job).unwrap_or(Value::Null);
+        }
+        StateSnapshotEvent::new(snapshot).into()
     }
 
     /// An `ACTIVITY_SNAPSHOT`, attributed to the open invocation when `attribute`. The activity
