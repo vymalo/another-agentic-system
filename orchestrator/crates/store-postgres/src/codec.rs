@@ -139,7 +139,12 @@ pub(crate) fn binding_from_row(row: &PgRow) -> Result<AgentBinding, StoreError> 
 pub(crate) fn outbox_from_row(row: &PgRow) -> Result<OutboxItem, StoreError> {
     let kind: String = get(row, "kind")?;
     let status: String = get(row, "status")?;
-    let payload: serde_json::Value = get(row, "payload")?;
+    let mut payload: serde_json::Value = get(row, "payload")?;
+    // A cancel row written before it named its job (ADR 0020) is the bare string `"cancel"`: the
+    // current job's.
+    if payload.as_str() == Some("cancel") {
+        payload = serde_json::json!({"cancel": {}});
+    }
     let payload: OutboxPayload = serde_json::from_value(payload)
         .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
     let attempts: i32 = get(row, "attempts")?;

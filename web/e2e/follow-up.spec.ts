@@ -6,7 +6,7 @@ test("a blocked thread waits for the answer, and the follow-up resumes it", asyn
 
   await expect(page.getByText("Waiting for your answer.")).toBeVisible();
   await expect(page.getByText("Which branch?").first()).toBeVisible();
-  await expect(badge(page)).toHaveText("Waiting for you");
+  await expect(badge(page)).toHaveText("Your turn");
 
   await page.getByLabel("Message").fill("main");
   await page.getByRole("button", { name: "Send" }).click();

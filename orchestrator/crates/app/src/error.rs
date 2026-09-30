@@ -15,8 +15,9 @@ pub enum AppError {
     /// The request is invalid.
     #[error("{0}")]
     Invalid(String),
-    /// The thread is finished; start a new one.
-    #[error("thread is finished")]
+    /// An action on a card of a finished job (ADR 0020). A message is not refused: it starts the
+    /// thread's next job.
+    #[error("this card belongs to a finished request")]
     Finished,
     /// The store failed.
     #[error(transparent)]

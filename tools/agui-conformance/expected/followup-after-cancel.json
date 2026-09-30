@@ -1,0 +1,106 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "cancelled"
+    },
+    {
+      "runId": "run-5",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success",
+      "result": {
+        "status": "canceled"
+      }
+    },
+    {
+      "id": "sub-7",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "slow work"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "detail": "canceled",
+        "status": "canceled"
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "user",
+      "text": "echo never mind, do this"
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "name": "result",
+        "text": "echo: echo never mind, do this",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-7",
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "slow work"
+    }
+  },
+  "pendingInterrupts": []
+}

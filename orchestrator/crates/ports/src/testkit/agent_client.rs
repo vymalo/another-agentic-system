@@ -95,6 +95,7 @@ fn request(
         message_id: message_id.to_owned(),
         context_id: context_id.to_owned(),
         task_id,
+        reference_task_ids: Vec::new(),
         content: crate::SendContent::Text(text),
         release: None,
     }

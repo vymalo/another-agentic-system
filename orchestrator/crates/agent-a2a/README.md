@@ -33,7 +33,7 @@ The pure mapping from A2A values to envelopes and idempotency keys lives in
 | `install_crypto_provider()` | idempotent `rustls` provider setup |
 
 A selected release is sent as the `A2A-Extensions` header plus namespaced
-message metadata. **A2UI is sent only when the card read for that very call lists it** (capabilities in the
+message metadata; `SendRequest.reference_task_ids` becomes the message's `referenceTaskIds` ([ADR 0021](../../../docs/decisions/0021-context-across-a2a-tasks.md)). **A2UI is sent only when the card read for that very call lists it** (capabilities in the
 metadata, the URI in the header and in `message.extensions`); a card that lost it makes the next message plain
 A2A again. A surface from an agent is relayed whether or not its card lists the extension, and an action goes
 back in the version its surface spoke (ADR 0013). Methods used: `SendStreamingMessage`, `SubscribeToTask`

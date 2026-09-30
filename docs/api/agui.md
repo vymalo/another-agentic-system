@@ -98,7 +98,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id). |
-| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts). |
+| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity. |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message is open. |
@@ -131,6 +131,7 @@ gets everything.
 | `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | Status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
+| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
 | `check_result{source:"verifier", status:"passed"\|"failed"}` | The verdict | The `vymalo.check` snapshot (same id, `replace:true`) → `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{passed}}` |
@@ -194,7 +195,8 @@ gets everything.
 | Nothing new, no resume, unknown `runId` | 422 (nothing to run) |
 | A new message or answer under a `runId` the thread already used | 422: a run id is never reused |
 | A run already open on the thread | 409 before the stream |
-| Thread terminal (`done`, `failed`, `cancelled`) | 409, "start a new thread" |
+| Thread terminal (`done`, `failed`, `cancelled`), one new user message | Served: `Input::UserMessage` starts the thread's next job ([ADR 0020](../decisions/0020-a-thread-is-a-conversation.md)): `user_message`, `job_started`, a delegation. The run is an ordinary run from `RUN_STARTED` on |
+| Thread terminal, an A2UI action | 409, "this card belongs to a finished request" |
 | `protocolVersion` of another major | 400 before the stream; a newer 1.x is served with a warning |
 | `tools`, `context` | Ignored with a warning (open question 18) |
 | `state` | Ignored (producer-owned) |
@@ -431,7 +433,7 @@ was streamed and nothing was written.
 | 401 | No edge identity |
 | 404 | The `agentId` is not configured; the thread belongs to someone else (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
-| 409 | The thread targets another agent; a run is open on it; it is finished (`done`, `failed`, `cancelled`); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
+| 409 | The thread targets another agent; a run is open on it; the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB) |
 | 415 | `Content-Type` is not `application/json` |
 | 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel |
@@ -698,7 +700,7 @@ orchestrator:
    action for a surface that was never sent, that was deleted, or on a thread that does not exist yet,
    reaches nothing;
 4. applies the usual rules of an input: not someone else's thread (404), the URL's agent is the
-   thread's (409), no run is open (409), the thread is not finished (409), the `runId` is new (422),
+   thread's (409), no run is open (409), the thread is not finished (409; a message is served, see above), the `runId` is new (422),
    and no message, `resume` or cancel comes with it (422). Since a run is open exactly while the thread
    is `queued` or `working`, an action can only be sent while the thread **waits** (`blocked`);
 5. writes `ui_action` (attributed to the user; the log's own time is the action's time) and one outbox
@@ -851,8 +853,8 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
-| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}}` |
-| `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `attempt` is the one the agent is on, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |
+| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
+| `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{number?, attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `number` is the job of the thread (present from job 2); `attempt` is the one the agent is on in **this job**, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |
 | Interrupt `responseSchema` | — | `{type:"object", required:["text"], properties:{text:{type:"string"}}}` |
 
 ## Worked example

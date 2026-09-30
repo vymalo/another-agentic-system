@@ -2,7 +2,7 @@
 //! Everything here is a function of the thread record and its event log.
 
 use orch_app::{App, AppError};
-use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadId, ThreadRecord, UserId};
+use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadRecord, UserId};
 use orch_ports::Ports;
 use serde::Serialize;
 
@@ -70,6 +70,9 @@ pub struct JobSummary {
     pub title: String,
     /// The agent it was given to.
     pub agent: String,
+    /// Which job of the thread this is, from 1: a message to a finished job starts the next one
+    /// (ADR 0020). Everything below is about this job.
+    pub job: u32,
     /// `queued`, `working`, `verifying`, `blocked`, `done`, `failed` or `cancelled`.
     pub state: &'static str,
     /// Whether the state is final.
@@ -158,18 +161,38 @@ fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Option
 async fn find_pull_request<P: Ports>(
     app: &App<P>,
     user: &UserId,
-    id: ThreadId,
+    thread: &ThreadRecord,
 ) -> Result<Option<PullRequest>, AppError> {
+    let id = thread.id;
     let newest = app
         .latest_events(user, id, EventKind::Artifact, ARTIFACTS_LOOKED_AT)
         .await?;
-    Ok(newest.iter().find_map(|event| {
-        let EventBody::Artifact(a) = &event.body else {
-            return None;
-        };
-        pull_request_url(&a.name, a.uri.as_deref(), a.text.as_deref())
-            .map(|url| PullRequest { url })
-    }))
+    // Only this job's: the pull request of an earlier job of the thread is not this job's (ADR
+    // 0020). The job started at the last `job_started`; the first job has no such event.
+    let since = if thread.job.number > 1 {
+        app.latest_events(user, id, EventKind::JobStarted, 1)
+            .await?
+            .first()
+            .map_or(0, |e| e.seq)
+    } else {
+        0
+    };
+    Ok(newest_pull_request(&newest, since))
+}
+
+/// The newest pull request among `newest` (artifacts, newest first) that came after the event
+/// `since` (the job's start; 0 for the first job). Pure.
+fn newest_pull_request(newest: &[orch_core::Event], since: i64) -> Option<PullRequest> {
+    newest
+        .iter()
+        .filter(|event| event.seq > since)
+        .find_map(|event| {
+            let EventBody::Artifact(a) = &event.body else {
+                return None;
+            };
+            pull_request_url(&a.name, a.uri.as_deref(), a.text.as_deref())
+                .map(|url| PullRequest { url })
+        })
 }
 
 /// Summarises `thread`, which belongs to `user`.
@@ -178,7 +201,7 @@ pub async fn summarise<P: Ports>(
     user: &UserId,
     thread: &ThreadRecord,
 ) -> Result<JobSummary, AppError> {
-    let pull_request = find_pull_request(app, user, thread.id).await?;
+    let pull_request = find_pull_request(app, user, thread).await?;
     Ok(summary_of(thread, pull_request))
 }
 
@@ -214,6 +237,7 @@ pub fn summary_of(thread: &ThreadRecord, pull_request: Option<PullRequest>) -> J
         job_id: thread.id.to_string(),
         title: thread.title.clone(),
         agent: thread.target.agent_id.to_string(),
+        job: job.number,
         state: thread.state.as_str(),
         finished: thread.state.is_terminal(),
         hold: job.hold.map(orch_core::Hold::as_str),
@@ -237,7 +261,7 @@ pub fn summary_of(thread: &ThreadRecord, pull_request: Option<PullRequest>) -> J
 #[allow(clippy::unwrap_used)]
 mod tests {
     use orch_core::{
-        AgentId, AgentTarget, CheckResult, GatePolicy, Hold, Job, PushedRef, ThreadState,
+        AgentId, AgentTarget, CheckResult, GatePolicy, Hold, Job, PushedRef, ThreadId, ThreadState,
     };
 
     use super::*;
@@ -273,6 +297,41 @@ mod tests {
         }
     }
 
+    fn pr_event(seq: i64, url: &str) -> orch_core::Event {
+        orch_core::Event {
+            seq,
+            thread_id: ThreadId("00000000-0000-7000-8000-000000000001".parse().unwrap()),
+            at: "2026-09-30T10:00:00Z".parse().unwrap(),
+            actor: orch_core::Actor::system(),
+            body: EventBody::Artifact(orch_core::ArtifactData {
+                name: "pull_request".to_owned(),
+                mime_type: None,
+                uri: Some(url.to_owned()),
+                text: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn the_pull_request_of_an_earlier_job_is_not_this_jobs() {
+        // Newest first: job 2 (started at seq 10) opened none, job 1 opened #1 at seq 4.
+        let newest = [pr_event(4, "https://github.com/acme/demo/pull/1")];
+        assert_eq!(
+            newest_pull_request(&newest, 0).map(|p| p.url),
+            Some("https://github.com/acme/demo/pull/1".to_owned())
+        );
+        assert_eq!(newest_pull_request(&newest, 10), None);
+        // The job's own, when it opened one.
+        let newest = [
+            pr_event(14, "https://github.com/acme/demo/pull/2"),
+            pr_event(4, "https://github.com/acme/demo/pull/1"),
+        ];
+        assert_eq!(
+            newest_pull_request(&newest, 10).map(|p| p.url),
+            Some("https://github.com/acme/demo/pull/2".to_owned())
+        );
+    }
+
     #[test]
     fn what_comes_from_outside_is_cut_to_size() {
         assert_eq!(cap("short", 10), "short");
@@ -306,7 +365,7 @@ mod tests {
             v,
             serde_json::json!({
                 "job_id": "00000000-0000-7000-8000-000000000001",
-                "title": "fix it", "agent": "coder", "state": "working", "finished": false,
+                "title": "fix it", "agent": "coder", "job": 1, "state": "working", "finished": false,
                 "last_seq": 9,
                 "created_at": "2026-09-30T10:00:00Z", "updated_at": "2026-09-30T10:05:00Z"
             })

@@ -6,18 +6,18 @@ test("a second tab follows a run it did not start, and sees it cancelled from th
   context,
 }) => {
   await startThread(page, "slow task");
-  await expect(badge(page)).toHaveText("Working");
+  await expect(badge(page)).toHaveText("Working…");
 
   const other = await context.newPage();
   await other.goto(page.url());
-  await expect(badge(other)).toHaveText("Working");
+  await expect(badge(other)).toHaveText("Working…");
   await expect(conversation(other).getByText("slow task", { exact: true })).toBeVisible();
   await expect(conversation(other).getByText("Working", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(badge(other)).toHaveText("Cancelled");
+  await page.getByRole("button", { name: "Stop" }).click();
+  await expect(badge(other)).toHaveText("Stopped");
   await expect(conversation(other).getByText("Cancelled", { exact: false }).first()).toBeVisible();
-  await expect(badge(page)).toHaveText("Cancelled");
+  await expect(badge(page)).toHaveText("Stopped");
 });
 
 test("an answer given in one tab reaches the other, which was waiting for it", async ({

@@ -49,7 +49,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             Command::Append(d) => Some(&d.body),
             Command::Delegate { .. }
             | Command::DelegateAction { .. }
-            | Command::RequestCancel
+            | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
             | Command::RequestVerification { .. } => None,
@@ -153,11 +153,117 @@ fn row2_user_message_in_blocked_requeues() {
 }
 
 #[test]
-fn row3_user_message_in_terminal_is_finished() {
+fn row3_user_message_in_terminal_starts_the_next_job() {
     for s in TERMINAL {
+        let (next, cmds) = run(s, &um("again"));
+        assert_eq!(next, Queued, "{s:?}");
+        assert_eq!(cmds.len(), 3, "{cmds:?}");
         assert_eq!(
-            transition(&s, &um("x")),
-            Err(TransitionError::Finished { state: s })
+            bodies(&cmds),
+            [
+                &EventBody::UserMessage(UserMessageData::new("again")),
+                &EventBody::JobStarted(JobStartedData { job: 2 }),
+            ]
+        );
+        // The job starts after the message it answers, and is the system's word, not the user's.
+        match (&cmds[0], &cmds[1]) {
+            (Command::Append(m), Command::Append(j)) => {
+                assert_eq!(m.actor, Actor::user(&user()));
+                assert_eq!(j.actor, Actor::system());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            cmds[2],
+            Command::Delegate {
+                text: "again".into()
+            }
+        );
+        // No `thread_state`: entering `queued` is implied by the message.
+        assert!(
+            !bodies(&cmds)
+                .iter()
+                .any(|b| matches!(b, EventBody::ThreadState(_)))
+        );
+    }
+}
+
+#[test]
+fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_rest() {
+    let mut gate = GatePolicy::requiring([CheckSource::AgentChecks, CheckSource::Verifier]);
+    gate.max_attempts = 2;
+    let sha = "a".repeat(40);
+    for s in TERMINAL {
+        let before = Snapshot {
+            state: s,
+            job: Job {
+                number: 3,
+                gate: gate.clone(),
+                attempt: 2,
+                verification: 5,
+                task: Some("first".into()),
+                branch_problem: Some("why".into()),
+                summary: Some("did things".into()),
+                pushed: Some(PushedRef {
+                    repository: "https://github.com/o/r".into(),
+                    branch: "agent/x".into(),
+                    commit: sha.clone(),
+                }),
+                results: vec![CheckResult {
+                    source: CheckSource::AgentChecks,
+                    name: None,
+                    attempt: 2,
+                    commit: Some(sha.clone()),
+                    status: CheckStatus::Passed,
+                    summary: None,
+                    stale: false,
+                    findings: vec![],
+                }],
+                hold: None,
+            },
+        };
+        let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
+        assert_eq!(after.state, Queued);
+        assert_eq!(
+            after.job,
+            Job {
+                number: 4,
+                gate: gate.clone(),
+                attempt: 1,
+                verification: 5,
+                task: Some("next".into()),
+                ..Job::default()
+            }
+        );
+        assert!(
+            bodies(&cmds)
+                .iter()
+                .any(|b| **b == EventBody::JobStarted(JobStartedData { job: 4 }))
+        );
+    }
+}
+
+#[test]
+fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
+    for s in [Done, Failed] {
+        let (next, cmds) = run(s, &Input::Redeliver { text: "x".into() });
+        assert_eq!(next, Queued);
+        // The `user_message` is in the log already: only the boundary and the delegation.
+        assert_eq!(
+            bodies(&cmds),
+            [&EventBody::JobStarted(JobStartedData { job: 2 })]
+        );
+        assert_eq!(cmds[1], Command::Delegate { text: "x".into() });
+    }
+    assert_eq!(
+        run(Cancelled, &Input::Redeliver { text: "x".into() }),
+        (Cancelled, vec![])
+    );
+    // Still open: it only delegates, and a blocked thread is answered.
+    for (s, expected) in [(Queued, Queued), (Working, Working), (Blocked, Queued)] {
+        assert_eq!(
+            run(s, &Input::Redeliver { text: "x".into() }),
+            (expected, vec![Command::Delegate { text: "x".into() }])
         );
     }
 }
@@ -167,7 +273,7 @@ fn row4_cancel_requests_cancel_when_open() {
     for s in OPEN {
         assert_eq!(
             run(s, &Input::Cancel { user: user() }),
-            (s, vec![Command::RequestCancel])
+            (s, vec![Command::RequestCancel { job: 1 }])
         );
     }
 }

@@ -161,7 +161,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "404": { description: "The agent is not configured, or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
-        "409": { description: "The thread targets another agent, a run is already open on it, it is finished (`done`, `failed`, `cancelled`), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
+        "409": { description: "The thread targets another agent, a run is already open on it, the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
         "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
@@ -302,8 +302,11 @@ components:
           additionalProperties: true
           description: |
             The whole job ledger, which `Thread.job` only summarises (and omits without a gate), as
-            the store keeps it: `gate` (the policy: `require`, `maxAttempts`, `ci`, `verifier`,
-            `verifierTimeout`), `attempt`, `verification`, `task` (the person's messages of the
+            the store keeps it: `number` (which job of the thread this is, from 1; a thread is a
+            conversation and a message on a finished thread starts its next job, ADR 0020; earlier
+            jobs are in `events`, between the `job_started` events), `gate` (the policy: `require`,
+            `maxAttempts`, `ci`, `verifier`, `verifierTimeout`), `attempt`, `verification` (counted
+            per thread, never reset by a new job), `task` (the person's messages of the
             job in order, each later one after a line `[next message]`, capped: the first message
             and the newest ones are kept, and a line `[… earlier messages omitted …]` stands for
             the ones left out), `branchProblem` (why the agent's last `branch` artifact could not
@@ -349,7 +352,11 @@ components:
         carries the same object under `job`.
       required: [attempt, maxAttempts, gate]
       properties:
-        attempt: { type: integer, minimum: 1, description: "The attempt the agent is on, from 1" }
+        number:
+          type: integer
+          minimum: 1
+          description: "Which job of the thread this is. A thread is a conversation: a message on a finished thread starts its next job (ADR 0020). Present from job 2; absent means job 1"
+        attempt: { type: integer, minimum: 1, description: "The attempt the agent is on in this job, from 1" }
         maxAttempts: { type: integer, minimum: 1, description: "The attempts there are, the first included" }
         gate:
           type: array
@@ -391,6 +398,7 @@ components:
         - ui_action           # data: { surfaceId, name, sourceComponentId, context, version, runId? }  what the user did on an A2UI surface of the thread (ADR 0013); attributed to the user. Additive.
         - ci_result           # data: { provider: github|generic, repository, sha, branch?, name, conclusion: success|neutral|skipped|failure|cancelled|timed_out|action_required|stale|startup_failure, url?, summary? }  a CI provider reported a completed check on a commit (ADR 0017); attributed to the system. Additive; logged since MVP slice 6 (the CI webhooks).
         - check_result        # data: { source: CheckSource, attempt, status: pending|passed|failed, name?, commit?, summary?, stale?, findings?: [string] }  a source of the verification gate answered (ADR 0018); attributed to the system. `findings` are untrusted text (at most 20 items and 16 KiB). `stale`: the answer was for a verification that is no longer the current one and decided nothing. Additive.
+        - job_started         # data: { job: integer }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
     Actor:
       type: object
@@ -441,6 +449,10 @@ components:
           description: "ui_action only: the A2UI version of the surface, so the agent gets the action in the dialect it spoke."
         source:
           $ref: "#/components/schemas/CheckSource"
+        job:
+          type: integer
+          minimum: 2
+          description: "job_started only: the number of the job that started."
         attempt:
           type: integer
           minimum: 1

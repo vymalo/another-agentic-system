@@ -255,6 +255,9 @@ impl<P: Ports> Dispatcher<P> {
             message_id: v.row.id.to_string(),
             context_id: v.context.clone(),
             task_id: None,
+            // never a reference: the verifier has a context of its own and is told nothing of
+            // the author's tasks (ADR 0002, ADR 0021)
+            reference_task_ids: Vec::new(),
             content: SendContent::Text(text),
             release: None,
         };

@@ -14,6 +14,8 @@ export const ACTIVITY = {
   check: "vymalo.check",
   /** The gate failed and the agent is sent back to work (ADR 0018). */
   rework: "vymalo.rework",
+  /** A message on a finished thread started the thread's next job (ADR 0020): `{job}`, from 2. */
+  job: "vymalo.job",
   /** A CI system reported a check on a commit (ADR 0017), whether or not the gate counted it. */
   ci: "vymalo.ci",
   /**
@@ -116,7 +118,14 @@ export type ReworkContent = WithActor<{
 }>;
 
 /** `job` of a `STATE_SNAPSHOT` and of `Thread` (chat-api.yaml, `ThreadJob`): only under a gate. */
-export type JobView = { attempt: number; maxAttempts: number; gate: string[]; sha?: string };
+export type JobView = {
+  /** Which job of the thread this is; present from job 2 (ADR 0020), absent means job 1. */
+  number?: number;
+  attempt: number;
+  maxAttempts: number;
+  gate: string[];
+  sha?: string;
+};
 
 /**
  * A surface: the operations exactly as the orchestrator sent them (untrusted, read by
@@ -292,7 +301,9 @@ export function parseJob(v: unknown): JobView | null {
   const maxAttempts = positiveInt(v.maxAttempts);
   if (attempt === undefined || maxAttempts === undefined) return null;
   const sha = str(v.sha);
+  const number = positiveInt(v.number);
   return {
+    ...(number !== undefined && number > 1 ? { number } : {}),
     attempt,
     maxAttempts,
     gate: Array.isArray(v.gate) ? v.gate.filter((x): x is string => typeof x === "string") : [],

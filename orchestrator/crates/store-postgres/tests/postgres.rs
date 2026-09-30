@@ -65,6 +65,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         watches: Vec::new(),
         timers: Vec::new(),
         inbox: None,
+        finishes_outbox: None,
     }
 }
 
@@ -74,6 +75,7 @@ fn delegate() -> NewOutbox {
         payload: OutboxPayload::Delegate {
             text: "go".into(),
             release: None,
+            new_job: false,
         },
     }
 }
@@ -1083,4 +1085,56 @@ async fn a_row_this_build_cannot_read_does_not_spoil_its_batch() {
         !err.to_string().contains("from_the_future"),
         "the payload is not echoed: {err}"
     );
+}
+
+/// A cancel row written before it named its job is stored as the bare string `"cancel"`: it reads
+/// as a cancel of the current job (`job: None`), and a row that names its job reads back with it
+/// (ADR 0020).
+#[tokio::test]
+async fn a_legacy_cancel_row_reads_as_the_current_jobs_and_a_new_one_keeps_its_job() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let pool = db.pool("orch-test", 4).await;
+    let row = |n: u128, payload: OutboxPayload| NewOutbox {
+        id: OutboxId(Uuid::from_u128(
+            0x0190_0000_0000_7000_a000_0000_0000_0000 + n,
+        )),
+        payload,
+    };
+    let id = create(
+        &store,
+        vec![
+            row(1, OutboxPayload::Cancel { job: Some(3) }),
+            row(2, OutboxPayload::Cancel { job: None }),
+        ],
+    )
+    .await;
+    // what an older build wrote: the unit variant, a bare JSON string
+    sqlx::query(
+        "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, created_at, \
+         updated_at) VALUES ($1, $2, 'cancel', '\"cancel\"'::jsonb, 'pending', now(), now(), now())",
+    )
+    .bind(Uuid::from_u128(0x0190_0000_0000_7000_a000_0000_0000_0009))
+    .bind(id.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let open = store.list_open_outbox(id).await.unwrap();
+    let job_of = |n: u128| {
+        open.iter()
+            .find(|r| r.id.0 == Uuid::from_u128(0x0190_0000_0000_7000_a000_0000_0000_0000 + n))
+            .map(|r| r.payload.clone())
+    };
+    assert_eq!(job_of(1), Some(OutboxPayload::Cancel { job: Some(3) }));
+    assert_eq!(job_of(2), Some(OutboxPayload::Cancel { job: None }));
+    assert_eq!(job_of(9), Some(OutboxPayload::Cancel { job: None }));
+    // a row that names its job stores it
+    let (stored,): (serde_json::Value,) =
+        sqlx::query_as("SELECT payload FROM outbox WHERE id = $1")
+            .bind(Uuid::from_u128(0x0190_0000_0000_7000_a000_0000_0000_0001))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!({"cancel": {"job": 3}}));
 }

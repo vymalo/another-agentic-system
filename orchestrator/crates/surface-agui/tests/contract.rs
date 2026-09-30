@@ -321,14 +321,34 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     )
     .await;
     seen.problem("runAgent", 406, &r);
+    // A message on the finished thread is served (it starts the next job, ADR 0020); what is
+    // refused with 409 is a run while another is open.
+    let busy = new_thread_id();
+    let mut open = h
+        .run(
+            "plain",
+            ALICE,
+            &input(&busy, "run-b", &[("m2", "gate wait")]),
+        )
+        .await;
+    assert_eq!(
+        open.next(std::time::Duration::from_secs(10))
+            .await
+            .unwrap()
+            .kind(),
+        "RUN_STARTED"
+    );
+    h.wait_state(ALICE, &busy, "working").await;
     let r = h
         .refused(
             "plain",
             Some(ALICE),
-            &input(&thread, "run-b", &[("m2", "echo again")]),
+            &input(&busy, "run-c", &[("m2", "gate wait"), ("m3", "hurry")]),
         )
         .await;
     seen.problem("runAgent", 409, &r);
+    h.agent.release_gate();
+    open.all().await;
     let huge = "x".repeat(orch_surface_agui::MAX_BODY_BYTES + 1);
     let r = raw_run(
         &h,

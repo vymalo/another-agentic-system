@@ -186,6 +186,11 @@ fn write_commit(
         row.lease_owner = None;
         row.lease_until = None;
     }
+    if let (Some(lease), Some(outcome)) = (&commit.lease, commit.finishes_outbox.clone())
+        && let Some(row) = leased(inner, lease)
+    {
+        finish_row(row, outcome);
+    }
     for row in commit.outbox {
         inner.outbox.push(OutboxItem {
             id: row.id,
@@ -247,6 +252,20 @@ fn new_row(new: NewInbox, available_at: Timestamp, now: Timestamp) -> InboxItem 
     }
 }
 
+/// Ends a claimed row as `outcome` and lets go of the claim.
+fn finish_row(r: &mut OutboxItem, outcome: OutboxFinal) {
+    match outcome {
+        OutboxFinal::Delivered => r.status = OutboxStatus::Delivered,
+        OutboxFinal::Dead { error } => {
+            r.status = OutboxStatus::Dead;
+            r.last_error = Some(error);
+        }
+        OutboxFinal::Skipped => r.status = OutboxStatus::Skipped,
+    }
+    r.lease_owner = None;
+    r.lease_until = None;
+}
+
 fn leased<'a>(inner: &'a mut Inner, lease: &Lease) -> Option<&'a mut OutboxItem> {
     inner.outbox.iter_mut().find(|r| holds(r, lease))
 }
@@ -264,6 +283,7 @@ impl ThreadStore for MemoryStore {
         // A thread that does not exist yet has no inbox row to be applied.
         let first = Commit {
             inbox: None,
+            finishes_outbox: None,
             ..first
         };
         let mut inner = self.lock();
@@ -563,18 +583,7 @@ impl ThreadStore for MemoryStore {
     ) -> Result<bool, StoreError> {
         let mut inner = self.lock();
         Ok(leased(&mut inner, lease)
-            .map(|r| {
-                match outcome {
-                    OutboxFinal::Delivered => r.status = OutboxStatus::Delivered,
-                    OutboxFinal::Dead { error } => {
-                        r.status = OutboxStatus::Dead;
-                        r.last_error = Some(error);
-                    }
-                    OutboxFinal::Skipped => r.status = OutboxStatus::Skipped,
-                }
-                r.lease_owner = None;
-                r.lease_until = None;
-            })
+            .map(|r| finish_row(r, outcome))
             .is_some())
     }
 

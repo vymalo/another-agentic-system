@@ -12,6 +12,8 @@
   [status note](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit), which also has the rework prompt
   carry the person's messages, writes down the fence grammar of the prompts the core writes, and lists the holes that
   remain.
+  **Amended 2026-09-30 (threads never lock):** the gate applies to **each job** of a thread; verifications are
+  counted per thread, see the [status note](#status-note-2026-09-30-threads-never-lock).
   **Planned, not built:** the web's card for CI (slice 8)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
@@ -463,6 +465,24 @@ at it passed". They do not make it mean "the right commit, in the right place":
   The verifier, which reads the diff, is what catches it.
 - **The branch artifact is the agent's word** (its shape is checked, including by `git check-ref-format`; that the
   commit exists on that branch of that repository is not).
+
+## Status note (2026-09-30): threads never lock
+
+[ADR 0020](0020-a-thread-is-a-conversation.md): a message on a finished thread starts the thread's next job, so a
+thread runs the gate once per job.
+
+- **The gate is per job, and it is the thread's.** `Job::next()` keeps `gate` (fixed when the thread was created; a
+  per-job override is [open question 31](../open-questions.md)) and gives the new job attempt 1, so the budget
+  (`max_attempts`) is per job: a follow-up after a job that used all its attempts has all of them again.
+- **`Job.verification` is counted per thread, never reset.** A report or timer names `(attempt, verification)`;
+  attempt 1 of job 2 must not match attempt 1 of job 1, and because the count only grows, a verdict, a
+  `CiDeadline`, a `VerifierDeadline` or a `verify` row of an earlier job is stale by the comparison the core already
+  makes. No `job` field was added to any of them.
+- **What is cleared** for the new job: `results`, `pushed`, `summary`, `hold`, `branch_problem`, `task` (the new job's
+  task is the new message, then accumulates as in the previous status note). A CI report for an earlier job's commit
+  is only a card (`about_the_push` compares the new job's pushed commit).
+- **Rework is unchanged** inside a job; the verifier still gets no reference to earlier tasks
+  ([ADR 0021](0021-context-across-a2a-tasks.md)).
 
 ## Configuration summary
 

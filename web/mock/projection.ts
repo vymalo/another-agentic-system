@@ -122,6 +122,8 @@ export class Projector {
   private readonly said = new Set<string>();
   /** The operations received so far per live surface: every snapshot carries the whole surface. */
   private readonly surfaces = new Map<string, Surface>();
+  /** Which job of the thread the log is in (from 1; `job_started` moves it, ADR 0020). */
+  private jobNumber = 1;
   /** The attempt the agent is on, and the commit it pushed in it (`job` of the snapshot). */
   private attempt = 1;
   private sha: string | undefined;
@@ -143,11 +145,28 @@ export class Projector {
     const gate = this.info.gate;
     if (!gate || gate.require.length === 0) return undefined;
     return {
+      ...(this.jobNumber > 1 ? { number: this.jobNumber } : {}),
       attempt: this.attempt,
       maxAttempts: gate.maxAttempts,
       gate: [...gate.require],
       ...(this.sha !== undefined ? { sha: this.sha } : {}),
     };
+  }
+
+  /**
+   * The thread's next job starts (ADR 0020): the finished one is forgotten (attempt 1, nothing
+   * pushed, no surface to act on). The verification count goes on, as the core's does.
+   */
+  private beginJob(number: number) {
+    this.jobNumber = number;
+    this.attempt = 1;
+    this.sha = undefined;
+    this.state = "queued";
+    this.checksFailed = false;
+    this.interrupt = null;
+    this.failure = null;
+    this.suspended = null;
+    this.surfaces.clear();
   }
 
   private snapshot(): Ev {
@@ -157,6 +176,7 @@ export class Projector {
       snapshot: {
         ...(job ? { job } : {}),
         thread: {
+          ...(this.jobNumber > 1 ? { jobNumber: this.jobNumber } : {}),
           state: this.state,
           title: this.info.title,
           target: {
@@ -290,8 +310,27 @@ export class Projector {
   /** Frames of one log event. `id` (the seq) goes on the last frame, unless a message is open. */
   apply(e: Event, audience: Audience = {}): Frame[] {
     const out: Ev[] = [];
+    // a message on a finished thread starts the next job; so does a bare `job_started` (a
+    // message redelivered to the agent), whose run it opens
+    const finished = this.state === "done" || this.state === "failed" || this.state === "cancelled";
+    const jobStart = e.kind === "job_started" ? Number(e.data.job) : undefined;
+    const begunByMessage = jobStart !== undefined && jobStart === this.jobNumber;
+    if (!this.run && finished && e.kind === "user_message") this.beginJob(this.jobNumber + 1);
+    if (jobStart !== undefined && jobStart !== this.jobNumber) this.beginJob(jobStart);
+    const wasOpen = this.run !== null;
     if (!this.run && e.kind !== "user_message" && e.kind !== "thread_state") this.openRun(e, out);
     switch (e.kind) {
+      case "job_started": {
+        out.push({
+          type: "ACTIVITY_SNAPSHOT",
+          messageId: `job-${jobStart}`,
+          activityType: "vymalo.job",
+          content: { job: jobStart },
+          metadata: actorMeta(e),
+        });
+        if (!begunByMessage && wasOpen) out.push(this.snapshot());
+        break;
+      }
       case "user_message": {
         if (!this.run) this.openRun(e, out);
         // a message during a verification abandons it
@@ -534,7 +573,10 @@ export class Projector {
         this.state = "queued";
         out.push({
           type: "ACTIVITY_SNAPSHOT",
-          messageId: `rework-${this.attempt}`,
+          messageId:
+            this.jobNumber > 1
+              ? `rework-j${this.jobNumber}-${this.attempt}`
+              : `rework-${this.attempt}`,
           activityType: "vymalo.rework",
           content: { ...e.data },
           replace: true,

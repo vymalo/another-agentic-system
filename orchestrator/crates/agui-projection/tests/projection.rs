@@ -860,3 +860,167 @@ fn a_running_thread_has_a_run_open_and_nothing_to_answer() {
     assert!(view.run_open);
     assert!(view.open_interrupts.is_empty());
 }
+
+// ---- a thread is a conversation (ADR 0020) ----------------------------------------------------
+
+fn job_started(seq: i64, job: u32) -> Event {
+    ev(
+        seq,
+        Actor::system(),
+        EventBody::JobStarted(orch_core::JobStartedData { job }),
+    )
+}
+
+/// A job that ran to `done`, the log's first five events.
+fn finished_job() -> Vec<Event> {
+    vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        status(3, AgentStatus::Completed, None),
+        thread(4, ThreadState::Done),
+    ]
+}
+
+#[test]
+fn a_message_on_a_finished_thread_opens_the_next_jobs_run() {
+    let mut events = finished_job();
+    events.push(user(5, "and now this"));
+    events.push(job_started(6, 2));
+    events.push(status(7, AgentStatus::Working, None));
+    events.push(status(8, AgentStatus::Completed, None));
+    events.push(thread(9, ThreadState::Done));
+    let got = all_lines(&events);
+    let second: Vec<&String> = got
+        .iter()
+        .skip_while(|l| !l.starts_with("RUN_STARTED run-5"))
+        .collect();
+    assert_eq!(second[0], "RUN_STARTED run-5");
+    // The run says which job it is from its first snapshot, and the boundary is an activity.
+    let snapshot = project(&events)[4][1].clone();
+    let orch_agui_proto::Event::StateSnapshot(s) = &snapshot.event else {
+        panic!("{snapshot:?}");
+    };
+    assert_eq!(
+        s.snapshot,
+        serde_json::json!({"thread": {
+            "jobNumber": 2, "state": "queued", "title": "a thread", "target": {"agentId": "plain"}
+        }})
+    );
+    assert!(
+        second
+            .iter()
+            .any(|l| l.starts_with("ACTIVITY_SNAPSHOT job-2 vymalo.job {\"job\":2}")),
+        "{second:?}"
+    );
+    assert_eq!(
+        second.last().unwrap().as_str(),
+        "RUN_FINISHED run-5 success  id:9"
+    );
+    // The first job's frames are what they were, with no job number.
+    assert!(
+        !got[..got.iter().position(|l| l == "RUN_STARTED run-5").unwrap()]
+            .iter()
+            .any(|l| l.contains("jobNumber"))
+    );
+}
+
+#[test]
+fn a_redelivered_message_opens_its_run_at_the_job_boundary() {
+    // No `user_message`: it is in the log already, in the job before.
+    let mut events = finished_job();
+    events.push(job_started(5, 2));
+    events.push(status(6, AgentStatus::Working, None));
+    events.push(status(7, AgentStatus::Completed, None));
+    events.push(thread(8, ThreadState::Done));
+    let got = all_lines(&events);
+    let second: Vec<&String> = got
+        .iter()
+        .skip_while(|l| !l.starts_with("RUN_STARTED run-5"))
+        .collect();
+    assert_eq!(second[0], "RUN_STARTED run-5");
+    assert_eq!(second[1], "STATE_SNAPSHOT queued");
+    assert!(second[2].starts_with("ACTIVITY_SNAPSHOT job-2 vymalo.job"));
+}
+
+#[test]
+fn the_next_job_forgets_the_surfaces_the_attempt_and_the_commit_of_the_last() {
+    use support::log::{gate, meta_under};
+    let push = |seq: i64| {
+        ev(
+            seq,
+            plain(),
+            EventBody::Artifact(ArtifactData {
+                name: "branch".to_owned(),
+                mime_type: None,
+                uri: None,
+                text: Some(
+                    serde_json::json!({
+                        "repository": "https://github.com/o/r.git",
+                        "branch": "agent/x",
+                        "commit": "a".repeat(40)
+                    })
+                    .to_string(),
+                ),
+            }),
+        )
+    };
+    let mut projector = Projector::new(meta_under(gate()));
+    let mut feed = |e: Event| projector.apply(&e, Audience::Viewer);
+    feed(user(1, "go"));
+    feed(status(2, AgentStatus::Working, None));
+    feed(push(3));
+    feed(ev(
+        4,
+        Actor::system(),
+        EventBody::Rework(orch_core::ReworkData {
+            attempt: 2,
+            max_attempts: 3,
+            findings: vec![],
+        }),
+    ));
+    feed(status(5, AgentStatus::Completed, None));
+    let done = feed(ev(
+        6,
+        Actor::system(),
+        EventBody::CheckResult(orch_core::CheckResult {
+            source: orch_core::CheckSource::AgentChecks,
+            name: None,
+            attempt: 2,
+            commit: Some("a".repeat(40)),
+            status: orch_core::CheckStatus::Passed,
+            summary: None,
+            stale: false,
+            findings: vec![],
+        }),
+    ));
+    drop(done);
+    feed(thread(7, ThreadState::Done));
+    let opened = feed(user(8, "again"));
+    let orch_agui_proto::Event::StateSnapshot(s) = &opened[1].event else {
+        panic!("{opened:?}");
+    };
+    assert_eq!(
+        s.snapshot["job"],
+        serde_json::json!({"number": 2, "attempt": 1, "maxAttempts": 3, "gate": ["agent_checks"]})
+    );
+    assert_eq!(s.snapshot["thread"]["jobNumber"], 2);
+    // An attempt 2 in job 2 has an id of its own (job 1's was `rework-2`).
+    feed(job_started(9, 2));
+    feed(status(10, AgentStatus::Working, None));
+    let rework = feed(ev(
+        11,
+        Actor::system(),
+        EventBody::Rework(orch_core::ReworkData {
+            attempt: 2,
+            max_attempts: 3,
+            findings: vec![],
+        }),
+    ));
+    assert!(
+        lines(&rework)
+            .iter()
+            .any(|l| l.starts_with("ACTIVITY_SNAPSHOT rework-j2-2 vymalo.rework")),
+        "{:?}",
+        lines(&rework)
+    );
+}

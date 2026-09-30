@@ -200,8 +200,18 @@ async fn an_answer_unblocks_a_job(backend: Backend) {
             .collect::<Vec<_>>(),
         [json!("mcp"), json!("mcp")]
     );
-    let (is_error, _) = call(&alice, "answer", json!({"job_id": job, "text": "again"})).await;
-    assert!(is_error);
+    // A message to a finished job starts the thread's next job, on any replica (ADR 0020).
+    let (is_error, next) = call(&alice, "answer", json!({"job_id": job, "text": "again"})).await;
+    assert!(!is_error, "{next}");
+    assert_eq!(next["job"], 2);
+    wait_state(&alice, &job, "done").await;
+    let events = world.chat(&orch).events(&job).await;
+    assert_eq!(
+        events.iter().filter(|e| e["kind"] == "job_started").count(),
+        1
+    );
+    let (_, summary) = call(&alice, "get_job", json!({"job_id": job})).await;
+    assert_eq!(summary["job"], 2);
 }
 
 /// `cancel_job` reaches the agent through the dispatcher.

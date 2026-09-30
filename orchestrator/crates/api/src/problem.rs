@@ -130,7 +130,10 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         ErrorClass::Invalid => (Problem::bad_request(err.to_string()), None),
         ErrorClass::Rejected => {
             let detail = match err {
-                AppError::Finished => "Thread is finished; start a new one".to_owned(),
+                AppError::Finished => {
+                    "This card belongs to a finished request; write a message to start the next one"
+                        .to_owned()
+                }
                 other => other.to_string(),
             };
             (Problem::new(StatusCode::CONFLICT, detail), None)

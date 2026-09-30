@@ -36,6 +36,7 @@ macro_rules! thread_store_conformance {
             inbox_counts_only_the_claims_that_failed
             inbox_only_commit_finishes_the_row_and_leaves_the_thread_alone
             verify_rows_are_unordered_and_keep_their_task_on_the_row
+            a_commit_can_finish_the_claimed_row_with_what_it_writes
         );
     };
     (@cases $make:path; $($case:ident)*) => {

@@ -20,7 +20,8 @@ pub enum ToolName {
     GetJob,
     /// Follows a job until it is over or blocked, with progress notifications.
     WaitForJob,
-    /// Sends a message to a job (an answer to a question, or a follow-up).
+    /// Sends a message to a job (an answer to a question, a follow-up, or the next request on a
+    /// finished job, which starts the thread's next job).
     Answer,
     /// Cancels a job.
     CancelJob,
@@ -67,12 +68,14 @@ impl ToolName {
                  instead of starting another, and a different request is refused."
             }
             ToolName::GetJob => {
-                "Summarise a job: its state, attempt, the branch and commit the agent pushed, the \
-                 pull request, the last CI result and any findings that failed a check."
+                "Summarise a job: its state, which job of the thread it is (job), the attempt, the \
+                 branch and commit the agent pushed, the pull request, the last CI result and any \
+                 findings that failed a check. All of it is about the thread's current job."
             }
             ToolName::WaitForJob => {
                 "Wait for a job: returns when it is finished or blocked (waiting for your answer), \
-                 or after timeout_secs, with the same summary as get_job plus outcome \
+                 or after timeout_secs (a finished job is not the end of the thread: answer starts \
+                 the next job, and you wait again), with the same summary as get_job plus outcome \
                  (finished, blocked, timed_out, interrupted) and resume_after_seq. Progress \
                  notifications report each event as it happens when the request has a \
                  progressToken; without one the wait is cut to the server's heartbeat interval \
@@ -82,10 +85,13 @@ impl ToolName {
             }
             ToolName::Answer => {
                 "Send a message to a job: the answer to a question the agent asked (state \
-                 blocked), or a follow-up while it works. Refused when the job is finished."
+                 blocked), or a follow-up while it works. A message to a finished job (done, \
+                 failed or cancelled) starts the thread's next job with the same agent and the \
+                 same job_id; the answer says which job (job). Wait for it again."
             }
             ToolName::CancelJob => {
-                "Cancel a job. Cancelling a job that is already finished changes nothing."
+                "Cancel the job that is running. Cancelling a job that is already finished \
+                 changes nothing; a later answer still starts the next job."
             }
         }
     }

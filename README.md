@@ -85,6 +85,8 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0017](docs/decisions/0017-ci-results-by-webhook.md) | CI results by webhook: a GitHub adapter and a generic signed shape. *Generic route built (slice 6); GitHub adapter planned* |
 | [0018](docs/decisions/0018-verification-gate-and-rework-loop.md) | Configurable verification gate (CI, agent checks, verifier agent) and a bounded rework loop; refines 0002. *Built for the agent's own checks (slices 2, 3) and the verifier agent (slice 10); CI built (slice 6)* |
 | [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Tools, bearer tokens and `wait_for_job` built; OIDC planned* |
+| [0020](docs/decisions/0020-a-thread-is-a-conversation.md) | A thread is a conversation: a message on a finished thread starts its next job (`Job.number`, `job_started`); amends 0012, 0016, 0018, 0019 |
+| [0021](docs/decisions/0021-context-across-a2a-tasks.md) | Context across A2A tasks: same context, `referenceTaskIds` of the previous task on every new task of a thread, never for the verifier |
 
 ## Local development
 

@@ -164,7 +164,7 @@ describe("ChatShell over AG-UI", () => {
     expect(push).not.toHaveBeenCalled();
   });
 
-  it("a finished thread is replayed from the connect stream: transcript, PR, Done, no composer", async () => {
+  it("a finished thread is replayed from the connect stream: transcript, PR, Done, and the composer stays open", async () => {
     const id = await makeThread("Implement the thing");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
@@ -175,13 +175,72 @@ describe("ChatShell over AG-UI", () => {
     const pr = transcript.getByRole("link", { name: "Pull request acme/demo#1" });
     expect(pr.getAttribute("href")).toBe("https://github.com/acme/demo/pull/1");
     expect(transcript.getAllByText("coder · coder-r47").length).toBeGreaterThan(0);
-    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(true);
-    expect(screen.getByText(/This thread is done\./)).toBeTruthy();
+    // a thread never locks (ADR 0020): the box is there, ready for the next request
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+    expect(box.placeholder).toBe("Send a follow-up…");
+    expect(screen.queryByText(/This thread is done/)).toBeNull();
+    expect(screen.queryByText(/Start a new thread/)).toBeNull();
     // replay: one connect, and the finished thread needs no more than that
     await new Promise((r) => setTimeout(r, 50));
     expect(calls.filter((c) => c.includes("/connect"))).toEqual([
       `GET /agui/threads/${id}/connect 200`,
     ]);
+  });
+
+  it("a follow-up after Done starts the next job in the same conversation: both jobs stay in the transcript", async () => {
+    const id = await makeThread("echo hi");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+    fireEvent.change(box, { target: { value: "echo and now the tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const transcript = within(log());
+    await waitFor(() => transcript.getByText("echo and now the tests"));
+    await waitFor(() => expect(transcript.getAllByText("Completed")).toHaveLength(2));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    // the first job is still there, the second job's answer is under the second message
+    expect(transcript.getAllByText("echo hi")).toHaveLength(1);
+    expect(transcript.getAllByRole("link", { name: "Pull request acme/demo#1" })).toHaveLength(2);
+    // one POST, the follow-up: the first job was not sent again
+    expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
+      "POST /agui/agents/coder 200",
+    ]);
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
+  it("a thread that was stopped takes the next message too", async () => {
+    const id = await makeThread("slow work", "reviewer", true);
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Working…"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "echo go on" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    await waitFor(() => within(log()).getByText("echo go on"));
+  });
+
+  it("while the agent works the box is open for drafting, Enter does not send, and the button says Stop", async () => {
+    const id = await makeThread("slow work", "reviewer", true);
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Working…"));
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    fireEvent.change(box, { target: { value: "a draft for later" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([]);
+    expect(box.value).toContain("a draft for later");
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
+    // the draft is still there, and the button is Send again
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe(
+      "a draft for later",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   });
 
   it("Export JSON downloads the whole thread as a file, through the API client", async () => {
@@ -306,8 +365,9 @@ describe("ChatShell over AG-UI", () => {
     const id = await makeThread("ask pick a branch");
     shell(id);
     await screen.findByText("Waiting for your answer.");
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe("Reply…");
     // the question is the runtime's interrupt, which arrives a moment after the thread state does
-    await screen.findByText("Which branch?");
+    await screen.findByText(/Which branch\?/);
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "main" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
@@ -327,7 +387,7 @@ describe("ChatShell over AG-UI", () => {
     // stream; that pause must not take the send, whose events are already here, with it.
     const id = await makeThread("ask pick a branch");
     shell(id);
-    await screen.findByText("Which branch?");
+    await screen.findByText(/Which branch\?/);
     let release = () => {};
     holding = {
       key: "POST /agui/agents/coder",
@@ -350,7 +410,7 @@ describe("ChatShell over AG-UI", () => {
     const id = await makeThread("ask pick a branch");
     shell(id);
     await screen.findByText("Waiting for your answer.");
-    await screen.findByText("Which branch?");
+    await screen.findByText(/Which branch\?/);
     failing = {
       key: "POST /agui/agents/coder",
       status: 409,
@@ -369,7 +429,7 @@ describe("ChatShell over AG-UI", () => {
     const id = await makeThread("ui pick one", "reviewer");
     shell(id);
     const ui = await screen.findByRole("region", { name: "Interface from reviewer" });
-    await waitFor(() => expect(stateBadge().textContent).toBe("Waiting for you"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Your turn"));
     expect(within(ui).getByText("Pick one")).toBeTruthy();
     const goButton = await within(ui).findByRole("button", { name: "Go" });
     await waitFor(() => expect((goButton as HTMLButtonElement).disabled).toBe(false));
@@ -392,7 +452,7 @@ describe("ChatShell over AG-UI", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
-    expect(screen.getByText(/This thread is finished/)).toBeTruthy();
+    expect(screen.getByText(/This request is finished/)).toBeTruthy();
   });
 
   it("a finished thread shows its surface read-only, and the button says why", async () => {
@@ -420,7 +480,7 @@ describe("ChatShell over AG-UI", () => {
     expect((within(ui).getByRole("button", { name: "Go" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    expect(within(ui).getByText(/This thread is finished/)).toBeTruthy();
+    expect(within(ui).getByText(/This request is finished/)).toBeTruthy();
     expect(calls.filter((c) => c.startsWith("POST"))).toEqual([]);
   });
 
@@ -448,12 +508,16 @@ describe("ChatShell over AG-UI", () => {
   it("Cancel asks the orchestrator; the run ends cancelled and the runtime shows it", async () => {
     const id = await makeThread("slow work", "reviewer", true);
     shell(id);
-    await waitFor(() => expect(stateBadge().textContent).toBe("Working"));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(stateBadge().textContent).toBe("Cancelled"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Working…"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
     expect(calls).toContain(`POST /api/threads/${id}/cancel 202`);
     await waitFor(() => expect(within(log()).getAllByText(/Cancelled/).length).toBeGreaterThan(0));
-    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    // stopped is not closed: the next message goes on
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe(
+      "Tell the agent how to go on…",
+    );
   });
 
   it("an unknown thread is not found, and its connect is not retried", async () => {

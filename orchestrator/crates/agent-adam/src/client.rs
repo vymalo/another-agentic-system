@@ -197,6 +197,9 @@ impl AgentClient for LocalAgentClient {
         message.message_id = req.message_id.clone();
         message.context_id = Some(req.context_id.clone());
         message.task_id = req.task_id.clone();
+        if !req.reference_task_ids.is_empty() {
+            message.reference_task_ids = Some(req.reference_task_ids.clone());
+        }
         let task = entry
             .backend
             .submit(caller.clone(), message, req.task_id, Some(req.context_id))

@@ -84,6 +84,7 @@ fn delegate(n: u128) -> NewOutbox {
         payload: OutboxPayload::Delegate {
             text: format!("do {n}"),
             release: None,
+            new_job: false,
         },
     }
 }
@@ -91,7 +92,7 @@ fn delegate(n: u128) -> NewOutbox {
 fn cancel_row(n: u128) -> NewOutbox {
     NewOutbox {
         id: outbox_id(n),
-        payload: OutboxPayload::Cancel,
+        payload: OutboxPayload::Cancel { job: Some(1) },
     }
 }
 
@@ -124,6 +125,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         watches: Vec::new(),
         timers: Vec::new(),
         inbox: None,
+        finishes_outbox: None,
     }
 }
 
@@ -984,6 +986,65 @@ pub async fn commit_after_another_owner_reclaims_is_fenced<S: ThreadStore>(store
     assert_fenced(&store, 1, lease(1, "b", 1)).await;
 }
 
+/// `Commit::finishes_outbox`: the claimed row ends in the same transaction as what the commit
+/// writes (ADR 0020: a redelivered message starts the next job and is done with it), and a commit
+/// that is fenced, or a repeat, finishes nothing.
+pub async fn a_commit_can_finish_the_claimed_row_with_what_it_writes<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let held = claim(&store, "a", t0()).await;
+    assert_eq!(held.len(), 1);
+    let l = held[0].lease().unwrap();
+
+    // a stale claim: nothing written, and the row is not touched
+    let stale = Lease {
+        attempt: l.attempt + 1,
+        ..l.clone()
+    };
+    let mut c = under(
+        commit(ThreadState::Working, vec![user_event("late", None)], vec![]),
+        stale,
+    );
+    c.finishes_outbox = Some(OutboxFinal::Skipped);
+    assert_eq!(
+        store.commit(thread_id(1), 1, c).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+    let row = store.get_outbox(outbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, OutboxStatus::Inflight);
+
+    // the claim holds: the events, the new row and the end of this one are one commit
+    let mut c = under(
+        commit(
+            ThreadState::Queued,
+            vec![user_event("next", Some("finish-1"))],
+            vec![delegate(9)],
+        ),
+        l.clone(),
+    );
+    c.finishes_outbox = Some(OutboxFinal::Skipped);
+    let (record, events) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!((record.version, events.len()), (2, 1));
+    let row = store.get_outbox(outbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(row.status, OutboxStatus::Skipped);
+    assert_eq!(row.lease(), None);
+    let new = store.get_outbox(outbox_id(9)).await.unwrap().unwrap();
+    assert_eq!(new.status, OutboxStatus::Pending);
+    // the claim is gone with the row: the same commit again is fenced, not applied twice
+    let mut again = under(
+        commit(
+            ThreadState::Queued,
+            vec![user_event("next", Some("finish-1"))],
+            vec![],
+        ),
+        l,
+    );
+    again.finishes_outbox = Some(OutboxFinal::Skipped);
+    assert_eq!(
+        store.commit(thread_id(1), 2, again).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+}
+
 pub async fn commit_after_complete_is_fenced<S: ThreadStore>(store: S) {
     // Finished: delivered, dead or skipped rows hold no claim.
     for (n, outcome) in [
@@ -1588,6 +1649,7 @@ fn busy_job() -> Job {
     gate.ci.required = ["build".to_owned()].into();
     gate.verifier = Some(AgentId::new("reviewer"));
     Job {
+        number: 3,
         gate,
         attempt: 2,
         verification: 3,
@@ -1773,8 +1835,8 @@ pub async fn job_is_written_with_the_state<S: ThreadStore>(store: S) {
     assert_eq!(after.version, 3);
 }
 
-/// The events of the gate are stored and read back, and `verifying` is a state a thread can
-/// be in.
+/// The events of the gate (and `job_started`) are stored and read back, and `verifying` is a
+/// state a thread can be in.
 pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
     let sha = "b".repeat(40);
     let bodies = vec![
@@ -1806,6 +1868,7 @@ pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
                 findings: vec!["red".into()],
             }],
         }),
+        EventBody::JobStarted(orch_core::JobStartedData { job: 2 }),
     ];
     let events: Vec<NewEvent> = bodies
         .iter()

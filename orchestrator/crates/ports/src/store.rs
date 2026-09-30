@@ -67,6 +67,10 @@ pub enum OutboxKind {
     Verify,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Payload of an outbox row (stored as JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +81,11 @@ pub enum OutboxPayload {
         text: String,
         /// Selected release channel or revision.
         release: Option<String>,
+        /// The message starts the thread's next job (ADR 0020): it is sent as a new A2A task
+        /// whatever the binding says of the last one. Absent (`false`) in a row written before
+        /// the field existed.
+        #[serde(default, skip_serializing_if = "is_false")]
+        new_job: bool,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -88,8 +97,15 @@ pub enum OutboxPayload {
         /// Selected release channel or revision.
         release: Option<String>,
     },
-    /// Cancel.
-    Cancel,
+    /// Cancel. `job` is the job of the thread the person asked to stop (ADR 0020): a row claimed
+    /// after that job ended and the next began is finished without calling the agent. A row
+    /// written before the field existed has none and means the thread's current job. (Such a row
+    /// was stored as the bare string `"cancel"`; the Postgres codec reads it as `{"cancel": {}}`.)
+    Cancel {
+        /// The job to cancel, when the row says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        job: Option<u32>,
+    },
     /// Ask `verifier` to review `pushed` (ADR 0018). `attempt` and `verification` say which
     /// verification of the job this answers: a row whose verification is over is dropped, and
     /// the verdict it produces carries them, so the core can tell a stale one.
@@ -112,7 +128,7 @@ impl OutboxPayload {
     pub fn kind(&self) -> OutboxKind {
         match self {
             OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
-            OutboxPayload::Cancel => OutboxKind::Cancel,
+            OutboxPayload::Cancel { .. } => OutboxKind::Cancel,
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
         }
     }
@@ -187,6 +203,12 @@ pub struct Commit {
     /// behind the thread's back. It leaves the thread as it is: no version bump, no
     /// `updated_at`, no wakeup.
     pub inbox: Option<InboxLease>,
+    /// With [`lease`](Self::lease): also finish the claimed outbox row as this, in the same
+    /// transaction (and under the same fence). It is how a row that hands its work on (a
+    /// redelivered message that starts the next job, ADR 0020) ends together with what it did,
+    /// so a crash between the two cannot leave the work done and the row claimable again.
+    /// Ignored without a lease and by [`ThreadStore::create_thread`].
+    pub finishes_outbox: Option<OutboxFinal>,
 }
 
 impl Commit {

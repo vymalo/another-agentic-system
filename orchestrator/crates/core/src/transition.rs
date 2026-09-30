@@ -20,7 +20,7 @@ use crate::agent::{AgentTaskState, AgentUpdate};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
-    Origin, ThreadStateData, UserMessageData,
+    JobStartedData, Origin, ThreadStateData, UserMessageData,
 };
 use crate::gate::{
     CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_SUMMARY_BYTES, PushedRef,
@@ -35,7 +35,8 @@ use crate::verify;
 /// Everything that can happen to a thread, already translated to protocol-neutral terms.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
-    /// The user wrote a message (first message, follow-up, or answer to a blocked job).
+    /// The user wrote a message (first message, follow-up, answer to a blocked job, or the next
+    /// request on a finished thread, which starts the thread's next job: ADR 0020).
     UserMessage {
         /// Author.
         user: UserId,
@@ -57,6 +58,15 @@ pub enum Input {
         user: UserId,
         /// What they did.
         action: UiActionData,
+    },
+    /// A user message that is in the log already but whose delegation never reached the agent
+    /// (its outbox row was claimed after the job ended). The dispatcher builds it so that the
+    /// message is not lost (ADR 0020): on a `done` or `failed` thread it starts the next job for
+    /// `text` (the `user_message` event is in the log, so none is appended); on a `cancelled` one
+    /// it changes nothing, because the person asked to stop; on an open thread it delegates.
+    Redeliver {
+        /// The message text.
+        text: String,
     },
     /// The user asked to cancel.
     Cancel {
@@ -127,6 +137,7 @@ impl Input {
         match self {
             Input::UserMessage { .. } => "user message",
             Input::UiAction { .. } => "ui action",
+            Input::Redeliver { .. } => "redelivery",
             Input::Cancel { .. } => "cancel",
             Input::Agent { .. } => "agent update",
             Input::DeliveryFailed { .. } => "delivery failure",
@@ -164,8 +175,13 @@ pub enum Command {
         /// The action.
         action: UiActionData,
     },
-    /// Ask the agent to cancel the running task (outbox kind `cancel`).
-    RequestCancel,
+    /// Ask the agent to cancel the running task (outbox kind `cancel`). `job` is the number of
+    /// the job the person asked to stop: a row claimed after that job ended and the next began
+    /// is finished without touching the agent (ADR 0020).
+    RequestCancel {
+        /// The job to cancel.
+        job: u32,
+    },
     /// Route inbound CI reports for this key to the thread (a row of the `watches` table,
     /// ADR 0016). Idempotent.
     ///
@@ -205,7 +221,8 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TransitionError {
-    /// The thread is finished; the user must start a new one.
+    /// An action on a finished job: its surface belongs to a request that ended, and a person who
+    /// wants something else writes a message (which starts the next job, ADR 0020).
     #[error("thread is finished ({state:?})")]
     Finished {
         /// The terminal state.
@@ -297,6 +314,13 @@ fn user_message(
     ]
 }
 
+fn job_started(job: &Job) -> Command {
+    append(
+        Actor::system(),
+        EventBody::JobStarted(JobStartedData { job: job.number }),
+    )
+}
+
 fn ui_action(user: &UserId, action: &UiActionData) -> Vec<Command> {
     vec![
         append(Actor::user(user), EventBody::UiAction(action.clone())),
@@ -374,9 +398,43 @@ fn decide(
                     user_message(user, text, message_id, run_id, *origin),
                 ))
             }
+            // The thread is a conversation (ADR 0020): the next message is the next job, on the
+            // same agent and under the same gate, whatever state the last one ended in.
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
-                Err(TransitionError::Finished { state })
+                *job = job.next();
+                note_task(job, text);
+                let mut cmds = user_message(user, text, message_id, run_id, *origin);
+                cmds.insert(1, job_started(job));
+                Ok((ThreadState::Queued, cmds))
             }
+        },
+        Input::Redeliver { text } => match state {
+            // The thread moved on while the message waited (an earlier redelivery started the next
+            // job): the message joins that job, as one written during it would, and is sent
+            // after what that job has been told, so it may reach the agent out of the order it
+            // was written in (open question 33).
+            ThreadState::Queued | ThreadState::Working => {
+                note_task(job, text);
+                Ok((state, vec![Command::Delegate { text: text.clone() }]))
+            }
+            ThreadState::Blocked | ThreadState::Verifying => {
+                note_task(job, text);
+                job.hold = None;
+                Ok((
+                    ThreadState::Queued,
+                    vec![Command::Delegate { text: text.clone() }],
+                ))
+            }
+            ThreadState::Done | ThreadState::Failed => {
+                *job = job.next();
+                note_task(job, text);
+                Ok((
+                    ThreadState::Queued,
+                    vec![job_started(job), Command::Delegate { text: text.clone() }],
+                ))
+            }
+            // The person asked to stop: a message they wrote before that stays undelivered.
+            ThreadState::Cancelled => Ok((state, vec![])),
         },
         Input::UiAction { user, action } => match state {
             ThreadState::Queued | ThreadState::Working => Ok((state, ui_action(user, action))),
@@ -390,7 +448,7 @@ fn decide(
         },
         Input::Cancel { .. } => match state {
             ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
-                Ok((state, vec![Command::RequestCancel]))
+                Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
             // cancelled at once.

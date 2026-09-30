@@ -26,6 +26,8 @@ pub enum Call {
         context_id: String,
         /// Task continued, if any.
         task_id: Option<String>,
+        /// The earlier tasks the message says it is about (A2A `referenceTaskIds`, ADR 0021).
+        reference_task_ids: Vec<String>,
         /// Text (for an action: `ui-action <name>`).
         text: String,
         /// The A2UI action delivered instead of text, if any.
@@ -528,6 +530,7 @@ impl AgentClient for ScriptedAgent {
                 message_id: req.message_id.clone(),
                 context_id: req.context_id.clone(),
                 task_id: req.task_id.clone(),
+                reference_task_ids: req.reference_task_ids.clone(),
                 text: text.clone(),
                 action,
                 release: req.release.clone(),

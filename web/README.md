@@ -87,6 +87,7 @@ stateDiagram-v2
   Open --> Reconnecting: the stream ends or breaks (frames after the last id: are discarded)
   Reconnecting --> Connecting: after the backoff, with Last-Event-ID
   Open --> Paused: the thread is finished and everything is loaded
+  Paused --> Open: a message starts the next job (the accepted run opens the stream again)
   Paused --> [*]: stop() (unmount)
   Open --> [*]: stop() (unmount)
 ```
@@ -111,9 +112,18 @@ stateDiagram-v2
 - **Reload is a replay.** There is no history adapter: the connect stream from the start is the
   history, replayed through the same path as live frames, which keeps every activity (see
   [`patches/UPSTREAM.md`](patches/UPSTREAM.md#observed-not-patched)).
-- **Thread state** (the header badge, whether the composer shows Cancel or Send) is the newest
+- **A thread never locks** ([ADR 0020](../docs/decisions/0020-a-thread-is-a-conversation.md)). The
+  composer is never disabled. While a run is live the box is for drafting: Enter does not send
+  (`submitMode: none`), the button says **Stop** (`POST /api/threads/{id}/cancel`) and the draft survives it; once the
+  run has ended the button is Send, and a message on a `done`, `failed` or `cancelled` thread is the next job's first
+  word, in the same transcript. The placeholder says what fits: "Describe the task…" (new), "Reply…" (the agent
+  asked), "Tell the agent how to go on…" (failed or stopped), "Send a follow-up…" (otherwise). Nothing tells the
+  person to start a new thread; the `vymalo.job` marker of a later job draws nothing. A replay that holds several jobs
+  applies their runs one after the other (`live-runs.ts`, `quiesce`: the runtime's transcript lags a render, and a
+  run applied before the earlier one showed would hang off the wrong message).
+- **Thread state** (the header pill, whether the composer shows Stop or Send) is the newest
   `STATE_SNAPSHOT.thread` the agent delivered, else `GET /api/threads/{id}`. `verifying` counts as
-  active, like `working`: the run is open and Cancel is offered. The snapshot also carries `job` and,
+  active, like `working`: the run is open and Stop is offered. The snapshot also carries `job` and,
   for a run that failed, the `RUN_ERROR` code (`ThreadSnapshot.job`, `.failure`).
 - **Interrupts.** The run that ended in an interrupt leaves the runtime holding it
   (`useAgUiInterrupts`); the composer shows its `message` as the question and sends the answer as
@@ -187,7 +197,7 @@ sequenceDiagram
   participant V as Renderers (parts/)
   participant H as Header and composer
   O-->>T: STATE_SNAPSHOT verifying, job {attempt 1, maxAttempts 3, gate, sha}
-  T->>H: state = verifying, job (the badge, "Attempt 1/3")
+  T->>H: state = verifying, job (the pill, "Checking the work…")
   O-->>T: ACTIVITY_SNAPSHOT vymalo.check check-1-1-agent_checks (failed, findings), replace
   T->>R: the same, with the actor folded into the content
   R->>V: the data part, replaced in place by its message id
@@ -195,7 +205,7 @@ sequenceDiagram
   O-->>T: ACTIVITY_SNAPSHOT vymalo.rework rework-2, then SUBAGENT_STARTED, STATE_SNAPSHOT queued (attempt 2)
   R->>V: the divider "Attempt 2 of 3: sent back with 1 finding", then the next attempt's parts
   O-->>T: a check passed, STATE_SNAPSHOT done, RUN_FINISHED success
-  T->>H: state = done, the counter stays "Attempt 2/3"
+  T->>H: state = done (the attempts are in the divider, not in the header)
   Note over O,T: out of attempts: STATE_SNAPSHOT failed, then RUN_ERROR checks_failed
   T->>H: failure = checks_failed: "Checks failed after 3 attempts"
 ```
@@ -205,13 +215,13 @@ stateDiagram-v2
   [*] --> Queued
   Queued --> Working: the agent works
   Working --> Verifying: completed, and the run stays open
-  Verifying --> Queued: a check failed, attempts left (divider, counter + 1)
+  Verifying --> Queued: a check failed, attempts left (divider)
   Verifying --> Done: every required check passed
   Verifying --> Failed: a check failed on the last attempt (Checks failed after N attempts)
-  Verifying --> Cancelled: Cancel
-  Done --> [*]
-  Failed --> [*]
-  Cancelled --> [*]
+  Verifying --> Cancelled: Stop
+  Done --> Queued: a message (the next job)
+  Failed --> Queued: a message
+  Cancelled --> Queued: a message
 ```
 
 The badge follows that lifecycle. A check card has a smaller one of its own: `pending` becomes `passed` or `failed` by
@@ -220,12 +230,11 @@ the same message id (in place, never a second card), and an answer that arrived 
 
 | Piece | Where | What it does |
 |---|---|---|
-| Badge | `state-badge.tsx` | `verifying` has its own label ("Verifying"), colour (`--verifying`, a violet that keeps 4.5:1 in both schemes) and spoken text ("Thread state: Verifying the agent's work") |
-| Attempt counter | `attempt-counter.tsx` | "Attempt 2/3" beside the badge, only while the newest snapshot (or `Thread.job` before the stream) has a `job`; read aloud as "Attempt 2 of 3". It stays after the job ends |
+| State pill | `state-badge.tsx` | One pill, in words a person uses: queued "Starting…", working "Working…", verifying "Checking the work…" (its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), blocked "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise, done "Done", failed "Failed", cancelled "Stopped". There is no attempt counter: attempts show inside the turn, in the rework divider |
 | Check card | `parts/check-card.tsx` | `vymalo.check`: status in words with an icon (Passed, Failed, Pending), the source ("Agent checks", "CI", "Verifier"; an unknown one as it came), the attempt, the short commit (seven hex digits, else cut to 12; the full value in `title`), the CI check `name`, the summary, the findings. One card per source in one verification of one attempt (`check-<attempt>-<verification>-<source>`), replaced in place; a `stale` answer has its own id, a dashed muted card marked "Stale" that says it decided nothing |
 | Findings | `parts/findings-list.tsx` | A list of **plain text**: React text nodes, never `dangerouslySetInnerHTML`, never the markdown renderer, so `<script>`, `**bold**`, `[x](javascript:...)` and `<img onerror>` show as the characters they are. A finding over 240 characters is cut (never in the middle of a surrogate pair) with "Show more" / "Show less" (`aria-expanded`); more than five findings are folded behind "Show all N findings" |
 | Rework divider | `parts/rework-divider.tsx` | `vymalo.rework`: a rule with "Attempt 2 of 3: sent back with N findings" (N is the findings of all sources). The next attempt's `SUBAGENT_STARTED` is the runtime's new invocation, its parts below the rule; the findings themselves are on the check cards above |
-| Checks failed | `composer.tsx` | A finished thread whose run ended in `RUN_ERROR` `checks_failed` says "Checks failed after N attempts" (a destructive notice) where any other finished thread says "This thread is failed." |
+| Checks failed | `composer.tsx` | A failed thread whose run ended in `RUN_ERROR` `checks_failed` says "Checks failed after N attempts" (a destructive notice, with no link to a new thread: write a message to go on); any other finished thread says nothing above the box |
 | Parsing | `lib/agui/vymalo.ts` | `parseCheck` (needs a `source`, an `attempt` >= 1 and a status of pending, passed or failed), `parseRework` (an `attempt` and `maxAttempts`) and `parseJob` return null for anything else, ignore unknown fields, keep only string findings (at most 100 read), and treat `stale` as true only when it is `true`. `lib/findings.ts` holds the shortening |
 
 Not in this slice: the verifier as its own subagent comes with its slice; a check of a source this UI has not heard of is

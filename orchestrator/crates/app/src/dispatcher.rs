@@ -112,6 +112,8 @@ enum Flow {
 struct Loaded {
     ctx: Ctx,
     state: ThreadState,
+    /// The number of the thread's current job (ADR 0020).
+    job: u32,
     binding: orch_ports::AgentBinding,
 }
 
@@ -372,19 +374,24 @@ impl<P: Ports> Dispatcher<P> {
         Ok(Some(Loaded {
             ctx,
             state: thread.state,
+            job: thread.job.number,
             binding,
         }))
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release) = match row.payload.clone() {
-            OutboxPayload::Delegate { text, release } => (SendContent::Text(text), release),
+        let (content, release, new_job) = match row.payload.clone() {
+            OutboxPayload::Delegate {
+                text,
+                release,
+                new_job,
+            } => (SendContent::Text(text), release, new_job),
             OutboxPayload::Action {
                 action,
                 at,
                 release,
-            } => (SendContent::UiAction { action, at }, release),
-            OutboxPayload::Cancel | OutboxPayload::Verify { .. } => {
+            } => (SendContent::UiAction { action, at }, release, false),
+            OutboxPayload::Cancel { .. } | OutboxPayload::Verify { .. } => {
                 return self
                     .finish(
                         &row,
@@ -399,6 +406,7 @@ impl<P: Ports> Dispatcher<P> {
             ctx,
             state,
             binding,
+            ..
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -407,6 +415,36 @@ impl<P: Ports> Dispatcher<P> {
         if state.is_terminal() {
             if row.sent_at.is_some() {
                 return self.finish(&row, OutboxFinal::Delivered).await;
+            }
+            // A message the person wrote while the job was open, behind a delegation that ended
+            // it: the thread is a conversation (ADR 0020), so it is the next job's, not lost. A
+            // person who stopped the thread asked for that; an action belongs to a finished job.
+            if let OutboxPayload::Delegate { text, .. } = &row.payload
+                && state != ThreadState::Cancelled
+            {
+                // The row ends in the same commit as the job it starts: a crash between the two
+                // would leave the message to be sent again on top of the redelivery.
+                let lease = self.lease(&row);
+                return match self
+                    .app
+                    .apply_finishing(
+                        row.thread_id,
+                        Input::Redeliver { text: text.clone() },
+                        format!("redeliver:{}", row.id),
+                        &lease,
+                        OutboxFinal::Skipped,
+                    )
+                    .await
+                {
+                    Ok(ApplyOutcome::Fenced) => Err(DispatchError::Fenced),
+                    Ok(ApplyOutcome::Applied { .. }) => Ok(()),
+                    // written before, and its row not finished: end it now
+                    Ok(ApplyOutcome::Duplicate) => self.finish(&row, OutboxFinal::Skipped).await,
+                    Err(AppError::Transition(TransitionError::InvalidInState { .. })) => {
+                        self.finish(&row, OutboxFinal::Skipped).await
+                    }
+                    Err(e) => Err(e.into()),
+                };
             }
             self.apply_quiet(
                 &row,
@@ -450,17 +488,28 @@ impl<P: Ports> Dispatcher<P> {
             return self.follow_task(&ctx, task_id).await;
         }
 
-        // Continue the previous task only if it is waiting for the user.
+        // Continue the previous task only if it is waiting for the user, and never from a new
+        // job: a thread that failed while blocked keeps its `input-required` task in the
+        // binding, and the next job opens a task of its own.
         let continues = binding.task_id.clone().filter(|_| {
-            binding
-                .task_state
-                .is_some_and(AgentTaskState::is_interrupted)
+            !new_job
+                && binding
+                    .task_state
+                    .is_some_and(AgentTaskState::is_interrupted)
         });
+        // A task that does not continue one waiting for the user is a new task of the thread (a
+        // rework, a follow-up after the turn ended, the first task of a new job): it names the
+        // previous task, so the agent can tell what the message is about (ADR 0021).
+        let reference_task_ids = match (&continues, &binding.task_id) {
+            (None, Some(previous)) => vec![previous.clone()],
+            (Some(_) | None, _) => Vec::new(),
+        };
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             message_id: row.id.to_string(),
             context_id: binding.context_id.clone(),
             task_id: continues.clone(),
+            reference_task_ids,
             content,
             release,
         };
@@ -729,16 +778,31 @@ impl<P: Ports> Dispatcher<P> {
         let Some(Loaded {
             ctx,
             state,
+            job,
             binding,
         }) = self.load(&row).await?
         else {
             return Ok(());
         };
+        // A stop typed during an earlier job must not stop this one (ADR 0020). A row written
+        // before it named its job means the current one.
+        if let OutboxPayload::Cancel { job: Some(asked) } = &row.payload
+            && *asked != job
+        {
+            return self.finish(&row, OutboxFinal::Skipped).await;
+        }
         if state.is_terminal() {
             return self.finish(&row, OutboxFinal::Delivered).await;
         }
 
-        if let Some(task_id) = binding.task_id {
+        // The binding keeps the last task for `referenceTaskIds` after it ended: a stop typed
+        // while the next job has not reached the agent yet is not for that task (the agent would
+        // refuse it, and the job would go on). Only a task that is still running is cancelled;
+        // otherwise what has not been sent is.
+        let running = binding
+            .task_id
+            .filter(|_| !binding.task_state.is_some_and(AgentTaskState::is_terminal));
+        if let Some(task_id) = running {
             let handle = TaskHandle {
                 endpoint: ctx.endpoint.clone(),
                 task_id,

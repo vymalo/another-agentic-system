@@ -83,6 +83,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             version: UiVersion::V0_9_1,
             run_id: None,
         }),
+        EventBody::JobStarted(JobStartedData { job: 2 }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -97,6 +98,72 @@ fn every_kind_roundtrips_and_never_emits_null() {
         let back: Event = serde_json::from_str(&text).unwrap();
         assert_eq!(back, e);
     }
+}
+
+#[test]
+fn job_started_is_the_systems_word_and_carries_the_number() {
+    let e = event(
+        EventBody::JobStarted(JobStartedData { job: 2 }),
+        Actor::system(),
+    );
+    assert_eq!(e.kind(), EventKind::JobStarted);
+    assert_eq!(e.kind().as_str(), "job_started");
+    assert_eq!(
+        serde_json::to_value(&e).unwrap(),
+        json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00.123456Z",
+            "kind": "job_started",
+            "actor": {"type": "system", "name": "orchestrator"},
+            "data": {"job": 2}
+        })
+    );
+    // a job_started without its number does not read
+    assert!(
+        serde_json::from_value::<Event>(json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00Z",
+            "kind": "job_started",
+            "actor": {"type": "system", "name": "orchestrator"},
+            "data": {}
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn a_ledger_without_a_number_is_job_one_and_the_ledger_writes_it() {
+    let job: Job = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(job.number, 1);
+    let old: Job = serde_json::from_value(json!({"attempt": 2, "verification": 3})).unwrap();
+    assert_eq!(old.number, 1);
+    // the ledger always says which job it is (the export shows it), unlike the client's view
+    assert_eq!(serde_json::to_value(Job::default()).unwrap()["number"], 1);
+    let second = old.next();
+    let v = serde_json::to_value(&second).unwrap();
+    assert_eq!(v["number"], 2);
+    assert_eq!(v["attempt"], 1);
+    assert_eq!(v["verification"], 3);
+    assert_eq!(serde_json::from_value::<Job>(v).unwrap(), second);
+}
+
+#[test]
+fn the_view_of_a_later_job_says_which_job_it_is() {
+    let mut job = Job::with_gate(GatePolicy::requiring([CheckSource::AgentChecks]));
+    assert_eq!(
+        serde_json::to_value(job.view().unwrap()).unwrap(),
+        json!({"attempt": 1, "maxAttempts": 3, "gate": ["agent_checks"]})
+    );
+    job = job.next();
+    assert_eq!(
+        serde_json::to_value(job.view().unwrap()).unwrap(),
+        json!({"number": 2, "attempt": 1, "maxAttempts": 3, "gate": ["agent_checks"]})
+    );
+    let read: JobView =
+        serde_json::from_value(json!({"attempt": 1, "maxAttempts": 3, "gate": []})).unwrap();
+    assert_eq!(read.number, 1);
 }
 
 #[test]

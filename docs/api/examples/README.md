@@ -20,6 +20,8 @@ the log itself, which the AG-UI streams below project.)
 | `verify-verifier-red.events.json` | `verify-reviewed`, the same gate, a verifier that rejects every commit: three attempts, two `rework`s, then the `error` and `thread_state: failed` | `failed`, `checks_failed` |
 | `ci.events.json` | `verify-ci` on the fake agent (it pushes a `branch` artifact and leaves the checking to CI), under a gate that requires CI (`plain` has `gate: {require: [ci]}`), with the test playing the CI system through `App::receive` and the inbox worker: a red `ci/build` for commit `…01` (`ci_result`, `check_result` failed, `rework`), the agent goes again and pushes `…02`, a green `ci/build` for it (ADR 0017) | `done`, attempt 2 of 3 |
 | `a2ui.events.json` | `ui`, on an agent whose card lists the A2UI extension: a surface in two artifacts (`ui_surface` twice), the question, then the user's action through the AG-UI run route (`ui_action`) and the answer | `done` |
+| `followup.events.json` | `echo hi`, then the follow-up `echo now add tests` on the finished thread: a message on a `done` thread starts job 2 (`user_message`, `job_started`), a new task on the same context (ADR 0020) | `done`, job 2 |
+| `followup-after-cancel.events.json` | `slow work`, Cancel, then the follow-up `echo never mind, do this`: a stopped thread is not closed either | `done`, job 2 |
 
 Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>` and an agent
 message's `messageId` is `<message-id>`.

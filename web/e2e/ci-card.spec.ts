@@ -53,6 +53,6 @@ test("a report of an older push is a card of its own next to the current one", a
 
 test("a thread that waits for CI has no report card yet", async ({ page }) => {
   await startThread(page, "verify-wait ship it", "Reviewer");
-  await expect(badge(page)).toHaveText("Verifying");
+  await expect(badge(page)).toHaveText("Checking the work…");
   await expect(reports(page)).toHaveCount(0);
 });

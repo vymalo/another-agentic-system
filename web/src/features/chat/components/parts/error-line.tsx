@@ -16,7 +16,7 @@ export function ErrorLine({ data }: { data: ErrorContent }) {
       </AlertTitle>
       <AlertDescription className="flex flex-wrap items-baseline justify-between gap-x-3">
         <span>
-          {data.retryable ? "You can send a message to retry." : "Start a new thread to try again."}
+          {data.retryable ? "You can send a message to retry." : "Write a message to try again."}
         </span>
         <ActorLabel actor={data.actor} />
       </AlertDescription>

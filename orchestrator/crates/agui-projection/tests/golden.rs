@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 12] = [
+const SCENARIOS: [&str; 14] = [
     "echo",
     "ask",
     "cancel",
@@ -35,6 +35,8 @@ const SCENARIOS: [&str; 12] = [
     "verify-verifier-green",
     "verify-verifier-red",
     "ci",
+    "followup",
+    "followup-after-cancel",
 ];
 
 fn examples_dir() -> PathBuf {

@@ -143,6 +143,7 @@ pub fn describe(event: &Event) -> Option<String> {
             format!("check {}: {:?}", c.source.as_str(), c.status).to_lowercase()
         }
         EventBody::Rework(r) => format!("rework: attempt {} of {}", r.attempt, r.max_attempts),
+        EventBody::JobStarted(j) => format!("job {} started", j.job),
     };
     Some(format!("#{} {}", event.seq, one_line(&text)))
 }

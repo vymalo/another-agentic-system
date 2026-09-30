@@ -3,21 +3,19 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useExportThread } from "@/features/chat/hooks/use-export-thread";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
-import type { JobView } from "@/features/chat/lib/agui/vymalo";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
-import { AttemptCounter } from "./attempt-counter";
 import { ExportThreadButton } from "./export-thread-button";
 import { StateBadge } from "./state-badge";
 
 type Props = {
   thread: ApiThread | null;
   state: ThreadState | undefined;
-  /** Where the job stands under a verification gate; null without one. */
-  job: JobView | null;
   connection: Connection;
+  /** The agent asked something and waits for the answer: a blocked thread is then "Your turn". */
+  waiting: boolean;
 };
 
-export function ThreadHeader({ thread, state, job, connection }: Props) {
+export function ThreadHeader({ thread, state, connection, waiting }: Props) {
   const target = thread
     ? [thread.target.agentId, thread.target.release].filter(Boolean).join(" · ")
     : null;
@@ -44,8 +42,7 @@ export function ThreadHeader({ thread, state, job, connection }: Props) {
               Reconnecting…
             </Badge>
           ) : null}
-          <AttemptCounter job={job} />
-          <StateBadge state={state} />
+          <StateBadge state={state} needsAnswer={waiting} />
           <ExportThreadButton exporter={exporter} disabled={thread === null} />
         </div>
       </header>

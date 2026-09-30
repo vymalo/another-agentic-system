@@ -3,14 +3,6 @@
 
 use orch_core::*;
 
-/// The gate is off in these tests (the default job), so the state alone decides: the shim keeps
-/// every case below as it was before the job existed.
-fn transition(
-    state: &ThreadState,
-    input: &Input,
-) -> Result<(ThreadState, Vec<Command>), TransitionError> {
-    orch_core::transition(&Snapshot::new(*state), input).map(|(next, cmds)| (next.state, cmds))
-}
 use proptest::prelude::*;
 
 fn arb_task_state() -> impl Strategy<Value = AgentTaskState> {
@@ -93,6 +85,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
         Just(Input::CancelledBeforeStart),
         (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected { reason, retryable }),
+        "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text }),
     ]
 }
 
@@ -110,14 +103,41 @@ fn complete() -> Input {
 proptest! {
     #[test]
     fn invariants_hold_over_random_sequences(inputs in proptest::collection::vec(arb_input(), 0..40)) {
-        let mut state = ThreadState::Queued;
+        let mut snap = Snapshot::new(ThreadState::Queued);
         for input in inputs {
-            match transition(&state, &input) {
-                Ok((next, cmds)) => {
-                    // (a) terminal states are absorbing.
+            let state = snap.state;
+            match orch_core::transition(&snap, &input) {
+                Ok((next_snap, cmds)) => {
+                    let next = next_snap.state;
+                    let starts_job = matches!(input, Input::UserMessage { .. } | Input::Redeliver { .. });
+                    // (a) a finished job absorbs every input except a message, which starts
+                    // the next job (ADR 0020): job n+1, attempt 1, the same gate, the
+                    // verification count not reset.
                     if state.is_terminal() {
-                        prop_assert_eq!(next, state);
+                        let restarts = starts_job && !(state == ThreadState::Cancelled && matches!(input, Input::Redeliver { .. }));
+                        if restarts {
+                            prop_assert_eq!(next, ThreadState::Queued);
+                            prop_assert_eq!(next_snap.job.number, snap.job.number + 1);
+                            prop_assert_eq!(next_snap.job.attempt, 1);
+                            prop_assert_eq!(&next_snap.job.gate, &snap.job.gate);
+                            prop_assert_eq!(next_snap.job.verification, snap.job.verification);
+                            let started = cmds.iter().any(|c| matches!(c,
+                                Command::Append(d) if d.body == EventBody::JobStarted(JobStartedData { job: next_snap.job.number })));
+                            prop_assert!(started);
+                            let delegations = cmds.iter().filter(|c| matches!(c, Command::Delegate { .. })).count();
+                            prop_assert_eq!(delegations, 1);
+                        } else {
+                            prop_assert_eq!(next, state);
+                            prop_assert_eq!(&next_snap.job, &snap.job);
+                        }
+                    } else {
+                        // The job number only moves when a job starts from a finished thread.
+                        prop_assert_eq!(next_snap.job.number, snap.job.number);
                     }
+                    // `job_started` is appended exactly when the number moved.
+                    let started = cmds.iter().filter(|c| matches!(c,
+                        Command::Append(d) if matches!(d.body, EventBody::JobStarted(_)))).count();
+                    prop_assert_eq!(started, usize::from(next_snap.job.number != snap.job.number));
                     // (b) thread_state events name the resulting state and only mark entry.
                     for cmd in &cmds {
                         if let Command::Append(d) = cmd
@@ -137,15 +157,14 @@ proptest! {
                             Command::Append(d) if matches!(&d.body, EventBody::ThreadState(t) if t.state == next)));
                         prop_assert!(announced);
                     }
-                    state = next;
+                    snap = next_snap;
                 }
                 Err(TransitionError::Finished { state: s }) => {
-                    // (c) only a user message (or an action, which answers like one) on a
-                    // finished thread.
+                    // (c) only an action, which belongs to the finished job, is refused on a
+                    // finished thread: a message starts the next job.
                     prop_assert!(s.is_terminal() && s == state);
-                    let is_user_message =
-                        matches!(input, Input::UserMessage { .. } | Input::UiAction { .. });
-                    prop_assert!(is_user_message);
+                    let is_action = matches!(input, Input::UiAction { .. });
+                    prop_assert!(is_action);
                 }
                 Err(TransitionError::InvalidInState { state: s, .. }) => {
                     prop_assert!(s.is_terminal() && s == state);
@@ -156,9 +175,9 @@ proptest! {
             }
         }
         // (d) from every non-terminal state, `Completed` reaches Done.
-        if !state.is_terminal() {
-            let (next, _) = transition(&state, &complete()).unwrap();
-            prop_assert_eq!(next, ThreadState::Done);
+        if !snap.state.is_terminal() {
+            let (next, _) = orch_core::transition(&snap, &complete()).unwrap();
+            prop_assert_eq!(next.state, ThreadState::Done);
         }
     }
 }

@@ -17,7 +17,7 @@ test("a dropped stream resumes without duplicates", async ({ page }) => {
   await startThread(page, "gate reconnect", "Plain");
   await waitForExecution(page.request, "plain", "gate reconnect");
   const log = page.getByRole("log", { name: "Conversation" });
-  await expect(badge(page)).toHaveText("Working");
+  await expect(badge(page)).toHaveText("Working…");
 
   proxy.block();
   await expect(page.getByText("Reconnecting…")).toBeVisible();

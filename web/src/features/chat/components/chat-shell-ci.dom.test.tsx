@@ -134,7 +134,7 @@ describe("CI results, in the app", () => {
     ].map((n) => n.getAttribute("data-slot"));
     expect(order).toEqual(["check-card", "ci-card", "rework-divider", "check-card", "ci-card"]);
     expect(screen.queryByText("Pending")).toBeNull();
-    expect(screen.getByText(/This thread is done\./)).toBeTruthy();
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
   });
 
   it("a fresh page shows the same cards, none doubled", async () => {
@@ -189,11 +189,11 @@ describe("CI results, in the app", () => {
   it("a thread that waits for CI has no report card yet", async () => {
     const id = await makeThread("verify-wait ship it");
     shell(id);
-    await waitFor(() => expect(stateBadge().textContent).toBe("Verifying"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Checking the work…"));
     await waitFor(() => expect(checks()).toHaveLength(2));
     expect(reports()).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(stateBadge().textContent).toBe("Cancelled"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
   });
 
   it("a thread without a gate has no report card", async () => {

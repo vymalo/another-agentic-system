@@ -425,7 +425,7 @@ describe("actions: a control acts on a click of its own and on nothing else", ()
   it("a control that cannot act is disabled, says why once, and a click on it does nothing", async () => {
     for (const [host, why] of [
       [{ canSend: false, state: "working" as const }, /work while the thread waits for you/],
-      [{ canSend: false, canCompose: false, state: "done" as const }, /This thread is finished/],
+      [{ canSend: false, canCompose: false, state: "done" as const }, /This request is finished/],
     ] as const) {
       const send = vi.fn();
       const m = mountSurfaces({ send, ...host });

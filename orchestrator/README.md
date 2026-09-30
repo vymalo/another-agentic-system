@@ -302,16 +302,22 @@ the service stopped or panicked, 1 anything else.
 - **One user identity source.** The proxy header, or the dev user. No sessions,
   no roles: a user sees exactly their own threads.
 - **Every replica migrates.** Boot runs the embedded migrations; sqlx's
-  advisory lock serialises replicas, so a rolling update is safe. There is no
-  separate migration job.
+  advisory lock serialises replicas. There is no separate migration job. **A rolling update is not safe for the
+  release that adds `job_started`** ([ADR 0020](../docs/decisions/0020-a-thread-is-a-conversation.md)): an older
+  replica cannot read the new event kind or an outbox `cancel` row that names its job, still answers a follow-up on a
+  finished thread with 409, and writes `threads.job` back without `job.number` (the thread is job 1 again, and job
+  2's ids repeat). Stop the old replicas, or upgrade in two steps (every replica to a build that only reads the new
+  shapes, then the release that writes them), before any traffic reaches the new one.
 - **Polling backs up every wakeup.** `LISTEN/NOTIFY` makes things prompt, but
   the dispatcher and the SSE streams also poll, so a lost notification only
   costs latency.
 - **One agent per thread, no planner.** A thread delegates to the agent chosen
   at creation; the planner, reviewers and other inputs are later MVP steps (the verify/rework gate is built: the
   agent's own checks and a verifier agent).
-- **Follow-ups on a `done` thread are refused (409)** rather than starting a new
-  task; start a new thread.
+- **A message on a finished thread starts its next job** (`done`, `failed` or `cancelled`: a new A2A task in the
+  same context that names the previous task, [ADR 0020](../docs/decisions/0020-a-thread-is-a-conversation.md),
+  [ADR 0021](../docs/decisions/0021-context-across-a2a-tasks.md)). Only an A2UI action on a card of a finished
+  request is refused (409). The gate stays the thread's, fixed at creation.
 
 ## Contract issues found while implementing
 

@@ -184,6 +184,44 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // a thread is a conversation (ADR 0020): a message on a finished thread starts its next job
+    followup: async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "echo hi" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "done");
+      const second = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-6",
+        messages: [{ id: "evt-6", role: "user", content: "echo now add tests" }],
+      });
+      expect(second.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
+    // a stopped thread is not closed either
+    "followup-after-cancel": async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "slow work" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "working");
+      expect((await fetch(`${base}/api/threads/${id}/cancel`, { method: "POST" })).status).toBe(
+        202,
+      );
+      await waitForState(id, "cancelled");
+      const second = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-5",
+        messages: [{ id: "evt-5", role: "user", content: "echo never mind, do this" }],
+      });
+      expect(second.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,

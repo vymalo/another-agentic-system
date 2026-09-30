@@ -19,7 +19,7 @@ test.describe("A2UI surfaces", () => {
       }
     });
     await startThread(page, "ui pick one", "Reviewer");
-    await expect(badge(page)).toHaveText("Waiting for you");
+    await expect(badge(page)).toHaveText("Your turn");
 
     const ui = surfaceOf(page);
     await expect(ui).toBeVisible();
@@ -60,13 +60,13 @@ test.describe("A2UI surfaces", () => {
     page,
   }) => {
     await startThread(page, "ui pick one", "Reviewer");
-    await expect(badge(page)).toHaveText("Waiting for you");
+    await expect(badge(page)).toHaveText("Your turn");
     await surfaceOf(page).getByRole("button", { name: "Go" }).click();
     await expect(badge(page)).toHaveText("Done");
 
     const go = surfaceOf(page).getByRole("button", { name: "Go" });
     await expect(go).toBeDisabled();
-    await expect(surfaceOf(page).getByText(/This thread is finished/)).toBeVisible();
+    await expect(surfaceOf(page).getByText(/This request is finished/)).toBeVisible();
 
     await page.reload();
     await expect(badge(page)).toHaveText("Done");

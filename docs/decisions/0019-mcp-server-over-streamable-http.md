@@ -4,7 +4,8 @@
   tokens; see the [status note](#status-note-2026-09-30-slice-11-is-built)) and 12 (`wait_for_job`
   with progress; [status note](#status-note-2026-09-30-slice-12-is-built)); the review fixes
   ([status note](#status-note-2026-09-30-review-fixes)) bound the waits, reserve the job ids and
-  add `start_job.gate`. **Planned, not built:** slice 14 (OIDC, after the MVP)
+  add `start_job.gate`. **Amended 2026-09-30 (threads never lock):** `answer` on a finished job starts the next one, see
+  the [status note](#status-note-2026-09-30-answer-on-a-finished-job-starts-the-next-one). **Planned, not built:** slice 14 (OIDC, after the MVP)
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)). Amends the design sentence "every input
   goes through the inbox" of [`orchestrator.md`](../orchestrator.md#event-flow) for MCP, and the
   "needs the inbox" note of MVP step 6. Refines [ADR 0004](0004-closed-enums-over-dyn-registry.md)
@@ -389,3 +390,17 @@ network connection" and rmcp "failed to send pending response during drain". The
   proxy's first read (about 4 KiB) needs this; the JSON framing alone does not cover it.
 - **Production.** oauth2-proxy is a Go reverse proxy; whether it shows the same race is *unverified*. Give `/mcp` a
   proxy that buffers request bodies, or check it before relying on it.
+
+### Status note, 2026-09-30: `answer` on a finished job starts the next one
+
+[ADR 0020](0020-a-thread-is-a-conversation.md): a thread is a conversation, so `answer` is no longer refused when
+the job is `done`, `failed` or `cancelled`. It starts the thread's next job on the same agent (the job id is still
+the thread id) and returns `{job_id, state, job}`, where `job` is the new job's number. The summary of `get_job`,
+`start_job` and `wait_for_job` gains `job`; `pull_request` looks only at artifacts after the last `job_started`, so
+it never shows an earlier job's pull request; `cancel_job` of a finished job is still a no-op. `wait_for_job` is
+unchanged: it returns when the job is finished or blocked, and a client calls it again after an `answer`. The
+tool descriptions say so. The decision stands.
+
+_Status note, 2026-09-30:_ `answer` has no idempotency key (as before). A retry of an `answer` whose reply was lost,
+made after the job it answered has finished, is a message on a finished thread and therefore starts the next job
+(job n+2 if job n+1 had already finished). A client that retries should call `get_job` first.

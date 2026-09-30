@@ -27,6 +27,9 @@ pub const ACTIVITY_CI: &str = "vymalo.ci";
 /// Activity type of a rework (`vymalo.rework`, ADR 0018): the content is the `rework` event's
 /// data, `{attempt, maxAttempts, findings: [{source, findings}]}`.
 pub const ACTIVITY_REWORK: &str = "vymalo.rework";
+/// Activity type of the start of a thread's next job (`vymalo.job`, ADR 0020): the content is
+/// `{job}`, the number of the job that started (from 2), and its id is `job-<job>`.
+pub const ACTIVITY_JOB: &str = "vymalo.job";
 /// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 

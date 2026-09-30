@@ -528,6 +528,10 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     c.check("exportThread", &r);
     let export = r.json();
     assert_eq!(export["thread"], thread, "`thread` is what getThread says");
+    assert_eq!(
+        export["job"]["number"], 1,
+        "the ledger says which job it is"
+    );
     assert_eq!(export["events"].as_array().unwrap().len(), 5);
     assert_eq!(export["events"][4]["data"]["state"], "done");
     assert_eq!(export["binding"]["agentId"], "coder");

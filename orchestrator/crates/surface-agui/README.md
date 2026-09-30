@@ -102,7 +102,8 @@ serve `tests/contract.rs`.
   its end, earlier runs can be attached to, two concurrent requests with the same ids write one message,
   a retried answer.
 - `tests/refusals.rs`: every status of the table in `docs/api/agui.md` (400, 401, 404, 406, 409, 413,
-  415, 422, 502) as a problem, with nothing written; another owner's thread id.
+  415, 422, 502) as a problem, with nothing written; another owner's thread id; a message on a finished
+  thread is served as the next job (and its retry is an attach, not a third job), a run while another is open is a 409.
 - `tests/connect.rs`: a finished thread replayed and left open (only keepalives while idle), runs that
   come later followed, several viewers each getting the whole stream, a reconnect in the middle of a run
   (the preamble, then the rest once), a reconnect from every resume point of a two-run thread, a cursor

@@ -14,8 +14,8 @@ pub use orch_ports::Received;
 use orch_ports::{
     AgentBinding, AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock,
     Commit, CommitOutcome, IdGen, InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent,
-    NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxPayload, OutboxStats, Ports, StoreError,
-    TIMER_SOURCE, ThreadStore, Topic, Wakeup,
+    NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports,
+    StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
@@ -223,6 +223,17 @@ fn validate_text(text: &str) -> Result<(), AppError> {
 fn default_title(text: &str) -> String {
     let first = text.trim().lines().next().unwrap_or("").trim();
     first.chars().take(DEFAULT_TITLE_CHARS).collect()
+}
+
+/// The claims a commit is made under, and the row it ends with it.
+#[derive(Default)]
+struct Claim<'a> {
+    /// The outbox row the dispatcher works for: a commit after it lost the claim is refused.
+    lease: Option<&'a Lease>,
+    /// The inbox row the input came from, marked applied in the same commit.
+    inbox: Option<&'a InboxLease>,
+    /// With `lease`: how to end that row in the same commit.
+    finishes: Option<OutboxFinal>,
 }
 
 impl<P: Ports> App<P> {
@@ -697,10 +708,11 @@ impl<P: Ports> App<P> {
                     .check()
                     .map_err(|e| AppError::Invalid(format!("invalid action: {e}")))?;
             }
-            // Machine inputs (a CI report, the verifier's verdict, a timer) come from the
+            // Machine inputs (a redelivery, a CI report, the verifier's verdict, a timer) come from the
             // inbox and the dispatcher through `apply`, never from a user's request: a user
             // must not be able to forge a check result.
-            Input::CiReported(_)
+            Input::Redeliver { .. }
+            | Input::CiReported(_)
             | Input::VerifierReported { .. }
             | Input::VerifierFailed { .. }
             | Input::TimerFired(_) => {
@@ -739,6 +751,12 @@ impl<P: Ports> App<P> {
         binding: Option<BindingUpdate>,
         now: Timestamp,
     ) -> Commit {
+        // The delegation a new job sends opens a new A2A task, whatever the binding says of the
+        // last one (ADR 0021): a thread that failed while blocked still has an `input-required`
+        // task, which the next job must not continue.
+        let new_job = cmds.iter().any(|c| {
+            matches!(c, Command::Append(d) if matches!(d.body, orch_core::EventBody::JobStarted(_)))
+        });
         let mut events = Vec::new();
         let mut outbox = Vec::new();
         let mut watches = Vec::new();
@@ -762,6 +780,7 @@ impl<P: Ports> App<P> {
                     payload: OutboxPayload::Delegate {
                         text,
                         release: target.release.clone(),
+                        new_job,
                     },
                 }),
                 Command::DelegateAction { action } => outbox.push(NewOutbox {
@@ -772,9 +791,9 @@ impl<P: Ports> App<P> {
                         release: target.release.clone(),
                     },
                 }),
-                Command::RequestCancel => outbox.push(NewOutbox {
+                Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
-                    payload: OutboxPayload::Cancel,
+                    payload: OutboxPayload::Cancel { job: Some(job) },
                 }),
                 // Both are written in this commit: the watch also re-arms the reports that
                 // were parked waiting for it, and the timer becomes an inbox row that the
@@ -828,6 +847,7 @@ impl<P: Ports> App<P> {
             watches,
             timers,
             inbox: None,
+            finishes_outbox: None,
         }
     }
 
@@ -844,7 +864,31 @@ impl<P: Ports> App<P> {
         binding: Option<BindingUpdate>,
         lease: Option<&Lease>,
     ) -> Result<ApplyOutcome, AppError> {
-        self.apply_fenced(thread, input, key, binding, lease, None)
+        let claim = Claim {
+            lease,
+            ..Claim::default()
+        };
+        self.apply_fenced(thread, input, key, binding, claim).await
+    }
+
+    /// [`apply`](Self::apply) under the claim of an outbox row, which the same commit also ends
+    /// as `finish` (ADR 0020: a redelivered message starts the next job and its row is done in
+    /// one transaction, so a crash cannot leave it claimable after the job started). A repeat
+    /// of the input ([`ApplyOutcome::Duplicate`]) wrote nothing and left the row for the caller.
+    pub async fn apply_finishing(
+        &self,
+        thread: ThreadId,
+        input: Input,
+        key: String,
+        lease: &Lease,
+        finish: OutboxFinal,
+    ) -> Result<ApplyOutcome, AppError> {
+        let claim = Claim {
+            lease: Some(lease),
+            inbox: None,
+            finishes: Some(finish),
+        };
+        self.apply_fenced(thread, input, Some(key), None, claim)
             .await
     }
 
@@ -862,7 +906,11 @@ impl<P: Ports> App<P> {
         lease: &InboxLease,
     ) -> Result<ApplyOutcome, AppError> {
         let key = format!("inbox:{}", lease.id);
-        self.apply_fenced(thread, input, Some(key), None, None, Some(lease))
+        let claim = Claim {
+            inbox: Some(lease),
+            ..Claim::default()
+        };
+        self.apply_fenced(thread, input, Some(key), None, claim)
             .await
     }
 
@@ -872,9 +920,13 @@ impl<P: Ports> App<P> {
         input: Input,
         key: Option<String>,
         binding: Option<BindingUpdate>,
-        lease: Option<&Lease>,
-        inbox: Option<&InboxLease>,
+        claim: Claim<'_>,
     ) -> Result<ApplyOutcome, AppError> {
+        let Claim {
+            lease,
+            inbox,
+            finishes,
+        } = claim;
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
                 .ports
@@ -897,6 +949,7 @@ impl<P: Ports> App<P> {
             );
             commit.lease = lease.cloned();
             commit.inbox = inbox.cloned();
+            commit.finishes_outbox = finishes.clone();
             if commit.events.is_empty()
                 && commit.outbox.is_empty()
                 && commit.binding.is_none()
@@ -909,6 +962,7 @@ impl<P: Ports> App<P> {
                 // store checks the version too, so a "nothing to do" that was decided on a
                 // thread that has moved since is decided again, not written as final.
                 && inbox.is_none()
+                && finishes.is_none()
             {
                 return Ok(ApplyOutcome::Applied {
                     thread: record,
@@ -1103,6 +1157,7 @@ impl<P: Ports> App<P> {
                 watches: Vec::new(),
                 timers: Vec::new(),
                 inbox: None,
+                finishes_outbox: None,
             };
             match self
                 .ports

@@ -35,8 +35,9 @@ use crate::wait::{ProgressSink, WaitEnd, WaitRequest, effective_timeout, wait_fo
 /// What the server tells a client about itself, once, at `initialize`.
 const INSTRUCTIONS: &str = "Start a job with start_job and look at it with get_job, or follow it \
     with wait_for_job (call it again with after_seq set to its resume_after_seq to keep waiting). \
-    A job in state blocked waits for an answer: send it with answer. Jobs are the caller's own; \
-    a job_id that is not yours is reported as unknown.";
+    A job in state blocked waits for an answer: send it with answer. A finished job is not the \
+    end of the thread: answer starts its next job (same job_id, the job number says which). Jobs \
+    are the caller's own; a job_id that is not yours is reported as unknown.";
 
 /// The server for one request.
 pub(crate) struct McpServer<P: Ports> {
@@ -162,7 +163,7 @@ fn failure(err: &AppError) -> Result<CallToolResult, ErrorData> {
         ErrorClass::NotFound => Ok(refused("no such job")),
         ErrorClass::Invalid => Ok(refused(err.to_string())),
         ErrorClass::Rejected => Ok(refused(match err {
-            AppError::Finished => "the job is finished; start a new one with start_job".to_owned(),
+            AppError::Finished => "this card belongs to a finished request".to_owned(),
             other => other.to_string(),
         })),
         ErrorClass::Conflict | ErrorClass::Transient | ErrorClass::RateLimited => {
@@ -414,9 +415,11 @@ impl<P: Ports> McpServer<P> {
         };
         // No idempotency key: an `answer` is not made safe to retry (ADR 0019).
         match self.app.submit(user, id, input, None).await {
-            Ok(orch_app::ApplyOutcome::Applied { thread, .. }) => {
-                success(&json!({ "job_id": thread.id, "state": thread.state.as_str() }))
-            }
+            Ok(orch_app::ApplyOutcome::Applied { thread, .. }) => success(&json!({
+                "job_id": thread.id,
+                "state": thread.state.as_str(),
+                "job": thread.job.number,
+            })),
             Ok(orch_app::ApplyOutcome::Duplicate | orch_app::ApplyOutcome::Fenced) => {
                 tracing::error!("a message without an idempotency key or a lease was not applied");
                 Err(ErrorData::internal_error("internal error", None))
