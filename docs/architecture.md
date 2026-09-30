@@ -537,7 +537,7 @@ Three sources can be required, in any combination: CI on the pushed commit (a si
 agent. The default gate is empty, which is today's behaviour. The attempts are 3 by default, raised no
 higher than 10; a target or a thread may add sources, never remove one its target requires. The chat
 shows a `verifying` badge, an attempt counter such as "2/3" and the findings per source
-([`api/agui.md`](api/agui.md) will carry the `vymalo.check` and `vymalo.rework` activities when built).
+([`api/agui.md`](api/agui.md) carries the `vymalo.check`, `vymalo.rework` and `vymalo.ci` activities).
 
 ## Where it runs
 

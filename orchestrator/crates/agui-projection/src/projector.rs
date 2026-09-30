@@ -47,9 +47,10 @@ use orch_agui_proto::{
 };
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData,
-    CheckResult, CheckSource, CheckStatus, ErrorData, Event, EventBody, GatePolicy, JobView,
-    MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId, ThreadState, UiActionData,
-    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
+    CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody, GatePolicy,
+    JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId, ThreadState,
+    UiActionData, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact,
+    serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -57,10 +58,13 @@ use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
-    ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED, CODE_CHECKS_FAILED,
-    CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED, actor_metadata, problem_metadata, response_schema,
-    status_content,
+    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, CODE_AGENT_FAILED,
+    CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED, actor_metadata,
+    problem_metadata, response_schema, status_content,
 };
+
+/// Characters of a commit hash a card shows (`shortSha`).
+const SHORT_SHA_CHARS: usize = 7;
 
 /// What the projection knows about the thread besides its log: the parts of the thread record
 /// that appear in `STATE_SNAPSHOT.snapshot.thread`.
@@ -336,9 +340,7 @@ impl Projector {
             EventBody::UiAction(d) => self.on_ui_action(event, d, &mut out),
             EventBody::CheckResult(d) => self.on_check_result(event, d, &mut out),
             EventBody::Rework(d) => self.on_rework(event, d, &mut out),
-            // TODO(MVP slice 7): a CI report becomes a `vymalo.ci` card (ADR 0017). With the
-            // gates this build honours none is ever logged.
-            EventBody::CiResult(_) => {}
+            EventBody::CiResult(d) => self.on_ci_result(event, d, &mut out),
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -804,6 +806,55 @@ impl Projector {
         let mut finished = SubagentFinishedEvent::new(inv.id, None);
         finished.result = Some(result);
         out.push(finished.into());
+    }
+
+    /// A CI report (ADR 0017): a `vymalo.ci` activity, for every report, counted or not. The
+    /// card is about a commit and a check, so its id is `ci-<sha>-<name>` and does not depend on
+    /// anything the projector has folded: a check that runs again on the same commit replaces
+    /// its card (`replace`), a report about another commit is a card of its own, and the same
+    /// log projects to the same ids whoever reads it. The report changes neither the state nor
+    /// the attempt (the `check_result` that follows it does, when it counts). One that arrives
+    /// after the job ended opens a run of its own, like any late event, and closes it.
+    fn on_ci_result(&mut self, ev: &Event, d: &CiReport, out: &mut Vec<agui::Event>) {
+        let opened = self.ensure_run(ev, out);
+        let id = format!("ci-{}-{}", d.sha, d.name);
+        let mut content = Metadata::new();
+        content.insert("name".to_owned(), Value::from(d.name.as_str()));
+        content.insert("conclusion".to_owned(), Value::from(d.conclusion.as_str()));
+        content.insert("passed".to_owned(), Value::Bool(d.conclusion.passes()));
+        content.insert("sha".to_owned(), Value::from(d.sha.as_str()));
+        content.insert(
+            "shortSha".to_owned(),
+            Value::from(d.sha.chars().take(SHORT_SHA_CHARS).collect::<String>()),
+        );
+        content.insert(
+            "provider".to_owned(),
+            serde_json::to_value(d.provider).unwrap_or(Value::Null),
+        );
+        content.insert("repository".to_owned(), Value::from(d.repository.as_str()));
+        // A link is passed on only when it is `http` or `https`: a card is something to click.
+        // (The webhook keeps only those already; the log is data, so this is checked again.)
+        let link = d
+            .url
+            .as_deref()
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"));
+        for (key, value) in [
+            ("branch", d.branch.as_deref()),
+            ("url", link),
+            ("summary", d.summary.as_deref()),
+        ] {
+            if let Some(value) = value {
+                content.insert(key.to_owned(), Value::from(value));
+            }
+        }
+        let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_CI, content);
+        snapshot.replace = Some(true);
+        snapshot.base.metadata = Some(actor_metadata(&ev.actor));
+        self.message_ids.insert(id);
+        out.push(snapshot.into());
+        if opened {
+            self.settle(ev, out);
+        }
     }
 
     /// The gate failed and the agent is sent back to work: a `vymalo.rework` activity, then the

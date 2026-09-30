@@ -431,6 +431,27 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             };
             chat.wait_state(thread, last).await;
         }
+        // CI on the pushed commit (ADR 0017): what a viewer reads of a job that waits for CI, is
+        // sent back by a red report and finishes on a green one.
+        "ci" => {
+            let node = world.node("ci-node").await;
+            let inbox = node.spawn_inbox(fast_inbox(), "ci-node");
+            let sse = chat
+                .agui_run(
+                    "plain",
+                    &input(
+                        thread,
+                        "run-1",
+                        &[("msg-1", "verify-ci fix the login")],
+                        json!({"forwardedProps": {"vymalo.gate": {"require": ["ci"]}}}),
+                    ),
+                )
+                .await;
+            drive_ci(&chat, &node, thread).await;
+            whole(sse).await;
+            chat.wait_state(thread, "done").await;
+            inbox.shutdown().await;
+        }
         other => panic!("unknown scenario {other}"),
     }
     vec![whole(chat.agui_connect(thread, None, true).await).await]
@@ -470,6 +491,7 @@ async fn connect_streams_match_docs_api_examples() {
         "verify-red",
         "verify-verifier-green",
         "verify-verifier-red",
+        "ci",
     ]
     .into_iter()
     .enumerate()

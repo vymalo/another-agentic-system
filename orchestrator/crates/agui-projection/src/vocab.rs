@@ -20,6 +20,10 @@ pub const A2UI_OPERATIONS_KEY: &str = "a2ui_operations";
 /// `check_result` event's data, `{source, attempt, status, name?, commit?, summary?, stale?,
 /// findings?}`.
 pub const ACTIVITY_CHECK: &str = "vymalo.check";
+/// Activity type of a CI report (`vymalo.ci`, ADR 0017): the content is
+/// `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}`; `summary`
+/// (and `name`, `branch`) come from outside and are untrusted text.
+pub const ACTIVITY_CI: &str = "vymalo.ci";
 /// Activity type of a rework (`vymalo.rework`, ADR 0018): the content is the `rework` event's
 /// data, `{attempt, maxAttempts, findings: [{source, findings}]}`.
 pub const ACTIVITY_REWORK: &str = "vymalo.rework";

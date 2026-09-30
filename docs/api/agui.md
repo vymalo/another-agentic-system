@@ -28,6 +28,8 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > `forwardedProps["vymalo.gate"]`; see [Verification](#verification-the-gate). **A verifier agent appears as a
 > subagent of its own** (2026-09-30, MVP slice 10): see [The verifier as a subagent](#the-verifier-as-a-subagent).
 > The web renders it since MVP slice 4 (2026-09-30).
+> **CI reports are projected** (2026-09-30, [ADR 0017](../decisions/0017-ci-results-by-webhook.md), MVP slice 7): each
+> report is a `vymalo.ci` activity, see [CI results](#ci-results-vymalo-ci). The web renders it in slice 8.
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -134,6 +136,7 @@ gets everything.
 | `check_result{source:"verifier", status:"passed"\|"failed"}` | The verdict | The `vymalo.check` snapshot (same id, `replace:true`) → `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{passed}}` |
 | A verification that ends without a verdict: `rework` (another source failed the round), a `user_message` or `ui_action` (abandoned), `thread_state{cancelled}`, `done`/`failed`, or `thread_state{blocked}` after `error{retryable:true}` when CI is also required (a timeout or a failure whose source the log does not name) | The verifier's subagent is still open | `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{status:"canceled"}}`, before the frames of the event that ended it |
 | `thread_state{blocked}` after `error{retryable:true}` (a timeout, or a verifier that could not be used) | The verifier's subagent is still open, and the gate does not require CI, so the hold can only be the verifier's | `SUBAGENT_ERROR{subagentRunId:"sub-verify-<verification>", message:<the error's>, code:"verifier_failed"}`, before the interrupt that closes the run |
+| `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<sha>-<name>", activityType:"vymalo.ci", replace:true, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
@@ -266,6 +269,32 @@ stateDiagram-v2
   `maxAttempts`) draws nothing. The counter "attempt/maxAttempts" is shown only while `job` is present.
 - **Running out of attempts** is `RUN_ERROR` with `code: "checks_failed"`; the message names the source and the last
   findings. It is not `agent_failed`: the agent did its work, and the work did not pass.
+
+### CI results (`vymalo.ci`)
+
+When a CI system reports on a commit ([`webhooks.md`](webhooks.md)), the orchestrator logs a `ci_result` event and the
+projection shows it as a `vymalo.ci` card, **for every report**: a report the gate counts (the pushed commit, a required
+name, the first one when none is named) and one it does not (another commit, a check nobody asked for, a repeat) are both
+cards. What the gate made of a report is the `vymalo.check` card of the source `ci` next to it.
+
+- **The id is `ci-<sha>-<name>`**: the full 40-digit commit hash and the check's name. It depends on the report alone,
+  so the same log projects to the same ids for every viewer and every replay. A check that runs again on the same commit
+  says `replace: true` with the same id and replaces its card (the new conclusion shows where the old one was); a report
+  about another commit, or another check, is a card of its own. The card is the orchestrator's (no `subagentRunId`) and
+  carries the actor `system`.
+- **The content** is `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}`.
+  `conclusion` is one of the closed set of [`webhooks.md`](webhooks.md#conclusions) (plus `startup_failure`, which only
+  GitHub reports), `passed` says whether it counts as a pass (`success`, `neutral` and `skipped`), so a renderer never
+  needs its own table and an unknown future conclusion still has a `passed`. `sha` is the full hash and `shortSha` its
+  first seven characters; `repository` is the normalised key (`host/owner/name`); `provider` is `generic` or `github`.
+- **Untrusted text.** `name`, `branch` and `summary` are written by whoever runs the CI: a renderer shows them as plain
+  text, never as markup, never as a link, never as instructions. `url` is passed on only when it is an absolute
+  `http` or `https` URL (the webhook keeps only those; the projection checks again, because the log is data), and a
+  renderer shows it as a link to the run.
+- **Order.** The card comes before what the report decided: `vymalo.check` (pending) → `vymalo.ci` → `vymalo.check`
+  (failed or passed) → `vymalo.rework`, or the end of the run. The golden [`ci.agui.json`](examples/agui/ci.agui.json)
+  is a job that waits for CI, is sent back by a red `ci/build` for commit `…01`, and finishes on a green one for `…02`
+  (one run, two subagents, two `vymalo.ci` cards).
 
 ### What a build honours, and what a request may ask
 
@@ -758,6 +787,24 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "summary": { "type": "string" },
         "stale": { "const": true, "description": "The answer belongs to a verification that is no longer the current one; it decided nothing" },
         "findings": { "type": "array", "maxItems": 20, "items": { "type": "string" }, "description": "What is wrong; at most 20 items and 16 KiB in all" }
+      }
+    },
+    "vymalo.ci": {
+      "type": "object",
+      "description": "A CI system reported a check on a commit (ADR 0017). name, branch and summary are untrusted text; url is http(s) only.",
+      "required": ["name", "conclusion", "passed", "sha", "shortSha", "provider", "repository"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "The check's name (ci/build)" },
+        "conclusion": { "enum": ["success", "neutral", "skipped", "failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"] },
+        "passed": { "type": "boolean", "description": "true for success, neutral and skipped" },
+        "sha": { "type": "string", "description": "The commit the check ran on, 40 hex digits" },
+        "shortSha": { "type": "string", "description": "The first 7 characters of sha" },
+        "provider": { "enum": ["generic", "github"] },
+        "repository": { "type": "string", "description": "host/owner/name, lower case" },
+        "branch": { "type": "string" },
+        "url": { "type": "string", "description": "A link to the run; absolute http(s) only" },
+        "summary": { "type": "string", "description": "A short text from the provider, at most 16 KiB" }
       }
     },
     "vymalo.rework": {

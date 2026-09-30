@@ -524,7 +524,7 @@ dev/ci-e2e.sh                                                                   
 401; the thread is `verifying` with the gate `ci` and the sha `1111111`; a red report for that commit sends the agent
 back (attempt 2, which pushes `2222222`); a report about the old commit changes nothing; a green report for the new
 commit ends the job `done` at attempt 2 of 3, and the run ends `RUN_FINISHED` (success); the same delivery id twice is
-accepted twice. The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
+accepted twice; and that the chat shows a `vymalo.ci` card per report (the conclusion, the short sha, the link and the summary; the old commit's report replaces the first card of that commit). The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
 report's summary keeps `red-once`. The mock pushes the same two commits every time and a commit is watched by the first
 job that pushed it, so the script passes once per database (`docker compose down -v` to run it again). CI runs it in
 the `Coder E2E` workflow.

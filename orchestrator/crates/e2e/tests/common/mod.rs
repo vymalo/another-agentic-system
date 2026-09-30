@@ -18,7 +18,8 @@ use orch_app::{
     InboxWorker, NewThread, Received,
 };
 use orch_core::{
-    AgentId, AgentTarget, CiReport, Event, GatePolicy, Input, ThreadId, ThreadRecord, UserId,
+    AgentId, AgentTarget, CiConclusion, CiProvider, CiReport, Event, GatePolicy, Input, ThreadId,
+    ThreadRecord, UserId,
 };
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{
@@ -586,4 +587,50 @@ impl Node {
     pub async fn watch(&self, key: &str) -> Option<ThreadId> {
         on_node!(self, app => app.ports().store().get_watch(key).await.unwrap())
     }
+}
+
+// ---- the `ci` golden ---------------------------------------------------------------------
+
+/// The report of the `ci` golden: check `build` of the commit the fake agent's `verify-ci`
+/// script pushes in `attempt`, in the repository it reports.
+pub fn golden_ci_report(attempt: u32, conclusion: CiConclusion, summary: &str) -> CiReport {
+    CiReport {
+        provider: CiProvider::Generic,
+        repository: "github.com/acme/demo".to_owned(),
+        sha: orch_testsupport::fake::verify_commit(attempt),
+        branch: Some("agent/fix".to_owned()),
+        name: "ci/build".to_owned(),
+        conclusion,
+        url: Some(format!("https://ci.example.com/runs/{attempt}")),
+        summary: Some(summary.to_owned()),
+    }
+}
+
+/// Plays a CI system for a thread of the `ci` golden, which runs `verify-ci` under a gate that
+/// requires CI: waits until the agent's push is being verified, reports a red `ci/build` for it
+/// (the agent is sent back and pushes the next commit), waits for that, and reports a green one.
+/// The inbox worker of `node` applies the reports.
+pub async fn drive_ci(chat: &Chat, node: &Node, thread: &str) {
+    use orch_core::CiConclusion::{Failure, Success};
+    chat.wait_state(thread, "verifying").await;
+    node.receive(
+        "generic",
+        "golden-delivery-1",
+        golden_ci_report(1, Failure, "1 test failed: tests::login"),
+    )
+    .await;
+    eventually(
+        "the agent was sent back and its second push is being verified",
+        || async {
+            let t = chat.thread(thread).await;
+            (t["job"]["attempt"] == 2 && t["state"] == "verifying").then_some(())
+        },
+    )
+    .await;
+    node.receive(
+        "generic",
+        "golden-delivery-2",
+        golden_ci_report(2, Success, "3 tests passed"),
+    )
+    .await;
 }

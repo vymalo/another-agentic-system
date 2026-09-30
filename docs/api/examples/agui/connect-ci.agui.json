@@ -1,0 +1,518 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "verify-ci fix the login",
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 1,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000001"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "source": "ci",
+        "status": "pending"
+      },
+      "messageId": "check-1-1-ci",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ci",
+      "content": {
+        "branch": "agent/fix",
+        "conclusion": "failure",
+        "name": "ci/build",
+        "passed": false,
+        "provider": "generic",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000001",
+        "shortSha": "0000000",
+        "summary": "1 test failed: tests::login",
+        "url": "https://ci.example.com/runs/1"
+      },
+      "messageId": "ci-0000000000000000000000000000000000000001-ci/build",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 1,
+        "commit": "0000000000000000000000000000000000000001",
+        "findings": [
+          "ci/build: failure - 1 test failed: tests::login (https://ci.example.com/runs/1)"
+        ],
+        "source": "ci",
+        "status": "failed",
+        "summary": "1 test failed: tests::login"
+      },
+      "messageId": "check-1-1-ci",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.rework",
+      "content": {
+        "attempt": 2,
+        "findings": [
+          {
+            "findings": [
+              "ci/build: failure - 1 test failed: tests::login (https://ci.example.com/runs/1)"
+            ],
+            "source": "ci"
+          }
+        ],
+        "maxAttempts": 3
+      },
+      "messageId": "rework-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "working"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3
+        },
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "mimeType": "application/json",
+        "name": "branch",
+        "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "status": "completed"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000002"
+        },
+        "thread": {
+          "state": "verifying",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "source": "ci",
+        "status": "pending"
+      },
+      "messageId": "check-2-2-ci",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 12
+  },
+  {
+    "event": {
+      "activityType": "vymalo.ci",
+      "content": {
+        "branch": "agent/fix",
+        "conclusion": "success",
+        "name": "ci/build",
+        "passed": true,
+        "provider": "generic",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000002",
+        "shortSha": "0000000",
+        "summary": "3 tests passed",
+        "url": "https://ci.example.com/runs/2"
+      },
+      "messageId": "ci-0000000000000000000000000000000000000002-ci/build",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 13
+  },
+  {
+    "event": {
+      "activityType": "vymalo.check",
+      "content": {
+        "attempt": 2,
+        "commit": "0000000000000000000000000000000000000002",
+        "source": "ci",
+        "status": "passed",
+        "summary": "3 tests passed"
+      },
+      "messageId": "check-2-2-ci",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 14
+  },
+  {
+    "event": {
+      "snapshot": {
+        "job": {
+          "attempt": 2,
+          "gate": [
+            "ci"
+          ],
+          "maxAttempts": 3,
+          "sha": "0000000000000000000000000000000000000002"
+        },
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "verify-ci fix the login"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 15
+  }
+]

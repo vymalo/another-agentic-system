@@ -729,7 +729,7 @@ stateDiagram-v2
   while the thread is `queued`, `working` or `verifying`. It learns the gate from the thread record
   (`ThreadMeta.gate`, the job's copy) and everything else from the log: `SUBAGENT_FINISHED` and a `STATE_SNAPSHOT` with
   `job {attempt, maxAttempts, gate, sha}` at `completed`, `check_result` as the `vymalo.check` activity,
-  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `RUN_FINISHED` at `done`, `RUN_ERROR` with
+  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `ci_result` as `vymalo.ci` (a card per report, id `ci-<sha>-<name>`; slice 7), `RUN_FINISHED` at `done`, `RUN_ERROR` with
   `checks_failed` when the attempts are out, and a hold as an answerable interrupt. A run that continues a thread and asks
   for a different gate than the thread's is a 409. The resource API's `Thread` carries the same `job` (`chat-api.yaml`).
 - **A rework is a new A2A task in the same context.** The first task is `completed` and cannot be continued, so the

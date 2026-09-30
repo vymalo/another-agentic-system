@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 11] = [
+const SCENARIOS: [&str; 12] = [
     "echo",
     "ask",
     "cancel",
@@ -34,6 +34,7 @@ const SCENARIOS: [&str; 11] = [
     "verify-red",
     "verify-verifier-green",
     "verify-verifier-red",
+    "ci",
 ];
 
 fn examples_dir() -> PathBuf {
@@ -59,6 +60,8 @@ fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
             gate.verifier = Some(AgentId::new("reviewer"));
             gate
         }
+        // The CI scenario ran under a gate that requires CI on the pushed commit.
+        "ci" => GatePolicy::requiring([CheckSource::Ci]),
         _ => GatePolicy::default(),
     };
     ThreadMeta {

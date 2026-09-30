@@ -1,8 +1,8 @@
 # ADR 0017 — CI results by webhook: GitHub and a generic signed shape
 
 - **Status:** accepted (2026-09-30). **Built:** MVP slice 6 (the generic route, `SurfaceRoutes::machine`, the CI
-  source in the gate), 2026-09-30; see [Built (slice 6)](#built-slice-6). **Planned, not built:** slices 7 and 8
-  (the card) and 9 (the GitHub adapter) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
+  source in the gate), 2026-09-30; see [Built (slice 6)](#built-slice-6). **Built:** slice 7 (the AG-UI card), 2026-09-30; see
+  [Built (slice 7)](#built-slice-7). **Planned, not built:** slice 8 (the web's card) and 9 (the GitHub adapter) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
   [`api/webhooks.md`](../api/webhooks.md).
@@ -180,6 +180,23 @@ name `ORCH_SURFACES` knows. Where the build differs from, or fixes, the text abo
   deadline blocks the thread; a refused delivery changes nothing.
 - **Reproducing the vectors.** The known-answer vectors are in [`api/webhooks.md`](../api/webhooks.md#known-answer-vectors)
   and in the unit tests of `signature.rs`.
+
+## Built (slice 7)
+
+*2026-09-30.* Every `ci_result` event is the AG-UI activity `vymalo.ci`
+(`orch-agui-projection`, [`api/agui.md`](../api/agui.md#ci-results-vymalo-ci)); the TODO of slice 3 is gone.
+
+- **The id is `ci-<sha>-<name>`, not per attempt.** The text above leaves the id to the slice. A report is about a commit
+  and a check, so its id depends on those and on nothing the projector has folded: the same log gives the same ids to
+  every viewer and replay, a check that runs again on the same commit replaces its card (`replace: true`), and a report
+  about the old commit (which the gate ignores) is a card of its own. A per-attempt id would have tied the card to the
+  fold state, and a late report about attempt 1's commit would have landed on attempt 2's card.
+- **The content** is the report plus what a renderer would otherwise have to compute: `passed` (from the closed
+  conclusion enum), `shortSha`. `name`, `branch` and `summary` are untrusted text; `url` is passed on only when it is
+  `http(s)` (checked again in the projection: the log is data).
+- **Golden `ci`** (`ci.events.json`, `ci.agui.json`, `run-ci`, `connect-ci`, and the reference client's expectations):
+  the fake agent's `verify-ci`, a red `ci/build` for the first commit, a green one for the second.
+  The web's mock does not replay it yet (`NOT_MOCKED_YET`); slice 8 renders the card.
 
 ## Security notes
 

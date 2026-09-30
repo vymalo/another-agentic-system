@@ -130,13 +130,28 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
                 "failed"
             },
         ),
+        // CI on the pushed commit (ADR 0017): `plain` runs under `gate: {require: [ci]}`
+        // (`world_for`), and the test plays the CI system. The agent pushes commit 1 and
+        // completes; CI says `ci/build` failed on it; the agent is sent back, pushes commit 2
+        // and completes; CI says it passed.
+        "ci" => {
+            let node = world.node("ci-node").await;
+            let inbox = node.spawn_inbox(fast_inbox(), "ci-node");
+            let id = chat
+                .seed_thread("plain", "verify-ci fix the login", None)
+                .await;
+            drive_ci(&chat, &node, &id).await;
+            chat.wait_state(&id, "done").await;
+            inbox.shutdown().await;
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 11] = [
+const SCENARIOS: [&str; 12] = [
     "echo",
     "ask",
     "cancel",
@@ -148,6 +163,7 @@ const SCENARIOS: [&str; 11] = [
     "verify-red",
     "verify-verifier-green",
     "verify-verifier-red",
+    "ci",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -186,6 +202,19 @@ async fn world_for(name: &str) -> World {
                 VerifierScript::AlwaysFail
             };
             World::with(Backend::Memory, verified_by_reviewer(script)).await
+        }
+        "ci" => {
+            let gate = GateLayer::from_json(&json!({"require": ["ci"]}))
+                .unwrap()
+                .unwrap();
+            World::with(
+                Backend::Memory,
+                Setup {
+                    target_gates: BTreeMap::from([(AgentId::new("plain"), gate)]),
+                    ..Setup::default()
+                },
+            )
+            .await
         }
         _ => World::start(Backend::Memory).await,
     }

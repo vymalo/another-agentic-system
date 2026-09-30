@@ -21,7 +21,8 @@
 #   4. a report for the OLD commit is a card and changes nothing (the thread stays `verifying`);
 #   5. a green report for the new commit ends the job: `done`, attempt 2 of 3, and the run ends
 #      RUN_FINISHED success;
-#   6. the same delivery id twice is accepted twice (202) and counted once.
+#   6. the same delivery id twice is accepted twice (202) and counted once;
+#   7. the chat shows a `vymalo.ci` card for every report (conclusion, short sha, link, summary).
 #
 # Environment (all optional):
 #   BASE_URL    where the API and the webhook are served  (default http://127.0.0.1:8080, the compose `edge`)
@@ -149,6 +150,18 @@ else
   outcome=$(sed -n 's/^data: *//p' "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last | if . == null then "none" elif .type == "RUN_ERROR" then "error \(.code)" else "finished \(.outcome.type // "success")" end')
   expect "the run ended RUN_FINISHED (success)" "$outcome" "finished success"
 fi
+
+echo "== the chat shows every report as a card"
+curl -sS --max-time 60 -H "X-Auth-Request-Email: $AUTH_EMAIL" -H 'accept: text/event-stream' \
+  "$BASE_URL/agui/threads/$THREAD/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' >"$tmp/events.json" || echo '[]' >"$tmp/events.json"
+expect "the vymalo.ci cards, in order: red, then the old commit's report replacing it, then green" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | "\(.content.shortSha)=\(.content.conclusion)"] | join(",")' "$tmp/events.json")" \
+  "1111111=failure,1111111=success,2222222=success"
+expect "one card per commit and check: the second report of 1111111 replaced the first" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | .messageId] | unique | length' "$tmp/events.json")" "2"
+expect "the card carries the link and the summary" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci" and .content.shortSha == "2222222")][0].content | [.passed, .url, .summary] | join(" ")' "$tmp/events.json")" \
+  "true https://ci.example.com/runs/2 212 tests passed"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"
