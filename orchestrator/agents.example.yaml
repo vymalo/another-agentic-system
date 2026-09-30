@@ -16,22 +16,26 @@
 #             (ORCH_GATE, ORCH_MAX_ATTEMPTS). A job is not done until the required sources pass; a
 #             failure sends the agent back with the findings, up to `maxAttempts` in all.
 #               require       sources that must pass; at least the deployment's. This build honours
-#                             `agent-checks` (the agent's own `checks` artifact) and `verifier`
-#                             (another agent reviews the pushed commit); `ci` is refused at startup
-#                             until its slices are built.
+#                             `agent-checks` (the agent's own `checks` artifact), `ci` (a signed
+#                             CI report about the pushed commit, POST /webhooks/ci, ADR 0017) and
+#                             `verifier` (another agent reviews the pushed commit).
 #               maxAttempts   1..=ORCH_MAX_ATTEMPTS_CAP (default 3, cap 10, at most 100)
 #               verifier      the id of the agent that verifies this agent's work (required when
 #                             `require` has `verifier`, unless ORCH_VERIFIER names one): another
 #                             configured agent, never this one
-#               ci            refused for now
+#               ci            {required: [check names], timeoutSecs}: which checks must pass (a gate
+#                             that requires `ci` must name at least one, or startup fails; a report of
+#                             another name is a card and nothing else) and how long to wait for them
+#                             before the job is blocked (default ORCH_CI_TIMEOUT_SECS)
 #             Unknown keys are errors.
 - id: coder
   name: Coder
   cardUrl: https://coder.example.com/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
   # gate:
-  #   require: [agent-checks]
+  #   require: [agent-checks, ci]
   #   maxAttempts: 3
+  #   ci: {required: [ci/build], timeoutSecs: 1800}   # a gate that requires ci names the checks that count
 
 # A verifier (ADR 0018): `builder`'s work is not done until `reviewer`, another agent, passes the
 # commit it pushed. `reviewer` has its own card and its own token, and is never sent the builder's.

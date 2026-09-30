@@ -2,6 +2,7 @@
 #
 # It puts the chat UI, the resource API, the AG-UI route and the MCP server on ONE origin (as the production ingress does) and
 # injects a fixed identity. It performs no authentication at all: every request is "dev@example.com".
+# The exception is /webhooks/*: machine routes, which get no identity at all.
 # Local development only. Never expose it beyond 127.0.0.1 and never use it in production, where
 # oauth2-proxy authenticates the user and strips client-supplied copies of X-Auth-Request-Email.
 {
@@ -19,11 +20,13 @@
 		}
 	}
 
-	# The AG-UI run route: a streaming POST, so no buffering either.
+	# The AG-UI run route: a streaming POST, so no buffering of the response either. The REQUEST is
+	# buffered (`request_buffers`, here and on /mcp and /webhooks/*): see the note at the end of this file.
 	handle /agui/* {
 		reverse_proxy orchestrator:8080 {
 			header_up X-Auth-Request-Email dev@example.com
 			flush_interval -1
+			request_buffers 8MiB
 		}
 	}
 
@@ -35,6 +38,18 @@
 		reverse_proxy orchestrator:8080 {
 			header_up -X-Auth-Request-Email
 			flush_interval -1
+			request_buffers 1MiB
+		}
+	}
+
+	# The webhooks of CI systems (ADR 0017). Machine routes: no user, so NO identity. `header_up -X-Auth-Request-Email`
+	# deletes the header a client may have sent, and none is added: the orchestrator's webhook routes
+	# authenticate by signature and never read it. Production routes /webhooks/* the same way (oauth2-proxy
+	# `skip_auth_routes`, unverified: docs/api/webhooks.md).
+	handle /webhooks/* {
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+			request_buffers 5MiB
 		}
 	}
 
@@ -50,3 +65,15 @@
 		reverse_proxy web:3000
 	}
 }
+
+# Why the request bodies are buffered. Caddy's proxy (Go net/http) streams a request body to the
+# upstream and, once it has written it, reads the client's body once more to see its end. When the
+# upstream answers first, which the orchestrator does on these routes (an event stream or a short
+# answer as soon as it has the body), Caddy writes the response head to the client, and Go's server
+# then closes the client's request body. If that last read comes after the close, it fails, the
+# transport takes it for a failed request and closes the upstream connection, and the rest of the
+# response is lost: coder-e2e's `FAIL start_job: {}` with "aborting with incomplete response ... use
+# of closed network connection" here. A body read into memory first cannot be closed under the
+# transport. Reproduced on 2026-09-30 with Caddy 2.11.4 (Go 1.26.3) and with Go 1.24's
+# httputil.ReverseProxy, over a veth pair under CPU load; not seen over loopback without load. The
+# sizes are the orchestrator's own limits (1 MiB for /mcp, 8 MiB for an AG-UI run, 5 MiB for GitHub).

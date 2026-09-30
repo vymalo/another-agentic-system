@@ -1,0 +1,241 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "verify-ci fix the login"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mimeType": "application/json",
+      "name": "branch",
+      "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
+    },
+    "kind": "artifact",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 1,
+      "commit": "0000000000000000000000000000000000000001",
+      "source": "ci",
+      "status": "pending"
+    },
+    "kind": "check_result",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "branch": "agent/fix",
+      "conclusion": "failure",
+      "name": "ci/build",
+      "provider": "generic",
+      "repository": "github.com/acme/demo",
+      "sha": "0000000000000000000000000000000000000001",
+      "summary": "1 test failed: tests::login",
+      "url": "https://ci.example.com/runs/1"
+    },
+    "kind": "ci_result",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 1,
+      "commit": "0000000000000000000000000000000000000001",
+      "findings": [
+        "ci/build: failure - 1 test failed: tests::login (https://ci.example.com/runs/1)"
+      ],
+      "source": "ci",
+      "status": "failed",
+      "summary": "1 test failed: tests::login"
+    },
+    "kind": "check_result",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 2,
+      "findings": [
+        {
+          "findings": [
+            "ci/build: failure - 1 test failed: tests::login (https://ci.example.com/runs/1)"
+          ],
+          "source": "ci"
+        }
+      ],
+      "maxAttempts": 3
+    },
+    "kind": "rework",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "mimeType": "application/json",
+      "name": "branch",
+      "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
+    },
+    "kind": "artifact",
+    "seq": 10,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 11,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 2,
+      "commit": "0000000000000000000000000000000000000002",
+      "source": "ci",
+      "status": "pending"
+    },
+    "kind": "check_result",
+    "seq": 12,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "branch": "agent/fix",
+      "conclusion": "success",
+      "name": "ci/build",
+      "provider": "generic",
+      "repository": "github.com/acme/demo",
+      "sha": "0000000000000000000000000000000000000002",
+      "summary": "3 tests passed",
+      "url": "https://ci.example.com/runs/2"
+    },
+    "kind": "ci_result",
+    "seq": 13,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "attempt": 2,
+      "commit": "0000000000000000000000000000000000000002",
+      "source": "ci",
+      "status": "passed",
+      "summary": "3 tests passed"
+    },
+    "kind": "check_result",
+    "seq": 14,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 15,
+    "threadId": "<thread-id>"
+  }
+]

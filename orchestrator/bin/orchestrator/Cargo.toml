@@ -13,13 +13,16 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp"]
+default = ["surface-agui", "surface-mcp", "surface-webhook"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
 # has it; it is mounted only when ORCH_SURFACES names `mcp`, and then it needs MCP_TOKENS_FILE and
 # MCP_ALLOWED_HOSTS.
 surface-mcp = ["dep:orch-surface-mcp"]
+# The webhook routes (ADR 0017): signed CI results, machine routes outside the identity layer.
+# On by default, but a route is mounted only when ORCH_SURFACES names it and its secrets are set.
+surface-webhook = ["dep:orch-surface-webhook"]
 # In-process agents (`transport: local` in AGENTS_FILE, ADR 0015): adam-rs agents hosted by this
 # process, journaled in the orchestrator's own Postgres under the prefix `orch_agent_`. Off by
 # default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
@@ -34,11 +37,13 @@ orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui = { workspace = true, optional = true }
 orch-surface-mcp = { workspace = true, optional = true }
+orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+jiff.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -56,6 +61,7 @@ uuid.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 reqwest.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

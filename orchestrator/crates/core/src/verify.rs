@@ -112,17 +112,11 @@ fn ci(job: &Job) -> Eval {
     };
     let required = &job.gate.ci.required;
     if required.is_empty() {
-        // The first completed report decides.
-        return match job.results.iter().find(on_commit) {
-            None => Eval::pending(source, commit),
-            Some(r) => Eval {
-                source,
-                status: r.status,
-                commit,
-                summary: r.summary.clone(),
-                findings: r.findings.clone(),
-            },
-        };
+        // Configuration refuses a gate that requires `ci` with no check named (ADR 0017,
+        // 2026-09-30 status note): "the first report decides" lets a red commit pass on a
+        // `skipped` or another workflow's report. Should one get here anyway, nothing counts and
+        // nothing passes; the deadline blocks the job.
+        return Eval::pending(source, commit);
     }
     let mut waiting = false;
     let mut findings = Vec::new();
@@ -148,11 +142,23 @@ fn ci(job: &Job) -> Eval {
     } else {
         CheckStatus::Passed
     };
+    // With one check named, its summary is the source's summary; with several there is no one
+    // summary to give (the findings carry each failure).
+    let summary = match required.iter().collect::<Vec<_>>()[..] {
+        [only] => job
+            .results
+            .iter()
+            .rev()
+            .filter(on_commit)
+            .find(|r| r.name.as_deref() == Some(only.as_str()))
+            .and_then(|r| r.summary.clone()),
+        _ => None,
+    };
     Eval {
         source,
         status,
         commit,
-        summary: None,
+        summary,
         findings: crate::gate::cap_findings(findings),
     }
 }

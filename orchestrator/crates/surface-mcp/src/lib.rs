@@ -36,6 +36,18 @@
 //! cancel_job {job_id}     -> {job_id, state, finished}
 //! list_agents {}          -> {agents: [{id, name, description}]}
 //! ```
+//!
+//! # Response framing
+//!
+//! A call is answered with one `application/json` response (rmcp's `json_response`), sent when the
+//! tool has answered, with the answer in the same write as the head. Only a call whose tool speaks
+//! before it answers, `wait_for_job` with a `progressToken`, gets a `text/event-stream`, and its
+//! head goes out with the first notification. The head is never sent before the tool has said
+//! anything: a Go reverse proxy (Caddy; oauth2-proxy is unverified) can drop the upstream
+//! connection as soon as it has written the head to its client, when it has not yet finished
+//! reading the request body it forwarded, and then everything the server writes after the head is
+//! lost. With an event stream opened before the answer, that was the whole answer
+//! (`tests/framing.rs`).
 
 mod auth;
 mod id;
@@ -314,6 +326,8 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, config: McpConfig) -> SurfaceRoutes {
     });
     let http = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
+        // No response head before the tool has answered: see "Response framing" in the crate docs.
+        .with_json_response(true)
         .with_allowed_hosts(allowed_hosts)
         // With an empty list this refuses every request that carries an `Origin` (browsers do,
         // the CLI clients do not), and a listed origin is let through.

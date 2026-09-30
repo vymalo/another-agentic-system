@@ -508,6 +508,27 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
                 .await,
             ]
         }
+        // CI on the pushed commit (ADR 0017): the run stays open while the job waits for CI,
+        // one response for both attempts, with a `vymalo.ci` card for each report.
+        "ci" => {
+            let node = world.node("ci-node").await;
+            let inbox = node.spawn_inbox(fast_inbox(), "ci-node");
+            let sse = chat
+                .agui_run(
+                    "plain",
+                    &input(
+                        thread,
+                        "run-1",
+                        &[("msg-1", "verify-ci fix the login")],
+                        json!({"forwardedProps": {"vymalo.gate": {"require": ["ci"]}}}),
+                    ),
+                )
+                .await;
+            drive_ci(&chat, &node, thread).await;
+            let frames = read(sse).await;
+            inbox.shutdown().await;
+            vec![frames]
+        }
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -547,6 +568,7 @@ async fn run_responses_match_docs_api_examples() {
         "verify-red",
         "verify-verifier-green",
         "verify-verifier-red",
+        "ci",
     ]
     .into_iter()
     .enumerate()

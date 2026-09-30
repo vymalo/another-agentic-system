@@ -673,7 +673,19 @@ impl<P: Ports> App<P> {
                 // Both are written in this commit: the watch also re-arms the reports that
                 // were parked waiting for it, and the timer becomes an inbox row that the
                 // store makes due `after` this commit's `now` (the core never reads a clock).
-                Command::Watch { key } => watches.push(key),
+                Command::Watch { key } => {
+                    // The two sides of a CI match log the same key (here, and in `receive`), so a
+                    // report that never finds its job can be compared by eye with what the job
+                    // watches: a repository spelled differently shows at once.
+                    let (repository, short_sha) = describe_watch_key(key.as_str());
+                    tracing::info!(
+                        watch_key = %key,
+                        repository,
+                        short_sha,
+                        "watching for the CI reports of a pushed commit"
+                    );
+                    watches.push(key);
+                }
                 Command::Schedule { after, timer } => timers.push(NewTimer {
                     id: InboxId(self.ports.ids().new_id()),
                     after,
@@ -928,6 +940,16 @@ impl<P: Ports> App<P> {
                 report.repository = repository;
                 report.sha = sha;
                 let correlation = WatchKey::ci(&report.repository, &report.sha).to_string();
+                let (repository, short_sha) = describe_watch_key(&correlation);
+                tracing::info!(
+                    watch_key = %correlation,
+                    repository,
+                    short_sha,
+                    name = %report.name,
+                    conclusion = report.conclusion.as_str(),
+                    source,
+                    "a CI report will be matched to the job that watches this key"
+                );
                 (InboxPayload::CiReport(report), correlation)
             }
         };
@@ -1071,4 +1093,13 @@ impl<P: Ports> App<P> {
         })
         .boxed())
     }
+}
+
+/// The repository key and the first seven characters of the commit in a CI watch key
+/// (`ci:<repository>@<sha>`), for the log; the whole key when it is not of that form.
+fn describe_watch_key(key: &str) -> (&str, &str) {
+    let Some((repository, sha)) = key.strip_prefix("ci:").and_then(|k| k.rsplit_once('@')) else {
+        return (key, "");
+    };
+    (repository, sha.get(..7).unwrap_or(sha))
 }

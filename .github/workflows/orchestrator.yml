@@ -177,7 +177,10 @@ jobs:
           docker stop --time 20 "$cid" >/dev/null
           code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
           [ "$code" = 0 ] || { echo "::error::exit code $code after SIGTERM, expected 0"; exit 1; }
-          docker logs "$cid" 2>&1 | grep -q 'shutting down' || { echo "::error::no clean shutdown in the log"; exit 1; }
+          # Read the whole log first: `docker logs | grep -q` under pipefail fails whenever grep exits on its
+          # match while docker logs is still writing (SIGPIPE), which reported a clean shutdown as missing.
+          logs=$(docker logs "$cid" 2>&1)
+          grep -q 'shutting down' <<<"$logs" || { echo "::error::no clean shutdown in the log"; exit 1; }
       - name: Push (main only)
         if: github.event_name == 'push'
         uses: docker/build-push-action@v7

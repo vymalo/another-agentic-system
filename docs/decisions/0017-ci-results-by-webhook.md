@@ -1,10 +1,16 @@
 # ADR 0017 — CI results by webhook: GitHub and a generic signed shape
 
-- **Status:** accepted (2026-09-30). **Planned, not built:** MVP slices 6 (generic route, core),
-  7 and 8 (the card) and 9 (GitHub adapter) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
+- **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 6 (the generic route,
+  `SurfaceRoutes::machine`, the CI source in the gate), slice 7 (the AG-UI card) and slice 9 (the GitHub adapter);
+  see [Built (slice 6)](#built-slice-6), [Built (slice 7)](#built-slice-7) and [Built (slice 9)](#built-slice-9).
+  **Planned, not built:** slice 8 (the web's card) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
   [`api/webhooks.md`](../api/webhooks.md).
+  **Amended 2026-09-30 (review of slices 6, 7 and 9):** "the first completed report decides" is gone, `check_suite` is
+  not accepted, the idempotency keys come from the signed content and not from delivery ids, the AG-UI card id is
+  unique per report, and a few limits were added. The text of the Decision and of the Built sections below is kept as
+  it was written; [the status note](#status-note-2026-09-30-review-fixes) says what replaced what.
 
 ## Context
 
@@ -139,13 +145,143 @@ stateDiagram-v2
   Dead --> [*]
 ```
 
+## Built (slice 6)
+
+*2026-09-30.* The generic route, `SurfaceRoutes::machine`, the CI source of the gate and `ORCH_CI_TIMEOUT_SECS` are
+built and checked against the code (`orchestrator/crates/surface-webhook`, `api`, `app`, `core`; the binary). The
+GitHub route is slice 9 ([below](#built-slice-9)). Where the build differs from, or fixes, the text above:
+
+- **The guard is the signature check.** `SurfaceRoutes::machine(routes, guard)` mounts routes outside the identity
+  layer and outside the request timeout, and takes the guard as a required argument, so a machine route cannot be added
+  without one. The webhook's guard is a middleware that reads the body up to the route's limit, checks the headers, the
+  timestamp and the HMAC, and only then hands the handler the verified bytes in a request extension; a handler that
+  finds none refuses. The order is: the three headers (401), the timestamp is plain digits and within the skew (401),
+  the body within 256 KiB (413), the HMAC (401). Nothing is written before the HMAC is good, and the handler cannot be
+  reached without it.
+- **The clock is the application's.** The skew is judged against `App`'s injected clock, so a test that holds the clock
+  sees the same window the route does.
+- **Delivery ids are UUIDs.** `X-Vymalo-Delivery` must parse as a UUID (else 400, after the signature). It is stored
+  in its hyphenated lower-case form, so the two spellings of one UUID are one delivery. The inbox `source` is `generic`.
+- **The timestamp is `[0-9]{1,12}`.** A sign, a blank or a fraction is a 401. This keeps the signed string
+  `"<ts>.<body>"` unambiguous (a timestamp with a full stop could trade bytes with the body).
+- **The conclusions of the generic body are the eight of `api/webhooks.md`.** The core's enum also has
+  `startup_failure` (GitHub's `workflow_run` can say it); slice 9 maps it, the generic body refuses it with a 400.
+- **Only `http` and `https` links are kept**, and a summary is cut to 16 KiB at a character boundary.
+- **`ORCH_CI_TIMEOUT_SECS` is read** (default 3600, at least 1) as the deployment's `ci.timeout`; an `AGENTS_FILE`
+  entry's `gate.ci.timeoutSecs` overrides it for that agent. A gate that requires `ci` while no webhook surface is
+  mounted on a control plane logs a warning at startup; its jobs end `Blocked` (`ci_timeout`), never `Done`.
+- **Secrets are required by the role that serves the route.** `WEBHOOK_GENERIC_SECRETS` unset while `ORCH_SURFACES`
+  names `webhook-generic` is exit 78 for `all` and `control-plane`; a `worker` serves no routes and does not need it
+  (a value that is set is validated in every role). More than two secrets is exit 78 too. The variable is redacted in
+  `--help` and in `Debug`, and the value is never in a message or a log.
+- **`ping` and the GitHub events** are slice 9, below.
+- **The gate honours `ci`.** `pending_reason(Ci)` is `None`; the `ci` and `ci:` settings are accepted in a deployment or
+  an `AGENTS_FILE` entry (never per thread); `verifier` is still refused until slice 10 ([ADR 0018](0018-verification-gate-and-rework-loop.md)).
+- **The core needed no change.** `ci_result` cards, the CI source and the CI deadline to `Blocked` (no attempt spent)
+  were built in slices 2 and 5; the slice's end-to-end tests (`orch-e2e` `webhook.rs`, both stores, a clock the test
+  holds) drive them through the real route: a report that beats its watch is parked, matched and the job done; a red
+  report reworks with the report in the findings, and a report about the old commit changes nothing; with no report the
+  deadline blocks the thread; a refused delivery changes nothing.
+- **Reproducing the vectors.** The known-answer vectors are in [`api/webhooks.md`](../api/webhooks.md#known-answer-vectors)
+  and in the unit tests of `signature.rs`.
+
+## Built (slice 7)
+
+*2026-09-30.* Every `ci_result` event is the AG-UI activity `vymalo.ci`
+(`orch-agui-projection`, [`api/agui.md`](../api/agui.md#ci-results-vymalo-ci)); the TODO of slice 3 is gone.
+
+- **The id is `ci-<sha>-<name>`, not per attempt.** The text above leaves the id to the slice. A report is about a commit
+  and a check, so its id depends on those and on nothing the projector has folded: the same log gives the same ids to
+  every viewer and replay, a check that runs again on the same commit replaces its card (`replace: true`), and a report
+  about the old commit (which the gate ignores) is a card of its own. *(Superseded on 2026-09-30, see the status note:
+  the id is now `ci-<provider>-<sha>-<name>-<seq>` and nothing is replaced.)* A per-attempt id would have tied the card to the
+  fold state, and a late report about attempt 1's commit would have landed on attempt 2's card.
+- **The content** is the report plus what a renderer would otherwise have to compute: `passed` (from the closed
+  conclusion enum), `shortSha`. `name`, `branch` and `summary` are untrusted text; `url` is passed on only when it is
+  `http(s)` (checked again in the projection: the log is data).
+- **Golden `ci`** (`ci.events.json`, `ci.agui.json`, `run-ci`, `connect-ci`, and the reference client's expectations):
+  the fake agent's `verify-ci`, a red `ci/build` for the first commit, a green one for the second.
+  The web's mock does not replay it yet (`NOT_MOCKED_YET`); slice 8 renders the card.
+
+## Built (slice 9)
+
+*2026-09-30.* `POST /webhooks/github` (`ORCH_SURFACES` name `webhook-github`, secret `WEBHOOK_GITHUB_SECRETS`, same
+feature `surface-webhook`) is built; contract in [`api/webhooks.md`](../api/webhooks.md#github-adapter-post-webhooksgithub).
+
+- **`ping` answers 204, as this ADR says.** (The slice's brief said 200; the ADR and the contract page say 204, the
+  ADR wins, and GitHub accepts any 2xx.) `ping` is not parsed.
+- **Order and codes.** The guard checks the signature header (401), the size (413, 5 MiB) and the HMAC (401) before
+  anything else; the handler then needs `X-GitHub-Event` (400 without) and answers: `ping` 204; the three events with
+  `action` = `completed` are stored under `github:<X-GitHub-Delivery>` and 202 (a delivery id is required for those, 400
+  without); every other event or action is 202 and not stored, and not parsed, so GitHub neither retries nor flags them.
+- **What `summary`, `url` and `name` are per event is fixed** (table in `api/webhooks.md`): a check suite has a name
+  (`app.slug`) but neither link nor summary; a check run has its `html_url` and `output.summary`; a workflow run has its
+  `html_url` and a name that may be `null` (then `workflow`). `startup_failure` is kept as a conclusion of its own (it
+  fails); anything else outside the closed list, and `null`, is `failure`.
+- **The fixtures are synthetic, not recorded.** No real delivery was available, so the payloads in
+  `crates/surface-webhook/testdata/github` were written by hand after the documented schemas and say so (their README).
+  What the docs do say was read on 2026-09-30 and is marked in the Verified section below; what they do not (the
+  members of `check_suite` and `check_run` payloads) stays *unverified* until a real delivery replaces a fixture.
+- **Dev stack.** `mock-ci` (`dev/mock-ci`, alpine with git, curl and openssl, pinned by tag and digest) polls
+  `git ls-remote` on `git-server` for `agent/*` and posts a signed `check_suite` through the edge (`success`, or
+  `failure` when the commit message contains `CI_FAIL`; `MOCK_CI_SHAPE=generic` for the generic body); its delivery ids
+  are derived from repository and commit, so a restart sends repeats, not new reports. The coder is gated on CI
+  (`gate: {require: [ci]}`), and `dev/coder-e2e.sh` asserts the job's gate and the `vymalo.ci` card. Not run here:
+  it needs Docker; the `Coder E2E` workflow is its first run.
+
+## Status note (2026-09-30): review fixes
+
+A review of the three slices found that a red commit could pass, that a captured delivery could be replayed, and a few
+smaller faults. What changed, and which sentence above it replaces:
+
+- **A gate that requires `ci` names its checks.** Replaces "Otherwise the first completed report decides" (Common
+  rules) and the "first report decides" path of the core. With no names, the first report for a commit decided, so a
+  `skipped` report of another check, another workflow's, or a fork's, could pass a red commit. Now `ci.required` must
+  name at least one check wherever the resolved policy requires `ci`: the deployment (`ORCH_CI_REQUIRED`) and every
+  `AGENTS_FILE` entry are refused at startup (exit 78), a per-thread request that adds `ci` on a policy with none is a
+  400 or a tool error, and the core, should such a gate get through, lets nothing pass (the CI deadline blocks the job).
+  Only a named check decides; every other report is a card. ([ADR 0018](0018-verification-gate-and-rework-loop.md#status-note-2026-09-30-review-fixes).)
+- **`ci` is honoured only where a report can arrive.** A process that serves routes and mounts neither `webhook-generic`
+  nor `webhook-github` refuses `ci` in every layer, per-thread requests included, with "no CI webhook surface is mounted
+  (ORCH_SURFACES)". This replaces the startup warning of slice 6. A `worker` serves no routes and cannot tell.
+- **`check_suite` is dropped** from the GitHub adapter. A suite is named by its app (`github-actions`), so every check of
+  that app would have the same name and none could be required by name. `check_run` (named by the check) and
+  `workflow_run` (named by the workflow; a `null` or blank name is ignored: 202, not stored) remain. Replaces the
+  GitHub list of the Decision and the "three events" of Built (slice 9).
+- **A fork's run does not count.** A `workflow_run` whose `head_repository` is not the repository (or is missing), and a
+  `check_run` with a pull request whose head repository is not the repository, is acknowledged (202) and not stored.
+  The fork chooses its own workflow names; its commit is not one the agent pushed.
+- **Idempotency comes from what is signed.** `X-GitHub-Delivery` and `X-Vymalo-Delivery` are not signed, so a captured
+  request could be replayed under a new id and stored again. Replaces "Idempotency key: `github:<X-GitHub-Delivery>`"
+  and "`X-Vymalo-Delivery` (a UUID, the idempotency key)". GitHub: `check_run:<id>:<completed_at>` and
+  `workflow_run:<id>:<run_attempt>`. Generic: the SHA-256 of the signed string `"<ts>.<body>"`, so the same timestamp and
+  body are one delivery. The delivery-id headers are optional and only logged. An event whose signed `completed_at`
+  (`updated_at` for a workflow run) is older than `WEBHOOK_GITHUB_MAX_AGE_SECS` (default 86400) is acknowledged and not
+  stored, so a captured GitHub delivery is not replayable for ever (the generic route already had its skew window).
+- **`X-GitHub-Event` is not signed.** It only selects which parser reads the signed body, and the body must be what that
+  parser demands (a `check_run` header over a `workflow_run` body is a 400). It cannot make a body mean something else.
+- **Reading is bounded.** The body buffer is not sized from `Content-Length` (a declared 5 MiB with no bytes held 5 MiB
+  per connection); it grows with what arrives, up to the limit. Each webhook route gives up on a request after 10 seconds
+  (408), inside the route's guard and not on `SurfaceRoutes::machine` as a whole (an MCP wait is long). The refusal log
+  is one `warn` per route per 30 seconds, with the count of the ones held back, and `debug` for the rest.
+- **The AG-UI card id is unique per report** (see the note under [Built (slice 7)](#built-slice-7)).
+- **Secrets are at least 32 bytes**, trimmed, and a blank one is nothing. `X-GitHub-Event`, `X-Vymalo-Delivery` and
+  `X-GitHub-Delivery` are never trusted for a decision.
+- **Both sides of a match log the same key.** When a job's push starts a CI watch, and when a report is received, the
+  watch key (`ci:<repository key>@<sha>`) is logged at info with the repository key and the short sha, so a mismatch of
+  spelling shows by eye.
+
+Still open: what a real GitHub delivery carries (all fixtures are synthetic; every member read is *unverified* as listed
+in the Verified section), and per-repository secrets.
+
 ## Security notes
 
 - **Verify before any write.** The HMAC is over the raw bytes as received, not a re-serialised
   body. A missing or wrong signature is 401 and touches no table.
 - **Constant-time comparison** through the HMAC library's verify function; never `==` on hex.
-- **Replay.** GitHub's delivery id is unique per delivery; the generic shape signs a timestamp and
-  rejects one outside the skew window, and its delivery id dedupes inside it.
+- **Replay.** The generic shape signs a timestamp, rejects one outside the skew window, and is one delivery by its
+  timestamp and body; GitHub's key comes from the signed body and an event older than the maximum age is not stored.
+  A delivery-id header is never a key: it is not signed (status note above).
 - **Untrusted text.** `summary` and `name` come from the outside. They are shown in a card, and
   they flow into a rework prompt only as quoted, untrusted data ([ADR 0018](0018-verification-gate-and-rework-loop.md)).
   A report can fail a check or pass it; it cannot start a job, approve a review or merge.
@@ -171,8 +307,9 @@ stateDiagram-v2
 - The orchestrator must be reachable from the CI system (a public route, or a relay). The webhook
   is inbound.
 - Two secret variables and two body schemas to keep in step with `api/webhooks.md`.
-- GitHub webhook payloads are assumed to match the REST schemas' field names; slice 9 records real
-  fixtures to settle it.
+- GitHub webhook payloads are assumed to match the REST schemas' field names. Slice 9 meant to settle it with
+  recorded deliveries and could not (none was available): its fixtures are synthetic, and the question is still open
+  (status note of 2026-09-30, [Built (slice 9)](#built-slice-9)).
 
 ## Alternatives considered
 
@@ -214,10 +351,24 @@ Easy to reverse: limits, the skew window, the timeout and the TTL.
   <https://docs.github.com/en/rest/checks/runs>.
 - *Verified 2026-09-30* in the REST schemas (check suites, workflow runs): `head_sha`,
   `head_branch`, `conclusion`, `repository.html_url`. That the **webhook** payloads are identical to
-  the REST ones is *unverified*; slice 9 records real fixtures. Whether `workflow_run` can carry a
-  conclusion outside the list above (for example `startup_failure`) is *unverified*; such a value
-  fails closed as `failure`.
+  the REST ones is *unverified*, and still is after slice 9, whose fixtures are synthetic (status note of
+  2026-09-30). Whether `workflow_run` can carry a conclusion outside the list above (for example `startup_failure`)
+  is *unverified*; `startup_failure` is mapped to its own failing conclusion, any other such value fails closed as `failure`.
 - *Verified 2026-09-30* (adam-rs `882e239`): `adam-coder` emits `branch {repository, branch,
   base_branch, commit}` and `pull_request {…}` artifacts, so the watch key can be built from it.
-- *Unverified*, checked in slice 6: oauth2-proxy `skip_auth_routes` for `/webhooks/*`; that `hmac`
-  `verify_slice` is constant-time.
+- *Verified 2026-09-30* (slice 9): GitHub's documented signature vector (secret `It's a Secret to Everybody`, payload
+  `Hello, World!`, `sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17`), the REST fields of a workflow
+  run (`html_url`, `head_sha`, `head_branch` and `name` nullable, `conclusion` nullable, no list of values, no
+  `startup_failure`), and the `ping` payload (`zen`, `hook_id`, `hook`). Sources: the pages named in
+  [`api/webhooks.md`](../api/webhooks.md#verified-and-unverified-2026-09-30). **Still unverified:** the members of the
+  `check_suite` and `check_run` webhook payloads beyond the REST schemas, and that GitHub sends `startup_failure`. The
+  slice's fixtures are synthetic, not recorded deliveries.
+- *Verified 2026-09-30* (slice 6), reading the source: `verify_slice` of `digest`'s `Mac` checks the length and then
+  compares with `subtle`'s `ct_eq`. It is constant-time in the tag; the length of a tag is public. (Re-read for the
+  versions the crate now uses, `hmac` 0.12.1 over `digest` 0.10.7, `digest-0.10.7/src/mac.rs`, `verify_slice`; the
+  crate uses those, the versions the MCP tokens' `sha2` 0.10 shares, and no longer `hmac` 0.13.)
+- *Verified 2026-09-30*: oauth2-proxy has the option `--skip-auth-route` / `skip_auth_routes` ("bypass authentication
+  for requests that match the method & path. Format: method=path_regex OR method!=path_regex. For all methods:
+  path_regex OR !=path_regex"). <https://oauth2-proxy.github.io/oauth2-proxy/configuration/overview>. *Unverified*:
+  that oauth2-proxy strips a client-supplied `X-Auth-Request-Email` on a skipped route. It does not matter to the
+  webhooks, which never read it, and the compose edge deletes it (`header_up -X-Auth-Request-Email`).

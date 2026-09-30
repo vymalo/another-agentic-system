@@ -366,3 +366,26 @@ A review of slices 11 and 12 found no blocker; these changes followed it. The de
   *unverified*: whether oauth2-proxy passes an `Authorization: Bearer` header it did not issue through to the upstream
   untouched (with `skip_auth_routes` it should not look at it; it can also be configured to treat such a header as its
   own JWT, `skip_jwt_bearer_tokens`, which must be off for this route). Check both before relying on it.
+
+### Status note, 2026-09-30: tool answers are one JSON response
+
+The decision stands; the response framing changed. rmcp's stateless mode sent the head of a `text/event-stream` as soon
+as it had parsed the request, before the tool had run. coder-e2e failed on it twice (the MCP merge on `main` and PR
+#57): `dev/mcp-e2e.sh` got `FAIL start_job: {}`, the edge logged "aborting with incomplete response ... use of closed
+network connection" and rmcp "failed to send pending response during drain". The job had been made; its answer was lost.
+
+- **Cause.** *Verified 2026-09-30* by reproduction (Caddy 2.11.4 on Go 1.26.3, and Go 1.24.7's
+  `httputil.ReverseProxy` with a logging connection, over a veth pair under CPU load): a Go reverse proxy writes the
+  request body upstream and then reads the client's body once more to see its end. When the upstream's head comes
+  back first, the proxy writes it to its client, its own server closes the client's request body, that last read fails
+  (`http: invalid Read on closed Body`), and the transport's write loop closes the upstream connection. Whatever the
+  upstream writes after the head is lost. Whether Go tracks this as a bug is *unverified*.
+- **The server.** `orch-surface-mcp` sets `json_response`: a call is one `application/json` response sent when the tool
+  has answered, the answer in the same write as the head, so a proxy that drops the connection then has already read
+  it. `wait_for_job` with a `progressToken` is still an event stream, opened with its first notification.
+  `tests/framing.rs` plays the proxy.
+- **The dev edge.** `dev/Caddyfile` buffers the request bodies of `/mcp`, `/agui/*` and `/webhooks/*`
+  (`request_buffers`), so the proxy has nothing left to read and never drops the connection. An answer larger than the
+  proxy's first read (about 4 KiB) needs this; the JSON framing alone does not cover it.
+- **Production.** oauth2-proxy is a Go reverse proxy; whether it shows the same race is *unverified*. Give `/mcp` a
+  proxy that buffers request bodies, or check it before relying on it.

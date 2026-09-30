@@ -1,7 +1,7 @@
 //! The inbox end to end, on both stores: a deadline scheduled by a gated completion fires and
 //! blocks the thread; a row claimed by a process that died is applied once by the next; a
-//! report that arrives before its watch waits for it. The real webhook surface is a later
-//! slice, so the test plays it through `App::receive`, and the agent through `App::apply`
+//! report that arrives before its watch waits for it. The webhook surface is tested in `webhook.rs`;
+//! here the test plays it through `App::receive`, and the agent through `App::apply`
 //! where the fake agent would only get in the way.
 //!
 //! Nothing here sleeps to synchronise: each wait is `eventually` on what the store says, with a
@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use common::*;
 use jiff::SignedDuration;
-use orch_app::GateRules;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiPolicy, CiProvider,
     CiReport, EventBody, EventKind, GatePolicy, Hold, Input, ThreadState,
@@ -28,8 +27,8 @@ use serde_json::json;
 fn ci_gate(timeout: Duration) -> GatePolicy {
     GatePolicy {
         ci: CiPolicy {
+            required: ["build".to_owned()].into(),
             timeout: SignedDuration::try_from(timeout).unwrap(),
-            ..CiPolicy::default()
         },
         ..GatePolicy::requiring([CheckSource::Ci])
     }
@@ -38,9 +37,6 @@ fn ci_gate(timeout: Duration) -> GatePolicy {
 fn setup(timeout: Duration) -> Setup {
     Setup {
         gate: ci_gate(timeout),
-        // This build refuses a CI gate until the CI webhook exists (slice 6); the inbox is tested
-        // underneath it.
-        gate_rules: GateRules::default().honouring(CheckSource::ALL),
         ..Setup::default()
     }
 }

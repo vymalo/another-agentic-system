@@ -81,7 +81,7 @@ for (const scheme of ["light", "dark"] as const) {
     test("axe: a finished thread with a replaced and a stale check has no serious violations", async ({
       page,
     }) => {
-      await startThread(page, "verify-ci ship it", "Reviewer");
+      await startThread(page, "verify-ci-stale ship it", "Reviewer");
       await expect(badge(page)).toHaveText("Done");
       await expect(
         page.getByRole("region", { name: "Check: CI, attempt 1, failed, stale" }),

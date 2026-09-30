@@ -63,8 +63,9 @@ pub enum Fatal {
 
 /// The routes of one surface, built from its adapter crate.
 ///
-/// The configuration refuses a surface that is not compiled in, so the error arm below is a
-/// second line of defence, not a path a running service takes.
+/// The configuration refuses a surface that is not compiled in, and a webhook surface without
+/// its secrets, so the error arms below are a second line of defence, not paths a running
+/// service takes.
 fn surface_routes<P: orch_ports::Ports>(
     surface: Surface,
     app: &Arc<App<P>>,
@@ -73,10 +74,51 @@ fn surface_routes<P: orch_ports::Ports>(
 ) -> Result<SurfaceRoutes, ConfigError> {
     match surface {
         #[cfg(feature = "surface-agui")]
-        Surface::Agui => Ok(orch_surface_agui::routes(Arc::clone(app), sse_keepalive)),
+        Surface::Agui => {
+            let _ = cfg;
+            Ok(orch_surface_agui::routes(Arc::clone(app), sse_keepalive))
+        }
         #[cfg(not(feature = "surface-agui"))]
         Surface::Agui => {
-            let _ = (app, sse_keepalive);
+            let _ = (cfg, app, sse_keepalive);
+            Err(ConfigError::SurfaceNotCompiled {
+                surface: surface.name(),
+                feature: surface.feature(),
+            })
+        }
+        #[cfg(feature = "surface-webhook")]
+        Surface::WebhookGeneric => {
+            let _ = sse_keepalive;
+            let generic = cfg
+                .webhook_generic
+                .clone()
+                .ok_or(ConfigError::MissingForSurface {
+                    var: "WEBHOOK_GENERIC_SECRETS",
+                    surface: surface.name(),
+                })?;
+            Ok(orch_surface_webhook::generic::routes(
+                Arc::clone(app),
+                generic,
+            ))
+        }
+        #[cfg(feature = "surface-webhook")]
+        Surface::WebhookGithub => {
+            let _ = sse_keepalive;
+            let github = cfg
+                .webhook_github
+                .clone()
+                .ok_or(ConfigError::MissingForSurface {
+                    var: "WEBHOOK_GITHUB_SECRETS",
+                    surface: surface.name(),
+                })?;
+            Ok(orch_surface_webhook::github::routes(
+                Arc::clone(app),
+                github,
+            ))
+        }
+        #[cfg(not(feature = "surface-webhook"))]
+        Surface::WebhookGeneric | Surface::WebhookGithub => {
+            let _ = (cfg, app, sse_keepalive);
             Err(ConfigError::SurfaceNotCompiled {
                 surface: surface.name(),
                 feature: surface.feature(),

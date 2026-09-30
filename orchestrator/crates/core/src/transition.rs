@@ -851,13 +851,9 @@ fn ci_reported(
     if !about_the_push {
         return (state, vec![card]);
     }
-    let first_decides = job.gate.ci.required.is_empty();
-    let counts = first_decides || job.gate.ci.required.contains(&report.name);
-    let decided = job.results.iter().any(|r| {
-        r.source == CheckSource::Ci
-            && r.commit.as_deref() == Some(report.sha.to_lowercase().as_str())
-    });
-    if !counts || (first_decides && decided) {
+    // Only a check the gate names counts; a gate that names none never passes (configuration
+    // refuses it, see `orch_app::GateError::CiWithoutChecks`).
+    if !job.gate.ci.required.contains(&report.name) {
         return (state, vec![card]);
     }
     let entry = ci_entry(job, report);

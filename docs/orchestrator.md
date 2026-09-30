@@ -17,19 +17,18 @@ change.
 > **What is built.** Facts in this page are marked **Built** (present in
 > `orchestrator/` and checked against the code on 2026-09-30) or **Planned**
 > (design only). Today: the pure core, the Postgres store, the durable dispatcher,
-> the inbox worker (timers and stored reports), the A2A client adapter, and one interaction surface over `App`: AG-UI
+> the inbox worker (timers and stored reports), the A2A client adapter, and two inbound surfaces over `App`: AG-UI
 > (the wire types, the pure projection, and the run, connect and capabilities
-> routes, with A2UI surfaces and actions). The legacy chat API surface was
-> removed on 2026-09-30. Not yet: an A2A or MCP server, webhook routes (the inbox
-> that would take their reports is built), MCP tools, and the model endpoint. The
+> routes, with A2UI surfaces and actions), and the CI webhooks `POST /webhooks/ci` (generic, MVP slice 6) and `POST /webhooks/github` (slice 9), machine routes. The legacy chat API surface was
+> removed on 2026-09-30. Not yet: an A2A or MCP server, MCP tools, and the model endpoint. The
 > whole picture, with diagrams, is in [Architecture: as built](architecture.md#as-built).
 >
 > **Partly built (design accepted 2026-09-30).** The job ledger and the gate in the core (MVP slice 2), the
-> gate's configuration and its AG-UI projection (slice 3), the inbox, watches and timers (slice 5) and the
-> verifier agent (slice 10) are built, with the agent's own checks and the verifier as the sources the build honours
+> gate's configuration and its AG-UI projection (slice 3), the inbox, watches and timers (slice 5), the CI webhook
+> (slice 6) and the verifier agent (slice 10) are built, with the agent's own checks, CI and the verifier as the sources the build honours
 > ([The gate's configuration](#the-gates-configuration-and-its-projection-mvp-slice-3),
 > [The verifier's dispatch](#the-verifiers-dispatch-mvp-slice-10)).
-> The rest, CI webhooks and the MCP server, is planned. They are all designed in
+> The GitHub webhook adapter (slice 9) is built too; nothing of these is left but the web's card for CI (slice 8). They are all designed in
 > [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 > [ADR 0017](decisions/0017-ci-results-by-webhook.md),
 > [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) and
@@ -48,7 +47,7 @@ protocol:
 | MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | Server: **built** (`orch-surface-mcp`: `start_job`, `get_job`, `wait_for_job` with progress notifications, `answer`, `cancel_job` and `list_agents`, over streamable HTTP, stateless, with bearer tokens, going straight to `App` and not through the inbox, [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); the client side is not designed yet |
 | AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
 | Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
-| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Planned**: `orch-surface-webhook` ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The inbox it writes to is **built**: `App::receive` stores a report and the `InboxWorker` applies it |
+| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Built** (`orch-surface-webhook`): the generic signed shape (`POST /webhooks/ci`, MVP slice 6) and the GitHub adapter (`POST /webhooks/github`, slice 9) ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The route verifies the signature, calls `App::receive`, which stores the report, and the `InboxWorker` applies it |
 | Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | **Built** (MVP slice 5): timers are inbox rows, armed by `Schedule` in the commit that asks for it and applied by the `InboxWorker` as `TimerFired` ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). Only the CI and verifier deadlines exist; reminders and cron are not designed |
 
 The chat's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
@@ -56,8 +55,8 @@ small REST resource API beside it (agents, threads, cancel, health: always mount
 binding in [`api/agui.md`](api/agui.md)). Each inbound surface (AG-UI, later
 A2A) is an adapter crate behind a Cargo feature, and which ones are mounted is configuration
 (`ORCH_SURFACES`, default `agui`). **Built:** the mechanism, the `agui` surface (the run route, the connect
-stream and the capabilities document) and the `mcp` surface (a machine route with bearer tokens, off unless
-named). **Planned:** `a2a`. The legacy `chat-api` surface was removed on
+stream and the capabilities document), the `mcp` surface (a machine route with bearer tokens, off unless
+named), `webhook-generic` and `webhook-github` (machine routes, below). **Planned:** `a2a`. The legacy `chat-api` surface was removed on
 2026-09-30 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag)).
 
 *Design, not built:* every event records its **origin**, and a `Reply` command goes back to
@@ -99,7 +98,7 @@ flowchart TB
   end
   subgraph G_SURF["Interaction surfaces: mounted by ORCH_SURFACES"]
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
-    surfwh["<b>orch-surface-webhook</b> (planned)<br/>POST /webhooks/github, /webhooks/ci<br/>machine routes, HMAC"]:::planned
+    surfwh["<b>orch-surface-webhook</b><br/>POST /webhooks/ci, /webhooks/github<br/>machine routes, HMAC guard"]
     surfmcp["<b>orch-surface-mcp</b><br/>/mcp, streamable HTTP, stateless<br/>machine route, bearer tokens"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
@@ -107,7 +106,7 @@ flowchart TB
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp (default), agent-local (off)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-webhook (default), agent-local (off)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -137,11 +136,11 @@ flowchart TB
   surfagui --> app
   surfagui --> proj
   surfagui --> proto
-  surfwh -.-> api
-  surfwh -.-> app
+  surfwh --> api
+  surfwh --> app
   surfmcp --> api
   surfmcp --> app
-  bin -.-> surfwh
+  bin -. "feature surface-webhook" .-> surfwh
   ts --> api
   ts --> app
   ts --> surfagui
@@ -191,12 +190,12 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
-| `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` | **Built** |
+| `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` (`plain`, `streaming` and `machine` routes) | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
 | `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
 | `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
-| `orch-surface-webhook` | `POST /webhooks/github` and `POST /webhooks/ci`: HMAC on the raw body, normalise to a `CiReport`, `App::receive`; feature `surface-webhook`, on by default | **Planned** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
+| `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
 | MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
@@ -208,13 +207,14 @@ Rules the graph enforces, each checkable in the manifests:
 |---|---|---|---|
 | `orchestrator` | `surface-mcp` | yes | Compiles in `orch-surface-mcp` (`rmcp`, its tower service and the bearer check). Mounted only when `ORCH_SURFACES` names `mcp`, and then `MCP_TOKENS_FILE` and `MCP_ALLOWED_HOSTS` are required |
 | `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities); it decides what *can* be mounted, `ORCH_SURFACES` what *is*. (`surface-chat-api` and its crate were removed on 2026-09-30.) |
+| `orchestrator` | `surface-webhook` | yes | Compiles in `orch-surface-webhook`: the CI webhooks, `ORCH_SURFACES` names `webhook-generic` (needs `WEBHOOK_GENERIC_SECRETS`) and `webhook-github` (needs `WEBHOOK_GITHUB_SECRETS`), exit 78 without. Default-on, but a route exists only when `ORCH_SURFACES` names it |
 | `orchestrator` | `agent-local` | no | Compiles in `orch-agent-adam` and the adam-rs runtime: `transport: local` agents in `AGENTS_FILE` are served in this process (below). Without it such an entry is refused at startup (exit 78) and nothing of adam-rs's runtime is linked |
 | `orch-agent-adam` | `testkit` | no | The scripted agent, `LocalFixture` (the `AgentFixture` of the conformance suite), `LocalWorld` (processes sharing a journal) and a private Postgres schema; enable as a dev-dependency feature |
 | `orch-ports` | `testkit` | no | In-memory implementations and the conformance testkit; enable as a dev-dependency feature in adapter crates |
 | `orch-agui-proto` | `testkit` | no | `assert_conforms` and friends against the vendored schema (`jsonschema`); enable as a dev-dependency feature |
 
-Planned, not built: the feature `surface-webhook` (on by default; selects `orch-surface-webhook`, whose
-surfaces are the `ORCH_SURFACES` names `webhook-github` and `webhook-generic`).
+The feature `surface-webhook` selects `orch-surface-webhook`, whose surfaces are the `ORCH_SURFACES` names
+`webhook-generic` and `webhook-github` (both built).
 
 There is no Cargo feature that selects the store or the A2A client: the binary depends on
 `orch-store-postgres` and `orch-agent-a2a` unconditionally, because there is one implementation of
@@ -224,7 +224,7 @@ is not built (see the status note in [ADR 0009](decisions/0009-swappable-impleme
 ## Event flow
 
 **Design ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)); the inbox, the
-watches and the timers are built (MVP slice 5), the webhook adapters that write reports are not.**
+watches and the timers are built (MVP slice 5), the webhooks that write reports are built (slice 6 generic, slice 9 GitHub).**
 This is the flow for **unsolicited machine input**: webhooks and timers. The inbox exists to answer fast, to
 dedupe redeliveries and to park a report that cannot be matched to a thread yet. Requests from an
 authenticated caller who waits for the answer do **not** go through it: the chat (AG-UI, the legacy
@@ -256,7 +256,7 @@ agent):
 
 | Design | Built |
 |---|---|
-| Inbound adapters write an `inbox` row; a worker claims it and runs the transition | Machine input does: `App::receive` writes the row (no adapter calls it yet, the webhook surface is slice 6) and timers are written by the commit that schedules them; the `InboxWorker` claims them and applies them. A person's request does not: the request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. MCP does not use the inbox |
+| Inbound adapters write an `inbox` row; a worker claims it and runs the transition | Machine input does: `App::receive` writes the row (the webhook surface calls it, slice 6) and timers are written by the commit that schedules them; the `InboxWorker` claims them and applies them. A person's request does not: the request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. MCP does not use the inbox |
 | Inbound events are deduplicated by `UNIQUE (source, idempotency_key)` | Events carry an optional `idempotency_key`, unique per thread (`events_idempotency`); the dispatcher derives keys from the agent's own ids, so a resumed or replayed stream never duplicates an event |
 | The job row holds the state as `jsonb` | The `threads` row holds `state` as text with a `CHECK`; the state has no payload |
 | Async results re-enter as new inbound events | The dispatcher turns everything the agent reports into `Input::Agent` and calls `App::apply`, the same entry point every surface uses |
@@ -279,7 +279,7 @@ adds the watch re-arms it:
 
 ```mermaid
 sequenceDiagram
-  participant S as A surface (webhook, later)
+  participant S as A surface (the webhook)
   participant DB as Postgres
   participant W as InboxWorker
   participant A as App and transition (pure)
@@ -357,6 +357,76 @@ What the diagrams do not say:
   are kept, which keeps that true and makes retention an open question (#29).
 - **Wakeups.** `NOTIFY orch_inbox` (`Topic::Inbox`) on a received or re-armed row; the worker also
   polls, so a lost notification costs latency only.
+
+### The webhook surface (MVP slices 6 and 9)
+
+**Built** (checked against `orch-surface-webhook`, `orch-api` and the binary on 2026-09-30). A webhook is a
+**machine route**: `SurfaceRoutes::machine(routes, guard)` mounts it outside the identity layer (it never reads
+`X-Auth-Request-Email`) and outside the request timeout, and requires a guard, so it cannot be mounted without one.
+The guard of `POST /webhooks/ci` reads the body up to 256 KiB, checks the headers, the timestamp against the
+application's clock and the HMAC over `"<timestamp>.<body>"`, and only then lets the handler see the verified bytes;
+the handler parses them (400), normalises to a `CiReport` and calls `App::receive`. The wire contract is
+[`api/webhooks.md`](api/webhooks.md); the decision is [ADR 0017](decisions/0017-ci-results-by-webhook.md#built-slice-6).
+
+```mermaid
+sequenceDiagram
+  participant CI as CI system
+  participant E as Edge (no identity for /webhooks/*)
+  participant G as Guard (machine route)
+  participant H as Handler
+  participant A as App::receive
+  participant DB as Postgres (inbox)
+  CI->>E: POST /webhooks/ci, X-Vymalo-Delivery / -Timestamp / -Signature-256
+  E->>G: X-Auth-Request-Email deleted
+  G->>G: headers, timestamp within the skew of the clock, size, HMAC
+  alt a header missing, a stale timestamp or a bad signature
+    G-->>CI: 401, nothing stored
+  else over 256 KiB
+    G-->>CI: 413, nothing stored
+  else verified
+    G->>H: the exact bytes, in a request extension
+    H->>H: JSON to CiReport (version 1, eight conclusions)
+    alt malformed
+      H-->>CI: 400, nothing stored
+    else well formed
+      H->>A: receive("generic", delivery UUID, CiReport)
+      A->>DB: INSERT inbox (source, key), a repeat is a no-op
+      H-->>CI: 202, new or repeated
+    end
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Arrived: POST /webhooks/ci
+  Arrived --> Refused401: header missing, timestamp not digits or outside the skew, or HMAC matches no secret
+  Arrived --> Refused408: the request did not arrive within 10 s
+  Arrived --> Refused413: body over 256 KiB
+  Arrived --> Verified: HMAC good under either secret
+  Verified --> Refused400: not JSON, a field missing or mistyped, version other than 1, a bad sha, an unknown conclusion, a name over 256 bytes
+  Verified --> Accepted202: stored once in the inbox, or already there
+  Refused401 --> [*]
+  Refused408 --> [*]
+  Refused413 --> [*]
+  Refused400 --> [*]
+  Accepted202 --> [*]: a worker matches it to a job by the watch on the commit
+```
+
+`POST /webhooks/github` (slice 9) is the same machine route with GitHub's own scheme: the guard checks
+`X-Hub-Signature-256` over the raw body (401), the size (413, 5 MiB), the read timeout (408, 10 s) and the HMAC, and the
+handler answers `ping` with 204, stores a `check_run` or `workflow_run` with `action` = `completed` as a `CiReport` under a key
+made of the signed body (`check_run:<id>:<completed_at>`, `workflow_run:<id>:<run_attempt>`; 202), and acknowledges every other
+event or action with 202 without storing it: `check_suite`, an unnamed workflow, a fork's run, an event older than
+`WEBHOOK_GITHUB_MAX_AGE_SECS`. The generic route's key is a digest of its signed string; delivery-id headers are only logged.
+Its fixtures are synthetic (no real delivery was available; [ADR 0017](decisions/0017-ci-results-by-webhook.md#built-slice-9),
+[status note](decisions/0017-ci-results-by-webhook.md#status-note-2026-09-30-review-fixes)).
+
+What the diagrams do not say: a `202` means *received*, not *applied*. The report waits in the inbox until the
+`InboxWorker` finds the watch of `ci:<repo-key>@<sha>` (set when the agent's `branch` artifact was applied), or
+parks it until one appears (`INBOX_PARKED_TTL_SECS`); the gate then decides
+([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)). A refused delivery writes nothing, and the
+`orch-e2e` tests (`webhook.rs`, on both stores, with a clock the test holds) drive the real route through a parked
+report, a rework and a deadline.
 
 The turn as the code runs it, step by step, is a sequence diagram in
 [Architecture: a chat turn](architecture.md#a-chat-turn).
@@ -646,7 +716,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Layer: a layer arrives (env, file entry or request)
-  Layer --> Refused: names a source or setting this build cannot honour (ci)
+  Layer --> Refused: names a source or setting this build cannot honour (none by default)
   Layer --> Refused: leaves out a source the layer above requires
   Layer --> Refused: maxAttempts outside 1..=cap, or verifier / ci set per thread
   Layer --> Applied: adds sources, changes attempts
@@ -656,12 +726,12 @@ stateDiagram-v2
 
 - **What this build honours is listed in one place, and is checked in two.** `pending_reason` (a `match` over `CheckSource`,
   no wildcard) says why a source cannot be honoured yet; `GateRules::new` honours the rest. The binary applies the rules
-  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. Until
-  the CI webhook (slice 6) exists no surface writes CI reports into the inbox, so a gate that required `ci` would wait for a
-  report that can never come; configuration therefore **refuses** it, and the `ci` settings, in every layer, naming the slice
-  that enables them: at startup with exit 78 (`ORCH_GATE`, an `AGENTS_FILE` entry, including its `ci` key), and as a 400 for
-  a request. The same was true of `verifier` until slice 10, which changed its arm of `pending_reason`; each slice owns
-  what its source needs beyond that (the verifier's checks in `GateRules::check_verifier`, the `ci` settings, the cards).
+  at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. A source
+  or setting this build cannot honour is **refused** in every layer, naming the slice that enables it (exit 78 at startup:
+  `ORCH_GATE`, an `AGENTS_FILE` entry, including its `ci` and `verifier` keys; a 400 for a request), because a gate that required
+  something nothing can answer would wait for a verdict that can never come. `ci` was refused until the CI webhook (slice 6) and
+  `verifier` until slice 10: each changed its arm of `pending_reason`, and owns what its source needs beyond that (the verifier's
+  checks in `GateRules::check_verifier`, the `ci` settings, the cards).
 - **Sources: a layer adds, never removes; attempts: anywhere within the cap.** The requested `require` is the whole list
   and must contain the layer above's (`ci.required` names add up; the verifier's own entry may leave the `verifier`
   source out for itself); `maxAttempts` may be anything in `1..=ORCH_MAX_ATTEMPTS_CAP` (at most 100); a thread cannot choose the verifier or the CI
@@ -670,7 +740,7 @@ stateDiagram-v2
   while the thread is `queued`, `working` or `verifying`. It learns the gate from the thread record
   (`ThreadMeta.gate`, the job's copy) and everything else from the log: `SUBAGENT_FINISHED` and a `STATE_SNAPSHOT` with
   `job {attempt, maxAttempts, gate, sha}` at `completed`, `check_result` as the `vymalo.check` activity,
-  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `RUN_FINISHED` at `done`, `RUN_ERROR` with
+  `rework` as `vymalo.rework` plus the next attempt's `SUBAGENT_STARTED`, `ci_result` as `vymalo.ci` (a card per report, id `ci-<sha>-<name>`; slice 7), `RUN_FINISHED` at `done`, `RUN_ERROR` with
   `checks_failed` when the attempts are out, and a hold as an answerable interrupt. A run that continues a thread and asks
   for a different gate than the thread's is a 409. The resource API's `Thread` carries the same `job` (`chat-api.yaml`).
 - **A rework is a new A2A task in the same context.** The first task is `completed` and cannot be continued, so the

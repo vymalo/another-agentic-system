@@ -23,8 +23,11 @@ secrecy.workspace = true
 orch-agent-adam = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 orch-store-postgres.workspace = true
+orch-surface-webhook.workspace = true
+axum.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 jiff.workspace = true

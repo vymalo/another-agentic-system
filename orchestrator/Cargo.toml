@@ -27,6 +27,7 @@ orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-surface-agui = { path = "crates/surface-agui" }
 orch-surface-mcp = { path = "crates/surface-mcp" }
+orch-surface-webhook = { path = "crates/surface-webhook" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
@@ -83,3 +84,6 @@ secrecy = "0.10"
 schemars = "1"
 subtle = "2.6"
 sha2 = "0.10"
+# Webhook signatures (ADR 0017): HMAC-SHA-256, verified in constant time by `Mac::verify_slice`
+# (digest 0.10.7, `ct_eq`), over the same sha2 as the MCP tokens. Secrets are `secrecy` strings.
+hmac = "0.12"

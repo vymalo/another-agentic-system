@@ -3,8 +3,9 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::{
-    AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, Command, Event, GatePolicy,
-    Input, ThreadId, ThreadState, Timestamp, UiActionData, UiVersion, UserId,
+    AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiProvider,
+    CiReport, Command, Event, GatePolicy, Input, ThreadId, ThreadState, Timestamp, UiActionData,
+    UiVersion, UserId,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -48,6 +49,18 @@ pub fn verifier_gate() -> GatePolicy {
 pub fn both_gate() -> GatePolicy {
     let mut gate = GatePolicy::requiring([CheckSource::AgentChecks, CheckSource::Verifier]);
     gate.verifier = Some(AgentId::new("reviewer"));
+    gate
+}
+
+/// A gate that requires the CI check `ci/build` on the pushed commit, three attempts.
+pub fn ci_gate() -> GatePolicy {
+    ci_gate_of(["ci/build"])
+}
+
+/// A gate that requires the CI checks `names` on the pushed commit, three attempts.
+pub fn ci_gate_of<'a>(names: impl IntoIterator<Item = &'a str>) -> GatePolicy {
+    let mut gate = GatePolicy::requiring([CheckSource::Ci]);
+    gate.ci.required = names.into_iter().map(str::to_owned).collect();
     gate
 }
 
@@ -121,6 +134,26 @@ pub enum Action {
     VerifierDown,
     /// The verifier's deadline (of the verification in progress) comes due.
     VerifierDeadline,
+    /// A CI provider reports check `name` on the commit named by `commit`.
+    Ci {
+        name: &'static str,
+        commit: u8,
+        conclusion: CiConclusion,
+    },
+}
+
+/// A CI report about commit `commit` (see [`Action::Branch`]), as a surface normalises it.
+pub fn ci_report(name: &str, commit: u8, conclusion: CiConclusion) -> CiReport {
+    CiReport {
+        provider: CiProvider::Generic,
+        repository: "github.com/acme/demo".to_owned(),
+        sha: format!("{commit:040x}"),
+        branch: Some("agent/x".to_owned()),
+        name: name.to_owned(),
+        conclusion,
+        url: Some("https://ci.example.com/runs/1".to_owned()),
+        summary: Some("2 tests failed".to_owned()),
+    }
 }
 
 /// One operation of surface `s<surface>`, in the shapes of the A2UI spec.
@@ -167,6 +200,13 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         1 => Just(Action::StaleVerdict),
         1 => Just(Action::VerifierDown),
         1 => Just(Action::VerifierDeadline),
+        3 => (0u8..3, prop_oneof![Just("build"), Just("lint")], any::<bool>()).prop_map(
+            |(commit, name, ok)| Action::Ci {
+                name,
+                commit,
+                conclusion: if ok { CiConclusion::Success } else { CiConclusion::Failure },
+            }
+        ),
     ]
 }
 
@@ -330,6 +370,11 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 attempt: state.job.attempt,
                 verification: state.job.verification,
             }),
+            Action::Ci {
+                name,
+                commit,
+                conclusion,
+            } => Input::CiReported(ci_report(name, *commit, *conclusion)),
             Action::UiAct { ids } => {
                 users += 1;
                 Input::UiAction {

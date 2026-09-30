@@ -19,9 +19,12 @@ use support::*;
 const SHA: &str = "cccccccccccccccccccccccccccccccccccccccc";
 
 fn gated(sources: &[CheckSource]) -> AppConfig {
+    let mut gate = GatePolicy::requiring(sources.iter().copied());
+    // A gate that requires CI names its checks (`GateError::CiWithoutChecks`).
+    gate.ci.required = ["build".to_owned()].into();
     AppConfig {
         stream_poll: Duration::from_millis(100),
-        gate: GatePolicy::requiring(sources.iter().copied()),
+        gate,
         // The core decides CI and the verifier already; these tests play the application that
         // will honour them.
         gate_rules: GateRules::default().honouring(CheckSource::ALL),

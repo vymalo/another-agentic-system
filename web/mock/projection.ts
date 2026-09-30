@@ -495,6 +495,35 @@ export class Projector {
         if (verifier && e.data.status === "failed") this.closeVerifier({ passed: false }, out);
         break;
       }
+      case "ci_result": {
+        // a CI system reported a check on a commit: a card of its own for every report, never
+        // replacing another (the id ends in the report's place in the log); the `check_result` that
+        // follows, when the report counts, is what changes the state
+        const d = e.data;
+        const sha = String(d.sha ?? "");
+        const link = typeof d.url === "string" && /^https?:\/\//i.test(d.url) ? d.url : undefined;
+        const content: Record<string, unknown> = {
+          name: d.name,
+          conclusion: d.conclusion,
+          passed: ["success", "neutral", "skipped"].includes(String(d.conclusion)),
+          sha,
+          shortSha: sha.slice(0, 7),
+          provider: d.provider,
+          repository: d.repository,
+        };
+        if (typeof d.branch === "string") content.branch = d.branch;
+        if (link) content.url = link;
+        if (typeof d.summary === "string") content.summary = d.summary;
+        out.push({
+          type: "ACTIVITY_SNAPSHOT",
+          messageId: `ci-${String(d.provider)}-${sha}-${String(d.name)}-${e.seq}`,
+          activityType: "vymalo.ci",
+          content,
+          replace: false,
+          metadata: actorMeta(e),
+        });
+        break;
+      }
       case "rework": {
         // the gate failed and the agent is sent back: the divider, then the next attempt's
         // invocation (the delegation is already on its way, so the run shows it working)

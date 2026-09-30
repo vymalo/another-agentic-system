@@ -92,7 +92,10 @@ fn verdict(attempt: u32, verification: u32, passed: bool, findings: &[&str]) -> 
 }
 
 fn gated(sources: &[CheckSource]) -> Snapshot {
-    Snapshot::queued(GatePolicy::requiring(sources.iter().copied()))
+    let mut gate = GatePolicy::requiring(sources.iter().copied());
+    // A gate that requires CI names its checks (configuration refuses it otherwise).
+    gate.ci.required = ["build".to_owned()].into();
+    Snapshot::queued(gate)
 }
 fn with_verifier(mut s: Snapshot) -> Snapshot {
     s.job.gate.verifier = Some(AgentId::new("reviewer"));
@@ -670,18 +673,47 @@ fn a_rerun_of_a_required_check_replaces_its_earlier_report_until_the_thread_move
 }
 
 #[test]
-fn without_required_names_the_first_completed_report_decides() {
+fn a_gate_that_names_no_check_never_passes_on_a_report() {
+    // Configuration refuses this gate; if one is built anyway, no report counts.
+    let mut none = gated(&[CheckSource::Ci]);
+    none.job.gate.ci.required.clear();
+    let (verifying, _) = feed(none, &[branch(S1), completed()]);
+    assert_eq!(verifying.state, Verifying);
+    for conclusion in [CiConclusion::Success, CiConclusion::Skipped] {
+        let (snap, cmds) = step(&verifying, &ci("build", S1, conclusion));
+        assert_eq!(snap, verifying, "{conclusion:?}");
+        assert!(card_only(&cmds));
+    }
+}
+
+#[test]
+fn a_report_of_a_check_nobody_named_does_not_decide_before_the_named_one() {
+    // A `skipped` (or any) report of another check arrives first; the named check is still
+    // what decides, and a red one reworks.
     let (verifying, _) = feed(gated(&[CheckSource::Ci]), &[branch(S1), completed()]);
-    let (done, _) = step(&verifying, &ci("build", S1, CiConclusion::Success));
-    assert_eq!(done.state, Done);
-    // Before verification starts, the first report is kept and a later one is only a card.
+    for name in ["lint", "docs", "Build"] {
+        let (snap, cmds) = step(&verifying, &ci(name, S1, CiConclusion::Skipped));
+        assert_eq!(snap, verifying, "{name}");
+        assert!(card_only(&cmds));
+    }
+    let (reworked, _) = step(&verifying, &ci("build", S1, CiConclusion::Failure));
+    assert_eq!(reworked.state, Queued);
+}
+
+#[test]
+fn conflicting_reports_of_a_check_for_one_commit_leave_the_latest_before_verification() {
+    // Working, not yet verifying: success, then failure of the same check. The latest is kept
+    // and the red one reworks when the agent finishes.
     let (working, _) = feed(
         gated(&[CheckSource::Ci]),
-        &[branch(S1), ci("build", S1, CiConclusion::Failure)],
+        &[
+            branch(S1),
+            ci("build", S1, CiConclusion::Success),
+            ci("build", S1, CiConclusion::Failure),
+        ],
     );
-    let (snap, cmds) = step(&working, &ci("other", S1, CiConclusion::Success));
-    assert_eq!(snap, working);
-    assert!(card_only(&cmds));
+    let (snap, _) = step(&working, &completed());
+    assert_eq!(snap.state, Queued, "the red report wins");
 }
 
 // ---- the verifier ---------------------------------------------------------------------------
