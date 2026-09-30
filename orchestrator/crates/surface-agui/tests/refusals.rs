@@ -493,3 +493,65 @@ async fn every_refusal_is_a_problem_with_a_detail_and_no_stream() {
     assert_eq!(p["type"], "about:blank");
     assert_eq!(p["title"], "Bad Request");
 }
+
+/// The ids `start_job` derives (UUID version 8, ADR 0019) are reserved: nobody can create a
+/// thread under an id another user's `start_job` will need. A job that exists is still served.
+#[tokio::test]
+async fn a_new_thread_cannot_take_a_reserved_version_8_id_but_an_existing_job_is_served() {
+    use orch_app::{Inbound, NewThread};
+    use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
+
+    let h = Harness::start().await;
+    let v8 = "0190aaaa-0000-8000-8000-000000000001";
+    let r = h
+        .refused("plain", Some(ALICE), &input(v8, "r", &[("m", "echo hi")]))
+        .await;
+    let problem = r.problem(400);
+    assert!(
+        problem["detail"].as_str().unwrap().contains("reserved"),
+        "{problem}"
+    );
+    no_thread(&h, ALICE, v8).await;
+    assert!(h.agent.sends().is_empty());
+    // Versions 4 and 7 are as free as ever.
+    for ok in [
+        "0190aaaa-0000-7000-8000-000000000002",
+        "0190aaaa-0000-4000-8000-000000000003",
+    ] {
+        let resp = h
+            .post("plain", Some(ALICE), &input(ok, "r", &[("m", "echo hi")]))
+            .await;
+        assert_eq!(resp.status().as_u16(), 200, "{ok}");
+        Stream::new(resp).all().await;
+    }
+
+    // A job the MCP surface started (a version 8 id) can be continued from the chat by its owner.
+    let job = ThreadId(v8.parse().unwrap());
+    h.app
+        .create_thread_as(
+            &UserId::new(ALICE),
+            job,
+            NewThread {
+                title: None,
+                target: AgentTarget {
+                    agent_id: AgentId::new("plain"),
+                    release: None,
+                },
+                text: "ask which branch".to_owned(),
+            },
+            Inbound::default(),
+        )
+        .await
+        .unwrap();
+    h.wait_state(ALICE, v8, "blocked").await;
+    let resp = h
+        .post("plain", Some(ALICE), &input(v8, "r2", &[("m2", "more")]))
+        .await;
+    let status = resp.status().as_u16();
+    assert_eq!(status, 200, "{}", resp.text().await.unwrap());
+    // Someone else cannot see it, whatever the id looks like.
+    let r = h
+        .refused("plain", Some(BOB), &input(v8, "r3", &[("m3", "hi")]))
+        .await;
+    r.problem(404);
+}

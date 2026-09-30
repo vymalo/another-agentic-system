@@ -152,6 +152,19 @@ mod tests {
         })
         .context("reading the configuration");
         assert_eq!(exit_code(&gate), 78);
+        // A token variable that is missing, or a file that cannot be read, is a configuration error.
+        let no_token = anyhow::Error::from(ConfigError::McpTokenEnvMissing {
+            user: "alice@example.com".to_owned(),
+            var: "MCP_TOKEN_ALICE".to_owned(),
+        })
+        .context("reading the configuration");
+        assert_eq!(exit_code(&no_token), 78);
+        let no_file = anyhow::Error::from(ConfigError::McpTokensFileRead {
+            path: "/etc/orch/mcp-tokens.yaml".into(),
+            source: io::Error::from(io::ErrorKind::NotFound),
+        })
+        .context("reading the configuration");
+        assert_eq!(exit_code(&no_file), 78);
 
         let db_down = anyhow::Error::from(StoreError::unavailable(io::Error::other("refused")))
             .context("cannot connect to Postgres");

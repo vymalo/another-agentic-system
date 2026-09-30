@@ -18,6 +18,10 @@ use tracing_subscriber::registry::LookupSpan;
 
 use crate::config::LogFormat;
 
+/// The filter when `RUST_LOG` is not set: `info`, and the MCP library's own chatter (a line per
+/// request at `info`/`debug`) at `warn`. `RUST_LOG` replaces it whole.
+const DEFAULT_FILTER: &str = "info,rmcp=warn";
+
 /// Who is logging: the fields put on every line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessFields {
@@ -117,10 +121,11 @@ where
     }
 }
 
-/// Installs the global subscriber: `format` on stdout, filtered by `RUST_LOG` (default `info`),
+/// Installs the global subscriber: `format` on stdout, filtered by `RUST_LOG` (default `info,rmcp=warn`),
 /// with `fields` on every line. Keeps the subscriber already installed, if any.
 pub fn init(format: LogFormat, fields: Option<ProcessFields>) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
     let _ =
         tracing::dispatcher::set_global_default(dispatch(format, fields, filter, std::io::stdout));
 }
@@ -213,6 +218,28 @@ mod tests {
         assert_eq!(second["fields"]["message"], "second");
         assert_eq!(second["span"]["name"], "outbox");
         assert_eq!(second["span"]["id"], "row-1");
+    }
+
+    #[test]
+    fn the_default_filter_keeps_the_mcp_librarys_chatter_at_warn() {
+        let buf = Buf::default();
+        let subscriber = dispatch(
+            LogFormat::Json,
+            None,
+            EnvFilter::new(DEFAULT_FILTER),
+            buf.clone(),
+        );
+        tracing::dispatcher::with_default(&subscriber, || {
+            tracing::info!(target: "rmcp::transport", "a line per request");
+            tracing::warn!(target: "rmcp::transport", "a real problem");
+            tracing::info!(target: "orch_app", "ours");
+        });
+        let out = buf.text();
+        assert!(!out.contains("a line per request"), "{out}");
+        assert!(
+            out.contains("a real problem") && out.contains("ours"),
+            "{out}"
+        );
     }
 
     #[test]

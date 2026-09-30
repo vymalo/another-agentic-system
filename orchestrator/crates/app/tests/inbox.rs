@@ -1047,6 +1047,8 @@ impl ThreadStore for RacyStore {
             -> Result<orch_ports::CommitOutcome, StoreError>;
         list_events(thread: ThreadId, after: i64, limit: u32)
             -> Result<Vec<orch_core::Event>, StoreError>;
+        latest_events(thread: ThreadId, kind: orch_core::EventKind, limit: u32)
+            -> Result<Vec<orch_core::Event>, StoreError>;
         get_binding(thread: ThreadId) -> Result<Option<orch_ports::AgentBinding>, StoreError>;
         claim_outbox(owner: &str, now: Timestamp, lease: Duration, limit: u32)
             -> Result<Vec<orch_ports::OutboxItem>, StoreError>;

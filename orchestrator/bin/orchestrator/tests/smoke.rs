@@ -243,6 +243,13 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--listen-addr", "LISTEN_ADDR"),
         ("--role", "ORCH_ROLE"),
         ("--surfaces", "ORCH_SURFACES"),
+        ("--mcp-tokens-file", "MCP_TOKENS_FILE"),
+        ("--mcp-allowed-hosts", "MCP_ALLOWED_HOSTS"),
+        ("--public-url", "ORCH_PUBLIC_URL"),
+        ("--mcp-wait-max-secs", "MCP_WAIT_MAX_SECS"),
+        ("--mcp-wait-max-concurrent", "MCP_WAIT_MAX_CONCURRENT"),
+        ("--mcp-wait-max-per-user", "MCP_WAIT_MAX_PER_USER"),
+        ("--mcp-allowed-origins", "MCP_ALLOWED_ORIGINS"),
         ("--auth-dev-user", "AUTH_DEV_USER"),
         ("--database-max-connections", "DATABASE_MAX_CONNECTIONS"),
         ("--dispatcher-concurrency", "DISPATCHER_CONCURRENCY"),
@@ -275,6 +282,12 @@ fn every_setting_is_read_from_its_variable() {
         ("DISPATCHER_CONCURRENCY", "0"),
         ("OUTBOX_LEASE_SECS", "2"),
         ("SHUTDOWN_GRACE_SECS", "0"),
+        // Read whatever the surfaces are: a typo is not quietly ignored until `mcp` is mounted.
+        ("ORCH_PUBLIC_URL", "chat.example.com"),
+        ("MCP_WAIT_MAX_SECS", "0"),
+        ("MCP_WAIT_MAX_CONCURRENT", "0"),
+        ("MCP_WAIT_MAX_PER_USER", "many"),
+        ("MCP_ALLOWED_ORIGINS", "*"),
     ] {
         let mut run = spawn(
             &scratch,
@@ -593,6 +606,296 @@ async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
     let log = run.borrow().log();
     assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
     assert!(log.contains("\"surfaces\":\"agui\""), "{log}");
+}
+
+// ---- the MCP surface (ADR 0019) ---------------------------------------------------------------
+
+const MCP_TOKENS: &str = "- user: mcp-user@example.com\n  tokenEnv: MCP_TOKEN_SMOKE\n";
+const MCP_TOKEN: &str = "smoke-mcp-bearer-0123456789abcdef0123456789";
+
+fn write_mcp_tokens(scratch: &Scratch) -> PathBuf {
+    let path = scratch.file("mcp-tokens.yaml");
+    fs::write(&path, MCP_TOKENS).unwrap();
+    path
+}
+
+/// The MCP surface is fail closed: named in `ORCH_SURFACES` without its tokens, its token
+/// variable or its hosts, the process stops with the configuration exit code before anything
+/// connects, says which variable is missing and never prints a token.
+#[cfg(feature = "surface-mcp")]
+#[test]
+fn mcp_without_its_tokens_or_hosts_is_a_config_error() {
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let tokens = write_mcp_tokens(&scratch);
+    let unreachable = "postgres://nobody@127.0.0.1:1/none";
+    let full = [
+        ("DATABASE_URL", unreachable),
+        ("AGENTS_FILE", path_str(&agents)),
+        ("SMOKE_AGENT_TOKEN", TOKEN),
+        ("ORCH_SURFACES", "agui,mcp"),
+        ("MCP_TOKENS_FILE", path_str(&tokens)),
+        ("MCP_ALLOWED_HOSTS", "127.0.0.1"),
+        ("MCP_TOKEN_SMOKE", MCP_TOKEN),
+    ];
+    for (missing, want) in [
+        ("MCP_TOKENS_FILE", "MCP_TOKENS_FILE is required"),
+        ("MCP_ALLOWED_HOSTS", "MCP_ALLOWED_HOSTS is required"),
+        ("MCP_TOKEN_SMOKE", "MCP_TOKEN_SMOKE"),
+    ] {
+        let env: Vec<(&str, &str)> = full
+            .iter()
+            .copied()
+            .filter(|(k, _)| *k != missing)
+            .collect();
+        let mut run = spawn(&scratch, &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(
+            status.code(),
+            Some(78),
+            "without {missing}: EX_CONFIG; {log}"
+        );
+        assert!(log.contains(want), "without {missing}: {log}");
+        assert!(
+            !log.contains("cannot connect to Postgres"),
+            "nothing connects before the configuration is accepted: {log}"
+        );
+        assert!(!log.contains(MCP_TOKEN), "a token leaked into the log");
+    }
+    // A token that is too short to be a secret, and hosts that are not `Host` values (a URL, a
+    // wildcard, a port that is not a number), are refused at startup too, never at the first call.
+    for (var, bad, want) in [
+        ("MCP_TOKEN_SMOKE", "short", "shorter than 32 bytes"),
+        (
+            "MCP_ALLOWED_HOSTS",
+            "https://orch.example.com",
+            "MCP_ALLOWED_HOSTS",
+        ),
+        ("MCP_ALLOWED_HOSTS", "*", "MCP_ALLOWED_HOSTS"),
+        (
+            "MCP_ALLOWED_HOSTS",
+            "orch.example.com:port",
+            "MCP_ALLOWED_HOSTS",
+        ),
+        (
+            "MCP_ALLOWED_ORIGINS",
+            "orch.example.com",
+            "MCP_ALLOWED_ORIGINS",
+        ),
+    ] {
+        let mut env = full.to_vec();
+        env.retain(|(k, _)| *k != var);
+        env.push((var, bad));
+        let mut run = spawn(&scratch, &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(status.code(), Some(78), "{var}={bad}: EX_CONFIG; {log}");
+        assert!(log.contains(want), "{var}={bad}: {log}");
+        assert!(!log.contains(MCP_TOKEN), "a token leaked into the log");
+        assert!(!log.contains("cannot connect to Postgres"), "{log}");
+    }
+    // A token file that is not there is the same kind of error.
+    let mut env = full.to_vec();
+    env.retain(|(k, _)| *k != "MCP_TOKENS_FILE");
+    env.push(("MCP_TOKENS_FILE", "/nonexistent/mcp-tokens.yaml"));
+    let mut run = spawn(&scratch, &env);
+    assert_eq!(
+        run.wait(Duration::from_secs(10)).code(),
+        Some(78),
+        "{}",
+        run.log()
+    );
+    assert!(
+        run.log().contains("cannot read MCP_TOKENS_FILE"),
+        "{}",
+        run.log()
+    );
+}
+
+/// Parses the JSON-RPC messages of a response that is JSON or an SSE stream.
+fn rpc_messages(body: &str) -> Vec<serde_json::Value> {
+    let trimmed = body.trim_start();
+    if trimmed.starts_with('{') {
+        return vec![serde_json::from_str(trimmed).unwrap()];
+    }
+    body.lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .filter_map(|d| serde_json::from_str(d.trim()).ok())
+        .collect()
+}
+
+async fn mcp_call(
+    client: &reqwest::Client,
+    base: &str,
+    token: Option<&str>,
+    body: &serde_json::Value,
+) -> (u16, Vec<serde_json::Value>) {
+    let mut req = client
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .json(body);
+    if let Some(token) = token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    (status, rpc_messages(&resp.text().await.unwrap()))
+}
+
+#[cfg(feature = "surface-mcp")]
+#[tokio::test]
+async fn mcp_is_mounted_by_its_name_and_a_token_lists_the_tools() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let tokens = write_mcp_tokens(&scratch);
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let addr = format!("127.0.0.1:{}", free_port());
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", &database_url),
+            ("LISTEN_ADDR", &addr),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+            ("ORCH_SURFACES", "agui,mcp"),
+            ("MCP_TOKENS_FILE", path_str(&tokens)),
+            ("MCP_ALLOWED_HOSTS", "127.0.0.1"),
+            ("MCP_TOKEN_SMOKE", MCP_TOKEN),
+            ("ORCH_PUBLIC_URL", "https://chat.example.com"),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{addr}");
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    // No token, or a wrong one: 401 with the challenge, whatever identity header comes along.
+    for token in [None, Some("wrong")] {
+        let resp = client
+            .post(format!("{base}/mcp"))
+            .header("Accept", "application/json, text/event-stream")
+            .header("X-Auth-Request-Email", "mcp-user@example.com")
+            .bearer_auth(token.unwrap_or(""))
+            .json(&list)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 401);
+        assert_eq!(resp.headers()["www-authenticate"], "Bearer");
+    }
+    // With the token: one tools/list gives the five tools.
+    let (status, messages) = mcp_call(&client, &base, Some(MCP_TOKEN), &list).await;
+    assert_eq!(status, 200, "{messages:?}");
+    let tools: Vec<&str> = messages
+        .iter()
+        .find_map(|m| m["result"]["tools"].as_array())
+        .expect("a tools/list result")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tools,
+        [
+            "list_agents",
+            "start_job",
+            "get_job",
+            "wait_for_job",
+            "answer",
+            "cancel_job"
+        ]
+    );
+    // A tool runs as the token's user: the agent list is the configured one.
+    let (status, messages) = mcp_call(
+        &client,
+        &base,
+        Some(MCP_TOKEN),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_agents", "arguments": {}}}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let agents_result = messages
+        .iter()
+        .find_map(|m| m["result"]["structuredContent"]["agents"].as_array())
+        .expect("a list_agents result");
+    assert_eq!(agents_result[0]["id"], "fake");
+    // The Host header is checked: a name that is not listed is refused, token or not.
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Host", "attacker.example.com")
+        .bearer_auth(MCP_TOKEN)
+        .json(&list)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 403);
+    // A browser's `Origin` is refused unless listed (none is), and two `Authorization` headers
+    // are not a token, whichever they carry.
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Origin", "https://attacker.example.com")
+        .bearer_auth(MCP_TOKEN)
+        .json(&list)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 403);
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Authorization", format!("Bearer {MCP_TOKEN}"))
+        .header("Authorization", format!("Bearer {MCP_TOKEN}"))
+        .json(&list)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("\"surfaces\":\"agui,mcp\""), "{log}");
+    assert!(log.contains("the MCP server is mounted at /mcp"), "{log}");
+    assert!(!log.contains(MCP_TOKEN), "a token leaked into the log");
+}
+
+/// Without `mcp` in `ORCH_SURFACES` there is no `/mcp`, even in a build that has it.
+#[tokio::test]
+async fn mcp_is_not_there_unless_it_is_named() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (run, base, client) = serve_with(&db, &scratch, "no-mcp.log", &[]).await;
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("X-Auth-Request-Email", "alice@example.com")
+        .bearer_auth(MCP_TOKEN)
+        .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+    assert!(resp.headers().get("www-authenticate").is_none());
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    assert!(status.success(), "{}", run.borrow().log());
 }
 
 #[test]

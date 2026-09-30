@@ -8,6 +8,19 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct ThreadId(pub Uuid);
 
+impl ThreadId {
+    /// The UUID version of the ids the MCP surface derives from a user and a `client_request_id`
+    /// (ADR 0019). No other surface creates a thread with such an id, so a retried `start_job`
+    /// can find its job and nobody can take the id first.
+    pub const DERIVED_VERSION: usize = 8;
+
+    /// Whether the id is in the namespace reserved for derived ids. The AG-UI run route, where
+    /// the consumer chooses the id, refuses to create a thread with one.
+    pub fn is_derived(&self) -> bool {
+        self.0.get_version_num() == Self::DERIVED_VERSION
+    }
+}
+
 impl fmt::Display for ThreadId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)

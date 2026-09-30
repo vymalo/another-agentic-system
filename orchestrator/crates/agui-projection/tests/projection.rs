@@ -47,6 +47,7 @@ fn user_ids(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             text: text.to_owned(),
             message_id: Some(message_id.to_owned()),
             run_id: Some(run_id.to_owned()),
+            origin: orch_core::Origin::Agui,
         }),
     )
 }

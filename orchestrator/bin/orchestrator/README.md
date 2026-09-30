@@ -17,7 +17,7 @@ for `AgentClient` (and, with the feature `agent-local`, [`orch-agent-adam`](../.
 in-process agents, routed by transport with `ByTransport`), the system clock and UUIDv7 ids. It has no logic of its own:
 what the service does lives in [`orch-app`](../../crates/app/README.md) and
 [`orch-api`](../../crates/api/README.md) and the surface crates
-([`orch-surface-agui`](../../crates/surface-agui/README.md)). Processes are stateless; the only
+([`orch-surface-agui`](../../crates/surface-agui/README.md), [`orch-surface-mcp`](../../crates/surface-mcp/README.md)). Processes are stateless; the only
 persistence is Postgres
 ([ADR 0001](../../../docs/decisions/0001-rust-state-machine-on-postgres.md)).
 The role enum (`Role`) and the supervisor (`Host`) are not ours: they come from
@@ -35,7 +35,7 @@ Running it, the container image, configuration and shutdown are documented in
 | File | What |
 |---|---|
 | `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
-| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far; compiled in with the feature `agent-local`; `needs_model()` says whether a kind calls a model), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
+| `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `McpSettings` (the tokens as `SecretString`s read through the `env` and `read` closures, the hosts and the public URL, when `mcp` is mounted on a role that serves HTTP), `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far; compiled in with the feature `agent-local`; `needs_model()` says whether a kind calls a model), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
 | `src/local.rs` | the one place that knows `orch-agent-adam`, in two variants of one surface. With the feature `agent-local`: `Local::start` builds the local agents' own pool on `DATABASE_URL` and migrates their journal (only when `AGENTS_FILE` lists a local agent), `compose` builds `ByTransport<A2aAgentClient, LocalAgentClient>`, `Local::register` adds the agents' worker as a worker component in the roles that run workers, `is_unavailable` maps a transient failure to exit 69. Without it: `Agents` is the A2A client alone and `Local` cannot be built |
 | `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher and the inbox worker (timers and stored reports, `orch_app::InboxWorker`) as worker components, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher and the inbox worker release their leases as they stop). Readiness flips first, so probes answer 503 for the whole drain |
 
@@ -59,13 +59,20 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `INBOX_MAX_ATTEMPTS` | `10` | at least 1; claims of one inbox row before it is dead-lettered (a row claimed more often without being finished is dead-lettered undelivered; claims handed back at shutdown or ended by a park are not counted) |
 | `AGENT_LOCAL_CONCURRENCY` | `4` | only with the feature `agent-local`: runs of local agents stepped at once (at least 1); the local agents' pool is this plus 4 connections |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
-| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
+| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), `agui` and `mcp`, as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
 | `ORCH_GATE` | none | sources every job must pass before it is `done`, a comma list of `ci`, `agent-checks`, `verifier` (`--gate`). Empty is no gate: an agent that completes is done. **Only `agent-checks` is accepted by this build**; `ci` and `verifier` are a startup error (78) naming the slice that enables them |
 | `ORCH_MAX_ATTEMPTS` | `3` | attempts a gated job's agent gets, the first included (`--max-attempts`); at least 1 and at most the cap |
 | `ORCH_MAX_ATTEMPTS_CAP` | `10` | the most an `AGENTS_FILE` entry or a run may set the attempts to (`--max-attempts-cap`); at most `100`. When only the cap is set below `3`, the default attempts are lowered to it; an explicit `ORCH_MAX_ATTEMPTS` above the cap is a startup error |
 | `ORCH_VERIFIER` | none | the verifier agent's id (`--verifier`). Refused (78) until the verifier dispatch is built |
+| `MCP_TOKENS_FILE` | required with `mcp` | YAML list of `{user, tokenEnv}` (`--mcp-tokens-file`): who each bearer token is; read by the roles that serve HTTP only. A `tokenEnv` variable that is unset or empty is `McpTokenEnvMissing` and an unreadable file `McpTokensFileRead` (both 78) |
+| `MCP_TOKEN_<NAME>` | required by the file | the variable a `tokenEnv` names: the bearer token (a `SecretString`, never logged), at least 32 bytes (shorter is `Invalid`, 78) |
+| `MCP_ALLOWED_HOSTS` | required with `mcp` | comma-separated `Host` values the MCP server accepts (`--mcp-allowed-hosts`), each `host` or `host:port`: a URL, `*` or a port that is not a number is `Invalid` (78) |
+| `MCP_WAIT_MAX_SECS` | `3600` | the largest `timeout_secs` of `wait_for_job` (`--mcp-wait-max-secs`), 1 to 86400, larger requests are cut to it |
+| `MCP_WAIT_MAX_CONCURRENT`, `MCP_WAIT_MAX_PER_USER` | `256`, `16` | the most `wait_for_job` calls one process, and one user, may hold open (`--mcp-wait-max-concurrent`, `--mcp-wait-max-per-user`), at least 1 |
+| `MCP_ALLOWED_ORIGINS` | none | comma-separated browser origins the MCP server lets through (`--mcp-allowed-origins`), each `http(s)://host[:port]`; a request with another `Origin` is 403 |
+| `ORCH_PUBLIC_URL` | unset | the chat's public origin (`--public-url`), for the `web_url` of `start_job`; an origin with no path |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
-| `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
+| `RUST_LOG`, `LOG_FORMAT` | `info,rmcp=warn`, `json` | `LOG_FORMAT=text` for humans; `RUST_LOG` replaces the default whole (the MCP library logs a line per request at `info`) |
 
 ### The verification gate
 
@@ -138,6 +145,7 @@ noted in `src/main.rs`.
 | Feature | Default | Compiles in |
 |---|---|---|
 | `surface-agui` | yes | [`orch-surface-agui`](../../crates/surface-agui/README.md), the surface name `agui` |
+| `surface-mcp` | yes | [`orch-surface-mcp`](../../crates/surface-mcp/README.md), the surface name `mcp` ([ADR 0019](../../../docs/decisions/0019-mcp-server-over-streamable-http.md)). On by default like `surface-agui`, so the image has it; it is mounted only when `ORCH_SURFACES` names it |
 | `agent-local` | **no** | [`orch-agent-adam`](../../crates/agent-adam/README.md) and the adam-rs runtime: `transport: local` agents run in this process ([ADR 0015](../../../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)); the variable `AGENT_LOCAL_CONCURRENCY` |
 
 The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
@@ -162,6 +170,7 @@ The resource API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`
 | `ORCH_SURFACES` | Serves |
 |---|---|
 | unset, or `agui` (the default) | the AG-UI routes: `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect`, `GET /agui/agents/{agentId}/capabilities` |
+| `agui,mcp` | and the MCP server at `/mcp`: a **machine route** outside the identity layer, guarded by `Authorization: Bearer <token>`; needs `MCP_TOKENS_FILE` and `MCP_ALLOWED_HOSTS` (a missing piece is exit 78 before anything connects) |
 
 That is the whole list. The legacy chat API interaction routes (`POST /api/threads`,
 `POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`, `GET /api/threads/{id}/stream`),
@@ -199,6 +208,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   value, blank, unknown, the flag collected raw). `src/main.rs` maps every
   `HostError` to exit 70. `src/logging.rs`: role and instance first on every JSON and text
   line (an instance with a quote stays valid JSON, no fields means the stock line).
+* Unit tests of the MCP settings in `src/config.rs`: tokens, hosts, public URL and wait bound read and normalised (user lower-cased, token trimmed, hosts split and required to be authorities, origins, the 32-byte token minimum, the wait limits; `MCP_WAIT_MAX_SECS` 1 to 86400), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
 * `tests/local.rs` (`#![cfg(feature = "agent-local")]`, run with `--features agent-local`): the executable hosting
   a local `echo` agent answers an AG-UI run and the journal holds the run (`orch_agent_runs`); a `control-plane`
   process with a local agent starts, accepts a run and leaves it `queued` with an empty journal until a `worker`
@@ -216,7 +226,10 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   unknown thread and cancel answer as resources). With a database: `/healthz`, `/readyz`, 401 without
   identity, a thread run and completed over AG-UI (the default surface) through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one
-  database with a SIGKILL mid-task. The roles: `--role worker` (over a
+  database with a SIGKILL mid-task. The MCP surface (`mcp_without_its_tokens_or_hosts_is_a_config_error`: each missing piece is
+  exit 78 naming it, before anything connects, with no token in the log; `mcp_is_mounted_by_its_name_and_a_token_lists_the_tools`:
+  the process mounted with `ORCH_SURFACES=agui,mcp` answers 401 with the challenge without or with a wrong token, `tools/list` (six tools) and
+  `list_agents` with the token, 403 for a `Host` that is not listed; `mcp_is_not_there_unless_it_is_named`: 404). The roles: `--role worker` (over a
   nonsense `ORCH_ROLE`) serves `/healthz` and `/readyz` answers 404 on
   `/api/...` and `/metrics` with role and instance on every log line; a `control-plane` process serves the API but the thread stays
   `queued` and the agent is never called until a worker process starts (its `/metrics` shows one

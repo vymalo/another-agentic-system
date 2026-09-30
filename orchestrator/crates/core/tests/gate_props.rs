@@ -66,6 +66,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             text,
             message_id: None,
             run_id: None,
+            origin: orch_core::Origin::Agui,
         }),
         1 => Just(Input::Cancel {
             user: UserId::new("u@x.io")

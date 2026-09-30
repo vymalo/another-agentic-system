@@ -25,6 +25,7 @@ use orch_app::{
 };
 use orch_core::{AgentId, CheckSource, DEFAULT_MAX_ATTEMPTS, GatePolicy, UserId};
 use orch_ports::AgentEndpoint;
+use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use url::Url;
 
@@ -35,6 +36,14 @@ const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
 #[cfg(feature = "agent-local")]
 const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
+const DEFAULT_MCP_WAIT_MAX_SECS: u64 = 3600;
+/// The largest `MCP_WAIT_MAX_SECS`: a day. A wait is a request that stays open.
+const MAX_MCP_WAIT_MAX_SECS: u64 = 86_400;
+const DEFAULT_MCP_WAIT_MAX_CONCURRENT: usize = 256;
+const DEFAULT_MCP_WAIT_MAX_PER_USER: usize = 16;
+/// The shortest bearer token: 32 bytes, what `openssl rand -base64 32` gives (43 characters).
+/// Static tokens never expire and nothing slows a guess down.
+const MIN_MCP_TOKEN_BYTES: usize = 32;
 const MAX_AGENT_ID_LEN: usize = 63;
 
 /// A configuration problem. The message is what the operator sees.
@@ -100,6 +109,27 @@ pub enum ConfigError {
         /// The Cargo feature of the `orchestrator` package that would compile local agents in.
         feature: &'static str,
     },
+    /// `MCP_TOKENS_FILE` could not be read.
+    #[error("cannot read MCP_TOKENS_FILE {}", path.display())]
+    McpTokensFileRead {
+        /// The path from `MCP_TOKENS_FILE`.
+        path: PathBuf,
+        /// The I/O error.
+        source: io::Error,
+    },
+    /// The environment variable named by a `tokenEnv` of `MCP_TOKENS_FILE` is unset or empty. A
+    /// token that is quietly missing would leave a user locked out, or worse, an MCP surface
+    /// that starts with fewer tokens than the operator meant.
+    #[error(
+        "MCP_TOKENS_FILE: the token of {user:?} is in {var}, but that environment variable is \
+         unset or empty"
+    )]
+    McpTokenEnvMissing {
+        /// The user the token is for.
+        user: String,
+        /// The environment variable that should hold the token.
+        var: String,
+    },
     /// `AGENTS_FILE` could not be read.
     #[error("cannot read AGENTS_FILE {}", path.display())]
     AgentsFileRead {
@@ -154,6 +184,50 @@ pub enum ConfigError {
         /// The environment variable that should hold the token.
         var: String,
     },
+}
+
+/// The MCP server's configuration (ADR 0019), read when the surface `mcp` is mounted.
+#[derive(Clone)]
+pub struct McpSettings {
+    /// `MCP_TOKENS_FILE`, resolved: each `tokenEnv` already read. A user may have several tokens.
+    pub tokens: Vec<(UserId, SecretString)>,
+    /// `MCP_ALLOWED_HOSTS`: the `Host` values the server accepts.
+    pub allowed_hosts: Vec<String>,
+    /// `ORCH_PUBLIC_URL`: the chat's public origin, for the `web_url` of `start_job`.
+    pub public_url: Option<String>,
+    /// `MCP_WAIT_MAX_SECS`: the largest `timeout_secs` of `wait_for_job`.
+    pub wait_max: Duration,
+    /// `MCP_WAIT_MAX_CONCURRENT`: the most `wait_for_job` calls this process holds open.
+    pub wait_max_concurrent: usize,
+    /// `MCP_WAIT_MAX_PER_USER`: the most one user may hold open.
+    pub wait_max_per_user: usize,
+    /// `MCP_ALLOWED_ORIGINS`: browser origins let through; none by default.
+    pub allowed_origins: Vec<String>,
+}
+
+impl fmt::Debug for McpSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpSettings")
+            .field(
+                "tokens",
+                &self.tokens.iter().map(|(user, _)| user).collect::<Vec<_>>(),
+            )
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("public_url", &self.public_url)
+            .field("wait_max", &self.wait_max)
+            .field("wait_max_concurrent", &self.wait_max_concurrent)
+            .field("wait_max_per_user", &self.wait_max_per_user)
+            .field("allowed_origins", &self.allowed_origins)
+            .finish()
+    }
+}
+
+/// One entry of `MCP_TOKENS_FILE`, as written.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TokenSpec {
+    user: String,
+    token_env: String,
 }
 
 /// The `transport` key of an `AGENTS_FILE` entry: how the orchestrator reaches the agent.
@@ -289,6 +363,9 @@ pub enum Surface {
     /// The AG-UI routes (`orch-surface-agui`: run, connect, capabilities): the default user-facing
     /// protocol (ADR 0012).
     Agui,
+    /// The MCP server (`orch-surface-mcp`: `/mcp`, a machine route guarded by bearer tokens):
+    /// Claude Code, opencode or any MCP client starts and follows jobs (ADR 0019).
+    Mcp,
 }
 
 /// A surface name that used to exist. Asking for one is a [`ConfigError::RemovedSurface`], not an
@@ -329,12 +406,13 @@ const REMOVED: &[RemovedSurface] = &[RemovedSurface {
 
 impl Surface {
     /// Every surface this source tree knows, compiled in or not.
-    pub const ALL: &'static [Surface] = &[Surface::Agui];
+    pub const ALL: &'static [Surface] = &[Surface::Agui, Surface::Mcp];
 
     /// The name used in `ORCH_SURFACES`.
     pub const fn name(self) -> &'static str {
         match self {
             Surface::Agui => "agui",
+            Surface::Mcp => "mcp",
         }
     }
 
@@ -342,6 +420,7 @@ impl Surface {
     pub const fn feature(self) -> &'static str {
         match self {
             Surface::Agui => "surface-agui",
+            Surface::Mcp => "surface-mcp",
         }
     }
 
@@ -349,6 +428,7 @@ impl Surface {
     pub const fn compiled_in(self) -> bool {
         match self {
             Surface::Agui => cfg!(feature = "surface-agui"),
+            Surface::Mcp => cfg!(feature = "surface-mcp"),
         }
     }
 
@@ -466,7 +546,8 @@ pub struct Args {
     pub role: Option<String>,
 
     /// Interaction surfaces to mount, comma separated (default agui, as far as the build has
-    /// it). Known: agui. The removed legacy `chat-api` is refused at startup. The resource API
+    /// it). Known: agui, mcp (the MCP server at /mcp; it needs MCP_TOKENS_FILE and
+    /// MCP_ALLOWED_HOSTS). The removed legacy `chat-api` is refused at startup. The resource API
     /// and health are always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
     pub surfaces: Option<String>,
@@ -489,6 +570,43 @@ pub struct Args {
     /// built.
     #[arg(long, env = "ORCH_VERIFIER", value_name = "AGENT")]
     pub verifier: Option<String>,
+    /// YAML list of `{user, tokenEnv}` for the surface `mcp` (required when it is mounted): the
+    /// e-mail that owns the jobs of a token, and the environment variable that holds the bearer
+    /// token. A variable that is unset stops the service. Read by the roles that serve HTTP.
+    #[arg(long, env = "MCP_TOKENS_FILE", value_name = "PATH")]
+    pub mcp_tokens_file: Option<String>,
+
+    /// Host names the surface `mcp` accepts in the Host header, comma separated, for example
+    /// `orch.example.com,orch.example.com:443` (required when it is mounted; a name without a
+    /// port matches any port). Guards against DNS rebinding.
+    #[arg(long, env = "MCP_ALLOWED_HOSTS", value_name = "LIST")]
+    pub mcp_allowed_hosts: Option<String>,
+
+    /// The public origin of the chat, for example `https://chat.example.com`. The surface `mcp`
+    /// gives `start_job` a `web_url` from it; without it there is none.
+    #[arg(long, env = "ORCH_PUBLIC_URL", value_name = "URL")]
+    pub public_url: Option<String>,
+
+    /// The largest `timeout_secs` the tool `wait_for_job` of the surface `mcp` honours, in
+    /// seconds, between 1 and 86400 (default 3600). A larger request is cut to it.
+    #[arg(long, env = "MCP_WAIT_MAX_SECS", value_name = "SECS")]
+    pub mcp_wait_max_secs: Option<String>,
+
+    /// The most `wait_for_job` calls this process holds open at once, at least 1 (default 256).
+    /// Over it a call is refused ("too many waits").
+    #[arg(long, env = "MCP_WAIT_MAX_CONCURRENT", value_name = "N")]
+    pub mcp_wait_max_concurrent: Option<String>,
+
+    /// The most `wait_for_job` calls one user may hold open at once, at least 1 (default 16).
+    #[arg(long, env = "MCP_WAIT_MAX_PER_USER", value_name = "N")]
+    pub mcp_wait_max_per_user: Option<String>,
+
+    /// Browser origins the surface `mcp` lets through, comma separated, for example
+    /// `https://inspector.example.com`. A request with an Origin header that is not listed is
+    /// refused (403) whatever its token; requests without one, from every non-browser client,
+    /// are not affected. Default: none.
+    #[arg(long, env = "MCP_ALLOWED_ORIGINS", value_name = "LIST")]
+    pub mcp_allowed_origins: Option<String>,
 
     /// E-mail served for requests without X-Auth-Request-Email. Development only.
     #[arg(long, env = "AUTH_DEV_USER", value_name = "EMAIL")]
@@ -570,6 +688,9 @@ pub struct Config {
     /// `ORCH_SURFACES`: the interaction surfaces to mount, no repeats. Empty only when the
     /// variable is unset in a build that contains no default surface.
     pub surfaces: Vec<Surface>,
+    /// `MCP_TOKENS_FILE`, `MCP_ALLOWED_HOSTS` and `ORCH_PUBLIC_URL`: set when the surface `mcp` is
+    /// mounted by a role that serves HTTP.
+    pub mcp: Option<McpSettings>,
     /// `AUTH_DEV_USER`: an identity for requests without `X-Auth-Request-Email`. Dev only.
     pub auth_dev_user: Option<UserId>,
     /// `DATABASE_MAX_CONNECTIONS` (at least 2: the wakeup listener holds one).
@@ -602,6 +723,7 @@ impl fmt::Debug for Config {
             .field("target_gates", &self.target_gates)
             .field("role", &self.role)
             .field("surfaces", &self.surfaces)
+            .field("mcp", &self.mcp)
             .field("auth_dev_user", &self.auth_dev_user)
             .field("database_max_connections", &self.database_max_connections)
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
@@ -677,6 +799,50 @@ impl Config {
         let surfaces = match clean(args.surfaces) {
             None => default_surfaces(),
             Some(raw) => parse_surfaces(&raw)?,
+        };
+
+        // The MCP surface needs its tokens and hosts, and only a role that serves HTTP mounts it:
+        // a worker is not asked for secrets it would never use.
+        let public_url = clean(args.public_url)
+            .map(|raw| parse_public_url(&raw))
+            .transpose()?;
+        let mcp_wait_max_secs = number(
+            clean(args.mcp_wait_max_secs),
+            "MCP_WAIT_MAX_SECS",
+            DEFAULT_MCP_WAIT_MAX_SECS,
+            1,
+        )?;
+        let wait_max_concurrent = number(
+            clean(args.mcp_wait_max_concurrent),
+            "MCP_WAIT_MAX_CONCURRENT",
+            DEFAULT_MCP_WAIT_MAX_CONCURRENT,
+            1,
+        )?;
+        let wait_max_per_user = number(
+            clean(args.mcp_wait_max_per_user),
+            "MCP_WAIT_MAX_PER_USER",
+            DEFAULT_MCP_WAIT_MAX_PER_USER,
+            1,
+        )?;
+        let allowed_origins = parse_allowed_origins(clean(args.mcp_allowed_origins))?;
+        if mcp_wait_max_secs > MAX_MCP_WAIT_MAX_SECS {
+            return Err(ConfigError::Invalid {
+                var: "MCP_WAIT_MAX_SECS",
+                reason: format!("must be at most {MAX_MCP_WAIT_MAX_SECS}"),
+            });
+        }
+        let mcp = if surfaces.contains(&Surface::Mcp) && role.runs_control_plane() {
+            Some(McpSettings {
+                tokens: parse_mcp_tokens(clean(args.mcp_tokens_file), &get_env, &read)?,
+                allowed_hosts: parse_allowed_hosts(clean(args.mcp_allowed_hosts))?,
+                public_url,
+                wait_max: Duration::from_secs(mcp_wait_max_secs),
+                wait_max_concurrent,
+                wait_max_per_user,
+                allowed_origins,
+            })
+        } else {
+            None
         };
 
         let auth_dev_user = match clean(args.auth_dev_user) {
@@ -765,6 +931,7 @@ impl Config {
             target_gates,
             role,
             surfaces,
+            mcp,
             auth_dev_user,
             database_max_connections,
             dispatcher_concurrency,
@@ -914,6 +1081,174 @@ fn parse_gate(
             e => refused(e),
         })?;
     Ok((policy, rules))
+}
+
+/// `ORCH_PUBLIC_URL`: an `http(s)` origin, no path, query or fragment; returned without a
+/// trailing slash.
+fn parse_public_url(raw: &str) -> Result<String, ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        var: "ORCH_PUBLIC_URL",
+        reason,
+    };
+    let url = Url::parse(raw).map_err(|e| invalid(format!("{raw:?} is not a URL ({e})")))?;
+    if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
+        return Err(invalid(format!(
+            "{raw:?} must be an http(s) URL with a host"
+        )));
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err(invalid(format!(
+            "{raw:?} must be an origin such as https://chat.example.com, without a path"
+        )));
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
+/// `MCP_ALLOWED_HOSTS`: at least one name.
+fn parse_allowed_hosts(raw: Option<String>) -> Result<Vec<String>, ConfigError> {
+    let raw = raw.ok_or(ConfigError::Missing("MCP_ALLOWED_HOSTS"))?;
+    let hosts: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if hosts.is_empty() {
+        return Err(ConfigError::Invalid {
+            var: "MCP_ALLOWED_HOSTS",
+            reason: "the list is empty; name the hosts clients use, such as orch.example.com"
+                .to_owned(),
+        });
+    }
+    // A `Host` header is an authority: a name or an address, with or without a port. A URL, a
+    // wildcard or a path matches nothing, and would only look like a rule.
+    if let Some(bad) = hosts.iter().find(|h| !is_authority(h)) {
+        return Err(ConfigError::Invalid {
+            var: "MCP_ALLOWED_HOSTS",
+            reason: format!(
+                "{bad:?} is not a host name or address, with or without a port (no scheme, \
+                 path, wildcard or credentials): write orch.example.com or orch.example.com:8443"
+            ),
+        });
+    }
+    Ok(hosts)
+}
+
+/// Whether `host` is a `Host` header value: a name or an address, with or without a port.
+/// (Kept here, beside `orch_surface_mcp::is_host_authority`, because this file also builds
+/// without the `surface-mcp` feature.)
+fn is_authority(host: &str) -> bool {
+    if host.contains(['@', '*', '/', '?', '#', ' ']) {
+        return false;
+    }
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    if authority.as_str() != host || authority.host().is_empty() {
+        return false;
+    }
+    match host[authority.host().len()..].strip_prefix(':') {
+        None => host.len() == authority.host().len(),
+        Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
+/// `MCP_ALLOWED_ORIGINS`: `http(s)://host[:port]` entries, possibly none.
+fn parse_allowed_origins(raw: Option<String>) -> Result<Vec<String>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let origins: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for origin in &origins {
+        let ok = Url::parse(origin).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.has_host()
+                && u.username().is_empty()
+                && u.path() == "/"
+                && u.query().is_none()
+                && u.fragment().is_none()
+        }) && !origin.ends_with('/');
+        if !ok {
+            return Err(ConfigError::Invalid {
+                var: "MCP_ALLOWED_ORIGINS",
+                reason: format!(
+                    "{origin:?} is not an origin: write https://host or https://host:port, \
+                     with no path"
+                ),
+            });
+        }
+    }
+    Ok(origins)
+}
+
+/// `MCP_TOKENS_FILE`: the YAML list, with each token read from the variable its `tokenEnv` names.
+/// A user may appear more than once (a rotation); a token may belong to one user only.
+fn parse_mcp_tokens(
+    path: Option<String>,
+    env: &impl Fn(&str) -> Option<String>,
+    read: &impl Fn(&Path) -> io::Result<String>,
+) -> Result<Vec<(UserId, SecretString)>, ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        var: "MCP_TOKENS_FILE",
+        reason,
+    };
+    let path = PathBuf::from(path.ok_or(ConfigError::Missing("MCP_TOKENS_FILE"))?);
+    let text = read(&path).map_err(|source| ConfigError::McpTokensFileRead {
+        path: path.clone(),
+        source,
+    })?;
+    let specs: Option<Vec<TokenSpec>> = serde_norway::from_str(&text).map_err(|e| {
+        invalid(format!(
+            "{} is not a list of {{user, tokenEnv}}: {e}",
+            path.display()
+        ))
+    })?;
+    let specs = specs.unwrap_or_default();
+    if specs.is_empty() {
+        return Err(invalid(format!("{} lists no tokens", path.display())));
+    }
+    let mut tokens: Vec<(UserId, SecretString)> = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let user = spec.user.trim();
+        if !user.contains('@') {
+            return Err(invalid(format!(
+                "user {user:?} must be the e-mail address the jobs belong to"
+            )));
+        }
+        let var = spec.token_env.trim();
+        if var.is_empty() {
+            return Err(invalid(format!("the tokenEnv of {user:?} is empty")));
+        }
+        let token = env(var)
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| ConfigError::McpTokenEnvMissing {
+                user: user.to_owned(),
+                var: var.to_owned(),
+            })?;
+        if token.len() < MIN_MCP_TOKEN_BYTES {
+            return Err(invalid(format!(
+                "the token of {user:?} (in {var}) is shorter than {MIN_MCP_TOKEN_BYTES} bytes; \
+                 generate one with `openssl rand -base64 32`"
+            )));
+        }
+        let user = UserId::new(user);
+        if let Some((other, _)) = tokens
+            .iter()
+            .find(|(_, t)| t.expose_secret() == token.as_str())
+        {
+            return Err(invalid(format!(
+                "the same token is configured for {other} and for {user}"
+            )));
+        }
+        tokens.push((user, SecretString::from(token)));
+    }
+    Ok(tokens)
 }
 
 /// Parses an optional numeric variable with a default and a lower bound.
@@ -1159,6 +1494,13 @@ mod tests {
                 "ORCH_MAX_ATTEMPTS" => &mut args.max_attempts,
                 "ORCH_MAX_ATTEMPTS_CAP" => &mut args.max_attempts_cap,
                 "ORCH_VERIFIER" => &mut args.verifier,
+                "MCP_TOKENS_FILE" => &mut args.mcp_tokens_file,
+                "MCP_ALLOWED_HOSTS" => &mut args.mcp_allowed_hosts,
+                "ORCH_PUBLIC_URL" => &mut args.public_url,
+                "MCP_WAIT_MAX_SECS" => &mut args.mcp_wait_max_secs,
+                "MCP_WAIT_MAX_CONCURRENT" => &mut args.mcp_wait_max_concurrent,
+                "MCP_WAIT_MAX_PER_USER" => &mut args.mcp_wait_max_per_user,
+                "MCP_ALLOWED_ORIGINS" => &mut args.mcp_allowed_origins,
                 "AUTH_DEV_USER" => &mut args.auth_dev_user,
                 "DATABASE_MAX_CONNECTIONS" => &mut args.database_max_connections,
                 "DISPATCHER_CONCURRENCY" => &mut args.dispatcher_concurrency,
@@ -1870,6 +2212,13 @@ mod tests {
             "ORCH_MAX_ATTEMPTS",
             "ORCH_MAX_ATTEMPTS_CAP",
             "ORCH_VERIFIER",
+            "MCP_TOKENS_FILE",
+            "MCP_ALLOWED_HOSTS",
+            "ORCH_PUBLIC_URL",
+            "MCP_WAIT_MAX_SECS",
+            "MCP_WAIT_MAX_CONCURRENT",
+            "MCP_WAIT_MAX_PER_USER",
+            "MCP_ALLOWED_ORIGINS",
             "AUTH_DEV_USER",
             "DATABASE_MAX_CONNECTIONS",
             "DISPATCHER_CONCURRENCY",
@@ -2220,5 +2569,384 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(create("coder", Some(asked)).await.max_attempts, 1);
+    }
+
+    // ---- the MCP surface (ADR 0019) ---------------------------------------------------------
+
+    const TOKENS: &str = "\
+- user: Alice@Example.com
+  tokenEnv: MCP_TOKEN_ALICE
+- user: bob@example.com
+  tokenEnv: MCP_TOKEN_BOB
+";
+
+    /// `load` with a token file: `MCP_TOKENS_FILE` reads `tokens_yaml`, every other path the agents.
+    fn load_mcp(pairs: &[(&str, &str)], tokens_yaml: &str) -> Result<Config, ConfigError> {
+        let tokens = tokens_yaml.to_owned();
+        Config::load(args_of(pairs), env_of(pairs), move |path| {
+            if path == Path::new("/etc/orch/mcp-tokens.yaml") {
+                Ok(tokens.clone())
+            } else if path == Path::new("/etc/orch/agents.yaml") {
+                Ok(AGENTS.to_owned())
+            } else {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
+        })
+    }
+
+    fn mcp_env<'a>() -> Vec<(&'a str, &'a str)> {
+        let mut env = base();
+        env.extend([
+            ("ORCH_SURFACES", "agui,mcp"),
+            ("MCP_TOKENS_FILE", "/etc/orch/mcp-tokens.yaml"),
+            (
+                "MCP_ALLOWED_HOSTS",
+                "orch.example.com, orch.example.com:443,",
+            ),
+            (
+                "MCP_TOKEN_ALICE",
+                " alice-secret-0123456789abcdef0123456789\n",
+            ),
+            ("MCP_TOKEN_BOB", "bob-secret-0123456789abcdef012345678901"),
+        ]);
+        env
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn the_mcp_surface_reads_its_tokens_hosts_and_public_url() {
+        let mut env = mcp_env();
+        env.push(("ORCH_PUBLIC_URL", "https://chat.example.com/"));
+        let cfg = load_mcp(&env, TOKENS).unwrap();
+        assert_eq!(cfg.surfaces, vec![Surface::Agui, Surface::Mcp]);
+        let mcp = cfg.mcp.unwrap();
+        let tokens: Vec<(&str, &str)> = mcp
+            .tokens
+            .iter()
+            .map(|(user, token)| (user.as_str(), token.expose_secret()))
+            .collect();
+        // The user is normalised and the token is trimmed, as everywhere else.
+        assert_eq!(
+            tokens,
+            [
+                (
+                    "alice@example.com",
+                    "alice-secret-0123456789abcdef0123456789"
+                ),
+                ("bob@example.com", "bob-secret-0123456789abcdef012345678901")
+            ]
+        );
+        assert_eq!(
+            mcp.allowed_hosts,
+            ["orch.example.com", "orch.example.com:443"]
+        );
+        assert_eq!(mcp.public_url.as_deref(), Some("https://chat.example.com"));
+        assert_eq!(mcp.wait_max, Duration::from_secs(3600), "the default bound");
+        // Nothing prints a token.
+        let shown = format!("{mcp:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains("alice@example.com"), "{shown}");
+    }
+
+    #[test]
+    fn the_mcp_settings_are_not_read_unless_the_surface_is_mounted() {
+        // The default surfaces: no file, no hosts, no error, even for variables that are wrong.
+        let mut env = base();
+        env.extend([("MCP_TOKENS_FILE", "/nowhere"), ("MCP_ALLOWED_HOSTS", ",")]);
+        assert!(load(&env, AGENTS).unwrap().mcp.is_none());
+    }
+
+    /// A worker mounts no surface, so it is not asked for the secrets of one.
+    #[cfg(all(feature = "surface-agui", feature = "surface-mcp"))]
+    #[test]
+    fn a_worker_is_not_asked_for_the_mcp_secrets() {
+        let mut env = mcp_env();
+        env.retain(|(k, _)| !k.starts_with("MCP_TOKEN"));
+        env.push(("ORCH_ROLE", "worker"));
+        assert!(load_mcp(&env, TOKENS).unwrap().mcp.is_none());
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn the_mcp_surface_fails_closed_on_every_missing_piece() {
+        let without = |var: &str| {
+            let mut env = mcp_env();
+            env.retain(|(k, _)| *k != var);
+            load_mcp(&env, TOKENS).unwrap_err()
+        };
+        assert!(matches!(
+            without("MCP_TOKENS_FILE"),
+            ConfigError::Missing("MCP_TOKENS_FILE")
+        ));
+        assert!(matches!(
+            without("MCP_ALLOWED_HOSTS"),
+            ConfigError::Missing("MCP_ALLOWED_HOSTS")
+        ));
+        // A token variable that is unset stops the service, and names the variable, not a value.
+        let err = without("MCP_TOKEN_BOB");
+        assert!(
+            matches!(&err, ConfigError::McpTokenEnvMissing { user, var }
+            if user == "bob@example.com" && var == "MCP_TOKEN_BOB"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("MCP_TOKEN_BOB"));
+        // Empty counts as unset.
+        let mut env = mcp_env();
+        env.retain(|(k, _)| *k != "MCP_TOKEN_BOB");
+        env.push(("MCP_TOKEN_BOB", "  "));
+        assert!(matches!(
+            load_mcp(&env, TOKENS).unwrap_err(),
+            ConfigError::McpTokenEnvMissing { .. }
+        ));
+        // The file cannot be read.
+        let mut env = mcp_env();
+        env.retain(|(k, _)| *k != "MCP_TOKENS_FILE");
+        env.push(("MCP_TOKENS_FILE", "/etc/orch/elsewhere.yaml"));
+        assert!(matches!(
+            load_mcp(&env, TOKENS).unwrap_err(),
+            ConfigError::McpTokensFileRead { .. }
+        ));
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn a_bad_token_file_or_host_list_is_refused_naming_the_variable() {
+        let invalid = |env: &[(&str, &str)], yaml: &str, var: &str| {
+            let err = load_mcp(env, yaml).unwrap_err();
+            assert!(
+                matches!(&err, ConfigError::Invalid { var: v, .. } if *v == var),
+                "{err}"
+            );
+        };
+        let env = mcp_env();
+        for yaml in [
+            "",
+            "[]",
+            "user: a@x.io\ntokenEnv: MCP_TOKEN_ALICE\n",
+            "- {user: a@x.io}\n",
+            "- {user: a@x.io, tokenEnv: MCP_TOKEN_ALICE, scope: all}\n",
+            "- {user: not-an-email, tokenEnv: MCP_TOKEN_ALICE}\n",
+            "- {user: a@x.io, tokenEnv: ''}\n",
+            // One token for two users.
+            "- {user: a@x.io, tokenEnv: MCP_TOKEN_ALICE}\n- {user: b@x.io, tokenEnv: MCP_TOKEN_ALICE}\n",
+        ] {
+            invalid(&env, yaml, "MCP_TOKENS_FILE");
+        }
+        // Two tokens for one user (a rotation) are fine.
+        let rotation = "- {user: a@x.io, tokenEnv: MCP_TOKEN_ALICE}\n- {user: a@x.io, tokenEnv: MCP_TOKEN_BOB}\n";
+        assert_eq!(
+            load_mcp(&env, rotation).unwrap().mcp.unwrap().tokens.len(),
+            2
+        );
+
+        for hosts in [",", " , "] {
+            let mut env = mcp_env();
+            env.retain(|(k, _)| *k != "MCP_ALLOWED_HOSTS");
+            env.push(("MCP_ALLOWED_HOSTS", hosts));
+            invalid(&env, TOKENS, "MCP_ALLOWED_HOSTS");
+        }
+        for url in [
+            "chat.example.com",
+            "ftp://chat.example.com",
+            "https://chat.example.com/app",
+            "https://chat.example.com/?x=1",
+            "https://",
+        ] {
+            let mut env = mcp_env();
+            env.push(("ORCH_PUBLIC_URL", url));
+            invalid(&env, TOKENS, "ORCH_PUBLIC_URL");
+        }
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn the_wait_bound_is_a_number_of_seconds_within_limits() {
+        let with = |value: &'static str| {
+            let mut env = mcp_env();
+            env.push(("MCP_WAIT_MAX_SECS", value));
+            load_mcp(&env, TOKENS)
+        };
+        assert_eq!(
+            with("90").unwrap().mcp.unwrap().wait_max,
+            Duration::from_secs(90)
+        );
+        assert_eq!(
+            with(" 1 ").unwrap().mcp.unwrap().wait_max,
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            with("86400").unwrap().mcp.unwrap().wait_max,
+            Duration::from_secs(86_400)
+        );
+        for bad in ["0", "86401", "-5", "soon", "1.5"] {
+            let err = with(bad).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "MCP_WAIT_MAX_SECS",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn hosts_must_be_authorities_and_origins_origins() {
+        let with = |var: &'static str, value: &'static str| {
+            let mut env = mcp_env();
+            env.retain(|(k, _)| *k != var);
+            env.push((var, value));
+            load_mcp(&env, TOKENS)
+        };
+        // Names, addresses and ports are hosts.
+        for good in [
+            "orch.example.com",
+            "orch.example.com:8443",
+            "localhost,127.0.0.1:8080,[::1]:8080",
+        ] {
+            assert!(with("MCP_ALLOWED_HOSTS", good).is_ok(), "{good}");
+        }
+        // Anything else would match no Host header, and only look like a rule.
+        for bad in [
+            "https://orch.example.com",
+            "*",
+            "*.example.com",
+            "orch.example.com/mcp",
+            "user@orch.example.com",
+            "orch example",
+            "orch.example.com:notaport",
+        ] {
+            let err = with("MCP_ALLOWED_HOSTS", bad).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "MCP_ALLOWED_HOSTS",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
+        }
+        assert!(
+            with(
+                "MCP_ALLOWED_ORIGINS",
+                "https://inspector.example.com,http://localhost:6274"
+            )
+            .is_ok()
+        );
+        assert!(
+            with("MCP_ALLOWED_ORIGINS", "")
+                .unwrap()
+                .mcp
+                .unwrap()
+                .allowed_origins
+                .is_empty()
+        );
+        for bad in [
+            "inspector.example.com",
+            "https://x.example.com/",
+            "https://x.example.com/app",
+            "*",
+            "ftp://x.example.com",
+        ] {
+            let err = with("MCP_ALLOWED_ORIGINS", bad).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "MCP_ALLOWED_ORIGINS",
+                        ..
+                    }
+                ),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn a_token_shorter_than_32_bytes_is_refused() {
+        let mut env = mcp_env();
+        env.retain(|(k, _)| *k != "MCP_TOKEN_BOB");
+        env.push(("MCP_TOKEN_BOB", "0123456789012345678901234567890"));
+        let err = load_mcp(&env, TOKENS).unwrap_err();
+        let ConfigError::Invalid {
+            var: "MCP_TOKENS_FILE",
+            reason,
+        } = &err
+        else {
+            panic!("{err}");
+        };
+        assert!(reason.contains("shorter than 32 bytes"), "{reason}");
+        assert!(
+            !reason.contains("0123456789012345678901234567890"),
+            "the token is not echoed"
+        );
+        // Exactly 32 is enough.
+        env.retain(|(k, _)| *k != "MCP_TOKEN_BOB");
+        env.push(("MCP_TOKEN_BOB", "01234567890123456789012345678901"));
+        assert!(load_mcp(&env, TOKENS).is_ok());
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn the_wait_limits_default_and_are_at_least_one() {
+        let mcp = load_mcp(&mcp_env(), TOKENS).unwrap().mcp.unwrap();
+        assert_eq!((mcp.wait_max_concurrent, mcp.wait_max_per_user), (256, 16));
+        let mut env = mcp_env();
+        env.extend([
+            ("MCP_WAIT_MAX_CONCURRENT", "8"),
+            ("MCP_WAIT_MAX_PER_USER", "2"),
+        ]);
+        let mcp = load_mcp(&env, TOKENS).unwrap().mcp.unwrap();
+        assert_eq!((mcp.wait_max_concurrent, mcp.wait_max_per_user), (8, 2));
+        for var in ["MCP_WAIT_MAX_CONCURRENT", "MCP_WAIT_MAX_PER_USER"] {
+            for bad in ["0", "-1", "many"] {
+                let mut env = mcp_env();
+                env.push((var, bad));
+                let err = load_mcp(&env, TOKENS).unwrap_err();
+                assert!(
+                    matches!(&err, ConfigError::Invalid { var: v, .. } if *v == var),
+                    "{var}={bad}: {err}"
+                );
+            }
+        }
+    }
+
+    #[cfg(not(feature = "surface-mcp"))]
+    #[test]
+    fn mcp_is_refused_in_a_build_without_the_feature() {
+        let mut env = mcp_env();
+        env.retain(|(k, _)| *k != "ORCH_SURFACES");
+        env.push(("ORCH_SURFACES", "mcp"));
+        let err = load_mcp(&env, TOKENS).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::SurfaceNotCompiled {
+                    surface: "mcp",
+                    feature: "surface-mcp"
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_configuration_never_prints_a_bearer_token() {
+        let mut env = mcp_env();
+        env.push(("ORCH_PUBLIC_URL", "https://chat.example.com"));
+        if let Ok(cfg) = load_mcp(&env, TOKENS) {
+            let shown = format!("{cfg:?}");
+            assert!(
+                !shown.contains("alice-secret") && !shown.contains("bob-secret"),
+                "{shown}"
+            );
+        }
     }
 }

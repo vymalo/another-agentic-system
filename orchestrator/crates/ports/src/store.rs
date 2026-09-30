@@ -4,7 +4,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    Job, ThreadId, ThreadRecord, ThreadState, UserId, WatchKey,
+    EventKind, Job, ThreadId, ThreadRecord, ThreadState, UserId, WatchKey,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -485,6 +485,15 @@ pub trait ThreadStore: Send + Sync + 'static {
         &self,
         thread: ThreadId,
         after: i64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
+
+    /// The newest `limit` events of `kind`, newest first: one bounded read for "the last artifact",
+    /// which would otherwise be a scan of the whole log.
+    fn latest_events(
+        &self,
+        thread: ThreadId,
+        kind: EventKind,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
 

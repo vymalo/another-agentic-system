@@ -7,8 +7,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
-    Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UserId, WatchKey, is_commit_hash,
-    repo_key, report, transition,
+    Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UserId, WatchKey,
+    is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -100,6 +100,9 @@ pub struct Inbound {
     /// The gate the request asks for (AG-UI `forwardedProps["vymalo.gate"]`). It applies when
     /// the request creates the thread: a thread's gate is fixed then (ADR 0016).
     pub gate: Option<GateLayer>,
+    /// The surface the input came in through, recorded on the `user_message` event (ADR 0019).
+    /// The default is the chat, `agui`.
+    pub origin: Origin,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -375,6 +378,7 @@ impl<P: Ports> App<P> {
                 text: req.text.clone(),
                 message_id: inbound.message_id,
                 run_id: inbound.run_id,
+                origin: inbound.origin,
             },
         )?;
         let title = req
@@ -509,6 +513,19 @@ impl<P: Ports> App<P> {
         Ok(self.ports.store().list_events(id, after, limit).await?)
     }
 
+    /// The newest `limit` events of `kind` of one of the user's threads, newest first (one
+    /// bounded read; someone else's thread is `NotFound`).
+    pub async fn latest_events(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+        kind: EventKind,
+        limit: u32,
+    ) -> Result<Vec<Event>, AppError> {
+        self.get_thread(user, id).await?;
+        Ok(self.ports.store().latest_events(id, kind, limit).await?)
+    }
+
     /// Appends a user message and queues its delegation. Returns the `user_message` event.
     pub async fn post_message(
         &self,
@@ -526,6 +543,7 @@ impl<P: Ports> App<P> {
                     text,
                     message_id: None,
                     run_id: None,
+                    origin: Origin::default(),
                 },
                 None,
                 None,

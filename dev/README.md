@@ -17,9 +17,9 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is not set, so it is the default `agui`: the AG-UI routes the web and the scripts here run on, beside the resource API. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp`: the AG-UI routes the web and the scripts here run on, beside the resource API, and the [MCP server](#the-mcp-server) at `/mcp`. The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
-| `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`) and the AG-UI routes (`/agui/*`, streams unbuffered). |
+| `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
@@ -174,6 +174,50 @@ in a data part).
   gives the next run a fresh repository and fresh databases.
 - The coder does not support `ListTasks`: if the orchestrator dies between sending a message and
   recording the task, the retry starts a second run (ADR 0014).
+
+## The MCP server
+
+The `orchestrator` service of the `app` profile also mounts the MCP server ([ADR 0019](../docs/decisions/0019-mcp-server-over-streamable-http.md),
+`ORCH_SURFACES=agui,mcp`), so Claude Code, opencode or any MCP client can start and follow a job. It is a **machine route**:
+the edge forwards `/mcp` without an identity header (and drops one the client sent), and the orchestrator authenticates
+`Authorization: Bearer <token>` itself.
+
+| What | Where |
+|---|---|
+| The URL | `http://127.0.0.1:8080/mcp` (the edge; `EDGE_PORT` moves it) |
+| The token | `dev-mcp-token-0123456789abcdef0123456789`, a dummy: `MCP_TOKEN_DEV` in `compose.yaml`, named by `tokenEnv` in [`mcp-tokens.yaml`](mcp-tokens.yaml) (`MCP_TOKENS_FILE`) |
+| Whose jobs | `dev@example.com`, the identity the edge gives the chat, so a job started over MCP is in the chat's thread list (`web_url` in the answer of `start_job` points at it: `ORCH_PUBLIC_URL`) |
+| Which `Host` | `127.0.0.1` and `localhost`, any port (`MCP_ALLOWED_HOSTS`); anything else is 403 |
+| The tools | `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` |
+
+```sh
+claude mcp add --transport http orchestrator http://127.0.0.1:8080/mcp --header "Authorization: Bearer dev-mcp-token-0123456789abcdef0123456789"
+```
+
+[`mcp.json.example`](mcp.json.example) is the same as a generic client configuration (Claude Code's `.mcp.json`, most
+others). Then ask the client to start a job on the agent `mock-coder` ("start a job with mock-coder: add a health
+endpoint"), or drive it from the terminal:
+
+```sh
+dev/mcp-e2e.sh          # curl and jq: 401s, initialize, tools/list, start_job (and a retry), get_job to done, the refusals,
+                        # then wait_for_job with a progress token on a `slow` job (8 s) and a timeout that is resumed
+```
+
+`wait_for_job` answers as an event stream when the request has a `progressToken`: one `notifications/progress` per event
+of the job (`#3 artifact: Pull request`, a counter that only increases) and a heartbeat every 60 s, then the result. The
+edge does not buffer it, so the notifications arrive as the events happen; the script reads them from the SSE response.
+The script speaks MCP by hand and prints one `ok` or `FAIL` line per check. Its default agent is `mock-coder`, which ends with
+a pull request in seconds; `AGENT_ID`, `MCP_TOKEN`, `BASE_URL`, `AUTH_EMAIL` and `TIMEOUT` change what it uses.
+The server is **stateless**: it hands out no `Mcp-Session-Id`, so any replica serves any call.
+A `wait_for_job` without a `progressToken` returns `timed_out` (with `resume_after_seq`) after at most one heartbeat interval (60 s),
+and a user can hold 16 waits open (256 per process): more is the tool error "too many waits" (`MCP_WAIT_MAX_PER_USER`,
+`MCP_WAIT_MAX_CONCURRENT`). A request with an `Origin` header (a browser) is 403 unless listed in `MCP_ALLOWED_ORIGINS`.
+The dummy token is 32 bytes or more because the orchestrator refuses a shorter one.
+
+Troubleshooting: `401` with `WWW-Authenticate: Bearer` is a missing or wrong token (nothing else says why, on
+purpose); `403` is a `Host` the server does not list, for example a client that reaches the edge by another name
+(add it to `MCP_ALLOWED_HOSTS`); the orchestrator refusing to start with `MCP_TOKEN_DEV` in the message means
+the variable named by `mcp-tokens.yaml` is not set.
 
 ## The split profile: a control plane and two workers
 
@@ -533,6 +577,15 @@ the body patterns and the templates are the ones the other stubs use); the first
 image builds and the WireMock image's argument handling. The machine that wrote this had no Docker
 daemon. CI (`.github/workflows/compose.yml`) starts the default profile and runs the same checks;
 the `app` profile is only parsed there, and run by the `Coder E2E` workflow (below).
+
+The MCP server (`dev/mcp-e2e.sh`, `dev/mcp-tokens.yaml`, the `@mcp` block of the `dev/Caddyfile`):
+
+*Verified 2026-09-30*: `dev/mcp-e2e.sh`, including the `wait_for_job` checks (every check `ok`, exit 0) against the real `orchestrator` debug binary (default
+features, `ORCH_SURFACES=agui,mcp`) on Postgres 16, `dev/wiremock/agent` served by `wiremock-standalone-3.13.2.jar`, and Caddy
+2.11.4 running the `dev/Caddyfile` with the two upstream addresses and the port changed (the `@mcp` block, `header_up
+-X-Auth-Request-Email` and `flush_interval -1` as committed); `caddy validate` accepts the Caddyfile; `docker compose config`
+accepts every profile; `shellcheck dev/*.sh` is clean. *Unverified*: `docker compose up` itself (no Docker daemon here);
+Claude Code and opencode against this server (neither was run; only `curl` and rmcp's own client were).
 
 The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
 
