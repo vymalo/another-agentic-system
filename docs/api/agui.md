@@ -29,7 +29,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > subagent of its own** (2026-09-30, MVP slice 10): see [The verifier as a subagent](#the-verifier-as-a-subagent).
 > The web renders it since MVP slice 4 (2026-09-30).
 > **CI reports are projected** (2026-09-30, [ADR 0017](../decisions/0017-ci-results-by-webhook.md), MVP slice 7): each
-> report is a `vymalo.ci` activity, see [CI results](#ci-results-vymalo-ci). The web renders it in slice 8.
+> report is a `vymalo.ci` activity, see [CI results](#ci-results-vymalo-ci). The web renders it since MVP slice 8 (2026-09-30).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -297,6 +297,12 @@ name) and one it does not (another commit, a check nobody asked for, a repeat) a
   (failed or passed) → `vymalo.rework`, or the end of the run. The golden [`ci.agui.json`](examples/agui/ci.agui.json)
   is a job that waits for CI, is sent back by a red `ci/build` for commit `…01`, and finishes on a green one for `…02`
   (one run, two subagents, two `vymalo.ci` cards).
+- **Rendering rules** (what the web does, and what another consumer should): the conclusion is shown in words first
+  (with an icon; colour last), and a conclusion a renderer does not know is shown by its own name with `passed` deciding
+  the colour; `name`, `branch` and `summary` are plain text, and a long summary is cut with a control to read the rest;
+  the link to the run is drawn only when `url` is an absolute `http` or `https` URL, checked again by the renderer
+  (`target="_blank"`, `rel="noopener noreferrer"`); a card is kept under the message id on the wire (one per report, and
+  replaced only when the wire says so), never under its own idea of the id; an unknown field is ignored, and a payload without a required member draws nothing.
 
 ### What a build honours, and what a request may ask
 

@@ -34,7 +34,7 @@ message's `messageId` is `<message-id>`.
   same story, `a2ui` included (a surface, the question, and the action that answers it through
   `forwardedProps.a2uiAction`), the four `verify-*` scenarios (the gate, with the agent's own checks and with a
   verifier agent; the web renders their cards since MVP slice 4, and the mock plays the verifier as a subagent) and `ci` (the
-  mock plays the CI reports too; the web renders the card in slice 8). The web renders the AG-UI goldens, not these event logs: see the next section.
+  mock plays the CI reports too; the web renders the card since MVP slice 8). The web renders the AG-UI goldens, not these event logs: see the next section.
 
 ## AG-UI streams
 

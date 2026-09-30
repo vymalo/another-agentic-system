@@ -99,6 +99,30 @@ const EXPECTED: Record<string, Summary> = {
       ],
     },
   ],
+  // CI (ADR 0017): ONE run for both attempts; each report is a `ci` card (its own part, next to the
+  // check it decided: the pending check card was replaced in place by the answer)
+  ci: [
+    USER("verify-ci fix the login"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [
+        ACTOR,
+        "status:working",
+        "artifact",
+        "status:completed",
+        "check:failed",
+        "ci",
+        "rework",
+        ACTOR,
+        "status:working",
+        "artifact",
+        "status:completed",
+        "check:passed",
+        "ci",
+      ],
+    },
+  ],
   // out of attempts: the run ends in RUN_ERROR checks_failed, after the last failed check
   "verify-red": [
     USER("verify-red fix the login"),
@@ -150,7 +174,7 @@ const EXPECTED: Record<string, Summary> = {
 };
 
 /** The scenarios the orchestrator's e2e tests also record over real HTTP (connect-<name>). */
-const CONNECT = ["echo", "ask", "cancel", "verify-green", "verify-red"];
+const CONNECT = ["echo", "ask", "cancel", "verify-green", "verify-red", "ci"];
 
 async function play(name: string) {
   const stream = new LiveStream();
@@ -259,6 +283,23 @@ describe("the goldens through the runtime", () => {
       failure: { code: "checks_failed" },
     });
     expect(agent.getSnapshot().failure?.message).toContain("after 3 attempts");
+    agent.stop();
+  });
+
+  it("ci: the agent holds the job under a CI gate, and the reports are data parts the renderer reads", async () => {
+    const { agent, messages } = await play("ci");
+    expect(agent.getSnapshot()).toMatchObject({
+      state: "done",
+      job: { attempt: 2, maxAttempts: 3, gate: ["ci"] },
+      failure: null,
+    });
+    const reports = messages().flatMap((m) =>
+      m.content.filter((p) => p.type === "data" && p.name === "agui-activity/vymalo.ci"),
+    );
+    expect(reports.map((p) => (p as { data: unknown }).data)).toMatchObject([
+      { name: "ci/build", conclusion: "failure", passed: false, actor: { type: "system" } },
+      { name: "ci/build", conclusion: "success", passed: true, actor: { type: "system" } },
+    ]);
     agent.stop();
   });
 

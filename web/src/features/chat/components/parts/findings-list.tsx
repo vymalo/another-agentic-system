@@ -2,38 +2,18 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { keyed, pluralFindings, truncate } from "@/features/chat/lib/findings";
+import { keyed, pluralFindings } from "@/features/chat/lib/findings";
+import { ExpandableText, MORE } from "./expandable-text";
 
 /** A finding longer than this is cut, with a control to read the rest. */
 export const FINDING_PREVIEW = 240;
 /** More findings than this are folded behind a control. */
 export const FINDINGS_SHOWN = 5;
 
-const MORE =
-  "h-auto cursor-pointer p-0 text-xs underline underline-offset-2 hover:underline focus-visible:ring-3";
-
 function Finding({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  const preview = truncate(text, FINDING_PREVIEW);
   return (
     <li data-slot="finding" className="[overflow-wrap:anywhere]">
-      {/* plain text in a text node: React escapes it, and nothing here parses markup */}
-      <span className="whitespace-pre-wrap">{open ? text : preview.text}</span>
-      {preview.cut ? (
-        <>
-          {" "}
-          <Button
-            type="button"
-            variant="link"
-            size="xs"
-            className={MORE}
-            aria-expanded={open}
-            onClick={() => setOpen((o) => !o)}
-          >
-            {open ? "Show less" : "Show more"}
-          </Button>
-        </>
-      ) : null}
+      <ExpandableText text={text} limit={FINDING_PREVIEW} />
     </li>
   );
 }

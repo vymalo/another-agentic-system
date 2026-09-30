@@ -89,6 +89,17 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: a finished thread with CI report cards (red, then green, with links) has no serious violations", async ({
+      page,
+    }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "verify-ci fix the login", "Reviewer");
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      await expect(page.getByRole("region", { name: "CI: ci/build, failure" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "CI: ci/build, success" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a thread that failed its checks (findings, stale-free) has no serious violations", async ({
       page,
     }) => {
