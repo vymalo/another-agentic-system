@@ -6,7 +6,15 @@ import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import type { ApiActor, ThreadState } from "@/lib/api/types";
 import { readSse } from "./sse";
-import { A2UI_SURFACE, ACTIVITY, ACTOR_KEY, ACTOR_PART, RELEASE_CHANNELS_URI } from "./vymalo";
+import {
+  A2UI_SURFACE,
+  ACTIVITY,
+  ACTOR_KEY,
+  ACTOR_PART,
+  type JobView,
+  parseJob,
+  RELEASE_CHANNELS_URI,
+} from "./vymalo";
 
 /**
  * The AG-UI side of one thread (docs/api/agui.md, ADR 0012).
@@ -70,6 +78,16 @@ export type ThreadSnapshot = {
   /** `STATE_SNAPSHOT.thread` of the last group: what the server says the thread is doing. */
   state: ThreadState | undefined;
   title: string | undefined;
+  /**
+   * `STATE_SNAPSHOT.job` of the last group, when the thread runs under a verification gate
+   * (attempt, attempts there are, sources, commit); null without a gate (ADR 0018).
+   */
+  job: JobView | null;
+  /**
+   * The `RUN_ERROR` that ended the newest run (`code` such as `agent_failed`, `checks_failed`), so
+   * the page can say why a thread failed; null while a run is open and after a run that did not fail.
+   */
+  failure: { code: string; message: string } | null;
   /** The `runId` of the run that is open according to the delivered frames, if any. */
   openRun: string | null;
   /** The connect stream answered 404: the thread does not exist for this user. */
@@ -165,6 +183,8 @@ export class ThreadAgent extends AbstractAgent {
     lastSeq: 0,
     state: undefined,
     title: undefined,
+    job: null,
+    failure: null,
     openRun: null,
     notFound: false,
     error: null,
@@ -324,17 +344,25 @@ export class ThreadAgent extends AbstractAgent {
           run.frames.next(event);
           this.waiter?.(this.queue.shift() ?? null);
         }
-        this.patch({ openRun: runId });
+        this.patch({ openRun: runId, failure: null });
         return;
       }
       case EventType.STATE_SNAPSHOT: {
         const thread = isRecord(event.snapshot) ? event.snapshot.thread : undefined;
         if (isRecord(thread)) {
           const state = str(thread.state) as ThreadState | undefined;
-          this.patch({ state, title: str(thread.title) ?? this.snapshot.title });
+          this.patch({
+            state,
+            title: str(thread.title) ?? this.snapshot.title,
+            // a snapshot without a job is a thread without a gate
+            job: parseJob(isRecord(event.snapshot) ? event.snapshot.job : undefined),
+          });
         }
         break;
       }
+      case EventType.RUN_ERROR:
+        this.patch({ failure: { code: str(event.code) ?? "", message: str(event.message) ?? "" } });
+        break;
       default:
     }
     if (!this.route) {

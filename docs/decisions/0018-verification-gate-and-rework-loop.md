@@ -1,8 +1,9 @@
 # ADR 0018 — Configurable verification gate and a bounded rework loop
 
-- **Status:** accepted (2026-09-30). **Built:** MVP slice 2 (the core) and slice 3 (configuration and
-  the AG-UI projection), 2026-09-30, for the agent-checks source; see *Built (slice 3)* below.
-  **Planned, not built:** slices 4 (web) and 10 (verifier agent), and CI as a source
+- **Status:** accepted (2026-09-30). **Built:** MVP slice 2 (the core), slice 3 (configuration and
+  the AG-UI projection) and slice 4 (the web), 2026-09-30, for the agent-checks source; see *Built
+  (slice 3)* and *Built (slice 4)* below.
+  **Planned, not built:** slice 10 (verifier agent), and CI as a source
   (slices 5 and 6) ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Refines [ADR 0002](0002-verification-over-consensus.md) (how "verify" and "budgets" are made
   concrete). Closes [open question 8](../open-questions.md#closed) and answers part of question 6
@@ -205,6 +206,24 @@ last findings in its `error` event.
 - **The gate is fixed at creation**, and a run that continues a thread and asks for another is a 409 (`orch-surface-agui`),
   not a silent no-op.
 
+## Built (slice 4)
+
+*2026-09-30.* The web (`web/`) renders the gate; it invents nothing, so each thing below is read from the stream:
+
+- **The badge** has a `verifying` state (its own colour and label, "Verifying", spoken as "Verifying the agent's
+  work"), and the composer offers Cancel while it lasts.
+- **The attempt counter** ("Attempt 2/3", spoken as "Attempt 2 of 3") sits beside the badge whenever the newest
+  `STATE_SNAPSHOT` (or, before the stream, `Thread.job`) carries a `job`; a thread without a gate shows none.
+- **`vymalo.check`** is a card per source and attempt (status in words, source, short commit, summary and findings),
+  replaced in place by its id; a `stale` one is its own muted card. **`vymalo.rework`** is a divider, "Attempt 2 of 3:
+  sent back with 1 finding". Findings, summaries and names are untrusted and drawn as text: never as markdown or HTML;
+  a long finding is cut with an expand control.
+- **`RUN_ERROR` `checks_failed`** is kept by the stream's agent and shown as "Checks failed after 3 attempts" where an
+  ordinary finished thread says "This thread is failed".
+- The mock replays both goldens (and `verify-pass`, and the mock-only `verify-ci` and `verify-wait`, which need the CI
+  source of slices 5 and 6); the system tests run the fake agent's `verify-*` scripts through the real orchestrator.
+  Rules and tests: [`web/README.md`](../../web/README.md#verification-the-gate).
+
 ## Configuration summary
 
 | Variable | Default | Meaning |
@@ -248,7 +267,7 @@ last findings in its `error` event.
 - `AgentChecks` needs an adam-rs change (a `checks` artifact from `run_checks`). Until then it is
   unusable with the default agent.
 - The run now stays open longer, so a client sees `RUN_FINISHED` later than the agent's
-  `completed`; every AG-UI consumer must tolerate it (the reference client does; the web is slice 4).
+  `completed`; every AG-UI consumer must tolerate it (the reference client does; the web has since slice 4).
 - Three configuration layers to explain and test. The monotonic rule (may add, may not remove) is
   the simplification.
 - A `Blocked` thread from a timeout needs a human; there is no automatic retry of the wait.

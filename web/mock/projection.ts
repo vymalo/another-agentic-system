@@ -9,15 +9,24 @@ import type { components } from "../src/lib/api/schema";
 
 type Event = components["schemas"]["Event"];
 type ThreadState = components["schemas"]["ThreadState"];
+type CheckSource = components["schemas"]["CheckSource"];
 
 type Ev = Record<string, unknown> & { type: string };
 export type Frame = { id?: number; event: Ev };
+
+/** The verification gate a thread's job runs under (ADR 0018): `require` is in the order of the sources. */
+export type GateInfo = { require: CheckSource[]; maxAttempts: number };
 
 export type ThreadInfo = {
   threadId: string;
   title: string;
   target: { agentId: string; release?: string };
+  /** Absent: no gate, so no `job` and a run that ends at the agent's `completed`. */
+  gate?: GateInfo;
 };
+
+/** What `Thread.job` and the `job` of a `STATE_SNAPSHOT` say (docs/api/chat-api.yaml, `ThreadJob`). */
+export type Job = components["schemas"]["ThreadJob"];
 
 /** The requester of a run already holds the user messages its own request carried. */
 export type Audience = { skipUserMessageIds?: ReadonlySet<string> };
@@ -73,6 +82,23 @@ export function surfacesOf(log: readonly Event[]): Map<string, string> {
 
 type Surface = { messageId: string; operations: unknown[] };
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const COMMIT = /^[0-9a-f]{40}$/;
+
+/** The commit of a `branch` artifact (the core's `recognise_artifact`, reduced to what `job.sha` needs). */
+function pushedCommit(name: unknown, text: unknown): string | undefined {
+  if (name !== "branch" || typeof text !== "string") return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    const commit = isRecord(value) ? str(value.commit)?.toLowerCase() : undefined;
+    return commit !== undefined && COMMIT.test(commit) ? commit : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class Projector {
   private state: ThreadState | undefined;
   private run: Open | null = null;
@@ -86,6 +112,15 @@ export class Projector {
   private readonly said = new Set<string>();
   /** The operations received so far per live surface: every snapshot carries the whole surface. */
   private readonly surfaces = new Map<string, Surface>();
+  /** The attempt the agent is on, and the commit it pushed in it (`job` of the snapshot). */
+  private attempt = 1;
+  private sha: string | undefined;
+  /** How many verifications have started: the agent's `completed` under a gate starts one. */
+  private verification = 0;
+  /** A source failed and nothing has answered it yet: an `error` that follows is the gate out of attempts. */
+  private checksFailed = false;
+  /** The actor of the agent's last event: a rework starts the next attempt's invocation as it. */
+  private lastAgent: Event["actor"] | undefined;
 
   constructor(private readonly info: ThreadInfo) {}
 
@@ -93,10 +128,24 @@ export class Projector {
     return this.run !== null;
   }
 
+  /** Where the job stands, when the thread has a gate. */
+  job(): Job | undefined {
+    const gate = this.info.gate;
+    if (!gate || gate.require.length === 0) return undefined;
+    return {
+      attempt: this.attempt,
+      maxAttempts: gate.maxAttempts,
+      gate: [...gate.require],
+      ...(this.sha !== undefined ? { sha: this.sha } : {}),
+    };
+  }
+
   private snapshot(): Ev {
+    const job = this.job();
     return {
       type: "STATE_SNAPSHOT",
       snapshot: {
+        ...(job ? { job } : {}),
         thread: {
           state: this.state,
           title: this.info.title,
@@ -157,6 +206,7 @@ export class Projector {
     };
     this.suspended = null;
     this.invocation = inv;
+    if (e.actor.type === "agent") this.lastAgent = e.actor;
     out.push(this.startedEvent(inv));
     return inv;
   }
@@ -206,6 +256,9 @@ export class Projector {
     switch (e.kind) {
       case "user_message": {
         if (!this.run) this.openRun(e, out);
+        // a message during a verification abandons it
+        if (this.state === "verifying") this.state = "queued";
+        this.checksFailed = false;
         this.lastWasError = false;
         const messageId = str(e.data.messageId) ?? `evt-${e.seq}`;
         if (!audience.skipUserMessageIds?.has(messageId)) {
@@ -277,6 +330,12 @@ export class Projector {
         } else if (status === "completed") {
           out.push({ type: "SUBAGENT_FINISHED", subagentRunId: inv.id });
           this.invocation = null;
+          // under a gate the agent finishing is not the end: the work is verified, the run stays open
+          if (this.job()) {
+            this.verification += 1;
+            this.state = "verifying";
+            out.push(this.snapshot());
+          }
         } else if (status === "failed") {
           const message = detail ?? "the agent failed";
           out.push({
@@ -300,6 +359,9 @@ export class Projector {
       case "artifact": {
         const inv = this.ensureInvocation(e, out);
         const { name, mimeType, uri, text } = e.data;
+        // what is verified is what the agent had pushed when it finished
+        const pushed = pushedCommit(name, text);
+        if (this.job() && this.state !== "verifying" && pushed !== undefined) this.sha = pushed;
         out.push(
           this.activity(
             e,
@@ -361,6 +423,58 @@ export class Projector {
         );
         break;
       }
+      case "check_result": {
+        // one card per source in one verification of one attempt, replaced by its later answers; a stale answer is a
+        // card of its own and changes nothing else
+        const stale = e.data.stale === true;
+        const attempt = Number(e.data.attempt) || 1;
+        let messageId = `evt-${e.seq}`;
+        if (!stale) {
+          this.attempt = Math.max(1, attempt);
+          // `job.sha` is what the agent pushed (its `branch` artifact), not the commit a check ran on
+          if (e.data.status === "failed") this.checksFailed = true;
+          if (this.state !== "verifying" && this.state !== "done" && this.state !== "failed") {
+            this.state = "verifying";
+            out.push(this.snapshot());
+          }
+          messageId = `check-${attempt}-${Math.max(1, this.verification)}-${String(e.data.source)}`;
+        }
+        out.push({
+          type: "ACTIVITY_SNAPSHOT",
+          messageId,
+          activityType: "vymalo.check",
+          content: { ...e.data },
+          replace: true,
+          metadata: actorMeta(e),
+        });
+        break;
+      }
+      case "rework": {
+        // the gate failed and the agent is sent back: the divider, then the next attempt's
+        // invocation (the delegation is already on its way, so the run shows it working)
+        this.attempt = Number(e.data.attempt) || this.attempt + 1;
+        this.sha = undefined;
+        this.checksFailed = false;
+        this.state = "queued";
+        out.push({
+          type: "ACTIVITY_SNAPSHOT",
+          messageId: `rework-${this.attempt}`,
+          activityType: "vymalo.rework",
+          content: { ...e.data },
+          replace: true,
+          metadata: actorMeta(e),
+        });
+        if (!this.invocation) {
+          const actor = this.lastAgent ?? {
+            type: "agent" as const,
+            name: this.info.target.agentId,
+          };
+          this.invocation = { id: `sub-${e.seq}`, event: { ...e, actor } };
+          out.push(this.startedEvent(this.invocation));
+        }
+        out.push(this.snapshot());
+        break;
+      }
       case "error": {
         const message = str(e.data.message) ?? "";
         out.push(
@@ -380,7 +494,10 @@ export class Projector {
           });
           this.invocation = null;
         }
-        this.failure = { message, code: "delivery_failed" };
+        // an error right after a failed check is the gate out of attempts; any other is a delivery
+        const code =
+          this.checksFailed && e.data.retryable !== true ? "checks_failed" : "delivery_failed";
+        this.failure = { message, code };
         this.lastWasError = true;
         break;
       }
@@ -427,7 +544,9 @@ export class Projector {
                     ? "Agent failed"
                     : f.code === "delivery_failed"
                       ? "Delivery failed"
-                      : "Error",
+                      : f.code === "checks_failed"
+                        ? "Checks failed"
+                        : "Error",
                 detail: f.message,
               },
             },

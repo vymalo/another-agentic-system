@@ -5,12 +5,17 @@ import type { FormEvent, RefObject } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import type { JobView } from "@/features/chat/lib/agui/vymalo";
 import type { ThreadState } from "@/lib/api/types";
 import { isActive, isTerminal } from "@/lib/api/types";
 
 type Props = {
   /** The thread's state; undefined until known. */
   state: ThreadState | undefined;
+  /** Where the job stands under a verification gate; null without one. */
+  job?: JobView | null;
+  /** The `RUN_ERROR` that ended the newest run, if it failed: why the thread is `failed`. */
+  failure?: { code: string; message: string } | null;
   /** The new-thread page: no thread yet. */
   isNew: boolean;
   sendError: string | null;
@@ -20,13 +25,18 @@ type Props = {
   inputRef?: RefObject<HTMLTextAreaElement | null>;
 };
 
+/** `RUN_ERROR.code` of a job whose last attempt did not pass the verification gate (ADR 0018). */
+export const CHECKS_FAILED = "checks_failed";
+
+const attempts = (n: number): string => `${n} ${n === 1 ? "attempt" : "attempts"}`;
+
 /**
  * The message box. Sending is the runtime's: a message starts a run (`POST /agui/agents/{id}`).
  * Two things are ours: while an interrupt waits, the text is the interrupt's answer (a run that
  * `resume`s it), and Cancel asks the orchestrator, because the runtime's own cancel only detaches
  * (AG-UI: a consumer that leaves has a truncated run, not a cancelled one).
  */
-export function Composer({ state, isNew, sendError, onCancel, inputRef }: Props) {
+export function Composer({ state, job, failure, isNew, sendError, onCancel, inputRef }: Props) {
   const aui = useAui();
   const interrupts = useAgUiInterrupts();
   const steerAway = useAgUiSteerAway();
@@ -46,11 +56,13 @@ export function Composer({ state, isNew, sendError, onCancel, inputRef }: Props)
     ? "Describe the task…"
     : blocked
       ? "Answer the agent…"
-      : running
-        ? "The agent is working…"
-        : finished
-          ? "This thread is finished"
-          : "Send a follow-up…";
+      : state === "verifying"
+        ? "The work is being checked…"
+        : running
+          ? "The agent is working…"
+          : finished
+            ? "This thread is finished"
+            : "Send a follow-up…";
 
   // With an interrupt open the runtime refuses a plain message; the text answers it instead.
   const answerInterrupt = (e: FormEvent<HTMLFormElement>) => {
@@ -81,7 +93,18 @@ export function Composer({ state, isNew, sendError, onCancel, inputRef }: Props)
           {question ? <AlertDescription>{question}</AlertDescription> : null}
         </Alert>
       ) : null}
-      {finished ? (
+      {finished && state === "failed" && failure?.code === CHECKS_FAILED ? (
+        <Alert variant="destructive" role="status" data-slot="checks-failed">
+          <AlertTitle>
+            {job ? `Checks failed after ${attempts(job.attempt)}` : "Checks failed"}
+          </AlertTitle>
+          <AlertDescription>
+            The agent finished, but its work did not pass verification and no attempts are left. The
+            findings are in the conversation above. <Link href="/">Start a new thread</Link> to try
+            again.
+          </AlertDescription>
+        </Alert>
+      ) : finished ? (
         <Alert role="status">
           <AlertDescription>
             This thread is {state}. <Link href="/">Start a new thread</Link> to continue.

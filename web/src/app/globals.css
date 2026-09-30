@@ -28,6 +28,7 @@
   --destructive: #b3261e;
   --success: #1e7a3c;
   --warning: #8a5300;
+  --verifying: #6b3fa0;
   --border: #dcdcd8;
   --input: #dcdcd8;
   --ring: #1f5fbf;
@@ -54,6 +55,7 @@
     --destructive: #ff8a80;
     --success: #6fcf8e;
     --warning: #e0a84a;
+    --verifying: #c4a7f2;
     --border: #2f3136;
     --input: #2f3136;
     --ring: #8ab4ff;
@@ -80,6 +82,7 @@
   --color-destructive: var(--destructive);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-verifying: var(--verifying);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

@@ -29,8 +29,8 @@ message's `messageId` is `<message-id>`.
 - **Consumers:** `web/mock/golden.test.ts` drives every scenario through the mock server's AG-UI routes
   and requires the connect stream to be the golden `agui/<name>.agui.json` below, so the mock tells the
   same story, `a2ui` included (a surface, the question, and the action that answers it through
-  `forwardedProps.a2uiAction`). The two `verify-*` scenarios are not played by the mock yet (they are listed in
-  `NOT_MOCKED_YET` there, and the web renders their cards in MVP slice 4). The web renders the AG-UI goldens, not these event logs: see the next section.
+  `forwardedProps.a2uiAction`) and the two `verify-*` scenarios (the gate; the web renders their cards since MVP
+  slice 4). The web renders the AG-UI goldens, not these event logs: see the next section.
 
 ## AG-UI streams
 

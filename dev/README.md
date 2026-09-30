@@ -347,6 +347,27 @@ stateDiagram-v2
   Failed --> [*]
 ```
 
+**What the chat shows** (the web of the `app` profile at http://127.0.0.1:8080, pick **Mock coder (gated)** and send
+`red-once fix the login`; MVP slice 4):
+
+1. The badge reads **Verifying** as soon as the agent says `completed`, with **Attempt 1/3** beside it (the counter
+   is there only for a gated agent; the other mocks show none). The composer says "The work is being checked…" and
+   offers Cancel.
+2. A card **Failed · Agent checks** appears in the conversation with the attempt, the short commit, the summary
+   ("1 test failed") and the finding as plain text. Then a divider, **Attempt 2 of 3: sent back with 1 finding**,
+   and the badge goes back to Queued and Working, the counter to **Attempt 2/3**: the next attempt is a new
+   subagent in the same run, its status lines and artifacts under the divider.
+3. A second card, **Passed · Agent checks**, on the new commit; the badge ends **Done**, the counter stays
+   **Attempt 2/3**.
+
+`red-always fix the login` ends on **Attempt 3/3** with three failed cards, two dividers, the badge **Failed** and
+the notice **Checks failed after 3 attempts** (not "This thread is failed": the agent did its work and the work did
+not pass). Findings are text from a tool: a finding with `<script>` or markdown shows those characters, and a long
+one is cut with **Show more**. Reload the page mid-verification and the same badge, counter and cards come back
+(the page replays the log). The web's own mock (`pnpm dev:mock`, [`web/README.md`](../web/README.md#mock-server)) plays
+the same story with `verify-red-once` and `verify-red`, and two scenarios for what CI will add: `verify-ci` (a pending
+card replaced by its answer, and a stale answer shown apart) and `verify-wait` (stays Verifying until cancelled).
+
 `dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts what a user sees: one run across
 both attempts with two subagents; a `vymalo.check` that failed and one that passed; the `vymalo.rework`; the final
 `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate `agent_checks`, the second commit) and the thread of the resource

@@ -45,9 +45,6 @@ async function waitForState(id: string, state: Thread["state"]) {
 let n = 0;
 const newThreadId = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
 
-/** Goldens of the orchestrator that the mock does not play yet (MVP slice 4 adds them). */
-const NOT_MOCKED_YET = ["verify-green", "verify-red"];
-
 /** The scenarios of golden.rs, driven through the mock's AG-UI run route. Returns the final state. */
 const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: Thread["state"] }>> =
   {
@@ -135,6 +132,26 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(action.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // the verification gate (ADR 0018): red, sent back, green on attempt 2 of 3
+    "verify-green": async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "verify-red-once fix the login" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
+    // three attempts whose checks all fail: the run ends in RUN_ERROR checks_failed
+    "verify-red": async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "verify-red fix the login" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "failed" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,
@@ -171,10 +188,7 @@ describe("the mock server against the AG-UI goldens", () => {
   it("has a scenario for every golden event log", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
-      .map((f) => f.replace(/\.events\.json$/, ""))
-      // The verification gate's goldens (ADR 0018) are the orchestrator's until the web renders
-      // them and the mock replays them (MVP slice 4).
-      .filter((name) => !NOT_MOCKED_YET.includes(name));
+      .map((f) => f.replace(/\.events\.json$/, ""));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

@@ -9,6 +9,10 @@ export const ACTIVITY = {
   artifact: "vymalo.artifact",
   error: "vymalo.error",
   action: "vymalo.action",
+  /** One source of the verification gate answered for one attempt (ADR 0018). */
+  check: "vymalo.check",
+  /** The gate failed and the agent is sent back to work (ADR 0018). */
+  rework: "vymalo.rework",
   /**
    * An A2UI surface, as `ThreadAgent` hands it to the runtime. On the wire it is
    * `a2ui-surface` ({@link A2UI_SURFACE}); see `thread-agent.ts` for why it is renamed.
@@ -59,6 +63,39 @@ export type ActionContent = WithActor<{
   sourceComponentId?: string;
   context?: Record<string, unknown>;
 }>;
+export const CHECK_STATUSES = ["pending", "passed", "failed"] as const;
+export type CheckStatus = (typeof CHECK_STATUSES)[number];
+
+/**
+ * One source of the gate for one attempt. The strings (`summary`, `findings`, `name`, `commit`) come
+ * from a tool, a CI provider or a reviewer: untrusted text, drawn as text and nothing else.
+ * `source` is whatever the orchestrator named (`ci`, `agent_checks`, `verifier` today).
+ */
+export type CheckContent = WithActor<{
+  source: string;
+  attempt: number;
+  status: CheckStatus;
+  name?: string;
+  commit?: string;
+  summary?: string;
+  /** The answer belongs to a verification that is no longer the current one; it decided nothing. */
+  stale: boolean;
+  findings: string[];
+}>;
+
+/** What one failed source said, as the rework carries it. */
+export type ReworkFindings = { source: string; findings: string[] };
+
+export type ReworkContent = WithActor<{
+  /** The attempt that starts now. */
+  attempt: number;
+  maxAttempts: number;
+  findings: ReworkFindings[];
+}>;
+
+/** `job` of a `STATE_SNAPSHOT` and of `Thread` (chat-api.yaml, `ThreadJob`): only under a gate. */
+export type JobView = { attempt: number; maxAttempts: number; gate: string[]; sha?: string };
+
 /**
  * A surface: the operations exactly as the orchestrator sent them (untrusted, read by
  * `lib/a2ui/prepare.ts` and nothing else) and `surface`, the activity message id that identifies
@@ -136,6 +173,74 @@ export function parseAction(v: unknown): ActionContent | null {
     name,
     ...(sourceComponentId !== undefined ? { sourceComponentId } : {}),
     ...(actor ? { actor } : {}),
+  };
+}
+
+/** How many findings a card reads: the orchestrator sends at most 20 per source. */
+const MAX_FINDINGS = 100;
+
+const strings = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? v.filter((x): x is string => typeof x === "string").slice(0, MAX_FINDINGS)
+    : [];
+
+const positiveInt = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 1 ? v : undefined;
+
+/** `vymalo.check`; a payload without a source, an attempt or a known status renders nothing. */
+export function parseCheck(v: unknown): CheckContent | null {
+  if (!isRecord(v)) return null;
+  const source = str(v.source);
+  const attempt = positiveInt(v.attempt);
+  const status = str(v.status);
+  if (!source || attempt === undefined) return null;
+  if (!status || !(CHECK_STATUSES as readonly string[]).includes(status)) return null;
+  const name = str(v.name);
+  const commit = str(v.commit);
+  const summary = str(v.summary);
+  const actor = readActor(v.actor);
+  return {
+    source,
+    attempt,
+    status: status as CheckStatus,
+    ...(name ? { name } : {}),
+    ...(commit ? { commit } : {}),
+    ...(summary ? { summary } : {}),
+    stale: v.stale === true,
+    findings: strings(v.findings),
+    ...(actor ? { actor } : {}),
+  };
+}
+
+/** `vymalo.rework`; a payload without the attempt and the attempts there are renders nothing. */
+export function parseRework(v: unknown): ReworkContent | null {
+  if (!isRecord(v)) return null;
+  const attempt = positiveInt(v.attempt);
+  const maxAttempts = positiveInt(v.maxAttempts);
+  if (attempt === undefined || maxAttempts === undefined) return null;
+  const findings = Array.isArray(v.findings)
+    ? v.findings.flatMap((f): ReworkFindings[] => {
+        if (!isRecord(f)) return [];
+        const source = str(f.source);
+        return source ? [{ source, findings: strings(f.findings) }] : [];
+      })
+    : [];
+  const actor = readActor(v.actor);
+  return { attempt, maxAttempts, findings, ...(actor ? { actor } : {}) };
+}
+
+/** `job` of a snapshot or of the thread resource; null when it is absent or not a job. */
+export function parseJob(v: unknown): JobView | null {
+  if (!isRecord(v)) return null;
+  const attempt = positiveInt(v.attempt);
+  const maxAttempts = positiveInt(v.maxAttempts);
+  if (attempt === undefined || maxAttempts === undefined) return null;
+  const sha = str(v.sha);
+  return {
+    attempt,
+    maxAttempts,
+    gate: Array.isArray(v.gate) ? v.gate.filter((x): x is string => typeof x === "string") : [],
+    ...(sha ? { sha } : {}),
   };
 }
 

@@ -1,8 +1,16 @@
 # AGENTS_FILE of the system e2e tests: the two agents of `orch-fake-agent`
-# (orchestrator/crates/testsupport/src/bin/orch-fake-agent.rs).
+# (orchestrator/crates/testsupport/src/bin/orch-fake-agent.rs), and `gated`, the `plain` agent again
+# under the verification gate (ADR 0018): its job is done only when the agent's own checks pass
+# (verification.spec.ts; the fake agent's `verify-*` scripts).
 - id: coder
   name: Coder
   cardUrl: http://127.0.0.1:4021/.well-known/agent-card.json
 - id: plain
   name: Plain
   cardUrl: http://127.0.0.1:4022/.well-known/agent-card.json
+- id: gated
+  name: Gated
+  cardUrl: http://127.0.0.1:4022/.well-known/agent-card.json
+  gate:
+    require: [agent-checks]
+    maxAttempts: 3
