@@ -12,17 +12,24 @@
 # (the first entry of dev/agents.yaml) with one POST /agui/agents/{agentId} whose message names the
 # seeded repository, waits for a terminal state, and checks the whole chain. The agent list and the
 # thread state come from the resource API. (The legacy chat API routes were removed on 2026-09-30.)
+# Before the task it puts an empty commit naming the thread on main of the sandbox, so that the pushed
+# commit is this run's own even when an earlier run made the same change in the same second.
+#
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * the default agent of GET /api/agents is `coder`;
 #   * the run stream ends with RUN_FINISHED (success), and the thread ends `done` within TIMEOUT;
-#   * the thread's AG-UI frames (GET /agui/threads/{id}/connect?mode=run) carry the `branch` and
-#     `pull_request` artifacts (`vymalo.artifact` activities; their JSON is in `content.text`);
-#   * the coder is gated on CI (dev/agents.yaml, ADR 0017): the thread's job has the gate `ci`, and the chat
-#     shows exactly one `vymalo.ci` card, the check `mock-ci/build`, `success`, for the pushed commit (the
-#     thread ends `done` only after mock-ci reported it through the edge and the orchestrator's GitHub
-#     webhook). When the thread does not end `done`, the last lines of the orchestrator's and mock-ci's
-#     logs are printed (the watch key of the pushed commit and of the report, for a mismatch of repository
-#     spelling or commit);
+#   * the thread's AG-UI frames (GET /agui/threads/{id}/connect?mode=run) carry the `checks`, `branch` and
+#     `pull_request` artifacts (`vymalo.artifact` activities; their JSON is in `content.text`). Since adam-rs
+#     ae540e9 the coder emits `checks` twice, in this order: from `run_checks` (bound to the HEAD it ran on)
+#     and from `commit_and_push` (bound to the pushed commit, before `branch`). The LAST one must have
+#     passed on exactly the pushed commit, with a 40-hex tree;
+#   * the coder is gated on its own checks AND on CI (dev/agents.yaml, ADR 0017, ADR 0018): the thread's job has
+#     the gate `ci+agent_checks` (the order of the sources), the chat shows an `agent_checks` `vymalo.check`
+#     card that passed on the pushed commit, and exactly one `vymalo.ci` card, the check `mock-ci/build`,
+#     `success`, for the pushed commit (the thread ends `done` only after mock-ci reported it through the edge
+#     and the orchestrator's GitHub webhook). When the thread does not end `done`, the last lines of the
+#     orchestrator's and mock-ci's logs are printed (the watch key of the pushed commit and of the report,
+#     for a mismatch of repository spelling or commit);
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
 #   * git-server has the branch, and hello.txt on it is `hello`.
@@ -120,6 +127,21 @@ done
 # The consumer mints the thread id (a UUID); the first run creates the thread, owned by the edge
 # identity and targeting the agent of the URL. The response streams until the run ends.
 thread=$(uuid)
+
+# --- a base of this run's own -------------------------------------------------------------------------
+# The change is always the same (hello.txt on main), and git dates have one-second resolution: two runs in
+# the same second (dev/e2e-all.sh runs this script twice in a row) would push the very same commit, which
+# is watched by the first job that pushed it, so the second job would never hear its CI report. An empty
+# commit naming the thread on main makes this run's commit its own; the tree, and so check.sh, is unchanged.
+if git clone -q --depth 1 --branch main "$gitserver/$repo_path.git" "$tmp/base" 2>"$tmp/base.err" &&
+  git -C "$tmp/base" -c user.name=coder-e2e -c user.email=coder-e2e@example.invalid -c commit.gpgsign=false \
+    commit -q --allow-empty -m "coder-e2e base for thread $thread" 2>>"$tmp/base.err" &&
+  git -C "$tmp/base" push -q origin HEAD:main 2>>"$tmp/base.err"; then
+  ok "main of $repo_path is at a base of this run's own ($(git -C "$tmp/base" rev-parse --short=10 HEAD))"
+else
+  bad "cannot give this run a base of its own on main: $(head -c 300 "$tmp/base.err")"
+  finish
+fi
 input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$text" '{
   threadId: $thread, runId: $run, state: {}, tools: [], context: [],
   messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
@@ -171,10 +193,26 @@ artifact() { # artifact NAME FIELD -> the field of the last artifact of that nam
   jq -r --arg n "$1" --arg f "$2" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.artifact" and .content.name == $n)
     | .content.text | fromjson? | .[$f] // empty] | last // empty' "$events"
 }
+checks_passed=$(artifact checks passed)
+checks_commit=$(artifact checks commit)
+checks_tree=$(artifact checks tree)
+checks_count=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.artifact" and .content.name == "checks")] | length' "$events" 2>/dev/null || echo '?')
 branch=$(artifact branch branch)
 commit=$(artifact branch commit)
 pr_url=$(artifact pull_request url)
 pr_branch=$(artifact pull_request branch)
+# The coder reports its checks (run_checks), then again bound to the pushed commit (commit_and_push).
+case $checks_count in
+  '' | '?' | 0 | 1) bad "the chat shows $checks_count checks artifacts, want at least 2 (run_checks, then commit_and_push)" ;;
+  *) ok "$checks_count checks artifacts (run_checks, then the one bound to the pushed commit)" ;;
+esac
+if [ "$checks_passed" = true ]; then ok "the last checks artifact passed"; else bad "the last checks artifact: passed is '${checks_passed:-absent}', want true"; fi
+if [ -n "$commit" ] && [ "$checks_commit" = "$commit" ]; then
+  ok "the last checks artifact is bound to the pushed commit $(printf '%s' "$commit" | cut -c1-10)"
+else
+  bad "the last checks artifact commit '$checks_commit' is not the pushed commit '$commit'"
+fi
+if printf '%s' "$checks_tree" | grep -Eq '^[0-9a-f]{40}$'; then ok "the checks artifact names the tree $(printf '%s' "$checks_tree" | cut -c1-10)"; else bad "the checks artifact tree '$checks_tree' is not a 40-hex tree id"; fi
 if [ -n "$branch" ] && [ -n "$commit" ]; then
   ok "branch artifact: $branch at $(printf '%s' "$commit" | cut -c1-10)"
 else
@@ -187,11 +225,19 @@ else
   bad "the pull_request branch '$pr_branch' is not the pushed branch '$branch'"
 fi
 
-# --- CI (ADR 0017) --------------------------------------------------------------------------------
+# --- the gate: the coder's checks and CI (ADR 0017, ADR 0018) -------------------------------------------
 # mock-ci polls git-server and posts a signed check_run (mock-ci/build) for the pushed commit; the gate
 # waited for it, and the gate names that check (`ci.required` of the coder's entry).
 gate=$(api GET "/api/threads/$thread" 2>/dev/null | jq -r '(.job.gate // []) | join("+")' || true)
-if [ "$gate" = ci ]; then ok "the job runs under the gate ci"; else bad "the job's gate is '${gate:-none}', want ci"; fi
+if [ "$gate" = ci+agent_checks ]; then ok "the job runs under the gates ci and agent_checks"; else bad "the job's gate is '${gate:-none}', want ci+agent_checks"; fi
+# The coder's own checks, as the gate saw them (source `agent_checks`), in the chat as a vymalo.check card.
+check_cards=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.check" and .content.source == "agent_checks")
+  | "\(.content.attempt)=\(.content.status)@\(.content.commit)"] | last // empty' "$events" 2>/dev/null || true)
+if [ -n "$commit" ] && [ "$check_cards" = "1=passed@$commit" ]; then
+  ok "the agent_checks card: passed at attempt 1 on the pushed commit"
+else
+  bad "the last agent_checks vymalo.check card is '${check_cards:-none}', want 1=passed@${commit:-<commit>}"
+fi
 ci_cards=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci")
   | "\(.content.name)=\(.content.conclusion)@\(.content.sha)"] | join(" ")' "$events" 2>/dev/null || true)
 if [ -n "$commit" ] && [ "$ci_cards" = "mock-ci/build=success@$commit" ]; then

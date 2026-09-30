@@ -4,7 +4,8 @@ name: Compose
 # stand-in agents must answer as documented, and the REAL orchestrator client must still work against
 # them, so the mocks cannot drift from the protocol code they exist to test.
 # The `app` and `split` profiles build the orchestrator and web images, which the Orchestrator and Web
-# workflows already build; here they are only validated with `docker compose config`. They are RUN by the
+# workflows already build; here they are only validated with `docker compose config` (every profile, and the
+# live override compose.live.yaml against .env.example). They are RUN by the
 # Coder E2E workflow (coder-e2e.yml), which also checks the mocks vendored under dev/coder and runs the
 # split roles (dev/split-e2e.sh).
 #
@@ -14,6 +15,8 @@ on:
   pull_request:
     paths:
       - "compose.yaml"
+      - "compose.live.yaml"
+      - ".env.example"
       - "dev/**"
       - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
@@ -23,6 +26,8 @@ on:
     branches: [main]
     paths:
       - "compose.yaml"
+      - "compose.live.yaml"
+      - ".env.example"
       - "dev/**"
       - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
@@ -52,6 +57,14 @@ jobs:
           docker compose --profile app config -q
           docker compose --profile split config -q
           docker compose --profile app --profile split config -q
+          docker compose --profile '*' config -q
+      - name: The live override parses against the example environment
+        # compose.live.yaml (going live, dev/README.md) needs Compose v2.24.4 or newer for `!override`; .env.example
+        # stands in for a real .env, so the `:?` checks pass. The result must also drop the mocks from the coder.
+        run: |
+          docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q
+          docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example --profile app config --services | tee services.txt
+          ! grep -E '^(mock-openai|mock-github|git-server|mock-ci)$' services.txt
       - name: Start the infrastructure and the mocks
         run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier
       - name: Every mock scenario answers as documented
@@ -75,4 +88,4 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Shellcheck the dev scripts
-        run: shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh
+        run: shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh
