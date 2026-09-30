@@ -307,6 +307,88 @@ const nextMessageId = (() => {
 })();
 
 /**
+ * The coder scenarios of the screenshots (`pnpm screens`): a coding agent's run the way a chat shows
+ * it, from its steps to a pull request. Mock only; the wording of the steps is the mock's, not
+ * adam-coder's (unverified).
+ */
+const CODER_REPOSITORY = "https://github.com/acme/demo.git";
+const CODER_BRANCH = "agent/fix-login-redirect";
+const CODER_PR = "https://github.com/acme/demo/pull/12";
+
+/** A `working` status with the agent's words for the step. */
+const doing = (detail: string): Step => ({
+  kind: "agent_status",
+  data: { status: "working", detail },
+});
+
+/** The coder's branch, checks and pull request artifacts for a commit. */
+function coderPushed(
+  commit: string,
+  checks: { passed: boolean; summary: string; findings?: string[] },
+): Step[] {
+  return [
+    {
+      kind: "artifact",
+      data: {
+        name: "branch",
+        mimeType: "application/json",
+        text: JSON.stringify({ branch: CODER_BRANCH, commit, repository: CODER_REPOSITORY }),
+      },
+    },
+    {
+      kind: "artifact",
+      data: {
+        name: "checks",
+        mimeType: "application/json",
+        text: JSON.stringify({ commit, ...checks }),
+      },
+    },
+  ];
+}
+
+const coderPullRequest: Step = {
+  kind: "artifact",
+  data: {
+    name: "pull_request",
+    mimeType: "application/json",
+    text: JSON.stringify({
+      branch: CODER_BRANCH,
+      number: 12,
+      repository: "github.com/acme/demo",
+      title: "Fix the redirect loop after signing in",
+      url: CODER_PR,
+    }),
+  },
+};
+
+const CODER_SUMMARY = [
+  "I fixed the redirect loop after signing in.",
+  "",
+  "**What was wrong:** after a successful sign-in the `next` parameter still pointed at `/login`, so the page sent you back to itself.",
+  "",
+  "**What I changed**",
+  "- `src/auth/login.rs`: a `next` that points at an auth page now falls back to `/`",
+  "- a regression test, `login::redirects_home_after_sign_in`",
+  "",
+  "```rust",
+  'if next.starts_with("/login") {',
+  '    next = "/".into();',
+  "}",
+  "```",
+  "",
+  "All 42 tests pass, and the pull request is ready for review.",
+].join("\n");
+
+const coderWork: Step[] = [
+  working,
+  doing("Preparing the workspace"),
+  doing("Reading src/auth/login.rs and its tests"),
+  doing("$ cargo test -p auth login::"),
+  doing("Fixing the redirect in src/auth/login.rs"),
+  doing("$ cargo test -p auth"),
+];
+
+/**
  * The scripts tell the story the real orchestrator tells (`docs/api/examples/*.events.json`,
  * written by `orchestrator/crates/e2e/tests/golden.rs`): agent text arrives as one final
  * `agent_message`, an agent failure is `agent_status: failed` with its detail (no `error`
@@ -339,6 +421,17 @@ const nextMessageId = (() => {
  *   told to a client that joins) until the thread is cancelled.
  * - `partial`: streams a partial `agent_message` and replaces it by its final version.
  * - `unreachable`: the delivery was dead-lettered: an `error` event, thread blocked.
+ *
+ * Mock only, the coder scenarios of the screenshots (plain words, so the thread titles read well):
+ * - `Fix …`: the coder works through its steps, pushes, runs its checks, opens a pull request and
+ *   says what it did (a markdown answer); done.
+ * - `Refactor …`: the same steps, and the coder is still running a command until cancelled.
+ * - `Make …`: under the agent-checks gate: the first push fails a test, the coder is sent back,
+ *   the second passes, then the pull request and the answer; done.
+ * - `Upgrade …`: the coder never starts (nothing after the message) until cancelled.
+ * - `Deploy …`: asks where to deploy and waits; the answer finishes it.
+ * - `Also …`: a short follow-up: one step, a push and an answer.
+ * - `Migrate …`: fails after two steps with the agent's reason.
  */
 export function scriptFor(text: string): {
   start: Step[];
@@ -348,6 +441,146 @@ export function scriptFor(text: string): {
 } {
   const word = text.split(/\s+/).find((w) => w !== "");
   switch (word) {
+    case "Fix":
+      return {
+        start: [
+          ...coderWork,
+          ...coderPushed(commitOf(12), { passed: true, summary: "42 tests passed" }),
+          coderPullRequest,
+          { kind: "agent_status", data: { status: "completed", detail: CODER_SUMMARY } },
+          done,
+        ],
+      };
+    case "Refactor":
+      return { start: [...coderWork.slice(0, 4), { pause: "cancel" }] };
+    case "Make": {
+      const finding = "session::expires_after_idle: expected 401, got 200";
+      return {
+        gate: GATE_CHECKS,
+        start: [
+          working,
+          doing("Preparing the workspace"),
+          doing("Updating the session expiry check"),
+          doing("$ cargo test -p auth"),
+          ...coderPushed(commitOf(1), {
+            passed: false,
+            summary: "1 of 42 tests failed",
+            findings: [finding],
+          }),
+          completedAndVerifying,
+          {
+            kind: "check_result",
+            system: true,
+            data: {
+              attempt: 1,
+              commit: commitOf(1),
+              findings: [finding],
+              source: "agent_checks",
+              status: "failed",
+              summary: "1 of 42 tests failed",
+            },
+          },
+          {
+            kind: "rework",
+            system: true,
+            setState: "queued",
+            data: {
+              attempt: 2,
+              findings: [{ findings: [finding], source: "agent_checks" }],
+              maxAttempts: GATE_CHECKS.maxAttempts,
+            },
+          },
+          working,
+          doing("Fixing session::expires_after_idle"),
+          doing("$ cargo test -p auth"),
+          ...coderPushed(commitOf(2), { passed: true, summary: "42 tests passed" }),
+          coderPullRequest,
+          {
+            kind: "agent_status",
+            data: {
+              status: "completed",
+              detail:
+                "Sessions now expire after 30 idle minutes. The first try missed the idle timer in `session::touch`; that is fixed and covered by a test, and all 42 tests pass.",
+            },
+            setState: "verifying",
+          },
+          {
+            kind: "check_result",
+            system: true,
+            data: {
+              attempt: 2,
+              commit: commitOf(2),
+              source: "agent_checks",
+              status: "passed",
+              summary: "42 tests passed",
+            },
+          },
+          done,
+        ],
+      };
+    }
+    case "Upgrade":
+      return { start: [{ pause: "cancel" }] };
+    case "Deploy":
+      return {
+        start: [
+          working,
+          doing("Reading the deployment configuration"),
+          {
+            kind: "agent_status",
+            data: {
+              status: "input_required",
+              detail: "Should I deploy to **staging** or straight to **production**?",
+            },
+          },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [
+          working,
+          doing(`Deploying to ${answer.trim().toLowerCase() || "staging"}`),
+          {
+            kind: "agent_status",
+            data: {
+              status: "completed",
+              detail: `Deployed to ${answer.trim() || "staging"}. The health checks are green.`,
+            },
+          },
+          done,
+        ],
+      };
+    case "Also":
+      return {
+        start: [
+          working,
+          doing("Adding an entry to CHANGELOG.md"),
+          ...coderPushed(commitOf(13), { passed: true, summary: "42 tests passed" }),
+          {
+            kind: "agent_status",
+            data: {
+              status: "completed",
+              detail:
+                "Added a changelog entry under **Unreleased** and pushed it to the same branch, so the pull request picks it up.",
+            },
+          },
+          done,
+        ],
+      };
+    case "Migrate":
+      return {
+        start: [
+          working,
+          doing("Preparing the workspace"),
+          doing("$ git clone https://github.com/acme/legacy.git"),
+          {
+            kind: "agent_status",
+            data: {
+              status: "failed",
+              detail: "could not clone github.com/acme/legacy: permission denied (publickey)",
+            },
+          },
+          { kind: "thread_state", data: { state: "failed" }, setState: "failed", system: true },
+        ],
+      };
     case "verify-pass":
       return { gate: GATE_CHECKS, start: [...attemptSteps(1, true), done] };
     case "verify-red-once":

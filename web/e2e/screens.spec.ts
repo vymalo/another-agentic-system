@@ -1,0 +1,114 @@
+import { expect, type Page, test } from "@playwright/test";
+import { badge, conversation, openThreadList, startThread } from "./helpers";
+
+/*
+ * `pnpm screens`: the screenshots of every state a person meets, for both color schemes, on a
+ * desktop (1440×900) and a phone (390×844), written to e2e/__screens__/<device>-<scheme>-<state>.png.
+ * They are for reading, not asserting: each waits for its state, then takes the viewport. The
+ * scenarios are the mock's coder scripts (mock/scripts.ts, `Fix …`, `Make …` and so on).
+ */
+
+const DIR = "e2e/__screens__";
+
+async function shot(page: Page, name: string) {
+  const device = test.info().project.name;
+  const dark = await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches);
+  const scheme = dark ? "dark" : "light";
+  // the caret and the scroll-to-bottom button's fade are noise in a still
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(250);
+  await page.screenshot({
+    path: `${DIR}/${device}-${scheme}-${name}.png`,
+    animations: "disabled",
+    caret: "hide",
+  });
+}
+
+async function send(page: Page, text: string) {
+  await page.getByLabel("Message").fill(text);
+  await page.getByRole("button", { name: "Send" }).click();
+}
+
+for (const scheme of ["light", "dark"] as const) {
+  test.describe(scheme, () => {
+    test.use({ colorScheme: scheme });
+
+    test("empty thread", async ({ page }) => {
+      await page.goto("/");
+      await expect(page.getByLabel("Agent")).toBeVisible();
+      await shot(page, "empty-thread");
+    });
+
+    test("starting", async ({ page }) => {
+      await startThread(page, "Upgrade the dependencies to their latest minor versions");
+      await expect(badge(page)).toBeVisible();
+      await page.waitForTimeout(600);
+      await shot(page, "starting");
+      await page.getByRole("button", { name: "Stop" }).click();
+      await expect(badge(page)).toHaveText("Stopped");
+    });
+
+    test("agent working", async ({ page }) => {
+      await startThread(page, "Refactor the session store behind a trait");
+      await expect(conversation(page).getByText("cargo test -p auth login::")).toBeVisible();
+      await shot(page, "agent-working");
+      await page.getByRole("button", { name: "Stop" }).click();
+      await expect(badge(page)).toHaveText("Stopped");
+    });
+
+    test("your turn", async ({ page }) => {
+      await startThread(page, "Deploy the new login page");
+      await expect(badge(page)).toHaveText("Your turn");
+      await shot(page, "your-turn");
+    });
+
+    test("done with a pull request", async ({ page }) => {
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await shot(page, "done-pull-request");
+      await page.getByText("I fixed the redirect loop").scrollIntoViewIfNeeded();
+      await shot(page, "done-answer");
+    });
+
+    test("follow-up after done", async ({ page }) => {
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await send(page, "Also add an entry to the changelog");
+      await expect(conversation(page).getByText("Added a changelog entry")).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(badge(page)).toHaveText("Done");
+      await shot(page, "follow-up");
+    });
+
+    test("rework with failed checks", async ({ page }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "Make sessions expire after 30 idle minutes");
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      await shot(page, "rework-done");
+      await conversation(page)
+        .getByText(/trying again/)
+        .scrollIntoViewIfNeeded();
+      await shot(page, "rework");
+    });
+
+    test("error", async ({ page }) => {
+      await startThread(page, "Migrate the legacy repository to the new CI");
+      await expect(badge(page)).toHaveText("Failed", { timeout: 20_000 });
+      await shot(page, "error");
+    });
+
+    test("sidebar", async ({ page, isMobile }) => {
+      await page.goto("/");
+      await expect(page.getByLabel("Agent")).toBeVisible();
+      if (isMobile) {
+        await openThreadList(page);
+        await expect(page.getByRole("dialog", { name: "Threads" })).toBeVisible();
+      } else {
+        await page.getByRole("button", { name: "Close sidebar" }).click();
+        await expect(page.getByRole("button", { name: "Open sidebar" })).toBeVisible();
+      }
+      await shot(page, "sidebar");
+    });
+  });
+}
