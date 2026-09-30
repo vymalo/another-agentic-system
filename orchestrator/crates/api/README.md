@@ -12,7 +12,7 @@ orchestrator. It depends on [`orch-app`](../app/README.md),
 [`orch-ports`](../ports/README.md) (generic over `Ports`) and
 [`orch-core`](../core/README.md); it names no adapter and no surface. The
 interaction routes live in surface crates that depend on this one
-([`orch-surface-agui`](../surface-agui/README.md), [`orch-surface-chat-api`](../surface-chat-api/README.md)); the
+([`orch-surface-agui`](../surface-agui/README.md)); the
 binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 `ORCH_SURFACES` names
 ([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)).
@@ -34,17 +34,17 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 
 Routes served here: `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /api/agents`,
 `GET /api/threads`, `GET /api/threads/{id}`,
-`POST /api/threads/{id}/cancel`. The interaction operations
-(`createThread`, `postMessage`, `listEvents`, `streamEvents`) come from a
-surface. Bodies are limited to 1 MiB; request ids are set and propagated.
-Without a surface `POST /api/threads` answers 405 (its path is served for `GET`)
-and the other interaction paths 404.
+`POST /api/threads/{id}/cancel`. The interaction routes come from a
+surface (`/agui/*`, from `orch-surface-agui`). Bodies are limited to 1 MiB; request ids are set and
+propagated. The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
+`streamEvents`) were removed on 2026-09-30 (ADR 0012): `POST /api/threads` answers 405 (its path
+is served for `GET`) and the other three paths 404, with or without a surface mounted.
 
 ```rust
 let app: std::sync::Arc<orch_app::App<_>> = /* built by the composition root */;
 let cfg = orch_api::ApiConfig::default();
-let chat = orch_surface_chat_api::routes(app.clone(), cfg.sse_keepalive);
-let router = orch_api::router_with_surfaces(app, cfg, vec![chat]);
+let agui = orch_surface_agui::routes(app.clone(), cfg.sse_keepalive);
+let router = orch_api::router_with_surfaces(app, cfg, vec![agui]);
 // axum::serve(listener, router).await
 ```
 
@@ -87,13 +87,23 @@ HTTP. No environment variables.
 * `tests/edge.rs`: health and `/metrics` without identity; `health_router` serving health
   and metrics only (no identity header needed, 404 elsewhere, 503 when not ready or shutting
   down); the resource API without any
-  surface; interaction routes absent unless mounted; a mounted surface sits
+  surface; the removed legacy interaction routes are 404 (405 for `POST /api/threads`), mounted
+  surface or not; a mounted surface sits
   behind the identity layer (also with a dev user); streaming routes skip the
   request timeout; several surfaces merge.
 
-The contract conformance, auth, flow and SSE tests exercise the composed router
-(resource API plus the chat-api surface) and live in
-[`orch-surface-chat-api`](../surface-chat-api/README.md).
+* `tests/contract.rs`: the resource API against [`docs/api/chat-api.yaml`](../../../docs/api/chat-api.yaml).
+  Every operation this crate serves (health, the agent list, the thread list with its paging and
+  refusals, one thread, cancel) is driven over real HTTP against the in-memory stack with a
+  dispatcher, each response is validated against the contract's schemas, and the test fails when the
+  contract has an operation it does not drive (the `/agui/*` ones are `orch-surface-agui`'s). The
+  events of a real thread and the golden transcripts (`docs/api/examples/*.events.json`) are
+  validated against the contract's `Event` schema, and the validator is shown to bite.
+* `tests/edge.rs` also holds the identity tests of the resource API: no identity is 401 on every
+  path but the probes (a surface's paths, unknown paths and the removed legacy routes included),
+  a blank or malformed header is 401, one user never sees another's thread (the same 404 as for a
+  thread that does not exist), identity is case- and space-insensitive, the dev user applies only
+  when configured, and the probes report readiness and shutdown while the API keeps answering.
 
 ## See also
 

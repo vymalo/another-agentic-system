@@ -11,8 +11,8 @@
 # The script speaks AG-UI, as the UI does (docs/api/agui.md): one POST /agui/agents/{agentId} runs
 # the thread (its response streams while the task runs, so the script reads it from the background),
 # the thread state comes from the resource API, and the events are the thread's AG-UI frames. The
-# deprecated chat API routes are not used: they are served only with ORCH_SURFACES=agui,chat-api,
-# and compose does not set that. It prints one ok or FAIL line per check; it exits 1 if any failed:
+# legacy chat API routes were removed on 2026-09-30. It prints one ok or FAIL line per check; it
+# exits 1 if any failed:
 #   * GET /metrics answers on the control plane and on both workers, with the outbox gauge;
 #   * a thread for the mock agent with the keyword `slow` (an 8 s answer, dev/README.md) reaches
 #     `working`, and its delegate row is held by orchestrator-worker-1 or -2 (`lease_owner`);

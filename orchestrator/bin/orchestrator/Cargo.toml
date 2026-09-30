@@ -13,11 +13,9 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-chat-api"]
+default = ["surface-agui"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
-# The legacy chat API interaction routes (createThread, postMessage, listEvents, streamEvents).
-surface-chat-api = ["dep:orch-surface-chat-api"]
 
 [dependencies]
 adam-host.workspace = true
@@ -26,7 +24,6 @@ orch-ports.workspace = true
 orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui = { workspace = true, optional = true }
-orch-surface-chat-api = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-store-postgres.workspace = true
 anyhow.workspace = true

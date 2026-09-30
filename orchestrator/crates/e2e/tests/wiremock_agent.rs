@@ -1,4 +1,4 @@
-//! The real chat API, dispatcher and A2A adapter against the WireMock stand-in agents of
+//! The real AG-UI run route, dispatcher and A2A adapter against the WireMock stand-in agents of
 //! `compose.yaml` (`dev/wiremock/agent*`), to keep the mocks honest.
 //!
 //! Gated: each test skips, printing a notice, unless its environment variable holds the
@@ -82,7 +82,7 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
     };
     let instance = TestInstance::spawn(app, api, fast_dispatcher(), "orch-mock").await;
     Rig {
-        chat: Chat::new(&instance.base_url, "dev@example.com"),
+        chat: instance.chat("dev@example.com"),
         _instance: instance,
     }
 }
@@ -135,8 +135,8 @@ async fn ask_blocks_the_thread_and_the_answer_completes_the_same_task() {
         "Which branch should I base the change on?"
     );
 
-    let (status, body) = rig.chat.post_message(&id, "main").await;
-    assert_eq!(status, 202, "{body}");
+    let run = rig.chat.follow_up(&id, "mock-coder", "main").await;
+    assert_eq!(run.status, 200);
     rig.chat.wait_state(&id, "done").await;
     let events = rig.chat.events(&id).await;
     assert_eq!(

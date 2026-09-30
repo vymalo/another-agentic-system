@@ -79,19 +79,6 @@ fn surface_routes<P: orch_ports::Ports>(
                 feature: surface.feature(),
             })
         }
-        #[cfg(feature = "surface-chat-api")]
-        Surface::ChatApi => Ok(orch_surface_chat_api::routes(
-            Arc::clone(app),
-            sse_keepalive,
-        )),
-        #[cfg(not(feature = "surface-chat-api"))]
-        Surface::ChatApi => {
-            let _ = (app, sse_keepalive);
-            Err(ConfigError::SurfaceNotCompiled {
-                surface: surface.name(),
-                feature: surface.feature(),
-            })
-        }
     }
 }
 

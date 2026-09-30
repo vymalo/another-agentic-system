@@ -87,7 +87,7 @@ no state in the process either.
 
 ### The log says where a message came from
 
-`user_message` events gain `origin: agui | chat_api | mcp`. The web shows "from Claude Code" for an
+`user_message` events gain `origin: agui | mcp` (see the status note below). The web shows "from Claude Code" for an
 MCP message. This is one additive field; existing events read as before.
 
 ### Configuration
@@ -224,3 +224,9 @@ Easy to reverse: the wait bound, the heartbeat, the progress granularity.
 - *Unverified*, checked in slice 11 (first) and 12: whether Claude Code works against rmcp's
   stateless mode, and whether it displays progress; oauth2-proxy `skip_auth_routes` for `/mcp`; the
   current `secrecy` version.
+
+### Status note, 2026-09-30: no `chat_api` origin
+
+The legacy chat API surface was removed the same day ([ADR 0012](0012-ag-ui-user-facing-protocol.md)'s
+status note), so `origin` has two values, `agui` and `mcp`, not the three first written here. The
+decision stands.

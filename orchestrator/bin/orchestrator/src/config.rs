@@ -53,6 +53,23 @@ pub enum ConfigError {
         /// The known names, comma separated.
         known: String,
     },
+    /// `ORCH_SURFACES` names a surface that used to exist and was removed. Fail closed, with
+    /// the way forward: a deployment that still lists it is not quietly started without the
+    /// routes it expects.
+    #[error(
+        "ORCH_SURFACES is invalid: surface {name:?} was removed on {removed}: {what}. \
+         Use AG-UI instead: set ORCH_SURFACES=agui (the default) and speak {replacement}"
+    )]
+    RemovedSurface {
+        /// The surface's name as written.
+        name: &'static str,
+        /// The date it was removed (ISO 8601).
+        removed: &'static str,
+        /// What it was.
+        what: &'static str,
+        /// What replaces it.
+        replacement: &'static str,
+    },
     /// `ORCH_SURFACES` names a surface whose Cargo feature was not compiled in.
     #[error(
         "ORCH_SURFACES is invalid: surface {surface:?} is not in this build \
@@ -244,20 +261,52 @@ pub enum Surface {
     /// The AG-UI routes (`orch-surface-agui`: run, connect, capabilities): the default user-facing
     /// protocol (ADR 0012).
     Agui,
-    /// The legacy chat API interaction routes (`orch-surface-chat-api`). Deprecated, and off
-    /// unless `ORCH_SURFACES` lists it: `agui,chat-api` keeps them beside the AG-UI ones.
-    ChatApi,
 }
+
+/// A surface name that used to exist. Asking for one is a [`ConfigError::RemovedSurface`], not an
+/// [`ConfigError::UnknownSurface`]: the operator learns what happened and what to use instead.
+struct RemovedSurface {
+    name: &'static str,
+    removed: &'static str,
+    what: &'static str,
+    replacement: &'static str,
+}
+
+impl RemovedSurface {
+    /// The removal `name` refers to, as the error the operator sees.
+    fn refusing(name: &str) -> Option<ConfigError> {
+        REMOVED
+            .iter()
+            .find(|r| r.name == name)
+            .map(|gone| ConfigError::RemovedSurface {
+                name: gone.name,
+                removed: gone.removed,
+                what: gone.what,
+                replacement: gone.replacement,
+            })
+    }
+}
+
+/// The surfaces that were removed (ADR 0012), newest last.
+const REMOVED: &[RemovedSurface] = &[RemovedSurface {
+    name: "chat-api",
+    removed: "2026-09-30",
+    what: "the legacy chat API interaction routes (createThread, postMessage, listEvents, \
+           streamEvents; POST /api/threads and /api/threads/{id}/messages, \
+           GET /api/threads/{id}/events and /api/threads/{id}/stream)",
+    replacement: "POST /agui/agents/{agentId}, GET /agui/threads/{threadId}/connect and \
+                  GET /agui/agents/{agentId}/capabilities (docs/api/agui.md); the resource API \
+                  (GET /api/threads, GET /api/threads/{id}, GET /api/agents, cancel) is unchanged",
+}];
 
 impl Surface {
     /// Every surface this source tree knows, compiled in or not.
-    pub const ALL: &'static [Surface] = &[Surface::Agui, Surface::ChatApi];
+    pub const ALL: &'static [Surface] = &[Surface::Agui];
 
     /// The name used in `ORCH_SURFACES`.
     pub const fn name(self) -> &'static str {
         match self {
             Surface::Agui => "agui",
-            Surface::ChatApi => "chat-api",
         }
     }
 
@@ -265,7 +314,6 @@ impl Surface {
     pub const fn feature(self) -> &'static str {
         match self {
             Surface::Agui => "surface-agui",
-            Surface::ChatApi => "surface-chat-api",
         }
     }
 
@@ -273,7 +321,6 @@ impl Surface {
     pub const fn compiled_in(self) -> bool {
         match self {
             Surface::Agui => cfg!(feature = "surface-agui"),
-            Surface::ChatApi => cfg!(feature = "surface-chat-api"),
         }
     }
 
@@ -314,9 +361,8 @@ impl fmt::Display for Surface {
 /// The surfaces mounted when `ORCH_SURFACES` is not set, as far as this build contains them
 /// (a build without a surface's feature simply does not serve it by default, whereas *asking*
 /// for it by name is an error). The list moved with the AG-UI migration (ADR 0012): `chat-api`
-/// alone, then `agui,chat-api` while the web was migrated, and now `agui` alone, because the web
-/// speaks only AG-UI. The deprecated `chat-api` routes stay in the build and are opt-in:
-/// `ORCH_SURFACES=agui,chat-api`.
+/// alone, then `agui,chat-api` while the web was migrated, then `agui` alone; the `chat-api`
+/// surface was removed on 2026-09-30, and naming it is an error ([`REMOVED`]).
 fn default_surfaces() -> Vec<Surface> {
     [Surface::Agui]
         .into_iter()
@@ -341,6 +387,11 @@ fn parse_surfaces(raw: &str) -> Result<Vec<Surface>, ConfigError> {
             "the list is empty; name at least one of {}",
             Surface::known()
         )));
+    }
+    // A removed surface is reported whatever else the list holds, and before any other name is
+    // judged: `agui,chat-api` (the old default) says what happened, in every build.
+    if let Some(err) = names.iter().find_map(|name| RemovedSurface::refusing(name)) {
+        return Err(err);
     }
     let mut surfaces: Vec<Surface> = Vec::with_capacity(names.len());
     for name in names {
@@ -387,8 +438,8 @@ pub struct Args {
     pub role: Option<String>,
 
     /// Interaction surfaces to mount, comma separated (default agui, as far as the build has
-    /// it). Known: agui, chat-api (deprecated, off by default: use agui,chat-api to keep the
-    /// legacy routes). The resource API and health are always mounted.
+    /// it). Known: agui. The removed legacy `chat-api` is refused at startup. The resource API
+    /// and health are always mounted.
     #[arg(long, env = "ORCH_SURFACES", value_name = "LIST")]
     pub surfaces: Option<String>,
 
@@ -1213,28 +1264,13 @@ mod tests {
         let agui = vec![Surface::Agui];
         let cfg = load(&base(), AGENTS).unwrap();
         assert_eq!(cfg.surfaces, agui);
-        assert!(
-            !cfg.surfaces.contains(&Surface::ChatApi),
-            "the deprecated chat API is opt-in"
-        );
         // A blank value is unset, as for every variable.
         let mut env = base();
         env.push(("ORCH_SURFACES", "  "));
         assert_eq!(load(&env, AGENTS).unwrap().surfaces, agui);
     }
 
-    #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
-    #[test]
-    fn the_legacy_routes_are_kept_by_listing_the_chat_api_beside_agui() {
-        let mut env = base();
-        env.push(("ORCH_SURFACES", "agui,chat-api"));
-        assert_eq!(
-            load(&env, AGENTS).unwrap().surfaces,
-            vec![Surface::Agui, Surface::ChatApi]
-        );
-    }
-
-    #[cfg(all(feature = "surface-agui", feature = "surface-chat-api"))]
+    #[cfg(feature = "surface-agui")]
     #[test]
     fn surfaces_are_a_comma_list_of_known_names() {
         let with = |value: &'static str| {
@@ -1242,23 +1278,65 @@ mod tests {
             env.push(("ORCH_SURFACES", value));
             load(&env, AGENTS)
         };
-        assert_eq!(with("chat-api").unwrap().surfaces, vec![Surface::ChatApi]);
         assert_eq!(with("agui").unwrap().surfaces, vec![Surface::Agui]);
         assert_eq!(
-            with(" chat-api , agui,").unwrap().surfaces,
-            vec![Surface::ChatApi, Surface::Agui],
-            "whitespace and a trailing comma are tolerated, and the order is kept"
+            with(" agui ,").unwrap().surfaces,
+            vec![Surface::Agui],
+            "whitespace and a trailing comma are tolerated"
         );
         assert!(matches!(
-            with("chat-api,chat-api").unwrap_err(),
+            with("agui,agui").unwrap_err(),
             ConfigError::Invalid {
                 var: "ORCH_SURFACES",
                 ..
             }
         ));
         // The first bad name is the one reported.
-        let err = with("agui,a2a,chat-api").unwrap_err();
+        let err = with("agui,a2a,nope").unwrap_err();
         assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "a2a"));
+    }
+
+    /// The legacy chat API was removed on 2026-09-30 (ADR 0012). A deployment that still lists it
+    /// must not start quietly without the routes it expects: the error names the surface, says it
+    /// is gone, and points to AG-UI. It is a `ConfigError`, so the process exits 78.
+    #[test]
+    fn the_removed_chat_api_surface_fails_closed_and_points_to_agui() {
+        for value in ["chat-api", "agui,chat-api", "chat-api,agui", " chat-api "] {
+            let mut env = base();
+            env.push(("ORCH_SURFACES", value));
+            let err = load(&env, AGENTS).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::RemovedSurface {
+                        name: "chat-api",
+                        ..
+                    }
+                ),
+                "{value:?}: {err}"
+            );
+            let shown = err.to_string();
+            assert!(shown.contains("ORCH_SURFACES"), "{shown}");
+            assert!(
+                shown.contains("\"chat-api\" was removed on 2026-09-30"),
+                "{shown}"
+            );
+            assert!(shown.contains("Use AG-UI instead"), "{shown}");
+            assert!(shown.contains("POST /agui/agents/{agentId}"), "{shown}");
+            assert!(shown.contains("docs/api/agui.md"), "{shown}");
+        }
+        // The flag is checked the same way as the variable.
+        let mut args = args_of(&base());
+        args.surfaces = Some("agui,chat-api".to_owned());
+        let err = Config::load(args, env_of(&base()), |_| Ok(AGENTS.to_owned())).unwrap_err();
+        assert!(matches!(err, ConfigError::RemovedSurface { .. }), "{err}");
+        // A different spelling is not the removed surface: names are exact.
+        let mut env = base();
+        env.push(("ORCH_SURFACES", "CHAT-API"));
+        assert!(matches!(
+            load(&env, AGENTS).unwrap_err(),
+            ConfigError::UnknownSurface { .. }
+        ));
     }
 
     #[test]
@@ -1269,15 +1347,7 @@ mod tests {
         assert!(matches!(&err, ConfigError::UnknownSurface { name, .. } if name == "a2a"));
         let shown = err.to_string();
         assert!(shown.contains("ORCH_SURFACES"), "{shown}");
-        assert!(shown.contains("chat-api"), "names what is known: {shown}");
         assert!(shown.contains("agui"), "names what is known: {shown}");
-        // Names are exact: no case folding.
-        env.pop();
-        env.push(("ORCH_SURFACES", "CHAT-API"));
-        assert!(matches!(
-            load(&env, AGENTS).unwrap_err(),
-            ConfigError::UnknownSurface { .. }
-        ));
     }
 
     #[test]
@@ -1302,12 +1372,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "surface-chat-api")]
-    #[test]
-    fn a_compiled_in_surface_is_accepted() {
-        assert!(Surface::ChatApi.compiled_in());
-    }
-
     #[cfg(feature = "surface-agui")]
     #[test]
     fn the_agui_surface_is_compiled_in_by_its_feature() {
@@ -1329,29 +1393,6 @@ mod tests {
             }
         ));
         assert!(err.to_string().contains("surface-agui"), "{err}");
-    }
-
-    #[cfg(not(feature = "surface-chat-api"))]
-    #[test]
-    fn a_surface_that_is_not_compiled_in_is_refused_naming_its_feature() {
-        let mut env = base();
-        env.push(("ORCH_SURFACES", "chat-api"));
-        let err = load(&env, AGENTS).unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::SurfaceNotCompiled {
-                surface: "chat-api",
-                feature: "surface-chat-api"
-            }
-        ));
-        assert!(err.to_string().contains("surface-chat-api"), "{err}");
-        // Not asking for it is fine: the default is what the build contains.
-        assert!(
-            !load(&base(), AGENTS)
-                .unwrap()
-                .surfaces
-                .contains(&Surface::ChatApi)
-        );
     }
 
     #[test]
@@ -1432,14 +1473,14 @@ mod tests {
             "--listen-addr",
             "127.0.0.1:9000",
             "--surfaces",
-            "chat-api",
+            "agui",
             "--database-max-connections",
             "4",
         ])
         .unwrap();
         assert_eq!(args.database_url.as_deref(), Some("postgres://flag/db"));
         assert_eq!(args.listen_addr.as_deref(), Some("127.0.0.1:9000"));
-        assert_eq!(args.surfaces.as_deref(), Some("chat-api"));
+        assert_eq!(args.surfaces.as_deref(), Some("agui"));
         assert_eq!(args.database_max_connections.as_deref(), Some("4"));
         // Nothing here is validated by clap: a bad value is a ConfigError, exit code 78.
         let args = Args::try_parse_from(["orchestrator", "--listen-addr", "nowhere"]).unwrap();

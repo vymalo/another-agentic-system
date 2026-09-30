@@ -56,8 +56,9 @@ x-orchestrator-env: &orchestrator-env
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
   LOG_FORMAT: text
   # No ORCH_SURFACES: the default is `agui`, the AG-UI routes beside the resource API (ADR 0012).
-  # The web and the dev scripts speak only AG-UI. To get the deprecated chat API interaction
-  # routes back, add `ORCH_SURFACES: agui,chat-api` here (see orchestrator/bin/orchestrator/README.md).
+  # The web and the dev scripts speak only AG-UI. The legacy chat API surface was removed on
+  # 2026-09-30: `ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup
+  # (see orchestrator/bin/orchestrator/README.md).
   # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
 
 services:

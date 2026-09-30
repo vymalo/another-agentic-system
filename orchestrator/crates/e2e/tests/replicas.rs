@@ -13,7 +13,7 @@ use orch_testsupport::CallKind;
 
 const WAIT: Duration = Duration::from_secs(20);
 
-/// `orch-1` only serves the API, `orch-2` only dispatches.
+/// `orch-1` only serves the API (the viewer's connect stream lives there), `orch-2` only dispatches.
 async fn a_stream_on_one_replica_sees_events_dispatched_by_another(backend: Backend) {
     let world = World::start(backend).await;
     let api_only = world.instance_with("orch-1", false).await;
@@ -21,7 +21,7 @@ async fn a_stream_on_one_replica_sees_events_dispatched_by_another(backend: Back
     let chat = world.chat(&api_only);
 
     let id = chat.create_thread("plain", "gate across", None).await;
-    let mut sse = chat.stream(&id, None).await;
+    let mut sse = chat.agui_connect(&id, None, false).await;
     assert_eq!(sse.status, 200);
     // The stream lives on orch-1, whose dispatcher does not run: the running state can only
     // have been written by orch-2 and reach orch-1 through the database.
@@ -33,15 +33,17 @@ async fn a_stream_on_one_replica_sees_events_dispatched_by_another(backend: Back
     world.plain.release_gate();
 
     let frames = sse
-        .collect_until(WAIT, |kind, data| {
-            kind == "thread_state" && data["data"]["state"] == "done"
-        })
+        .frames_until(WAIT, |f| f.event["type"] == "RUN_FINISHED")
         .await;
-    let seqs: Vec<i64> = frames.iter().map(|(s, _, _)| *s).collect();
+    let seqs: Vec<i64> = frames.iter().filter_map(|f| f.id).collect();
     assert_eq!(seqs, [1, 2, 3, 4, 5]);
-    let over_sse: Vec<_> = frames.iter().map(|(_, _, d)| d.clone()).collect();
-    assert_eq!(shape(&over_sse), FIVE);
-    assert_eq!(chat.events(&id).await, over_sse);
+    assert_eq!(
+        frames.last().unwrap().event["outcome"],
+        serde_json::json!({"type": "success"})
+    );
+    let events = chat.events(&id).await;
+    assert_eq!(shape(&events), FIVE);
+    assert_contiguous(&events);
     assert_eq!(world.plain.executions().len(), 1);
     drop(dispatching);
 }

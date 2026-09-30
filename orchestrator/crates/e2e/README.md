@@ -1,6 +1,6 @@
 # orch-e2e
 
-End-to-end tests only: the AG-UI run route, the chat API, the dispatcher and the A2A adapter
+End-to-end tests only: the AG-UI routes, the resource API, the dispatcher and the A2A adapter
 against an in-process fake A2A agent over real HTTP, on the in-memory store
 and on Postgres. The library is empty; everything is under `tests/`.
 
@@ -16,7 +16,10 @@ dev-dependencies. It defines no port and no API (`publish = false`).
 ## API at a glance
 
 None: there is no public API. `tests/common/mod.rs` is the shared harness. Each
-scenario runs as two tests, `<name>::memory` and `<name>::postgres`.
+scenario runs as two tests, `<name>::memory` and `<name>::postgres`. Threads are created and
+continued over the AG-UI run route (`Chat::create_thread`, `Chat::follow_up`), like a consumer does;
+the log as the core wrote it has no HTTP route, so `Chat::events` reads it in-process (a client from
+`TestInstance::chat`).
 
 ## Features and environment
 
@@ -32,20 +35,18 @@ No Cargo features.
 
 | File | Covers |
 |---|---|
-| `e2e.rs` | the acceptance sequence: chat API, dispatcher, A2A adapter, agent |
+| `e2e.rs` | the acceptance sequence: AG-UI run and connect, dispatcher, A2A adapter, agent (the connect stream's resume points are the log's `seq`); failures and chunked artifacts; two threads and two users side by side; the removed legacy interaction routes are 404 (405 for `POST /api/threads`) on the composed router |
 | `agui_run.rs` | the AG-UI run route (`POST /agui/agents/{agentId}`) with the same stack: echo, ask and `resume`, fail, cancel (`RUN_FINISHED` cancelled), a retried POST attaches (also through another replica), refusals as problems, another owner's thread id is 404, release through `forwardedProps`, one log for both surfaces; every event validates against the vendored AG-UI schema; the responses are the goldens `docs/api/examples/agui/run-*.agui.json` |
 | `agui_connect.rs` | the AG-UI connect stream and capabilities document: a client connected to a replica that is killed (with the agent's task parked) reconnects to another with `Last-Event-ID` and gets the preamble and exactly the missing suffix, no gap and no duplicate (the joined frames equal a fresh replay); viewers on several replicas each get the whole stream, the requester's response is the same run; from every resume point the rest of a two-run thread, on either replica; another owner's, a missing and a malformed thread id are one 404 problem before the stream, on every replica; the capabilities document is the live card in the spec's shape. Every event and document validates against the vendored schema; the streams are the goldens `docs/api/examples/agui/connect-*.agui.json` and `capabilities-*.json` |
 | `agui_a2ui.rs` | A2UI through the real stack (fake agent listing the extension in its card): a surface reaches the requester and a viewer whole, the action returns through `forwardedProps.a2uiAction` and reaches the agent as an `application/a2ui+json` data part of the same task, unknown and oversized actions never reach the agent, a refused part is an error line and the run goes on, a surface in a message and in the question, a deleted surface, the capabilities document following the live card |
-| `deprecation.rs` | the composed router (AG-UI and the chat API, as `ORCH_SURFACES=agui,chat-api`; the default is `agui`, tested by the binary's smoke test): the four legacy operations answer with `Deprecation` (RFC 9745), the AG-UI operations, the resource API and health do not |
 | `restart.rs` | the process dies mid-stream, a new one on the same database finishes with no gap and no duplicate |
-| `replicas.rs` | several replicas on one database (Postgres only) |
-| `sse_resume.rs` | SSE resume with `Last-Event-ID` |
-| `blocked.rs` | `input-required` blocks the thread; a follow-up continues the same A2A task |
+| `replicas.rs` | several replicas on one database (Postgres only): a viewer's connect stream on a replica that does not dispatch sees the events another replica dispatched; a cancel through a replica that runs no dispatcher |
+| `blocked.rs` | `input-required` and `auth-required` block the thread; a follow-up (a new AG-UI run on the thread) continues the same A2A task, also across an orchestrator restart |
 | `cancel.rs` | cancelling sends `CancelTask` |
 | `release.rs` | release channels: discovery from the live card, selection on the wire |
 | `agent_auth.rs` | bearer auth towards the agent |
 | `agent_text.rs` | what the agent says reaches the chat as `agent_message` events, each once |
-| `golden.rs` | golden transcripts (including `a2ui`, whose action goes through the AG-UI run route), read by the web's mock test `mock/golden.test.ts` |
+| `golden.rs` | golden transcripts of the log (`docs/api/examples/*.events.json`), which `orch-agui-projection` projects into the AG-UI goldens the web's mock test `mock/golden.test.ts` reads; the first message enters through the application, not a surface, so the transcripts hold no consumer-chosen ids (`a2ui`'s action goes through the AG-UI run route) |
 | `wiremock_agent.rs` | the real stack against the compose WireMock agents (in-memory store), to keep the mocks honest; see [`dev/README.md`](../../../dev/README.md) |
 
 ```sh

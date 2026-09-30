@@ -113,8 +113,9 @@ serve `tests/contract.rs`.
   `connectThread` and `getAgentCapabilities` and fails when the statuses the contract documents differ
   from the ones answered (one named exemption: a store that fails to read, the 503 of `connectThread`),
   validates every problem, capabilities document and stream frame against the contract's schemas (which
-  reference the vendored AG-UI schema by file; the test checks the reference resolves to it), checks
-  that none of these responses carries `Deprecation`, and that its validator bites.
+  reference the vendored AG-UI schema by file; the test checks the reference resolves to it), and
+  that its validator bites. (The resource API is covered by
+  [`orch-api`](../api/README.md)'s `tests/contract.rs`.)
 
 Against the fake A2A agent and Postgres, see [`orch-e2e`](../e2e/README.md) (`agui_run.rs`, which also
 writes the run goldens `docs/api/examples/agui/run-*.agui.json`; `agui_connect.rs`, with the
@@ -123,5 +124,4 @@ killed-replica reconnect, which writes the connect and capabilities goldens).
 ## See also
 
 [`orch-agui-projection`](../agui-projection/README.md), [`orch-agui-proto`](../agui-proto/README.md),
-[`orch-api`](../api/README.md), [`orch-app`](../app/README.md),
-[`orch-surface-chat-api`](../surface-chat-api/README.md).
+[`orch-api`](../api/README.md), [`orch-app`](../app/README.md).

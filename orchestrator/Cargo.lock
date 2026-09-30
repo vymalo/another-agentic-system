@@ -1940,13 +1940,16 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "jiff",
+ "jsonschema",
  "orch-app",
  "orch-core",
  "orch-ports",
  "reqwest",
  "serde",
  "serde_json",
+ "serde_norway",
  "tokio",
+ "tokio-util",
  "tower-http 0.7.1",
  "tracing",
 ]
@@ -2058,27 +2061,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orch-surface-chat-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "bytes",
- "futures",
- "jiff",
- "jsonschema",
- "orch-api",
- "orch-app",
- "orch-core",
- "orch-ports",
- "reqwest",
- "serde",
- "serde_json",
- "serde_norway",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "orch-testsupport"
 version = "0.1.0"
 dependencies = [
@@ -2093,12 +2075,12 @@ dependencies = [
  "orch-core",
  "orch-ports",
  "orch-surface-agui",
- "orch-surface-chat-api",
  "reqwest",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -2116,7 +2098,6 @@ dependencies = [
  "orch-ports",
  "orch-store-postgres",
  "orch-surface-agui",
- "orch-surface-chat-api",
  "orch-testsupport",
  "reqwest",
  "serde",

@@ -83,7 +83,7 @@ flowchart LR
   subgraph REPLICA["Orchestrator process: stateless, any number, one binary (ORCH_ROLE: all, control-plane, worker)"]
     direction TB
     api["<b>orch-api</b><br/>identity layer, resource API, health"]
-    surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities): built, the default<br/>chat-api: built, deprecated, opt-in<br/>a2a: planned"]
+    surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities): built, the default<br/>chat-api: removed 2026-09-30<br/>a2a: planned"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event streams"]
     disp["<b>Dispatcher</b><br/>claims outbox rows, delegates, applies replies"]
     adapters["adapters chosen in bin/orchestrator<br/>PgStore, PgWakeup, A2aAgentClient"]
@@ -224,10 +224,9 @@ Prose for what the diagram compresses:
 - **Closing a stream never cancels a run.** Truncation is not cancellation (the AG-UI rule). Cancel is
   `POST /api/threads/{id}/cancel` of the resource API, and its outcome arrives as
   `RUN_FINISHED{outcome: cancelled}`.
-- **The legacy chat API is the same turn over other routes.** With `ORCH_SURFACES=agui,chat-api`
-  the deprecated `POST /api/threads`, `POST /api/threads/{id}/messages` and
-  `GET /api/threads/{id}/stream` (our own `Event` JSON over SSE, `Last-Event-ID`) drive `App` the same
-  way from the orchestrator inward; the web no longer calls them. By default they answer 404, but
+- **There is one door.** The legacy chat API (`POST /api/threads`, `POST /api/threads/{id}/messages`,
+  `GET /api/threads/{id}/events` and `…/stream`, our own `Event` JSON over SSE) drove `App` the same
+  way from the orchestrator inward; it was removed on 2026-09-30. Those routes answer 404, but
   `POST /api/threads` answers 405, because its path is shared with the resource API's `GET /api/threads`.
 
 The run as a state machine, as the projection shows it (a run is open exactly while the thread is
@@ -399,12 +398,12 @@ produced from the log, and why no replica remembers a connection, is
 | Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (there is no inbox table yet) |
 | The web | `@assistant-ui/react-ag-ui` (pinned, one patch) over a `ThreadAgent`: the connect stream with `Last-Event-ID`, runs by `POST /agui/agents/{agentId}`, interrupts by `resume`, Cancel by the resource API ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) |
 | Generative UI | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) on the orchestrator side: `ui_surface` and `ui_action` events, the A2A adapter's `application/a2ui+json` parts (envelope check, size caps), capability detection of both extension URIs, `a2ui-surface` snapshots of the whole surface, `forwardedProps.a2uiAction` validated and delivered to the same A2A task, the capabilities document ([`api/agui.md`](api/agui.md#a2ui-generative-ui)); in the web, the validator, the shadcn vocabulary and actions on a user gesture only ([`web/README.md`](../web/README.md#a2ui-surfaces)) |
-| The legacy chat API | The crate is separate and mounted by flag; its four interaction operations are marked `deprecated: true` in `chat-api.yaml` and answer with a `Deprecation` header (RFC 9745), and it is off by default. Removing the crate, the feature and the operations is planned as a separate change ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag), step 3) |
+| The legacy chat API | Removed (2026-09-30, [ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag), step 3): the crate `orch-surface-chat-api`, its feature `surface-chat-api`, the four interaction operations of `chat-api.yaml` and their goldens. The resource API stayed |
 
-`ORCH_SURFACES` accepts `agui` and `chat-api` and defaults to `agui` (2026-09-29: the web no longer
-uses `chat-api`, so it is off unless listed; `ORCH_SURFACES=agui,chat-api` keeps the legacy routes). The
-resource API and health are mounted whatever it says. A name whose Cargo feature is not compiled in is a
-startup error (exit 78).
+`ORCH_SURFACES` accepts `agui` and defaults to it. The removed `chat-api` fails closed: naming it is a
+startup error (exit 78) that says it was removed and points to AG-UI. The resource API and health are
+mounted whatever it says. A name whose Cargo feature is not compiled in is also a startup error
+(exit 78).
 
 ## How a job flows
 

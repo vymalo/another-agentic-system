@@ -1,8 +1,13 @@
-//! Golden transcripts: what the real orchestrator emits for each scripted agent behaviour,
-//! written to `docs/api/examples/*.events.json` and replayed by the web's
-//! `src/features/chat/lib/golden.test.ts`, so the chat surface is checked against the orchestrator's real
-//! event sequences (kinds, status spellings, failure shape, message finality), not only
-//! against the schema in `docs/api/chat-api.yaml`.
+//! Golden transcripts: what the real orchestrator logs for each scripted agent behaviour,
+//! written to `docs/api/examples/*.events.json`. `orch-agui-projection` projects them into the
+//! AG-UI goldens the web and `tools/agui-conformance` read, so the chat surface is checked against
+//! the orchestrator's real event sequences (kinds, status spellings, failure shape, message
+//! finality), not only against the schema in `docs/api/chat-api.yaml`.
+//!
+//! The first message of a scenario enters the log through the application, with no surface in
+//! between (`Chat::seed_thread`, `Chat::seed_message`), so the transcripts hold what the core and
+//! the A2A adapter wrote and nothing a consumer chose (message and run ids). What a consumer
+//! sends over AG-UI is the business of `agui_run.rs` and `agui_connect.rs`.
 //!
 //! `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test golden` rewrites the files; without it any
 //! difference fails the test.
@@ -45,39 +50,34 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let (id, last) = match name {
-        "echo" => (chat.create_thread("plain", "echo hi", None).await, "done"),
+        "echo" => (chat.seed_thread("plain", "echo hi", None).await, "done"),
         "ask" => {
-            let id = chat
-                .create_thread("plain", "ask about branches", None)
-                .await;
+            let id = chat.seed_thread("plain", "ask about branches", None).await;
             chat.wait_state(&id, "blocked").await;
-            let (status, body) = chat.post_message(&id, "main").await;
-            assert_eq!(status, 202, "{body}");
+            let event = chat.seed_message(&id, "main").await;
+            assert_eq!(event["kind"], "user_message");
             (id, "done")
         }
         "cancel" => {
-            let id = chat.create_thread("plain", "slow work", None).await;
+            let id = chat.seed_thread("plain", "slow work", None).await;
             chat.wait_state(&id, "working").await;
             assert_eq!(chat.cancel(&id).await, 202);
             (id, "cancelled")
         }
         "fail" => (
-            chat.create_thread("plain", "fail please", None).await,
+            chat.seed_thread("plain", "fail please", None).await,
             "failed",
         ),
-        "talk" => (
-            chat.create_thread("plain", "talk to me", None).await,
-            "done",
-        ),
+        "talk" => (chat.seed_thread("plain", "talk to me", None).await, "done"),
         "release" => (
-            chat.create_thread("coder", "echo ship it", Some("staging"))
+            chat.seed_thread("coder", "echo ship it", Some("staging"))
                 .await,
             "done",
         ),
         // A2UI: the agent sends a surface and asks; the user acts on it through the AG-UI run
         // route (the only door an action has) and the agent finishes the same task.
         "a2ui" => {
-            let id = chat.create_thread("plain", "ui pick one", None).await;
+            let id = chat.seed_thread("plain", "ui pick one", None).await;
             chat.wait_state(&id, "blocked").await;
             let body = Chat::agui_input(
                 &id,

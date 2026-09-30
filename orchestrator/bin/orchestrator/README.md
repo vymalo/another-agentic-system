@@ -16,8 +16,7 @@ implementations
 for `AgentClient`, the system clock and UUIDv7 ids. It has no logic of its own:
 what the service does lives in [`orch-app`](../../crates/app/README.md) and
 [`orch-api`](../../crates/api/README.md) and the surface crates
-([`orch-surface-agui`](../../crates/surface-agui/README.md),
-[`orch-surface-chat-api`](../../crates/surface-chat-api/README.md)). Processes are stateless; the only
+([`orch-surface-agui`](../../crates/surface-agui/README.md)). Processes are stateless; the only
 persistence is Postgres
 ([ADR 0001](../../../docs/decisions/0001-rust-state-machine-on-postgres.md)).
 The role enum (`Role`) and the supervisor (`Host`) are not ours: they come from
@@ -52,7 +51,7 @@ Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on;
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | |
 | `SHUTDOWN_GRACE_SECS` | `15` | |
-| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error. `agui,chat-api` also serves the deprecated legacy routes (see [Surfaces](#surfaces)) |
+| `ORCH_SURFACES` | `agui` | comma-separated surfaces to mount (`--surfaces`), as far as the build has them; unknown, empty, repeated or not compiled in is a startup error, and so is the removed `chat-api` (see [Surfaces](#surfaces)) |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info`, `json` | `LOG_FORMAT=text` for humans |
 
@@ -103,7 +102,6 @@ noted in `src/main.rs`.
 | Feature | Default | Compiles in |
 |---|---|---|
 | `surface-agui` | yes | [`orch-surface-agui`](../../crates/surface-agui/README.md), the surface name `agui` |
-| `surface-chat-api` | yes | [`orch-surface-chat-api`](../../crates/surface-chat-api/README.md), the surface name `chat-api` |
 
 The feature decides what *can* be mounted, `ORCH_SURFACES` what *is*: a surface
 named but not compiled in stops startup with an error naming its feature. The
@@ -118,35 +116,50 @@ The resource API (`GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}`
 | `ORCH_SURFACES` | Serves |
 |---|---|
 | unset, or `agui` (the default) | the AG-UI routes: `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect`, `GET /agui/agents/{agentId}/capabilities` |
-| `agui,chat-api` | the same, and the **deprecated** legacy routes: `POST /api/threads`, `POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`, `GET /api/threads/{id}/stream`, each answering with `Deprecation` |
-| `chat-api` | the legacy routes alone |
 
-**Migrating an existing deployment.** Before 2026-09-29 the default was `agui,chat-api`. It is now
-`agui`, so a deployment with a client that still creates threads or posts messages over the
-legacy routes must set `ORCH_SURFACES=agui,chat-api` (or `--surfaces agui,chat-api`) to keep it
-working; without it those routes answer 404 (`POST /api/threads` answers 405, because its path
-is also the thread list). The better move is the client's: create a thread and send a message
-with one `POST /agui/agents/{agentId}` (a UUID you mint as `threadId`), read the log with
-`GET /agui/threads/{threadId}/connect` ([`docs/api/agui.md`](../../../docs/api/agui.md)).
-The web app runs on AG-UI only. The legacy routes, the crate and the feature are removed in a
-later release ([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)).
+That is the whole list. The legacy chat API interaction routes (`POST /api/threads`,
+`POST /api/threads/{id}/messages`, `GET /api/threads/{id}/events`, `GET /api/threads/{id}/stream`),
+the crate `orch-surface-chat-api` and its feature `surface-chat-api` were **removed on 2026-09-30**
+([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)). Those routes answer 404
+(`POST /api/threads` answers 405, because its path is also the thread list).
+
+**Migrating an existing deployment.** An `ORCH_SURFACES` (or `--surfaces`) that still lists
+`chat-api` fails closed: the process exits 78 (`EX_CONFIG`) before it connects to anything,
+with
+
+```text
+ORCH_SURFACES is invalid: surface "chat-api" was removed on 2026-09-30: the legacy chat API
+interaction routes (createThread, postMessage, listEvents, streamEvents; POST /api/threads and
+/api/threads/{id}/messages, GET /api/threads/{id}/events and /api/threads/{id}/stream). Use AG-UI
+instead: set ORCH_SURFACES=agui (the default) and speak POST /agui/agents/{agentId}, GET
+/agui/threads/{threadId}/connect and GET /agui/agents/{agentId}/capabilities (docs/api/agui.md);
+the resource API (GET /api/threads, GET /api/threads/{id}, GET /api/agents, cancel) is unchanged
+```
+
+Nothing is quietly ignored: drop `chat-api` from the list (or unset the variable) and move the
+client. Create a thread and send a message with one `POST /agui/agents/{agentId}` (a UUID you
+mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
+([`docs/api/agui.md`](../../../docs/api/agui.md)). The web app has run on AG-UI only since
+2026-09-29.
 
 ## Tests
 
 * Unit tests in `src/config.rs`: no database, no environment (defaults, the
-  environment/flag mapping, unknown, empty and repeated surfaces, a surface not
-  compiled in, `--help` naming every variable, the role: default `all`, each
+  environment/flag mapping, unknown, empty and repeated surfaces, the removed
+  `chat-api` refused with an error naming it and AG-UI (`RemovedSurface`, from the variable and from the
+  flag), `--help` naming every variable, the role: default `all`, each
   value, blank, unknown, the flag collected raw). `src/main.rs` maps every
   `HostError` to exit 70. `src/logging.rs`: role and instance first on every JSON and text
   line (an instance with a quote stays valid JSON, no fields means the stock line).
 * `tests/smoke.rs`: the built executable as a process. Configuration-error
   tests always run (the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
-  read from the environment alone, a flag over its variable, a usage error, and
-  `--surfaces chat-api` serving the legacy routes and not the AG-UI one, `--surfaces agui,chat-api`
-  serving both (every legacy route answers with `Deprecation`), and the default serving `agui`
+  read from the environment alone, a flag over its variable, a usage error, the removed
+  `chat-api` (`the_removed_chat_api_surface_is_a_config_error_pointing_to_agui`: from the variable,
+  beside `agui`, from the flag, and the flag over a valid variable: exit 78, the log says it was
+  removed on 2026-09-30 and points to AG-UI, nothing connects first), and the default serving `agui`
   and the resource API only (the AG-UI route answers 400 to `{}` and 401 without identity; the
-  four legacy routes answer 404, or 405 for `POST /api/threads`, while the thread list, an
+  four removed legacy routes answer 404, or 405 for `POST /api/threads`, while the thread list, an
   unknown thread and cancel answer as resources). With a database: `/healthz`, `/readyz`, 401 without
   identity, a thread run and completed over AG-UI (the default surface) through a fake agent with the bearer from
   `tokenEnv`, JSON logs, a clean exit on SIGTERM, and two processes on one

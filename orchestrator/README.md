@@ -11,7 +11,7 @@ the process itself keeps nothing, so a restart mid-task loses nothing. Design:
 > **Status:** MVP steps 1–2 of issue #9 are implemented: the AG-UI surface (run,
 > connect, capabilities; A2UI surfaces and actions), the resource API, the
 > durable dispatcher, the A2A adapter, the Postgres store and the runnable
-> binary and image. The legacy chat API is deprecated and off by default. The planner, verify/rework, reviewers and the MCP/webhook
+> binary and image. The legacy chat API interaction routes were removed on 2026-09-30. The planner, verify/rework, reviewers and the MCP/webhook
 > inputs come in later steps ([`docs/mvp.md`](../docs/mvp.md)).
 
 ## Run it locally
@@ -47,9 +47,9 @@ curl -s localhost:8080/api/threads/$ID     # the thread's state, from the resour
 ```
 
 `dev/try-thread.sh` does the same with `jq` ([`dev/README.md`](../dev/README.md)). The legacy
-`POST /api/threads` (and `…/messages`, `…/events`, `…/stream`) is served only with
-`ORCH_SURFACES=agui,chat-api`. Without it they answer 404, but `POST /api/threads` answers 405,
-because its path is shared with the resource API's `GET /api/threads`.
+`POST /api/threads` (and `…/messages`, `…/events`, `…/stream`) was removed on 2026-09-30 (ADR 0012):
+those routes answer 404, but `POST /api/threads` answers 405, because its path is shared with the
+resource API's `GET /api/threads`.
 
 ### Configuration
 
@@ -65,7 +65,7 @@ An empty value counts as unset.
 | `AGENTS_FILE` | required | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?}` (`transport` is `a2a`, the default, which needs `cardUrl`; `local` is an in-process agent named by `agent` and is refused until a build has local agents), see [`agents.example.yaml`](agents.example.yaml). Ids are unique slugs; a `tokenEnv` that names an unset or empty variable is a startup error, not an unauthenticated agent. The first entry is the default agent the chat UI preselects ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)). |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | Control plane: the API. Worker: the probes only. |
 | `ORCH_ROLE` | `all` | What this process runs: `all`, `control-plane` (server, API and surfaces; no dispatcher) or `worker` (dispatcher, and a router with only `/healthz` and `/readyz`). Flag `--role`; the enum is `adam_host::Role` ([ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)). The role table is in [`bin/orchestrator`](bin/orchestrator/README.md#roles). An unknown value is a startup error. |
-| `ORCH_SURFACES` | `agui` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `agui`, the AG-UI routes `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect` and `GET /agui/agents/{agentId}/capabilities` ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md), [`docs/api/agui.md`](../docs/api/agui.md)); and `chat-api`, the legacy interaction routes (`createThread`, `postMessage`, `listEvents`, `streamEvents`), deprecated in favour of AG-UI and **off by default**: set `ORCH_SURFACES=agui,chat-api` to keep serving them (a deployment that still has clients of `POST /api/threads`, `…/messages`, `…/events` or `…/stream`; the web is not one). An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-agui`, `surface-chat-api`) is not in the build is a startup error. The resource API and health are always mounted. |
+| `ORCH_SURFACES` | `agui` | Comma-separated interaction surfaces to mount (flag `--surfaces`). Known: `agui`, the AG-UI routes `POST /agui/agents/{agentId}`, `GET /agui/threads/{threadId}/connect` and `GET /agui/agents/{agentId}/capabilities` ([ADR 0012](../docs/decisions/0012-ag-ui-user-facing-protocol.md), [`docs/api/agui.md`](../docs/api/agui.md)). The legacy `chat-api` surface (`createThread`, `postMessage`, `listEvents`, `streamEvents`) was **removed on 2026-09-30**: naming it fails closed (exit 78, an error that says it was removed and points to AG-UI, see [`bin/orchestrator`](bin/orchestrator/README.md#surfaces)). An unknown name, an empty list (`,`), a repeat, or a surface whose Cargo feature (`surface-agui`) is not in the build is a startup error. The resource API and health are always mounted. |
 | `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |
 | `DISPATCHER_CONCURRENCY` | `32` | Delegations processed at the same time by this replica. |
@@ -151,12 +151,11 @@ change of the composition root, never a runtime plugin.
 | [`crates/agui-projection`](crates/agui-projection/README.md) | `orch-agui-projection` | Pure: the AG-UI view of the event log (`Projector`: events to frames, audiences, resume preamble) and the translation of a `RunAgentInput` to core inputs. Depends on `orch-core` and `orch-agui-proto` only; no async, no I/O. |
 | [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams) and the durable outbox `Dispatcher`, written against the ports. |
 | [`crates/api`](crates/api/README.md) | `orch-api` | The always-mounted HTTP edge: proxy-identity auth (fail closed), RFC 9457 problems, the resource API (agents, threads, cancel), health, and `SurfaceRoutes`, the mounting point of interaction surfaces. |
-| [`crates/surface-chat-api`](crates/surface-chat-api/README.md) | `orch-surface-chat-api` | The legacy interaction surface (`createThread`, `postMessage`, `listEvents`, `streamEvents`), mounted only when `ORCH_SURFACES` lists `chat-api` (Cargo feature `surface-chat-api`). Deprecated, off by default. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
 | [`crates/a2a-mapping`](crates/a2a-mapping/README.md) | `orch-a2a-mapping` | Pure: the mapping from A2A 1.0 stream items and tasks to `AgentEnvelope`s and idempotency keys (`StreamMapper`, `snapshot`). No I/O, no async, no HTTP client. |
-| [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, chat and SSE clients; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
-| [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: AG-UI surface, chat API, dispatcher and A2A adapter against a fake agent over real HTTP, on either store. |
+| [`crates/testsupport`](crates/testsupport/README.md) | `orch-testsupport` | Test-only: an in-process fake A2A agent (`a2a-server-lf`), a running orchestrator on a TCP port, clients for the resource API and the AG-UI routes; the executable `orch-fake-agent` serves two scripted agents for the browser tests (`web/e2e-system`) and is never part of the image. |
+| [`crates/e2e`](crates/e2e/README.md) | `orch-e2e` | Tests only: AG-UI surface, dispatcher and A2A adapter against a fake agent over real HTTP, on either store. |
 | [`bin/orchestrator`](bin/orchestrator/README.md) | `orchestrator` | The composition root: flags, environment (clap) and `AGENTS_FILE` parsing (`config.rs`, unit-tested), the role (`ORCH_ROLE`, `adam_host::Role`), and the surfaces to mount and the wiring, startup and graceful shutdown on `adam_host::Host` (`boot.rs`). No logic of its own. |
 
 Every crate has its own README (role, public API, environment, tests); update it
@@ -176,7 +175,7 @@ only `bin/orchestrator` depends on all of them.
 - **`thread_state` events** are appended only when a thread *enters* `blocked`,
   `done`, `failed` or `cancelled`; entering `queued`/`working` is implied by
   `user_message` / `agent_status`.
-- **No inbox table.** A surface (the AG-UI run route, or the legacy chat API)
+- **No inbox table.** A surface (the AG-UI run route)
   runs the transition inside the request and writes the events and the outbox
   row in one transaction, so redeliveries cannot happen on this path (a retried
   AG-UI run carries an idempotency key on the event and attaches). The inbox of `docs/orchestrator.md` arrives with
@@ -278,6 +277,9 @@ version of the contract.
     `listThreads`, are unspecified (here: on entering blocked/done/failed/
     cancelled; creation order).
 
+Items 3 and 5 concern operations that were removed on 2026-09-30 (`streamEvents`, `postMessage`,
+`listEvents`); they are kept as the record of what the contract left open.
+
 The issue text names the A2A 0.3 methods; the pinned `-lf` crates speak A2A 1.0
 (`SendStreamingMessage`, `SubscribeToTask`, `GetTask`, `CancelTask`).
 
@@ -300,8 +302,8 @@ that edits, renames or deletes an already applied migration. With it set:
   the in-memory and the Postgres store.
 - **End to end, on both stores.** Every scenario of `crates/e2e` runs twice, as
   `<scenario>::memory` and `<scenario>::postgres`: the acceptance sequence over
-  SSE and `GET /events`, restart safety (a killed instance and a new one on the
-  *same* database, no gap and no duplicate), SSE resume, blocked/follow-up,
+  the AG-UI run and connect routes and the log, restart safety (a killed instance and a new one on the
+  *same* database, no gap and no duplicate), SSE resume (`agui_connect`), blocked/follow-up,
   cancel, releases, agent auth, what the agent says (`agent_message`, once,
   also across a crash). The tests that need separate connections (a stream on
   one replica fed by another, a cancel through a replica that runs no
@@ -312,15 +314,15 @@ that edits, renames or deletes an already applied migration. With it set:
 - **The binary.** `bin/orchestrator/tests/smoke.rs` starts the built executable
   against the test database and a fake agent: `/healthz`, `/readyz`, 401 without
   identity, a thread run over AG-UI (the default surface) that completes with the bearer from `tokenEnv`, JSON logs,
-  and a clean exit on SIGTERM; the default surfaces (`agui` and the resource API, the legacy
-  routes answering 404); and, as two real processes on one database, a
+  and a clean exit on SIGTERM; the default surfaces (`agui` and the resource API, the removed legacy
+  routes answering 404, or 405 for `POST /api/threads`); and, as two real processes on one database, a
   SIGKILL mid-task that the second process finishes (the message reaches the
   agent once), threads served by either process, and a SIGTERM with a running
   task that exits within `SHUTDOWN_GRACE_SECS`. It also runs the CLI: `--help` lists every flag
   and variable, each variable is read from the environment alone, a flag wins
-  over its variable, an unknown flag is a usage error, and `--surfaces chat-api`
-  (or `agui,chat-api`) serves the legacy routes. The multi-process tests set
-  `ORCH_SURFACES=agui,chat-api` themselves, because they use the legacy client.
+  over its variable, an unknown flag is a usage error, and `ORCH_SURFACES` or `--surfaces` naming the
+  removed `chat-api` exits 78 with the message in [`bin/orchestrator`](bin/orchestrator/README.md#surfaces). The multi-process tests drive their threads over
+  AG-UI and read the log as a viewer does (the connect stream).
   Its configuration-error tests (and the unit tests
   in `config.rs`) need no database; the unreachable-database one waits out sqlx's
   30 s connect timeout.
@@ -329,8 +331,9 @@ that edits, renames or deletes an already applied migration. With it set:
   each scripted agent behaviour to [`docs/api/examples`](../docs/api/examples/README.md) and
   fails when they differ (`UPDATE_GOLDEN=1` rewrites them). The web replays them.
 
-The contract conformance test (`crates/surface-chat-api/tests/conformance.rs`)
-starts the real router (resource API plus the chat-api surface) on a TCP port over the in-memory stack, drives every operation and
-validates each response body against the schemas of the contract, and checks the `Deprecation` header
-against the contract's `deprecated` flags. `crates/surface-agui/tests/contract.rs` does the same for the
+The contract conformance test (`crates/api/tests/contract.rs`) starts the real router (the resource
+API, with no interaction surface) on a TCP port over the in-memory stack, drives every operation it
+serves (health, the agent list, the thread list, a thread, cancel) and validates each response body
+against the schemas of the contract; it also validates the events of a real thread, and the golden
+transcripts, against the contract's `Event` schema. `crates/surface-agui/tests/contract.rs` does the same for the
 `/agui/*` operations, whose documented statuses must be the answered ones.
