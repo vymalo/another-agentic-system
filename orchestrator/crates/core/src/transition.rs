@@ -6,7 +6,15 @@
 //!
 //! Rule for `thread_state` events: one is appended only when the thread *enters*
 //! `blocked`, `done`, `failed` or `cancelled`. Entering `queued`/`working` is implied
-//! by `user_message` / `agent_status` and visible through `Thread.state`.
+//! by `user_message` / `agent_status` and visible through `Thread.state`; entering
+//! `verifying` by the `check_result` events that follow the agent's `completed`.
+//!
+//! The function takes and returns a [`Snapshot`]: the state and the job ledger. Under a gate
+//! with no required source (the default) the job is never touched and every decision is the one
+//! made before the gate existed. Under an active gate the agent finishing is not enough: see
+//! [`crate::verify`] for the rules and ADR 0018 for the reasoning.
+
+use jiff::SignedDuration;
 
 use crate::agent::{AgentTaskState, AgentUpdate};
 use crate::error::{Classify, ErrorClass};
@@ -14,9 +22,15 @@ use crate::event::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
     ThreadStateData, UserMessageData,
 };
+use crate::gate::{
+    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_TASK_BYTES, PushedRef,
+    Recognised, Snapshot, Timer, Verdict, WatchKey, cap_findings, recognise_artifact, repo_key,
+    truncate_to,
+};
 use crate::ids::{AgentId, UserId};
 use crate::thread::ThreadState;
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
+use crate::verify;
 
 /// Everything that can happen to a thread, already translated to protocol-neutral terms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +86,23 @@ pub enum Input {
         /// Whether retrying can help.
         retryable: bool,
     },
+    /// A CI provider reported a completed check on some commit (a webhook, already normalised
+    /// and matched to this thread by its watch key). The core decides whether it is about the
+    /// commit the agent pushed.
+    CiReported(CiReport),
+    /// The verifier answered the request made for `attempt` in `verification`. The dispatcher builds it
+    /// from the verifier's `verdict` artifact, or from its absence (`passed: false`, the
+    /// finding "no verdict").
+    VerifierReported {
+        /// The attempt the verification was requested in.
+        attempt: u32,
+        /// The verification it was requested in.
+        verification: u32,
+        /// The verdict.
+        verdict: Verdict,
+    },
+    /// A deadline armed by [`Command::Schedule`] passed.
+    TimerFired(Timer),
 }
 
 impl Input {
@@ -85,6 +116,9 @@ impl Input {
             Input::DeliveryFailed { .. } => "delivery failure",
             Input::CancelledBeforeStart => "cancelled before start",
             Input::CancelRejected { .. } => "cancel rejection",
+            Input::CiReported(_) => "ci report",
+            Input::VerifierReported { .. } => "verifier report",
+            Input::TimerFired(_) => "timer",
         }
     }
 }
@@ -115,6 +149,41 @@ pub enum Command {
     },
     /// Ask the agent to cancel the running task (outbox kind `cancel`).
     RequestCancel,
+    /// Route inbound CI reports for this key to the thread (a row of the `watches` table,
+    /// ADR 0016). Idempotent.
+    ///
+    /// The application does not execute it yet: the inbox arrives with slice 5 of the MVP plan.
+    Watch {
+        /// `ci:<repo-key>@<sha>`.
+        key: WatchKey,
+    },
+    /// Feed `timer` back as [`Input::TimerFired`] once `after` has passed (an inbox row with
+    /// `source = 'timer'`, ADR 0016).
+    ///
+    /// The application does not execute it yet: timers arrive with slice 5 of the MVP plan.
+    Schedule {
+        /// How long from now.
+        after: SignedDuration,
+        /// What to feed back.
+        timer: Timer,
+    },
+    /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
+    /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and `verification`.
+    ///
+    /// The application does not execute it yet: the verifier path arrives with slice 10 of the
+    /// MVP plan.
+    RequestVerification {
+        /// The attempt it belongs to.
+        attempt: u32,
+        /// The verification it belongs to.
+        verification: u32,
+        /// The agent that reviews.
+        verifier: AgentId,
+        /// What to review.
+        pushed: PushedRef,
+        /// The prompt, written by the core.
+        text: String,
+    },
 }
 
 /// An input that is not valid in the current state.
@@ -155,11 +224,11 @@ fn refused_ui(reason: &str) -> EventBody {
     })
 }
 
-fn append(actor: Actor, body: EventBody) -> Command {
+pub(crate) fn append(actor: Actor, body: EventBody) -> Command {
     Command::Append(EventDraft { actor, body })
 }
 
-fn entered(state: ThreadState) -> Command {
+pub(crate) fn entered(state: ThreadState) -> Command {
     append(
         Actor::system(),
         EventBody::ThreadState(ThreadStateData { state }),
@@ -220,12 +289,39 @@ fn ui_action(user: &UserId, action: &UiActionData) -> Vec<Command> {
     ]
 }
 
-/// Decides the next state and the commands for `input` in `state`. Pure: no I/O, no clock.
+/// Decides the next state, job and commands for `input` in `snapshot`. Pure: no I/O, no clock.
 pub fn transition(
-    state: &ThreadState,
+    snapshot: &Snapshot,
+    input: &Input,
+) -> Result<(Snapshot, Vec<Command>), TransitionError> {
+    let mut job = snapshot.job.clone();
+    let (state, commands) = decide(snapshot.state, &mut job, input)?;
+    // A hold explains a `blocked` thread; a thread that is anything else has none.
+    match state {
+        ThreadState::Blocked => {}
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Verifying
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => job.hold = None,
+    }
+    Ok((Snapshot { state, job }, commands))
+}
+
+/// Keeps the user's task for the verifier, under an active gate only (an empty gate never
+/// touches the job).
+fn note_task(job: &mut Job, text: &str) {
+    if job.gate.is_active() && job.task.is_none() {
+        job.task = Some(truncate_to(text, MAX_TASK_BYTES).to_owned());
+    }
+}
+
+fn decide(
+    state: ThreadState,
+    job: &mut Job,
     input: &Input,
 ) -> Result<(ThreadState, Vec<Command>), TransitionError> {
-    let state = *state;
     match input {
         Input::UserMessage {
             user,
@@ -234,19 +330,29 @@ pub fn transition(
             run_id,
         } => match state {
             ThreadState::Queued | ThreadState::Working => {
+                note_task(job, text);
                 Ok((state, user_message(user, text, message_id, run_id)))
             }
-            ThreadState::Blocked => Ok((
-                ThreadState::Queued,
-                user_message(user, text, message_id, run_id),
-            )),
+            // Blocked, or being verified: the user's message re-delegates. It does not use an
+            // attempt: an attempt is used only when the gate fails.
+            ThreadState::Blocked | ThreadState::Verifying => {
+                note_task(job, text);
+                job.hold = None;
+                Ok((
+                    ThreadState::Queued,
+                    user_message(user, text, message_id, run_id),
+                ))
+            }
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::Finished { state })
             }
         },
         Input::UiAction { user, action } => match state {
             ThreadState::Queued | ThreadState::Working => Ok((state, ui_action(user, action))),
-            ThreadState::Blocked => Ok((ThreadState::Queued, ui_action(user, action))),
+            ThreadState::Blocked | ThreadState::Verifying => {
+                job.hold = None;
+                Ok((ThreadState::Queued, ui_action(user, action)))
+            }
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::Finished { state })
             }
@@ -255,20 +361,40 @@ pub fn transition(
             ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
                 Ok((state, vec![Command::RequestCancel]))
             }
+            // The agent's task is over, so there is nothing to ask it to cancel: the thread is
+            // cancelled at once.
+            ThreadState::Verifying => Ok((
+                ThreadState::Cancelled,
+                vec![entered(ThreadState::Cancelled)],
+            )),
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => Ok((state, vec![])),
         },
         Input::Agent {
             agent,
             revision,
             update,
-        } => agent_input(state, Actor::agent(agent, revision.clone()), update, input),
+        } => agent_input(
+            state,
+            job,
+            Actor::agent(agent, revision.clone()),
+            update,
+            input,
+        ),
         Input::DeliveryFailed { reason, retryable } => match state {
-            ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Blocked
+            | ThreadState::Verifying => {
                 if *retryable {
                     let mut cmds = vec![error_event(reason, true)];
                     match state {
                         ThreadState::Blocked => {}
                         ThreadState::Queued | ThreadState::Working => {
+                            cmds.push(entered(ThreadState::Blocked));
+                        }
+                        // The verifier could not be reached.
+                        ThreadState::Verifying => {
+                            job.hold = Some(Hold::VerifierFailed);
                             cmds.push(entered(ThreadState::Blocked));
                         }
                         ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {}
@@ -286,23 +412,41 @@ pub fn transition(
             }
         },
         Input::CancelledBeforeStart => match state {
-            ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => Ok((
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Blocked
+            | ThreadState::Verifying => Ok((
                 ThreadState::Cancelled,
                 vec![entered(ThreadState::Cancelled)],
             )),
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => Ok((state, vec![])),
         },
         Input::CancelRejected { reason, retryable } => match state {
-            ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
-                Ok((state, vec![error_event(reason, *retryable)]))
-            }
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Blocked
+            | ThreadState::Verifying => Ok((state, vec![error_event(reason, *retryable)])),
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => Ok((state, vec![])),
         },
+        Input::CiReported(report) => Ok(ci_reported(state, job, report)),
+        Input::VerifierReported {
+            attempt,
+            verification,
+            verdict,
+        } => Ok(verifier_reported(
+            state,
+            job,
+            *attempt,
+            *verification,
+            verdict,
+        )),
+        Input::TimerFired(timer) => Ok(timer_fired(state, job, *timer)),
     }
 }
 
 fn agent_input(
     state: ThreadState,
+    job: &mut Job,
     actor: Actor,
     update: &AgentUpdate,
     input: &Input,
@@ -314,7 +458,10 @@ fn agent_input(
                 input: input.name(),
             });
         }
-        ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {}
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Verifying
+        | ThreadState::Blocked => {}
     }
     match update {
         AgentUpdate::Artifact {
@@ -322,9 +469,8 @@ fn agent_input(
             mime_type,
             uri,
             text,
-        } => Ok((
-            state,
-            vec![append(
+        } => {
+            let mut cmds = vec![append(
                 actor,
                 EventBody::Artifact(ArtifactData {
                     name: name.clone(),
@@ -332,8 +478,22 @@ fn agent_input(
                     uri: uri.clone(),
                     text: text.clone(),
                 }),
-            )],
-        )),
+            )];
+            // While the work is being verified the ledger is frozen: what is checked is what
+            // the agent had pushed when it finished.
+            match state {
+                ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
+                    if job.gate.is_active() {
+                        cmds.extend(note_artifact(job, name, text.as_deref()));
+                    }
+                }
+                ThreadState::Verifying
+                | ThreadState::Done
+                | ThreadState::Failed
+                | ThreadState::Cancelled => {}
+            }
+            Ok((state, cmds))
+        }
         // The adapter has checked the payload; the door is checked again here, so nothing
         // unchecked reaches the log whatever adapter sent it (ADR 0013).
         AgentUpdate::Ui { operations } => Ok((
@@ -367,7 +527,7 @@ fn agent_input(
         AgentUpdate::Status {
             state: task,
             detail,
-        } => status_input(state, actor, *task, detail),
+        } => status_input(state, job, actor, *task, detail),
     }
 }
 
@@ -387,12 +547,17 @@ fn blocked(
             Some(_) => (ThreadState::Blocked, vec![status]),
             None => (ThreadState::Blocked, vec![]),
         },
-        ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => (state, vec![]),
+        // The agent's task is over; a late wait changes nothing.
+        ThreadState::Verifying
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => (state, vec![]),
     }
 }
 
 fn status_input(
     state: ThreadState,
+    job: &mut Job,
     actor: Actor,
     task: AgentTaskState,
     detail: &Option<String>,
@@ -407,9 +572,11 @@ fn status_input(
                     Some(_) => Ok((ThreadState::Working, vec![cmd])),
                     None => Ok((ThreadState::Working, vec![])),
                 },
-                ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
-                    Ok((state, vec![]))
-                }
+                // A late update of a task that is over: the verification goes on.
+                ThreadState::Verifying
+                | ThreadState::Done
+                | ThreadState::Failed
+                | ThreadState::Cancelled => Ok((state, vec![])),
             }
         }
         AgentTaskState::InputRequired => Ok(blocked(
@@ -422,13 +589,16 @@ fn status_input(
             agent_status(actor, AgentStatus::AuthRequired, detail.clone()),
             detail,
         )),
-        AgentTaskState::Completed => Ok((
-            ThreadState::Done,
-            vec![
-                agent_status(actor, AgentStatus::Completed, detail.clone()),
-                entered(ThreadState::Done),
-            ],
-        )),
+        AgentTaskState::Completed => match state {
+            // A repeat of the completion that started the verification.
+            ThreadState::Verifying => Ok((state, vec![])),
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Blocked
+            | ThreadState::Done
+            | ThreadState::Failed
+            | ThreadState::Cancelled => Ok(completed(state, job, actor, detail)),
+        },
         AgentTaskState::Failed | AgentTaskState::Rejected => {
             let detail = match task {
                 AgentTaskState::Rejected => Some(prefixed("rejected", detail)),
@@ -455,6 +625,318 @@ fn status_input(
                 entered(ThreadState::Cancelled),
             ],
         )),
+    }
+}
+
+/// The agent finished. With no gate that is the end; under a gate it is where verification
+/// starts.
+fn completed(
+    state: ThreadState,
+    job: &mut Job,
+    actor: Actor,
+    detail: &Option<String>,
+) -> (ThreadState, Vec<Command>) {
+    match state {
+        ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => return (state, vec![]),
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Blocked
+        | ThreadState::Verifying => {}
+    }
+    let status = agent_status(actor, AgentStatus::Completed, detail.clone());
+    if !job.gate.is_active() {
+        return (ThreadState::Done, vec![status, entered(ThreadState::Done)]);
+    }
+    job.verification += 1;
+    job.hold = None;
+    let (next, more) = verify::conclude(job, true, &[]);
+    let mut cmds = vec![status];
+    cmds.extend(more);
+    (next, cmds)
+}
+
+// ---- the gate ------------------------------------------------------------------------------
+
+fn same_repository(a: &str, b: &str) -> bool {
+    match (repo_key(a), repo_key(b)) {
+        (Some(x), Some(y)) => x == y,
+        (Some(_), None) | (None, Some(_)) | (None, None) => false,
+    }
+}
+
+/// What the gate makes of an artifact of the agent. Only called under an active gate.
+fn note_artifact(job: &mut Job, name: &str, text: Option<&str>) -> Vec<Command> {
+    match recognise_artifact(name, text) {
+        Recognised::Branch(pushed) => {
+            if job.pushed.as_ref() == Some(&pushed) {
+                return Vec::new();
+            }
+            // Facts about another commit no longer count.
+            job.results
+                .retain(|r| r.commit.as_deref().is_none_or(|c| c == pushed.commit));
+            let watch = job.gate.requires(CheckSource::Ci).then(|| Command::Watch {
+                key: WatchKey::ci(&pushed.repository, &pushed.commit),
+            });
+            job.pushed = Some(pushed);
+            watch.into_iter().collect()
+        }
+        Recognised::Checks(report) => {
+            if job.gate.requires(CheckSource::AgentChecks) {
+                let entry = CheckResult {
+                    source: CheckSource::AgentChecks,
+                    name: None,
+                    attempt: job.attempt,
+                    commit: Some(report.commit),
+                    status: if report.passed {
+                        CheckStatus::Passed
+                    } else {
+                        CheckStatus::Failed
+                    },
+                    summary: report.summary,
+                    stale: false,
+                    findings: report.findings,
+                };
+                replace_agent_checks(job, entry);
+            }
+            Vec::new()
+        }
+        Recognised::Malformed {
+            artifact: crate::gate::KnownArtifact::Checks,
+            reason,
+        } => {
+            if job.gate.requires(CheckSource::AgentChecks) {
+                let entry = CheckResult {
+                    source: CheckSource::AgentChecks,
+                    name: None,
+                    attempt: job.attempt,
+                    commit: None,
+                    status: CheckStatus::Failed,
+                    summary: None,
+                    stale: false,
+                    findings: cap_findings([format!(
+                        "the agent's `checks` artifact cannot be used: {reason}"
+                    )]),
+                };
+                replace_agent_checks(job, entry);
+            }
+            Vec::new()
+        }
+        Recognised::Malformed {
+            artifact: crate::gate::KnownArtifact::Branch,
+            reason: _,
+        }
+        | Recognised::Other => Vec::new(),
+    }
+}
+
+fn replace_agent_checks(job: &mut Job, entry: CheckResult) {
+    job.results.retain(|r| r.source != CheckSource::AgentChecks);
+    job.results.push(entry);
+}
+
+/// The ledger entry for a CI report.
+fn ci_entry(job: &Job, report: &CiReport) -> CheckResult {
+    let passed = report.conclusion.passes();
+    let summary = report
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate_to(s, 2048).to_owned());
+    let findings = if passed {
+        Vec::new()
+    } else {
+        let mut line = format!("{}: {}", report.name, report.conclusion.as_str());
+        if let Some(summary) = &summary {
+            line.push_str(" - ");
+            line.push_str(summary);
+        }
+        if let Some(url) = &report.url {
+            line.push_str(&format!(" ({url})"));
+        }
+        cap_findings([line])
+    };
+    CheckResult {
+        source: CheckSource::Ci,
+        name: Some(report.name.clone()),
+        attempt: job.attempt,
+        commit: Some(report.sha.to_lowercase()),
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        summary,
+        stale: false,
+        findings,
+    }
+}
+
+/// A CI report. It always leaves its card in the log. It changes the job only when it is about
+/// the commit the agent pushed, CI is required and the report counts; then it decides at once
+/// if the thread is being verified, otherwise it waits in the ledger for the agent to finish.
+fn ci_reported(
+    state: ThreadState,
+    job: &mut Job,
+    report: &CiReport,
+) -> (ThreadState, Vec<Command>) {
+    let card = append(Actor::system(), EventBody::CiResult(report.clone()));
+    match state {
+        ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
+            return (state, vec![card]);
+        }
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Verifying
+        | ThreadState::Blocked => {}
+    }
+    let about_the_push = job.gate.requires(CheckSource::Ci)
+        && job.pushed.as_ref().is_some_and(|p| {
+            p.commit == report.sha.to_lowercase()
+                && same_repository(&p.repository, &report.repository)
+        });
+    if !about_the_push {
+        return (state, vec![card]);
+    }
+    let first_decides = job.gate.ci.required.is_empty();
+    let counts = first_decides || job.gate.ci.required.contains(&report.name);
+    let decided = job.results.iter().any(|r| {
+        r.source == CheckSource::Ci
+            && r.commit.as_deref() == Some(report.sha.to_lowercase().as_str())
+    });
+    if !counts || (first_decides && decided) {
+        return (state, vec![card]);
+    }
+    let entry = ci_entry(job, report);
+    job.results.retain(|r| {
+        !(r.source == CheckSource::Ci && r.name == entry.name && r.commit == entry.commit)
+    });
+    job.results.push(entry);
+    match state {
+        ThreadState::Verifying => {
+            let (next, more) = verify::conclude(job, false, &[CheckSource::Ci]);
+            let mut cmds = vec![card];
+            cmds.extend(more);
+            (next, cmds)
+        }
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Blocked
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => (state, vec![card]),
+    }
+}
+
+/// The verifier's answer. Only the answer to the verification in progress decides. Any other
+/// (an abandoned verification, a repeat, a finished thread) is recorded as a `check_result`
+/// marked `stale` and changes nothing else.
+fn verifier_reported(
+    state: ThreadState,
+    job: &mut Job,
+    attempt: u32,
+    verification: u32,
+    verdict: &Verdict,
+) -> (ThreadState, Vec<Command>) {
+    let findings = if verdict.passed || !verdict.findings.is_empty() {
+        cap_findings(verdict.findings.iter().cloned())
+    } else {
+        cap_findings(["the verifier rejected the work without saying why"])
+    };
+    let status = if verdict.passed {
+        CheckStatus::Passed
+    } else {
+        CheckStatus::Failed
+    };
+    let entry = CheckResult {
+        source: CheckSource::Verifier,
+        name: None,
+        attempt,
+        commit: job.pushed.as_ref().map(|p| p.commit.clone()),
+        status,
+        summary: None,
+        stale: false,
+        findings,
+    };
+    let stale = |entry: CheckResult| {
+        (
+            state,
+            vec![append(
+                Actor::system(),
+                EventBody::CheckResult(CheckResult {
+                    stale: true,
+                    ..entry
+                }),
+            )],
+        )
+    };
+    let current = match state {
+        ThreadState::Verifying => {
+            attempt == job.attempt
+                && verification == job.verification
+                && job.gate.requires(CheckSource::Verifier)
+                && verify::status_of(job, CheckSource::Verifier) == CheckStatus::Pending
+        }
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Blocked
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => false,
+    };
+    if !current {
+        return stale(entry);
+    }
+    job.results.push(entry);
+    verify::conclude(job, false, &[CheckSource::Verifier])
+}
+
+/// A deadline. It blocks the thread only if the verification it was armed for is still waiting
+/// for the source it guards; a timer of anything else is stale and changes nothing. Blocking
+/// does not use an attempt.
+fn timer_fired(state: ThreadState, job: &mut Job, timer: Timer) -> (ThreadState, Vec<Command>) {
+    match state {
+        ThreadState::Verifying => {}
+        ThreadState::Queued
+        | ThreadState::Working
+        | ThreadState::Blocked
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => return (state, vec![]),
+    }
+    match timer {
+        Timer::CiDeadline {
+            attempt,
+            verification,
+        } => {
+            let waiting = attempt == job.attempt
+                && verification == job.verification
+                && job.gate.requires(CheckSource::Ci)
+                && verify::status_of(job, CheckSource::Ci) == CheckStatus::Pending;
+            if waiting {
+                verify::hold(job, Hold::CiTimeout, "CI did not report in time")
+            } else {
+                (state, vec![])
+            }
+        }
+        Timer::VerifierDeadline {
+            attempt,
+            verification,
+        } => {
+            let waiting = attempt == job.attempt
+                && verification == job.verification
+                && job.gate.requires(CheckSource::Verifier)
+                && verify::status_of(job, CheckSource::Verifier) == CheckStatus::Pending;
+            if waiting {
+                verify::hold(
+                    job,
+                    Hold::VerifierTimeout,
+                    "the verifier did not answer in time",
+                )
+            } else {
+                (state, vec![])
+            }
+        }
     }
 }
 

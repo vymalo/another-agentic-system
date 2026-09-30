@@ -2,6 +2,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::thread::ThreadState;
 use crate::ui::{UiActionData, UiSurfaceData};
@@ -26,6 +27,12 @@ pub enum EventKind {
     UiSurface,
     /// The user acted on an A2UI surface (ADR 0013).
     UiAction,
+    /// A CI provider reported a completed check on the pushed commit (ADR 0017).
+    CiResult,
+    /// A source of the verification gate answered (ADR 0018).
+    CheckResult,
+    /// The gate failed and the agent was sent back to work (ADR 0018).
+    Rework,
 }
 
 impl EventKind {
@@ -40,6 +47,9 @@ impl EventKind {
             EventKind::Error => "error",
             EventKind::UiSurface => "ui_surface",
             EventKind::UiAction => "ui_action",
+            EventKind::CiResult => "ci_result",
+            EventKind::CheckResult => "check_result",
+            EventKind::Rework => "rework",
         }
     }
 }
@@ -224,6 +234,12 @@ pub enum EventBody {
     UiSurface(UiSurfaceData),
     /// See [`UiActionData`].
     UiAction(UiActionData),
+    /// See [`CiReport`].
+    CiResult(CiReport),
+    /// See [`CheckResult`].
+    CheckResult(CheckResult),
+    /// See [`ReworkData`].
+    Rework(ReworkData),
 }
 
 impl EventBody {
@@ -238,6 +254,9 @@ impl EventBody {
             EventBody::Error(_) => EventKind::Error,
             EventBody::UiSurface(_) => EventKind::UiSurface,
             EventBody::UiAction(_) => EventKind::UiAction,
+            EventBody::CiResult(_) => EventKind::CiResult,
+            EventBody::CheckResult(_) => EventKind::CheckResult,
+            EventBody::Rework(_) => EventKind::Rework,
         }
     }
 
@@ -252,6 +271,9 @@ impl EventBody {
             EventBody::Error(d) => serde_json::to_value(d),
             EventBody::UiSurface(d) => serde_json::to_value(d),
             EventBody::UiAction(d) => serde_json::to_value(d),
+            EventBody::CiResult(d) => serde_json::to_value(d),
+            EventBody::CheckResult(d) => serde_json::to_value(d),
+            EventBody::Rework(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -268,6 +290,9 @@ impl EventBody {
             EventKind::Error => EventBody::Error(serde_json::from_value(data)?),
             EventKind::UiSurface => EventBody::UiSurface(serde_json::from_value(data)?),
             EventKind::UiAction => EventBody::UiAction(serde_json::from_value(data)?),
+            EventKind::CiResult => EventBody::CiResult(serde_json::from_value(data)?),
+            EventKind::CheckResult => EventBody::CheckResult(serde_json::from_value(data)?),
+            EventKind::Rework => EventBody::Rework(serde_json::from_value(data)?),
         })
     }
 }

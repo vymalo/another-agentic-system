@@ -1,7 +1,9 @@
 //! Conversions between the port types and their column representations.
 
 use jiff::{Timestamp, Unit};
-use orch_core::{Actor, AgentId, AgentTarget, Event, EventBody, ThreadId, ThreadRecord, UserId};
+use orch_core::{
+    Actor, AgentId, AgentTarget, Event, EventBody, Job, ThreadId, ThreadRecord, UserId,
+};
 use orch_ports::{AgentBinding, OutboxId, OutboxItem, OutboxPayload, StoreError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -13,7 +15,7 @@ use crate::error::store_err;
 /// Column list of `threads`, in the order [`thread_from_row`] reads them by name.
 macro_rules! thread_cols {
     () => {
-        "id, owner, title, agent_id, release, state, version, last_seq, created_at, updated_at"
+        "id, owner, title, agent_id, release, state, job, version, last_seq, created_at, updated_at"
     };
 }
 
@@ -73,6 +75,9 @@ where
 
 pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
     let state: String = get(row, "state")?;
+    let job: serde_json::Value = get(row, "job")?;
+    let job: Job =
+        serde_json::from_value(job).map_err(|e| StoreError::corrupt_with("thread job", e))?;
     Ok(ThreadRecord {
         id: ThreadId(get(row, "id")?),
         owner: UserId::new(&get::<String>(row, "owner")?),
@@ -82,6 +87,7 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
             release: get(row, "release")?,
         },
         state: parse_enum("thread state", &state)?,
+        job,
         version: get(row, "version")?,
         last_seq: get(row, "last_seq")?,
         created_at: get_ts(row, "created_at")?,

@@ -19,8 +19,8 @@ it.
 | Item | What |
 |---|---|
 | `PgStore::connect(url)`, `connect_with(url, max_connections)`, `from_pool(pool)`, `pool()` | construct; `Result<_, StoreError>` |
-| `PgStore::migrate()` | applies the embedded migrations (`migrations/`: `0001_init.sql`, and `0002_ui_events.sql`, which widens the `events.kind` check to the additive kinds `ui_surface` and `ui_action`); sqlx records them under an advisory lock, so every replica may run it at boot |
-| `impl ThreadStore for PgStore` | per-thread `seq` from a counter row updated in the same transaction as the event insert (no gaps, no duplicates); optimistic `version`; outbox claims with `FOR UPDATE SKIP LOCKED` and leases; every outbox write matches `id`, owner, `attempts` (the fencing token) and `status = 'inflight'`, and `commit` checks its `Commit.lease` with a `FOR SHARE` lock on the outbox row right after the thread lock, answering `CommitOutcome::Fenced` (no migration); `outbox_stats` is one aggregate query over the open rows (the `outbox_open` partial index), with the `claim_outbox` due predicate |
+| `PgStore::migrate()` | applies the embedded migrations (`migrations/`: `0001_init.sql`; `0002_ui_events.sql`, which widens the `events.kind` check to the additive kinds `ui_surface` and `ui_action`; and `0003_job_ledger.sql`, which adds `threads.job jsonb NOT NULL DEFAULT '{}'`, widens the state and event-kind checks to `verifying` and `ci_result`, `check_result`, `rework`, and gives `outbox` the kind `verify` and a nullable `task_id`; `0004` is reserved for the inbox); sqlx records them under an advisory lock, so every replica may run it at boot |
+| `impl ThreadStore for PgStore` | per-thread `seq` from a counter row updated in the same transaction as the event insert (no gaps, no duplicates); optimistic `version`; outbox claims with `FOR UPDATE SKIP LOCKED` and leases; every outbox write matches `id`, owner, `attempts` (the fencing token) and `status = 'inflight'`, and `commit` checks its `Commit.lease` with a `FOR SHARE` lock on the outbox row right after the thread lock, answering `CommitOutcome::Fenced` (no migration); the job is written in the same `UPDATE` as the state (`job = COALESCE($n, job)`), so it shares the row lock, the version check and the idempotency check of the commit; `outbox_stats` is one aggregate query over the open rows (the `outbox_open` partial index), with the `claim_outbox` due predicate |
 | `PgWakeup::start(pool)`, `wait_listening(timeout)` | `LISTEN/NOTIFY` fan-out; a reconnect or a lagging subscriber yields `Topic::Resync` |
 
 ```rust
@@ -53,7 +53,9 @@ database; stale test schemas older than an hour are dropped.
 
 * `tests/conformance.rs`: the `orch-ports` testkit (`thread_store_conformance!`,
   `wakeup_conformance!`) against Postgres.
-* `tests/postgres.rs`: behaviour specific to this implementation.
+* `tests/postgres.rs`: behaviour specific to this implementation, including that migration 0003 upgrades a
+  database that ran 0001 and 0002 and holds a thread (its job reads back as the default, the widened
+  constraints take the new values and still refuse others).
 
 ```sh
 ORCH_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch_test \

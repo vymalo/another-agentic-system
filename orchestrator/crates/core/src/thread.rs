@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::gate::{Job, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
 
 /// MVP subset of the job lifecycle (contract `ThreadState`).
@@ -13,6 +14,10 @@ pub enum ThreadState {
     Queued,
     /// The agent is working.
     Working,
+    /// The agent finished and the verification gate is checking its work (ADR 0018). Only a
+    /// thread under an active gate is ever here; it is implied by the `check_result` events,
+    /// never announced by a `thread_state` event.
+    Verifying,
     /// Waiting for the user (or for a retry after a delivery failure).
     Blocked,
     /// Finished successfully.
@@ -28,7 +33,10 @@ impl ThreadState {
     pub fn is_terminal(self) -> bool {
         match self {
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => true,
-            ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => false,
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Verifying
+            | ThreadState::Blocked => false,
         }
     }
 
@@ -37,6 +45,7 @@ impl ThreadState {
         match self {
             ThreadState::Queued => "queued",
             ThreadState::Working => "working",
+            ThreadState::Verifying => "verifying",
             ThreadState::Blocked => "blocked",
             ThreadState::Done => "done",
             ThreadState::Failed => "failed",
@@ -105,6 +114,9 @@ pub struct ThreadRecord {
     pub target: AgentTarget,
     /// Current state.
     pub state: ThreadState,
+    /// The job ledger (never serialised here; surfaces project the parts they show).
+    #[serde(skip)]
+    pub job: Job,
     /// Optimistic-concurrency version (never serialised).
     #[serde(skip)]
     pub version: i64,
@@ -114,6 +126,16 @@ pub struct ThreadRecord {
     pub created_at: Timestamp,
     /// Last change time.
     pub updated_at: Timestamp,
+}
+
+impl ThreadRecord {
+    /// The state and job [`transition`](crate::transition) works on.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            state: self.state,
+            job: self.job.clone(),
+        }
+    }
 }
 
 /// Contract `Agent`: a configured agent, with its live release data when it offers any.

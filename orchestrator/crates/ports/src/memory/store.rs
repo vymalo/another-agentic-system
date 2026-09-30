@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, ThreadId, ThreadRecord, UserId};
+use orch_core::{Event, Job, ThreadId, ThreadRecord, UserId};
 
 use crate::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewThreadRecord, OutboxFinal,
@@ -120,6 +120,9 @@ fn write_commit(
         stored.push(event);
     }
     entry.record.state = commit.new_state;
+    if let Some(job) = commit.job {
+        entry.record.job = job;
+    }
     entry.record.version += 1;
     entry.record.updated_at = commit.now;
     if let Some(update) = &commit.binding {
@@ -180,6 +183,7 @@ impl ThreadStore for MemoryStore {
             title: new.title,
             target: new.target.clone(),
             state: first.new_state,
+            job: Job::default(),
             version: 1,
             last_seq: 0,
             created_at: new.now,

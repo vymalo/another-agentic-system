@@ -143,6 +143,7 @@ fn thread_wire_hides_owner_and_version() {
             release: None,
         },
         state: ThreadState::Working,
+        job: Job::default(),
         version: 7,
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),

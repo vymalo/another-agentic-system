@@ -6,8 +6,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, Input, ThreadId,
-    ThreadRecord, ThreadState, Timestamp, UserId, report, transition,
+    AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
+    Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UserId, report, transition,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock, Commit,
@@ -31,6 +31,10 @@ pub struct AppConfig {
     pub stream_poll: Duration,
     /// Attempts of the optimistic commit loop.
     pub max_commit_attempts: u32,
+    /// The verification gate a new thread starts under; it is copied into the thread's job, so
+    /// changing it never affects a running job (ADR 0016). The default requires nothing: an
+    /// agent finishing is enough, as before the gate existed.
+    pub gate: GatePolicy,
 }
 
 impl Default for AppConfig {
@@ -39,6 +43,7 @@ impl Default for AppConfig {
             card_timeout: Duration::from_secs(3),
             stream_poll: Duration::from_secs(5),
             max_commit_attempts: 8,
+            gate: GatePolicy::default(),
         }
     }
 }
@@ -79,6 +84,8 @@ pub struct Inbound {
 }
 
 /// Result of [`App::create_thread_as`].
+// One value per request; the thread carries its job ledger, which makes `Created` large.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Creation {
     /// The thread was created, with its first events.
@@ -94,6 +101,8 @@ pub enum Creation {
 }
 
 /// Result of [`App::apply`].
+// One value per input; the thread carries its job ledger, which makes `Applied` large.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
     /// The input was applied (possibly changing nothing).
@@ -332,7 +341,7 @@ impl<P: Ports> App<P> {
 
         let now = self.ports.clock().now();
         let (next, cmds) = transition(
-            &ThreadState::Queued,
+            &Snapshot::queued(self.cfg.gate.clone()),
             &Input::UserMessage {
                 user: user.clone(),
                 text: req.text.clone(),
@@ -344,7 +353,17 @@ impl<P: Ports> App<P> {
             .title
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| default_title(&req.text));
-        let commit = self.build_commit(&req.target, next, cmds, inbound.key.as_deref(), None, now);
+        // The default job is what the column holds when nothing is written.
+        let job = (next.job != Job::default()).then_some(next.job);
+        let commit = self.build_commit(
+            &req.target,
+            next.state,
+            job,
+            cmds,
+            inbound.key.as_deref(),
+            None,
+            now,
+        );
         let new = NewThreadRecord {
             id,
             owner: user.clone(),
@@ -480,6 +499,14 @@ impl<P: Ports> App<P> {
                     .check()
                     .map_err(|e| AppError::Invalid(format!("invalid action: {e}")))?;
             }
+            // Machine inputs (a CI report, the verifier's verdict, a timer) come from the
+            // inbox and the dispatcher through `apply`, never from a user's request: a user
+            // must not be able to forge a check result.
+            Input::CiReported(_) | Input::VerifierReported { .. } | Input::TimerFired(_) => {
+                return Err(AppError::Invalid(
+                    "this input cannot be submitted by a user".to_owned(),
+                ));
+            }
             Input::Cancel { .. }
             | Input::Agent { .. }
             | Input::DeliveryFailed { .. }
@@ -500,10 +527,12 @@ impl<P: Ports> App<P> {
 
     /// Turns commands into one store commit. The first appended event carries `key`, the
     /// following ones `key#1`, `key#2`, …
+    #[allow(clippy::too_many_arguments)]
     fn build_commit(
         &self,
         target: &AgentTarget,
         new_state: ThreadState,
+        job: Option<Job>,
         cmds: Vec<Command>,
         key: Option<&str>,
         binding: Option<BindingUpdate>,
@@ -544,10 +573,36 @@ impl<P: Ports> App<P> {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel,
                 }),
+                // TODO(MVP slice 5): `Watch` and `Schedule` become rows of the inbox tables
+                // (`watches`, and an inbox row with `source = 'timer'`) written in this commit.
+                // TODO(MVP slice 10): `RequestVerification` becomes an outbox row of kind
+                // `verify`. Until then they are dropped, loudly: a gate that requires CI or the
+                // verifier is not configurable before slice 3 rejects it, so with the default
+                // (empty) gate none of them is ever produced.
+                Command::Watch { key } => {
+                    tracing::warn!(%key, "dropping a watch: the inbox is not built yet");
+                }
+                Command::Schedule { after, timer } => {
+                    tracing::warn!(
+                        ?after,
+                        ?timer,
+                        "dropping a timer: the inbox is not built yet"
+                    );
+                }
+                Command::RequestVerification {
+                    attempt, verifier, ..
+                } => {
+                    tracing::warn!(
+                        attempt,
+                        %verifier,
+                        "dropping a verification request: the verifier path is not built yet"
+                    );
+                }
             }
         }
         Commit {
             new_state,
+            job,
             events,
             outbox,
             binding,
@@ -576,11 +631,14 @@ impl<P: Ports> App<P> {
                 .get_thread(None, thread)
                 .await?
                 .ok_or(AppError::NotFound)?;
-            let (next, cmds) = transition(&record.state, &input)?;
+            let (next, cmds) = transition(&record.snapshot(), &input)?;
             let now = self.ports.clock().now();
+            let job = (next.job != record.job).then_some(next.job);
+            let next = next.state;
             let mut commit = self.build_commit(
                 &record.target,
                 next,
+                job,
                 cmds,
                 key.as_deref(),
                 binding.clone(),
@@ -590,6 +648,7 @@ impl<P: Ports> App<P> {
             if commit.events.is_empty()
                 && commit.outbox.is_empty()
                 && commit.binding.is_none()
+                && commit.job.is_none()
                 && next == record.state
             {
                 return Ok(ApplyOutcome::Applied {
@@ -639,6 +698,7 @@ impl<P: Ports> App<P> {
                 .ok_or(AppError::NotFound)?;
             let commit = Commit {
                 new_state: record.state,
+                job: None,
                 events: Vec::new(),
                 outbox: Vec::new(),
                 binding: Some(binding.clone()),

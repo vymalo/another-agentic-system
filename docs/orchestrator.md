@@ -484,19 +484,31 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 property test (`tests/properties.rs`) checks that terminal states absorb, that a `thread_state`
 event names the state the thread entered, and that `completed` reaches `done` from every open state.
 
-**Planned** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+**Built in the core** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and
-rows for the new inputs. With an empty gate the table above is unchanged.
+rows for the new inputs. With an empty gate the table above is unchanged, and the tests that pin it
+run against the same expectations as before. The application does not yet execute `Watch`,
+`Schedule` and `RequestVerification` (slices 5 and 10), and nothing yet produces `CiReported`,
+`VerifierReported` or `TimerFired` (slices 5, 6 and 10); the core decides them already
+(`crates/core/tests/gate.rs` has a row for each).
 
 | Input | `verifying` |
 |---|---|
-| `CiReported` | The report is recorded as a `ci_result` and a `check_result`; if it settles a required source: all passed → `done`; a failure with `attempt < max` → `queued`, `attempt + 1`, a `rework` event and a `Delegate` with the findings; a failure on the last attempt → `failed`. A report for an older SHA or attempt: recorded, nothing else changes |
-| `VerifierReported` | Same, for the verifier source |
-| `TimerFired(CiDeadline)` | Current: → `blocked` (`ci_timeout`), no attempt spent. Stale: recorded, nothing changes |
-| `TimerFired(VerifierDeadline)` | Current: → `blocked`. Stale: as above |
-| `UserMessage` | The verification is abandoned; → `queued`, `Delegate`; no attempt counted |
-| `Cancel` | → `cancelled` |
+| `CiReported` | The report is recorded as a `ci_result`. If it is about the pushed commit, CI is required and the report counts, it also settles the source: all required sources passed → `done`; a failure with `attempt < max` → `queued`, `attempt + 1`, a `rework` event and a `Delegate` with the findings; a failure on the last attempt → `failed`. A report for another commit or repository: the card only, nothing else changes |
+| `VerifierReported` | Same, for the verifier source. Only the answer to the current `(attempt, verification)` counts; any other is recorded as a `check_result` marked `stale` and changes nothing |
+| `TimerFired(CiDeadline)` | Current (`attempt` and `verification` match, CI still pending): → `blocked` (`ci_timeout`), no attempt spent. Stale: nothing |
+| `TimerFired(VerifierDeadline)` | Current: → `blocked` (`verifier_timeout`). Stale: nothing |
+| `UserMessage`, `UiAction` | The verification is abandoned; → `queued`, `Delegate`; no attempt counted. The facts about the pushed commit stay, so a CI result for it still counts in the next verification |
+| `Cancel` | → `cancelled` at once (the agent's task is over, so there is nothing to ask it to cancel) |
+| `DeliveryFailed`, retryable | → `blocked` (hold `verifier_failed`); permanent → `failed` |
+| Agent artifact or message | Appended; the ledger is frozen (what is checked is what was pushed when the agent finished) |
+| Agent status other than `failed`, `rejected`, `canceled` | Nothing: a repeat or a late update of a task that is over |
 | `CiReported` on `done` / `failed` / `cancelled` | Only the `ci_result` card is appended |
+
+The job also carries a `verification` counter that grows every time a thread enters `verifying`. A user
+message abandons a verification without using an attempt, so the next one has the same `attempt`; timers
+and verdicts name the `verification` they belong to, which is how a leftover of the abandoned one is
+recognised as stale.
 
 `completed` from `queued` or `working` goes to `verifying` instead of `done` when the gate requires
 anything. There is no `reworking` state: a rework is `queued` or `working` with `attempt > 1`. The state
@@ -511,7 +523,7 @@ compiler, not by convention. The public surface that matters, as in `crates/core
 ```rust
 // crate `orch-core` — types + one function. No I/O.
 
-pub enum ThreadState { Queued, Working, Blocked, Done, Failed, Cancelled }
+pub enum ThreadState { Queued, Working, Verifying, Blocked, Done, Failed, Cancelled }
 
 /// Everything that can happen to a thread, already protocol-neutral.
 pub enum Input {
@@ -531,15 +543,16 @@ pub enum Command {
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
-pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_) }
+pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // a user message on a finished thread
     InvalidInState { state: ThreadState, input: &'static str }, // a late agent update
 }
 
-pub fn transition(state: &ThreadState, input: &Input)
-    -> Result<(ThreadState, Vec<Command>), TransitionError>;
+pub fn transition(snapshot: &Snapshot, input: &Input)
+    -> Result<(Snapshot, Vec<Command>), TransitionError>;   // Snapshot = state + job, below
 ```
 
 An agent is a configured A2A agent-card URL and nothing host-specific. `AgentEndpoint { id, transport }`
@@ -568,30 +581,40 @@ the JSON. A release selection travels as
 `AgentTarget.release` and is only accepted when the *live* card advertises the release-channels
 extension (ADR 0008).
 
-**Planned, specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
-[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): the core moves from
-`transition(&ThreadState, &Input)` to a snapshot that carries the job ledger, and the enums grow. Not in
-the code; the shapes are the design and may differ in detail:
+**Built** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): the core takes and returns a snapshot
+that carries the job ledger, and the enums grew. As in `crates/core/src`:
 
 ```rust
 pub struct Snapshot { pub state: ThreadState, pub job: Job }
 pub fn transition(s: &Snapshot, i: &Input) -> Result<(Snapshot, Vec<Command>), TransitionError>;
 
-pub struct Job { gate: GatePolicy, attempt: u32, pushed: Option<PushedRef>,
-                 results: Vec<CheckResult>, hold: Option<Hold> }
+pub struct Job {
+    gate: GatePolicy, attempt: u32, verification: u32, task: Option<String>,
+    pushed: Option<PushedRef>, results: Vec<CheckResult>, hold: Option<Hold>,
+}
+pub struct GatePolicy {
+    require: BTreeSet<CheckSource>, max_attempts: u32, ci: CiPolicy /* required names, timeout */,
+    verifier: Option<AgentId>, verifier_timeout: SignedDuration,
+}
 pub enum CheckSource { Ci, AgentChecks, Verifier }
 
 ThreadState += Verifying
-Input       += CiReported(CiReport) | VerifierReported { attempt, verdict } | TimerFired(Timer)
-Timer        = CiDeadline { attempt } | VerifierDeadline { attempt }
+Input       += CiReported(CiReport) | VerifierReported { attempt, verification, verdict } | TimerFired(Timer)
+Timer        = CiDeadline { attempt, verification } | VerifierDeadline { attempt, verification }
 Command     += Watch { key } | Schedule { after: SignedDuration, timer }
-             | RequestVerification { attempt, verifier, pushed, text }
-EventBody   += CiResult | CheckResult { source, attempt, status, findings } | Rework { attempt, max_attempts, findings }
+             | RequestVerification { attempt, verification, verifier, pushed, text }
+EventBody   += CiResult(CiReport) | CheckResult { source, attempt, status, findings, .. } | Rework { attempt, max_attempts, findings }
 ```
 
 The gate policy is copied into `Job` at thread creation, so a configuration change never touches a running
-job. A pure function of the core recognises the agent's `branch` artifact (sets `pushed`, emits
-`Watch { ci:<repo-key>@<sha> }`) and `checks` artifact. There is still no wildcard arm anywhere.
+job. Pure functions of the core recognise the agent's `branch` artifact (sets `pushed`, emits
+`Watch { ci:<repo-key>@<sha> }`) and `checks` artifact (`recognise_artifact`), and normalise repository
+keys (`repo_key`). Findings are capped at 20 items and 16 KiB per source (`cap_findings`) and quoted as
+untrusted data in the rework prompt, which the core writes. `Job::default()` (the `{}` a row gets from the
+database) has no gate. There is still no wildcard arm anywhere. Where the code differs from the ADR's
+sketch: the `verification` counter and the `task` (the user's request, kept for the verifier's prompt)
+are additions, and a `check_result` may carry `stale: true`.
 
 **Planned, not yet specified** (in the earlier design): an `Origin` on every input (user, A2A, webhook,
 timer; MCP's is `user_message.origin`, above), inputs for `Approval` and `ToolResult`, and the commands
@@ -841,27 +864,28 @@ erDiagram
 | `a2a_bindings` | The A2A context id (the thread id), the current task id and state, the serving revision | Written with the commit that causes it, or by `mark_sent` |
 | `outbox` | Commands to dispatch (`delegate`, `cancel`) | Status, attempts, `next_attempt_at`, lease owner and expiry, `sent_at`; two partial indexes over the open rows |
 
-**Planned, specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
-[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)). Not in the code. Two migrations,
-their numbers fixed now so that parallel slices do not collide:
+**Specified** ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+[ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)). Two migrations, their numbers fixed
+now so that parallel slices do not collide:
 
-- **`0003` (slice 2):** `threads.job jsonb NOT NULL DEFAULT '{}'`, written in the same commit as `state`
-  under the same `version` compare-and-swap; the `threads.state` and `events.kind` `CHECK`s widened once
-  to every new value (`verifying`; `ci_result`, `check_result`, `rework`); `outbox.kind` gains `verify`
-  and `outbox` gains `task_id`.
-- **`0004` (slice 5):** the `inbox` and `watches` tables.
+- **`0003` (slice 2, built):** `threads.job jsonb NOT NULL DEFAULT '{}'`, written in the same commit as
+  `state` under the same `version` compare-and-swap (`Commit.job`); the `threads.state` and `events.kind`
+  `CHECK`s widened once to every new value (`verifying`; `ci_result`, `check_result`, `rework`);
+  `outbox.kind` gains `verify` and `outbox` gains a nullable `task_id`. The port types for the `verify`
+  outbox kind come with the dispatcher's verifier path (slice 10).
+- **`0004` (slice 5, planned):** the `inbox` and `watches` tables.
 
 ```mermaid
 erDiagram
   threads ||--o{ inbox : "correlation, through watches"
   threads ||--o{ watches : "key to thread"
   threads {
-    jsonb job "PLANNED 0003: gate, attempt, pushed, results, hold"
-    text state "PLANNED 0003: + verifying"
+    jsonb job "0003: gate, attempt, verification, pushed, results, hold"
+    text state "0003: + verifying"
   }
   outbox {
-    text kind "PLANNED 0003: + verify"
-    text task_id "PLANNED 0003"
+    text kind "0003: + verify"
+    text task_id "0003"
   }
   inbox {
     uuid id PK

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, ThreadId, ThreadRecord, UserId};
+use orch_core::{Event, Job, ThreadId, ThreadRecord, UserId};
 use orch_ports::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxStats, StoreError, ThreadStore,
@@ -91,6 +91,10 @@ fn plus(t: Timestamp, d: Duration) -> Timestamp {
 /// `outbox.attempts` is an `integer`; a lease past `i32::MAX` matches no row.
 fn attempt(lease: &Lease) -> i32 {
     i32::try_from(lease.attempt).unwrap_or(i32::MAX)
+}
+
+fn job_json(job: &Job) -> Result<serde_json::Value, StoreError> {
+    serde_json::to_value(job).map_err(|e| StoreError::corrupt_with("cannot serialise the job", e))
 }
 
 type Tx = Transaction<'static, Postgres>;
@@ -227,8 +231,8 @@ impl ThreadStore for PgStore {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         // Creation is version 1 whatever the first commit does.
         let inserted = sqlx::query(
-            "INSERT INTO threads (id, owner, title, agent_id, release, state, version, last_seq, \
-             created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, 0, $7, $7)",
+            "INSERT INTO threads (id, owner, title, agent_id, release, state, job, version, \
+             last_seq, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, $8, $8)",
         )
         .bind(new.id.0)
         .bind(new.owner.as_str())
@@ -236,6 +240,7 @@ impl ThreadStore for PgStore {
         .bind(new.target.agent_id.as_str())
         .bind(new.target.release.as_deref())
         .bind(enum_str(&first.new_state)?)
+        .bind(job_json(first.job.as_ref().unwrap_or(&Job::default()))?)
         .bind(to_db(new.now))
         .execute(&mut *tx)
         .await;
@@ -406,15 +411,19 @@ impl ThreadStore for PgStore {
         let has_outbox = !commit.outbox.is_empty();
         let events = insert_events(&mut tx, thread, last_seq + 1, commit.events).await?;
         let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
+        // The job is written with the state, under the same lock and version check; a commit
+        // without one leaves the stored job alone.
+        let job = commit.job.as_ref().map(job_json).transpose()?;
         let row = sqlx::query(concat!(
-            "UPDATE threads SET state = $2, version = version + 1, last_seq = $3, updated_at = $4 \
-             WHERE id = $1 RETURNING ",
+            "UPDATE threads SET state = $2, job = COALESCE($5, job), version = version + 1, \
+             last_seq = $3, updated_at = $4 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(thread.0)
         .bind(enum_str(&commit.new_state)?)
         .bind(new_last_seq)
         .bind(to_db(commit.now))
+        .bind(job)
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;

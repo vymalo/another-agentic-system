@@ -4,7 +4,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    ThreadId, ThreadRecord, ThreadState, UserId,
+    Job, ThreadId, ThreadRecord, ThreadState, UserId,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -120,6 +120,10 @@ pub struct BindingUpdate {
 pub struct Commit {
     /// The thread state after the commit.
     pub new_state: ThreadState,
+    /// The job ledger after the commit, written in the same transaction as the state and under
+    /// the same version check; `None` leaves the stored job as it is. On
+    /// [`ThreadStore::create_thread`] `None` starts the thread with [`Job::default`] (no gate).
+    pub job: Option<Job>,
     /// Events to append (seq assigned by the store, contiguous).
     pub events: Vec<NewEvent>,
     /// Outbox rows to insert as `pending`, due immediately.
@@ -138,6 +142,9 @@ pub struct Commit {
 }
 
 /// Result of [`ThreadStore::commit`].
+// One value per commit, matched at a handful of call sites; the thread carries its job ledger,
+// which makes `Applied` large. Boxing it would only add a deref to every one of them.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitOutcome {
     /// Written.
@@ -381,7 +388,7 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
 
-    /// Atomically inserts the thread (state and events from `first`, version 1), its binding
+    /// Atomically inserts the thread (state, job and events from `first`, version 1), its binding
     /// row (agent from the target, context from `new`, then `first.binding`), the events
     /// (seq 1..) and the outbox rows.
     fn create_thread(
@@ -412,8 +419,9 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// version, so a fenced worker never retries); `version != expected_version` gives
     /// [`StoreError::VersionConflict`] (nothing written); an idempotency key already present
     /// in the thread's log gives [`CommitOutcome::Duplicate`] (nothing written); otherwise
-    /// appends the events with `seq = last_seq + 1..`, sets state, bumps version, `last_seq`
-    /// and `updated_at`, inserts the outbox rows and applies the binding update.
+    /// appends the events with `seq = last_seq + 1..`, sets state (and the job, when the commit
+    /// carries one), bumps version, `last_seq` and `updated_at`, inserts the outbox rows and
+    /// applies the binding update.
     fn commit(
         &self,
         thread: ThreadId,
