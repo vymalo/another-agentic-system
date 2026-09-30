@@ -98,6 +98,20 @@ request, no `Mcp-Session-Id`, no state in the process, so any replica serves any
 rmcp's own client: the `initialize` handshake of the older protocol versions and the `server/discover` lifecycle of
 `2026-07-28`. *Unverified:* Claude Code and opencode against it (not tried).
 
+### Response framing
+
+A call is answered with **one `application/json` response** (rmcp's `json_response`), sent once the tool has answered,
+the answer in the same write as the head. Only `wait_for_job` with a `progressToken` is a `text/event-stream`, and its
+head goes out with the first notification. The head is never sent before the tool has said anything, because a Go
+reverse proxy (Caddy; oauth2-proxy is *unverified*) can drop the upstream connection right after writing the head to its client: when
+the server answers before the proxy has finished reading the request body it forwarded, the proxy's own server closes
+that body and its transport takes the failed read for a failed request. Whatever came after the head is lost; with an
+event stream opened before the answer, that was the answer (coder-e2e's `FAIL start_job: {}`, with rmcp logging "failed
+to send pending response during drain"). Reproduced on 2026-09-30 through Caddy 2.11.4 and Go 1.24's
+`httputil.ReverseProxy` over a veth pair under CPU load. An answer larger than the proxy's first read (about 4 KiB,
+`tools/list` is about 6 KiB) can still be cut, so the dev edge also buffers request bodies (`dev/Caddyfile`), which stops
+the proxy from dropping the connection at all.
+
 ## Features and environment
 
 No Cargo features. The crate reads no environment: the binary reads these and builds an `McpConfig` from them.
@@ -122,6 +136,7 @@ No Cargo features. The crate reads no environment: the binary reads these and bu
 | `tests/wait.rs` | the wait loop with no network, on a paused clock (nothing sleeps to synchronise; a test waits on the sink): progress counts up one per event and the last event returns the job; a timeout says where to resume and the next call loses nothing; a timeout of 0 still reports the log; the heartbeat shares the counter; a finished job returns at once and `after_seq: 0` replays it; a blocked job returns and the answer lets the next wait finish; a shutdown ends the call and another replica continues; a client that goes away ends it; another user's job is not found |
 | `tests/wait_http.rs` | `wait_for_job` over HTTP with an rmcp client that records the notifications: increasing integer counters and one notification per event, then the finished job; a timeout of 0 and a resume that together report every event once; a blocked job and its answer; a heartbeat while the agent is held; `timeout_secs` cut to the bound; refusals |
 | `tests/wait_limits.rs` | the per-user and per-process caps (and that another user's share is their own), a client that hangs up with and without a progress token gives its slot back, a wait without a token returns within a heartbeat with where to resume (and with a token it stays open), a replica that is shutting down says `interrupted` with `retry_after_secs` |
+| `tests/framing.rs` | over raw TCP and HTTP: a client that drops the connection as soon as it has the response head (as a Go reverse proxy can) still has the whole answer, for a tool that takes a while (a held `wait_for_job`) and for `start_job`; a tool answer, `tools/list` included, is one `application/json` response with a `Content-Length`; `wait_for_job` with a progress token is still an event stream with its notifications |
 | `tests/tools.rs` | an in-process rmcp client on the in-memory stack: `list_agents`; `start_job` (default agent, title, `origin: mcp` in the log, refusals before any write); an idempotent `start_job` (sequential, concurrent, per user), a retry that says something else is refused; `start_job.gate` (taken, refused with the reason, a retry with another gate refused); a derived job id that another user's thread holds; `web_url`; `get_job` to `done` with the pull request; another user's job is "no such job" for `get_job`, `wait_for_job`, `answer` and `cancel_job`; `answer` on a blocked job and on a finished one; `cancel_job` on a running and on a finished job; the `2026-07-28` handshake |
 
 The end-to-end tests over the real dispatcher and the A2A adapter, on the in-memory store and on Postgres, and across
