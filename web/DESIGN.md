@@ -23,7 +23,7 @@ structure, not the branding.
 
 What we reject: bordered cards around every event, uppercase "ARTIFACT" badges, raw JSON names
 (`pull_request`), status lines repeating the agent's words, a filled blue user bubble, gradients
-beyond the one brand mark.
+beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini's home).
 
 ## Layout
 
@@ -37,8 +37,10 @@ beyond the one brand mark.
 - **Composer** sticky at the bottom of the column, a 24 px-radius surface with a soft shadow: the
   text (1 to 8 lines), then a row with the agent pill on the left and a 36 px round Send / Stop
   button on the right. A one-line disclaimer under it.
-- **Empty state** (new chat): the mark, a two-line greeting, the composer in the middle of the page
-  and suggestion chips under it; the agent and release pickers are pills inside the composer.
+- **Empty state** (new chat): the mark, a greeting and what the chosen agent does, the composer in
+  the middle of the page over a faint radial glow of the accent, and suggestion chips under it (a
+  chip fills the box, it does not send); the agent and release pickers are pills inside the
+  composer.
 
 ## A turn
 
