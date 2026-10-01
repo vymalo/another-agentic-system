@@ -24,10 +24,11 @@ import {
 
 const DIR = "e2e/__screens__";
 
-// each device starts from an empty mock, so its sidebar holds the threads of its own scenarios
-test.beforeAll(async () => {
+// each color scheme of each device starts from an empty mock, so its sidebar holds the threads of
+// its own scenarios, as many in the dark shots as in the light ones (a doc shows the pair)
+async function resetMock() {
   await fetch(`${MOCK_URL}/__mock/reset`, { method: "POST" });
-});
+}
 
 async function shot(page: Page, name: string) {
   const device = test.info().project.name;
@@ -36,6 +37,8 @@ async function shot(page: Page, name: string) {
   // the caret and the scroll-to-bottom button's fade are noise in a still
   await page.mouse.move(0, 0);
   await page.waitForTimeout(250);
+  // a page that scrolled itself (the document, not the chat) is a still with its header cut off
+  expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(0);
   await page.screenshot({
     path: `${DIR}/${device}-${scheme}-${name}.png`,
     animations: "disabled",
@@ -53,6 +56,7 @@ async function send(page: Page, text: string) {
 for (const scheme of ["light", "dark"] as const) {
   test.describe(scheme, () => {
     test.use({ colorScheme: scheme });
+    test.beforeAll(resetMock);
 
     test("empty thread", async ({ page }) => {
       await page.goto("/");
@@ -81,7 +85,7 @@ for (const scheme of ["light", "dark"] as const) {
       // the words of the reply as the agent writes them: a draft after the turn's parts, with its caret
       await startThread(page, "Write the plan for the login redirect");
       const draft = conversation(page).locator('[data-slot="agent-draft"]');
-      await expect(draft).toContainText("then make the smallest change");
+      await expect(draft).toContainText("fix the off-by-one in the loop"); // the last piece the mock writes
       await shot(page, "reply-writing");
       await page.getByRole("button", { name: "Stop" }).click();
       await expect(badge(page)).toHaveText("Stopped");
@@ -151,6 +155,11 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(page.locator('[data-slot="mermaid-image"]')).toBeVisible();
       await page.locator('[data-slot="mermaid-image"]').scrollIntoViewIfNeeded();
       await shot(page, "cards-mermaid");
+      // the answer is taller than the screen: the cards (their heading at the top) are above the graph
+      await page
+        .getByRole("heading", { name: "Three ways to keep a session" })
+        .scrollIntoViewIfNeeded();
+      await shot(page, "cards");
     });
 
     test("panel", async ({ page }) => {
