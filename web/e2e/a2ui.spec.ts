@@ -89,8 +89,8 @@ test.describe("A2UI surfaces", () => {
     await expect(log.getByRole("region", { name: /^Interface from/ })).toHaveCount(0);
     // nothing of it is drawn: not the title, not the button, not a link
     await expect(log.getByText("Not shown", { exact: true })).toHaveCount(0);
-    await expect(log.getByRole("button", { name: "Open" })).toHaveCount(0);
-    await expect(log.getByRole("link", { name: "Open" })).toHaveCount(0);
+    await expect(log.getByRole("button", { name: "Open", exact: true })).toHaveCount(0);
+    await expect(log.getByRole("link", { name: "Open", exact: true })).toHaveCount(0);
     // the raw operations are there, as text, behind a disclosure
     await log.getByText("Raw operations").click();
     await expect(log.getByText("javascript:alert(1)")).toBeVisible();

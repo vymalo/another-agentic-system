@@ -14,7 +14,7 @@ import { mountSurfaces, stubLayout } from "@/features/chat/components/surface/te
 import { type GoldenFrame, loadGolden, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import type { CiContent } from "@/features/chat/lib/agui/vymalo";
 import { CI_CONCLUSIONS, conclusionLabel } from "@/features/chat/lib/ci";
-import { CiCard, NAME_PREVIEW, SUMMARY_PREVIEW } from "./ci-card";
+import { CiStep, NAME_PREVIEW, SUMMARY_PREVIEW } from "./ci-step";
 
 configure({ asyncUtilTimeout: 10_000 });
 beforeAll(stubLayout);
@@ -33,7 +33,8 @@ const ci = (over: Partial<CiContent> = {}): CiContent => ({
   ...over,
 });
 
-const card = () => screen.getByRole("region", { name: /^CI: / });
+// a report is a step of the turn: a list item named by the check and its conclusion
+const card = () => screen.getByRole("listitem", { name: /^CI: / });
 const iconOf = (el: HTMLElement) =>
   [...(el.querySelector("[data-slot='badge'] svg")?.classList ?? [])].find((c) =>
     c.startsWith("lucide-"),
@@ -42,7 +43,7 @@ const iconOf = (el: HTMLElement) =>
 describe("the CI card", () => {
   it("says the conclusion in words, names the check, and gives the commit, its provider and repository", () => {
     render(
-      <CiCard
+      <CiStep
         data={ci({
           branch: "agent/fix",
           url: "https://ci.example.com/runs/1",
@@ -61,13 +62,19 @@ describe("the CI card", () => {
     expect(view.getByText("Branch", { exact: false })).toBeTruthy();
     expect(view.getByText("Generic webhook · github.com/acme/demo")).toBeTruthy();
     expect(view.getByText("1 test failed: tests::login")).toBeTruthy();
-    expect(view.getByText("orchestrator")).toBeTruthy();
+    // the orchestrator is not an author worth a label on its own reports
+    expect(view.queryByText("orchestrator")).toBeNull();
     expect(card().getAttribute("data-conclusion")).toBe("failure");
     expect(card().getAttribute("data-passed")).toBe("false");
   });
 
+  it("an agent that reported is named", () => {
+    render(<CiStep data={ci({ actor: { type: "agent", name: "verifier", revision: "v-r3" } })} />);
+    expect(within(card()).getByText("verifier · v-r3")).toBeTruthy();
+  });
+
   it("names GitHub as GitHub", () => {
-    render(<CiCard data={ci({ provider: "github", conclusion: "success", passed: true })} />);
+    render(<CiStep data={ci({ provider: "github", conclusion: "success", passed: true })} />);
     expect(within(card()).getByText("GitHub · github.com/acme/demo")).toBeTruthy();
   });
 
@@ -76,7 +83,7 @@ describe("the CI card", () => {
     const tones: Record<string, string> = {};
     for (const conclusion of CI_CONCLUSIONS) {
       const passed = ["success", "neutral", "skipped"].includes(conclusion);
-      const { unmount } = render(<CiCard data={ci({ conclusion, passed })} />);
+      const { unmount } = render(<CiStep data={ci({ conclusion, passed })} />);
       const label = conclusionLabel(conclusion);
       expect(card().getAttribute("aria-label")).toBe(`CI: ci/build, ${label.toLowerCase()}`);
       const badge = within(card()).getByText(label).closest("[data-slot='badge']") as HTMLElement;
@@ -109,17 +116,17 @@ describe("the CI card", () => {
 
   it("a conclusion it does not know is shown by its name; `passed` picks the colour", () => {
     const { rerender } = render(
-      <CiCard data={ci({ conclusion: "partial_success", passed: true })} />,
+      <CiStep data={ci({ conclusion: "partial_success", passed: true })} />,
     );
     expect(within(card()).getByText("Partial success")).toBeTruthy();
     expect(card().getAttribute("aria-label")).toBe("CI: ci/build, partial success");
     expect(within(card()).getByText("Partial success").className).toContain("text-success");
-    rerender(<CiCard data={ci({ conclusion: "melted", passed: false })} />);
+    rerender(<CiStep data={ci({ conclusion: "melted", passed: false })} />);
     expect(within(card()).getByText("Melted").className).toContain("text-destructive");
   });
 
   it("branch, summary and link are left out when the report has none", () => {
-    const { container } = render(<CiCard data={ci()} />);
+    const { container } = render(<CiStep data={ci()} />);
     expect(container.querySelector("[data-slot='ci-branch']")).toBeNull();
     expect(container.querySelector("[data-slot='ci-summary']")).toBeNull();
     expect(within(card()).queryByRole("link")).toBeNull();
@@ -127,14 +134,14 @@ describe("the CI card", () => {
 
   describe("View run", () => {
     it("is a link to the run when the url is http(s): a new tab, without opener or referrer", () => {
-      render(<CiCard data={ci({ url: "https://ci.example.com/runs/1" })} />);
+      render(<CiStep data={ci({ url: "https://ci.example.com/runs/1" })} />);
       const link = within(card()).getByRole("link", { name: /^View run/ });
       expect(link.getAttribute("href")).toBe("https://ci.example.com/runs/1");
       expect(link.getAttribute("target")).toBe("_blank");
       expect(link.getAttribute("rel")).toBe("noopener noreferrer");
       expect(link.textContent).toContain("View run");
       cleanup();
-      render(<CiCard data={ci({ url: "http://ci.example.com/runs/1" })} />);
+      render(<CiStep data={ci({ url: "http://ci.example.com/runs/1" })} />);
       expect(
         within(card())
           .getByRole("link", { name: /^View run/ })
@@ -143,7 +150,7 @@ describe("the CI card", () => {
     });
 
     it("is not drawn without a url", () => {
-      render(<CiCard data={ci()} />);
+      render(<CiStep data={ci()} />);
       expect(screen.queryByRole("link")).toBeNull();
       expect(screen.queryByText(/View run/)).toBeNull();
     });
@@ -165,7 +172,7 @@ describe("the CI card", () => {
         "https://user:pass@ci.example.com/runs/1",
         "https://ci.example.com\\@evil.example/",
       ]) {
-        const { container, unmount } = render(<CiCard data={ci({ url })} />);
+        const { container, unmount } = render(<CiStep data={ci({ url })} />);
         expect(container.querySelector("a"), url).toBeNull();
         expect(container.querySelector("[href], [src], [action]"), url).toBeNull();
         expect(container.textContent).not.toContain("View run");
@@ -181,7 +188,7 @@ describe("the CI card", () => {
     const summary =
       "# heading\n- item\n\n> quote `code` <a href='https://evil.example'>go</a> https://auto.example/link";
     const { container } = render(
-      <CiCard data={ci({ name, branch, summary, provider: "<b>x</b>", repository: "<i>y</i>" })} />,
+      <CiStep data={ci({ name, branch, summary, provider: "<b>x</b>", repository: "<i>y</i>" })} />,
     );
     const view = within(card());
     expect(view.getByText(name)).toBeTruthy();
@@ -189,8 +196,9 @@ describe("the CI card", () => {
     expect(container.querySelector("[data-slot='ci-summary']")?.textContent).toBe(summary);
     expect(view.getByText("<b>x</b> · <i>y</i>")).toBeTruthy();
     // none of it became an element: the only `code` is the commit, and there is no link
+    // (the step itself is the one `li`; nothing inside it is markup)
     expect(
-      container.querySelector(
+      card().querySelector(
         "script, img, a, b, i, strong, em, h1, ul, li, blockquote, iframe, svg[onload]",
       ),
     ).toBeNull();
@@ -200,7 +208,7 @@ describe("the CI card", () => {
 
   it("a long summary is cut, with a control that shows all of it and takes it back", () => {
     const long = `${"x".repeat(SUMMARY_PREVIEW)}TAIL-OF-THE-SUMMARY`;
-    const { container } = render(<CiCard data={ci({ summary: long })} />);
+    const { container } = render(<CiStep data={ci({ summary: long })} />);
     const summary = container.querySelector("[data-slot='ci-summary']") as HTMLElement;
     expect(summary.textContent).not.toContain("TAIL-OF-THE-SUMMARY");
     expect(summary.textContent).toContain("…");
@@ -215,7 +223,7 @@ describe("the CI card", () => {
   });
 
   it("a short summary has no control", () => {
-    const { container } = render(<CiCard data={ci({ summary: "3 tests passed" })} />);
+    const { container } = render(<CiStep data={ci({ summary: "3 tests passed" })} />);
     expect(
       within(container.querySelector("[data-slot='ci-summary']") as HTMLElement).queryByRole(
         "button",
@@ -225,7 +233,7 @@ describe("the CI card", () => {
 
   it("a very long name and branch are cut, the whole name stays in the title", () => {
     const name = `${"n".repeat(NAME_PREVIEW)}END-OF-THE-NAME`;
-    const { container } = render(<CiCard data={ci({ name, branch: `${"b".repeat(300)}END` })} />);
+    const { container } = render(<CiStep data={ci({ name, branch: `${"b".repeat(300)}END` })} />);
     const shown = container.querySelector("[data-slot='ci-name']") as HTMLElement;
     expect(shown.textContent).not.toContain("END-OF-THE-NAME");
     expect(shown.textContent).toContain("…");
@@ -236,7 +244,7 @@ describe("the CI card", () => {
 
   it("a commit that is not a hash is cut, not trusted", () => {
     render(
-      <CiCard
+      <CiStep
         data={ci({ shortSha: "<script>alert(1)</script>", sha: "<script>alert(1)</script>" })}
       />,
     );
@@ -296,8 +304,8 @@ function activities(list: [string, string, unknown][], first = 1): GoldenFrame[]
   ];
 }
 
-const cards = () => screen.queryAllByRole("region", { name: /^CI: / });
-const checks = () => screen.queryAllByRole("region", { name: /^Check: / });
+const cards = () => screen.queryAllByRole("listitem", { name: /^CI: / });
+const checks = () => screen.queryAllByRole("listitem", { name: /^Check: / });
 
 describe("the CI card in the transcript", () => {
   it("the ci golden: a card for each report, next to the check it decided, in the order of the log", async () => {
@@ -324,18 +332,18 @@ describe("the CI card in the transcript", () => {
         .getByRole("link", { name: /^View run/ })
         .getAttribute("href"),
     ).toBe("https://ci.example.com/runs/2");
-    expect(within(red).getByText("orchestrator")).toBeTruthy();
+    expect(within(red).queryByText("orchestrator")).toBeNull();
 
     // the gate's own cards are still there: pending was replaced by the answer, one per attempt
     expect(checks().map((c) => c.getAttribute("aria-label"))).toEqual([
       "Check: CI, attempt 1, failed",
       "Check: CI, attempt 2, passed",
     ]);
-    // document order: check, CI report, divider, check, CI report
+    // document order: check, CI report, rework, check, CI report
     const log = screen.getByRole("log", { name: "Conversation" });
     const order = [
       ...log.querySelectorAll(
-        "[data-slot='check-card'], [data-slot='ci-card'], [data-slot='rework-divider']",
+        "[data-slot='check-card'], [data-slot='ci-card'], [data-slot='rework-step']",
       ),
     ].map(
       (n) =>
@@ -344,7 +352,7 @@ describe("the CI card in the transcript", () => {
     expect(order).toEqual([
       "check-card:failed",
       "ci-card:failure",
-      "rework-divider:",
+      "rework-step:",
       "check-card:passed",
       "ci-card:success",
     ]);

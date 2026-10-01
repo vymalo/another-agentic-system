@@ -22,14 +22,23 @@ function Finding({ text }: { text: string }) {
  * What a source found wrong, as plain text. Long findings are cut with an expand control, and a
  * long list is folded after {@link FINDINGS_SHOWN}.
  */
-export function FindingsList({ findings }: { findings: readonly string[] }) {
+export function FindingsList({
+  findings,
+  heading = true,
+}: {
+  findings: readonly string[];
+  /** "Findings (n)" over the list; off where a disclosure's summary says it already. */
+  heading?: boolean;
+}) {
   const [all, setAll] = useState(false);
   if (findings.length === 0) return null;
   const folded = !all && findings.length > FINDINGS_SHOWN;
   const shown = keyed(folded ? findings.slice(0, FINDINGS_SHOWN) : findings);
   return (
     <div data-slot="findings" className="flex flex-col gap-1">
-      <p className="text-xs font-medium text-muted-foreground">Findings ({findings.length})</p>
+      {heading ? (
+        <p className="text-xs font-medium text-muted-foreground">Findings ({findings.length})</p>
+      ) : null}
       <ul className="list-disc space-y-1 pl-5">
         {shown.map((f) => (
           <Finding key={f.key} text={f.text} />

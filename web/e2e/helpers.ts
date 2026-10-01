@@ -32,8 +32,9 @@ export async function expectNoHorizontalScroll(page: Page) {
 /**
  * Shared locators. Specs go through these (never a CSS selector), so a markup change touches this
  * file only. They rely on roles and accessible names: labels `Agent`, `Release`, `Message`; buttons
- * `Send`, `Cancel`, `New thread`, `Threads` (phone), `Load older`, `Retry`; the `log`
- * "Conversation"; the `status` "Thread state: ..."; the `navigation` "Threads".
+ * `Send`, `Stop`, `Threads` (phone), `Thread options`, `Load older`, `Retry`; the link `New chat`;
+ * the `log` "Conversation"; the `status` "Thread state: ..."; the `navigation` "Threads"; a check
+ * or CI report is a step, a `listitem` named "Check: …" or "CI: …".
  */
 export const badge = (page: Page) => page.getByRole("status", { name: /^Thread state:/ });
 
@@ -46,7 +47,7 @@ export const errorLine = (page: Page) =>
 /** The thread list. On a phone it is collapsed until `openThreadList` runs. */
 export const threadList = (page: Page) => page.getByRole("navigation", { name: "Threads" });
 
-/** One entry per thread in the list, in order (the "New thread" and "Load older" buttons excluded). */
+/** One entry per thread in the list, in order (the "New chat" link and "Load older" excluded). */
 export const threadRows = (page: Page) => threadList(page).getByRole("listitem");
 
 /** Opens the thread list where it is a sheet (a phone); a no-op where it is always visible. */
@@ -55,12 +56,20 @@ export async function openThreadList(page: Page) {
   if (await toggle.isVisible()) await toggle.click();
 }
 
-/** The agent message (text bubble) of the log whose text contains `text`. */
+/** The agent turn of the log whose text contains `text` (its words, its steps and its cards). */
 export const agentMessage = (page: Page, text: string) =>
-  conversation(page).locator('[data-slot="agent-message"]', { hasText: text });
+  conversation(page).locator('[data-slot="agent-turn"]', { hasText: text });
 
-/** `coder · coder-r47`: the actor label inside a message. */
-export const actorLabel = (message: Locator) => message.locator('[data-slot="actor-label"]');
+/** `coder · coder-r47`: the agent's name and revision, once, at the top of its turn. */
+export const actorLabel = (turn: Locator) => turn.locator('[data-slot="actor-label"]').first();
+
+/** "Export JSON", an item of the thread's overflow menu: opens the menu and returns the item. */
+export async function exportMenuItem(page: Page): Promise<Locator> {
+  const item = page.getByRole("menuitem", { name: /Export JSON|Exporting…/ });
+  if (!(await item.isVisible())) await page.getByRole("button", { name: "Thread options" }).click();
+  await expect(item).toBeVisible();
+  return item;
+}
 
 /** The option a native `<select>` shows. */
 export const selectedOption = (select: Locator) => select.getByRole("option", { selected: true });

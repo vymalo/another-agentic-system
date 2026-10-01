@@ -10,6 +10,12 @@ import { badge, conversation, openThreadList, startThread } from "./helpers";
 
 const DIR = "e2e/__screens__";
 
+// each device starts from an empty mock, so its sidebar holds the threads of its own scenarios
+test.beforeAll(async () => {
+  // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback mock server
+  await fetch("http://127.0.0.1:4010/__mock/reset", { method: "POST" });
+});
+
 async function shot(page: Page, name: string) {
   const device = test.info().project.name;
   const dark = await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches);

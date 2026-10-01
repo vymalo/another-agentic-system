@@ -64,7 +64,7 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   };
 
   return (
-    <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs">
+    <div className="aui-code-header-root border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
@@ -126,7 +126,7 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   p: ({ className, ...props }) => (
-    <p className={cn("aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0", className)} {...props} />
+    <p className={cn("aui-md-p my-3 leading-7 first:mt-0 last:mb-0", className)} {...props} />
   ),
   // Agent text is untrusted: every link opens in a new tab without an opener. Raw HTML stays off
   // (react-markdown's default), and react-markdown drops javascript: and data: URLs.
@@ -153,7 +153,7 @@ const defaultComponents = memoizeMarkdownComponents({
   ul: ({ className, ...props }) => (
     <ul
       className={cn(
-        "aui-md-ul marker:text-muted-foreground my-3 ms-5 list-disc [&>li]:mt-1",
+        "aui-md-ul marker:text-muted-foreground my-3 ms-5 list-disc [&>li]:mt-1.5",
         className,
       )}
       {...props}
@@ -182,7 +182,7 @@ const defaultComponents = memoizeMarkdownComponents({
   th: ({ className, ...props }) => (
     <th
       className={cn(
-        "aui-md-th bg-background text-foreground px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
+        "aui-md-th bg-muted text-foreground px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
         className,
       )}
       {...props}
@@ -207,7 +207,7 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   li: ({ className, ...props }) => (
-    <li className={cn("aui-md-li leading-relaxed", className)} {...props} />
+    <li className={cn("aui-md-li leading-7", className)} {...props} />
   ),
   strong: ({ className, ...props }) => (
     <strong className={cn("aui-md-strong font-semibold", className)} {...props} />
@@ -218,7 +218,7 @@ const defaultComponents = memoizeMarkdownComponents({
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
-        "aui-md-pre border-border/50 bg-background text-foreground overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed",
+        "aui-md-pre border-border bg-muted/40 text-foreground mb-4 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 font-mono text-[13px] leading-relaxed last:mb-0",
         className,
       )}
       {...props}
@@ -230,7 +230,7 @@ const defaultComponents = memoizeMarkdownComponents({
       <code
         className={cn(
           !isCodeBlock &&
-            "aui-md-inline-code border-border/50 bg-background text-foreground rounded-md border px-1.5 py-0.5 font-mono text-[0.85em]",
+            "aui-md-inline-code bg-muted text-foreground rounded-md px-1.5 py-0.5 font-mono text-[0.85em]",
           className,
         )}
         {...props}

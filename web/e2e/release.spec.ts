@@ -27,7 +27,8 @@ test("the selected release is sent with the new thread", async ({ page }) => {
   expect(body.forwardedProps).toEqual({ [RELEASE_CHANNELS_URI]: { release: "staging" } });
   expect(body.messages).toMatchObject([{ role: "user", content: "Use staging" }]);
   await expect(page).toHaveURL(/\/threads\//);
-  await expect(page.getByText("coder · staging")).toBeVisible();
+  // the agent's pill (top bar and composer) names the release, the turn names its revision
+  await expect(page.getByText("coder · staging").first()).toBeVisible();
   await expect(page.getByText("coder · coder-r51").first()).toBeVisible();
 });
 

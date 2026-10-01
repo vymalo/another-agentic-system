@@ -12,11 +12,11 @@ test("a second tab follows a run it did not start, and sees it cancelled from th
   await other.goto(page.url());
   await expect(badge(other)).toHaveText("Working…");
   await expect(conversation(other).getByText("slow task", { exact: true })).toBeVisible();
-  await expect(conversation(other).getByText("Working", { exact: true })).toBeVisible();
+  await expect(conversation(other).getByText("Started working", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(badge(other)).toHaveText("Stopped");
-  await expect(conversation(other).getByText("Cancelled", { exact: false }).first()).toBeVisible();
+  await expect(conversation(other).getByText("Stopped", { exact: true }).first()).toBeVisible();
   await expect(badge(page)).toHaveText("Stopped");
 });
 
@@ -39,9 +39,10 @@ test("an answer given in one tab reaches the other, which was waiting for it", a
   await expect(log.getByText("main", { exact: true })).toBeVisible();
   await expect(badge(other)).toHaveText("Done");
   await expect(log.getByText("answered: main")).toHaveCount(1);
-  // the question is the agent's words, said once; its status line no longer repeats them
+  // the question is the agent's words, said once (no status line repeats them), and it is no
+  // longer waiting for a reply
   await expect(log.getByText("Which branch?", { exact: true })).toHaveCount(1);
-  await expect(log.getByText("Needs input", { exact: true })).toHaveCount(1);
+  await expect(log.getByText("Waiting for your reply")).toHaveCount(0);
 });
 
 test("reloading a blocked thread offers the answer again", async ({ page }) => {

@@ -51,7 +51,7 @@ beyond the one brand mark.
   quiet check; a failure is a cross. Labels are human: "Started working", "Preparing the workspace",
   "Pushed agent/fix", "Checks passed", "Opened pull request #12", "Checks failed — trying again
   (2/3)". A command (`$ …`) is monospace in a light box, one line, with Show more. Findings open in
-  place. Past 12 steps the earliest fold behind "Show N earlier steps".
+  place. Past 30 steps the earliest fold behind "Show N earlier steps".
 - **Before the first event** a shimmering "Coder is starting…" line under the mark.
 - **Cards** (after the words): a pull request card (repository, number, title, branch chip, Open
   button), a file card; A2UI surfaces as they are. Errors are soft callouts in the flow, never

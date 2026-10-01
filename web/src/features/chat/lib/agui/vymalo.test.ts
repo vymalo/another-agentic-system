@@ -49,6 +49,8 @@ describe("reading an activity's content", () => {
         mimeType: "text/plain",
       }),
     ).toEqual({
+      // an artifact of an orchestrator that does not type them is a file
+      kind: "file",
       name: "result",
       uri: "https://github.com/acme/demo/pull/1",
       text: "x",
@@ -59,6 +61,58 @@ describe("reading an activity's content", () => {
       retryable: true,
     });
     expect(parseError({ message: "down" })).toEqual({ message: "down", retryable: false });
+  });
+
+  it("typed artifacts (docs/api/agui.md, Typed artifacts): the kind and the fields of its card", () => {
+    expect(
+      parseArtifact({
+        kind: "pull_request",
+        name: "pull_request",
+        url: "https://github.com/acme/demo/pull/12",
+        number: 12,
+        repository: "github.com/acme/demo",
+        branch: "agent/fix",
+        at: "2026-09-30T10:00:00Z",
+      }),
+    ).toEqual({
+      kind: "pull_request",
+      name: "pull_request",
+      url: "https://github.com/acme/demo/pull/12",
+      number: 12,
+      repository: "github.com/acme/demo",
+      branch: "agent/fix",
+      at: "2026-09-30T10:00:00Z",
+    });
+    expect(
+      parseArtifact({
+        kind: "branch",
+        name: "branch",
+        repository: "github.com/acme/demo",
+        branch: "agent/fix",
+        sha: "0000000000000000000000000000000000000001",
+        shortSha: "0000000",
+      }),
+    ).toMatchObject({ kind: "branch", branch: "agent/fix", shortSha: "0000000" });
+    expect(parseArtifact({ kind: "checks", name: "checks", passed: false })).toMatchObject({
+      kind: "checks",
+      passed: false,
+    });
+    // a kind this UI does not know is a file; a URL that is not https is dropped
+    expect(parseArtifact({ kind: "diagram", name: "d" })).toEqual({ kind: "file", name: "d" });
+    expect(
+      parseArtifact({ kind: "pull_request", name: "pr", url: "http://example.com/pull/1" }),
+    ).toEqual({ kind: "pull_request", name: "pr" });
+    expect(
+      parseArtifact({ kind: "pull_request", name: "pr", url: "javascript:alert(1)", number: -1 }),
+    ).toEqual({ kind: "pull_request", name: "pr" });
+  });
+
+  it("`at`, when it is a time, on every activity", () => {
+    const at = "2026-09-30T10:00:00.123Z";
+    expect(parseStatus({ status: "working", at })).toEqual({ status: "working", at });
+    expect(parseStatus({ status: "working", at: "yesterday-ish" })).toEqual({ status: "working" });
+    expect(parseError({ message: "down", at })).toMatchObject({ at });
+    expect(parseArtifact({ name: "x", at })).toMatchObject({ at });
   });
 });
 

@@ -53,13 +53,34 @@ export const ACTOR_PART = "vymalo.actor";
  * content: the runtime drops an event's `metadata`, so `ThreadAgent` folds
  * `metadata["vymalo.actor"]` into the content it hands over.
  */
-export type WithActor<T> = T & { actor?: ApiActor };
+export type WithActor<T> = T & {
+  actor?: ApiActor;
+  /** When the event happened (RFC 3339, `Event.at`); every `vymalo.*` activity carries it. */
+  at?: string;
+};
 export type StatusContent = WithActor<{ status: AgentStatus; detail?: string }>;
+export const ARTIFACT_KINDS = ["branch", "checks", "pull_request", "file"] as const;
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+/**
+ * An artifact as the projection typed it (docs/api/agui.md, "Typed artifacts"): `kind` and the
+ * fields its card needs. An artifact of an older orchestrator, or of a kind this UI does not know,
+ * is a `file`. Every string comes from the agent: untrusted text; `url` is kept only when it is an
+ * absolute `https` link.
+ */
 export type ArtifactContent = WithActor<{
+  kind: ArtifactKind;
   name: string;
   mimeType?: string;
   uri?: string;
   text?: string;
+  repository?: string;
+  branch?: string;
+  sha?: string;
+  shortSha?: string;
+  url?: string;
+  number?: number;
+  passed?: boolean;
 }>;
 export type ErrorContent = WithActor<{ message: string; retryable: boolean }>;
 export type ActionContent = WithActor<{
@@ -154,6 +175,12 @@ const readActor = (v: unknown): ApiActor | undefined => {
 
 export const parseActor = readActor;
 
+/** `{at}` when `v.at` is a time a `Date` can read, else nothing. */
+const readAt = (v: Record<string, unknown>): { at?: string } => {
+  const at = str(v.at);
+  return at && !Number.isNaN(Date.parse(at)) ? { at } : {};
+};
+
 export function parseStatus(v: unknown): StatusContent | null {
   if (!isRecord(v)) return null;
   const status = str(v.status);
@@ -164,6 +191,7 @@ export function parseStatus(v: unknown): StatusContent | null {
     status: status as AgentStatus,
     ...(detail !== undefined ? { detail } : {}),
     ...(actor ? { actor } : {}),
+    ...readAt(v),
   };
 }
 
@@ -171,16 +199,36 @@ export function parseArtifact(v: unknown): ArtifactContent | null {
   if (!isRecord(v)) return null;
   const name = str(v.name);
   if (name === undefined) return null;
+  const kind = str(v.kind);
   const mimeType = str(v.mimeType);
   const uri = str(v.uri);
   const text = str(v.text);
+  const repository = str(v.repository);
+  const branch = str(v.branch);
+  const sha = str(v.sha);
+  const shortSha = str(v.shortSha);
+  const link = safeHttpUrl(v.url);
+  const url = link?.startsWith("https://") ? link : undefined;
+  const number = positiveInt(v.number);
   const actor = readActor(v.actor);
   return {
+    kind:
+      kind && (ARTIFACT_KINDS as readonly string[]).includes(kind)
+        ? (kind as ArtifactKind)
+        : "file",
     name,
     ...(mimeType !== undefined ? { mimeType } : {}),
     ...(uri !== undefined ? { uri } : {}),
     ...(text !== undefined ? { text } : {}),
+    ...(repository ? { repository } : {}),
+    ...(branch ? { branch } : {}),
+    ...(sha ? { sha } : {}),
+    ...(shortSha ? { shortSha } : {}),
+    ...(url ? { url } : {}),
+    ...(number !== undefined ? { number } : {}),
+    ...(typeof v.passed === "boolean" ? { passed: v.passed } : {}),
     ...(actor ? { actor } : {}),
+    ...readAt(v),
   };
 }
 
@@ -189,7 +237,7 @@ export function parseError(v: unknown): ErrorContent | null {
   const message = str(v.message);
   if (message === undefined) return null;
   const actor = readActor(v.actor);
-  return { message, retryable: v.retryable === true, ...(actor ? { actor } : {}) };
+  return { message, retryable: v.retryable === true, ...(actor ? { actor } : {}), ...readAt(v) };
 }
 
 export function parseAction(v: unknown): ActionContent | null {
@@ -204,6 +252,7 @@ export function parseAction(v: unknown): ActionContent | null {
     name,
     ...(sourceComponentId !== undefined ? { sourceComponentId } : {}),
     ...(actor ? { actor } : {}),
+    ...readAt(v),
   };
 }
 
@@ -240,6 +289,7 @@ export function parseCheck(v: unknown): CheckContent | null {
     stale: v.stale === true,
     findings: strings(v.findings),
     ...(actor ? { actor } : {}),
+    ...readAt(v),
   };
 }
 
@@ -274,6 +324,7 @@ export function parseCi(v: unknown): CiContent | null {
     ...(url ? { url } : {}),
     ...(summary ? { summary } : {}),
     ...(actor ? { actor } : {}),
+    ...readAt(v),
   };
 }
 
@@ -291,7 +342,7 @@ export function parseRework(v: unknown): ReworkContent | null {
       })
     : [];
   const actor = readActor(v.actor);
-  return { attempt, maxAttempts, findings, ...(actor ? { actor } : {}) };
+  return { attempt, maxAttempts, findings, ...(actor ? { actor } : {}), ...readAt(v) };
 }
 
 /** `job` of a snapshot or of the thread resource; null when it is absent or not a job. */

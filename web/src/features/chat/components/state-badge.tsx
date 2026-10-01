@@ -1,4 +1,12 @@
-import { Badge } from "@/components/ui/badge";
+import {
+  BanIcon,
+  CheckIcon,
+  LoaderCircleIcon,
+  type LucideIcon,
+  MessageCircleQuestionIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from "lucide-react";
 import type { ThreadState } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
@@ -20,13 +28,23 @@ const LABELS: Record<ThreadState, string> = {
 const YOUR_TURN = "Your turn";
 
 const TONE: Record<ThreadState, string> = {
-  queued: "text-primary",
-  working: "text-primary",
-  verifying: "text-verifying",
-  blocked: "text-warning",
-  done: "text-success",
-  failed: "text-destructive",
-  cancelled: "text-muted-foreground",
+  queued: "bg-primary/10 text-primary",
+  working: "bg-primary/10 text-primary",
+  verifying: "bg-verifying/10 text-verifying",
+  blocked: "bg-warning-soft text-warning",
+  done: "bg-success/10 text-success",
+  failed: "bg-destructive-soft text-destructive",
+  cancelled: "bg-muted text-muted-foreground",
+};
+
+const ICON: Record<ThreadState, LucideIcon> = {
+  queued: LoaderCircleIcon,
+  working: LoaderCircleIcon,
+  verifying: LoaderCircleIcon,
+  blocked: TriangleAlertIcon,
+  done: CheckIcon,
+  failed: XIcon,
+  cancelled: BanIcon,
 };
 
 /**
@@ -47,20 +65,27 @@ export function StateBadge({
   needsAnswer?: boolean;
 }) {
   if (!state) return null;
-  const label = state === "blocked" && needsAnswer ? YOUR_TURN : LABELS[state];
+  const yourTurn = state === "blocked" && needsAnswer;
+  const label = yourTurn ? YOUR_TURN : LABELS[state];
+  const Icon = yourTurn ? MessageCircleQuestionIcon : ICON[state];
+  const spins = state === "queued" || state === "working" || state === "verifying";
   return (
-    <Badge
-      variant="outline"
+    <span
       role="status"
+      data-slot="state-badge"
       aria-label={`Thread state: ${SPOKEN[state] ?? label}`}
       className={cn(
-        "h-6 gap-1.5 border-current px-2.5 text-[0.8125rem] font-semibold",
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[0.8125rem] font-medium whitespace-nowrap",
         TONE[state],
       )}
     >
-      <span className="size-2 rounded-full bg-current" aria-hidden="true" />
+      <Icon
+        aria-hidden="true"
+        className={cn("size-3.5", spins && "motion-safe:animate-spin")}
+        strokeWidth={2.25}
+      />
       {label}
-    </Badge>
+    </span>
   );
 }
 

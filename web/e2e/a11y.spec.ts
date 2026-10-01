@@ -77,7 +77,7 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "verify-wait ship it", "Reviewer");
       await expect(badge(page)).toHaveText("Checking the work…");
       await expect(
-        page.getByRole("region", { name: "Check: CI, attempt 1, pending" }),
+        page.getByRole("listitem", { name: "Check: CI, attempt 1, pending" }),
       ).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
@@ -88,7 +88,7 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "verify-reviewed-wait ship it", "Reviewer");
       await expect(badge(page)).toHaveText("Checking the work…");
       await expect(
-        page.getByRole("region", { name: "Check: Verifier, attempt 1, pending" }),
+        page.getByRole("listitem", { name: "Check: Verifier, attempt 1, pending" }),
       ).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
@@ -99,7 +99,7 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "verify-ci-stale ship it", "Reviewer");
       await expect(badge(page)).toHaveText("Done");
       await expect(
-        page.getByRole("region", { name: "Check: CI, attempt 1, failed, stale" }),
+        page.getByRole("listitem", { name: "Check: CI, attempt 1, failed, stale" }),
       ).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
@@ -110,8 +110,8 @@ for (const scheme of ["light", "dark"] as const) {
       test.setTimeout(60_000);
       await startThread(page, "verify-ci fix the login", "Reviewer");
       await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
-      await expect(page.getByRole("region", { name: "CI: ci/build, failure" })).toBeVisible();
-      await expect(page.getByRole("region", { name: "CI: ci/build, success" })).toBeVisible();
+      await expect(page.getByRole("listitem", { name: "CI: ci/build, failure" })).toBeVisible();
+      await expect(page.getByRole("listitem", { name: "CI: ci/build, success" })).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
 

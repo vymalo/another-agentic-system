@@ -86,8 +86,10 @@ async function makeThread(text: string, agent = "reviewer"): Promise<string> {
 
 const log = () => screen.getByRole("log", { name: "Conversation" });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
-const cards = () => screen.queryAllByRole("region", { name: /^Check: / });
-const dividers = () => [...document.querySelectorAll("[data-slot='rework-divider']")];
+const cards = () => screen.queryAllByRole("listitem", { name: /^Check: / });
+const dividers = () => [...document.querySelectorAll("[data-slot='rework-step']")];
+/** The one line of a rework step (its findings are folded under it). */
+const lineOf = (step: Element) => step.querySelector(":scope > div > div:first-child")?.textContent;
 
 /** Every distinct text the state pill shows, in order, until the test ends. */
 function recordHistory() {
@@ -127,10 +129,10 @@ describe("a thread under the verification gate, in the app", () => {
         "Done",
       ]),
     ).toBe(true);
-    // attempts show inside the turn, in the divider, and nowhere in the header
+    // attempts show inside the turn, in the rework step, and nowhere in the header
     expect(document.querySelector("[data-slot='attempt-counter']")).toBeNull();
 
-    // the cards, the divider and the second attempt, in the order the log has them
+    // the cards, the rework and the second attempt, in the order the log has them
     await waitFor(() => expect(cards()).toHaveLength(2));
     const [failed, passed] = cards() as [HTMLElement, HTMLElement];
     expect(failed.getAttribute("data-status")).toBe("failed");
@@ -139,21 +141,21 @@ describe("a thread under the verification gate, in the app", () => {
     // the short commit (the first seven digits; the fake agent's commits differ further on)
     expect(within(failed).getByText("0000000").getAttribute("title")).toMatch(/0001$/);
     expect(within(passed).getByText("0000000").getAttribute("title")).toMatch(/0002$/);
-    expect(dividers().map((d) => d.textContent)).toEqual([
-      "Attempt 2 of 3: sent back with 1 finding",
-    ]);
+    expect(dividers().map(lineOf)).toEqual(["Checks failed — trying again (2/3)"]);
     const order = [
-      ...log().querySelectorAll("[data-slot='check-card'], [data-slot='rework-divider']"),
+      ...log().querySelectorAll("[data-slot='check-card'], [data-slot='rework-step']"),
     ];
     expect(order.map((n) => n.getAttribute("data-slot"))).toEqual([
       "check-card",
-      "rework-divider",
+      "rework-step",
       "check-card",
     ]);
     // a finished job is not a closed thread: the box is open, and there is nothing to say about it
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
     expect(screen.queryByText(/This thread is/)).toBeNull();
-    expect(screen.queryByText(/Checks failed/)).toBeNull();
+    // the attempt that failed is a rework step; the job did not fail its checks
+    expect(screen.queryByText(/Checks failed after/)).toBeNull();
+    expect(document.querySelector("[data-slot='checks-failed']")).toBeNull();
   });
 
   it("verify-red: out of attempts is 'Checks failed after 3 attempts', not an ordinary failure", async () => {
@@ -176,9 +178,9 @@ describe("a thread under the verification gate, in the app", () => {
       ]),
     ).toBe(true);
     await waitFor(() => expect(cards()).toHaveLength(3));
-    expect(dividers().map((d) => d.textContent)).toEqual([
-      "Attempt 2 of 3: sent back with 1 finding",
-      "Attempt 3 of 3: sent back with 1 finding",
+    expect(dividers().map(lineOf)).toEqual([
+      "Checks failed — trying again (2/3)",
+      "Checks failed — trying again (3/3)",
     ]);
     const notice = await screen.findByText("Checks failed after 3 attempts");
     expect(notice.closest("[data-slot='checks-failed']")).not.toBeNull();
@@ -249,7 +251,7 @@ describe("a thread under the verification gate, in the app", () => {
     await waitFor(() => expect(cards()).toHaveLength(2));
     expect(stateBadge().textContent).toBe("Checking the work…");
     expect(cards().map((c) => c.getAttribute("aria-label"))).toEqual(before);
-    expect(document.querySelectorAll("[data-slot='rework-divider']")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-slot='rework-step']")).toHaveLength(0);
 
     // Stop is offered while the work is verified
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));

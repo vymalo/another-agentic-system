@@ -15,5 +15,5 @@ test("a blocked thread waits for the answer, and the follow-up resumes it", asyn
   await expect(log.getByText("main", { exact: true })).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
   await expect(log.getByText("answered: main")).toHaveCount(1);
-  await expect(log.getByRole("link", { name: /^Pull request / })).toBeVisible();
+  await expect(log.getByRole("link", { name: /^View pull request / })).toBeVisible();
 });

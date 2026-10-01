@@ -8,7 +8,7 @@ import { badge, conversation, expectNoHorizontalScroll, startThread } from "./he
  */
 
 const checks = (page: import("@playwright/test").Page) =>
-  conversation(page).getByRole("region", { name: /^Check: / });
+  conversation(page).getByRole("listitem", { name: /^Check: / });
 
 test("red once: verifying, sent back, verifying again, done; the cards follow", async ({
   page,
@@ -16,19 +16,19 @@ test("red once: verifying, sent back, verifying again, done; the cards follow", 
   await startThread(page, "verify-red-once fix the login", "Reviewer");
 
   // the states go by at the mock's pace; the pill's steps are the dom tests'
-  const failed = conversation(page).getByRole("region", {
+  const failed = conversation(page).getByRole("listitem", {
     name: "Check: Agent checks, attempt 1, failed",
   });
   await expect(failed).toBeVisible();
+  // the findings are folded under the check: open them
+  await failed.getByText("Findings (1)").click();
   await expect(failed.getByText("tests::login fails: expected 200, got 500")).toBeVisible();
-  await expect(
-    conversation(page).getByText("Attempt 2 of 3: sent back with 1 finding"),
-  ).toBeVisible();
+  await expect(conversation(page).getByText("Checks failed — trying again (2/3)")).toBeVisible();
 
   await expect(badge(page)).toHaveText("Done");
   await expect(checks(page)).toHaveCount(2);
   await expect(
-    conversation(page).getByRole("region", { name: "Check: Agent checks, attempt 2, passed" }),
+    conversation(page).getByRole("listitem", { name: "Check: Agent checks, attempt 2, passed" }),
   ).toBeVisible();
   await expectNoHorizontalScroll(page);
 });
@@ -59,7 +59,7 @@ test("waiting for CI: a pending card while the thread is verifying; Cancel ends 
 
   await expect(badge(page)).toHaveText("Checking the work…");
   await expect(
-    conversation(page).getByRole("region", { name: "Check: CI, attempt 1, pending" }),
+    conversation(page).getByRole("listitem", { name: "Check: CI, attempt 1, pending" }),
   ).toBeVisible();
   await page.reload();
   await expect(badge(page)).toHaveText("Checking the work…");
@@ -76,19 +76,20 @@ test("a verifier agent: its findings send the agent back, its pass finishes the 
   test.setTimeout(60_000);
   await startThread(page, "verify-reviewed fix the login", "Reviewer");
 
-  const failed = conversation(page).getByRole("region", {
+  const failed = conversation(page).getByRole("listitem", {
     name: "Check: Verifier, attempt 1, failed",
   });
   await expect(failed).toBeVisible();
+  await failed.getByText("Findings (1)").click();
   await expect(failed.getByText("src/login.rs: the empty password is accepted")).toBeVisible();
   await expect(
-    conversation(page).getByText("Attempt 2 of 3: sent back with 1 finding"),
+    conversation(page).getByText("The review found issues — trying again (2/3)"),
   ).toBeVisible();
 
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   await expect(checks(page)).toHaveCount(2);
   await expect(
-    conversation(page).getByRole("region", { name: "Check: Verifier, attempt 2, passed" }),
+    conversation(page).getByRole("listitem", { name: "Check: Verifier, attempt 2, passed" }),
   ).toBeVisible();
   await expectNoHorizontalScroll(page);
   await page.reload();
@@ -101,7 +102,7 @@ test("waiting for the verifier: a pending card; Cancel ends it", async ({ page }
 
   await expect(badge(page)).toHaveText("Checking the work…");
   await expect(
-    conversation(page).getByRole("region", { name: "Check: Verifier, attempt 1, pending" }),
+    conversation(page).getByRole("listitem", { name: "Check: Verifier, attempt 1, pending" }),
   ).toBeVisible();
   await page.reload();
   await expect(badge(page)).toHaveText("Checking the work…");

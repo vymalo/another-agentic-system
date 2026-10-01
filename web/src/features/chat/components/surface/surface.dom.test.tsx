@@ -117,8 +117,8 @@ describe("the golden A2UI story, through the runtime and the renderer", () => {
       .findByText("answered: ui-action go", {}, { timeout: 10_000 })
       .catch(() => undefined);
     await waitFor(() => expect(m.agent.getSnapshot().lastSeq).toBe(11));
-    await waitFor(() => expect(document.querySelector('[data-slot="action-line"]')).not.toBeNull());
-    const line = document.querySelector('[data-slot="action-line"]') as HTMLElement;
+    await waitFor(() => expect(document.querySelector('[data-slot="action-step"]')).not.toBeNull());
+    const line = document.querySelector('[data-slot="action-step"]') as HTMLElement;
     expect(line.textContent).toContain("Chose go");
     expect(line.textContent).toContain("alice@example.com");
     expect(regions()).toHaveLength(1);
