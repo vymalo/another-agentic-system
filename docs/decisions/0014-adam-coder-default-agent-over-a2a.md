@@ -271,3 +271,32 @@ results, and `dev/e2e-all.sh` the scenario `cards` (`dev/cards-e2e.sh`).
   (JSON Schema 2020-12, with `id` added as `show` does), and `dev/cards-e2e.sh` against a stand-in for the edge (see the last section of `dev/README.md`).
 - *Unverified where this was written* (the stack was not started: the disk was too small): the scenario `cards` in containers, through the `edge` and the real orchestrator and researcher, and how a
   live model chooses to show cards.
+
+### Status note, 2026-10-01: the coder shows its work as steps and its words as they are written (adam-rs cf6ddbb)
+
+Since adam-rs `cf6ddbb` ([#61](https://github.com/vymalo/another-adam-rs/pull/61) steps, [#62](https://github.com/vymalo/another-adam-rs/pull/62) a lease race of its runtime,
+[#63](https://github.com/vymalo/another-adam-rs/pull/63) streamed text; MVP slices 5 and 6 of [`docs/mvp.md`](../mvp.md); adam-rs ADR 0007) the coder, and `adam-agent` with it, list two more
+extensions on their cards, `steps/v1` ([ADR 0025](0025-nested-steps-events-carry-their-source-path.md)) and `text-stream/v1` ([ADR 0027](0027-live-text-relayed-not-stored.md)), and use them for a client that
+activates them. Nothing about the decision changes: the coder is still a plain A2A agent, the orchestrator reads its card live at every send and fails closed (ADR 0008), the image is still pinned by
+tag and digest at the commit in `dev/coder/UPSTREAM`, and the orchestrator needed no change for the pin (its sides were built in [#78](https://github.com/vymalo/another-agentic-system/pull/78) and
+[#80](https://github.com/vymalo/another-agentic-system/pull/80)). What the pin brings, and what this repository does for it:
+
+- **Steps.** Every tool call of the coder is a step, `delegate_to_opencode` is a `subagent` step labelled OpenCode, and what OpenCode did under it (its bash call, its summary) are child steps, so a turn that used to
+  be a flood of status lines is a tree the orchestrator keeps bounded and the web draws in its side panel.
+- **Streamed text.** The coder and `adam-agent` call their model with `"stream": true` and send each answer as chunks while it is written, then once whole, naming the stream; the orchestrator relays the chunks
+  and never stores them, and the log holds the one final message.
+- **Two more vendored mappings**, the SSE twins `coder-script-stream.json` and `coder-choices-stream.json` of the coder's scripts (`dev/coder/wiremock/mock-openai/mappings/`; every other vendored file is
+  unchanged at `cf6ddbb`, and `dev/coder/check-vendored.sh` passes there). The mappings stay a deliberate subset of upstream's: its `agent-script-stream.json` and `researcher-cards-stream.json` twin scripts
+  that are not vendored.
+- **Twins of our own scripts.** The chat and the researcher run the same image, so they stream too, and a stub of `dev/wiremock/model/mappings/` that does not say it streams answers plain JSON. Each script of
+  `persona.json`, `researcher.json` and `researcher-cards.json` has an SSE twin (`*-stream.json`, one priority above), and `dev/check-agent-mocks.sh` plays every probe both ways and requires the same answer.
+- **The scenario** `coder` (`dev/coder-e2e.sh`, both variants, so the Coder E2E workflow) asserts the tree (an OpenCode sub-agent step with a command or tool step under it, ended, finished once, the log bounded to six
+  events per step) and the live words (a message marked `vymalo.live` that grows in at least two pieces from offset 0 and is completed by the log's final message under the same id; the log holds it once; the replay reads
+  it plain). `cards` and `choices`, which read the words of a run stream, now read a message as a client does, by offset, instead of joining its deltas with a space.
+- *Verified 2026-10-01* (anonymous ghcr API, HTTP 200): `coder:sha-cf6ddbb` is one `linux/amd64` manifest (2.88 GB of compressed layers, ten layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` `cf6ddbb45a44afce99f437dbd370ef59bdf095d0`, digest `sha256:45f1afd1...` (the sha-256 of the manifest the registry returned), published by adam-rs's `coder` workflow for that commit
+  on `main`. The vendored scripts, played against WireMock 3.13.2: the greeting streams in eight deltas and the coder's last answer takes 2.1 s. Our twins and the new assertions of the scripts: the last section of
+  [`dev/README.md`](../../dev/README.md#what-was-checked).
+- *Unverified where this was written* (the stack was not started: the disk of the machine was too small for the orchestrator and web builds): the scenarios in containers, which is the first run of the coder at
+  `cf6ddbb` behind the real orchestrator (the Coder E2E workflow of the pull request that pins it); what a real OpenCode reports for its bash call (the script asks for a command or tool step under it and names
+  no label); and whether every real model provider accepts a streamed request with `stream_options`.

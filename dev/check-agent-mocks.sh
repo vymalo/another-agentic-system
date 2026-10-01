@@ -5,7 +5,9 @@
 #   * the scripted models of the agents that are only a folder, on the WireMock `mock-model` (dev/wiremock/model,
 #     dev/README.md "Several agents"; and `mock-title`, the title model of the orchestrator): `mock-persona` greets from the persona lines, `mock-researcher` calls
 #     `search__web_search` and then names the first link of the results, and for a question that carries
-#     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers.
+#     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers. Since adam-rs
+#     cf6ddbb the agents stream their model calls, so each of those scripts also has an SSE twin (`*-stream.json`, the same
+#     matchers plus `"stream": true`, one priority above): the twins are played here too and must say what the plain script says.
 # CI runs it after `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 #
 #   dev/check-agent-mocks.sh [SEARCH_URL [MODEL_URL]]
@@ -26,6 +28,9 @@ MODEL=${2:-http://127.0.0.1:${MOCK_MODEL_PORT:-8094}}
 TOKEN=${MOCK_MCP_TOKEN:-dev-search-token}
 ICON_PREFIX='data:image/svg+xml;base64,'
 fail=0
+TMPH=$(mktemp)
+TMPB=$(mktemp)
+trap 'rm -f "$TMPH" "$TMPB"' EXIT
 
 check() { # check DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then
@@ -205,6 +210,68 @@ check "mock-researcher [mock:cards]: once show is answered it says the three lin
 check "mock-researcher [mock:cards]: a refused show (the screen has no Cards) is answered in words too" \
   "$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 x), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'unknown component Cards')]" | jq -r .finish_reason)" \
   "stop"
+
+# The twins. The agents stream their model calls (adam-rs cf6ddbb: `"stream": true`, with the usage chunk asked for), so every script above has
+# an SSE twin, one priority above it. Each probe is played both ways with the same messages, and what a client assembles from the stream (the
+# content deltas joined, the argument deltas of each tool call joined, the finish reason) must equal what the plain script answers, so a twin
+# cannot drift from its original; the stream must also be a text/event-stream that ends with [DONE], and a text must arrive in several deltas.
+# streamed MODEL_NAME MESSAGES_JSON: the request with "stream": true, assembled as a client does, as {finish, content, deltas, calls}.
+streamed() {
+  jq -cn --arg m "$1" --argjson msgs "$2" '{model: $m, messages: $msgs, stream: true, stream_options: {include_usage: true}}' |
+    curl -sS -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
+    sed -n 's/^data: //p' | grep -v '^\[DONE\]' |
+    jq -cs '[.[] | select((.choices | length) > 0) | .choices[0]] as $cs | {
+      finish: ([$cs[].finish_reason | select(. != null)] | last),
+      content: ([$cs[].delta.content // empty] | join("")),
+      deltas: ([$cs[].delta.content // empty | select(. != "")] | length),
+      calls: ([$cs[].delta.tool_calls // [] | .[]] | group_by(.index)
+        | map({id: (map(.id // empty) | first), name: (map(.function.name // empty) | first), args: (map(.function.arguments // "") | join(""))}))}'
+}
+# plain_shape MODEL_NAME MESSAGES_JSON: the plain answer, in the shape `streamed` assembles (without `deltas`).
+plain_shape() {
+  completion "$1" "$2" | jq -c '{finish: .finish_reason, content: (.message.content // ""),
+    calls: [(.message.tool_calls // [])[] | {id, name: .function.name, args: .function.arguments}]}'
+}
+# twin DESCRIPTION MODEL_NAME MESSAGES_JSON [MIN_DELTAS]: the twin says what the plain script says (and a text arrives in at least MIN_DELTAS pieces).
+twin() {
+  _s=$(streamed "$2" "$3")
+  check "twin, $1: the stream assembles to the plain answer" \
+    "$(printf '%s' "$_s" | jq -c 'del(.deltas)')" "$(plain_shape "$2" "$3")"
+  if [ -n "${4:-}" ]; then
+    check "twin, $1: the text arrives in at least $4 deltas" "$(printf '%s' "$_s" | jq -r --argjson n "$4" '.deltas >= $n')" "true"
+  fi
+}
+
+persona_system=$(system Chat 'I chat with you and answer your questions in plain words')
+curl -sS -X POST "$MODEL/v1/chat/completions" -D "$TMPH" -o "$TMPB" -H 'content-type: application/json' \
+  -d "$(jq -cn --argjson msgs "[$persona_system, $(user hi)]" '{model: "mock-persona", messages: $msgs, stream: true, stream_options: {include_usage: true}}')"
+check "twin: a streaming request is a text/event-stream, with the usage chunk, ending with [DONE]" \
+  "$(grep -qi '^content-type: text/event-stream' "$TMPH" && echo sse || echo other) $(grep -q '^data: {.*"usage":{' "$TMPB" && echo usage || echo no-usage) $(tail -n 2 "$TMPB" | grep -q '^data: \[DONE\]' && echo finished || echo unfinished)" \
+  "sse usage finished"
+twin "mock-persona greets" mock-persona "[$persona_system, $(user hi)]" 2
+twin "mock-persona, a fourth agent's own name and summary" mock-persona "[$(system 'Dr Who-2' 'I help with the chores'), $(user 'what can you do?')]" 2
+twin "mock-persona, a tool result in" mock-persona "[$persona_system, $(user hi), $(call c1 some_tool), $(result c1 finished)]" 2
+research_system=$(system Researcher 'I search the web for you and answer with the sources I found')
+twin "mock-researcher searches" mock-researcher "[$research_system, $(user 'Who won the football world cup in 2014?')]"
+twin "mock-researcher answers with the first link" mock-researcher \
+  "[$research_system, $(user 'Who won the football world cup in 2014?'), $(call researcher-call-1 search__web_search), $(result researcher-call-1 "$(printf '1. A (mock) — https://example.org/mock-search/world-cup-2014\n   snippet\n2. B — https://example.org/mock-search/2')")]" 2
+twin "mock-researcher, no link in the results" mock-researcher \
+  "[$research_system, $(user q), $(call researcher-call-1 search__web_search), $(result researcher-call-1 'No results.')]" 2
+twin "mock-researcher, a follow-up question searches again" mock-researcher \
+  "[$research_system, $(user first), $(call researcher-call-1 search__web_search), $(result researcher-call-1 '1. A — https://example.org/mock-search/1'), $(user 'And Rust?')]"
+twin "mock-researcher [mock:cards], search" mock-researcher "[$cards_system, $cards_user]"
+twin "mock-researcher [mock:cards], ui_catalog" mock-researcher \
+  "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results")]"
+twin "mock-researcher [mock:cards], show (the arguments arrive in several deltas)" mock-researcher \
+  "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results"), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{"Cards":{},"Mermaid":{}}')]"
+check "twin, mock-researcher [mock:cards], show: the arguments of the call are cut into several deltas" \
+  "$(jq -cn --argjson msgs "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results"), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}')]" '{model: "mock-researcher", messages: $msgs, stream: true}' |
+     curl -sS -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
+     sed -n 's/^data: //p' | grep -v '^\[DONE\]' | jq -s '[.[] | select((.choices | length) > 0) | .choices[0].delta.tool_calls // [] | .[] | select(.function.arguments != "")] | length > 2')" "true"
+twin "mock-researcher [mock:cards], the words" mock-researcher \
+  "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results"), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'Shown to the person.')]" 2
+check "twin: a request that does not ask for a stream still gets the plain JSON answer" \
+  "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
 # `mock-title`: the orchestrator's own model call (the title of a thread, ADR 0005): a title, "no topic yet" and a failing model,
 # chosen by the markers in the conversation it is shown. The agents' mocks above never answer it, and it never answers theirs.

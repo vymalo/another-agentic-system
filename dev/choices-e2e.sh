@@ -178,8 +178,17 @@ stream() {
   fi
   outcome=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last
     | if . == null then "" elif .type == "RUN_ERROR" then "error: \(.code // "")" else (.outcome.type // "success") end' 2>/dev/null || true)
-  said=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "TEXT_MESSAGE_START" and .role == "assistant") | .messageId] as $ids
-    | [.[] | select(.type == "TEXT_MESSAGE_CONTENT" and (.messageId | IN($ids[]))) | .delta] | join(" ")' 2>/dev/null || true)
+  # The words of each assistant message as a client keeps them, the messages joined with a space. Since adam-rs cf6ddbb the
+  # answer is shown while it is written (text-stream/v1, docs/api/agui.md, "Live text"): the run stream holds it as several
+  # deltas, a live one continuing from its `metadata["vymalo.live"].offset` (UTF-16 code units; the mock's words are ASCII, so
+  # they are jq's string positions) and the log's final one completing the same message, so deltas are not joined by a space.
+  said=$(sse_events "$tmp/run.sse" | jq -rs 'reduce .[] as $f ({order: [], text: {}};
+      if $f.type == "TEXT_MESSAGE_START" and $f.role == "assistant" then
+        (if (.text | has($f.messageId)) then . else (.order += [$f.messageId] | .text[$f.messageId] = "") end)
+      elif $f.type == "TEXT_MESSAGE_CONTENT" and (.text | has($f.messageId)) then
+        .text[$f.messageId] |= ((if $f.metadata["vymalo.live"].offset != null then .[0:$f.metadata["vymalo.live"].offset] else . end) + $f.delta)
+      else . end)
+    | [.order[] as $id | .text[$id]] | join(" ")' 2>/dev/null || true)
   state=
   while :; do
     state=$(api GET "/api/threads/$thread" 2>/dev/null | jq -r '.state // empty' || true)

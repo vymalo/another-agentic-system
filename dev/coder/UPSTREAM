@@ -8,8 +8,8 @@
 # commit, the copies and the image pin in compose.yaml (`x-adam-image`, one pin for the coder and for the agents that
 # are only a folder, which run `adam-agent` from the same image) together. (To try a change to the agent folder
 # before it is upstream, point CODER_AGENT_DIR at a copy: dev/README.md, "Change what the coder says".)
-# Not vendored, on purpose: upstream's own `mock-assistant` model (dev/wiremock/mock-openai/mappings/agent-script.json) and
-# its example agent (dev/agents/assistant). The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and
-# dev/wiremock/model/, which follow the same persona convention (adam-rs bin/adam-agent/README.md).
+# Not vendored, on purpose: upstream's own `mock-assistant` model (dev/wiremock/mock-openai/mappings/agent-script.json and its SSE twin
+# agent-script-stream.json), its researcher script and twin (researcher-cards*.json) and its example agent (dev/agents/assistant). The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and
+# dev/wiremock/model/ (each script with its own SSE twin, as upstream's), which follow the same persona convention (adam-rs bin/adam-agent/README.md).
 repo=vymalo/another-adam-rs
-commit=c13ddf1a32a1424affa20043f6bd860d93c536cc
+commit=cf6ddbb45a44afce99f437dbd370ef59bdf095d0

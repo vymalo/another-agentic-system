@@ -21,6 +21,7 @@
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
+#                     (the work as a tree of steps, the answer shown as it is written)
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
 #                     cannot be weakened by a run
