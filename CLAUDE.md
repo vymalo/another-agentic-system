@@ -8,12 +8,15 @@ A protocol-agnostic **orchestration layer** for multi-agent work: a chat
 surface (Next.js + assistant-ui) and a stateless Rust orchestrator over one
 Postgres event log. It drives any A2A agent, uses tools over MCP, reacts to
 webhooks, and can be driven the same way. **Status: MVP steps 1–2 are built**
-(`orchestrator/`, `web/`); later steps are still design (`docs/mvp.md`).
+(`orchestrator/`, `web/`), but that is plumbing: the owner judged the MVP not
+ready. What the system is meant to be is `docs/vision.md`; the re-planned build
+order is `docs/mvp.md`.
 
 ## Layout
 
 | Path | What |
 |---|---|
+| `docs/vision.md` | What the system is meant to be (the owner's requirements), what exists and what is missing |
 | `docs/architecture.md` | Components, agent hosts, job flow and lifecycle |
 | `docs/orchestrator.md` | Ports & adapters, event/command model, inbox/outbox, core types, data model, crate layout |
 | `docs/decisions/NNNN-*.md` | ADRs |
