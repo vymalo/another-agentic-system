@@ -2,7 +2,7 @@
 # Exercises the WireMock stand-in agents of compose.yaml over plain HTTP, one call per scenario,
 # so the mocks cannot rot unnoticed. CI runs it after `docker compose up -d --wait`.
 #
-#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL]]]   # defaults: http://127.0.0.1:8081, :8082, :8083
+#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084
 #
 # It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
 # "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
@@ -12,14 +12,20 @@
 # that go with it are played as well: the `verdict` artifact a verifier answers with for a commit of forty
 # `a` and for any other, and what the rework prompt that quotes the verifier's findings does to the coder.
 #
+# The registry mock (`mock-registry`, agent-registry/v1, ADR 0022) is probed too: the linkset it serves, its cache headers, and a
+# conditional request answered 304.
+#
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
 
 AGENT=${1:-http://127.0.0.1:8081}
 RELEASES=${2:-http://127.0.0.1:8082}
 VERIFIER=${3:-http://127.0.0.1:8083}
+REGISTRY=${4:-http://127.0.0.1:8084}
 EXT=https://agents.vymalo.com/a2a/extensions/release-channels/v1
 fail=0
+HEADERS_FILE=$(mktemp)
+trap 'rm -f "$HEADERS_FILE"' EXIT
 
 check() { # check DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then
@@ -211,6 +217,23 @@ echo_revision() { # echo_revision RELEASE -> "requested revision"
 check "channel staging resolves to its revision" "$(echo_revision staging)" "staging coder-r51"
 check "an exact revision is accepted" "$(echo_revision coder-r53)" "coder-r53 coder-r53"
 check "unknown release fails closed" "$(frames "$RELEASES" 'ship it' '' nope)" "submitted,failed"
+
+echo "== $REGISTRY (agent-registry/v1)"
+doc=$(curl -fsS -D "$HEADERS_FILE" -H 'Accept: application/linkset+json' "$REGISTRY/registry/v1/agents")
+check "the media type is application/linkset+json" \
+  "$(sed -n 's/^[Cc]ontent-[Tt]ype: *\([^;]*\).*/\1/p' "$HEADERS_FILE" | tr -d '\r')" "application/linkset+json"
+check "it can be cached for two seconds, and has an ETag" \
+  "$(sed -n 's/^[Cc]ache-[Cc]ontrol: *//p' "$HEADERS_FILE" | tr -d '\r'), $(sed -n 's/^[Ee][Tt]ag: *//p' "$HEADERS_FILE" | tr -d '\r')" \
+  'private, max-age=2, "r-2026-10-01T09:00:00Z"'
+check "one context object that names the v1 profile" \
+  "$(printf '%s' "$doc" | jq -r '[.linkset[] | select(.profile[]?.href == "https://agents.vymalo.com/registry/v1")] | length')" "1"
+check "it lists platform-coder, at the card of mock-agent-releases, with its title and tags" \
+  "$(printf '%s' "$doc" | jq -r '.linkset[0].item[] | [.service[0], .href, .title, (.tags | join("+"))] | join(" ")')" \
+  "platform-coder http://mock-agent-releases:8080/.well-known/agent-card.json Platform coder coding+git"
+check "a request that asks with the ETag is answered 304" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "r-2026-10-01T09:00:00Z"' "$REGISTRY/registry/v1/agents")" "304"
+check "another validator gets the document again" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "other"' "$REGISTRY/registry/v1/agents")" "200"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

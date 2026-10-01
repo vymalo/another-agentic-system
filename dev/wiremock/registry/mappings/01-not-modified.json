@@ -1,0 +1,20 @@
+{
+  "name": "The registry document, asked about with its own ETag -> 304 Not Modified",
+  "priority": 1,
+  "request": {
+    "method": "GET",
+    "urlPath": "/registry/v1/agents",
+    "headers": {
+      "If-None-Match": {
+        "equalTo": "\"r-2026-10-01T09:00:00Z\""
+      }
+    }
+  },
+  "response": {
+    "status": 304,
+    "headers": {
+      "Cache-Control": "private, max-age=2",
+      "ETag": "\"r-2026-10-01T09:00:00Z\""
+    }
+  }
+}

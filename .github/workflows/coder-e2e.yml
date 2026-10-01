@@ -16,7 +16,8 @@ name: Coder E2E
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB; the chat and the researcher use the same image),
 #              run dev/e2e-all.sh (every scenario: the coder's greeting, the three agents each answering in its role,
-#              the coder asking with Choices, the researcher answering with cards and a graph, the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
+#              the coder asking with Choices, the researcher answering with cards and a graph, the platform's agent registry (an agent added
+#              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, and the coder restarted on a copy of its agent folder with another name), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
