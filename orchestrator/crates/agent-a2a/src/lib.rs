@@ -15,6 +15,11 @@
 //! when the card also lists `ui-catalog/v1`: [`extensions_from_card`] reads which of the
 //! orchestrator's own extensions a card lists.
 //!
+//! The thread tools (`thread-tools/v1`, ADR 0023) are another: when the live card lists the
+//! extension and the adapter has an issuer ([`A2aConfig::thread_tools`]), the message carries
+//! `{url, token, expiresAt}` for the thread's MCP endpoint, minted when it is sent from the
+//! non-secret grant on the request and never stored or logged ([`thread_tools_metadata`]).
+//!
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
@@ -24,6 +29,7 @@ mod client;
 mod errors;
 mod extensions;
 mod releases;
+mod thread_tools;
 
 pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
@@ -31,3 +37,4 @@ pub use a2ui::{
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
 pub use extensions::extensions_from_card;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
+pub use thread_tools::thread_tools_metadata;

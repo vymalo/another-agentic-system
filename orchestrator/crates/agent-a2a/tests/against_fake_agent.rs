@@ -40,7 +40,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         content: SendContent::Text(text.to_owned()),
         release: None,
         ui_catalog: None,
-        thread: None,
+        thread_tools: None,
     }
 }
 

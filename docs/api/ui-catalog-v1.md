@@ -1,10 +1,11 @@
 # A2A extension: UI catalog (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side of the handshake is
-  built (MVP slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter);
-  the [thread tools](thread-tools-v1.md) and `get_ui_catalog` (section 6) are not built yet.** The web's catalog and
-  Choices (versions 1 and 2) are built; slice 4 adds Cards and Mermaid (version 3); see
+- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
+  slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
+  the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog and Choices (versions 1
+  and 2) are built; the adam-rs side (an agent that turns the catalog into model tools and refetches) is that
+  repository's slice; slice 4 adds Cards and Mermaid (version 3); see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
   the A2UI transport is [ADR 0013](../decisions/0013-a2ui-generative-ui.md); the optional-extension pattern is

@@ -111,7 +111,7 @@ mod tests {
             content: SendContent::Text("echo hi".to_owned()),
             release: None,
             ui_catalog: None,
-            thread: None,
+            thread_tools: None,
         }
     }
 

@@ -20,6 +20,7 @@
 //! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
 //! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
 //! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
+//! | `thread-tools` | `working`, then calls back the thread's MCP endpoint with the grant of its message (`thread-tools/v1`: [`call_back`](crate::call_back)), lists the tools and calls `get_ui_catalog` twice (the second time with the digest it was given), and ends with the artifact `thread-tools: tools=get_ui_catalog; catalog=<id> v<version> <digest>; again unchanged=true` (or `no catalog: …`, `no grant`, `refused: …`) |
 //! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
@@ -277,6 +278,9 @@ pub struct Call {
     pub ui_catalog: Option<Value>,
     /// The catalogs the message carried inline: the `inlineCatalogs` of its renderer capabilities.
     pub inline_catalogs: Vec<Value>,
+    /// `metadata[<thread-tools/v1 URI>]` of the message: `{url, token, expiresAt}`, the grant of
+    /// the thread's MCP endpoint, when it carried one (ADR 0023).
+    pub thread_tools: Option<Value>,
 }
 
 impl Call {
@@ -900,6 +904,15 @@ fn ui_catalog_of(message: Option<&Message>) -> Option<Value> {
         .cloned()
 }
 
+/// `metadata[thread-tools/v1]` of the message (ADR 0023): the grant of the thread's endpoint.
+fn thread_tools_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::THREAD_TOOLS_EXTENSION)
+        .cloned()
+}
+
 /// The `inlineCatalogs` of the renderer capabilities of the message, whatever the dialect.
 fn inline_catalogs_of(message: Option<&Message>) -> Vec<Value> {
     capabilities_of(message)
@@ -951,6 +964,7 @@ impl Shared {
             actions: a2ui_messages(ctx.message.as_ref()),
             ui_catalog: ui_catalog_of(ctx.message.as_ref()),
             inline_catalogs: inline_catalogs_of(ctx.message.as_ref()),
+            thread_tools: thread_tools_of(ctx.message.as_ref()),
         });
     }
 
@@ -1130,6 +1144,7 @@ async fn script(
     text: String,
     resuming: bool,
     cancel: Arc<Notify>,
+    grant: Option<Value>,
 ) -> Option<()> {
     emit(&tx, ctx.status(TaskState::Working, None)).await?;
     if let Some(verifier) = shared.verifier {
@@ -1259,6 +1274,13 @@ async fn script(
                 ctx.status(TaskState::InputRequired, Some("Three questions")),
             )
             .await?;
+        }
+        "thread-tools" => {
+            // The agent's side of `thread-tools/v1`: the endpoint and token in the message.
+            let report = crate::call_back(grant).await;
+            let (a, done) = finish(shared.next_artifact_id(), report);
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
         }
         "ui-msg" => {
             let mut m = Message::new(
@@ -1398,6 +1420,7 @@ impl AgentExecutor for Executor {
         let cancel = Arc::new(Notify::new());
         lock(&shared.cancels).insert(task_id.clone(), Arc::clone(&cancel));
         let user_message = ctx.message.clone();
+        let grant = thread_tools_of(ctx.message.as_ref());
         let (tx, rx) = mpsc::channel(16);
         tokio::spawn(async move {
             let mut meta = Map::new();
@@ -1441,6 +1464,7 @@ impl AgentExecutor for Executor {
                             text,
                             resuming,
                             cancel,
+                            grant,
                         )
                         .await
                     }

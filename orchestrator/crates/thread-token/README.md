@@ -9,8 +9,9 @@ clock (every function that needs "now" takes it), so the tests pin the exact byt
 
 Depends on [`orch-core`](../core/README.md) (the ids, and `Caller` and `ToolsGrant`, the non-secret part that travels
 inside the orchestrator), `hmac` and `sha2` (RustCrypto), `base64`, `jiff`, `secrecy`, `serde` and `url`. Used by
-[`orch-surface-thread-tools`](../surface-thread-tools/README.md) (it verifies); the binary builds the issuer from
-`THREAD_TOOLS_*`, and the A2A adapter will mint with it when it attaches the grant to a message.
+[`orch-surface-thread-tools`](../surface-thread-tools/README.md) (it verifies) and by
+[`orch-agent-a2a`](../agent-a2a/README.md) (it mints, when it attaches the grant to a message); the binary builds the
+issuer from `THREAD_TOOLS_*` and gives it to both.
 The token never enters the event log, the outbox or a log line: `ThreadToolsGrant` prints `[redacted]` for it, the keys
 print only their `kid`.
 

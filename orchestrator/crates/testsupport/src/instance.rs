@@ -201,6 +201,20 @@ impl TestInstance {
         extra: Vec<SurfaceRoutes>,
     ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::spawn_on(listener, app, api, dispatcher, owner, extra).await
+    }
+
+    /// Like [`TestInstance::spawn_with_surfaces`], serving on `listener`, which the caller bound
+    /// beforehand: a test that has to tell something its own address before the instance exists
+    /// (the base URL of the thread tools, which the A2A adapter puts in every grant) binds first.
+    pub async fn spawn_on<P: Ports>(
+        listener: tokio::net::TcpListener,
+        app: Arc<App<P>>,
+        api: ApiConfig,
+        dispatcher: Option<DispatcherConfig>,
+        owner: &str,
+        extra: Vec<SurfaceRoutes>,
+    ) -> Self {
         let addr = listener.local_addr().unwrap();
         let shutdown = CancellationToken::new();
         let dispatcher = dispatcher.map(|config| {

@@ -229,7 +229,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
@@ -510,6 +510,43 @@ Troubleshooting: `401` with `WWW-Authenticate: Bearer` is a missing or wrong tok
 purpose); `403` is a `Host` the server does not list, for example a client that reaches the edge by another name
 (add it to `MCP_ALLOWED_HOSTS`); the orchestrator refusing to start with `MCP_TOKEN_DEV` in the message means
 the variable named by `mcp-tokens.yaml` is not set.
+
+## The thread tools
+
+The `orchestrator` service also serves **one MCP endpoint per thread**, `/thread-tools/{threadId}/mcp`
+([`docs/api/thread-tools-v1.md`](../docs/api/thread-tools-v1.md)), for the agents it sends work to. It is a machine
+route like `/mcp`, but **the edge does not route it**: an agent calls the orchestrator directly, on the compose network.
+What an agent of the stack receives, **only if its card lists** `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`
+(read for every message), is this, in the metadata of the A2A message and activated in `A2A-Extensions`:
+
+```json
+{"https://agents.vymalo.com/a2a/extensions/thread-tools/v1": {
+  "url": "http://orchestrator:8080/thread-tools/<threadId>/mcp",
+  "token": "<an HS256 JWT scoped to that thread and that agent, valid two hours>",
+  "expiresAt": "2026-10-01T14:00:00Z"}}
+```
+
+| What | Where |
+|---|---|
+| The key | `THREAD_TOOLS_SECRET`, a dummy in the `x-orchestrator-env` of `compose.yaml` (`dev-thread-tools-secret-…`); a `.env` that sets `THREAD_TOOLS_SECRET` replaces it (it is in [`.env.example`](../.env.example)). **Every orchestrator process has it**: a worker mints the grant it sends with the message, the control plane verifies it |
+| The address agents use | `THREAD_TOOLS_URL=http://orchestrator:8080`, the service name; the `orchestrator` service names `thread-tools` in `ORCH_SURFACES` and accepts the `Host` values `THREAD_TOOLS_ALLOWED_HOSTS=orchestrator:8080,127.0.0.1:8080,localhost:8080` |
+| The tool | `get_ui_catalog`: the newest UI catalog the thread's screen sent, or an error "this thread has no UI catalog; answer in text" |
+| `split` profile | the control plane serves it, the workers (same variables) mint |
+
+None of the agents of the stack lists the extension yet (the mocks are WireMock; `adam-coder` gets it with the adam-rs
+change that pins here), so nothing in the stack calls the endpoint until one does; the endpoint answers the checks of
+[`orchestrator/crates/surface-thread-tools`](../orchestrator/crates/surface-thread-tools/README.md) and the whole loop is
+tested by [`orchestrator/crates/e2e/tests/thread_tools.rs`](../orchestrator/crates/e2e/tests/thread_tools.rs) (the real
+dispatcher and A2A adapter, a fake agent that lists the extension and calls back with the grant it was given, on the
+in-memory store and on Postgres) and by the real binary in `orchestrator/bin/orchestrator/tests/smoke.rs`. To try it by
+hand against a binary, start `orch-fake-agent` with the extension (`cargo run -p orch-testsupport --bin orch-fake-agent`
+with `FAKE_AGENT_EXTENSIONS=thread-tools`, see [its README](../orchestrator/crates/testsupport/README.md)), point an
+`AGENTS_FILE` entry at it (`coder` is on 127.0.0.1:4021, `plain` on 4022), give the
+orchestrator `THREAD_TOOLS_SECRET` (32 bytes or more: `openssl rand -hex 32`) and `THREAD_TOOLS_URL`
+(`http://127.0.0.1:8080`), name `thread-tools` in `ORCH_SURFACES`, and send it `thread-tools hello`: the agent calls the
+endpoint back and its artifact says what it got (`thread-tools: tools=get_ui_catalog; …`); `GET /__control/<agent>/calls`
+on the fake agent shows the grant under `threadTools`. A `401` from the endpoint is the same answer for a missing,
+expired, foreign or forged token (nothing else says why, on purpose); a `403` is a `Host` it does not list.
 
 ## The split profile: a control plane and two workers
 
@@ -806,7 +843,7 @@ an agent that says `completed` is not done until a **signed CI report about the 
 `POST /webhooks/ci`, and **named `ci/build`**: a gate that requires CI names the checks that count (`ci.required`), and a
 report of any other name is a card and nothing else (there is no "first report decides": it let a red commit pass on
 a `skipped` report of another check). The orchestrator serves that route because compose sets
-`ORCH_SURFACES=agui,mcp,webhook-generic,webhook-github` and `WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123`
+`ORCH_SURFACES=agui,mcp,thread-tools,webhook-generic,webhook-github` and `WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123`
 on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**
 (`header_up -X-Auth-Request-Email` in the [Caddyfile](Caddyfile): a webhook is a machine route, authenticated by its
 signature and nothing else). The mock pushes a `branch` artifact and completes; the job then waits for CI, at most

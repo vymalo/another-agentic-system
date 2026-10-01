@@ -141,7 +141,10 @@ implementation and pinned in its tests and in [`api/thread-tools-v1.md`](../api/
 (`orch-surface-thread-tools`, a machine route at `/thread-tools/{threadId}/mcp`, stateless, any replica serves it) with
 the built-in `get_ui_catalog` (the newest catalog the thread recorded, `knownDigest` for "unchanged", an error to read
 for a thread with no catalog) and the provider seam slices 8 and 10 add their tools through, and the binary's
-`thread-tools` surface with `THREAD_TOOLS_*`. Two details the build settled, in the contract: a token is refused unless
+`thread-tools` surface with `THREAD_TOOLS_*`, and the A2A adapter's grant (minted at send time from the non-secret
+`ToolsGrant` on the send request, only for a card that lists the extension; the token is in the message and nowhere
+else, which a test of every log line, of the log, of the export and of every row of the database checks). Two details
+the build settled, in the contract: a token is refused unless
 the thread exists and is the token's agent's (an `ask:<n>` token is refused until slice 10 builds the ledger it names),
 and the key and the URL are required in every role when the surface is named, because the adapter of a worker is what
 mints.

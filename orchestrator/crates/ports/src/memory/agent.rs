@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, KnownExtension, Releases, ThreadId, UiActionData,
+    AgentId, AgentTaskState, AgentUpdate, KnownExtension, Releases, ToolsGrant, UiActionData,
     UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
@@ -39,8 +39,9 @@ pub enum Call {
         release: Option<String>,
         /// What the request told the agent of the person's UI catalog (ADR 0023).
         ui_catalog: Option<Box<UiDelivery>>,
-        /// The thread the request named, when it named one (`None` for the verifier).
-        thread: Option<ThreadId>,
+        /// The grant of the thread's tools the request carried (`None` for the verifier): who the
+        /// agent is to be given the thread's tools as.
+        thread_tools: Option<Box<ToolsGrant>>,
     },
     /// `resubscribe`.
     Resubscribe {
@@ -556,7 +557,7 @@ impl AgentClient for ScriptedAgent {
                 action,
                 release: req.release.clone(),
                 ui_catalog: req.ui_catalog.clone().map(Box::new),
-                thread: req.thread,
+                thread_tools: req.thread_tools.clone().map(Box::new),
             });
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));

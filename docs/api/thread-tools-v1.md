@@ -1,12 +1,15 @@
 # A2A extension: thread tools (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the endpoint, the token and
-  `get_ui_catalog` are built (MVP slice 3); the A2A adapter does not attach the grant to a message yet.** Slice 8 adds
-  the relayed tools of attached MCP servers; slice 10 adds `ask_agent` ([`mvp.md`](../mvp.md#the-new-build-order)). The
-  owner may revisit anything here. What is built: `orch-thread-token` (the token, with the known-answer vectors below),
-  `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools) and the binary's
-  `thread-tools` surface and `THREAD_TOOLS_*` settings; "not yet" is marked where it matters below.
+- **Status:** **built (MVP slice 3, 2026-10-01), apart from the tools of later slices.** Accepted on the owner's
+  delegation; the owner may revisit anything here. Built: `orch-thread-token` (the token, with the known-answer vectors
+  below), `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools), the binary's
+  `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send
+  time, only for an agent whose live card lists the extension). Slice 8 adds the relayed tools of attached MCP servers
+  and the `attached` member of the message; slice 10 adds `ask_agent` and the `ask:<n>` ledger
+  ([`mvp.md`](../mvp.md#the-new-build-order)). "Not yet" is marked where it matters below. The adam-rs side (an agent
+  that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
+  support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
   endpoint, the token, the refetch), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) (the relay)
   and [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) (`ask_agent`); a second MCP endpoint
@@ -89,8 +92,9 @@ flag an agent before the person sends ([`agui.md`](agui.md#capabilities-document
 
 ## The message
 
-Only when **all three** hold: the card lists the extension, the request belongs to a thread (a request to the
-verifier agent does not), and the orchestrator has a key and a base URL configured. The message metadata then has:
+Only when **all three** hold: the card lists the extension (read for this very message, exact URI), the request belongs
+to a thread (a request to the verifier agent does not), and the orchestrator has a key and a base URL configured
+(`THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL`). The message metadata then has:
 
 ```json
 {"metadata": {"https://agents.vymalo.com/a2a/extensions/thread-tools/v1": {
@@ -110,6 +114,26 @@ The orchestrator never writes the token to the event log, to the outbox payload 
 travels inside the orchestrator is a non-secret grant (the thread, the job, the agent, the caller and the depth) on the
 send request; only the A2A adapter mints the token, at the moment it sends, and the types that hold it print
 `[redacted]`. The agent must treat it as a secret: not in the model's context, not in its own logs.
+
+*Built and tested (2026-10-01):* a message to a card without the exact URI (another version, a trailing slash, another
+scheme or case), from an adapter with no keys, or for a request with no grant (the verifier's) is exactly the message it
+was before the extension existed; the card is read for every message, so an agent that drops the extension gets nothing
+from the next one; each message has a token of its own (`jti` is its message id). The token is searched for in
+everything the system keeps or says: the adapter's tests capture every log line of a send at the most verbose level and
+find neither the token, nor a segment of it, nor the key; the end-to-end test reads the event log, the thread, its
+export, every AG-UI frame of the runs and, on Postgres, **every row of every table of the schema**, and finds none; a
+test that makes the adapter log the metadata fails.
+
+### Trying it
+
+The fake agent of the test support (`orch-fake-agent`, `FAKE_AGENT_EXTENSIONS=thread-tools`, or `FakeAgentOptions::extensions`
+in a Rust test) lists the extension, records the grant of each message (`threadTools` in its `/__control/<agent>/calls`),
+and its `thread-tools` script is what an agent does with it: it calls the endpoint with rmcp's own client, lists the tools,
+calls `get_ui_catalog` twice (the second time with the digest it was given) and reports one line, for example
+`thread-tools: tools=get_ui_catalog; catalog=<id> v2 <digest>; again unchanged=true`, or `no catalog: this thread has no UI
+catalog; answer in text`, or `no grant`. In the dev stack ([`dev/README.md`](../../dev/README.md#the-thread-tools)) every
+orchestrator process has `THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL=http://orchestrator:8080`, and `orchestrator` serves
+the endpoint (the edge does not route it); an agent of the stack that lists the extension receives the grant.
 
 ## The token
 

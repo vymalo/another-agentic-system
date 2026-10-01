@@ -52,8 +52,13 @@ fn deliveries(w: &World) -> Vec<(Option<UiDelivery>, Option<ThreadId>)> {
         .into_iter()
         .map(|call| match call {
             Call::Send {
-                ui_catalog, thread, ..
-            } => (ui_catalog.map(|boxed| *boxed), thread),
+                ui_catalog,
+                thread_tools,
+                ..
+            } => (
+                ui_catalog.map(|boxed| *boxed),
+                thread_tools.map(|grant| grant.thread),
+            ),
             other => panic!("not a send: {other:?}"),
         })
         .collect()
@@ -186,14 +191,14 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
     let Call::Send {
         action: Some(_),
         ui_catalog,
-        thread,
+        thread_tools,
         ..
     } = &sends[1]
     else {
         panic!("the action is the second send: {sends:?}");
     };
     assert_eq!(ui_catalog.as_deref(), Some(&UiDelivery::Inline(v1)));
-    assert_eq!(thread, &Some(t.id));
+    assert_eq!(thread_tools.as_ref().map(|grant| grant.thread), Some(t.id));
     run.shutdown().await;
 }
 

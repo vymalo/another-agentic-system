@@ -25,6 +25,9 @@ tokio-util.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
+# The agent's side of the thread tools: the `thread-tools` script of the fake agent calls the
+# orchestrator's endpoint with rmcp's own client, as a real agent does.
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 bytes = "1"
 
 [lints]

@@ -119,6 +119,7 @@ flowchart TB
   pg --> ports
   a2a --> ports
   a2a --> a2amap
+  a2a --> token
   adam --> ports
   adam --> a2amap
   a2amap --> ports
@@ -176,7 +177,9 @@ Rules the graph enforces, each checkable in the manifests:
   `orch-agent-a2a` and `orch-agent-adam` name no other orchestrator crate (ADR 0009, rule 5: no
   implementation type in a port signature), except that the last two use `orch-a2a-mapping`, their
   shared pure helper (the mapping from A2A values to envelopes, itself depending on `orch-core` and
-  `orch-ports` only and on no HTTP client), not another adapter.
+  `orch-ports` only and on no HTTP client), not another adapter. `orch-agent-a2a` also uses `orch-thread-token`
+  (pure, `orch-core` only) to mint the thread-tools grant; the token crate is a helper of the adapter and of one
+  surface, not an adapter.
 - **`orch-agent-adam` is the only crate that names an adam-rs agent, runtime or store crate**
   (ADR 0015), and the binary links it only with the feature `agent-local`, off by default: with
   the feature off, `cargo tree -p orchestrator -i adam-runtime` finds nothing.
@@ -193,7 +196,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
 | `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres | **Built** |
-| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0 | **Built** |
+| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |

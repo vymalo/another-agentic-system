@@ -1101,7 +1101,113 @@ async fn the_thread_tools_endpoint_is_mounted_by_its_name_and_a_minted_token_ope
     );
 }
 
+/// The whole loop through the real binary: its A2A adapter mints a grant for a message to an agent
+/// whose card lists `thread-tools/v1`, the agent (the fake agent's `thread-tools` script) calls the
+/// binary's own endpoint back with it, and gets the catalog the screen sent. The binary is given
+/// the key and the URL it is reached at, as a deployment gives every role.
+#[cfg(feature = "surface-thread-tools")]
+#[tokio::test]
+async fn an_agent_that_lists_the_extension_calls_the_binary_back_with_the_grant_it_was_given() {
+    const KEY: &str = "smoke-loop-key-0123456789abcdef0123456789abcdef0123456789";
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let agent = FakeAgent::spawn(FakeAgentOptions {
+        bearer: Some(TOKEN.to_owned()),
+        extensions: vec![orch_core::THREAD_TOOLS_EXTENSION.to_owned()],
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml(&agent.card_url()));
+    let addr = format!("127.0.0.1:{}", free_port());
+    let base = format!("http://{addr}");
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", &database_url),
+            ("LISTEN_ADDR", &addr),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+            ("ORCH_SURFACES", "agui,thread-tools"),
+            ("THREAD_TOOLS_SECRET", KEY),
+            ("THREAD_TOOLS_URL", &base),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    // a run that carries the screen's catalog, to an agent that calls the endpoint back
+    let chat = Chat::new(&base, "alice@example.com");
+    let id = uuid::Uuid::now_v7().to_string();
+    let input = Chat::agui_input(
+        &id,
+        "run-1",
+        &[("msg-1", "thread-tools please")],
+        orch_testsupport::with_ui_catalog(1),
+    );
+    let frames = chat
+        .agui_run("fake", &input)
+        .await
+        .collect_frames(Duration::from_secs(30))
+        .await;
+    assert_eq!(
+        frames.last().map(|f| f.event["type"].clone()),
+        Some("RUN_FINISHED".into()),
+        "{frames:?}"
+    );
+    let (status, export) = chat.get(&format!("/api/threads/{id}/export")).await;
+    assert_eq!(status, 200);
+    let said: Vec<&str> = export["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "artifact" && e["data"]["name"] == "result")
+        .map(|e| e["data"]["text"].as_str().unwrap())
+        .collect();
+    let catalog = orch_testsupport::ui_catalog(1);
+    assert_eq!(
+        said,
+        [format!(
+            "thread-tools: tools=get_ui_catalog; catalog={} v1 {}; again unchanged=true",
+            orch_testsupport::UI_CATALOG_ID,
+            catalog["digest"].as_str().unwrap()
+        )],
+        "the agent called the endpoint back with its grant and got the catalog; log:\n{}",
+        run.borrow().log()
+    );
+
+    // the grant the agent was given names the binary's endpoint; neither it nor the key is in the
+    // thread the chat reads or in the binary's log
+    let grants: Vec<serde_json::Value> = agent
+        .executions()
+        .into_iter()
+        .filter_map(|call| call.thread_tools)
+        .collect();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0]["url"], format!("{base}/thread-tools/{id}/mcp"));
+    let token = grants[0]["token"].as_str().unwrap();
+    assert!(!export.to_string().contains(token));
+    let log = run.borrow().log();
+    assert!(
+        !log.contains(token) && !log.contains(KEY),
+        "a secret leaked into the log"
+    );
+}
+
 /// The JSON-RPC messages of a response, or none for an empty or non-JSON body (a refusal).
+#[cfg(feature = "surface-thread-tools")]
 fn rpc_messages_or_empty(body: &str) -> Vec<serde_json::Value> {
     if body.trim().is_empty() || !(body.trim_start().starts_with('{') || body.contains("data:")) {
         return Vec::new();

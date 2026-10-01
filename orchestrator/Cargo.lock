@@ -2029,12 +2029,16 @@ dependencies = [
  "orch-core",
  "orch-ports",
  "orch-testsupport",
+ "orch-thread-token",
  "reqwest",
  "rustls",
+ "secrecy",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2324,6 +2328,7 @@ dependencies = [
  "orch-ports",
  "orch-surface-agui",
  "reqwest",
+ "rmcp",
  "serde_json",
  "tokio",
  "tokio-stream",

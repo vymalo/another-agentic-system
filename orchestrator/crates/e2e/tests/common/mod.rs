@@ -124,6 +124,10 @@ pub struct Setup {
     /// Bearer tokens the orchestrator is configured with.
     pub coder_token: Option<String>,
     pub plain_token: Option<String>,
+    /// Whether the A2A adapter mints thread-tools grants ([`THREAD_TOOLS_KEY`]) and the grant's
+    /// URL is the first instance made with [`World::instance_with_thread_tools`] (its address is
+    /// bound beforehand, so the adapter can be told it). An agent still has to list the extension.
+    pub thread_tools: bool,
     /// The gate new threads start under (the deployment's; empty: no gate).
     pub gate: GatePolicy,
     /// The `gate` key of an agent's `AGENTS_FILE` entry, by agent id.
@@ -144,6 +148,7 @@ impl Default for Setup {
             reviewer: None,
             coder_token: None,
             plain_token: None,
+            thread_tools: false,
             // No source is required, but `ci/build` is the check a request that adds `ci` waits
             // for: a gate that requires CI must name its checks (`GateError::CiWithoutChecks`).
             gate: GatePolicy {
@@ -196,6 +201,9 @@ pub struct World {
     gate: GatePolicy,
     target_gates: BTreeMap<AgentId, GateLayer>,
     gate_rules: GateRules,
+    /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
+    /// the first instance with the thread-tools surface serves on it.
+    thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
 }
 
 impl World {
@@ -217,10 +225,28 @@ impl World {
                 Db::Postgres(db)
             }
         };
+        // The address the thread-tools grants name, and what mints them.
+        let thread_tools_listener = setup.thread_tools.then(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        });
+        let thread_tools = thread_tools_listener.as_ref().map(|listener| {
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            Arc::new(
+                orch_thread_token::ThreadToolsIssuer::new(
+                    thread_tools_keys(),
+                    &base,
+                    Duration::from_secs(7200),
+                )
+                .unwrap(),
+            )
+        });
         World {
             db,
             agents: A2aAgentClient::new(A2aConfig {
                 use_system_proxy: false,
+                thread_tools,
                 ..A2aConfig::default()
             })
             .unwrap(),
@@ -241,6 +267,7 @@ impl World {
             gate: setup.gate,
             target_gates: setup.target_gates,
             gate_rules: setup.gate_rules,
+            thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
 
@@ -331,6 +358,19 @@ impl World {
             .await
     }
 
+    /// The listener the grants name, for the first instance that serves the thread tools; a later
+    /// one binds a port of its own (a replica the grants do not name).
+    async fn listener_for(&self, surfaces: Surfaces) -> tokio::net::TcpListener {
+        let reserved = surfaces
+            .thread_tools
+            .then(|| self.thread_tools_listener.lock().unwrap().take())
+            .flatten();
+        match reserved {
+            Some(listener) => tokio::net::TcpListener::from_std(listener).unwrap(),
+            None => tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        }
+    }
+
     async fn instance_full(&self, owner: &str, dispatch: bool, surfaces: Surfaces) -> TestInstance {
         let dispatcher = dispatch.then(fast_dispatcher);
         let api = ApiConfig {
@@ -341,7 +381,8 @@ impl World {
             Db::Memory { store, wakeup } => {
                 let app = self.app(store.clone(), wakeup.clone());
                 let extra = extra_routes(&app, surfaces);
-                TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
+                let listener = self.listener_for(surfaces).await;
+                TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
@@ -352,9 +393,56 @@ impl World {
                 );
                 let app = self.app(PgStore::from_pool(pool), wakeup);
                 let extra = extra_routes(&app, surfaces);
-                TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
+                let listener = self.listener_for(surfaces).await;
+                TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
         }
+    }
+
+    /// The grants the thread tools' agent was given, in the order of its messages: the
+    /// `{url, token, expiresAt}` of each message of `plain` that carried one.
+    pub fn grants_of_plain(&self) -> Vec<Value> {
+        self.plain
+            .executions()
+            .into_iter()
+            .filter_map(|call| call.thread_tools)
+            .collect()
+    }
+
+    /// The tables of the test database whose rows mention `needle` anywhere (each row read as
+    /// JSON text): empty on the memory store, where there is no database to read. A secret that
+    /// was never stored is in none.
+    pub async fn tables_mentioning(&self, needle: &str) -> Vec<String> {
+        let Db::Postgres(db) = &self.db else {
+            return Vec::new();
+        };
+        let pool = db.pool("scan", 2).await;
+        let tables: Vec<(String,)> = sqlx::query_as(
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(
+            tables.len() >= 5,
+            "the schema has the orchestrator's tables: {tables:?}"
+        );
+        let mut found = Vec::new();
+        for (table,) in tables {
+            let query = format!(
+                "SELECT count(*) FROM \"{table}\" t WHERE row_to_json(t)::text LIKE '%' || $1 || '%'"
+            );
+            let (hits,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(query))
+                .bind(needle)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            if hits > 0 {
+                found.push(table);
+            }
+        }
+        found
     }
 
     /// A client for `instance` acting as [`ALICE`], which can also read the event log.

@@ -339,12 +339,15 @@ async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread()
     let sends = sends_to(&w, "reviewer");
     assert_eq!(sends.len(), 1);
     let Call::Send {
-        ui_catalog, thread, ..
+        ui_catalog,
+        thread_tools,
+        ..
     } = &sends[0]
     else {
         unreachable!()
     };
-    assert_eq!((ui_catalog, thread), (&None, &None));
+    // the verifier is told nothing of the author's screen and gets no tools on the author's thread
+    assert_eq!((ui_catalog, thread_tools), (&None, &None));
     run.shutdown().await;
 }
 
@@ -768,7 +771,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             content: orch_ports::SendContent::Text("review".into()),
             release: None,
             ui_catalog: None,
-            thread: None,
+            thread_tools: None,
         },
     )
     .await
@@ -867,7 +870,7 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
             content: orch_ports::SendContent::Text("review".into()),
             release: None,
             ui_catalog: None,
-            thread: None,
+            thread_tools: None,
         },
     )
     .await

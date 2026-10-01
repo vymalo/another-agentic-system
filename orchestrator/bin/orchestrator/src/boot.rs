@@ -227,6 +227,26 @@ fn thread_tools_routes<P: orch_ports::Ports>(
 
 type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids>;
 
+/// The A2A client's configuration: the defaults, and the issuer of the thread-tools grants when the
+/// keys and the URL are set (every role has them: the worker sends, the control plane serves).
+fn a2a_config(cfg: &Config) -> A2aConfig {
+    #[cfg(feature = "surface-thread-tools")]
+    if let Some(settings) = &cfg.thread_tools {
+        tracing::info!(
+            url = settings.issuer.base_url(),
+            ttl_secs = settings.issuer.ttl().as_secs(),
+            keys = ?settings.issuer.keys(),
+            "agents that list thread-tools/v1 are given a grant"
+        );
+        return A2aConfig {
+            thread_tools: Some(Arc::clone(&settings.issuer)),
+            ..A2aConfig::default()
+        };
+    }
+    let _ = cfg;
+    A2aConfig::default()
+}
+
 /// What every role needs, built once by [`setup`].
 struct Shared {
     /// Kept to close the pool at the very end.
@@ -254,7 +274,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         tracing::warn!("the wakeup listener is not attached yet; falling back to polling");
     }
 
-    let a2a = A2aAgentClient::new(A2aConfig::default()).context("cannot build the A2A client")?;
+    let a2a = A2aAgentClient::new(a2a_config(cfg)).context("cannot build the A2A client")?;
     // After the orchestrator's own migrations, before the app: every role creates the local
     // agents' journal too (idempotent, and serialised by its own advisory lock).
     let local = Local::start(cfg).await?;
