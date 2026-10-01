@@ -455,7 +455,7 @@ stateDiagram-v2
   then draws nothing (`drawnDrafts`), so the swap is one render: the words are never missing and never there twice.
 - **The mock** relays live text as the orchestrator does (`mock/live.ts` is its copy of the overlay, held to the `stream`
   golden by `mock/golden.test.ts`, and the sender's refresh every second, `refreshMs`), with the scenarios `stream`,
-  `stream-long`, `stream-hold` and `stream-abandon` ([Mock server](#mock-server)).
+  `stream-long`, `stream-hold`, `stream-gate` and `stream-abandon` ([Mock server](#mock-server)).
 
 ## A2UI surfaces
 
@@ -982,7 +982,7 @@ The first word of the first message picks the script, the same words as the orch
 | `partial` | mock only, **not produced by the current orchestrator**: a partial agent message replaced by its final version |
 | `unreachable` | mock only: an error activity, `RUN_ERROR` `delivery_failed`, thread blocked |
 | `stream` | the `stream` golden ([`stream.feed.json`](../docs/api/examples/stream.feed.json), live text, ADR 0027): working, the reply `Fibonacci in Rust.` as three live pieces (`Fib`, `onacci `, `in Rust.`: frames with `vymalo.live`, no `id:`, not in the log), then the log's message under the same id, the status that repeats the words, done. A viewer must be connected while the pieces are written to hear them, as with the orchestrator |
-| `stream-long`, `stream-hold`, `stream-abandon` | mock only, live text: a reply in Markdown (a paragraph and a list) written in eight pieces, then the log's message and done (`stream-long`); the same, five pieces and then nothing until cancelled, so a draft stays on the screen (`stream-hold`, and `Write …`, which the screenshots use); a stream the model gives up halfway, then the words the agent says next under another id (`stream-abandon`). The mock says the text so far again from its start every second (`refreshMs`, as the orchestrator's sender does), so a page that opens or reconnects mid-reply is told the draft a moment later |
+| `stream-long`, `stream-hold`, `stream-gate`, `stream-abandon` | mock only, live text: a reply in Markdown (a paragraph and a list) written in eight pieces, then the log's message and done (`stream-long`); the same, five pieces and then nothing until cancelled, so a draft stays on the screen (`stream-hold`, and `Write …`, which the screenshots use); five pieces and then nothing until the test releases it (`POST /__mock/release?thread=<id>`), then the other three, the log's message and done (`stream-gate`); a stream the model gives up halfway, once the test has released it, then the words the agent says next under another id (`stream-abandon`). The mock says the text so far again from its start every second (`refreshMs`, as the orchestrator's sender does), so a page that opens or reconnects mid-reply is told the draft a moment later: **a test that must see a draft after a reload or a cut holds the reply (`stream-gate`, `stream-abandon`) rather than race a script**, because a draft is on the screen only for as long as the script has left (about four seconds for `stream-long`, less than the page's reload takes on a slow phone run) |
 | `Delegate`, `Investigate`, `steps-many` | mock only, nested steps at a scale the goldens do not have (`quick` steps play at once): the coder hands the work to OpenCode, a sub-agent step with fourteen steps under it (reads, a search, edits, commands, one test run that fails and is run again), then a push, a pull request and the answer (`Delegate`); the same still running a command until cancelled (`Investigate`); a sub-agent step with 120 reads under it, one of them failing, played at once: a level long enough to be a scroll box (`steps-many`) |
 | `Fix`, `Refactor`, `Make`, `Upgrade`, `Deploy`, `Also`, `Migrate` | mock only, the coder scenarios of `pnpm screens` (plain words, so the titles read well): steps with commands, a push, the agent's checks, a pull request and a markdown answer (`Fix`); the same, still running a command (`Refactor`); a failed check, a rework and a pass (`Make`); nothing after the message (`Upgrade`); a question (`Deploy`); a short follow-up (`Also`); a failure with the agent's reason (`Migrate`). The wording of the steps is the mock's, not adam-coder's |
 
@@ -990,8 +990,11 @@ The mock tells the orchestrator's story: `mock/golden.test.ts` drives every scen
 [`docs/api/examples`](../docs/api/examples/README.md) through the mock's run route and requires the
 connect stream a viewer reads to be the golden `agui/<name>.agui.json`, frame for frame, so the mock
 cannot drift from the orchestrator unnoticed. Test hooks for the e2e suite: `POST
-/__mock/drop-streams` (cut every open stream), `POST /__mock/cut-next-connect?frames=n` (cut the
-next connect stream after `n` frames, in the middle of a group) and `POST /__mock/reset`. The mock also plays
+/__mock/drop-streams` (cut every open stream; with `?thread=<id>`, only that thread's, which is what a
+test that runs in parallel with others uses), `POST /__mock/release?thread=<id>` (let the run of that
+thread go on from a `{ pause: "release" }` step, `stream-gate` and `stream-abandon`; 409 when it does not
+wait), `POST /__mock/cut-next-connect?frames=n` (cut the next connect stream after `n` frames, in the
+middle of a group) and `POST /__mock/reset`. The mock also plays
 the platform's agent registry (ADR 0022): `GET /api/registry`, `POST /__mock/registry?down=true` makes it
 unreachable (its agents leave `/api/agents`, a run or a capabilities request for one is a 503 with `Retry-After`) and
 `POST /__mock/registry/agents` with an agent as the body adds one (`source: "registry"`). Its state is kept per

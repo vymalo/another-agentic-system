@@ -172,6 +172,9 @@ describe("live text, in the app", () => {
     const id = await makeThread("stream-abandon what is the answer");
     shell(id);
     await waitFor(() => expect(drafts()[0]?.textContent).toContain("The answer is forty-"));
+    // the model stalls halfway, and fails when the test says so
+    const released = await realFetch(`${base}/__mock/release?thread=${id}`, { method: "POST" });
+    expect(released.status).toBe(204);
     await waitFor(() => expect(drafts()).toHaveLength(0));
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     expect(replies().map((r) => r.textContent)).toEqual([

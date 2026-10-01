@@ -1,43 +1,61 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page, test } from "@playwright/test";
+import { type APIRequestContext, expect, type Page, test } from "@playwright/test";
 import { badge, conversation, expectNoHorizontalScroll, MOCK_URL, startThread } from "./helpers";
 
 /*
- * Live text (ADR 0027, web/DESIGN.md "A turn"), against the mock's `stream-long`, `stream-hold` and
+ * Live text (ADR 0027, web/DESIGN.md "A turn"), against the mock's `stream-gate`, `stream-hold` and
  * `stream-abandon` scenarios (mock/scripts.ts): the agent's words are drawn while they are written,
  * as a draft after the turn's parts, and the log's message, when it comes, is the one reply. A
  * draft is not in the runtime's transcript, so none of this is a message until the log says it.
+ *
+ * A draft is on the screen only as long as the script has left, so a test that has to look at one
+ * after a page load, a reload or a cut must not race a script that plays on a timer (that is what
+ * made these tests fail on the phone project: the reply was finished by the time the page was
+ * back). Those tests run a scenario that holds the reply until the test releases
+ * it (`stream-gate`, `stream-abandon`: `POST /__mock/release`), so the state they look at stays as
+ * long as they need, on any machine. The words growing piece by piece is covered by the app's
+ * DOM test (`chat-shell-live.dom.test.tsx`, `stream-long`).
  */
 
 const draft = (page: Page) => conversation(page).locator('[data-slot="agent-draft"]');
 const reply = (page: Page) => conversation(page).locator('[data-slot="agent-message"]');
+
+/** The thread the page is on (its id is the last part of the URL). */
+const threadOf = (page: Page) => new URL(page.url()).pathname.split("/").pop() ?? "";
+
+/**
+ * Lets a held run go on. Call it once the draft shows the last piece before the hold: the mock holds
+ * with that piece, so a release after it is never early (a 409 says the run does not wait).
+ */
+async function release(page: Page, request: APIRequestContext) {
+  const res = await request.post(`${MOCK_URL}/__mock/release?thread=${threadOf(page)}`);
+  expect(res.status(), "the release of a held run").toBe(204);
+}
 
 async function axeViolations(page: Page) {
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }
 
-test("the words grow while the agent writes them, then the reply stays, once", async ({ page }) => {
-  await startThread(page, "stream-long write the plan");
+test("a draft is Markdown as it is written; the log's reply replaces it, once", async ({
+  page,
+  request,
+}) => {
+  await startThread(page, "stream-gate write the plan");
 
-  // a draft in the agent's turn, busy and silent for a screen reader; not a reply yet
-  await expect(draft(page)).toBeVisible();
+  // five pieces in, held: a draft in the agent's turn, busy and silent for a screen reader; not a reply yet
+  await expect(draft(page)).toContainText("fix the off-by-one in the loop");
   await expect(draft(page)).toHaveAttribute("aria-busy", "true");
   await expect(draft(page)).toHaveAttribute("aria-live", "off");
   await expect(reply(page)).toHaveCount(0);
   await expect(conversation(page).getByText(/is starting/)).toHaveCount(0);
-  const first = (await draft(page).innerText()).length;
-  await expectNoHorizontalScroll(page);
-
-  // it grows, and it is Markdown as it is written
-  await expect
-    .poll(async () => (await draft(page).innerText()).length, { timeout: 10_000 })
-    .toBeGreaterThan(first);
   await expect(draft(page)).toContainText("that fixes it.");
   await expect(draft(page).getByRole("listitem").first()).toBeVisible();
+  await expect(draft(page).getByRole("listitem")).toHaveCount(2);
   await expectNoHorizontalScroll(page);
 
-  // the log says the reply: one message, no draft, the words once
+  // the rest comes, and the log says the reply: one message, no draft, the words once
+  await release(page, request);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   await expect(draft(page)).toHaveCount(0);
   await expect(reply(page)).toHaveCount(1);
@@ -58,9 +76,14 @@ test("a reply that is still being written ends with Stop: nothing is left that l
   await expect(conversation(page).getByText("then make the smallest change")).toHaveCount(0);
 });
 
-test("a stream the model gave up goes, and the words said next are said once", async ({ page }) => {
+test("a stream the model gave up goes, and the words said next are said once", async ({
+  page,
+  request,
+}) => {
   await startThread(page, "stream-abandon what is the answer");
   await expect(draft(page)).toContainText("The answer is forty-");
+  // the model stalls here until the test lets it fail
+  await release(page, request);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   await expect(draft(page)).toHaveCount(0);
   await expect(reply(page)).toHaveCount(1);
@@ -69,11 +92,17 @@ test("a stream the model gave up goes, and the words said next are said once", a
 });
 
 test("a connection cut mid-reply: the reply arrives once, whole", async ({ page, request }) => {
-  await startThread(page, "stream-long write the plan");
-  await expect(draft(page)).toBeVisible();
-  // the network goes away in the middle of the reply: the draft goes with the connection, and the
-  // reconnect is told the text so far again (the sender's refresh) or the final message
-  expect((await request.post(`${MOCK_URL}/__mock/drop-streams`)).ok()).toBe(true);
+  await startThread(page, "stream-gate write the plan");
+  await expect(draft(page)).toContainText("fix the off-by-one in the loop");
+  // the network goes away in the middle of the reply (this thread's streams only: the tests of this
+  // file run side by side against one mock): the reconnect heard none of the pieces, and is told the
+  // text so far again by the sender's refresh
+  const cut = await request.post(`${MOCK_URL}/__mock/drop-streams?thread=${threadOf(page)}`);
+  expect(cut.status()).toBe(204);
+  await expect(draft(page)).toHaveCount(1);
+  await expect(draft(page)).toContainText("fix the off-by-one in the loop");
+  await expect(conversation(page).getByText("I'll start with the failing test")).toHaveCount(1);
+  await release(page, request);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   await expect(draft(page)).toHaveCount(0);
   await expect(reply(page)).toHaveCount(1);
@@ -83,14 +112,17 @@ test("a connection cut mid-reply: the reply arrives once, whole", async ({ page,
 
 test("a page reloaded mid-reply shows the text so far, once, and the reply when it is done", async ({
   page,
+  request,
 }) => {
-  await startThread(page, "stream-long write the plan");
-  await expect(draft(page)).toContainText("that fixes it.");
+  await startThread(page, "stream-gate write the plan");
+  await expect(draft(page)).toContainText("fix the off-by-one in the loop");
   await page.reload();
   // the new connection heard none of the pieces: the sender says the text again, from the start
   await expect(draft(page)).toHaveCount(1);
+  await expect(draft(page)).toContainText("fix the off-by-one in the loop");
   await expect(draft(page)).toContainText("I'll start with the failing test");
   await expect(conversation(page).getByText("I'll start with the failing test")).toHaveCount(1);
+  await release(page, request);
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   await expect(draft(page)).toHaveCount(0);
   await expect(reply(page)).toHaveCount(1);

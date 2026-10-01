@@ -17,7 +17,14 @@ export type Step =
       /** Played at once after the step before it, not `stepMs` later (a burst of steps). */
       quick?: boolean;
     }
-  | { pause: "cancel" }
+  | {
+      /**
+       * The run waits here: `cancel` until the person stops it, `release` until a test says go on
+       * (`POST /__mock/release?thread=<id>`, mock/server.ts), so that a state a test needs to look at
+       * stays as long as it takes, whatever the speed of the machine.
+       */
+      pause: "cancel" | "release";
+    }
   | {
       /**
        * A piece of the reply the agent is still writing (live text, ADR 0027): relayed to the
@@ -525,14 +532,16 @@ const nextMessageId = (() => {
 /**
  * The pieces of a reply as a sender relays them while the model writes it: `parts` joined is the
  * reply. `last` ends it (the log's message closes the live one), `open` leaves it unfinished, and
- * `abandoned` gives the stream up after its words (the model failed).
+ * `abandoned` gives the stream up after its words (the model failed). `from` is how much of the reply
+ * was said before `parts` (the pieces that go on after a hold).
  */
 function livePieces(
   messageId: string,
   parts: readonly string[],
   end: "last" | "open" | "abandoned" = "last",
+  from = 0,
 ): Step[] {
-  let offset = 0;
+  let offset = from;
   const steps: Step[] = parts.map((text, i) => {
     const piece: Step = {
       live: {
@@ -812,8 +821,10 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   under it, played at once (a level long enough to be a scroll box), a read among them failing; done.
  * - Live text (ADR 0027): `stream …` is the golden (the words `Fib`, `onacci `, `in Rust.` as live pieces, then the
  *   log's message and done); `stream-long …` a longer Markdown reply in eight pieces, then done; `stream-hold …`
- *   (and `Write …`, for the screenshots) the same, still being written until cancelled; `stream-abandon …` a
- *   stream the model gives up halfway, then the words the agent says next under another id; done.
+ *   (and `Write …`, for the screenshots) the same, still being written until cancelled; `stream-gate …` the same
+ *   five pieces, then nothing until the test releases it (`POST /__mock/release?thread=<id>`), then the other three,
+ *   the log's message and done; `stream-abandon …` a stream the model gives up halfway, after the test releases it,
+ *   then the words the agent says next under another id; done.
  */
 export function scriptFor(text: string): {
   start: Step[];
@@ -1179,22 +1190,35 @@ export function scriptFor(text: string): {
           { pause: "cancel" },
         ],
       };
-    // mock only: the model fails halfway: the stream is given up, and the log has the words the
-    // agent says next, under another id
+    // mock only: the reply is being written, and goes on when the test says so: a draft stays on the
+    // screen as long as the test needs to look at it (a reload, a screenshot), then the rest comes
+    case "stream-gate": {
+      const id = nextMessageId();
+      const first = LONG_PARTS.slice(0, 5);
+      return {
+        start: [
+          working,
+          ...livePieces(id, first, "open"),
+          { pause: "release" },
+          ...livePieces(id, LONG_PARTS.slice(5), "last", first.join("").length),
+          { kind: "agent_message", data: { messageId: id, final: true, text: LONG_REPLY } },
+          { kind: "agent_status", data: { status: "completed", detail: LONG_REPLY } },
+          done,
+        ],
+      };
+    }
+    // mock only: the model fails halfway, when the test releases it: the stream is given up, and the
+    // log has the words the agent says next, under another id
     case "stream-abandon": {
       const retry = "Sorry, let me say that again: it is forty-two.";
       const id = nextMessageId();
       const said = "The answer is forty-";
-      // the model stalls for a while before it fails: the half-written reply stays on the screen a moment
-      const stalled = Array.from(
-        { length: 4 },
-        (): Step => ({ live: { messageId: id, offset: said.length, text: "", end: "open" } }),
-      );
       return {
         start: [
           working,
           ...livePieces(id, ["The answer is ", "forty-"], "open"),
-          ...stalled,
+          // the model stalls: the half-written reply stays on the screen until the test lets it fail
+          { pause: "release" },
           { live: { messageId: id, offset: said.length, text: "", end: "abandoned" } },
           { kind: "agent_message", data: { messageId: nextMessageId(), final: true, text: retry } },
           { kind: "agent_status", data: { status: "completed", detail: retry } },
