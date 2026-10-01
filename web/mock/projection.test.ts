@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repoKey, typedArtifact } from "./projection";
+import { CatalogLedger, Projector, repoKey, typedArtifact } from "./projection";
 
 /**
  * The typed artifact fields of the mock's projection, on the same cases as the real one's
@@ -124,5 +124,98 @@ describe("typedArtifact", () => {
     expect(repoKey("ssh://git@host:2222/a/b")).toBe("host:2222/a/b");
     expect(repoKey("https://github.com/only")).toBeUndefined();
     expect(repoKey("https://github.com/a/../b")).toBeUndefined();
+  });
+});
+
+/**
+ * The UI catalog ledger (ADR 0023), on the same cases as the real one's (`UiCatalogLedger`, in
+ * `orch-core`): a digest is recorded once, the highest version is current, an older one is
+ * recorded and never current, the same version with another digest replaces the current one.
+ */
+describe("CatalogLedger", () => {
+  const ref = (version: number, tag: string) => ({
+    catalogId: "https://agents.vymalo.com/a2ui/catalogs/chat",
+    version,
+    digest: `sha256:${tag.repeat(64)}`,
+  });
+
+  it("records a digest once and keeps the highest version current", () => {
+    const ledger = new CatalogLedger();
+    expect(ledger.observe(ref(1, "a"))).toEqual({ recorded: true, becameCurrent: true });
+    expect(ledger.observe(ref(1, "a"))).toEqual({ recorded: false, becameCurrent: false });
+    expect(ledger.observe(ref(2, "b"))).toEqual({ recorded: true, becameCurrent: true });
+    expect(ledger.observe(ref(1, "c"))).toEqual({ recorded: true, becameCurrent: false });
+    expect(ledger.observe(ref(1, "c"))).toEqual({ recorded: false, becameCurrent: false });
+    expect(ledger.current).toEqual(ref(2, "b"));
+    expect(ledger.knows(ref(1, "c").digest)).toBe(true);
+    expect(ledger.knows(ref(9, "d").digest)).toBe(false);
+  });
+
+  it("lets the later of two digests of one version win, once", () => {
+    const ledger = new CatalogLedger();
+    ledger.observe(ref(2, "a"));
+    expect(ledger.observe(ref(2, "b"))).toEqual({ recorded: true, becameCurrent: true });
+    expect(ledger.observe(ref(2, "a"))).toEqual({ recorded: false, becameCurrent: false });
+    expect(ledger.current).toEqual(ref(2, "b"));
+  });
+});
+
+describe("Projector and the UI catalog", () => {
+  const info = {
+    threadId: "00000000-0000-7000-8000-000000000001",
+    title: "t",
+    target: { agentId: "plain" },
+  };
+  const at = "2026-01-01T00:00:00Z";
+  const user = { type: "user" as const, name: "alice@example.com" };
+  const catalogEvent = (seq: number, version: number, tag: string) => ({
+    seq,
+    threadId: info.threadId,
+    at,
+    kind: "ui_catalog" as const,
+    actor: user,
+    data: {
+      catalogId: "https://agents.vymalo.com/a2ui/catalogs/chat",
+      version,
+      digest: `sha256:${tag.repeat(64)}`,
+      catalog: { catalogId: "https://agents.vymalo.com/a2ui/catalogs/chat", components: {} },
+    },
+  });
+  const message = (seq: number) => ({
+    seq,
+    threadId: info.threadId,
+    at,
+    kind: "user_message" as const,
+    actor: user,
+    data: { text: "hi", messageId: `m-${seq}`, runId: `r-${seq}` },
+  });
+
+  it("says nothing for a catalog, opens no run, and puts the current one in the snapshot", () => {
+    const projector = new Projector(info);
+    expect(projector.apply(catalogEvent(1, 1, "a"))).toEqual([]);
+    expect(projector.runOpen).toBe(false);
+    const frames = projector.apply(message(2));
+    expect(frames[0]?.event.type).toBe("RUN_STARTED");
+    const snapshot = frames.find((f) => f.event.type === "STATE_SNAPSHOT")?.event as unknown as {
+      snapshot: { thread: Record<string, unknown> };
+    };
+    expect(snapshot.snapshot.thread.uiCatalog).toEqual({
+      catalogId: "https://agents.vymalo.com/a2ui/catalogs/chat",
+      version: 1,
+      digest: `sha256:${"a".repeat(64)}`,
+    });
+    // in the middle of a run: still nothing, and the newest version is the one the snapshot names
+    expect(projector.apply(catalogEvent(3, 2, "b"))).toEqual([]);
+    expect(projector.runOpen).toBe(true);
+    expect(projector.apply(catalogEvent(4, 1, "c"))).toEqual([]);
+  });
+
+  it("leaves a thread that was shown no catalog with no uiCatalog", () => {
+    const projector = new Projector(info);
+    const frames = projector.apply(message(1));
+    const snapshot = frames.find((f) => f.event.type === "STATE_SNAPSHOT")?.event as unknown as {
+      snapshot: { thread: Record<string, unknown> };
+    };
+    expect("uiCatalog" in snapshot.snapshot.thread).toBe(false);
   });
 });

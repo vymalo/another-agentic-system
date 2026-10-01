@@ -1,0 +1,385 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "catalog": {
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "components": {
+          "Text": {
+            "additionalProperties": false,
+            "description": "Plain text (catalog version 1).",
+            "properties": {
+              "component": {
+                "const": "Text"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "text": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "variant": {
+                "enum": [
+                  "h1",
+                  "h2",
+                  "h3",
+                  "h4",
+                  "h5",
+                  "caption",
+                  "body"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "component",
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+      "digest": "sha256:1f266eba8bcaadea6898f093405fc2a4aab363e51226ad24bd1e39265f1df487",
+      "version": 1
+    },
+    "kind": "ui_catalog",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "messageId": "msg-1",
+      "runId": "run-1",
+      "text": "echo hi"
+    },
+    "kind": "user_message",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "name": "result",
+      "text": "echo: echo hi",
+      "uri": "https://github.com/acme/demo/pull/1"
+    },
+    "kind": "artifact",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "catalog": {
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "components": {
+          "Column": {
+            "additionalProperties": false,
+            "description": "Stacks its children vertically.",
+            "properties": {
+              "align": {
+                "enum": [
+                  "start",
+                  "center",
+                  "end",
+                  "stretch"
+                ]
+              },
+              "children": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              "component": {
+                "const": "Column"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "component",
+              "children"
+            ],
+            "type": "object"
+          },
+          "Text": {
+            "additionalProperties": false,
+            "description": "Plain text (catalog version 2).",
+            "properties": {
+              "component": {
+                "const": "Text"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "text": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "variant": {
+                "enum": [
+                  "h1",
+                  "h2",
+                  "h3",
+                  "h4",
+                  "h5",
+                  "caption",
+                  "body"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "component",
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+      "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+      "version": 2
+    },
+    "kind": "ui_catalog",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "messageId": "msg-2",
+      "runId": "run-2",
+      "text": "echo again"
+    },
+    "kind": "user_message",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "job": 2
+    },
+    "kind": "job_started",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 10,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "name": "result",
+      "text": "echo: echo again",
+      "uri": "https://github.com/acme/demo/pull/1"
+    },
+    "kind": "artifact",
+    "seq": 11,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 12,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 13,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "messageId": "msg-3",
+      "runId": "run-3",
+      "text": "echo once more"
+    },
+    "kind": "user_message",
+    "seq": 14,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "job": 3
+    },
+    "kind": "job_started",
+    "seq": 15,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 16,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "name": "result",
+      "text": "echo: echo once more",
+      "uri": "https://github.com/acme/demo/pull/1"
+    },
+    "kind": "artifact",
+    "seq": 17,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 18,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 19,
+    "threadId": "<thread-id>"
+  }
+]

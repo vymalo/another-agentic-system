@@ -883,6 +883,62 @@ describe("the UI catalog (ADR 0023), as the mock records it", () => {
     for (const s of snapshots(again)) expect(s).toEqual(ref(2, v2.digest));
   });
 
+  it("records each catalog in the log, first in its commit and once per digest, with no frame of its own", async () => {
+    const v1 = await catalogV(1);
+    const v2 = await catalogV(2);
+    const { threadId, body } = await startThread("echo hi", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: v1 },
+    });
+    // the run opens with the message: a catalog has no frame, the snapshots say which one counts
+    expect(body[0]?.event.type).toBe("RUN_STARTED");
+    await waitForState(threadId, ["done"]);
+    const run = async (n: number, props: unknown) => {
+      const res = await postRun(base, "reviewer", {
+        threadId,
+        runId: newId(),
+        messages: [{ id: `m-${n}`, role: "user", content: "echo again" }],
+        forwardedProps: { [UI_CATALOG_PROP]: props },
+      });
+      expect(res.status).toBe(200);
+      await frames(res);
+      await waitForState(threadId, ["done"]);
+    };
+    // the digest again is not recorded twice; a newer one is; an older one is recorded, never current
+    await run(2, v1);
+    await run(3, v2);
+    const olderCatalog = {
+      ...OWN_CATALOG.catalog,
+      components: {
+        ...OWN_CATALOG.catalog.components,
+        Older: { type: "object", properties: { component: { const: "Older" } } },
+      },
+    };
+    const older = { ...v1, catalog: olderCatalog, digest: await catalogDigest(olderCatalog) };
+    await run(4, older);
+    const res = await fetch(`${base}/api/threads/${threadId}/export`);
+    const doc = (await expectDocumented("/api/threads/{threadId}/export", "get", res)) as {
+      events: { seq: number; kind: string; data: { version?: number; digest?: string } }[];
+    };
+    const kinds = doc.events.map((e) => e.kind);
+    expect(kinds[0]).toBe("ui_catalog");
+    expect(doc.events.filter((e) => e.kind === "ui_catalog").map((e) => e.data.digest)).toEqual([
+      v1.digest,
+      v2.digest,
+      older.digest,
+    ]);
+    // each catalog comes right before the message that carried it
+    for (const [i, e] of doc.events.entries()) {
+      if (e.kind === "ui_catalog") expect(kinds[i + 1]).toBe("user_message");
+    }
+    // a replay shows the catalog as of each point: version 1, then 2 from the third job on, and
+    // the older one that came last never counts
+    const replay = snapshots(await frames(await connect(base, threadId, { mode: "run" })));
+    expect(replay[0]).toEqual(ref(1, v1.digest));
+    expect(replay.at(-1)).toEqual(ref(2, v2.digest));
+    const versions = replay.map((s) => (s as { version: number }).version);
+    expect([...versions].sort((a, b) => a - b)).toEqual(versions);
+  });
+
   it("catalog-newer (mock only): the thread's catalog is version 99, whatever the web sent", async () => {
     const { body } = await startThread("catalog-newer please", "reviewer", {
       forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },

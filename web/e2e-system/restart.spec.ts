@@ -37,7 +37,8 @@ test("orchestrator restart mid-thread: the page recovers and finishes", async ({
 
   const frames = await framesOf(page.request, id);
   expect(shape(frames)).toEqual(ECHO);
-  expect(seqs(frames)).toEqual([1, 2, 3, 4, 5]);
+  // (seq 1 is the web's UI catalog, which has no frame)
+  expect(seqs(frames)).toEqual([2, 3, 4, 5, 6]);
   // the message reached the agent exactly once: the new process resumed the task
   const executions = (await callsFor(page.request, "plain", "gate restart")).filter(
     (c) => c.kind === "execute",

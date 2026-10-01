@@ -376,11 +376,30 @@ fn a_ui_catalog_between_an_error_and_the_state_it_explains_changes_nothing_they_
     ];
     let (a, b) = (project(&without), project(&with));
     assert_eq!(b[3], vec![], "the catalog says nothing");
-    // the closing frames are the same, but for the resume point, which is the event's number
-    let events = |frames: &Vec<Frame>| -> Vec<orch_agui_proto::Event> {
-        frames.iter().map(|f| f.event.clone()).collect()
+    // the closing frames are the same, but for the resume point (the event's number) and the
+    // snapshot, which names the catalog the thread was shown (ADR 0023)
+    let values = |frames: &Vec<Frame>| -> Vec<serde_json::Value> {
+        frames
+            .iter()
+            .map(|f| {
+                let mut value = serde_json::to_value(&f.event).unwrap();
+                if let Some(thread) = value
+                    .pointer_mut("/snapshot/thread")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    thread.remove("uiCatalog");
+                }
+                value
+            })
+            .collect()
     };
-    assert_eq!(events(&a[3]), events(&b[4]));
+    assert_eq!(values(&a[3]), values(&b[4]));
+    let snapshot = b[4]
+        .iter()
+        .map(|f| serde_json::to_value(&f.event).unwrap())
+        .find(|v| v["type"] == "STATE_SNAPSHOT")
+        .expect("the thread state says where the thread stands");
+    assert_eq!(snapshot["snapshot"]["thread"]["uiCatalog"]["version"], 1);
     assert!(
         lines(&b[4])
             .iter()

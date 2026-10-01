@@ -1408,6 +1408,11 @@ impl Projector {
         if self.job_number > 1 {
             snapshot["thread"]["jobNumber"] = Value::from(self.job_number);
         }
+        // The catalog the agent is told to use, when the thread has one (ADR 0023): a screen
+        // compares it with its own to decide whether to send its catalog with the next run.
+        if let Some(current) = self.catalog.current() {
+            snapshot["thread"]["uiCatalog"] = serde_json::to_value(current).unwrap_or(Value::Null);
+        }
         // A job with a gate says where it stands; one without says nothing more than before.
         if self.meta.gate.is_active() {
             let job = JobView {

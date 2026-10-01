@@ -30,6 +30,9 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > The web renders it since MVP slice 4 (2026-09-30).
 > **CI reports are projected** (2026-09-30, [ADR 0017](../decisions/0017-ci-results-by-webhook.md), MVP slice 7): each
 > report is a `vymalo.ci` activity, see [CI results](#ci-results-vymalo-ci). The web renders it since MVP slice 8 (2026-09-30).
+> **The UI's component catalog is accepted** (2026-10-01, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md), MVP
+> slice 3): `forwardedProps["vymalo.uiCatalog"]` on a run, the `ui_catalog` event, and `thread.uiCatalog` in the state
+> snapshot; see [The UI catalog](#the-ui-catalog).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -130,6 +133,7 @@ gets everything.
 | `artifact{name, mimeType?, uri?, text?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.artifact", content:{kind, name, mimeType?, uri?, text?, …the fields of its kind}, subagentRunId}`. See [Typed artifacts](#typed-artifacts) |
 | `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
+| `ui_catalog{catalogId, version, digest, catalog}` (ADR 0023) | — | **No frame**, and no resume point: the catalog is not part of the transcript. The projector keeps which catalog is the thread's current one (the highest version it has recorded), and every later `STATE_SNAPSHOT` says so in `thread.uiCatalog`; an `error` before it still explains the `thread_state` after it. See [The UI catalog](#the-ui-catalog) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
@@ -229,6 +233,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `resume` `cancelled`, nothing new | `Input::Cancel` |
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
 | `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
+| `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
 | `a2uiAction` that is not an action, or names a surface the thread does not have (never had, or deleted), or is sent for a new thread | 422 before the stream; nothing is written or sent |
@@ -443,6 +448,55 @@ attempt 2 of 3) and [`verify-red.agui.json`](examples/agui/verify-red.agui.json)
 are this section as streams, with the `run-` and `connect-` variants of the other goldens; the reference client reads
 all of them in CI.
 
+## The UI catalog
+
+*Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
+Agents are meant to answer and ask through the components the person's screen can show. The web defines
+them as an A2UI **inline catalog**, `{catalogId, components: {<Name>: <JSON Schema>}}`, and sends it with a
+run; the orchestrator records it in the log and tells the agent (which is the business of the A2A adapter:
+the `ui-catalog/v1` extension, detected from the live card, ADR 0008). It relays the catalog and does not
+interpret it.
+
+```json
+{"forwardedProps": {"vymalo.uiCatalog": {
+  "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 2,
+  "digest": "sha256:…",
+  "catalog": {"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "components": {"Text": {…}, "Column": {…}}}}}}
+```
+
+**When a screen sends it.** On the run that creates a thread, and on any later run when the thread's
+`STATE_SNAPSHOT` has no `thread.uiCatalog`, or the screen's `version` is higher, or it is the same `version` with
+another `digest`. A screen older than the thread sends nothing (or may send its own: an older version is recorded
+and never becomes current).
+
+**What the orchestrator checks**, before anything is written (a refusal is a problem before the stream, and nothing
+was created or sent):
+
+| Rule | Refusal |
+|---|---|
+| the value is an object with exactly `catalogId`, `version`, `digest` and `catalog` | 400 |
+| `catalogId` is an absolute `https` URL of printable ASCII, at most 256 bytes; `catalog.catalogId` is the same | 400 |
+| `version` is an integer from 1 to 1 000 000 | 400 |
+| `digest` is `sha256:` and 64 lowercase hex digits **and is the digest of `catalog`**: SHA-256 over its canonical JSON (keys sorted, no whitespace, strings escaped as `JSON.stringify` does, integers in decimal) | 400 |
+| `catalog` is at most 64 KiB serialised | **413** |
+| `catalog` has exactly `catalogId` and `components` (no `functions`, no `theme`), one to 64 components named `[A-Z][A-Za-z0-9]{0,63}`, each a JSON object | 400 |
+| no `$ref`, `$dynamicRef`, `$id`, `$anchor` or `$schema` anywhere (each schema stands alone; nothing is ever fetched), keys are ASCII, numbers are integers within ±(2^53 − 1), nesting is at most 32 deep | 400 |
+| each component schema is valid JSON Schema (draft 2020-12) and says `properties.component.const` is the component's name | 400 |
+
+The known-answer vector of the digest, pinned in the orchestrator's, the web's and adam's tests: the catalog
+`{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"type":"object","properties":{"component":{"const":"Note"},"text":{"type":"string","maxLength":10}},"required":["component","text"]}}}`
+has the digest `sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293` (*verified 2026-10-01* with Python: `json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` hashed with `hashlib.sha256`).
+
+**What it does.** The value is read on **every** run, like `vymalo.gate`, so a malformed one is refused every time. It
+is applied only when the run applies an input: a run that attaches to one the log holds (an idempotent retry) ignores
+it, and so does one that only stops. When it is applied the core appends `ui_catalog` **first** in the commit of the
+message or action it came with, once per digest (a digest the thread has recorded is not written again), actor `user`,
+`data` as sent. The thread's current catalog is the highest version recorded (the same version with another digest:
+the later wins), and every digest recorded stays in the log. The projection gives the event **no frame**; the state
+snapshot says which catalog is current (`thread.uiCatalog`, see [Metadata and state](#metadata-and-state)). The
+delegation to the agent carries the catalog inline when this input made it current, and a reference to the current
+one in every other message (the delivery is in the outbox row, never a secret).
+
 ## Run binding
 
 `POST /agui/agents/{agentId}` with `Content-Type: application/json`, `Accept: text/event-stream`
@@ -472,12 +526,12 @@ was streamed and nothing was written.
 
 | Status | When |
 |---|---|
-| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018) |
+| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`) |
 | 401 | No edge identity |
 | 404 | The `agentId` is not configured; the thread belongs to someone else (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
 | 409 | The thread targets another agent; a run is open on it; the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
-| 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB) |
+| 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
 | 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`) |
@@ -933,6 +987,7 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
 | `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
+| `STATE_SNAPSHOT.snapshot` | `thread.uiCatalog` | Only when the thread has recorded a UI catalog (ADR 0023): `{catalogId, version, digest}` of the current one, the highest version recorded. A screen compares it with its own to decide whether to send its catalog with the next run; a thread without one has no member, as before |
 | `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{number?, attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `number` is the job of the thread (present from job 2); `attempt` is the one the agent is on in **this job**, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |
 | Interrupt `responseSchema` | — | `{type:"object", required:["text"], properties:{text:{type:"string"}}}` |
 

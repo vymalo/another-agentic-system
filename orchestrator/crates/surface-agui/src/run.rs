@@ -16,9 +16,11 @@ use orch_api::sse::{keep_alive, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
+    THREAD_UI_CATALOG_KEY, check_catalog_schemas,
 };
 use orch_core::{
-    AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UserId, report,
+    AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UiCatalogData, UserId,
+    report,
 };
 use orch_ports::Ports;
 
@@ -56,14 +58,23 @@ pub(crate) async fn run<P: Ports>(
     let input = parsed.input;
     check_ids(&input)?;
     let gate = gate_request(&input)?;
+    let catalog = catalog_request(&input)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     let agent = AgentId::new(agent_id);
     if state.app.directory().get(&agent).is_none() {
         return Err(Problem::not_found("no such agent").into());
     }
     for _ in 0..MAX_ATTEMPTS {
-        if let Some(feed) =
-            attempt(&state.app, &user, &agent, thread, &input, gate.as_ref()).await?
+        if let Some(feed) = attempt(
+            &state.app,
+            &user,
+            &agent,
+            thread,
+            &input,
+            gate.as_ref(),
+            catalog.as_ref(),
+        )
+        .await?
         {
             let stream = frames(feed);
             let sse = Sse::new(stream).keep_alive(keep_alive(state.keepalive));
@@ -89,6 +100,75 @@ fn gate_request(input: &RunAgentInput) -> Result<Option<GateLayer>, Problem> {
         return Ok(None);
     };
     GateLayer::from_json(value).map_err(|e| Problem::bad_request(e.to_string()))
+}
+
+/// The UI catalog the run carries, `forwardedProps["vymalo.uiCatalog"]` (ADR 0023): `{catalogId,
+/// version, digest, catalog}`, the screen's component catalog. Like the gate it is read on every
+/// run, so a malformed one is refused every time, before anything is written: the envelope rules
+/// of [`UiCatalogData::from_json`] (**400**, **413** for a catalog over 64 KiB) and the schema
+/// check of [`check_catalog_schemas`] (**400**). It is applied only when the run applies an input:
+/// a run that attaches to one already in the log ignores it, which is what makes a retry of the
+/// same request harmless.
+fn catalog_request(input: &RunAgentInput) -> Result<Option<UiCatalogData>, ApiError> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_UI_CATALOG_KEY))
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(None);
+    };
+    let catalog = UiCatalogData::from_json(value).map_err(|e| {
+        let status = if e.is_too_large() {
+            StatusCode::PAYLOAD_TOO_LARGE
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        Problem::new(status, format!("invalid {THREAD_UI_CATALOG_KEY}: {e}"))
+    })?;
+    check_catalog_schemas(&catalog)
+        .map_err(|e| Problem::bad_request(format!("invalid {THREAD_UI_CATALOG_KEY}: {e}")))?;
+    Ok(Some(catalog))
+}
+
+/// Gives the first input that is a message or an action the catalog the run carried, once.
+fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
+    match input {
+        Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog: _,
+        } => Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog: catalog.take(),
+        },
+        Input::UiAction {
+            user,
+            action,
+            catalog: _,
+        } => Input::UiAction {
+            user,
+            action,
+            catalog: catalog.take(),
+        },
+        other @ (Input::Redeliver { .. }
+        | Input::Cancel { .. }
+        | Input::Agent { .. }
+        | Input::DeliveryFailed { .. }
+        | Input::CancelledBeforeStart
+        | Input::CancelRejected { .. }
+        | Input::CiReported(_)
+        | Input::VerifierReported { .. }
+        | Input::VerifierFailed { .. }
+        | Input::TimerFired(_)) => other,
+    }
 }
 
 /// The ids we write into the log are bounded.
@@ -171,6 +251,7 @@ async fn attempt<P: Ports>(
     thread: ThreadId,
     input: &RunAgentInput,
     gate: Option<&GateLayer>,
+    catalog: Option<&UiCatalogData>,
 ) -> Result<Option<Feed>, ApiError> {
     // The thread as the log holds it now, if there is one.
     let known = match app.find_thread(user, thread).await? {
@@ -276,6 +357,7 @@ async fn attempt<P: Ports>(
                 key: key_of(thread, &inputs[0]),
                 gate: gate.cloned(),
                 origin: Origin::Agui,
+                ui_catalog: catalog.cloned(),
             };
             match app.create_thread_as(user, thread, new, inbound).await? {
                 Creation::Created {
@@ -296,8 +378,11 @@ async fn attempt<P: Ports>(
         }
         Some((_, _, projector)) => {
             let mut start = None;
+            // the catalog goes with the first message or action, which is the input it came with
+            let mut carried = catalog.cloned();
             for next in inputs {
                 let key = key_of(thread, &next);
+                let next = carrying(next, &mut carried);
                 match app.submit(user, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -320,5 +405,85 @@ async fn attempt<P: Ports>(
                 held,
             }))
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use orch_core::{UiActionData, UiVersion};
+    use serde_json::json;
+
+    use super::*;
+
+    fn catalog() -> UiCatalogData {
+        let value = json!({"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "components": {"Note": {"type": "object"}}});
+        UiCatalogData {
+            catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".to_owned(),
+            version: 1,
+            digest: orch_core::catalog_digest(&value).unwrap(),
+            catalog: value,
+        }
+    }
+
+    fn message() -> Input {
+        Input::UserMessage {
+            user: UserId::new("a@b.c"),
+            text: "hi".to_owned(),
+            message_id: None,
+            run_id: None,
+            origin: Origin::Agui,
+            catalog: None,
+        }
+    }
+
+    fn action() -> Input {
+        Input::UiAction {
+            user: UserId::new("a@b.c"),
+            action: UiActionData {
+                surface_id: "s".to_owned(),
+                name: "go".to_owned(),
+                source_component_id: "b".to_owned(),
+                context: serde_json::Map::new(),
+                version: UiVersion::V0_9_1,
+                run_id: None,
+            },
+            catalog: None,
+        }
+    }
+
+    #[test]
+    fn the_catalog_goes_with_the_first_message_or_action_and_only_once() {
+        let mut carried = Some(catalog());
+        let Input::UserMessage { catalog: first, .. } = carrying(message(), &mut carried) else {
+            panic!("a message stays a message");
+        };
+        assert_eq!(first, Some(catalog()));
+        assert_eq!(carried, None);
+        let Input::UserMessage {
+            catalog: second, ..
+        } = carrying(message(), &mut carried)
+        else {
+            panic!("a message stays a message");
+        };
+        assert_eq!(second, None);
+
+        let mut carried = Some(catalog());
+        let Input::UiAction { catalog: taken, .. } = carrying(action(), &mut carried) else {
+            panic!("an action stays an action");
+        };
+        assert_eq!(taken, Some(catalog()));
+        assert_eq!(carried, None);
+    }
+
+    #[test]
+    fn a_stop_does_not_take_the_catalog() {
+        let mut carried = Some(catalog());
+        let stop = Input::Cancel {
+            user: UserId::new("a@b.c"),
+        };
+        assert_eq!(carrying(stop.clone(), &mut carried), stop);
+        assert_eq!(carried, Some(catalog()), "left for an input that records");
     }
 }

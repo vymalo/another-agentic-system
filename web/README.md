@@ -688,11 +688,11 @@ next connect stream after `n` frames, in the middle of a group) and `POST /__moc
 The mock also keeps what the web says about the UI catalog (ADR 0023): a run's
 `forwardedProps["vymalo.uiCatalog"]` is checked as the orchestrator checks it, less the JSON Schema compilation (the
 shape, an https `catalogId`, a version of 1 to 1,000,000, 64 KiB (`413`), at most 64 components with names like
-`Choices`, and the digest **recomputed**: `400` otherwise, before anything is written), recorded once per digest when
-the run applies an input, and made the thread's current catalog when it has none or the version is higher (an older
-one is recorded and never current). Every snapshot of the thread then says `thread.uiCatalog`. The catalog is kept
-outside the log, because `ui_catalog` is not in `chat-api.yaml` yet: a replay shows the current catalog throughout, where
-the orchestrator's projection shows it as of each event.
+`Choices`, and the digest **recomputed**: `400` otherwise, before anything is written), recorded as a `ui_catalog` event of the person,
+first in the commit of the input and once per digest, when the run applies an input. The projection folds those events
+with the core's rule (`CatalogLedger` in `mock/projection.ts`: the highest version is current, an older one is recorded
+and never current, the same version with another digest replaces it), so a snapshot says `thread.uiCatalog` as of its
+place in the log, a replay shows the catalog changing, and the event has no frame of its own.
 
 Agents: `coder` (has `releases`) and `reviewer` (none).
 

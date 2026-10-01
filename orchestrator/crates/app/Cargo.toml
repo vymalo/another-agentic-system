@@ -19,6 +19,7 @@ jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 futures.workspace = true
+jsonschema.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

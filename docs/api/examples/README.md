@@ -22,6 +22,7 @@ the log itself, which the AG-UI streams below project.)
 | `a2ui.events.json` | `ui`, on an agent whose card lists the A2UI extension: a surface in two artifacts (`ui_surface` twice), the question, then the user's action through the AG-UI run route (`ui_action`) and the answer | `done` |
 | `followup.events.json` | `echo hi`, then the follow-up `echo now add tests` on the finished thread: a message on a `done` thread starts job 2 (`user_message`, `job_started`), a new task on the same context (ADR 0020) | `done`, job 2 |
 | `followup-after-cancel.events.json` | `slow work`, Cancel, then the follow-up `echo never mind, do this`: a stopped thread is not closed either | `done`, job 2 |
+| `catalog.events.json` | `echo hi` through the AG-UI run route with the screen's UI catalog, version 1, then `echo again` with version 2 and `echo once more` with version 1 again, each a job of the thread (ADR 0023, MVP slice 3): `ui_catalog` is the first event of the first two jobs (version 1, then 2) and the third writes none, because its digest is known; the log holds the consumer's message and run ids, which a route that carries a catalog has | `done`, job 3 |
 
 Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>` and an agent
 message's `messageId` is `<message-id>`.
@@ -72,6 +73,11 @@ named after the agent), started by the `pending` card of the `verifier` source a
 (`SUBAGENT_FINISHED` with `result: {"passed": …}`), so the green one has four subagents (the worker, the verifier, the worker,
 the verifier). Their event logs are produced with the fake agent's `verify-reviewed` script (a worker that pushes and says what it
 did) and the fake verifier's scripts `FindingsThenPass` and `AlwaysFail`.
+
+The `catalog.agui.json`, `run-catalog.agui.json` and `connect-catalog.agui.json` goldens are the UI catalog a viewer and a requester read
+([`../agui.md`](../agui.md#the-ui-catalog), ADR 0023): the `ui_catalog` event has **no frame**, so each run is an ordinary run, and the only trace
+is `thread.uiCatalog` (`{catalogId, version, digest}`) in every `STATE_SNAPSHOT`: version 1 in the first job, version 2 from the second job on, and
+still version 2 in the third, whose version-1 catalog was known already. The reference client's `expected/catalog.json` shows the last state it holds.
 
 The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymalo-ci)): **one
 run** across two attempts, the `vymalo.check` card of the source `ci` (`check-1-1-ci`, pending, then failed), between them

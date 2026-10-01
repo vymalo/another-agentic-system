@@ -19,7 +19,10 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
-use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer};
+use crate::{
+    AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer,
+    check_catalog_schemas,
+};
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
 /// log is exported up to here and says so.
@@ -160,6 +163,11 @@ pub struct Inbound {
     /// The surface the input came in through, recorded on the `user_message` event (ADR 0019).
     /// The default is the chat, `agui`.
     pub origin: Origin,
+    /// The UI catalog the screen sent with the run that creates the thread (AG-UI
+    /// `forwardedProps["vymalo.uiCatalog"]`, ADR 0023), already read by a surface
+    /// ([`UiCatalogData::from_json`]); it is checked again here. Recorded first in the thread's
+    /// log, and delivered to the agent inline with the first message.
+    pub ui_catalog: Option<UiCatalogData>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -221,11 +229,13 @@ fn validate_text(text: &str) -> Result<(), AppError> {
 }
 
 /// A catalog an input carries is checked again here, as an action's sizes are: whatever surface
-/// built the input, nothing is stored that the envelope rules refuse.
+/// built the input, nothing is stored that the envelope rules or the schema check refuse.
 fn check_catalog(catalog: Option<&UiCatalogData>) -> Result<(), AppError> {
     if let Some(catalog) = catalog {
         catalog
             .check()
+            .map_err(|e| AppError::Invalid(format!("invalid UI catalog: {e}")))?;
+        check_catalog_schemas(catalog)
             .map_err(|e| AppError::Invalid(format!("invalid UI catalog: {e}")))?;
     }
     Ok(())
@@ -439,6 +449,7 @@ impl<P: Ports> App<P> {
         inbound: Inbound,
     ) -> Result<Creation, AppError> {
         validate_text(&req.text)?;
+        check_catalog(inbound.ui_catalog.as_ref())?;
         if let Some(title) = &req.title
             && title.chars().count() > MAX_TITLE_CHARS
         {
@@ -458,7 +469,7 @@ impl<P: Ports> App<P> {
                 message_id: inbound.message_id,
                 run_id: inbound.run_id,
                 origin: inbound.origin,
-                catalog: None,
+                catalog: inbound.ui_catalog,
             },
         )?;
         let title = req

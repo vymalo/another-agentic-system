@@ -314,7 +314,10 @@ async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread()
     w.agent.set_verifier("reviewer", VerdictScript::Pass);
     let app = app_with(&w, 3);
     let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
-    let catalog_json = json!({"catalogId": id, "components": {"Note": {"type": "object"}}});
+    let catalog_json = json!({"catalogId": id, "components": {"Note": {
+        "type": "object",
+        "properties": {"component": {"const": "Note"}},
+    }}});
     let t = verifying_with(
         &w,
         &app,

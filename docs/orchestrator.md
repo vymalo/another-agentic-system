@@ -689,7 +689,8 @@ job's pushed commit).
 
 **The UI catalog on a thread** ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md), built in
 MVP slice 3). The web sends its component catalog with a thread's first run and again when its own version is newer
-than the thread's; the core records each digest once as a `ui_catalog` event (actor `user`) and keeps a ledger in
+than the thread's (`forwardedProps["vymalo.uiCatalog"]` of the AG-UI run route, checked before anything is written:
+[AG-UI binding](api/agui.md#the-ui-catalog)); the core records each digest once as a `ui_catalog` event (actor `user`) and keeps a ledger in
 the job (`Job.catalog`, `UiCatalogLedger`): the digests seen (at most 32, the oldest forgotten first) and the
 current catalog, the **highest version**. `UiCatalogLedger::accept` is the one rule, used by `transition` and,
 folding the same events, by the AG-UI projection: a digest the thread knows changes nothing; an unseen one is

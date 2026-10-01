@@ -6,7 +6,7 @@
 
 mod support;
 
-use orch_app::AppError;
+use orch_app::{AppError, Creation, Inbound, NewThread};
 use orch_core::{
     EventKind, Input, Origin, ThreadId, ThreadState, UiActionData, UiCatalogData, UiDelivery,
     UiVersion, catalog_digest,
@@ -20,7 +20,11 @@ fn catalog(version: u32, tag: &str) -> UiCatalogData {
     let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
     let catalog = serde_json::json!({
         "catalogId": id,
-        "components": {"Note": {"type": "object", "title": format!("{tag}-{version}")}},
+        "components": {"Note": {
+            "type": "object",
+            "title": format!("{tag}-{version}"),
+            "properties": {"component": {"const": "Note"}},
+        }},
     });
     UiCatalogData {
         catalog_id: id.to_owned(),
@@ -229,4 +233,70 @@ async fn a_catalog_the_envelope_refuses_is_refused_and_nothing_is_written() {
             .count(),
         0
     );
+}
+
+#[tokio::test]
+async fn a_thread_created_with_a_catalog_records_it_first_and_delivers_it_inline() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let v1 = catalog(1, "a");
+
+    let id = ThreadId(orch_ports::IdGen::new_id(&w.ids));
+    let created = app
+        .create_thread_as(
+            &alice(),
+            id,
+            NewThread {
+                title: None,
+                target: target("plain"),
+                text: "echo hi".to_owned(),
+            },
+            Inbound {
+                ui_catalog: Some(v1.clone()),
+                ..Inbound::default()
+            },
+        )
+        .await
+        .unwrap();
+    let Creation::Created { events, .. } = created else {
+        panic!("created");
+    };
+    assert_eq!(
+        events.iter().map(|e| e.kind()).collect::<Vec<_>>(),
+        [EventKind::UiCatalog, EventKind::UserMessage]
+    );
+    wait_state(&app, &alice(), id, ThreadState::Done).await;
+    assert_eq!(
+        deliveries(&w),
+        [(Some(UiDelivery::Inline(v1.clone())), Some(id))]
+    );
+    run.shutdown().await;
+
+    // a schema that does not name its component is refused, and no thread is created
+    let mut bad = catalog(1, "b");
+    bad.catalog["components"]["Note"]["properties"] = serde_json::json!({});
+    bad.digest = catalog_digest(&bad.catalog).unwrap();
+    let other = ThreadId(orch_ports::IdGen::new_id(&w.ids));
+    let err = app
+        .create_thread_as(
+            &alice(),
+            other,
+            NewThread {
+                title: None,
+                target: target("plain"),
+                text: "echo hi".to_owned(),
+            },
+            Inbound {
+                ui_catalog: Some(bad),
+                ..Inbound::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AppError::Invalid(ref why) if why.contains("properties.component.const")),
+        "{err:?}"
+    );
+    assert!(app.find_thread(&alice(), other).await.unwrap().is_none());
 }
