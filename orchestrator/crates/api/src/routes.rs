@@ -220,6 +220,9 @@ pub(crate) async fn export_thread<P: Ports>(
 
 /// The body of `POST /api/threads/{id}/fork`: where to cut (`after`, or `replace` with the new
 /// `text`), and optionally the agent the fork talks to and the id of the new thread.
+/// The longest `messageId` a fork's message may carry (`ForkRequest.messageId`, as AG-UI's ids).
+const MAX_MESSAGE_ID_BYTES: usize = 256;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ForkBody {
@@ -242,13 +245,24 @@ impl ForkBody {
                 }
                 orch_app::ForkAt::AfterTurn { seq }
             }
-            (None, Some(seq)) => orch_app::ForkAt::Replace {
-                seq,
-                text: self
-                    .text
-                    .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
-                message_id: self.message_id,
-            },
+            (None, Some(seq)) => {
+                if self
+                    .message_id
+                    .as_deref()
+                    .is_some_and(|id| id.len() > MAX_MESSAGE_ID_BYTES)
+                {
+                    return Err(Problem::bad_request(format!(
+                        "`messageId` must be at most {MAX_MESSAGE_ID_BYTES} bytes"
+                    )));
+                }
+                orch_app::ForkAt::Replace {
+                    seq,
+                    text: self
+                        .text
+                        .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
+                    message_id: self.message_id,
+                }
+            }
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));
             }

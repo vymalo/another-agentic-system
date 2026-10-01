@@ -207,8 +207,8 @@ paths:
         * `replace` (the `seq` of a person's message) with the new `text`: **edit**. The cut is the event before that
           message, which may be 0; the fork then holds the new message, the next job's start and its delegation to
           the agent, and is `queued`. The thread is a branch of the one it was made from: it is left out of
-          `listThreads` unless asked for, and `listBranches` finds its siblings. A conversation has room for 256
-          threads made this way (409 after).
+          `listThreads` unless asked for, and `listBranches` finds its siblings. A conversation holds at most 256
+          threads, its first thread and the threads made from it this way: the 256th edit is a 409.
 
         `target` names the agent and release the fork talks to (the parent's when absent), validated as for a new
         thread. `id` is a UUID the caller chose for the new thread: a repeat of the request with the same `id` answers
@@ -235,7 +235,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
-        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `text` or `messageId` with `after`, `replace` without `text`, an empty or too long text, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
+        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `text` or `messageId` with `after`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or it belongs to someone else (one answer for all three)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's, or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
         "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person", $ref: "#/components/responses/Problem" }

@@ -1059,6 +1059,10 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
 
     // a body that cannot be used
     let long = format!(r#"{{"replace":1,"text":"{}"}}"#, "x".repeat(100_001));
+    let long_id = format!(
+        r#"{{"replace":1,"text":"x","messageId":"{}"}}"#,
+        "m".repeat(257)
+    );
     for bad in [
         r#"{}"#,
         r#"{"after":1,"replace":1,"text":"x"}"#,
@@ -1068,6 +1072,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         r#"{"replace":1,"text":""}"#,
         r#"{"replace":1,"text":"   "}"#,
         long.as_str(),
+        long_id.as_str(),
         r#"{"after":"1"}"#,
         r#"{"after":1.5}"#,
         r#"{"after":null}"#,
