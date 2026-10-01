@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use common::*;
 use orch_agui_proto::testkit::assert_json_conforms;
-use orch_testsupport::{Chat, Frame, SseClient, VerifierScript};
+use orch_testsupport::{Chat, Frame, SseClient, VerifierScript, with_ui_catalog};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -530,6 +530,33 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
             inbox.shutdown().await;
             vec![frames]
         }
+        // The UI's catalog (ADR 0023): the first run carries version 1, the next job version 2,
+        // the third version 1 again (an older screen). No frame of its own: each response is an
+        // ordinary run, and the state snapshots say which catalog is current.
+        "catalog" => {
+            let mut responses = Vec::new();
+            for (n, (text, version)) in [("echo hi", 1), ("echo again", 2), ("echo once more", 1)]
+                .into_iter()
+                .enumerate()
+            {
+                let n = n + 1;
+                responses.push(
+                    run(
+                        &chat,
+                        "plain",
+                        &input(
+                            thread,
+                            &format!("run-{n}"),
+                            &[(&format!("msg-{n}"), text)],
+                            with_ui_catalog(version),
+                        ),
+                    )
+                    .await,
+                );
+                chat.wait_state(thread, "done").await;
+            }
+            responses
+        }
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -570,6 +597,7 @@ async fn run_responses_match_docs_api_examples() {
         "verify-verifier-green",
         "verify-verifier-red",
         "ci",
+        "catalog",
     ]
     .into_iter()
     .enumerate()

@@ -3,6 +3,7 @@
 //! written against the ports (ADR 0009), so any composition of adapters can run it.
 
 mod app;
+mod catalog;
 mod directory;
 mod dispatcher;
 mod error;
@@ -13,6 +14,7 @@ pub use app::{
     AgentDescription, App, AppConfig, ApplyOutcome, Creation, DEFAULT_MAX_EXPORT_BYTES,
     DEFAULT_MAX_EXPORT_EVENTS, Inbound, NewThread, Received, ThreadExport,
 };
+pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schemas};
 pub use directory::{AgentDirectory, AgentEntry};
 pub use dispatcher::{Dispatcher, DispatcherConfig};
 pub use error::AppError;

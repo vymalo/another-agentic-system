@@ -80,6 +80,7 @@ fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
         message_id: message_id.map(str::to_owned),
         run_id: Some(run_id.to_owned()),
         origin: orch_core::Origin::Agui,
+        catalog: None,
     }
 }
 
@@ -577,6 +578,7 @@ fn expected_action() -> Input {
             version: UiVersion::V0_9_1,
             run_id: Some("run-act".into()),
         },
+        catalog: None,
     }
 }
 

@@ -380,17 +380,24 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job) = match row.payload.clone() {
+        let (content, release, new_job, ui_catalog) = match row.payload.clone() {
             OutboxPayload::Delegate {
                 text,
                 release,
                 new_job,
-            } => (SendContent::Text(text), release, new_job),
+                ui_catalog,
+            } => (SendContent::Text(text), release, new_job, ui_catalog),
             OutboxPayload::Action {
                 action,
                 at,
                 release,
-            } => (SendContent::UiAction { action, at }, release, false),
+                ui_catalog,
+            } => (
+                SendContent::UiAction { action, at },
+                release,
+                false,
+                ui_catalog,
+            ),
             OutboxPayload::Cancel { .. } | OutboxPayload::Verify { .. } => {
                 return self
                     .finish(
@@ -512,6 +519,8 @@ impl<P: Ports> Dispatcher<P> {
             reference_task_ids,
             content,
             release,
+            ui_catalog,
+            thread: Some(row.thread_id),
         };
         match self.app.ports().agents().send_stream(req).await {
             Ok(stream) => {

@@ -39,6 +39,8 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
         release: None,
+        ui_catalog: None,
+        thread: None,
     }
 }
 

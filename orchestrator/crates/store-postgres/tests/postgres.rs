@@ -76,6 +76,7 @@ fn delegate() -> NewOutbox {
             text: "go".into(),
             release: None,
             new_job: false,
+            ui_catalog: None,
         },
     }
 }

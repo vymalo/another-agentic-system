@@ -144,6 +144,8 @@ pub fn describe(event: &Event) -> Option<String> {
         }
         EventBody::Rework(r) => format!("rework: attempt {} of {}", r.attempt, r.max_attempts),
         EventBody::JobStarted(j) => format!("job {} started", j.job),
+        // bookkeeping about the person's screen, not progress of the job
+        EventBody::UiCatalog(_) => return None,
     };
     Some(format!("#{} {}", event.seq, one_line(&text)))
 }

@@ -31,6 +31,7 @@ fn um(text: &str) -> Input {
         message_id: None,
         run_id: None,
         origin: orch_core::Origin::Agui,
+        catalog: None,
     }
 }
 fn status(state: AgentTaskState, detail: Option<&str>) -> Input {
@@ -83,7 +84,13 @@ fn row1_user_message_in_queued_or_working() {
             }
             other => panic!("unexpected {other:?}"),
         }
-        assert_eq!(cmds[1], Command::Delegate { text: "hi".into() });
+        assert_eq!(
+            cmds[1],
+            Command::Delegate {
+                text: "hi".into(),
+                catalog: None
+            }
+        );
     }
 }
 
@@ -95,6 +102,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
         message_id: Some("m-1".into()),
         run_id: Some("r-1".into()),
         origin: orch_core::Origin::Agui,
+        catalog: None,
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -111,7 +119,13 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
             other => panic!("unexpected {other:?}"),
         }
         // The delegation carries the text only: the agent never sees surface ids.
-        assert_eq!(cmds[1], Command::Delegate { text: "hi".into() });
+        assert_eq!(
+            cmds[1],
+            Command::Delegate {
+                text: "hi".into(),
+                catalog: None
+            }
+        );
     }
 }
 
@@ -123,6 +137,7 @@ fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
         message_id: None,
         run_id: None,
         origin: orch_core::Origin::Mcp,
+        catalog: None,
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -147,7 +162,8 @@ fn row2_user_message_in_blocked_requeues() {
     assert_eq!(
         cmds[1],
         Command::Delegate {
-            text: "main".into()
+            text: "main".into(),
+            catalog: None
         }
     );
 }
@@ -176,7 +192,8 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
         assert_eq!(
             cmds[2],
             Command::Delegate {
-                text: "again".into()
+                text: "again".into(),
+                catalog: None
             }
         );
         // No `thread_state`: entering `queued` is implied by the message.
@@ -193,6 +210,13 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
     let mut gate = GatePolicy::requiring([CheckSource::AgentChecks, CheckSource::Verifier]);
     gate.max_attempts = 2;
     let sha = "a".repeat(40);
+    // the catalogs the conversation has seen belong to it, not to the job
+    let mut catalog = UiCatalogLedger::default();
+    catalog.observe(&UiCatalogRef {
+        catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".into(),
+        version: 2,
+        digest: format!("sha256:{}", "b".repeat(64)),
+    });
     for s in TERMINAL {
         let before = Snapshot {
             state: s,
@@ -220,6 +244,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     findings: vec![],
                 }],
                 hold: None,
+                catalog: catalog.clone(),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -232,6 +257,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 attempt: 1,
                 verification: 5,
                 task: Some("next".into()),
+                catalog: catalog.clone(),
                 ..Job::default()
             }
         );
@@ -253,7 +279,13 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             bodies(&cmds),
             [&EventBody::JobStarted(JobStartedData { job: 2 })]
         );
-        assert_eq!(cmds[1], Command::Delegate { text: "x".into() });
+        assert_eq!(
+            cmds[1],
+            Command::Delegate {
+                text: "x".into(),
+                catalog: None
+            }
+        );
     }
     assert_eq!(
         run(Cancelled, &Input::Redeliver { text: "x".into() }),
@@ -263,7 +295,13 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
     for (s, expected) in [(Queued, Queued), (Working, Working), (Blocked, Queued)] {
         assert_eq!(
             run(s, &Input::Redeliver { text: "x".into() }),
-            (expected, vec![Command::Delegate { text: "x".into() }])
+            (
+                expected,
+                vec![Command::Delegate {
+                    text: "x".into(),
+                    catalog: None
+                }]
+            )
         );
     }
 }
@@ -742,6 +780,7 @@ fn ui_action(action: UiActionData) -> Input {
     Input::UiAction {
         user: user(),
         action,
+        catalog: None,
     }
 }
 
@@ -803,7 +842,13 @@ fn row_ui4_an_action_is_a_user_event_and_a_delegation() {
             panic!("not an append");
         };
         assert_eq!(draft.actor, Actor::user(&user()));
-        assert_eq!(cmds[1], Command::DelegateAction { action: act() });
+        assert_eq!(
+            cmds[1],
+            Command::DelegateAction {
+                action: act(),
+                catalog: None
+            }
+        );
     }
 }
 
@@ -855,5 +900,244 @@ fn row_ui7_an_unchecked_payload_never_reaches_the_log() {
             assert!(!e.retryable);
             assert!(e.message.contains("refused"), "{}", e.message);
         }
+    }
+}
+
+// ---- the UI catalog (ADR 0023) -------------------------------------------------------------
+
+/// A version of the UI's catalog with its real digest; two of the same version differ by `tag`.
+fn catalog(version: u32, tag: &str) -> UiCatalogData {
+    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
+    let catalog = serde_json::json!({
+        "catalogId": id,
+        "components": {"Note": {"type": "object", "title": format!("{tag}-{version}")}},
+    });
+    UiCatalogData {
+        catalog_id: id.into(),
+        version,
+        digest: catalog_digest(&catalog).unwrap(),
+        catalog,
+    }
+}
+fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
+    Input::UserMessage {
+        user: user(),
+        text: text.into(),
+        message_id: None,
+        run_id: None,
+        origin: orch_core::Origin::Agui,
+        catalog: Some(catalog.clone()),
+    }
+}
+fn action_with(catalog: &UiCatalogData) -> Input {
+    Input::UiAction {
+        user: user(),
+        action: act(),
+        catalog: Some(catalog.clone()),
+    }
+}
+/// The thread's snapshot after it has been shown `catalogs`, in order.
+fn after_catalogs(state: ThreadState, catalogs: &[UiCatalogData]) -> Snapshot {
+    let mut snap = Snapshot::new(state);
+    for c in catalogs {
+        snap.job.catalog.accept(Some(c));
+    }
+    snap
+}
+/// What the commands tell the agent of the catalog: the delivery of the only delegation.
+fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
+    let mut found = cmds.iter().filter_map(|c| match c {
+        Command::Delegate { catalog, .. } | Command::DelegateAction { catalog, .. } => {
+            Some(catalog.as_ref())
+        }
+        Command::Append(_)
+        | Command::RequestCancel { .. }
+        | Command::Watch { .. }
+        | Command::Schedule { .. }
+        | Command::RequestVerification { .. } => None,
+    });
+    let only = found.next().expect("a delegation");
+    assert!(found.next().is_none(), "one delegation: {cmds:?}");
+    only
+}
+
+#[test]
+fn row_cat1_the_first_message_with_a_catalog_records_it_first_and_delivers_it_inline() {
+    let v1 = catalog(1, "a");
+    for s in [Queued, Working, Blocked, ThreadState::Verifying] {
+        let (after, cmds) = orch_core::transition(&Snapshot::new(s), &um_with("hi", &v1)).unwrap();
+        assert_eq!(
+            bodies(&cmds),
+            [
+                &EventBody::UiCatalog(v1.clone()),
+                &EventBody::UserMessage(UserMessageData::new("hi")),
+            ],
+            "{s:?}"
+        );
+        // the person's screen sent it: the event is the user's, and first in the commit
+        let Command::Append(first) = &cmds[0] else {
+            panic!("not an append: {cmds:?}");
+        };
+        assert_eq!(first.actor, Actor::user(&user()));
+        assert_eq!(
+            delivery(&cmds),
+            Some(&UiDelivery::Inline(v1.clone())),
+            "{s:?}"
+        );
+        assert_eq!(after.job.catalog.current(), Some(&v1.reference()));
+        assert_eq!(after.job.catalog.seen(), std::slice::from_ref(&v1.digest));
+    }
+}
+
+#[test]
+fn row_cat2_the_same_digest_again_writes_no_event_and_comes_as_a_reference() {
+    let v1 = catalog(1, "a");
+    let before = after_catalogs(Working, std::slice::from_ref(&v1));
+    let (after, cmds) = orch_core::transition(&before, &um_with("again", &v1)).unwrap();
+    assert_eq!(
+        bodies(&cmds),
+        [&EventBody::UserMessage(UserMessageData::new("again"))]
+    );
+    assert_eq!(delivery(&cmds), Some(&UiDelivery::Ref(v1.reference())));
+    assert_eq!(after.job.catalog, before.job.catalog);
+}
+
+#[test]
+fn row_cat3_a_newer_version_is_recorded_and_delivered_inline() {
+    let (v1, v2) = (catalog(1, "a"), catalog(2, "a"));
+    let before = after_catalogs(Working, &[v1]);
+    let (after, cmds) = orch_core::transition(&before, &um_with("newer", &v2)).unwrap();
+    assert_eq!(
+        bodies(&cmds),
+        [
+            &EventBody::UiCatalog(v2.clone()),
+            &EventBody::UserMessage(UserMessageData::new("newer")),
+        ]
+    );
+    assert_eq!(delivery(&cmds), Some(&UiDelivery::Inline(v2.clone())));
+    assert_eq!(after.job.catalog.current(), Some(&v2.reference()));
+}
+
+#[test]
+fn row_cat4_an_older_version_is_recorded_once_and_the_agent_is_told_the_newest() {
+    let (v1, v2) = (catalog(1, "a"), catalog(2, "a"));
+    let before = after_catalogs(Working, std::slice::from_ref(&v2));
+    let (after, cmds) = orch_core::transition(&before, &um_with("older", &v1)).unwrap();
+    assert_eq!(
+        bodies(&cmds),
+        [
+            &EventBody::UiCatalog(v1.clone()),
+            &EventBody::UserMessage(UserMessageData::new("older")),
+        ]
+    );
+    assert_eq!(delivery(&cmds), Some(&UiDelivery::Ref(v2.reference())));
+    assert_eq!(after.job.catalog.current(), Some(&v2.reference()));
+    // a second time, it is known
+    let (_, cmds) = orch_core::transition(&after, &um_with("older again", &v1)).unwrap();
+    assert_eq!(
+        bodies(&cmds),
+        [&EventBody::UserMessage(UserMessageData::new("older again"))]
+    );
+}
+
+#[test]
+fn row_cat5_a_message_without_a_catalog_carries_a_reference_to_the_current_one() {
+    let v1 = catalog(1, "a");
+    let with = after_catalogs(Working, std::slice::from_ref(&v1));
+    let (after, cmds) = orch_core::transition(&with, &um("plain")).unwrap();
+    assert_eq!(
+        bodies(&cmds),
+        [&EventBody::UserMessage(UserMessageData::new("plain"))]
+    );
+    assert_eq!(delivery(&cmds), Some(&UiDelivery::Ref(v1.reference())));
+    assert_eq!(after.job, with.job, "nothing about the screen changed");
+    // a thread that was never shown one carries none, as before
+    let (_, cmds) = orch_core::transition(&Snapshot::new(Working), &um("plain")).unwrap();
+    assert_eq!(delivery(&cmds), None);
+}
+
+#[test]
+fn row_cat6_an_action_with_a_newer_catalog_answers_a_blocked_thread_and_delivers_it() {
+    let (v1, v2) = (catalog(1, "a"), catalog(2, "a"));
+    let before = after_catalogs(Blocked, &[v1]);
+    let (after, cmds) = orch_core::transition(&before, &action_with(&v2)).unwrap();
+    assert_eq!(after.state, Queued);
+    assert_eq!(
+        bodies(&cmds),
+        [
+            &EventBody::UiCatalog(v2.clone()),
+            &EventBody::UiAction(act())
+        ]
+    );
+    assert_eq!(delivery(&cmds), Some(&UiDelivery::Inline(v2.clone())));
+    assert!(matches!(cmds[2], Command::DelegateAction { .. }));
+    assert_eq!(after.job.catalog.current(), Some(&v2.reference()));
+}
+
+#[test]
+fn row_cat7_an_action_on_a_finished_thread_records_nothing_even_with_a_catalog() {
+    let v1 = catalog(1, "a");
+    for s in TERMINAL {
+        let before = after_catalogs(s, &[]);
+        assert_eq!(
+            orch_core::transition(&before, &action_with(&v1)),
+            Err(TransitionError::Finished { state: s })
+        );
+    }
+}
+
+#[test]
+fn row_cat8_a_message_that_starts_the_next_job_records_its_catalog_before_the_boundary() {
+    let (v1, v2) = (catalog(1, "a"), catalog(2, "a"));
+    for s in TERMINAL {
+        let before = after_catalogs(s, std::slice::from_ref(&v1));
+        let (after, cmds) = orch_core::transition(&before, &um_with("next", &v2)).unwrap();
+        assert_eq!(after.state, Queued, "{s:?}");
+        assert_eq!(
+            bodies(&cmds),
+            [
+                &EventBody::UiCatalog(v2.clone()),
+                &EventBody::UserMessage(UserMessageData::new("next")),
+                &EventBody::JobStarted(JobStartedData { job: 2 }),
+            ],
+            "{s:?}"
+        );
+        assert!(matches!(cmds[3], Command::Delegate { .. }));
+        assert_eq!(delivery(&cmds), Some(&UiDelivery::Inline(v2.clone())));
+        assert_eq!(after.job.catalog.current(), Some(&v2.reference()));
+        assert_eq!(after.job.catalog.seen().len(), 2);
+    }
+}
+
+#[test]
+fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery_names_it() {
+    let v1 = catalog(1, "a");
+    for s in [Done, Failed] {
+        let before = after_catalogs(s, std::slice::from_ref(&v1));
+        let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
+        assert_eq!(
+            delivery(&cmds),
+            Some(&UiDelivery::Ref(v1.reference())),
+            "{s:?}"
+        );
+        assert_eq!(after.job.catalog, before.job.catalog, "{s:?}");
+        let (after, cmds) =
+            orch_core::transition(&before, &Input::Redeliver { text: "x".into() }).unwrap();
+        assert_eq!(
+            delivery(&cmds),
+            Some(&UiDelivery::Ref(v1.reference())),
+            "{s:?}"
+        );
+        assert_eq!(after.job.catalog, before.job.catalog, "{s:?}");
+    }
+    for s in [Queued, Working, Blocked] {
+        let before = after_catalogs(s, std::slice::from_ref(&v1));
+        let (_, cmds) =
+            orch_core::transition(&before, &Input::Redeliver { text: "x".into() }).unwrap();
+        assert_eq!(
+            delivery(&cmds),
+            Some(&UiDelivery::Ref(v1.reference())),
+            "{s:?}"
+        );
     }
 }

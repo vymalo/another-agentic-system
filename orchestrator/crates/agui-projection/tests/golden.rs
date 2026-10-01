@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 14] = [
+const SCENARIOS: [&str; 15] = [
     "echo",
     "ask",
     "cancel",
@@ -37,6 +37,7 @@ const SCENARIOS: [&str; 14] = [
     "ci",
     "followup",
     "followup-after-cancel",
+    "catalog",
 ];
 
 fn examples_dir() -> PathBuf {
@@ -49,10 +50,14 @@ fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
         "release" => ("coder", Some("staging".to_owned())),
         _ => ("plain", None),
     };
-    let title = match &events[0].body {
-        EventBody::UserMessage(m) => m.text.lines().next().unwrap_or("").to_owned(),
-        _ => String::new(),
-    };
+    // The thread's title is its first message (a catalog event may come before it).
+    let title = events
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::UserMessage(m) => Some(m.text.lines().next().unwrap_or("").to_owned()),
+            _ => None,
+        })
+        .unwrap_or_default();
     // The verification scenarios ran under the gate that requires the agent's own checks, or
     // the verifier `reviewer`.
     let gate = match name {

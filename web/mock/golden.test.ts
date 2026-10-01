@@ -17,6 +17,7 @@ import { createMockServer } from "./server";
  */
 
 type Thread = components["schemas"]["Thread"];
+type Event = components["schemas"]["Event"];
 
 const DIR = path.resolve(import.meta.dirname, "../../docs/api/examples/agui");
 const server = createMockServer({ stepMs: 2, keepaliveMs: 1000 });
@@ -45,6 +46,18 @@ async function waitForState(id: string, state: Thread["state"]) {
 
 let n = 0;
 const newThreadId = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
+
+/**
+ * The two catalogs of the `catalog` scenario, as the orchestrator's golden recorded them (the
+ * `ui_catalog` events of catalog.events.json: version 1, then 2): the digests the stream names
+ * are theirs, and the mock recomputes them, so the two canonical JSONs agree on these catalogs too.
+ */
+function goldenCatalogs(): Record<string, unknown>[] {
+  const log = JSON.parse(
+    readFileSync(path.join(DIR, "..", "catalog.events.json"), "utf8"),
+  ) as Event[];
+  return log.filter((e) => e.kind === "ui_catalog").map((e) => e.data as Record<string, unknown>);
+}
 
 /** The scenarios of golden.rs, driven through the mock's AG-UI run route. Returns the final state. */
 const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: Thread["state"] }>> =
@@ -221,6 +234,25 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
         messages: [{ id: "evt-5", role: "user", content: "echo never mind, do this" }],
       });
       expect(second.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
+    // the UI's catalog (ADR 0023): the first run carries version 1, the next job version 2, the
+    // third job version 1 again (an older screen): recorded once each, current stays 2
+    catalog: async (id) => {
+      const [v1, v2] = goldenCatalogs();
+      const run = async (n: number, text: string, catalog: unknown) => {
+        const res = await postRun(base, "reviewer", {
+          threadId: id,
+          runId: `run-${n}`,
+          messages: [{ id: `msg-${n}`, role: "user", content: text }],
+          forwardedProps: { "vymalo.uiCatalog": catalog },
+        });
+        expect(res.status).toBe(200);
+        await waitForState(id, "done");
+      };
+      await run(1, "echo hi", v1);
+      await run(2, "echo again", v2);
+      await run(3, "echo once more", v1);
       return { agent: "reviewer", last: "done" };
     },
     release: async (id) => {

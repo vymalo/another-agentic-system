@@ -30,6 +30,7 @@ use crate::gate::{
 use crate::ids::{AgentId, UserId};
 use crate::thread::ThreadState;
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
+use crate::ui_catalog::{UiCatalogData, UiDelivery};
 use crate::verify;
 
 /// Everything that can happen to a thread, already translated to protocol-neutral terms.
@@ -48,6 +49,10 @@ pub enum Input {
         run_id: Option<String>,
         /// The surface the message came in through, recorded in the log (ADR 0019).
         origin: Origin,
+        /// The UI catalog the person's screen sent with it, when it sent one (ADR 0023): the
+        /// caller has checked it ([`UiCatalogData::from_json`]). The thread records a digest it
+        /// has not seen, and the agent is sent it when it becomes the current catalog.
+        catalog: Option<UiCatalogData>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -58,6 +63,9 @@ pub enum Input {
         user: UserId,
         /// What they did.
         action: UiActionData,
+        /// The UI catalog the person's screen sent with it, when it sent one (as for
+        /// [`Input::UserMessage`]).
+        catalog: Option<UiCatalogData>,
     },
     /// A user message that is in the log already but whose delegation never reached the agent
     /// (its outbox row was claimed after the job ended). The dispatcher builds it so that the
@@ -169,11 +177,15 @@ pub enum Command {
     Delegate {
         /// The user's text.
         text: String,
+        /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023).
+        catalog: Option<UiDelivery>,
     },
     /// Delegate a user's action on an A2UI surface to the target agent (outbox kind `delegate`).
     DelegateAction {
         /// The action.
         action: UiActionData,
+        /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023).
+        catalog: Option<UiDelivery>,
     },
     /// Ask the agent to cancel the running task (outbox kind `cancel`). `job` is the number of
     /// the job the person asked to stop: a row claimed after that job ended and the next began
@@ -291,27 +303,46 @@ fn prefixed(prefix: &str, detail: &Option<String>) -> String {
     }
 }
 
+/// The commands that record a catalog the input carried (first in the commit, before the message
+/// or the action it came with) and say what the agent is sent of it, as the thread's ledger
+/// decides ([`UiCatalogLedger::accept`]). One rule for every branch that delegates.
+fn deliver(
+    job: &mut Job,
+    user: &UserId,
+    carried: Option<&UiCatalogData>,
+) -> (Option<Command>, Option<UiDelivery>) {
+    let accepted = job.catalog.accept(carried);
+    let record = carried
+        .filter(|_| accepted.record)
+        .map(|catalog| append(Actor::user(user), EventBody::UiCatalog(catalog.clone())));
+    (record, accepted.delivery)
+}
+
 fn user_message(
+    job: &mut Job,
     user: &UserId,
     text: &str,
     message_id: &Option<String>,
     run_id: &Option<String>,
     origin: Origin,
+    catalog: &Option<UiCatalogData>,
 ) -> Vec<Command> {
-    vec![
-        append(
-            Actor::user(user),
-            EventBody::UserMessage(UserMessageData {
-                text: text.to_owned(),
-                message_id: message_id.clone(),
-                run_id: run_id.clone(),
-                origin,
-            }),
-        ),
-        Command::Delegate {
+    let (record, delivery) = deliver(job, user, catalog.as_ref());
+    let mut cmds: Vec<Command> = record.into_iter().collect();
+    cmds.push(append(
+        Actor::user(user),
+        EventBody::UserMessage(UserMessageData {
             text: text.to_owned(),
-        },
-    ]
+            message_id: message_id.clone(),
+            run_id: run_id.clone(),
+            origin,
+        }),
+    ));
+    cmds.push(Command::Delegate {
+        text: text.to_owned(),
+        catalog: delivery,
+    });
+    cmds
 }
 
 fn job_started(job: &Job) -> Command {
@@ -321,13 +352,32 @@ fn job_started(job: &Job) -> Command {
     )
 }
 
-fn ui_action(user: &UserId, action: &UiActionData) -> Vec<Command> {
-    vec![
-        append(Actor::user(user), EventBody::UiAction(action.clone())),
-        Command::DelegateAction {
-            action: action.clone(),
-        },
-    ]
+/// The delegation of a message that is in the log already: the screen's catalog is the thread's
+/// current one, since the message carries none of its own.
+fn redelegate(job: &Job, text: &str) -> Command {
+    Command::Delegate {
+        text: text.to_owned(),
+        catalog: job.catalog.redelivery(),
+    }
+}
+
+fn ui_action(
+    job: &mut Job,
+    user: &UserId,
+    action: &UiActionData,
+    catalog: &Option<UiCatalogData>,
+) -> Vec<Command> {
+    let (record, delivery) = deliver(job, user, catalog.as_ref());
+    let mut cmds: Vec<Command> = record.into_iter().collect();
+    cmds.push(append(
+        Actor::user(user),
+        EventBody::UiAction(action.clone()),
+    ));
+    cmds.push(Command::DelegateAction {
+        action: action.clone(),
+        catalog: delivery,
+    });
+    cmds
 }
 
 /// Decides the next state, job and commands for `input` in `snapshot`. Pure: no I/O, no clock.
@@ -383,10 +433,14 @@ fn decide(
             message_id,
             run_id,
             origin,
+            catalog,
         } => match state {
             ThreadState::Queued | ThreadState::Working => {
                 note_task(job, text);
-                Ok((state, user_message(user, text, message_id, run_id, *origin)))
+                Ok((
+                    state,
+                    user_message(job, user, text, message_id, run_id, *origin, catalog),
+                ))
             }
             // Blocked, or being verified: the user's message re-delegates. It does not use an
             // attempt: an attempt is used only when the gate fails.
@@ -395,16 +449,18 @@ fn decide(
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
-                    user_message(user, text, message_id, run_id, *origin),
+                    user_message(job, user, text, message_id, run_id, *origin, catalog),
                 ))
             }
             // The thread is a conversation (ADR 0020): the next message is the next job, on the
-            // same agent and under the same gate, whatever state the last one ended in.
+            // same agent and under the same gate, whatever state the last one ended in. The next
+            // job keeps the catalogs the conversation has seen.
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 *job = job.next();
                 note_task(job, text);
-                let mut cmds = user_message(user, text, message_id, run_id, *origin);
-                cmds.insert(1, job_started(job));
+                let mut cmds = user_message(job, user, text, message_id, run_id, *origin, catalog);
+                // the boundary comes right after the message, before its delegation
+                cmds.insert(cmds.len().saturating_sub(1), job_started(job));
                 Ok((ThreadState::Queued, cmds))
             }
         },
@@ -415,32 +471,35 @@ fn decide(
             // was written in (open question 33).
             ThreadState::Queued | ThreadState::Working => {
                 note_task(job, text);
-                Ok((state, vec![Command::Delegate { text: text.clone() }]))
+                Ok((state, vec![redelegate(job, text)]))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
                 note_task(job, text);
                 job.hold = None;
-                Ok((
-                    ThreadState::Queued,
-                    vec![Command::Delegate { text: text.clone() }],
-                ))
+                Ok((ThreadState::Queued, vec![redelegate(job, text)]))
             }
             ThreadState::Done | ThreadState::Failed => {
                 *job = job.next();
                 note_task(job, text);
                 Ok((
                     ThreadState::Queued,
-                    vec![job_started(job), Command::Delegate { text: text.clone() }],
+                    vec![job_started(job), redelegate(job, text)],
                 ))
             }
             // The person asked to stop: a message they wrote before that stays undelivered.
             ThreadState::Cancelled => Ok((state, vec![])),
         },
-        Input::UiAction { user, action } => match state {
-            ThreadState::Queued | ThreadState::Working => Ok((state, ui_action(user, action))),
+        Input::UiAction {
+            user,
+            action,
+            catalog,
+        } => match state {
+            ThreadState::Queued | ThreadState::Working => {
+                Ok((state, ui_action(job, user, action, catalog)))
+            }
             ThreadState::Blocked | ThreadState::Verifying => {
                 job.hold = None;
-                Ok((ThreadState::Queued, ui_action(user, action)))
+                Ok((ThreadState::Queued, ui_action(job, user, action, catalog)))
             }
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::Finished { state })

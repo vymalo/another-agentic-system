@@ -1,0 +1,590 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:1f266eba8bcaadea6898f093405fc2a4aab363e51226ad24bd1e39265f1df487",
+            "version": 1
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "echo hi",
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-3",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "status": "working"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-3",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:1f266eba8bcaadea6898f093405fc2a4aab363e51226ad24bd1e39265f1df487",
+            "version": 1
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo hi",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-3",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "status": "completed"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-3",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-3",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:1f266eba8bcaadea6898f093405fc2a4aab363e51226ad24bd1e39265f1df487",
+            "version": 1
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+            "version": 2
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "echo again",
+      "messageId": "msg-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "job": 2
+      },
+      "messageId": "job-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-10",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "status": "working"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-10",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+            "version": 2
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo again",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-10",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:12Z",
+        "status": "completed"
+      },
+      "messageId": "evt-12",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-10",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-10",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 12
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+            "version": 2
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 13
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-3",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 3,
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+            "version": 2
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "echo once more",
+      "messageId": "msg-3",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-3",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 14
+  },
+  {
+    "event": {
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:15Z",
+        "job": 3
+      },
+      "messageId": "job-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 15
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-16",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:16Z",
+        "status": "working"
+      },
+      "messageId": "evt-16",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-16",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 3,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+            "version": 2
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 16
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:17Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo once more",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-17",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-16",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 17
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:18Z",
+        "status": "completed"
+      },
+      "messageId": "evt-18",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-16",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-16",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 18
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 3,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "uiCatalog": {
+            "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+            "version": 2
+          }
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-3",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 19
+  }
+]

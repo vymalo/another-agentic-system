@@ -1,6 +1,6 @@
 //! [`A2aAgentClient`]: the A2A implementation of the [`AgentClient`] port.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,15 +18,18 @@ use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
-use orch_core::{BoxError, UiVersion};
+use orch_core::{BoxError, KnownExtension, UI_CATALOG_EXTENSION, UiDelivery, UiVersion};
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
     SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 use serde_json::json;
 
-use crate::a2ui::{action_part, client_capabilities, ui_from_card};
+use crate::a2ui::{
+    action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
+};
 use crate::errors::classify;
+use crate::extensions::extensions_from_card;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 
 /// Tunables of the A2A client. The defaults suit production.
@@ -329,9 +332,26 @@ fn map_stream(inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>) 
     .boxed()
 }
 
+/// What the message tells the agent of the screen's catalog: the request's delivery, and only
+/// when the card read for this very call lists `ui-catalog/v1` (ADR 0008: nothing is remembered,
+/// and a card without the extension gets the message it got before it existed).
+fn catalog_for<'r>(
+    req: &'r SendRequest,
+    card_extensions: &BTreeSet<KnownExtension>,
+) -> Option<&'r UiDelivery> {
+    req.ui_catalog
+        .as_ref()
+        .filter(|_| card_extensions.contains(&KnownExtension::UiCatalog))
+}
+
 /// The extensions this message uses, by URI: release channels when a release is selected, A2UI
-/// when the live card lists it (ADR 0008: read for this very call, never remembered).
-fn extensions_of(req: &SendRequest, ui: Option<&UiSupport>) -> Vec<String> {
+/// when the live card lists it, and the UI catalog when the message carries one (ADR 0008: read
+/// for this very call, never remembered).
+fn extensions_of(
+    req: &SendRequest,
+    ui: Option<&UiSupport>,
+    catalog: Option<&UiDelivery>,
+) -> Vec<String> {
     let mut uris = Vec::new();
     if req.release.is_some() {
         uris.push(RELEASE_CHANNELS_URI.to_owned());
@@ -342,10 +362,17 @@ fn extensions_of(req: &SendRequest, ui: Option<&UiSupport>) -> Vec<String> {
     {
         uris.push(uri.to_owned());
     }
+    if catalog.is_some() {
+        uris.push(UI_CATALOG_EXTENSION.to_owned());
+    }
     uris
 }
 
-fn user_message(req: &SendRequest, ui: Option<&UiSupport>) -> Message {
+fn user_message(
+    req: &SendRequest,
+    ui: Option<&UiSupport>,
+    catalog: Option<&UiDelivery>,
+) -> Message {
     let part = match &req.content {
         SendContent::Text(text) => Part::text(text.clone()),
         SendContent::UiAction { action, at } => action_part(action, *at),
@@ -366,14 +393,26 @@ fn user_message(req: &SendRequest, ui: Option<&UiSupport>) -> Message {
         );
     }
     // The renderer's capabilities go with every message, and only to an agent whose live card
-    // lists the extension: without it the message is plain A2A.
+    // lists the extension: without it the message is plain A2A. The screen's own catalog is
+    // listed in them (and carried inline when the agent takes it) only to an agent that also
+    // lists ui-catalog/v1.
+    let accepts_inline = ui.is_some_and(|ui| ui.accepts_inline_catalogs);
     if let Some((key, value)) = ui
         .and_then(UiSupport::preferred)
-        .and_then(client_capabilities)
+        .and_then(|version| client_capabilities(version, catalog, accepts_inline))
     {
         metadata.insert(key.to_owned(), value);
     }
-    let extensions = extensions_of(req, ui);
+    if let Some(delivery) = catalog {
+        // `inline` says whether the catalog is in `inlineCatalogs` of this very message (which
+        // needs the A2UI extension, so `accepts_inline` is false without it).
+        let inline = inline_catalog(Some(delivery), accepts_inline).is_some();
+        metadata.insert(
+            UI_CATALOG_EXTENSION.to_owned(),
+            ui_catalog_metadata(delivery, inline),
+        );
+    }
+    let extensions = extensions_of(req, ui, catalog);
     if !metadata.is_empty() {
         message.metadata = Some(metadata);
     }
@@ -391,6 +430,7 @@ impl AgentClient for A2aAgentClient {
             version: Some(card.version.clone()).filter(|v| !v.trim().is_empty()),
             releases: releases_from_card(&card),
             ui: ui_from_card(&card),
+            extensions: extensions_from_card(&card),
         })
     }
 
@@ -405,11 +445,17 @@ impl AgentClient for A2aAgentClient {
             ));
         }
         let ui = ui_from_card(&card);
+        let known = extensions_from_card(&card);
+        let catalog = catalog_for(&req, &known);
         let client = self
-            .client_for(&req.endpoint, &card, extensions_of(&req, ui.as_ref()))
+            .client_for(
+                &req.endpoint,
+                &card,
+                extensions_of(&req, ui.as_ref(), catalog),
+            )
             .await?;
         let request = SendMessageRequest {
-            message: user_message(&req, ui.as_ref()),
+            message: user_message(&req, ui.as_ref(), catalog),
             configuration: None,
             metadata: None,
             tenant: None,

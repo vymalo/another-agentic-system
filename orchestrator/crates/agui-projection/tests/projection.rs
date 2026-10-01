@@ -330,6 +330,85 @@ fn a_retryable_delivery_failure_ends_the_run_in_error_and_the_thread_stays_open(
     );
 }
 
+// ---- the UI's catalog (ADR 0023) ----------------------------------------------------------------
+
+fn ui_catalog(seq: i64, version: u32) -> Event {
+    ev(
+        seq,
+        alice(),
+        EventBody::UiCatalog(support::log::catalog(match version {
+            1 => 0,
+            2 => 1,
+            _ => 3,
+        })),
+    )
+}
+
+#[test]
+fn a_ui_catalog_gives_no_frames_and_no_resume_point_and_the_run_opens_with_the_message() {
+    let mut projector = Projector::new(meta());
+    // first in its commit, ahead of the message that opens the run
+    assert_eq!(projector.apply(&ui_catalog(1, 1), Audience::Viewer), vec![]);
+    assert!(!projector.run_open());
+    let frames = projector.apply(&user(2, "go"), Audience::Viewer);
+    assert_eq!(lines(&frames)[0], "RUN_STARTED run-2");
+    // in the middle of a run: still nothing, and the run goes on
+    assert_eq!(projector.apply(&ui_catalog(3, 2), Audience::Viewer), vec![]);
+    assert!(projector.run_open());
+    let more = projector.apply(&status(4, AgentStatus::Working, None), Audience::Viewer);
+    assert!(!more.is_empty());
+}
+
+#[test]
+fn a_ui_catalog_between_an_error_and_the_state_it_explains_changes_nothing_they_say() {
+    let without = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        error(3, "agent unreachable", true),
+        thread(4, ThreadState::Blocked),
+    ];
+    let with = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        error(3, "agent unreachable", true),
+        ui_catalog(4, 1),
+        thread(5, ThreadState::Blocked),
+    ];
+    let (a, b) = (project(&without), project(&with));
+    assert_eq!(b[3], vec![], "the catalog says nothing");
+    // the closing frames are the same, but for the resume point (the event's number) and the
+    // snapshot, which names the catalog the thread was shown (ADR 0023)
+    let values = |frames: &Vec<Frame>| -> Vec<serde_json::Value> {
+        frames
+            .iter()
+            .map(|f| {
+                let mut value = serde_json::to_value(&f.event).unwrap();
+                if let Some(thread) = value
+                    .pointer_mut("/snapshot/thread")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    thread.remove("uiCatalog");
+                }
+                value
+            })
+            .collect()
+    };
+    assert_eq!(values(&a[3]), values(&b[4]));
+    let snapshot = b[4]
+        .iter()
+        .map(|f| serde_json::to_value(&f.event).unwrap())
+        .find(|v| v["type"] == "STATE_SNAPSHOT")
+        .expect("the thread state says where the thread stands");
+    assert_eq!(snapshot["snapshot"]["thread"]["uiCatalog"]["version"], 1);
+    assert!(
+        lines(&b[4])
+            .iter()
+            .any(|l| l.starts_with("RUN_ERROR delivery_failed")),
+        "{:?}",
+        lines(&b[4])
+    );
+}
+
 #[test]
 fn a_permanent_delivery_failure_fails_the_thread() {
     let events = vec![

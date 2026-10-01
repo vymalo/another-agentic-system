@@ -28,6 +28,7 @@ fn input(a: UiActionData) -> Input {
     Input::UiAction {
         user: alice(),
         action: a,
+        catalog: None,
     }
 }
 
@@ -186,6 +187,7 @@ async fn an_action_on_a_finished_thread_is_refused_and_someone_elses_thread_is_n
             Input::UiAction {
                 user: bob(),
                 action: action("go"),
+                catalog: None,
             },
             None,
         )

@@ -27,6 +27,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             message_id: None,
             run_id: None,
             origin: orch_core::Origin::Agui,
+            catalog: None,
         }),
         Just(Input::Cancel {
             user: UserId::new("u@x.io")
@@ -81,6 +82,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 version: UiVersion::V0_9_1,
                 run_id: None,
             },
+            catalog: None,
         }),
         Just(Input::CancelledBeforeStart),
         (any::<bool>(), "[a-z]{1,5}")
@@ -179,5 +181,127 @@ proptest! {
             let (next, _) = orch_core::transition(&snap, &complete()).unwrap();
             prop_assert_eq!(next.state, ThreadState::Done);
         }
+    }
+}
+
+// ---- the UI catalog ledger (ADR 0023) ---------------------------------------------------------
+
+/// Five catalogs: versions 1, 2, 2 (another digest), 3, and a second version 1.
+fn catalog_pool() -> Vec<UiCatalogData> {
+    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
+    [(1, "a"), (2, "b"), (2, "c"), (3, "d"), (1, "e")]
+        .into_iter()
+        .map(|(version, tag)| {
+            let catalog = serde_json::json!({
+                "catalogId": id,
+                "components": {"Note": {"type": "object", "title": tag}},
+            });
+            UiCatalogData {
+                catalog_id: id.into(),
+                version,
+                digest: catalog_digest(&catalog).unwrap(),
+                catalog,
+            }
+        })
+        .collect()
+}
+
+/// Inputs that may carry one of the pool's catalogs, among the ones that move the thread.
+fn arb_catalog_input() -> impl Strategy<Value = Input> {
+    let pool = catalog_pool();
+    let carried = proptest::option::of((0..pool.len()).prop_map(move |i| pool[i].clone()));
+    prop_oneof![
+        4 => ("[a-z]{1,8}", carried.clone()).prop_map(|(text, catalog)| Input::UserMessage {
+            user: UserId::new("u@x.io"),
+            text,
+            message_id: None,
+            run_id: None,
+            origin: orch_core::Origin::Agui,
+            catalog,
+        }),
+        2 => carried.prop_map(|catalog| Input::UiAction {
+            user: UserId::new("u@x.io"),
+            action: UiActionData {
+                surface_id: "s".into(),
+                name: "go".into(),
+                source_component_id: "b".into(),
+                context: serde_json::Map::new(),
+                version: UiVersion::V0_9_1,
+                run_id: None,
+            },
+            catalog,
+        }),
+        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text }),
+        3 => arb_task_state().prop_map(|state| Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::Status { state, detail: None },
+        }),
+        1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
+    ]
+}
+
+proptest! {
+    /// Whatever the order the screens' catalogs arrive in: a digest is recorded once per thread,
+    /// the current version never goes down, an inline delivery is made only by the commit that
+    /// made its catalog current (and a commit that changes the current catalog delivers it
+    /// inline), every other delivery names the current catalog, and the events alone rebuild
+    /// the ledger, which is what the projection does.
+    #[test]
+    fn the_catalog_ledger_follows_the_events(inputs in proptest::collection::vec(arb_catalog_input(), 0..40)) {
+        let mut snap = Snapshot::new(ThreadState::Queued);
+        let mut recorded: Vec<UiCatalogData> = Vec::new();
+        for input in inputs {
+            let Ok((next, cmds)) = orch_core::transition(&snap, &input) else { continue };
+
+            let events: Vec<&UiCatalogData> = cmds.iter().filter_map(|c| match c {
+                Command::Append(d) => match &d.body {
+                    EventBody::UiCatalog(data) => Some(data),
+                    _ => None,
+                },
+                _ => None,
+            }).collect();
+            prop_assert!(events.len() <= 1, "one catalog per input");
+            if let Some(event) = events.first() {
+                // first in its commit, the person's, and new to the thread
+                prop_assert!(matches!(&cmds[0], Command::Append(d)
+                    if matches!(d.body, EventBody::UiCatalog(_)) && d.actor.r#type == ActorType::User));
+                prop_assert!(!snap.job.catalog.knows(&event.digest));
+                prop_assert!(!recorded.iter().any(|r| r.digest == event.digest), "recorded twice");
+                recorded.push((*event).clone());
+            }
+
+            let before = snap.job.catalog.current().cloned();
+            let after = next.job.catalog.current().cloned();
+            if let Some(b) = &before {
+                let a = after.as_ref().expect("a thread that has a current catalog keeps one");
+                prop_assert!(a.version >= b.version, "the current version went down");
+            }
+
+            let delivery = cmds.iter().find_map(|c| match c {
+                Command::Delegate { catalog, .. } | Command::DelegateAction { catalog, .. } => Some(catalog),
+                _ => None,
+            });
+            if let Some(delivery) = delivery {
+                match delivery {
+                    Some(UiDelivery::Inline(data)) => {
+                        prop_assert_eq!(events.first().map(|e| &e.digest), Some(&data.digest));
+                        prop_assert_eq!(after.as_ref(), Some(&data.reference()));
+                        prop_assert!(before.as_ref() != Some(&data.reference()), "inline when nothing changed");
+                    }
+                    Some(UiDelivery::Ref(r)) => {
+                        prop_assert_eq!(after.as_ref(), Some(r));
+                        prop_assert_eq!(before.as_ref(), after.as_ref(), "a reference when the current catalog changed");
+                    }
+                    None => prop_assert!(after.is_none(), "a thread with a catalog tells the agent"),
+                }
+            }
+            snap = next;
+        }
+        let mut replay = UiCatalogLedger::default();
+        for data in &recorded {
+            replay.observe(&data.reference());
+        }
+        prop_assert_eq!(replay, snap.job.catalog);
     }
 }

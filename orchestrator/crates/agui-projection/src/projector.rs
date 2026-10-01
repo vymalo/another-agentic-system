@@ -49,8 +49,8 @@ use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData,
     CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody, GatePolicy,
     JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId,
-    ThreadState, UiActionData, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
-    recognise_artifact, serialized_len,
+    ThreadState, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData,
+    inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -193,6 +193,9 @@ pub struct Projector {
     run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now (a deleted surface is gone).
     surfaces: BTreeMap<String, Surface>,
+    /// The UI catalogs the log recorded and which is current (ADR 0023), folded with the rule the
+    /// core uses, so the state snapshot and the thread's ledger agree.
+    catalog: UiCatalogLedger,
     /// Which job of the thread the log is in (from 1; `job_started` moves it, ADR 0020).
     job_number: u32,
     /// The attempt the agent is on (`job.attempt` of the snapshot); from the `check_result` and
@@ -291,6 +294,7 @@ impl Projector {
             message_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
+            catalog: UiCatalogLedger::default(),
             job_number: 1,
             attempt: 1,
             verification: 0,
@@ -398,6 +402,12 @@ impl Projector {
             EventBody::Rework(d) => self.on_rework(event, d, &mut out),
             EventBody::CiResult(d) => self.on_ci_result(event, d, &mut out),
             EventBody::JobStarted(d) => self.on_job_started(event, d, &mut out),
+            // The UI's catalog is not part of the transcript: the ledger moves, nothing is said,
+            // and an `error` before it still explains the `thread_state` that follows.
+            EventBody::UiCatalog(d) => {
+                self.catalog.observe(&d.reference());
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -1397,6 +1407,11 @@ impl Projector {
         // The first job says nothing more than before; a later one says which it is.
         if self.job_number > 1 {
             snapshot["thread"]["jobNumber"] = Value::from(self.job_number);
+        }
+        // The catalog the agent is told to use, when the thread has one (ADR 0023): a screen
+        // compares it with its own to decide whether to send its catalog with the next run.
+        if let Some(current) = self.catalog.current() {
+            snapshot["thread"]["uiCatalog"] = serde_json::to_value(current).unwrap_or(Value::Null);
         }
         // A job with a gate says where it stands; one without says nothing more than before.
         if self.meta.gate.is_active() {

@@ -1,0 +1,183 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-2",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-3",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-3",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-10",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-16",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "text": "echo hi"
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "<timestamp>",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo hi",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "msg-2",
+      "role": "user",
+      "text": "echo again"
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "<timestamp>",
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-10",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-10",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "<timestamp>",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo again",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-12",
+      "role": "activity",
+      "subagentRunId": "sub-10",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "msg-3",
+      "role": "user",
+      "text": "echo once more"
+    },
+    {
+      "id": "job-3",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "<timestamp>",
+        "job": 3
+      }
+    },
+    {
+      "id": "evt-16",
+      "role": "activity",
+      "subagentRunId": "sub-16",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-17",
+      "role": "activity",
+      "subagentRunId": "sub-16",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "<timestamp>",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo once more",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-18",
+      "role": "activity",
+      "subagentRunId": "sub-16",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "jobNumber": 3,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "echo hi",
+      "uiCatalog": {
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
+        "version": 2
+      }
+    }
+  },
+  "pendingInterrupts": []
+}

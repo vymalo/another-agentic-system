@@ -6,6 +6,7 @@ use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::thread::ThreadState;
 use crate::ui::{UiActionData, UiSurfaceData};
+use crate::ui_catalog::UiCatalogData;
 
 /// Contract `EventKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,6 +36,8 @@ pub enum EventKind {
     Rework,
     /// A message on a finished thread started its next job (ADR 0020).
     JobStarted,
+    /// The person's screen sent a version of its UI component catalog (ADR 0023).
+    UiCatalog,
 }
 
 impl EventKind {
@@ -53,6 +56,7 @@ impl EventKind {
             EventKind::CheckResult => "check_result",
             EventKind::Rework => "rework",
             EventKind::JobStarted => "job_started",
+            EventKind::UiCatalog => "ui_catalog",
         }
     }
 }
@@ -288,6 +292,8 @@ pub enum EventBody {
     Rework(ReworkData),
     /// See [`JobStartedData`].
     JobStarted(JobStartedData),
+    /// See [`UiCatalogData`].
+    UiCatalog(UiCatalogData),
 }
 
 impl EventBody {
@@ -306,6 +312,7 @@ impl EventBody {
             EventBody::CheckResult(_) => EventKind::CheckResult,
             EventBody::Rework(_) => EventKind::Rework,
             EventBody::JobStarted(_) => EventKind::JobStarted,
+            EventBody::UiCatalog(_) => EventKind::UiCatalog,
         }
     }
 
@@ -324,6 +331,7 @@ impl EventBody {
             EventBody::CheckResult(d) => serde_json::to_value(d),
             EventBody::Rework(d) => serde_json::to_value(d),
             EventBody::JobStarted(d) => serde_json::to_value(d),
+            EventBody::UiCatalog(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -344,6 +352,7 @@ impl EventBody {
             EventKind::CheckResult => EventBody::CheckResult(serde_json::from_value(data)?),
             EventKind::Rework => EventBody::Rework(serde_json::from_value(data)?),
             EventKind::JobStarted => EventBody::JobStarted(serde_json::from_value(data)?),
+            EventKind::UiCatalog => EventBody::UiCatalog(serde_json::from_value(data)?),
         })
     }
 }

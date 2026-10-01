@@ -5,6 +5,7 @@ mod support;
 
 use orch_agui_projection::RELEASE_CHANNELS_URI;
 use orch_agui_proto::testkit::assert_capabilities_json_conforms;
+use orch_core::KnownExtension;
 use serde_json::json;
 use support::*;
 
@@ -60,6 +61,43 @@ async fn release_channels_are_declared_only_while_the_card_lists_them() {
     assert_eq!(down["transport"]["resumable"], true);
     h.agent.set_card_down("coder", false);
     assert_eq!(get().await, doc);
+}
+
+#[tokio::test]
+async fn our_extensions_are_declared_only_while_the_card_lists_them() {
+    let h = Harness::start().await;
+    let get = || async {
+        let doc = h.get("/agui/agents/plain/capabilities", Some(ALICE)).await;
+        assert_eq!(doc.status, 200);
+        let doc = doc.json();
+        assert_capabilities_json_conforms(&doc);
+        doc
+    };
+    assert!(get().await.get("custom").is_none());
+
+    // the card lists two: each is a key of `custom`, with nothing more to say
+    h.agent.set_extensions(
+        "plain",
+        &[KnownExtension::UiCatalog, KnownExtension::ThreadTools],
+    );
+    let doc = get().await;
+    let custom = doc["custom"].as_object().unwrap();
+    assert_eq!(custom.len(), 2, "{doc}");
+    assert_eq!(custom[KnownExtension::UiCatalog.uri()], json!({}));
+    assert_eq!(custom[KnownExtension::ThreadTools.uri()], json!({}));
+
+    // read live: the card without them, the next document without them
+    h.agent.set_extensions("plain", &[]);
+    assert!(get().await.get("custom").is_none());
+    // fail closed: an unreadable card declares none
+    h.agent.set_extensions("plain", &[KnownExtension::Steps]);
+    assert!(
+        get().await["custom"]
+            .get(KnownExtension::Steps.uri())
+            .is_some()
+    );
+    h.agent.set_card_down("plain", true);
+    assert!(get().await.get("custom").is_none());
 }
 
 #[tokio::test]

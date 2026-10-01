@@ -7,8 +7,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
-    Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UserId, WatchKey,
-    is_commit_hash, repo_key, report, transition,
+    Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UiCatalogData, UserId,
+    WatchKey, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -19,7 +19,10 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
-use crate::{AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer};
+use crate::{
+    AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer,
+    check_catalog_schemas,
+};
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
 /// log is exported up to here and says so.
@@ -160,6 +163,11 @@ pub struct Inbound {
     /// The surface the input came in through, recorded on the `user_message` event (ADR 0019).
     /// The default is the chat, `agui`.
     pub origin: Origin,
+    /// The UI catalog the screen sent with the run that creates the thread (AG-UI
+    /// `forwardedProps["vymalo.uiCatalog"]`, ADR 0023), already read by a surface
+    /// ([`UiCatalogData::from_json`]); it is checked again here. Recorded first in the thread's
+    /// log, and delivered to the agent inline with the first message.
+    pub ui_catalog: Option<UiCatalogData>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -216,6 +224,19 @@ fn validate_text(text: &str) -> Result<(), AppError> {
         return Err(AppError::Invalid(format!(
             "text must be at most {MAX_TEXT_CHARS} characters"
         )));
+    }
+    Ok(())
+}
+
+/// A catalog an input carries is checked again here, as an action's sizes are: whatever surface
+/// built the input, nothing is stored that the envelope rules or the schema check refuse.
+fn check_catalog(catalog: Option<&UiCatalogData>) -> Result<(), AppError> {
+    if let Some(catalog) = catalog {
+        catalog
+            .check()
+            .map_err(|e| AppError::Invalid(format!("invalid UI catalog: {e}")))?;
+        check_catalog_schemas(catalog)
+            .map_err(|e| AppError::Invalid(format!("invalid UI catalog: {e}")))?;
     }
     Ok(())
 }
@@ -428,6 +449,7 @@ impl<P: Ports> App<P> {
         inbound: Inbound,
     ) -> Result<Creation, AppError> {
         validate_text(&req.text)?;
+        check_catalog(inbound.ui_catalog.as_ref())?;
         if let Some(title) = &req.title
             && title.chars().count() > MAX_TITLE_CHARS
         {
@@ -447,6 +469,7 @@ impl<P: Ports> App<P> {
                 message_id: inbound.message_id,
                 run_id: inbound.run_id,
                 origin: inbound.origin,
+                catalog: inbound.ui_catalog,
             },
         )?;
         let title = req
@@ -666,6 +689,7 @@ impl<P: Ports> App<P> {
                     message_id: None,
                     run_id: None,
                     origin: Origin::default(),
+                    catalog: None,
                 },
                 None,
                 None,
@@ -700,13 +724,19 @@ impl<P: Ports> App<P> {
         key: Option<String>,
     ) -> Result<ApplyOutcome, AppError> {
         match &input {
-            Input::UserMessage { text, .. } => validate_text(text)?,
+            Input::UserMessage { text, catalog, .. } => {
+                validate_text(text)?;
+                check_catalog(catalog.as_ref())?;
+            }
             // The surface has checked that the thread has the surface; the sizes are checked
             // here as well, so no surface can store an oversized action.
-            Input::UiAction { action, .. } => {
+            Input::UiAction {
+                action, catalog, ..
+            } => {
                 action
                     .check()
                     .map_err(|e| AppError::Invalid(format!("invalid action: {e}")))?;
+                check_catalog(catalog.as_ref())?;
             }
             // Machine inputs (a redelivery, a CI report, the verifier's verdict, a timer) come from the
             // inbox and the dispatcher through `apply`, never from a user's request: a user
@@ -775,20 +805,22 @@ impl<P: Ports> App<P> {
                         idempotency_key,
                     });
                 }
-                Command::Delegate { text } => outbox.push(NewOutbox {
+                Command::Delegate { text, catalog } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
                         text,
                         release: target.release.clone(),
                         new_job,
+                        ui_catalog: catalog,
                     },
                 }),
-                Command::DelegateAction { action } => outbox.push(NewOutbox {
+                Command::DelegateAction { action, catalog } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Action {
                         action,
                         at: now,
                         release: target.release.clone(),
+                        ui_catalog: catalog,
                     },
                 }),
                 Command::RequestCancel { job } => outbox.push(NewOutbox {

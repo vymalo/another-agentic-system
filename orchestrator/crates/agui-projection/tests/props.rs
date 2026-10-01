@@ -31,10 +31,14 @@ proptest! {
         let mut projector = Projector::new(meta.clone());
         let mut checker = verify::Checker::new();
         for (index, event) in events.iter().enumerate() {
-            let announces_state = matches!(
-                events.get(index + 1).map(|e| &e.body),
-                Some(EventBody::ThreadState(_))
-            );
+            // Inside a transaction: the `thread_state` that is announced is still to come, and a
+            // `ui_catalog` is always followed, in its commit, by the message or action that
+            // opens the run.
+            let announces_state = matches!(event.body, EventBody::UiCatalog(_))
+                || matches!(
+                    events.get(index + 1).map(|e| &e.body),
+                    Some(EventBody::ThreadState(_))
+                );
             let frames = projector.apply(event, Audience::Viewer);
             if let Err(e) = checker.feed_frames(&frames) {
                 return Err(TestCaseError::fail(format!(

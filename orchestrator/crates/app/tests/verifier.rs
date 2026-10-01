@@ -80,7 +80,34 @@ fn from_worker(update: AgentUpdate) -> Input {
 /// A thread of `plain` whose worker has pushed and finished: `verifying`, with one `verify` row
 /// pending. Nothing delivers the worker's own delegation.
 async fn verifying(w: &World, app: &TestApp) -> ThreadRecord {
+    verifying_with(w, app, None).await
+}
+
+/// [`verifying`], for a thread whose screen has sent `catalog` (ADR 0023) with the second
+/// message of the job.
+async fn verifying_with(
+    w: &World,
+    app: &TestApp,
+    catalog: Option<orch_core::UiCatalogData>,
+) -> ThreadRecord {
     let t = create(app, &alice(), "plain", "fix the login").await;
+    if let Some(catalog) = catalog {
+        app.submit(
+            &alice(),
+            t.id,
+            Input::UserMessage {
+                user: alice(),
+                text: "and mind the style".into(),
+                message_id: None,
+                run_id: None,
+                origin: orch_core::Origin::Agui,
+                catalog: Some(catalog),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    }
     w.store
         .skip_unsent_delegates(t.id, SystemClock.now())
         .await
@@ -276,6 +303,48 @@ async fn a_passing_verdict_finishes_the_job_and_is_never_the_workers_update() {
     assert!(ev.iter().all(|e| e.actor.name != "reviewer"));
     let job: Job = app.get_thread(&alice(), t.id).await.unwrap().job;
     assert_eq!(job.attempt, 1);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread() {
+    // ADR 0002, ADR 0023: the verifier works in a context of its own; the author's catalog and
+    // the thread's tools are the author's.
+    let w = World::new();
+    w.agent.set_verifier("reviewer", VerdictScript::Pass);
+    let app = app_with(&w, 3);
+    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
+    let catalog_json = json!({"catalogId": id, "components": {"Note": {
+        "type": "object",
+        "properties": {"component": {"const": "Note"}},
+    }}});
+    let t = verifying_with(
+        &w,
+        &app,
+        Some(orch_core::UiCatalogData {
+            catalog_id: id.into(),
+            version: 1,
+            digest: orch_core::catalog_digest(&catalog_json).unwrap(),
+            catalog: catalog_json,
+        }),
+    )
+    .await;
+    assert!(
+        t.job.catalog.current().is_some(),
+        "the thread has a catalog to withhold"
+    );
+    verify_row(&w, &t).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let sends = sends_to(&w, "reviewer");
+    assert_eq!(sends.len(), 1);
+    let Call::Send {
+        ui_catalog, thread, ..
+    } = &sends[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!((ui_catalog, thread), (&None, &None));
     run.shutdown().await;
 }
 
@@ -698,6 +767,8 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
             release: None,
+            ui_catalog: None,
+            thread: None,
         },
     )
     .await
@@ -795,6 +866,8 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
             release: None,
+            ui_catalog: None,
+            thread: None,
         },
     )
     .await

@@ -688,11 +688,11 @@ next connect stream after `n` frames, in the middle of a group) and `POST /__moc
 The mock also keeps what the web says about the UI catalog (ADR 0023): a run's
 `forwardedProps["vymalo.uiCatalog"]` is checked as the orchestrator checks it, less the JSON Schema compilation (the
 shape, an https `catalogId`, a version of 1 to 1,000,000, 64 KiB (`413`), at most 64 components with names like
-`Choices`, and the digest **recomputed**: `400` otherwise, before anything is written), recorded once per digest when
-the run applies an input, and made the thread's current catalog when it has none or the version is higher (an older
-one is recorded and never current). Every snapshot of the thread then says `thread.uiCatalog`. The catalog is kept
-outside the log, because `ui_catalog` is not in `chat-api.yaml` yet: a replay shows the current catalog throughout, where
-the orchestrator's projection shows it as of each event.
+`Choices`, and the digest **recomputed**: `400` otherwise, before anything is written), recorded as a `ui_catalog` event of the person,
+first in the commit of the input and once per digest, when the run applies an input. The projection folds those events
+with the core's rule (`CatalogLedger` in `mock/projection.ts`: the highest version is current, an older one is recorded
+and never current, the same version with another digest replaces it), so a snapshot says `thread.uiCatalog` as of its
+place in the log, a replay shows the catalog changing, and the event has no frame of its own.
 
 Agents: `coder` (has `releases`) and `reviewer` (none).
 
@@ -737,7 +737,7 @@ agent, the failure shape, the 409 on a finished thread, releases, a dropped stre
 orchestrator, history by URL (the connect stream closes on a finished thread), paging of the
 thread list, and A2UI (the fake agent's `ui` surface drawn, the button answering the agent's open
 question as an action with no message and no `resume`, delivered to the same A2A task; `ui-delete`; a
-payload the orchestrator refuses), and the verification gate (`gated` is the `plain` fake agent under `gate: {require: [agent-checks]}` in `e2e-system/agents.yaml`: `verify-red-once` is sent back in a new task of the same context and ends done on attempt 2 of 3, `verify-red` ends `checks_failed` after three, `verify-pass` is green at once). Every test starts on an empty database; the orchestrator log of a run is
+payload the orchestrator refuses), the UI catalog and Choices (`choices.spec.ts`: the fake agents list `ui-catalog/v1` through `FAKE_AGENT_EXTENSIONS` in `playwright.system.config.ts`; the web's catalog goes with the run that creates the thread, whole, and the agent is told it inline; the fake agent's `choices` draws a Choices under it, the answers reach the agent as one action with the catalog as a reference, and the log holds the `ui_catalog` event once, first), and the verification gate (`gated` is the `plain` fake agent under `gate: {require: [agent-checks]}` in `e2e-system/agents.yaml`: `verify-red-once` is sent back in a new task of the same context and ends done on attempt 2 of 3, `verify-red` ends `checks_failed` after three, `verify-pass` is green at once). Every test starts on an empty database; the orchestrator log of a run is
 `e2e-system/.run/orchestrator.log`. CI runs it as the `system-e2e` job of
 `.github/workflows/system.yml`.
 

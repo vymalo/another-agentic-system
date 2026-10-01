@@ -17,6 +17,7 @@ import { AGENTS, DEV_USER } from "./fixtures";
 import {
   type Audience,
   type CatalogRef,
+  catalogRefOf,
   type Frame,
   type GateInfo,
   Projector,
@@ -60,13 +61,16 @@ function chosen(context: Record<string, unknown>): string {
     .join("");
 }
 
+/** A catalog as the screen sent it: what a `ui_catalog` event holds. */
+type CatalogSent = CatalogRef & { catalog: Record<string, unknown> };
+
 /**
  * `forwardedProps["vymalo.uiCatalog"]` (docs/api/agui.md "Inbound"), checked as the orchestrator
  * checks it, less the JSON Schema compilation: the shape, the id, the version, the size and the
- * keys, and the digest recomputed. Returns what the thread records, or undefined when the run
- * carries none.
+ * keys, and the digest recomputed. Returns what the thread records (the event's data), or
+ * undefined when the run carries none.
  */
-async function readCatalog(props: unknown): Promise<CatalogRef | undefined> {
+async function readCatalog(props: unknown): Promise<CatalogSent | undefined> {
   if (!isRecord(props) || !(UI_CATALOG_PROP in props)) return undefined;
   const v = props[UI_CATALOG_PROP];
   if (!isRecord(v)) throw new BadCatalog(400, "vymalo.uiCatalog must be an object");
@@ -105,7 +109,7 @@ async function readCatalog(props: unknown): Promise<CatalogRef | undefined> {
   }
   if (actual !== digest)
     throw new BadCatalog(400, "vymalo.uiCatalog.digest does not match the catalog");
-  return { catalogId, version: version as number, digest };
+  return { catalogId, version: version as number, digest, catalog };
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -142,8 +146,6 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const runs = new Map<string, Run>();
   /** The gate each verified thread's job runs under (from its script); absent: none. */
   const gates = new Map<string, GateInfo>();
-  /** What each thread has recorded of the UI catalog: the one that counts, and every digest seen. */
-  const catalogs = new Map<string, { current: CatalogRef | undefined; seen: Set<string> }>();
   let cutNextConnectAfter: number | undefined;
 
   const reset = () => {
@@ -154,7 +156,6 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     viewers.clear();
     runs.clear();
     gates.clear();
-    catalogs.clear();
     cutNextConnectAfter = undefined;
   };
 
@@ -203,30 +204,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       ...(t.target.release ? { release: t.target.release } : {}),
     },
     ...(gates.has(t.id) ? { gate: gates.get(t.id) } : {}),
-    catalog: catalogOf(t.id),
   });
-
-  const catalogOf = (threadId: string) => {
-    let held = catalogs.get(threadId);
-    if (!held) {
-      held = { current: undefined, seen: new Set() };
-      catalogs.set(threadId, held);
-    }
-    return held;
-  };
-
-  /**
-   * A run that applies an input records the catalog it carries, once per digest; it becomes the
-   * thread's current one when there is none, or its version is higher (the orchestrator's ledger:
-   * an older version is recorded and never current).
-   */
-  const observeCatalog = (threadId: string, ref: CatalogRef | undefined) => {
-    if (!ref) return;
-    const held = catalogOf(threadId);
-    if (held.seen.has(ref.digest)) return;
-    held.seen.add(ref.digest);
-    if (!held.current || ref.version > held.current.version) held.current = ref;
-  };
 
   /** The thread as the resource API shows it: under a gate, with where its job stands (`job`). */
   const viewOf = (t: Thread): Thread => {
@@ -328,6 +306,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (v.end !== "never" && wasOpen && !v.projector.runOpen) closeViewer(v);
     }
     return event;
+  }
+
+  /** The seq of the last event of the thread: where the response to what is appended next starts. */
+  const lastSeq = (threadId: string) => events.get(threadId)?.length ?? 0;
+
+  /**
+   * Records the catalog an input carried as a `ui_catalog` event of the user, first in the
+   * commit of the input, unless the log holds its digest already (once per digest; no frame, so
+   * the ledger of the projection moves and nothing is said).
+   */
+  function recordCatalog(threadId: string, sent: CatalogSent | undefined) {
+    if (!sent) return;
+    const known = (events.get(threadId) ?? []).some(
+      (e) => e.kind === "ui_catalog" && catalogRefOf(e.data)?.digest === sent.digest,
+    );
+    if (known) return;
+    append(threadId, "ui_catalog", { type: "user", name: DEV_USER }, sent as Event["data"]);
   }
 
   const setState = (t: Thread, state: ThreadState) => {
@@ -536,7 +531,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 400, "Invalid request", "threadId must be a UUID");
     const agent = AGENTS.find((a) => a.id === agentId);
     if (!agent) return problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
-    let catalog: CatalogRef | undefined;
+    let catalog: CatalogSent | undefined;
     try {
       catalog = await readCatalog(body.forwardedProps);
     } catch (e) {
@@ -598,17 +593,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       };
       threads.set(created.id, created);
       events.set(created.id, []);
-      observeCatalog(created.id, catalog);
+      recordCatalog(created.id, catalog);
       const script = scriptFor(text);
       if (script.newerCatalog !== undefined) {
         // a newer version of the app opened this thread before: its catalog is the one that counts
-        observeCatalog(created.id, {
-          catalogId: catalog?.catalogId ?? OWN_CATALOG_ID,
+        const catalogId = catalog?.catalogId ?? OWN_CATALOG_ID;
+        recordCatalog(created.id, {
+          catalogId,
           version: script.newerCatalog,
           digest: `sha256:${"9".repeat(64)}`,
+          catalog: { catalogId, components: {} },
         });
       }
-      const event = append(
+      append(
         created.id,
         "user_message",
         { type: "user", name: DEV_USER },
@@ -618,7 +615,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       runs.set(created.id, { timer: undefined, pending: [], resume: script.resume });
       play(created, script.start);
       return startViewer(res, created, {
-        fromSeq: event.seq - 1,
+        fromSeq: 0,
         audience: { skipUserMessageIds: new Set([first.id as string]) },
         end: "first-close",
       });
@@ -650,8 +647,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (typeof next !== "string" || next === "") {
         return problem(res, 422, "Unprocessable", "a message without text");
       }
-      observeCatalog(thread.id, catalog);
-      const event = append(
+      const from = lastSeq(thread.id);
+      recordCatalog(thread.id, catalog);
+      append(
         thread.id,
         "user_message",
         { type: "user", name: DEV_USER },
@@ -665,7 +663,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       runs.set(thread.id, { timer: undefined, pending: [], resume: script.resume });
       play(thread, script.start);
       return startViewer(res, thread, {
-        fromSeq: event.seq - 1,
+        fromSeq: from,
         audience: { skipUserMessageIds: new Set([nextId]) },
         end: "first-close",
       });
@@ -699,8 +697,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         return problem(res, 422, "Unprocessable", "a message without text");
       }
     }
-    observeCatalog(thread.id, catalog);
-    const event = append(
+    const from = lastSeq(thread.id);
+    recordCatalog(thread.id, catalog);
+    append(
       thread.id,
       "user_message",
       { type: "user", name: DEV_USER },
@@ -710,7 +709,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const resumeScript = runs.get(thread.id)?.resume;
     if (resumeScript) play(thread, resumeScript(text));
     return startViewer(res, thread, {
-      fromSeq: event.seq - 1,
+      fromSeq: from,
       audience: { skipUserMessageIds: new Set(messageId ? [messageId] : []) },
       end: "first-close",
     });
@@ -727,7 +726,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     runId: string,
     body: Record<string, unknown>,
     withInput: boolean,
-    catalog: CatalogRef | undefined,
+    catalog: CatalogSent | undefined,
   ) {
     const envelope = (body.forwardedProps as Record<string, unknown>).a2uiAction;
     const action = isRecord(envelope) ? envelope.userAction : undefined;
@@ -777,8 +776,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         "a run is already open on this thread; wait for it to finish",
       );
     }
-    observeCatalog(thread.id, catalog);
-    const event = append(
+    const from = lastSeq(thread.id);
+    recordCatalog(thread.id, catalog);
+    append(
       thread.id,
       "ui_action",
       { type: "user", name: DEV_USER },
@@ -788,7 +788,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const resumeScript = runs.get(thread.id)?.resume;
     if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`));
     return startViewer(res, thread, {
-      fromSeq: event.seq - 1,
+      fromSeq: from,
       end: "first-close",
     });
   }

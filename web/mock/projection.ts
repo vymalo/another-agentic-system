@@ -22,26 +22,52 @@ export type GateInfo = {
   verifier?: string;
 };
 
-/** The UI catalog a thread has recorded, as `thread.uiCatalog` of a snapshot says it (ADR 0023). */
-export type CatalogRef = { catalogId: string; version: number; digest: string };
-
 export type ThreadInfo = {
   threadId: string;
   title: string;
   target: { agentId: string; release?: string };
   /** Absent: no gate, so no `job` and a run that ends at the agent's `completed`. */
   gate?: GateInfo;
-  /**
-   * The thread's catalog. A holder, not a value: the server moves `current` when a run brings a
-   * newer one, and every open stream's next snapshot says so. (The real projection folds the
-   * `ui_catalog` events of the log, so a replay shows the catalog as of each point; the mock shows
-   * the current one throughout.)
-   */
-  catalog?: { current: CatalogRef | undefined };
 };
 
 /** What `Thread.job` and the `job` of a `STATE_SNAPSHOT` say (docs/api/chat-api.yaml, `ThreadJob`). */
 export type Job = components["schemas"]["ThreadJob"];
+
+/** Which UI catalog (ADR 0023), without its contents: `thread.uiCatalog` of the state snapshot. */
+export type CatalogRef = { catalogId: string; version: number; digest: string };
+
+/**
+ * What a thread knows of the catalogs its screens sent: the digests recorded and the current
+ * one, the highest version (the rule of `UiCatalogLedger::observe` of the real core). A digest the
+ * thread knows changes nothing; an unseen one is recorded and becomes current when the thread had
+ * none, or its version is at least the current one's (the same version with another digest: the
+ * later wins). An older version is recorded, never current.
+ */
+export class CatalogLedger {
+  current: CatalogRef | undefined;
+  private readonly seen = new Set<string>();
+
+  knows(digest: string): boolean {
+    return this.seen.has(digest);
+  }
+
+  observe(ref: CatalogRef): { recorded: boolean; becameCurrent: boolean } {
+    if (this.seen.has(ref.digest)) return { recorded: false, becameCurrent: false };
+    this.seen.add(ref.digest);
+    const becameCurrent = this.current === undefined || ref.version >= this.current.version;
+    if (becameCurrent) this.current = ref;
+    return { recorded: true, becameCurrent };
+  }
+}
+
+/** The reference a `ui_catalog` event's data names, when it is well formed. */
+export function catalogRefOf(data: unknown): CatalogRef | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const { catalogId, version, digest } = data as Record<string, unknown>;
+  if (typeof catalogId !== "string" || typeof digest !== "string") return undefined;
+  if (typeof version !== "number" || !Number.isInteger(version)) return undefined;
+  return { catalogId, version, digest };
+}
 
 /** The requester of a run already holds the user messages its own request carried. */
 export type Audience = { skipUserMessageIds?: ReadonlySet<string> };
@@ -278,6 +304,8 @@ export class Projector {
   private readonly said = new Set<string>();
   /** The operations received so far per live surface: every snapshot carries the whole surface. */
   private readonly surfaces = new Map<string, Surface>();
+  /** The UI catalogs the log recorded, and which is current (ADR 0023). */
+  private readonly catalog = new CatalogLedger();
   /** Which job of the thread the log is in (from 1; `job_started` moves it, ADR 0020). */
   private jobNumber = 1;
   /** The attempt the agent is on, and the commit it pushed in it (`job` of the snapshot). */
@@ -335,13 +363,13 @@ export class Projector {
         ...(job ? { job } : {}),
         thread: {
           ...(this.jobNumber > 1 ? { jobNumber: this.jobNumber } : {}),
+          ...(this.catalog.current ? { uiCatalog: this.catalog.current } : {}),
           state: this.state,
           title: this.info.title,
           target: {
             agentId: this.info.target.agentId,
             ...(this.info.target.release ? { release: this.info.target.release } : {}),
           },
-          ...(this.info.catalog?.current ? { uiCatalog: { ...this.info.catalog.current } } : {}),
         },
       },
     };
@@ -470,6 +498,13 @@ export class Projector {
 
   /** Frames of one log event. `id` (the seq) goes on the last frame, unless a message is open. */
   apply(e: Event, audience: Audience = {}): Frame[] {
+    // The UI's catalog is not part of the transcript: the ledger moves and nothing is said (no
+    // frame, so no resume point), whether or not a run is open.
+    if (e.kind === "ui_catalog") {
+      const ref = catalogRefOf(e.data);
+      if (ref) this.catalog.observe(ref);
+      return [];
+    }
     const out: Ev[] = [];
     // a message on a finished thread starts the next job; so does a bare `job_started` (a
     // message redelivered to the agent), whose run it opens

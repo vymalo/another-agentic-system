@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use common::*;
 use orch_app::GateLayer;
 use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId};
-use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript};
+use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript, with_ui_catalog};
 use serde_json::{Value, json};
 
 fn examples_dir() -> PathBuf {
@@ -164,13 +164,44 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(event["kind"], "user_message");
             (id, "done")
         }
+        // The UI's catalog (ADR 0023), through the AG-UI run route, which is the only door a
+        // catalog has: the first run of the thread carries version 1; the next job, a message
+        // on the finished thread, version 2; the third job version 1 again, from an older
+        // screen. Each digest is recorded once, first in its commit, and the log names the
+        // consumer's message and run ids, which a route that carries a catalog has.
+        "catalog" => {
+            let id = "00000000-0000-7000-8000-000000000301".to_owned();
+            for (n, (text, version)) in [("echo hi", 1), ("echo again", 2), ("echo once more", 1)]
+                .into_iter()
+                .enumerate()
+            {
+                let n = n + 1;
+                let body = Chat::agui_input(
+                    &id,
+                    &format!("run-{n}"),
+                    &[(&format!("msg-{n}"), text)],
+                    with_ui_catalog(version),
+                );
+                let mut response = chat.agui_run("plain", &body).await;
+                assert_eq!(response.status, 200);
+                let frames = response
+                    .collect_frames(std::time::Duration::from_secs(20))
+                    .await;
+                assert_eq!(
+                    frames.last().map(|f| f.event["outcome"]["type"].clone()),
+                    Some(json!("success"))
+                );
+                chat.wait_state(&id, "done").await;
+            }
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 14] = [
+const SCENARIOS: [&str; 15] = [
     "echo",
     "ask",
     "cancel",
@@ -185,6 +216,7 @@ const SCENARIOS: [&str; 14] = [
     "ci",
     "followup",
     "followup-after-cancel",
+    "catalog",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.

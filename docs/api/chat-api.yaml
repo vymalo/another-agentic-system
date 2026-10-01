@@ -400,6 +400,7 @@ components:
         - check_result        # data: { source: CheckSource, attempt, status: pending|passed|failed, name?, commit?, summary?, stale?, findings?: [string] }  a source of the verification gate answered (ADR 0018); attributed to the system. `findings` are untrusted text (at most 20 items and 16 KiB). `stale`: the answer was for a verification that is no longer the current one and decided nothing. Additive.
         - job_started         # data: { job: integer }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
+        - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
     Actor:
       type: object
       required: [type, name]
@@ -444,9 +445,25 @@ components:
           additionalProperties: true
           description: "ui_action only: the context the component's action declared, resolved by the renderer; at most 16 KiB."
         version:
+          oneOf:
+            - type: string
+              enum: [v0.9, v0.9.1, v1.0]
+            - type: integer
+              minimum: 1
+              maximum: 1000000
+          description: "ui_action: the A2UI version of the surface (a string, v0.9, v0.9.1 or v1.0), so the agent gets the action in the dialect it spoke. ui_catalog: the version of the catalog (an integer from 1), raised by the UI with every change; the highest is the newest."
+        catalogId:
           type: string
-          enum: [v0.9, v0.9.1, v1.0]
-          description: "ui_action only: the A2UI version of the surface, so the agent gets the action in the dialect it spoke."
+          maxLength: 256
+          description: "ui_catalog only: the catalog's stable id, an absolute https URL. A UI keeps it across versions."
+        digest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: "ui_catalog only: `sha256:` and the lowercase hex of SHA-256 over the canonical JSON of `catalog` (keys sorted, no whitespace, integers in decimal). The orchestrator recomputes it and refuses a catalog whose digest differs."
+        catalog:
+          type: object
+          additionalProperties: true
+          description: "ui_catalog only: the catalog, `{catalogId, components: {<Name>: <JSON Schema of the component>}}`: an A2UI inline catalog, at most 64 KiB and 64 components, with no `$ref`, `$id`, `$anchor` or `$schema` and only integer numbers. Stored, relayed to agents, never interpreted by the orchestrator."
         source:
           $ref: "#/components/schemas/CheckSource"
         job:

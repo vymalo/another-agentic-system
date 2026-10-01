@@ -98,6 +98,8 @@ fn request(
         reference_task_ids: Vec::new(),
         content: crate::SendContent::Text(text),
         release: None,
+        ui_catalog: None,
+        thread: None,
     }
 }
 

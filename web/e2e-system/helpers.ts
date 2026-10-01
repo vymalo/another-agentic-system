@@ -167,6 +167,10 @@ export type AgentCall = {
   extensionsHeader: string[];
   activatesReleaseChannels: boolean;
   release: string | null;
+  /** `metadata[ui-catalog/v1]` of the message (ADR 0023); null when the message carried none. */
+  uiCatalog: { catalogId: string; version: number; digest: string; inline: boolean } | null;
+  /** The catalogs the message carried inline (A2UI's `inlineCatalogs`). */
+  inlineCatalogs: { catalogId: string; components: Record<string, unknown> }[];
 };
 
 /** What the fake agent's executor saw for messages whose text starts with `text`. */

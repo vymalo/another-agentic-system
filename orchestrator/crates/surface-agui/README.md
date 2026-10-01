@@ -48,6 +48,7 @@ Mounted by `orch-api`, the route sits behind the identity layer like every route
    asks for, `forwardedProps["vymalo.gate"]`, is read before anything else (a malformed one is a 400 whatever
    the thread) and applies when the run creates the thread: `App` resolves it on top of the deployment's and the
    agent's and refuses (400, before the stream) what weakens the gate or this build cannot honour. A run that continues a thread (or loses the race to create it) and asks for a gate different from the thread's is refused too (409, `App::gate_request_changes`); the same gate, or none, is served.
+   The screen's UI catalog, `forwardedProps["vymalo.uiCatalog"]` ([ADR 0023](../../../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md)), is read on every run too and refused before the stream when it breaks a rule: the envelope (`UiCatalogData::from_json`: 400, **413** over 64 KiB; the digest is recomputed) and the schemas (`orch_app::check_catalog_schemas`: 400); nothing is written. It is applied only when the run applies an input: it goes to the first message or action as its `catalog` (a new thread through `Inbound.ui_catalog`), and a run that attaches, or only stops, ignores it. `docs/api/agui.md`, "The UI catalog".
 5. **Stream.** From the first event the input caused (or, for an attach, from that run's `RUN_STARTED`)
    to the first terminal event of the run: `RUN_FINISHED` or `RUN_ERROR`, then EOF. Frames carry `id:
    <seq>` on resume points. Keepalive comments every `sse_keepalive`.
@@ -77,7 +78,7 @@ connection never cancels a run.
 ### The capabilities request
 
 `App::describe_agent` reads the agent's card live (bounded by `AppConfig::card_timeout`, never
-cached) and `orch_agui_projection::agent_capabilities` builds the document; the answer is
+cached) and `orch_agui_projection::agent_capabilities` builds the document, which lists the A2UI extensions and the extensions of the orchestrator's own (`ui-catalog/v1`, …) the card lists under `custom`, so the web can flag an agent before it sends anything; the answer is
 `application/json` with `Cache-Control: no-store`. An unreadable card gives the smaller document;
 an unknown agent is a 404 problem.
 
@@ -101,6 +102,7 @@ serve `tests/contract.rs`.
 - `tests/attach.rs`: a retried POST replays the same frames, one while the run is going follows it to
   its end, earlier runs can be attached to, two concurrent requests with the same ids write one message,
   a retried answer.
+- `tests/ui_catalog.rs`: the UI catalog on a run: a first run records it first and every snapshot names it, a thread without one says nothing (and `null` is none), the same request again attaches and records nothing twice (and ignores a newer catalog), a newer version on a later run is recorded and an older one never becomes current, an answer can carry a newer catalog, the 400 for each rule of the envelope and of the schemas (the reason in `detail`), the 413, and a bad catalog refused on a continuing thread and on an attach with nothing written.
 - `tests/refusals.rs`: every status of the table in `docs/api/agui.md` (400, 401, 404, 406, 409, 413,
   415, 422, 502) as a problem, with nothing written; another owner's thread id; a message on a finished
   thread is served as the next job (and its retry is an attach, not a third job), a run while another is open is a 409.

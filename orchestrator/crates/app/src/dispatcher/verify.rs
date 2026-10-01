@@ -260,6 +260,10 @@ impl<P: Ports> Dispatcher<P> {
             reference_task_ids: Vec::new(),
             content: SendContent::Text(text),
             release: None,
+            // the verifier is told nothing of the author's screen and gets no tools on the
+            // author's thread
+            ui_catalog: None,
+            thread: None,
         };
         match self.app.ports().agents().send_stream(request).await {
             Ok(stream) => match self.verifier_stream(v, stream, true, &mut answer).await? {

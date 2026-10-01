@@ -122,3 +122,14 @@ decided on that delegation as follows; the owner may revisit them.
   steps, mentions), and the AG-UI capabilities document lists each one under `custom`, so the web can flag an agent
   before the person sends, as [ADR 0024](0024-mcp-tools-attached-per-conversation.md) (decision 3) and
   [ADR 0026](0026-agent-mentions-as-structured-references.md) (decision 3) require.
+
+## Status note, 2026-10-01: the handshake is built (MVP slice 3)
+
+The web's catalog and Choices (versions 1 and 2) and the orchestrator's side of the handshake are built:
+`forwardedProps["vymalo.uiCatalog"]` on a run (checked before anything is written), the `ui_catalog` event (migration
+`0006`) and the thread's ledger in the core, `thread.uiCatalog` in the state snapshot, the closed `KnownExtension` set
+read from the live card and listed in the capabilities document, and the A2A adapter's metadata, `supportedCatalogIds`
+and `inlineCatalogs`. The contract is [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md). **Not built yet:** the
+thread tools and `get_ui_catalog` (the refetch seam above) and the adam-rs side. One detail the contract now says:
+an A2A server reads the numbers of message metadata as doubles, so an agent recomputing a digest writes whole numbers as
+integers first.

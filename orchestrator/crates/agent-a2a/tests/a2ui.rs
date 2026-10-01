@@ -44,6 +44,8 @@ fn text(ep: &AgentEndpoint, text: &str, task_id: Option<String>) -> SendRequest 
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
         release: None,
+        ui_catalog: None,
+        thread: None,
     }
 }
 
@@ -385,6 +387,8 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
             at,
         },
         release: None,
+        ui_catalog: None,
+        thread: None,
     };
     let second = drain(c.send_stream(request).await.unwrap()).await;
     assert_eq!(
@@ -437,6 +441,8 @@ async fn an_action_speaks_the_version_of_its_surface_whatever_the_card_says() {
             at: "2026-09-29T12:00:00Z".parse().unwrap(),
         },
         release: None,
+        ui_catalog: None,
+        thread: None,
     };
     drain(c.send_stream(request).await.unwrap()).await;
     let call = &fake.executions()[1];

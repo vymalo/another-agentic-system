@@ -299,6 +299,8 @@ pub(crate) fn conclude(
             ));
             cmds.push(Command::Delegate {
                 text: rework_prompt(job.attempt, max, job.task.as_deref(), &failed),
+                // the author still works on the same screen
+                catalog: job.catalog.redelivery(),
             });
             job.attempt = next;
             job.results.clear();
