@@ -580,6 +580,19 @@ const CODER_SUMMARY = [
   "All 42 tests pass, and the pull request is ready for review.",
 ].join("\n");
 
+/**
+ * What the `sources` scenario says: links the panel's Sources tab lists (a doc, the pull request it
+ * opened, a run), a link inside code that it must not, and one that is not http(s).
+ */
+const SOURCES_SUMMARY = [
+  `I fixed the redirect loop and opened ${CODER_PR}.`,
+  "",
+  "- why it loops: see [the axum redirect docs](https://docs.rs/axum/latest/axum/response/struct.Redirect.html)",
+  "- the run: [CI on the branch](https://ci.example.com/runs/12)",
+  "- run `curl https://example.com/only-in-code` to see it in code (not a source)",
+  "- [not a link we open](javascript:alert(1))",
+].join("\n");
+
 const coderWork: Step[] = [
   working,
   doing("Preparing the workspace"),
@@ -645,6 +658,9 @@ const coderWork: Step[] = [
  * Mock only, the coder scenarios of the screenshots (plain words, so the thread titles read well):
  * - `Fix …`: the coder works through its steps, pushes, runs its checks, opens a pull request and
  *   says what it did (a markdown answer); done.
+ * - `sources …`: mock only: the same steps, then what the Sources tab lists: a branch, a pull request,
+ *   a CI report with a link, and a final answer with links in it (one inside code, one that is not
+ *   http(s)); done.
  * - `Refactor …`: the same steps, and the coder is still running a command until cancelled.
  * - `Make …`: under the agent-checks gate: the first push fails a test, the coder is sent back,
  *   the second passes, then the pull request and the answer; done.
@@ -670,6 +686,17 @@ export function scriptFor(text: string): {
           ...coderPushed(commitOf(12), { passed: true, summary: "42 tests passed" }),
           coderPullRequest,
           { kind: "agent_status", data: { status: "completed", detail: CODER_SUMMARY } },
+          done,
+        ],
+      };
+    case "sources":
+      return {
+        start: [
+          ...coderWork.slice(0, 3),
+          ...coderPushed(commitOf(12), { passed: true, summary: "42 tests passed" }),
+          coderPullRequest,
+          ciReport(12, true),
+          { kind: "agent_status", data: { status: "completed", detail: SOURCES_SUMMARY } },
           done,
         ],
       };

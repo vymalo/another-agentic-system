@@ -5,7 +5,15 @@ import AxeBuilder from "@axe-core/playwright";
 import { chromium, expect, test } from "@playwright/test";
 import lighthouse from "lighthouse";
 import { uuidv7 } from "../src/lib/uuid";
-import { BASE_URL, badge, conversation, startThread } from "./helpers";
+import {
+  agentPicker,
+  BASE_URL,
+  badge,
+  closeAgentMenu,
+  conversation,
+  openAgentMenu,
+  startThread,
+} from "./helpers";
 
 async function finishedThreadUrl(): Promise<string> {
   // A thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it.
@@ -40,7 +48,23 @@ for (const scheme of ["light", "dark"] as const) {
 
     test("axe: new thread page has no serious violations", async ({ page }) => {
       await page.goto("/");
-      await expect(page.getByLabel("Agent")).toBeVisible();
+      await expect(agentPicker(page)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: the agent menu (open, on a new chat and on a thread) has no serious violations", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await openAgentMenu(page);
+      await expect(page.getByRole("menuitemradio", { name: /^Coder/ })).toBeChecked();
+      expect(await axeViolations(page)).toEqual([]);
+      await closeAgentMenu(page);
+
+      await startThread(page, "Implement the thing");
+      await expect(badge(page)).toHaveText("Done");
+      await openAgentMenu(page);
+      await expect(page.getByRole("group", { name: "Start a new chat with" })).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
 

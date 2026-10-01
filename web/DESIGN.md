@@ -16,7 +16,7 @@ structure, not the branding.
 
 | Reference | What we took |
 |---|---|
-| ChatGPT, conversation ([2ed2ffc3](https://refero.design/pages/2ed2ffc3-95b2-417c-a3fa-df50f4cb22e4)) | Centered reading column around 760 px; title in a minimal top bar with the actions on the right; a disclaimer line under the composer; ink (near-black) for the primary action |
+| ChatGPT, conversation ([2ed2ffc3](https://refero.design/pages/2ed2ffc3-95b2-417c-a3fa-df50f4cb22e4)) | Centered reading column around 760 px; title in a minimal top bar with the actions on the right; a disclaimer line under the composer; ink (near-black) for the primary action; **the model picker**: a button in the top bar that names the choice ("GPT ⌄") and opens a menu of one row per model, a name with a line under it and a check on the current one (our agent picker, see "Agent picker") |
 | Claude ([f42e56ca](https://refero.design/pages/f42e56ca-6f9d-45b8-b501-ce30add0f259)) | "Reply to Claude…" placeholder for the next turn; the model named inside the composer; warm neutrals |
 | Meta AI ([6c1e2ac6](https://refero.design/pages/6c1e2ac6-e65a-4290-8ae5-81ad61ea200a)) | The assistant's avatar once above its turn, then prose; generous spacing between turns |
 | Copilot ([d81060e5](https://refero.design/pages/d81060e5-9955-4fb2-a8d6-b4ccaa97c312)), Grok ([0ac86436](https://refero.design/pages/0ac86436-063a-45a1-a04d-81042b245675)) | A composer with a soft shadow and chips inside it; a two-line greeting (statement, then a muted question) |
@@ -74,16 +74,96 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
   with the wordmark, and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
   Previous 7 days, Previous 30 days, Older, by local calendar day) as single-line rows with a small live dot (green when working, amber when waiting) for a working or waiting
   thread. Collapsible on a desktop (remembered per browser); a sheet from the left on a phone.
-- **Top bar** 56 px, transparent: the title (one line), the agent as a pill, the thread's state as a
-  pill, and an overflow menu (Export JSON). On a phone the menu button opens the sheet.
+- **Top bar** 56 px, transparent: the **agent picker** (a button with the agent's name and a chevron,
+  see "Agent picker"), the title (one line, muted, from `md`; below it the title is for screen readers
+  only, and stays the page's heading), the thread's state as a pill, the **panel toggle** (a thread only,
+  see "Panel") and an overflow menu (Export JSON). On a phone the menu button opens the sheet, in front
+  of the picker.
+- **Panel** on the right of a thread: 360 px by default, docked beside the chat on a wide window and a
+  sheet on a narrower one; "Panel" says how it behaves. It is what makes the reading column calm: the
+  agents' work and what they shared are beside the conversation, not in it.
 - **Reading column** max 768 px (`max-w-3xl`), 16 px gutters on a phone, 24 px from `md`.
 - **Composer** sticky at the bottom of the column, a 24 px-radius surface with a soft shadow: the
-  text (1 to 8 lines), then a row with the agent pill on the left and a 36 px round Send / Stop
-  button on the right. A one-line disclaimer under it.
+  text (1 to 8 lines), then a row with a 36 px round Send / Stop button on the right; the left of the
+  row is empty and kept for the tools picker and mentions (plan 05): the agent is picked in the top
+  bar, not in the box. A one-line disclaimer under it.
 - **Empty state** (new chat): the panda, the greeting "What should we get done?" and what the chosen
   agent does, the composer in the middle of the page on the plain canvas (no glow), and suggestion
-  chips under it (a chip fills the box, it does not send); the agent and release pickers are pills
-  inside the composer.
+  chips under it (a chip fills the box, it does not send); the agent picker is in the top bar, in the
+  same place as on a thread.
+
+## Agent picker
+
+Choosing the agent is like choosing a model in ChatGPT, not a form field (owner, 2026-10-01: "a little more
+like the new ChatGPT"). It is a menu button in the top bar, on the new chat and on every thread
+(`features/agents/components/agent-menu.tsx`).
+
+- **The button**: ghost, 36 px, the agent's name (16 px, weight 500), then muted "· production" when the
+  agent offers releases (the one that will be used, the default channel until another is chosen; a phone's
+  top bar has no room for it, so there it is read but not drawn), then a chevron; it gives way (its text is
+  cut) before the state and the toggle do. Its name is "Agent: Coder · production" (a menu button: `aria-haspopup="menu"`,
+  `aria-expanded`). While the list loads it is a skeleton; if it could not be read it says "Agents
+  unavailable" and the menu holds Retry.
+- **The menu** (300 to 380 px, `--popover`, 12 px radius, shadow like the composer's): the label "Agents",
+  then one **radio item** per agent (`role="menuitemradio"`, `aria-checked`): its avatar (24 px), its
+  name (14 px, weight 500) and what it does in one muted line (12 px, from its live card), and a check
+  in `--brand` on the chosen one. When the chosen agent offers releases, a separator and a second group,
+  "Release": the channels (`production — coder-r47`) and then the revisions, in the **same menu**, not
+  a sub-menu, so it works from a phone and from the keyboard. Choosing an item closes the menu. The list
+  is read again each time the menu opens: releases are the agent's card right now (ADR 0008).
+- **Keyboard**: Enter, Space or the down arrow on the button opens it; the arrows move over the items,
+  letters jump to an agent, Enter or Space chooses, Escape closes it and the focus goes back to the button.
+- **On an existing thread** a thread has one agent, so the menu shows it (checked, with its pinned
+  release) and offers the others as **"Start a new chat with …"** links: they open a new chat with that
+  agent already chosen (`/?agent=reviewer`). They are not radio items, because nothing in this chat changes.
+  Changing the agent of a thread will be a fork (plan 08, F-series): the conversation so far copied into a
+  new thread that talks to the other agent; until it is built, this is what the menu offers.
+- **A notice slot** under the lists, inside the menu: a failed refresh of the list is said there ("Could not
+  refresh the agents: …", with Retry, the list stays as it was), and the agent registry's "unreachable,
+  showing the configured agents only" (plan 05) goes in the same place.
+
+## Panel
+
+The right side of a thread was unused (owner, 2026-10-01: "the right side of the page is usually unused … add a
+collapsible right panel to show the sources; the agents (and sub-agents) work better with a cleaner interface").
+The panel is the thread's second surface, `features/panel/`: two tabs, **Activity** and **Sources**.
+
+- **Where.** From 1132 px (the sidebar, 560 px of reading column and the narrowest panel) the panel is
+  **docked**: an `<aside>` between the chat and the edge, `--background` with a hairline on its left. Its
+  width is 360 px by default, 300 to 560 px, never more than 45 % of the window and never so much that the
+  column has less than 560 px beside the sidebar (448 px at 1280). Below 1132 px it is a **sheet**: from the
+  right from 768 px, from the bottom (85 % of the height, rounded top) on a phone, the way the thread list
+  is a sheet. Neither is on the new-chat page.
+- **Open or closed.** The header's toggle (an icon, "Thread details", `aria-expanded`, `aria-controls`) and
+  **Ctrl/⌘+Shift+.** (the physical key, from anywhere, the message box included) toggle it, and so does the
+  panel's own close button. A docked panel is remembered per browser (`chat.panel`, `chat.panel.width`,
+  `chat.panel.tab` in localStorage; a head script sets `data-panel` on `<html>` before the first paint, as the
+  sidebar's does); with nothing remembered it is open from 1280 px and closed below. A sheet is never open by
+  itself and never remembered: it is for this visit.
+- **Activity** is where the step tree goes (plan 03, S5.4): one section per agent turn, fed by the shell's
+  small contract, `useStepsPanel()` (`hooks/use-steps-panel.tsx`: the panel's id, whether it shows, the tab, a
+  request to focus a turn, and `openSteps(turnId)`). Until the tree exists the steps stay in the
+  conversation, as "A turn" says, and the tab says so.
+- **Sources** is what the agents shared, derived in the browser from what the runtime already holds: the pull
+  requests and branches they opened or pushed, their CI reports that link to a run, the files with a link,
+  and the links in their words. Four groups (Pull requests & branches, Checks, Files, Links), each item once
+  however often it was cited, with a **Turn n** button for each turn that cited it: it scrolls the chat to
+  that turn and focuses its header (on a phone the sheet closes first). A typed source (a pull request, a
+  report) describes a URL better than the same URL in someone's words, so it takes the place of the link.
+  Rules, because it is all agent output: only absolute http(s) URLs are ever links (`safeHttpUrl`), a URL
+  inside code is not read, nothing is fetched (no favicons), every link opens in a new tab with "(opens in a
+  new tab)" for a screen reader, and titles are text. A branch has no link: the projection's repository is
+  `host/owner/name`, not a URL.
+- **Look.** A header 48 px high with the tabs (14 px, weight 500, the selected one in the page's ink with a
+  2 px `--brand` underline) and a close button; the Sources count in muted text after the name. An item is a
+  32 px round icon on `--muted` (a CI report's is green or red, and says it in words too), its title (14 px,
+  weight 500, underlined when it is a link, an arrow after it), a muted line (the kind and a host, a
+  provider or a type) and the Turn buttons (28 px, outlined). An empty tab is the panda at 96 px, what the
+  tab is for, and why it is empty.
+- **Resizing.** The edge between the chat and the panel is a window splitter: a vertical `separator` the
+  keyboard can focus (Left widens by 16 px, Right narrows, Home and End go to the limits; its value is the
+  width in px) and a pointer can drag (the width does not animate while it is dragged).
+- **Motion.** The docked width animates in 200 ms; off under `prefers-reduced-motion`.
 
 ## A turn
 
@@ -154,6 +234,15 @@ All of it is off under `prefers-reduced-motion`.
 The transcript is `role="log"` (name "Conversation"); the state pill is a polite `status`; steps are
 a list whose items carry their full meaning as text; focus rings on every control; everything works
 from the keyboard; axe finds nothing serious in either scheme.
+
+The panel is a `complementary` landmark named "Thread details" (hidden and inert while it is closed, so it is
+neither tabbed into nor read); in a sheet it is a dialog with the same name that traps the focus, closes
+with Escape and gives the focus back to what opened it (to the turn, when a Turn button closed it). Its
+tabs are a `tablist` with the arrows, Home and End; its edge is a `separator` with `aria-valuenow`, `min` and
+`max`; its toggle keeps one name and says its state in `aria-expanded`, and announces its shortcut
+(`aria-keyshortcuts`). The agent picker's menu is not modal (axe reports the siblings of a modal menu as
+focusable though hidden), and axe is run with the picker's menu open and with the panel open, both tabs,
+in both schemes.
 
 ## A surface that needs a newer version of the app
 

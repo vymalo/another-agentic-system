@@ -77,6 +77,28 @@ export function drawsStep(part: PartLike): boolean {
   return true;
 }
 
+/**
+ * Whether a part draws anything in an agent's turn: words, a step, a failed status, an error, a
+ * surface or a card. A message none of whose parts do is no turn at all.
+ */
+export function drawsPart(part: PartLike): boolean {
+  if (part.type === "text") return Boolean(part.text?.trim());
+  if (part.type !== "data" || !part.name) return false;
+  if (isStepPart(part)) {
+    if (drawsStep(part)) return true;
+    const artifact =
+      part.name === activityPartName(ACTIVITY.artifact) ? parseArtifact(part.data) : null;
+    return artifact !== null && isCardArtifact(artifact);
+  }
+  if (part.name === activityPartName(ACTIVITY.status)) {
+    return parseStatus(part.data)?.status === "failed";
+  }
+  return (
+    part.name === activityPartName(ACTIVITY.error) ||
+    part.name === activityPartName(ACTIVITY.surface)
+  );
+}
+
 /** The artifacts that are also a card after the agent's words: a pull request, a file. */
 export function isCardArtifact(artifact: ArtifactContent): boolean {
   return artifact.kind === "pull_request" || artifact.kind === "file";

@@ -4,6 +4,7 @@ import {
   checkLabel,
   checksPayload,
   commandOf,
+  drawsPart,
   drawsStep,
   isAnswerPart,
   isStepPart,
@@ -45,6 +46,31 @@ describe("which parts are steps", () => {
     expect(drawsStep(data(ACTIVITY.job, { job: 2 }))).toBe(false);
     expect(drawsStep({ type: "data", name: ACTOR_PART, data: {} })).toBe(false);
     expect(drawsStep(data(ACTIVITY.artifact, { nope: 1 }))).toBe(false);
+  });
+});
+
+describe("which parts draw something in a turn", () => {
+  it("the agent's words, a step, a failed status, an error, a surface and a card", () => {
+    expect(drawsPart({ type: "text", text: "hello" })).toBe(true);
+    expect(drawsPart(data(ACTIVITY.status, { status: "working", detail: "x" }))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.status, { status: "failed", detail: "x" }))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.artifact, { name: "x" }))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.check, { source: "ci", attempt: 1, status: "passed" }))).toBe(
+      true,
+    );
+    expect(drawsPart(data(ACTIVITY.error, { message: "x" }))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.surface, { surface: "a" }))).toBe(true);
+  });
+
+  it("blank words, the statuses that come with the words, the markers and unknown parts draw nothing", () => {
+    expect(drawsPart({ type: "text", text: "  \n" })).toBe(false);
+    expect(drawsPart({ type: "text" })).toBe(false);
+    expect(drawsPart(data(ACTIVITY.status, { status: "completed" }))).toBe(false);
+    expect(drawsPart(data(ACTIVITY.status, { status: "input_required" }))).toBe(false);
+    expect(drawsPart({ type: "data", name: ACTOR_PART, data: {} })).toBe(false);
+    expect(drawsPart(data(ACTIVITY.job, { job: 2 }))).toBe(false);
+    expect(drawsPart({ type: "data", name: "agui-activity/unknown", data: {} })).toBe(false);
+    expect(drawsPart({ type: "image" })).toBe(false);
   });
 });
 

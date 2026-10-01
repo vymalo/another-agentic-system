@@ -1,5 +1,15 @@
 import { expect, type Page, test } from "@playwright/test";
-import { badge, conversation, openThreadList, startThread } from "./helpers";
+import {
+  agentPicker,
+  badge,
+  conversation,
+  openAgentMenu,
+  openThreadList,
+  panel,
+  panelTab,
+  panelToggle,
+  startThread,
+} from "./helpers";
 
 /*
  * `pnpm screens`: the screenshots of every state a person meets, for both color schemes, on a
@@ -43,7 +53,7 @@ for (const scheme of ["light", "dark"] as const) {
 
     test("empty thread", async ({ page }) => {
       await page.goto("/");
-      await expect(page.getByLabel("Agent")).toBeVisible();
+      await expect(agentPicker(page)).toBeVisible();
       await shot(page, "empty-thread");
     });
 
@@ -106,9 +116,47 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "error");
     });
 
+    test("agent menu", async ({ page }) => {
+      await page.goto("/");
+      await openAgentMenu(page);
+      await expect(page.getByRole("menuitemradio", { name: /^production/ })).toBeChecked();
+      await shot(page, "agent-menu");
+    });
+
+    test("agent menu on a thread", async ({ page }) => {
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await openAgentMenu(page);
+      await expect(page.getByRole("group", { name: "Start a new chat with" })).toBeVisible();
+      await shot(page, "agent-menu-thread");
+    });
+
+    test("cards and a graph, with the panel", async ({ page }) => {
+      // the answer of words, three cards and a drawn graph, in the narrower column the panel leaves
+      await startThread(page, "cards-mermaid please", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator('[data-slot="mermaid-image"]')).toBeVisible();
+      await page.locator('[data-slot="mermaid-image"]').scrollIntoViewIfNeeded();
+      await shot(page, "cards-mermaid");
+    });
+
+    test("panel", async ({ page }) => {
+      // beside the chat on a desktop (open by itself on a wide window), a sheet from the bottom on a phone
+      await startThread(page, "sources the login redirect");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      if ((await panelToggle(page).getAttribute("aria-expanded")) !== "true") {
+        await panelToggle(page).click();
+      }
+      await expect(panel(page)).toBeVisible();
+      await shot(page, "panel-activity");
+      await panelTab(page, "Sources").click();
+      await expect(panel(page).getByRole("region", { name: "Links" })).toBeVisible();
+      await shot(page, "panel-sources");
+    });
+
     test("sidebar", async ({ page, isMobile }) => {
       await page.goto("/");
-      await expect(page.getByLabel("Agent")).toBeVisible();
+      await expect(agentPicker(page)).toBeVisible();
       if (isMobile) {
         await openThreadList(page);
         await expect(page.getByRole("dialog", { name: "Threads" })).toBeVisible();

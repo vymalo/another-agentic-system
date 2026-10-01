@@ -49,9 +49,18 @@ importers:
       lucide-react:
         specifier: 1.48.0
         version: 1.48.0(react@19.3.0)
+      mdast-util-from-markdown:
+        specifier: 2.0.3
+        version: 2.0.3
+      mdast-util-gfm:
+        specifier: 3.1.0
+        version: 3.1.0
       mermaid:
         specifier: 12.0.0
         version: 12.0.0
+      micromark-extension-gfm:
+        specifier: 3.0.0
+        version: 3.0.0
       next:
         specifier: 16.3.6
         version: 16.3.6(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@22.20.4)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)

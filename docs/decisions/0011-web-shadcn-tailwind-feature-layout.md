@@ -1,6 +1,15 @@
 # ADR 0011 — Chat surface: shadcn/ui on Tailwind v4, kebab-case feature layout
 
-- **Status:** accepted (2026-09-29)
+- **Status:** accepted (2026-09-29). Amended (2026-10-01): the agent and release pickers are no longer native
+  selects. The owner asked for agent selection "a little more like the new ChatGPT", so the agent is picked
+  from a Radix dropdown menu in the top bar (`agent-menu.tsx`: radio items, the chosen agent's releases as a
+  second group of the same menu), which works from a phone and from the keyboard like any menu. The
+  `<optgroup>` of the revisions is a labelled group of the menu. Also amended (2026-10-01): a thread has a
+  right-hand panel, a new feature folder `src/features/panel/` (the Activity and Sources tabs; docked beside
+  the chat on a wide window, a sheet on a narrower one, as the thread list is on a phone), built on the
+  `Tabs` primitive in `src/components/ui`; the Sources tab reads the links in the agents' words with
+  `mdast-util-from-markdown`, `mdast-util-gfm` and `micromark-extension-gfm`, the parser `remark-gfm` already
+  uses for the chat, pinned as direct dependencies. The rest of this decision stands.
 
 ## Context
 
@@ -26,7 +35,8 @@ and dark, on every change.
   query: no toggle, no `next-themes`, no `.dark` class. The system font stack stays, so nothing is
   downloaded at build or run time.
 - **Native selects for the agent and release pickers** (`NativeSelect`, not Radix `Select`): the
-  best control on a phone, and `<optgroup>` groups the revisions.
+  best control on a phone, and `<optgroup>` groups the revisions. *(Superseded 2026-10-01, see the
+  status line: a dropdown menu in the top bar.)*
 - **assistant-ui registry components as the starting point, then pruned.** `thread`, `thread-list`
   and `markdown-text` come from the `@assistant-ui` shadcn registry (`components.json` →
   `registries`). What the event log has no handlers for is removed: voice, attachments,
