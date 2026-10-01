@@ -1,0 +1,139 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "interrupt:int-5/input_required"
+    },
+    {
+      "runId": "run-7",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "suspended:int-5"
+    },
+    {
+      "id": "sub-step-3",
+      "name": "OpenCode",
+      "end": "suspended:"
+    },
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "steps-ask clean the build"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "step-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "icon": "agent",
+        "id": "T/tool:c2",
+        "kind": "subagent",
+        "label": "OpenCode",
+        "path": [],
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "completed"
+      }
+    },
+    {
+      "id": "step-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "icon": "execute",
+        "id": "T/acp:c2:1",
+        "kind": "command",
+        "label": "rm -rf build",
+        "path": [
+          "T/tool:c2"
+        ],
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "completed"
+      }
+    },
+    {
+      "id": "st-5",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Allow rm -rf build?"
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "status": "input_required"
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "user",
+      "text": "yes"
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "st-11",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Done."
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "steps-ask clean the build"
+    }
+  },
+  "pendingInterrupts": []
+}

@@ -72,17 +72,37 @@ export function catalogRefOf(data: unknown): CatalogRef | undefined {
 /** The requester of a run already holds the user messages its own request carried. */
 export type Audience = { skipUserMessageIds?: ReadonlySet<string> };
 
-const actorMeta = (e: Event) => ({
+const actorMetaOf = (actor: Event["actor"]) => ({
   "vymalo.actor": {
-    type: e.actor.type,
-    name: e.actor.name,
-    ...(e.actor.revision ? { revision: e.actor.revision } : {}),
+    type: actor.type,
+    name: actor.name,
+    ...(actor.revision ? { revision: actor.revision } : {}),
   },
 });
+const actorMeta = (e: Event) => actorMetaOf(e.actor);
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 type Invocation = { id: string; event: Event };
+
+/**
+ * A step of the agent's work that has not ended (ADR 0025): what the projection says about it, so
+ * that every later event of the step says it again as the same activity (the real projection's
+ * `StepView`).
+ */
+type StepView = {
+  /** The seq of the step's first event: `step-<seq>` is its activity and `sub-step-<seq>` its subagent. */
+  seq: number;
+  data: Record<string, unknown>;
+  startedAt: string;
+  actor: Event["actor"];
+  path: string[];
+  /** Its subagent, for a sub-agent step, and the subagent it was started in. */
+  sub?: string;
+  parent?: string;
+  /** Its `SUBAGENT_STARTED` is open in the run that is open. */
+  subOpen: boolean;
+};
 type Open = { runId: string };
 
 /** How the verifier's subagent ends: with its verdict, or without one (the round ended elsewhere). */
@@ -319,6 +339,10 @@ export class Projector {
   private lastAgent: Event["actor"] | undefined;
   /** The open invocation's last final agent message: a status with the same words says nothing more. */
   private lastFinal: string | undefined;
+  /** The steps that have not ended, by id (ADR 0025). */
+  private readonly steps = new Map<string, StepView>();
+  /** The time of the event being applied, for the frames that close what is open. */
+  private now = "";
 
   constructor(private readonly info: ThreadInfo) {}
 
@@ -353,6 +377,7 @@ export class Projector {
     this.failure = null;
     this.suspended = null;
     this.surfaces.clear();
+    this.steps.clear();
   }
 
   private snapshot(): Ev {
@@ -388,8 +413,188 @@ export class Projector {
     ];
     if (this.invocation) out.push(this.startedEvent(this.invocation));
     if (this.verifier) out.push(this.startedEvent(this.verifier));
+    // the step subagents that are open, parents first: what a step says next is attributed to one
+    for (const id of this.openStepSubagents(true)) {
+      const step = this.steps.get(id);
+      if (step) out.push(this.stepStarted(step));
+    }
     out.push(this.snapshot());
     return out.map((event) => ({ event }));
+  }
+
+  // ---- steps (ADR 0025, the real projection's `on_agent_step`) -------------------------------
+
+  /** The subagent a step with `path` is attributed to: the nearest ancestor whose subagent is open, else the invocation. */
+  private enclosingRun(path: readonly string[]): string | undefined {
+    for (const id of [...path].reverse()) {
+      const step = this.steps.get(id);
+      if (step?.subOpen && step.sub) return step.sub;
+    }
+    return this.invocation?.id;
+  }
+
+  /** The `vymalo.step` snapshot of the step `id` as it stands, at the time of the event being applied. */
+  private stepActivity(id: string): Ev | undefined {
+    const step = this.steps.get(id);
+    if (!step) return undefined;
+    const subagentRunId = this.enclosingRun(step.path);
+    return {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: `step-${step.seq}`,
+      activityType: "vymalo.step",
+      content: { ...step.data, startedAt: step.startedAt, at: this.now },
+      replace: true,
+      ...(subagentRunId ? { subagentRunId } : {}),
+      metadata: actorMetaOf(step.actor),
+    };
+  }
+
+  /** `SUBAGENT_STARTED` of a step's subagent, in the subagent it was started in. */
+  private stepStarted(step: StepView): Ev {
+    return {
+      type: "SUBAGENT_STARTED",
+      subagentRunId: step.sub,
+      name: step.data.label,
+      ...(step.parent ? { parentSubagentRunId: step.parent } : {}),
+      metadata: actorMetaOf(step.actor),
+    };
+  }
+
+  /** The ids of the steps whose subagent is open: outermost first, or deepest first. */
+  private openStepSubagents(parentsFirst: boolean): string[] {
+    const open = [...this.steps.values()]
+      .filter((s) => s.subOpen)
+      .sort((a, b) => a.path.length - b.path.length || a.seq - b.seq);
+    if (!parentsFirst) open.reverse();
+    return open.map((s) => String(s.data.id));
+  }
+
+  /** A subagent that was cut short (the 1.0 outcome union has no cancelled member). */
+  private static canceledSubagent(id: string | undefined): Ev {
+    return { type: "SUBAGENT_FINISHED", subagentRunId: id, result: { status: "canceled" } };
+  }
+
+  /**
+   * The invocation is closing: what it still has open ends first, deepest first. When it suspends,
+   * the step subagents suspend with it (and are not started again); otherwise every step that has
+   * not ended is canceled, as a snapshot (no spinner stays) and, for a sub-agent step, as the end
+   * of its subagent.
+   */
+  private closeSteps(how: "suspended" | "canceled", out: Ev[]) {
+    if (how === "suspended") {
+      for (const id of this.openStepSubagents(false)) {
+        const step = this.steps.get(id);
+        if (!step) continue;
+        step.subOpen = false;
+        out.push({
+          type: "SUBAGENT_FINISHED",
+          subagentRunId: step.sub,
+          outcome: { type: "suspended" },
+        });
+      }
+      return;
+    }
+    const deepestFirst = [...this.steps.values()]
+      .sort((a, b) => a.path.length - b.path.length || a.seq - b.seq)
+      .reverse()
+      .map((s) => String(s.data.id));
+    for (const id of deepestFirst) {
+      const step = this.steps.get(id);
+      if (!step) continue;
+      step.data = { ...step.data, state: "canceled" };
+      const snap = this.stepActivity(id);
+      if (snap) out.push(snap);
+      if (step.subOpen) out.push(Projector.canceledSubagent(step.sub));
+      step.subOpen = false;
+    }
+    this.steps.clear();
+  }
+
+  /** A step of the agent's work: its `vymalo.step` activity and, for a sub-agent step, a subagent of its own. */
+  private onAgentStep(e: Event, wasOpen: boolean, out: Ev[]) {
+    const d = e.data;
+    const id = str(d.id) ?? "";
+    const phase = str(d.phase);
+    const state = str(d.state) ?? "running";
+    const ended = state === "completed" || state === "failed" || state === "canceled";
+    const path = Array.isArray(d.path) ? d.path.map(String) : [];
+    // a step is the sign that the agent works
+    const movedToWorking = this.state !== "working";
+    this.state = "working";
+    this.ensureInvocation(e, out);
+    const known = this.steps.get(id);
+    if (known && phase !== "start") {
+      // the icon is what the step first said when a later report leaves it out
+      known.data = {
+        id,
+        path,
+        kind: d.kind,
+        label: d.label,
+        state,
+        ...(d.icon !== undefined
+          ? { icon: d.icon }
+          : known.data.icon
+            ? { icon: known.data.icon }
+            : {}),
+        ...(d.detail !== undefined ? { detail: d.detail } : {}),
+      };
+      known.actor = e.actor;
+    } else {
+      // a step that starts again, or one the projection never saw start: a new run of it
+      if (known?.subOpen) out.push(Projector.canceledSubagent(known.sub));
+      this.steps.delete(id);
+      const step: StepView = {
+        seq: e.seq,
+        data: {
+          id,
+          path,
+          kind: d.kind,
+          label: d.label,
+          state,
+          ...(d.icon !== undefined ? { icon: d.icon } : {}),
+          ...(d.detail !== undefined ? { detail: d.detail } : {}),
+        },
+        startedAt: e.at,
+        actor: e.actor,
+        path,
+        subOpen: false,
+      };
+      if (d.kind === "subagent" && !ended) {
+        step.sub = `sub-step-${e.seq}`;
+        step.parent = this.enclosingRun(path);
+        out.push(this.stepStarted(step));
+        step.subOpen = true;
+      }
+      this.steps.set(id, step);
+    }
+    const snap = this.stepActivity(id);
+    if (snap) out.push(snap);
+    const step = this.steps.get(id);
+    if (ended && step) {
+      if (step.subOpen) {
+        // whatever still runs under it ends first, deepest first: nesting stays whole
+        for (const other of this.openStepSubagents(false)) {
+          const child = this.steps.get(other);
+          if (!child || other === id || !child.path.includes(id)) continue;
+          child.subOpen = false;
+          out.push(Projector.canceledSubagent(child.sub));
+        }
+        if (state === "failed") {
+          out.push({
+            type: "SUBAGENT_ERROR",
+            subagentRunId: step.sub,
+            message: str(d.detail) ?? `${String(d.label)} failed`,
+            code: "step_failed",
+          });
+        } else if (state === "canceled") {
+          out.push(Projector.canceledSubagent(step.sub));
+        } else {
+          out.push({ type: "SUBAGENT_FINISHED", subagentRunId: step.sub });
+        }
+      }
+      this.steps.delete(id);
+    }
+    if (movedToWorking && wasOpen) out.push(this.snapshot());
   }
 
   /**
@@ -433,7 +638,10 @@ export class Projector {
     this.run = { runId };
     this.interrupt = null;
     this.failure = null;
-    this.state = e.kind === "agent_status" && e.data.status === "working" ? "working" : "queued";
+    this.state =
+      e.kind === "agent_step" || (e.kind === "agent_status" && e.data.status === "working")
+        ? "working"
+        : "queued";
     out.push({
       type: "RUN_STARTED",
       threadId: this.info.threadId,
@@ -506,6 +714,7 @@ export class Projector {
       return [];
     }
     const out: Ev[] = [];
+    this.now = e.at;
     // a message on a finished thread starts the next job; so does a bare `job_started` (a
     // message redelivered to the agent), whose run it opens
     const finished = this.state === "done" || this.state === "failed" || this.state === "cancelled";
@@ -572,6 +781,10 @@ export class Projector {
         }
         break;
       }
+      case "agent_step": {
+        this.onAgentStep(e, wasOpen, out);
+        break;
+      }
       case "agent_status": {
         const inv = this.ensureInvocation(e, out);
         const status = str(e.data.status) ?? "working";
@@ -615,6 +828,7 @@ export class Projector {
             ...(detail !== undefined ? { message: detail } : {}),
             sub: inv.id,
           };
+          this.closeSteps("suspended", out);
           out.push({
             type: "SUBAGENT_FINISHED",
             subagentRunId: inv.id,
@@ -623,6 +837,7 @@ export class Projector {
           this.suspended = inv;
           this.invocation = null;
         } else if (status === "completed") {
+          this.closeSteps("canceled", out);
           out.push({ type: "SUBAGENT_FINISHED", subagentRunId: inv.id });
           this.invocation = null;
           // under a gate the agent finishing is not the end: the work is verified, the run stays open
@@ -633,6 +848,7 @@ export class Projector {
           }
         } else if (status === "failed") {
           const message = detail ?? "the agent failed";
+          this.closeSteps("canceled", out);
           out.push({
             type: "SUBAGENT_ERROR",
             subagentRunId: inv.id,
@@ -642,6 +858,7 @@ export class Projector {
           this.failure = { message, code: "agent_failed" };
           this.invocation = null;
         } else if (status === "canceled") {
+          this.closeSteps("canceled", out);
           out.push({
             type: "SUBAGENT_FINISHED",
             subagentRunId: inv.id,
@@ -824,6 +1041,7 @@ export class Projector {
           ),
         );
         if (this.invocation) {
+          this.closeSteps("canceled", out);
           out.push({
             type: "SUBAGENT_ERROR",
             subagentRunId: this.invocation.id,

@@ -84,3 +84,9 @@ The orchestrator's side is built; the contract an agent reports under is
 - **One path for every producer.** `record_step` serves the agent's own reports (`AgentUpdate::Step`) and the steps
   the orchestrator reports itself (`Input::Step`, `App::record_step`), which later slices use for a relayed tool call
   (with an `mcp-server:<id>` icon, which an agent may not claim) and an asked agent (a `subagent` step).
+- **In AG-UI** (`docs/api/agui.md`, "Nested steps"): a sub-agent step is a subagent (`sub-step-<seq>`) started in the
+  subagent that encloses it (`parentSubagentRunId`), every step is a `vymalo.step` activity (`step-<seq>`, said again at
+  each event of the step) attributed to its enclosing subagent, a failed command is an activity and nothing more, and what
+  is open when the agent's invocation closes is closed with it, deepest first: canceled when the task ended, suspended when
+  the agent asked (a suspended step subagent is not started again in the run that resumes; the step's later events only say
+  its activity again). The reference client reads the goldens `steps` and `steps-ask` in CI.

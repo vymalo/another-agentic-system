@@ -23,9 +23,11 @@ the log itself, which the AG-UI streams below project.)
 | `followup.events.json` | `echo hi`, then the follow-up `echo now add tests` on the finished thread: a message on a `done` thread starts job 2 (`user_message`, `job_started`), a new task on the same context (ADR 0020) | `done`, job 2 |
 | `followup-after-cancel.events.json` | `slow work`, Cancel, then the follow-up `echo never mind, do this`: a stopped thread is not closed either | `done`, job 2 |
 | `catalog.events.json` | `echo hi` through the AG-UI run route with the screen's UI catalog, version 1, then `echo again` with version 2 and `echo once more` with version 1 again, each a job of the thread (ADR 0023, MVP slice 3): `ui_catalog` is the first event of the first two jobs (version 1, then 2) and the third writes none, because its digest is known; the log holds the consumer's message and run ids, which a route that carries a catalog has | `done`, job 3 |
+| `steps.events.json` | `steps run the tests` on the fake agent with `steps/v1` in its card (ADR 0025, MVP slice 5): a sub-agent step `OpenCode`, a command `npm test` under it that fails with the detail `1 failed`, the sub-agent's end, then the agent's words and `completed`. Step ids are `<task>/<agent's id>`; the task id is normalised to `T` | `done` |
+| `steps-ask.events.json` | `steps-ask clean the build`: the same sub-agent with a command that is `waiting` when the agent asks (`input_required`); after the answer (`yes`) the command and the sub-agent end in the next run | `done` |
 
-Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>` and an agent
-message's `messageId` is `<message-id>`.
+Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>`, an agent
+message's `messageId` is `<message-id>` and the task id in front of a step's id and path is `T`.
 
 - **Producer:** `orchestrator/crates/e2e/tests/golden.rs` (`transcripts_match_docs_api_examples`)
   runs each script through the real application (the first message enters through `App`, so the log holds no
@@ -78,6 +80,15 @@ The `catalog.agui.json`, `run-catalog.agui.json` and `connect-catalog.agui.json`
 ([`../agui.md`](../agui.md#the-ui-catalog), ADR 0023): the `ui_catalog` event has **no frame**, so each run is an ordinary run, and the only trace
 is `thread.uiCatalog` (`{catalogId, version, digest}`) in every `STATE_SNAPSHOT`: version 1 in the first job, version 2 from the second job on, and
 still version 2 in the third, whose version-1 catalog was known already. The reference client's `expected/catalog.json` shows the last state it holds.
+
+The `steps.agui.json` and `steps-ask.agui.json` goldens are the nested steps a viewer reads
+([`../agui.md`](../agui.md#nested-steps), ADR 0025): a sub-agent step is a **subagent** of the run
+(`sub-step-<seq>`, started in the agent's invocation) and every step is a `vymalo.step` activity
+(`step-<seq>`, said again with `replace: true` at each event of the step), a command is attributed to the sub-agent that
+runs it, and a failed command is an activity and no more (the run goes on). In `steps-ask` the step is open when the agent asks:
+its subagent suspends with the invocation (`suspended`, no interrupt ids of its own), and in the run that resumes the end of
+the command and of the sub-agent only say their activities again, attributed to the invocation. The reference client's
+`expected/steps.json` shows the tree it holds: both steps `completed` (or `failed`), with their paths and their `startedAt`.
 
 The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymalo-ci)): **one
 run** across two attempts, the `vymalo.check` card of the source `ci` (`check-1-1-ci`, pending, then failed), between them

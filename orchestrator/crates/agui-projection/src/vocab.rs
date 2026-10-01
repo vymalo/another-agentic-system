@@ -41,10 +41,19 @@ pub const ACTIVITY_JOB: &str = "vymalo.job";
 /// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context, at}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 
+/// Activity type of a step of the agent's work (`vymalo.step`, ADR 0025): the content is `{id,
+/// path, kind, label, state, icon?, detail?, startedAt, at}`; its id is `step-<seq of the step's
+/// first event>`, and every event of the step says it again with `replace`. `label` and `detail`
+/// come from an agent and are untrusted text.
+pub const ACTIVITY_STEP: &str = "vymalo.step";
+
 /// Metadata key naming who produced an event (`{type, name, revision?}`).
 pub const ACTOR_KEY: &str = "vymalo.actor";
 /// Metadata key of a `RUN_ERROR` carrying the problem (`{type, title, detail?}`).
 pub const PROBLEM_KEY: &str = "vymalo.problem";
+
+/// `SUBAGENT_ERROR.code` of a sub-agent step that ended `failed`.
+pub const CODE_STEP_FAILED: &str = "step_failed";
 
 /// `RUN_ERROR.code` for an agent that reported `failed` (or `rejected`).
 pub const CODE_AGENT_FAILED: &str = "agent_failed";

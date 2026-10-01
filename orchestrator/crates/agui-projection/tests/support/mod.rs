@@ -92,7 +92,15 @@ pub fn line(frame: &Frame) -> String {
             .unwrap(),
             subagent(e.subagent_run_id.as_ref())
         ),
-        E::SubagentStarted(e) => format!("SUBAGENT_STARTED {} {}", e.subagent_run_id, e.name),
+        E::SubagentStarted(e) => format!(
+            "SUBAGENT_STARTED {} {}{}",
+            e.subagent_run_id,
+            e.name,
+            e.parent_subagent_run_id
+                .as_ref()
+                .map(|p| format!(" in {p}"))
+                .unwrap_or_default()
+        ),
         E::SubagentFinished(e) => {
             use orch_agui_proto::SubagentFinishedOutcome as O;
             let outcome = match &e.outcome {
