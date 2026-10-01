@@ -207,3 +207,22 @@ export function reworkLabel(
         : "Checks failed";
   return `${what} — trying again (${rework.attempt}/${rework.maxAttempts})`;
 }
+
+/** A card after the agent's words: a pull request, or a file that is not one. */
+export type TurnCard = { pr: PullRequestView } | { file: ArtifactContent };
+
+/**
+ * The cards of a turn from its artifacts, in order. A pull request (or a linked file) reported
+ * again, as a rework attempt does, is one card: the last report of its link stands, where it
+ * came. Files without a link are all kept.
+ */
+export function turnCards(artifacts: readonly ArtifactContent[]): TurnCard[] {
+  const cards = artifacts.filter(isCardArtifact).map((a): { card: TurnCard; href?: string } => {
+    const pr = pullRequestOf(a);
+    if (pr) return { card: { pr }, href: pr.href };
+    return { card: { file: a }, ...(a.uri ? { href: a.uri } : {}) };
+  });
+  return cards
+    .filter((c, i) => c.href === undefined || !cards.slice(i + 1).some((d) => d.href === c.href))
+    .map((c) => c.card);
+}

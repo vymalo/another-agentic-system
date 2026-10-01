@@ -9,6 +9,7 @@ import {
   pullRequestOf,
   reworkLabel,
   shortRepository,
+  turnCards,
 } from "./steps";
 
 const data = (activity: string, payload: unknown) => ({
@@ -185,6 +186,39 @@ describe("a pull request", () => {
     });
     expect(pullRequestOf({ kind: "file", name: "notes", uri: "https://example.com/a" })).toBe(
       undefined,
+    );
+  });
+});
+
+describe("the cards of a turn", () => {
+  const pr = (number: number, title: string) => ({
+    kind: "pull_request" as const,
+    name: "pull_request",
+    url: `https://github.com/acme/demo/pull/${number}`,
+    text: JSON.stringify({ title }),
+  });
+
+  it("a pull request reported again by a later attempt is one card, the last report", () => {
+    const cards = turnCards([
+      pr(12, "first try"),
+      { kind: "branch", name: "branch" },
+      { kind: "file", name: "notes", text: "a" },
+      pr(12, "second try"),
+      pr(13, "another"),
+      { kind: "file", name: "notes", text: "b" },
+    ]);
+    expect(
+      cards.map((c) => ("pr" in c ? `pr:${c.pr.label}:${c.pr.title}` : `file:${c.file.text}`)),
+    ).toEqual(["file:a", "pr:acme/demo#12:second try", "pr:acme/demo#13:another", "file:b"]);
+  });
+
+  it("a file is the same card again only when it links to the same place", () => {
+    const file = (uri: string) => ({ kind: "file" as const, name: "report", uri });
+    expect(turnCards([file("https://example.com/a"), file("https://example.com/a")])).toHaveLength(
+      1,
+    );
+    expect(turnCards([file("https://example.com/a"), file("https://example.com/b")])).toHaveLength(
+      2,
     );
   });
 });

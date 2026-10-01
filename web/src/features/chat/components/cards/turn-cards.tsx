@@ -11,7 +11,7 @@ import {
 } from "@/features/chat/lib/agui/vymalo";
 import { safeLinkHref } from "@/features/chat/lib/artifact";
 import { truncate } from "@/features/chat/lib/findings";
-import { isCardArtifact, type PullRequestView, pullRequestOf } from "@/features/chat/lib/steps";
+import { type PullRequestView, turnCards } from "@/features/chat/lib/steps";
 import { BranchChip } from "../steps/step-items";
 
 /** Lines of a file's text shown before "Show all". */
@@ -134,19 +134,25 @@ export function TurnCards() {
     name?: string;
     data?: unknown;
   }[];
-  const artifacts = parts.flatMap((p) => {
-    if (p.type !== "data" || p.name !== activityPartName(ACTIVITY.artifact)) return [];
-    const a = parseArtifact(p.data);
-    return a && isCardArtifact(a) ? [a] : [];
-  });
-  if (artifacts.length === 0) return null;
+  const cards = turnCards(
+    parts.flatMap((p) => {
+      if (p.type !== "data" || p.name !== activityPartName(ACTIVITY.artifact)) return [];
+      const a = parseArtifact(p.data);
+      return a ? [a] : [];
+    }),
+  );
+  if (cards.length === 0) return null;
   return (
     <div data-slot="turn-cards" className="flex flex-col gap-2">
-      {artifacts.map((a, n) => {
-        const pr = pullRequestOf(a);
-        // biome-ignore lint/suspicious/noArrayIndexKey: artifacts only append; the order is the key
-        return pr ? <PullRequestCard key={n} pr={pr} /> : <FileCard key={n} data={a} />;
-      })}
+      {cards.map((card, n) =>
+        "pr" in card ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the cards only grow; the order is the key
+          <PullRequestCard key={n} pr={card.pr} />
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the cards only grow; the order is the key
+          <FileCard key={n} data={card.file} />
+        ),
+      )}
     </div>
   );
 }
