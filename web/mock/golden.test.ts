@@ -11,6 +11,7 @@ import {
   postRun,
   RELEASE_CHANNELS_URI,
 } from "./agui-client";
+import { type Frame as ProjectedFrame, Projector } from "./projection";
 import { createMockServer } from "./server";
 
 /**
@@ -401,11 +402,54 @@ function normalise(list: Frame[], threadId: string): Frame[] {
   ) as Frame[];
 }
 
+/**
+ * The scenarios that fork a thread (ADR 0029). The mock has no route to fork one yet, so these are
+ * not driven through its server: its projection reads the golden event log, which holds the copy
+ * of the parent's events, the `thread_forked` event and the fork's own life, and must produce
+ * the golden stream.
+ */
+const FORKS = ["fork", "fork-blocked"];
+
+/** The events golden with its placeholders made real, as the Rust golden test makes them. */
+function forkLog(name: string): Event[] {
+  const raw = JSON.parse(
+    readFileSync(path.join(DIR, "..", `${name}.events.json`), "utf8"),
+  ) as Event[];
+  return raw.map((e) => ({
+    ...e,
+    at: new Date((1_800_000_000 + e.seq) * 1000).toISOString(),
+    data: e.kind === "agent_message" ? { ...e.data, messageId: `msg-${e.seq}` } : e.data,
+  }));
+}
+
+describe("the mock's projection against the AG-UI goldens of a fork", () => {
+  for (const name of FORKS) {
+    it(`reads the golden log and tells the golden stream: ${name}`, () => {
+      const log = forkLog(name);
+      // the thread's title is the first message's first line, as the golden test of the real
+      // projection takes it (the fork's own `thread_forked` then says the parent's)
+      const first = log.find((e) => e.kind === "user_message");
+      const projector = new Projector({
+        threadId: "<thread-id>",
+        title: String(first?.data.text).split("\n")[0] ?? "",
+        target: { agentId: "plain" },
+      });
+      const told: ProjectedFrame[] = log.flatMap((e) => projector.apply(e));
+      const golden = JSON.parse(
+        readFileSync(path.join(DIR, `${name}.agui.json`), "utf8"),
+      ) as Frame[];
+      expect(untimed(told as Frame[])).toEqual(untimed(golden));
+      expect(projector.runOpen).toBe(false);
+    });
+  }
+});
+
 describe("the mock server against the AG-UI goldens", () => {
   it("has a scenario for every golden event log", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
-      .map((f) => f.replace(/\.events\.json$/, ""));
+      .map((f) => f.replace(/\.events\.json$/, ""))
+      .filter((f) => !FORKS.includes(f));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

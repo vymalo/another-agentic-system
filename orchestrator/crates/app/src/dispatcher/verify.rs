@@ -264,6 +264,8 @@ impl<P: Ports> Dispatcher<P> {
             // author's thread
             ui_catalog: None,
             thread_tools: None,
+            // nor of the conversation a fork of the author's thread continues (ADR 0002)
+            history: None,
         };
         match self.app.ports().agents().send_stream(request).await {
             Ok(stream) => match self.verifier_stream(v, stream, true, &mut answer).await? {

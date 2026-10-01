@@ -14,8 +14,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, Classify, Input, ThreadId, ThreadState, ToolsGrant,
-    TransitionError, report,
+    AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, ThreadId,
+    ThreadState, ToolsGrant, TransitionError, fork_history, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
@@ -31,6 +31,9 @@ use crate::{App, AppError, ApplyOutcome};
 mod live;
 mod title;
 mod verify;
+
+/// Events read at a time when a fork's history is built.
+const FORK_PAGE: u32 = 500;
 
 use live::{LiveRelay, LiveTiming};
 
@@ -131,6 +134,9 @@ struct Loaded {
     /// The number of the thread's current job (ADR 0020).
     job: u32,
     binding: orch_ports::AgentBinding,
+    /// The last event the thread copied from its parent, when it is a fork (ADR 0029): the
+    /// events `1..=cut` are the conversation its first task is told.
+    forked_at: Option<i64>,
 }
 
 /// Everything the workers need to know about the delegation they serve.
@@ -411,7 +417,22 @@ impl<P: Ports> Dispatcher<P> {
             state: thread.state,
             job: thread.job.number,
             binding,
+            forked_at: thread.forked_from.map(|origin| origin.seq),
         }))
+    }
+
+    /// The conversation a fork continues, as its first task is told it: the fork's own events
+    /// `1..=cut` (the copy of its parent's), read in pages, through [`fork_history`] (ADR 0029).
+    async fn fork_history(&self, thread: ThreadId, cut: i64) -> Result<ForkHistory, DispatchError> {
+        let mut events: Vec<Event> = Vec::new();
+        let mut after = 0;
+        while after < cut {
+            let page = self.store().list_events(thread, after, FORK_PAGE).await?;
+            let Some(last) = page.last() else { break };
+            after = last.seq;
+            events.extend(page.into_iter().filter(|e| e.seq <= cut));
+        }
+        Ok(fork_history(&events))
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
@@ -451,6 +472,7 @@ impl<P: Ports> Dispatcher<P> {
             state,
             job,
             binding,
+            forked_at,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -548,6 +570,16 @@ impl<P: Ports> Dispatcher<P> {
             (None, Some(previous)) => vec![previous.clone()],
             (Some(_) | None, _) => Vec::new(),
         };
+        // The first task of a fork has no task to continue (a fork is a context of its own), so
+        // it is told the conversation it continues, which is derived from the thread's own log
+        // each time the message is sent: a retry sends the same words, and nothing of it is
+        // stored. A task that follows another, and an action, are told nothing of it.
+        let history = match (forked_at, &binding.task_id, &content) {
+            (Some(cut), None, SendContent::Text(_)) => {
+                Some(self.fork_history(row.thread_id, cut).await?)
+            }
+            _ => None,
+        };
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             message_id: row.id.to_string(),
@@ -560,6 +592,7 @@ impl<P: Ports> Dispatcher<P> {
             // Who the agent is to be given the thread's tools as. The adapter turns it into a
             // token when it sends, if the card lists the extension; nothing of it is stored.
             thread_tools: Some(ToolsGrant::main(row.thread_id, job, ctx.agent.clone())),
+            history,
         };
         match self.app.ports().agents().send_stream(req).await {
             Ok(stream) => {
@@ -868,6 +901,7 @@ impl<P: Ports> Dispatcher<P> {
             state,
             job,
             binding,
+            forked_at: _,
         }) = self.load(&row).await?
         else {
             return Ok(());

@@ -354,6 +354,93 @@ async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread()
 }
 
 #[tokio::test]
+async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_continues() {
+    // ADR 0002, ADR 0029: the verifier works in a context of its own and is told nothing of the
+    // author's conversation, however the author's thread began.
+    let w = World::new();
+    w.agent.set_verifier("reviewer", VerdictScript::Pass);
+    let app = app_with(&w, 3);
+    // a thread of two messages, the first of which the worker answered; the second is edited into
+    // a fork, whose worker (played by the test) pushes and finishes
+    let parent = verifying(&w, &app).await;
+    app.post_message(&alice(), parent.id, "and mind the style".into())
+        .await
+        .unwrap();
+    let second = events(&app, &alice(), parent.id)
+        .await
+        .iter()
+        .rev()
+        .find(|e| e.kind() == EventKind::UserMessage)
+        .unwrap()
+        .seq;
+    let fork = app
+        .fork_thread(
+            &alice(),
+            parent.id,
+            orch_app::ForkRequest {
+                at: orch_app::ForkAt::Replace {
+                    seq: second,
+                    text: "mind the style, please".into(),
+                    message_id: None,
+                },
+                target: None,
+                id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .thread;
+    for thread in [parent.id, fork.id] {
+        w.store
+            .skip_unsent_delegates(thread, SystemClock.now())
+            .await
+            .unwrap();
+    }
+    for update in [
+        AgentUpdate::Artifact {
+            name: "branch".into(),
+            mime_type: None,
+            uri: None,
+            text: Some(
+                json!({"repository": "https://github.com/acme/demo.git", "branch": "agent/fix",
+                       "commit": SHA})
+                .to_string(),
+            ),
+        },
+        AgentUpdate::Status {
+            state: AgentTaskState::Completed,
+            detail: None,
+        },
+    ] {
+        app.apply(fork.id, from_worker(update), None, None, None)
+            .await
+            .unwrap();
+    }
+    let fork = app.get_thread(&alice(), fork.id).await.unwrap();
+    assert_eq!(fork.state, ThreadState::Verifying);
+    assert!(fork.forked_from.is_some());
+    verify_row(&w, &fork).await;
+
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    wait_state(&app, &alice(), fork.id, ThreadState::Done).await;
+    let sends = sends_to(&w, "reviewer");
+    assert_eq!(sends.len(), 1, "one verification, of the fork's commit");
+    let Call::Send {
+        history,
+        text,
+        context_id,
+        ..
+    } = &sends[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(history, &None);
+    assert!(!text.contains("<<<conversation"), "{text}");
+    assert_ne!(context_id, &fork.id.to_string(), "a context of its own");
+    run.shutdown().await;
+}
+
+#[tokio::test]
 async fn findings_fail_the_job_on_the_last_attempt_and_go_to_the_log() {
     let w = World::new();
     w.agent.set_verifier(
@@ -776,6 +863,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             release: None,
             ui_catalog: None,
             thread_tools: None,
+            history: None,
         },
     )
     .await
@@ -875,6 +963,7 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
             release: None,
             ui_catalog: None,
             thread_tools: None,
+            history: None,
         },
     )
     .await

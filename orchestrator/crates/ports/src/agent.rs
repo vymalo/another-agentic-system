@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, KnownExtension,
-    LiveChunk, Releases, Timestamp, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, ForkHistory,
+    KnownExtension, LiveChunk, Releases, Timestamp, ToolsGrant, UiActionData, UiDelivery,
+    UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -184,6 +185,14 @@ pub struct SendRequest {
     /// live card lists the extension and the adapter has keys, and it never enters the request,
     /// the outbox or the log.
     pub thread_tools: Option<ToolsGrant>,
+    /// The conversation this thread continues, told with its **first task** when the thread is a
+    /// fork (ADR 0029): the adapter puts [`history_preamble`](orch_core::history_preamble) in front
+    /// of the message's text, in the same text part. A fork is a new A2A context, so its agent has
+    /// no task to continue and is told the earlier conversation instead. `None` for every other
+    /// message (a thread that is not a fork, a task after the first, a UI action) and for the
+    /// verifier, which is told nothing of the author's conversation (ADR 0002). Derived from the
+    /// log when the task is sent, so a retry sends the same text; never stored in the outbox.
+    pub history: Option<ForkHistory>,
 }
 
 /// A task on an agent.

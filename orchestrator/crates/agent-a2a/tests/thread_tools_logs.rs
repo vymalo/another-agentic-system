@@ -98,6 +98,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         release: None,
         ui_catalog: None,
         thread_tools: Some(grant()),
+        history: None,
     };
     let shown_request = format!("{req:?}");
     let mut stream = client.send_stream(req).await.unwrap();

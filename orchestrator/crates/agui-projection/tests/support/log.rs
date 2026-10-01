@@ -4,8 +4,9 @@
 
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion,
-    CiProvider, CiReport, Command, Event, GatePolicy, Input, StepKind, StepReport, StepState,
-    ThreadId, ThreadState, Timestamp, UiActionData, UiCatalogData, UiVersion, UserId,
+    CiProvider, CiReport, Command, Event, EventBody, ForkKind, ForkPoint, ForkSource, GatePolicy,
+    Input, StepKind, StepReport, StepState, ThreadForkedData, ThreadId, ThreadState, Timestamp,
+    TitleLedger, UiActionData, UiCatalogData, UiVersion, UserId, fork_cut, forked_snapshot,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -159,6 +160,14 @@ pub enum Action {
     Rename {
         n: u8,
     },
+    /// The log so far is a **parent**: what follows is a fork of it, cut after the turn that holds
+    /// event number `at` (modulo the log's length) as `fork_cut` allows, so the log becomes the
+    /// copy up to the cut, a `thread_forked` and the fork's own life (ADR 0029). A cut that is
+    /// not allowed (the turn is still open) does nothing.
+    Fork {
+        at: u8,
+        edit: bool,
+    },
 }
 
 /// Step kind `n % 4`; sub-agent steps are the interesting ones.
@@ -266,6 +275,7 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
             }
         ),
         2 => (0u8..4).prop_map(|n| Action::Rename { n }),
+        2 => (any::<u8>(), any::<bool>()).prop_map(|(at, edit)| Action::Fork { at, edit }),
         10 => (0u8..5, proptest::option::of(0u8..5), 0u8..4, 0u8..5, any::<bool>()).prop_map(
             |(id, parent, kind, state, by_orchestrator)| Action::Step {
                 id,
@@ -329,6 +339,44 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             update,
         };
         let mut next_slots = slots.clone();
+        if let Action::Fork { at, edit } = action {
+            // The log becomes a fork of itself: the copy, the event that ends it, and the
+            // snapshot a fork starts as (the parent's gate, no title ledger to speak of).
+            let Some(seq) =
+                (!events.is_empty()).then(|| events[usize::from(*at) % events.len()].seq)
+            else {
+                continue;
+            };
+            let Ok(cut) = fork_cut(&events, state.state, ForkPoint::AfterTurn(seq)) else {
+                continue;
+            };
+            events.truncate(usize::try_from(cut).unwrap());
+            state = forked_snapshot(&events, gate.clone(), TitleLedger::default());
+            slots = [Slot::default(), Slot::default()];
+            events.push(Event {
+                seq: cut + 1,
+                thread_id: thread_id(),
+                at: Timestamp::from_second(1_800_000_000 + cut + 1).unwrap(),
+                actor: Actor::user(&user),
+                body: EventBody::ThreadForked(ThreadForkedData {
+                    from: ForkSource {
+                        thread_id: thread_id(),
+                        seq: cut,
+                    },
+                    kind: if *edit {
+                        ForkKind::Edit
+                    } else {
+                        ForkKind::Fork
+                    },
+                    title: "a parent".to_owned(),
+                    target: AgentTarget {
+                        agent_id: agent.clone(),
+                        release: None,
+                    },
+                }),
+            });
+            continue;
+        }
         let input = match action {
             Action::User { text, ids } => {
                 users += 1;
@@ -480,6 +528,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     agent_input(AgentUpdate::Step(report))
                 }
             }
+            Action::Fork { .. } => unreachable!("handled above"),
             Action::Rename { n } => Input::Rename {
                 user: user.clone(),
                 title: format!("title {n}"),

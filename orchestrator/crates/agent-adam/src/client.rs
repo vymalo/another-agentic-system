@@ -14,6 +14,7 @@ use adam_a2a_runtime::{RuntimeTaskBackend, task_id_for};
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
+use orch_core::history_preamble;
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
     SendContent, SendRequest, TaskHandle, TaskSnapshot,
@@ -186,7 +187,11 @@ impl AgentClient for LocalAgentClient {
             ));
         }
         let text = match &req.content {
-            SendContent::Text(text) => text.clone(),
+            // The first task of a fork is told the conversation it continues (ADR 0029).
+            SendContent::Text(text) => match &req.history {
+                Some(history) => format!("{}{text}", history_preamble(history)),
+                None => text.clone(),
+            },
             SendContent::UiAction { .. } => {
                 return Err(AgentError::Rejected(
                     "a local agent does not offer A2UI surfaces, so it takes no UI action"

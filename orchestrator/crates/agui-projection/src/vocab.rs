@@ -38,6 +38,11 @@ pub const ACTIVITY_REWORK: &str = "vymalo.rework";
 /// Activity type of the start of a thread's next job (`vymalo.job`, ADR 0020): the content is
 /// `{job, at}`, the number of the job that started (from 2), and its id is `job-<job>`.
 pub const ACTIVITY_JOB: &str = "vymalo.job";
+/// Activity type of the start of a fork (`vymalo.fork`, ADR 0029): the content is `{from: {threadId,
+/// seq}, kind, title, target: {agentId, release?}, at}`, and its id is `fork-<seq>` of the
+/// `thread_forked` event. A thread that began as a copy of another says so once, where the copy
+/// ends. `title` is the parent's, as it was when the fork was made.
+pub const ACTIVITY_FORK: &str = "vymalo.fork";
 /// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context, at}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 

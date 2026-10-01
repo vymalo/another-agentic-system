@@ -100,6 +100,7 @@ fn request(
         release: None,
         ui_catalog: None,
         thread_tools: None,
+        history: None,
     }
 }
 

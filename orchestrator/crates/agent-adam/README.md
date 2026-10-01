@@ -79,6 +79,7 @@ The crate reads no environment variable; the binary maps `AGENT_LOCAL_CONCURRENC
 
 * `tests/conformance.rs`: the `AgentClient` conformance suite (`agent_client_conformance!`) against the client,
   over the in-memory journal and over Postgres.
+* `tests/history.rs`: a fork's first task (`SendRequest.history`, [ADR 0029](../../../docs/decisions/0029-forking-a-thread-copies-its-log.md)) is told the conversation in front of the message, in the same text, as the A2A client does; a message with none is sent as it is.
 * `tests/durability.rs`: a task survives its worker dying mid-step (two processes on one schema, a 1 s lease: the
   second steps the task to its end and a resubscribe shows the original keys); the tables and channels carry the
   prefix and no `adam_` table exists; the orchestrator's tables, adam's default prefix and ours coexist in one

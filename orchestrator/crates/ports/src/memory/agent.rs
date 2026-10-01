@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, KnownExtension, LiveChunk, LiveEnd, Releases, StepKind,
-    StepReport, StepState, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, ForkHistory, KnownExtension, LiveChunk, LiveEnd,
+    Releases, StepKind, StepReport, StepState, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -65,6 +65,8 @@ pub enum Call {
         /// The grant of the thread's tools the request carried (`None` for the verifier): who the
         /// agent is to be given the thread's tools as.
         thread_tools: Option<Box<ToolsGrant>>,
+        /// The conversation the request told the agent, for the first task of a fork (ADR 0029).
+        history: Option<Box<ForkHistory>>,
     },
     /// `resubscribe`.
     Resubscribe {
@@ -782,6 +784,7 @@ impl AgentClient for ScriptedAgent {
                 release: req.release.clone(),
                 ui_catalog: req.ui_catalog.clone().map(Box::new),
                 thread_tools: req.thread_tools.clone().map(Box::new),
+                history: req.history.clone().map(Box::new),
             });
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));

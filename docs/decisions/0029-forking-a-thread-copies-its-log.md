@@ -5,9 +5,11 @@
   parent's title kept) are taken on the delegation and the owner may revisit them. Built so far: the
   core (the event, the cut, the snapshot, the transcript and the edit families), the store (migration
   `0010`, `fork_thread`, `fork_family`) and the API (`POST /api/threads/{id}/fork`,
-  `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include`). Not built yet: the AG-UI
-  marker, the transcript on the wire (until then the agent of a fork is **not** told the earlier
-  conversation, so a fork should not be offered to a person before it is), the web.
+  `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include`), the AG-UI projection (the
+  marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](../api/agui.md#forks)) and the transcript
+  on the wire (`SendRequest.history`, built by the dispatcher for the first task of a fork and put in
+  front of the message by the A2A and the local-agent clients): **the agent of a fork is now told the
+  conversation it continues**. Not built yet: the web.
 
 ## Context
 
@@ -120,8 +122,11 @@ stateDiagram-v2
   the one new event kind is additive and a reader may skip it.
 - Storage is copied, not shared: one `INSERT ... SELECT` per fork of text that is small. Nothing
   reads across threads, so there is no join to keep fast and no parent to keep alive.
-- The projection, MCP and the export gain an arm for the event; the projection's frames for it (a
-  marker and a snapshot that says the fork's origin) are a step of their own.
+- The projection, MCP and the export gain an arm for the event. The projection says it as a run of
+  its own: the marker `vymalo.fork` and a snapshot that says the fork's origin (`thread.forkedFrom`),
+  after the parent's frames, which a viewer reads as they were. It forgets the finished job and the
+  UI catalog, and the ids of the copy stay known, so a screen that goes on with the messages it holds
+  is accepted ([`agui.md`](../api/agui.md#forks)).
 - A fork of a coding thread starts a coder with the conversation and not the workspace, and may push to
   a branch name the parent used ([open question 40](../open-questions.md)).
 - A fork onto another agent is the same operation with a `target`; "continue with another agent"

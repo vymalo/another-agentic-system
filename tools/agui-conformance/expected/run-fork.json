@@ -1,0 +1,75 @@
+{
+  "runs": [
+    {
+      "runId": "run-2",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-9",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "<timestamp>",
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-9",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-9",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "<timestamp>",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo two",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-9",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "forkedFrom": {
+        "kind": "fork",
+        "seq": 5,
+        "threadId": "<parent-thread-id>"
+      },
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "echo one"
+    }
+  },
+  "pendingInterrupts": []
+}

@@ -9,10 +9,11 @@ mod support;
 
 use orch_app::{AppError, ForkAt, ForkRequest};
 use orch_core::{
-    Event, EventBody, EventKind, ForkError, ForkKind, MAX_FORK_FAMILY, ThreadId, ThreadRecord,
-    ThreadState, TitleSource,
+    Event, EventBody, EventKind, ForkError, ForkHistory, ForkKind, MAX_FORK_FAMILY, ThreadId,
+    ThreadRecord, ThreadState, TitleSource, copied, fork_history, history_preamble,
 };
-use orch_ports::{OutboxKind, OutboxPayload, ThreadStore};
+use orch_ports::memory::Call;
+use orch_ports::{AgentError, OutboxKind, OutboxPayload, ThreadStore};
 use support::*;
 
 /// A thread of two finished turns: `echo one`, then `echo two`.
@@ -528,4 +529,209 @@ async fn a_fork_can_continue_with_another_agent() {
         panic!()
     };
     assert_eq!(data.target, target("coder"));
+}
+
+// ---- what the agent of a fork is told (ADR 0029) --------------------------------------------
+
+/// The messages the agent got in the A2A context of `thread`, oldest first.
+fn sends_in(w: &World, thread: ThreadId) -> Vec<Call> {
+    w.agent
+        .sends()
+        .into_iter()
+        .filter(|c| matches!(c, Call::Send { context_id, .. } if *context_id == thread.to_string()))
+        .collect()
+}
+
+/// What a send told the agent of the conversation, and the message it carried.
+fn told(call: &Call) -> (Option<ForkHistory>, &str) {
+    match call {
+        Call::Send { history, text, .. } => (history.as_deref().cloned(), text),
+        other => panic!("not a send: {other:?}"),
+    }
+}
+
+/// `name: text` of every entry of a history.
+fn lines(history: &ForkHistory) -> Vec<String> {
+    history
+        .entries
+        .iter()
+        .map(|e| format!("{}: {}", e.name, e.text))
+        .collect()
+}
+
+async fn finished_jobs(app: &std::sync::Arc<TestApp>, thread: ThreadId, n: usize) {
+    eventually("the turns to finish", || async {
+        let ev = events(app, &alice(), thread).await;
+        (ev.iter()
+            .filter(
+                |e| matches!(&e.body, EventBody::ThreadState(s) if s.state == ThreadState::Done),
+            )
+            .count()
+            >= n)
+            .then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_first_task_of_a_fork_is_told_the_conversation_and_a_later_one_is_not() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let fork = app
+        .fork_thread(&alice(), parent.id, after(1))
+        .await
+        .unwrap()
+        .thread;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    app.post_message(&alice(), fork.id, "echo three".to_owned())
+        .await
+        .unwrap();
+    // the copy holds one finished turn; its own finish is the second `done`
+    finished_jobs(&app, fork.id, 2).await;
+    app.post_message(&alice(), fork.id, "echo four".to_owned())
+        .await
+        .unwrap();
+    finished_jobs(&app, fork.id, 3).await;
+    run.shutdown().await;
+
+    let sends = sends_in(&w, fork.id);
+    assert_eq!(sends.len(), 2);
+    let (first, text) = told(&sends[0]);
+    assert_eq!(text, "echo three", "the message itself is what it was");
+    assert_eq!(
+        lines(&first.expect("the conversation")),
+        ["person: echo one"]
+    );
+    // the second task of the fork follows the first, in its context: nothing more to tell
+    let (second, text) = told(&sends[1]);
+    assert_eq!((second, text), (None, "echo four"));
+    let Call::Send {
+        reference_task_ids, ..
+    } = &sends[1]
+    else {
+        unreachable!()
+    };
+    assert_eq!(reference_task_ids.len(), 1);
+
+    // the parent's own tasks are told nothing: it is not a fork
+    for call in sends_in(&w, parent.id) {
+        assert_eq!(told(&call).0, None);
+    }
+}
+
+#[tokio::test]
+async fn a_retry_of_the_first_task_of_a_fork_tells_the_same_words() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let fork = app
+        .fork_thread(&alice(), parent.id, after(1))
+        .await
+        .unwrap()
+        .thread;
+    // the agent cannot be reached the first time: the delegation is sent again
+    w.agent
+        .fail_next_sends(1, || AgentError::unreachable("boom"));
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    app.post_message(&alice(), fork.id, "echo three".to_owned())
+        .await
+        .unwrap();
+    finished_jobs(&app, fork.id, 2).await;
+    run.shutdown().await;
+
+    let sends = sends_in(&w, fork.id);
+    assert_eq!(sends.len(), 2, "the failed send and the one that went");
+    let (a, b) = (told(&sends[0]), told(&sends[1]));
+    assert_eq!(a, b);
+    let history = a.0.expect("the conversation");
+    assert_eq!(history_preamble(&history), history_preamble(&b.0.unwrap()));
+    assert!(
+        history_preamble(&history).contains("<<<conversation\nperson: echo one\n>>>conversation")
+    );
+}
+
+#[tokio::test]
+async fn a_fork_of_a_fork_is_told_the_copy_it_has_of_everything_before_it() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    // a fork of the first turn, which goes on with a message of its own
+    let a = app
+        .fork_thread(&alice(), parent.id, after(1))
+        .await
+        .unwrap()
+        .thread;
+    app.post_message(&alice(), a.id, "echo a2".to_owned())
+        .await
+        .unwrap();
+    finished_jobs(&app, a.id, 2).await;
+    // and a fork of that: its log holds the parent's first turn and the second thread's
+    let a_log = events(&app, &alice(), a.id).await;
+    let b = app
+        .fork_thread(
+            &alice(),
+            a.id,
+            after(
+                a_log
+                    .iter()
+                    .find(|e| e.kind() == EventKind::JobStarted)
+                    .unwrap()
+                    .seq,
+            ),
+        )
+        .await
+        .unwrap()
+        .thread;
+    app.post_message(&alice(), b.id, "echo b3".to_owned())
+        .await
+        .unwrap();
+    finished_jobs(&app, b.id, 3).await;
+    run.shutdown().await;
+
+    let a_told = told(&sends_in(&w, a.id)[0]).0.expect("a's conversation");
+    assert_eq!(lines(&a_told), ["person: echo one"]);
+    let b_sends = sends_in(&w, b.id);
+    let (b_told, text) = told(&b_sends[0]);
+    let b_told = b_told.expect("b's conversation");
+    assert_eq!(text, "echo b3");
+    assert_eq!(
+        lines(&b_told),
+        ["person: echo one", "person: echo a2"],
+        "the first thread's turn and the second's; nothing of the third's own"
+    );
+    // it is what `fork_history` reads in the fork's own log, which holds all of it
+    let b_log = events(&app, &alice(), b.id).await;
+    let cut = b.forked_from.unwrap().seq;
+    assert_eq!(
+        history_preamble(&b_told),
+        history_preamble(&fork_history(copied(&b_log, cut)))
+    );
+}
+
+#[tokio::test]
+async fn an_edit_is_told_what_came_before_the_message_it_replaces() {
+    let w = World::new();
+    let app = w.app();
+    let parent = two_turns(&w, &app).await;
+    let log = events(&app, &alice(), parent.id).await;
+    let second = seq_of_nth_message(&log, 1);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let edit = app
+        .fork_thread(&alice(), parent.id, replace(second, "echo three"))
+        .await
+        .unwrap()
+        .thread;
+    finished_jobs(&app, edit.id, 2).await;
+    run.shutdown().await;
+    let sends = sends_in(&w, edit.id);
+    assert_eq!(sends.len(), 1);
+    let (history, text) = told(&sends[0]);
+    assert_eq!(text, "echo three");
+    assert_eq!(
+        lines(&history.expect("the conversation")),
+        ["person: echo one"],
+        "the first turn, and not the message that was replaced"
+    );
 }

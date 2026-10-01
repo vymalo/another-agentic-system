@@ -626,6 +626,18 @@ pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
     pretty(&value)
 }
 
+/// The id of the fork a scenario makes of the thread `parent` (a UUIDv7 like it, made with the
+/// parent's number so the goldens are the same on every run).
+pub fn fork_of(parent: &str) -> String {
+    parent.replacen("-8000-", "-8001-", 1)
+}
+
+/// [`render`] for the frames of the fork of `parent` (see [`fork_of`]): the fork is
+/// `<thread-id>` and the thread it was cut from `<parent-thread-id>`.
+pub fn render_fork(responses: &[Vec<Frame>], parent: &str) -> String {
+    render(responses, &fork_of(parent)).replace(parent, "<parent-thread-id>")
+}
+
 /// Pretty JSON with a trailing newline, the way the goldens are stored.
 pub fn pretty(value: &Value) -> String {
     let mut text = serde_json::to_string_pretty(value).unwrap();
