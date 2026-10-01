@@ -19,6 +19,13 @@ reacts to webhooks, and can be driven the same way. Its processes are
 stateless; the only durable state is the job ledger and event log (the chat)
 in Postgres.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="web/e2e/__screens__/desktop-dark-done-pull-request.png">
+  <img src="web/e2e/__screens__/desktop-light-done-pull-request.png" alt="A finished job in the chat. Left: the thread list. Middle: the coder’s answer under the line “9 steps · 4s”, with a code block and a pull request card with a View pull request button. Right: the Activity panel listing the steps, from reading the code to the passing checks and the opened pull request." width="720">
+</picture>
+
+*A finished job in the chat surface: the answer and its pull request in the middle, the steps the agent took in the panel on the right, the threads on the left. The screenshot is from the web’s own mock server (`pnpm screens`), not from the compose stack. More screens, phone layouts included: [`web/README.md`](web/README.md#what-it-looks-like).*
+
 ## In one picture
 
 ```mermaid
@@ -168,8 +175,8 @@ The mock agent picks its script from a word in your message:
 | `fail` / `reject` / `error` | ends `failed` (agent failure / agent rejection / JSON-RPC error) |
 | `slow` | like the default, over 8 seconds |
 
-`mock-agent-releases` declares the release-channels extension, so only it shows the release
-dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
+`mock-agent-releases` declares the release-channels extension, so only it has a **Release** group in the
+agent menu of a new chat: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
 `POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `MOCK_VERIFIER_PORT`, `EDGE_PORT`, `CODER_PORT`,
 `MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT`, `GIT_SERVER_PORT`, `MOCK_MODEL_PORT`, `MOCK_MCP_SEARCH_PORT`, `CHAT_PORT` and `RESEARCHER_PORT`. CI keeps the mocks
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs

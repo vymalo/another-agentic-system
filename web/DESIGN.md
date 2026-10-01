@@ -9,7 +9,8 @@ ours: the panda, ink actions, one bamboo green, warm neutrals (see "Brand" and "
 steps left the conversation for the side panel, "the agents (and sub-agents) work better with a cleaner
 interface" ("A turn", "Steps panel"). This brief
 is the contract the components in `src/` follow; the screenshots in `e2e/__screens__/`
-(`pnpm screens`) show the result.
+(`pnpm screens`) show the result and are embedded below; they are drawn from the mock server, so the agents, titles and
+wording in them are the mock's.
 
 ## References
 
@@ -49,6 +50,13 @@ The mark is a **boring giant panda, in three colours**: bamboo green `#3F7341`, 
 ring). The fills do not change with the colour scheme. Decision (owner, 2026-10-01): **the full mark
 at every size**, with its body and bamboo; a head-only drawing was made and is not shipped.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-empty-thread.png">
+  <img src="e2e/__screens__/desktop-light-empty-thread.png" alt="A new chat: the panda mark over the greeting “What should we get done?”, a line on what the chosen agent, Coder, does, a message box and four suggestion chips. The thread list on the left is empty." width="640">
+</picture>
+
+*The mark in the sidebar lockup and over the greeting of a new chat.*
+
 | Where | What |
 |---|---|
 | Sidebar lockup | the mark at 28 px and the wordmark `another·agentic`: lower case, Inter 600, 15 px, tight tracking, the dot in `--brand` (`components/brand/panda-mark.tsx`) |
@@ -71,6 +79,13 @@ every letter is at least 4.5:1 on its tint, light and dark). It is `aria-hidden`
 beside it. The orchestrator's own lines (checks, CI) keep their step icons. The panda itself has no name.
 
 ## Layout
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-done-pull-request.png">
+  <img src="e2e/__screens__/desktop-light-done-pull-request.png" alt="A finished job in the chat. Left: the thread list. Middle: the coder’s answer under the line “9 steps · 4s”, with a code block and a pull request card with a View pull request button. Right: the Activity panel listing the steps, from reading the code to the passing checks and the opened pull request." width="720">
+</picture>
+
+*The sidebar, the top bar, the reading column with its composer, and the panel docked on the right.*
 
 - **Sidebar** 272 px, one step off the canvas (`--sidebar`), no border in light mode. Top: the panda
   with the wordmark, and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
@@ -99,6 +114,13 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
 Choosing the agent is like choosing a model in ChatGPT, not a form field (owner, 2026-10-01: "a little more
 like the new ChatGPT"). It is a menu button in the top bar, on the new chat and on every thread
 (`features/agents/components/agent-menu.tsx`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-agent-menu.png">
+  <img src="e2e/__screens__/desktop-light-agent-menu.png" alt="The agent menu open over a new chat: three agents (Coder, Reviewer, Verifier) with one line each and a check on the chosen one, then the release channels production and staging, and three revisions." width="640">
+</picture>
+
+*The menu on a new chat: the agents, then the release channels and revisions of the chosen one; the mock's agents, with release channels on the coder.*
 
 - **The button**: ghost, 36 px, the agent's name (16 px, weight 500), then muted "· production" when the
   agent offers releases (the one that will be used, the default channel until another is chosen; a phone's
@@ -129,6 +151,12 @@ like the new ChatGPT"). It is a menu button in the top bar, on the new chat and 
 The right side of a thread was unused (owner, 2026-10-01: "the right side of the page is usually unused … add a
 collapsible right panel to show the sources; the agents (and sub-agents) work better with a cleaner interface").
 The panel is the thread's second surface, `features/panel/`: two tabs, **Activity** and **Sources**.
+
+| Docked, on a desktop | A sheet, on a phone |
+|---|---|
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-panel-sources.png"><img src="e2e/__screens__/desktop-light-panel-sources.png" alt="A finished thread with the panel on its Sources tab: a branch and a pull request, a passed CI check and a link, each with a Turn 1 button." width="480"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-panel-activity.png"><img src="e2e/__screens__/mobile-light-panel-activity.png" alt="A phone: the panel as a sheet from the bottom, on its Activity tab, over the dimmed chat. It lists the turn’s steps and ends in a passed CI check with a View run link." width="200"></picture> |
+
+*The Sources tab beside the chat, and the Activity tab as a sheet from the bottom.*
 
 - **Where.** From 1132 px (the sidebar, 560 px of reading column and the narrowest panel) the panel is
   **docked**: an `<aside>` between the chat and the edge, `--background` with a hairline on its left. Its
@@ -169,6 +197,13 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
 - **Motion.** The docked width animates in 200 ms; off under `prefers-reduced-motion`.
 
 ## A turn
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-reply-writing.png">
+  <img src="e2e/__screens__/desktop-light-reply-writing.png" alt="A reply being written. The agent’s words so far, an introduction and a list whose second item is still being typed, end in a thin bar. The top bar says Working… and the Activity panel shows one step." width="720">
+</picture>
+
+*A turn while the agent writes: the summary line under its name, the draft in the type of the finished reply, and its caret.*
 
 - **The person**: a soft bubble on the right (`--bubble`), 20 px radius with a 6 px corner at the top
   right, max 85 % of the column, markdown inside.
@@ -219,6 +254,13 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
 The Activity tab of the panel is the agents' work, for the person who wants to see it
 (`features/chat/components/steps/`, the tree itself `features/chat/lib/step-tree.ts`). It reads the steps the
 runtime already holds, so it is the same on the live stream, on a replay and after a reload.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steps-opened.png">
+  <img src="e2e/__screens__/desktop-light-steps-opened.png" alt="A delegation to OpenCode. In the chat one line, “20 steps · 3s” with a “1 failed” chip, then the answer and the pull request card. In the Activity panel the tree: OpenCode opened to its failed command and its latest three, with a “Show 10 more” link, then the push, the checks and the pull request." width="720">
+</picture>
+
+*The Activity tab with a sub-agent opened to its latest steps and its failed one, and the chat's one line for the turn.*
 
 - **A turn is a section.** One per agent turn that did something (a turn of words has none, and "Turn n" is
   numbered as the chat and the Sources tab number turns), oldest first. Its header is a heading with a button:
@@ -357,6 +399,13 @@ in the transcript, the question's id and the raw value stand in.
 
 Two components of the UI catalog (version 3, ADR 0023) for what an agent shows. They sit in the surface's card like `Choices`, as
 quiet as the rest of the page: no colour of their own, nothing that moves, nothing that loads.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-cards.png">
+  <img src="e2e/__screens__/desktop-light-cards.png" alt="An answer of words and a list of cards under the heading “Three ways to keep a session”: a card that links to postgresql.org, one that links to owasp.org and a third without a link, each with a title, a line, a sentence and tags." width="640">
+</picture>
+
+*Cards in a list under a heading, in the surface's card.*
 
 - **Cards** are tiles inside the surface: 12 px radius, 1 px `--border`, `--background` fill (one step off the surface's `--card`), 14 px
   of padding. In a **list** they stack with an 8 px gap; a **grid** is two columns from `sm`. Inside a tile: the **title** (14 px, weight

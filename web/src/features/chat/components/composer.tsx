@@ -107,7 +107,7 @@ export function Composer({
           </AlertTitle>
           <AlertDescription>
             The agent finished, but its work did not pass verification and no attempts are left. The
-            findings are in the conversation above. Write a message to go on.
+            findings are in the side panel, under Activity. Write a message to go on.
           </AlertDescription>
         </Alert>
       ) : null}

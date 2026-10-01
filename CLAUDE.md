@@ -21,7 +21,7 @@ order is `docs/mvp.md`.
 | `docs/orchestrator.md` | Ports & adapters, event/command model, inbox/outbox, core types, data model, crate layout |
 | `docs/decisions/NNNN-*.md` | ADRs |
 | `docs/mvp.md`, `docs/open-questions.md`, `docs/lessons-from-agent-canvas.md` | Build order, open/closed questions, lessons as requirements |
-| `tools/docs-check/` | Diagram + link checker (also run in CI) |
+| `tools/docs-check/` | Diagram, link and image checker (also run in CI) |
 | `tools/agui-conformance/` | Reads the AG-UI goldens through the reference client, `@ag-ui/client` 1.0.0 (also run in CI) |
 | `compose.yaml`, `compose.live.yaml`, `.env.example`, `dev/` | Local stack; start at `dev/README.md` "Test it locally". `compose.yaml`: Postgres, WireMock A2A mock agents, and the `app` profile (orchestrator, web, edge proxy standing in for oauth2-proxy, adam-coder the default agent, pinned by tag and digest, beside mocks and its agent folder (`dev/coder/agent/`, mounted at `/etc/adam/agent`: instructions and card read at startup, so a change needs a restart, no build) vendored from adam-rs into `dev/coder/`, see `dev/coder/UPSTREAM`; git-server; `mock-ci`, a CI stand-in that reports pushed commits to the webhook; `mock-mcp-search`, a dependency-free mock web-search MCP server, `dev/mock-mcp-search/`; and two agents that are only a folder each, `chat` and `researcher` (`dev/agents/<id>/agent/`, served by `adam-agent` from the coder's image, the researcher's `mcp.json` naming the mock web search) on a scripted `mock-model` (`dev/wiremock/model/`, whose scripts have SSE twins because the agents stream, and which also plays `mock-title`, the model the orchestrator asks for thread titles) and one `agents-postgres`: adding a fourth is a folder and a dozen lines, `dev/README.md` "Add a fourth agent by writing a folder"); opt-in profiles `split` (two workers beside a control plane), `smee` (smee-client behind a Caddy that passes only `/webhooks/github`; smee.io is a third party) and `local-agent` (the orchestrator built with `agent-local`). `compose.live.yaml` is an override (real model and GitHub from `.env`, `dev/agents.live.yaml`; Compose v2.24.4+). Scenario scripts, one per scenario, each asserting the chain: `greeting-e2e.sh` ("hi" gets the coder's greeting), `agents-e2e.sh` (three agents, each answers in its role), `choices-e2e.sh` (the coder asks with a form drawn from the web's UI catalog, one action answers it), `cards-e2e.sh` (the researcher answers with one surface of cards and a graph), `title-e2e.sh` (a thread is titled by the orchestrator's own model after the agent's first reply; a person's rename is final), `agent-folder-e2e.sh` (the coder restarted on an edited copy of its folder), `coder-e2e.sh` (chat to pull request, the coder's work as a tree of steps and its answer shown live), `verify-e2e.sh`, `verifier-e2e.sh`, `ci-e2e.sh`, `mcp-e2e.sh`, `split-e2e.sh`, plus `e2e-all.sh` (all but split), `check-mocks.sh` and `check-agent-mocks.sh`, and `export-thread.sh` (saves a thread as one JSON file to send a developer, the script form of the web's Export JSON); CI runs them in `coder-e2e.yml`; `dev/README.md` documents the scenarios |
 | `.agents/skills/` | Repo skills; `.claude/skills/*` are symlinks to them |
@@ -105,6 +105,10 @@ Not for direct use: `core-actionbook`, `core-agent-browser`, `core-dynamic-skill
   amending it with a dated status note, or superseding it with a new ADR —
   never silently rewriting it. Skill: `write-adr` (see *Skills*).
 - **Mark facts** as *verified* (with date and source) or *unverified*.
+- **Screenshots are the web's own.** `pnpm screens` (in `web/`) writes `web/e2e/__screens__/<device>-<scheme>-<state>.png`;
+  docs link to those files (never copies), as a `<picture>` of the `-light-` and `-dark-` file, with alt text that says what the
+  screen shows and a caption that says it comes from the web's mock server. Renaming a screen breaks the docs that embed it:
+  `tools/docs-check` fails on it (it reads `![]()` and the `src` and `srcset` of HTML tags).
 - **Processes are diagrams.** A Mermaid pair — `sequenceDiagram` for the
   interaction, `stateDiagram-v2` for the lifecycle — then prose.
 - Open questions move between Open / Closed / Moved in `docs/open-questions.md`;
@@ -126,7 +130,7 @@ and I/O so the compiler enforces purity.
 
 ```sh
 npm --prefix tools/docs-check ci          # once per clone
-node tools/docs-check/check-docs.mjs      # every diagram parses, every relative link resolves
+node tools/docs-check/check-docs.mjs      # every diagram parses, every relative link and image resolves
 npm --prefix tools/agui-conformance ci    # once per clone, for the next line
 node tools/agui-conformance/check.mjs     # every AG-UI golden reads cleanly through the reference client
 git config core.hooksPath .githooks       # once per clone: local Conventional Commits hook

@@ -544,8 +544,8 @@ silent "done". A finished job is not the end of the thread: the next message sta
 ### Verifying, the rework loop and attempts
 
 **Partly built** (designed 2026-09-30; the core, the configuration and the AG-UI projection are built for
-the agent's own checks, MVP slices 2 and 3, and the verifier agent is built, slice 10; CI and the web are
-planned).
+the agent's own checks, MVP slices 2 and 3, and the verifier agent is built, slice 10; CI is built, slices 6 and 9,
+and the web draws the gate, slices 4 and 8).
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md) makes the `Verifying` edges above
 concrete for the single-agent thread that exists today, and
 [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md) holds the job ledger they need
@@ -601,7 +601,8 @@ agent. The default gate is empty, which is today's behaviour. The attempts are 3
 higher than 10; a target or a thread may add sources, never remove one its target requires. The gate
 applies to **each job** of a thread (attempts start again at 1 with a new job), while verifications are counted
 per thread ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)). The chat
-shows a `verifying` badge, an attempt counter such as "2/3" and the findings per source
+shows the pill **Checking the work…** while the gate runs; its checks (with the findings of a failed one), the CI reports and each rework
+("Checks failed — trying again (2/3)") are steps in the **Activity** tab of the side panel, and the header has no attempt counter
 ([`api/agui.md`](api/agui.md) carries the `vymalo.check`, `vymalo.rework` and `vymalo.ci` activities).
 
 ## Where it runs
