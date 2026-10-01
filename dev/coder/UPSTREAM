@@ -5,7 +5,11 @@
 # dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream. Every file under dev/coder/agent/
 # (the folder the coder reads at run time, mounted by compose.yaml at /etc/adam/agent) is a copy of the
 # file below bin/adam-coder/agent/ upstream. Never edit them here: change them upstream, then update this
-# commit, the copies and the coder image pin in compose.yaml together. (To try a change to the agent folder
+# commit, the copies and the image pin in compose.yaml (`x-adam-image`, one pin for the coder and for the agents that
+# are only a folder, which run `adam-agent` from the same image) together. (To try a change to the agent folder
 # before it is upstream, point CODER_AGENT_DIR at a copy: dev/README.md, "Change what the coder says".)
+# Not vendored, on purpose: upstream's own `mock-assistant` model (dev/wiremock/mock-openai/mappings/agent-script.json) and
+# its example agent (dev/agents/assistant). The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and
+# dev/wiremock/model/, which follow the same persona convention (adam-rs bin/adam-agent/README.md).
 repo=vymalo/another-adam-rs
-commit=7b2d8f95ffd9abe8af990bd79d7d690e8183c392
+commit=f882b910b620ea583130a0517b4e52c5f7939179

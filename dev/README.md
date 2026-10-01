@@ -3,7 +3,8 @@
 ## Test it locally
 
 One command starts the whole system on your machine, **offline and deterministic**: the chat UI, the
-orchestrator, Postgres, the default agent (adam-coder) and a scripted model, GitHub, git remote and CI for it. No
+orchestrator, Postgres, the default agent (adam-coder) and a scripted model, GitHub, git remote and CI for it, and two more
+agents beside it, a chat and a researcher ([Several agents](#several-agents)). No
 account, no API key, no network after the images are built. Every credential in it is a dummy and every port is
 bound to `127.0.0.1`.
 
@@ -15,7 +16,7 @@ bound to `127.0.0.1`.
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
 | Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack). |
-| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8096 the mock web search. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
+| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
 
@@ -23,10 +24,10 @@ bound to `127.0.0.1`.
 docker compose --profile app up --build
 ```
 
-The first run pulls the coder (2.9 GB) and builds the orchestrator (Rust: several minutes), the web UI, the git
+The first run pulls the coder (2.9 GB; the chat and the researcher run from the same image, so it is pulled once) and builds the orchestrator (Rust: several minutes), the web UI, the git
 server and the mock CI; a later run takes seconds. The logs stream in this terminal and Ctrl-C stops it. To run it in the
 background and return when everything is healthy: `docker compose --profile app up -d --build --wait`. It is ready
-when `docker compose --profile app ps` shows `edge` and `coder` as `healthy` (the orchestrator has no health check
+when `docker compose --profile app ps` shows `edge`, `coder`, `chat` and `researcher` as `healthy` (the orchestrator has no health check
 of its own: the edge probes it). `docker compose --profile app down -v` stops it and forgets the databases and the
 pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 
@@ -39,7 +40,7 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 | MCP | http://127.0.0.1:8080/mcp | Bearer token `dev-mcp-token-0123456789abcdef0123456789`; see [Connect Claude Code](#connect-claude-code-over-mcp) |
 | Webhooks | `POST http://127.0.0.1:8080/webhooks/github` and `/webhooks/ci` | Signed with the dummy secret `dev-webhook-secret-0123456789abcdef0123`, no identity. `mock-ci` posts here on its own; [`ci-webhook.sh`](ci-webhook.sh) plays a CI by hand |
 | Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
-| The mocks' journals | http://127.0.0.1:8091/__admin/requests (model), :8092 (GitHub), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
+| The mocks' journals | http://127.0.0.1:8091/__admin/requests (the coder's model), :8094 (the model of the chat and the researcher), :8092 (GitHub), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
 | The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded; the branches the coder pushes are here |
 | The mock web search | http://127.0.0.1:8096/mcp (MCP, bearer `dev-search-token`), `/__journal` | An MCP server with one canned `web_search` tool; [Mock web search (MCP)](#mock-web-search-mcp) |
 
@@ -72,12 +73,15 @@ pull request on the mock GitHub); the text only has to name the seeded repositor
 3. A second card **Passed · CI** follows within a few seconds: `mock-ci` saw the pushed branch on `git-server` and reported
    `mock-ci/build` for that commit through the webhook. The badge ends **Done**.
 
-Which gate, badge and card each agent shows (pick the agent in the chat, send the keyword; the scripts assert all of it):
+Two more agents answer without a pull request: pick **Chat** and say `hi`, or pick **Researcher** and ask
+`Who won the football world cup in 2014?` ([Several agents](#several-agents)). Which gate, badge and card each agent shows (pick the agent in the chat, send the keyword; the scripts assert all of it):
 
 | Agent | Send | What the chat shows | Script |
 |---|---|---|---|
 | **Coder** | `hi` | a greeting that says "I'm Coder", what it does and asks which repository; the thread is **Blocked**, waiting for you | `greeting-e2e.sh` |
 | **Coder** | the repository message above | the steps above: checks, **Checking the work…**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
+| **Chat** | `hi` (or anything) | a greeting that says "I'm Chat" and what it does, no repository question, and the thread is **Done** | `agents-e2e.sh` |
+| **Researcher** | `Who won the football world cup in 2014?` | "I searched the web for you. The best source I found is https://example.org/mock-search/world-cup-2014." and **Done** | `agents-e2e.sh` |
 | **Mock coder (gated)** | `red-once fix the login` | **Checking the work…**, a card **Failed · Agent checks** with the finding, a **rework divider** ("Attempt 2 of 3: sent back with 1 finding"), a second card **Passed · Agent checks**, **Done** | `verify-e2e.sh` |
 | **Mock coder (gated)** | `red-always fix the login` | three failed cards, two dividers, the pill **Failed** and "Checks failed after 3 attempts" | `verify-e2e.sh` |
 | **Mock coder (verified)** | `push-flawed fix the login` | the coder, then the **Verifier** as a subagent of its own (a pending card, then **Failed · Verifier** with its findings), the divider, the coder again, the verifier again, **Passed · Verifier**, **Done** | `verifier-e2e.sh` |
@@ -122,6 +126,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | Scenario | Script | It proves |
 |---|---|---|
 | `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks which repository, and the thread waits (`blocked`); the model got the folder's instructions |
+| `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `coder chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it; the coder still greets and waits (`blocked`); the model mock matched every request |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
@@ -134,7 +139,7 @@ Every script prints one `ok` or `FAIL` line per check and exits non-zero on a fa
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
 pushed it), so a second run of it is reported as `SKIP`, not as a failure (so is `folder` where there is no `docker compose`): `docker compose --profile app down -v` and
 `up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and needs `docker compose --profile app up -d --wait mock-mcp-search`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the agents' scripted models and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 
 ### Connect Claude Code over MCP
 
@@ -163,10 +168,15 @@ docker compose -f compose.yaml -f compose.live.yaml --profile app up --build
 ```
 
 [`compose.live.yaml`](../compose.live.yaml) (Compose v2.24.4 or newer, for `!override`) replaces the coder's whole environment
-with the values of `.env`; stops `mock-openai`, `mock-github`, `git-server` and `mock-ci` (they move to a profile,
+with the values of `.env`; stops `mock-openai`, `mock-github`, `git-server`, `mock-ci` and `mock-model` (they move to a profile,
 `offline-mocks`, that is never enabled, and the coder no longer waits for them); puts the real secrets on the orchestrator
 (`CODER_A2A_TOKEN`, `WEBHOOK_GITHUB_SECRETS`, `MCP_TOKEN_DEV`, each 32 bytes or more); and gives the orchestrator
-[`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. In the chat, name a repository you can push to
+[`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. The chat and the researcher
+go live with it: `compose.live.yaml` gives them the same model endpoint (`CHAT_MODEL` and `RESEARCHER_MODEL` name another alias for each, else
+`MODEL`) and a bearer token each (`CHAT_A2A_TOKEN`, `RESEARCHER_A2A_TOKEN`, from `.env`), and drops `mock-model`. **The live researcher still
+searches the mock web search**, canned results whatever the question: this stack has no search provider credential. To search for real,
+write the `url` and the token of a search MCP server of your own into a copy of `dev/agents/researcher/agent/mcp.json` and point
+`RESEARCHER_AGENT_DIR` at it ([Add a fourth agent by writing a folder](#add-a-fourth-agent-by-writing-a-folder) says how a folder names its tools). In the chat, name a repository you can push to
 (`In https://github.com/<you>/<repo>.git (base branch main), ...`; the host must be in `ALLOWED_REPO_HOSTS`). Check the
 files without starting anything: `docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q`.
 
@@ -229,13 +239,17 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
-| `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
+| `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
+| `agents-postgres` | `postgres:16.15-alpine` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
+| `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher: two scripts, `mock-persona` and `mock-researcher`, in [`wiremock/model/mappings/`](wiremock/model/mappings). Ours, not vendored. See [Several agents](#several-agents). |
+| `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
+| `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`. No authentication. Vendored. |
 | `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
@@ -245,7 +259,8 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `orchestrator-local`, `local-postgres` | the orchestrator built with `--build-arg ORCH_FEATURES=agent-local` (long: it links the adam-rs runtime); `postgres:16.15-alpine` | `8095` (`ORCH_LOCAL_PORT`) | `local-agent` | A second orchestrator that hosts an `echo` agent in its own process ([`agents.local-echo.yaml`](agents.local-echo.yaml)), with a database of its own and `AUTH_DEV_USER` for the identity; no web UI. See [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
-(the Rust build takes a few minutes the first time), the git server, `mock-ci` and `mock-mcp-search`, and pulls the coder image. `--profile smee` and
+(the Rust build takes a few minutes the first time), the git server, `mock-ci` and `mock-mcp-search`, and pulls the coder image (which
+`chat` and `researcher` use too). `--profile smee` and
 `--profile local-agent` are opt-in and belong to no other profile. [`compose.live.yaml`](../compose.live.yaml) is an override, not a profile.
 
 ```mermaid
@@ -308,7 +323,10 @@ a vendored mapping names is vendored too, and `coder/git-server/` and `coder/age
 image of that commit (`sha-<first 7 characters>@sha256:`); CI runs it first. The mappings are a
 deliberate subset, the scripted coder run only: a mapping the coder starts to need upstream shows up
 as an unmatched request in `dev/coder-e2e.sh`. To move to a newer adam-rs
-commit, change the commit in `UPSTREAM`, refresh the copies, and re-pin the image, all in one change.
+commit, change the commit in `UPSTREAM`, refresh the copies, and re-pin the image, all in one change. The pin is written **once**,
+as `x-adam-image` at the top of `compose.yaml`: the coder and the agents that are only a folder ([Several agents](#several-agents)) take it by
+alias (`adam-agent` ships inside the same image), and the check fails on a second pin. Not vendored, on purpose: upstream's `mock-assistant` model
+and its example agent `dev/agents/assistant`; the chat and the researcher here are ours and follow the same persona convention.
 
 **The scripted run.** The coder's model is `mock-coder`, a script the mock follows by looking at which
 tool-call ids the conversation already holds (it keeps no state). The message names the seeded
@@ -466,6 +484,146 @@ in a data part).
   gives the next run a fresh repository and fresh databases.
 - The coder does not support `ListTasks`: if the orchestrator dies between sending a message and
   recording the task, the retry starts a second run (ADR 0014).
+
+## Several agents
+
+`GET /api/agents` lists three agents, in the order of [`agents.yaml`](agents.yaml), and the chat UI preselects the first:
+
+| Agent | What it is | On the mocks, "hi" or any message | Gate | Script |
+|---|---|---|---|---|
+| `coder` | adam-coder, the default agent ([above](#the-default-agent)) | a greeting that asks which repository to work on; the thread waits (`blocked`) | `agent-checks` and `ci` | `greeting-e2e.sh`, `coder-e2e.sh` |
+| `chat` | `adam-agent` over the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md): greets, chats in plain words, has no tool of its own and does not talk about repositories | `Hi! I'm Chat. I chat with you and answer your questions in plain words.`; the thread is `done` | none | `agents-e2e.sh` |
+| `researcher` | `adam-agent` over [`agents/researcher/agent/`](agents/researcher/agent/instructions.md): searches the web before it answers and cites every source as a link. Its `mcp.json` names the [mock web search](#mock-web-search-mcp) | it calls `search__web_search` with your words, then `I searched the web for you. The best source I found is <the first link of the results>.`; the thread is `done` | none | `agents-e2e.sh` |
+
+An agent with no gate is `done` when it says so (an agent whose answer is a question parks the thread `blocked`, as the coder's greeting does).
+
+**An agent here is a folder.** `adam-agent` (vymalo/another-adam-rs, `bin/adam-agent`) serves the one agent a folder describes:
+`instructions.md` (the frontmatter is the name, the card and the limits, the body is the system prompt), an optional `mcp.json` naming MCP
+servers whose tools it gets as `<server>__<tool>`, optional `skills/` and `subagents/`. It ships **inside the coder's image**, beside
+`adam-coder`, so there is no second image to pull or publish: a service is that image with the entrypoint `tini -- adam-agent` and the folder mounted
+read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`). The folder is read once, at startup (a change needs `docker compose --profile app up -d <id>`, no
+rebuild), and a mistake in it stops the agent with every problem as `path:line` (exit status 78, `docker compose --profile app logs <id>`). The
+contract is adam-rs's ([`bin/adam-agent/README.md`](https://github.com/vymalo/another-adam-rs/blob/f882b910b620ea583130a0517b4e52c5f7939179/bin/adam-agent/README.md), ADR 0005
+there); the three facts that matter here:
+
+- **The persona lines.** The body of every folder here opens with `Your name is {{display_name}}.` and `In one sentence: <summary>.`
+  (the summary without `"` and ending at its first period; `display_name` is a var of the frontmatter, kept in step with `card.name`). The model mock
+  greets from those two lines as the agent rendered them into its system prompt, so **editing them changes the mocked answer**, for any folder.
+- **The tools of a folder** are `ask_user`, one tool per MCP tool of its `mcp.json` (the `tools` allow-list of a server keeps only the ones
+  listed) and the tools of its skills and subagents. Which kinds of MCP server a folder may name is the deployment's, not the file's: plain `http` to
+  another container needs `MCP_ALLOW_INSECURE=true` in the service (the researcher's has it: development only), and a `${VAR}` in the `headers` of a server
+  reads the service's environment (`SEARCH_MCP_TOKEN`), so the folder holds a name and never a secret.
+- **One database for all of them.** The agents that are folders share `agents-postgres`: a run belongs to the agent's `name`, so no agent reads
+  another's. (The coder keeps its own, `coder-postgres`.)
+
+**The model of these two** is the `mock-model` service, WireMock with the scripts of [`wiremock/model/mappings/`](wiremock/model/mappings) (a stub per
+model name; an off-script request is a 404, and `/__admin/requests/unmatched` lists them):
+
+| Model | Answers | How |
+|---|---|---|
+| `mock-persona` | `Hi! I'm <name>. <summary>.` to any request; a fixed text when the last message is a tool result | `<name>` and `<summary>` are taken from the first message (the system prompt) by the two persona lines. Any folder that follows the convention works: it is what a fourth agent uses |
+| `mock-researcher` | a tool call `search__web_search` with the person's words as `query`, then `I searched the web for you. The best source I found is <link>.` | the turn is told by the **last** message: a tool result means the search came back, so it answers with the first `https://` link of it (or says no source was found); anything else is a question, so it searches. The query is the first run of letters, digits and spaces of the question (at most 60 characters), because a template must not put a quote or a backslash into JSON, and `[mock:empty]` or `[mock:error]` therefore cannot reach the search through this model |
+
+Limits of the scripts: they ignore the history (a second question in the thread is searched like the first, with the same tool call id
+`researcher-call-1`), and a real model is what makes the agent *good*, which the mocks cannot show ([Going live](#going-live)).
+
+```mermaid
+sequenceDiagram
+  actor U as agents-e2e.sh
+  participant O as orchestrator
+  participant R as researcher (adam-agent)
+  participant M as mock-model
+  participant S as mock-mcp-search
+  U->>O: POST /agui/agents/researcher, "Who won the football world cup in 2014?"
+  O->>R: SendStreamingMessage, bearer RESEARCHER_A2A_TOKEN
+  R->>M: chat completions, model mock-researcher, tools ask_user and search__web_search
+  M-->>R: tool call researcher-call-1: search__web_search with the query
+  R->>S: POST /mcp tools/call web_search, bearer dev-search-token
+  S-->>R: numbered results, each with its link (one call in the journal)
+  R->>M: chat completions again, the tool result is the last message
+  M-->>R: I searched the web for you. The best source I found is the first link.
+  R-->>O: task completed with that text
+  O-->>U: RUN_FINISHED, the thread is done, the words are in its frames
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Asked: a message reaches the researcher
+  Asked --> Searching: the model calls search__web_search
+  Searching --> Answered: the results, or an error, come back as a tool result
+  Asked --> Answered: the model answers without a search
+  Answered --> [*]: the task completes and the thread is done
+```
+
+A search that fails (the tool answers an error, or the server cannot be reached) is a result the model reads, not a failed run; only a search
+server that is down **at startup** keeps the researcher from starting (`depends_on` waits for `mock-mcp-search`, and adam-agent exits 69 otherwise).
+
+`dev/agents-e2e.sh` drives all three through the orchestrator (AG-UI, as the web does) and reads the journals of `mock-model` and `mock-mcp-search`;
+`dev/check-agent-mocks.sh` plays the model scripts over HTTP. To see an agent's work by hand: pick it in the chat, or from a terminal
+`AGENT_ID=researcher dev/try-thread.sh "Who won the football world cup in 2014?"`.
+
+### Add a fourth agent by writing a folder
+
+An agent is a folder and about a dozen lines of compose. This adds a `poet` that answers in rhyme (on the mocks it greets in role, which is
+what the model mock gives any folder; to script more, add a model name to `wiremock/model/mappings/`).
+
+1. **Write the folder** `dev/agents/poet/agent/instructions.md`, readable by uid 10001 (`chmod -R a+rX dev/agents/poet`):
+
+   ```markdown
+   ---
+   name: poet
+   description: "A poet: it answers every message in four lines that rhyme."
+   vars:
+     display_name: Poet
+   card:
+     name: Poet
+     skills:
+       - id: rhymes
+         name: Rhymes
+         description: Answers in four lines that rhyme.
+   ---
+   Your name is {{display_name}}.
+   In one sentence: I answer in four lines that rhyme.
+
+   You are {{display_name}}. Answer every message in four lines that rhyme, in plain words.
+   ```
+
+   `name` is the registered name of the agent and keys its stored runs, so do not rename it later. Every `vars` entry needs a value in the
+   file, and every `{{var}}` the body uses must be declared. Optional: a `mcp.json` (the tools of an MCP server: copy the researcher's), `skills/`
+   and `subagents/` (adam-rs's [authoring guide](https://github.com/vymalo/another-adam-rs/blob/f882b910b620ea583130a0517b4e52c5f7939179/docs/authoring.md)).
+2. **Add the service** to `compose.yaml`, copying `chat` (the anchors `x-adam-agent` and `x-adam-agent-env` carry the image, the entrypoint, the
+   healthcheck and the database; a folder that names an MCP server also copies `researcher`'s `depends_on`, `SEARCH_MCP_TOKEN` and `MCP_ALLOW_INSECURE`):
+
+   ```yaml
+     poet:
+       <<: *adam-agent
+       environment:
+         <<: *adam-agent-env
+         MODEL: mock-persona                  # greets from the persona lines of the folder
+         A2A_BEARER_TOKENS: dev-poet-token    # the orchestrator sends it as POET_A2A_TOKEN
+         PUBLIC_URL: http://poet:8080/        # the compose name: what the card advertises and the orchestrator posts to
+       ports:
+         - "127.0.0.1:${POET_PORT:-8099}:8080"   # optional: only to reach it from the host
+       volumes:
+         - ./dev/agents/poet/agent:/etc/adam/agent:ro
+   ```
+3. **Tell the orchestrator.** In `x-orchestrator-env` add `POET_A2A_TOKEN: dev-poet-token`, and in [`agents.yaml`](agents.yaml) an entry
+   (after `researcher`, before the mocks, so the coder stays the default):
+
+   ```yaml
+   - id: poet
+     name: Poet
+     cardUrl: http://poet:8080/.well-known/agent-card.json
+     tokenEnv: POET_A2A_TOKEN
+   ```
+4. **Start it.** The orchestrator reads `AGENTS_FILE` and its environment at startup, so recreate both:
+   `docker compose --profile app up -d poet orchestrator`.
+5. **Check it.** `curl -s -H 'X-Auth-Request-Email: dev@example.com' http://127.0.0.1:8080/api/agents | jq -r '.[].id'` lists `poet`; say `hi`
+   to it in the chat, or `AGENT_ID=poet dev/try-thread.sh hi`: on the mocks it answers `Hi! I'm Poet. I answer in four lines that rhyme.`
+
+Going live with it takes the same three edits as `chat`'s in [`compose.live.yaml`](../compose.live.yaml) (a real model and a token from `.env`),
+[`agents.live.yaml`](agents.live.yaml) and [`.env.example`](../.env.example). A folder that fails to load keeps the service from becoming healthy: read
+`docker compose --profile app logs poet` (the `agent files` line says what was read, and an error is `path:line: error: ...`).
 
 ## The MCP server
 
@@ -1019,7 +1177,8 @@ sources from others.
 and **empties the journal** (before and after); `node --test dev/mock-mcp-search/server.test.mjs` runs the same
 behaviours against the server in process (CI: workflow Compose, jobs `mocks` and `scripts`).
 
-**An agent uses it** through an `mcp.json` of its folder, the way adam-rs reads it:
+**An agent uses it** through an `mcp.json` of its folder, the way adam-rs reads it (the stack's [researcher](#several-agents) does,
+with [`agents/researcher/agent/mcp.json`](agents/researcher/agent/mcp.json)):
 
 ```json
 {"mcpServers": {"search": {"type": "http", "url": "http://mock-mcp-search:8080/mcp",
@@ -1134,7 +1293,8 @@ ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
 
 ## Changing a mock
 
-(The mock web search is not WireMock: [Mock web search (MCP)](#mock-web-search-mcp).) Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
+(The mock web search is not WireMock: [Mock web search (MCP)](#mock-web-search-mcp). The model of the chat and the researcher is: edit
+`wiremock/model/mappings/*.json` and `docker compose --profile app restart mock-model`; `dev/check-agent-mocks.sh` says whether it still answers as documented.) Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
 lower `priority` wins) and `wiremock/<mock>/__files/*` (bodies; JSON-RPC frames use Handlebars
 templates, see WireMock's response templating). The three mocks are separate directories so each can
 diverge; a change to a shared behaviour goes into all of them. The directories are mounted read-only, so
@@ -1309,3 +1469,36 @@ listing, calling, an `isError` result). The spec points are from the 2025-11-25 
 403 for a foreign `Origin`, 400 for an unsupported `MCP-Protocol-Version`, `icons` as `src`, `mimeType`, `sizes`, `theme`, and
 input validation errors as tool execution errors. *Unverified*: other clients (Claude Code, opencode), and the 2026-07-28
 revision of the protocol, which the mock does not speak.
+
+The chat and the researcher (MVP slice 2: the pin to adam-rs `f882b91`, `dev/agents/`, `mock-model`, `dev/agents-e2e.sh`):
+
+*Verified 2026-10-01*:
+
+- **The pin.** `coder:sha-f882b91@sha256:7c549618...` is the manifest digest the ghcr API returns for that tag (anonymous token), and the sha-256 of
+  the manifest body it returned; one `linux/amd64` manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` = `f882b910b620ea583130a0517b4e52c5f7939179`. adam-rs's `coder` workflow smoke-tested both binaries in this image
+  (`adam-coder`, then `adam-agent` with the example folder) and ran its own compose scenario for `adam-agent` on it before pushing. The only file of the
+  vendored paths that changed upstream since `7b2d8f9` is a new mapping, `agent-script.json` (the `mock-assistant` model), which is not vendored;
+  `dev/coder/check-vendored.sh` passes at `f882b91`, and now also fails on a second pin of the image in `compose.yaml`.
+- **The model scripts in WireMock itself.** `wiremock-standalone-3.13.2.jar` (the version compose pins, run with `--global-response-templating
+  --disable-banner` on `dev/wiremock/model`) against `dev/check-agent-mocks.sh`: 37 checks, all `ok` (26 of the mock web search, 11 of the two
+  models: the greeting from the persona lines, a fourth agent's own name, a tool result in, the first turn's tool call and its query, the second
+  turn's link, no link, a follow-up question, the 404 and the journal). Facts found there: `jsonPath` of `$.messages[-1].content` is the scalar
+  string, while `$.messages[-1:].content` is an array whose `/` are written `\/` (a link cannot be matched in it); `regexExtract` without a variable name
+  returns the whole match; `matchesJsonPath` of `$.messages[-1:][?(@.role == 'tool')]` tells the turn by the last message, so a follow-up question
+  after an earlier tool result still searches.
+- **The scenario, on real processes.** `dev/agents-e2e.sh` printed `ok` for every check (exit 0), and `dev/e2e-all.sh agents greeting` passed, against the
+  real orchestrator (a debug build of a working branch of this repository, ahead of `main`, `ORCH_SURFACES=agui,webhook-generic,webhook-github`, `AUTH_DEV_USER`, an agents file made
+  from `dev/agents.yaml` with the hosts changed to `127.0.0.1`), two `adam-agent` processes on `dev/agents/chat/agent` and a copy of
+  `dev/agents/researcher/agent` whose `mcp.json` URL is `127.0.0.1` (debug builds of an adam-rs working checkout later than `f882b91`), `adam-coder` on
+  `dev/coder/agent` and the vendored `mock-openai`, `mock-model` and `mock-mcp-search` (`server.mjs`) on WireMock 3.13.2, and Postgres 16 with one database
+  per process group, all in a private network namespace. Both folders loaded with no warning (the `agent files` line), the researcher connected the
+  search server at startup, and the tools the model was offered were `ask_user` (chat) and `ask_user` and `search__web_search` (researcher). With the chat folder
+  edited to another name the script failed on the three checks that read the persona, as it must.
+- `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh`, `actionlint` on the two workflows, `docker compose --profile '*' config -q`, the live
+  override against `.env.example` (the merged model keeps `chat` and `researcher` on the real model, drops `mock-model`) and the docs check are clean.
+
+*Unverified*: the two services in containers (the image's `adam-agent` on the mounts, `depends_on` and the healthchecks, `MCP_ALLOW_INSECURE` over the compose
+network, the folders readable by uid 10001), `dev/agents-e2e.sh` through the `edge` in the `Coder E2E` workflow (the first run is CI), the web's agent
+picker with three agents, and how a live model follows the two folders' instructions (the mocks prove that a folder reaches the model and that a tool call
+reaches the server, not that a model behaves).

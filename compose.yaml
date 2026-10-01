@@ -1,7 +1,8 @@
 # The local stack of the MVP: Postgres, WireMock stand-ins for the A2A agents the orchestrator drives,
 # and (profile `app`) the whole system: the orchestrator, the web UI, an edge proxy on one origin and
-# the default agent, adam-coder (ADR 0014), with its own mocks, a git server and a CI stand-in. Everything
-# binds to 127.0.0.1 and nothing here is a real secret. Start with dev/README.md, "Test it locally".
+# the default agent, adam-coder (ADR 0014), with its own mocks, a git server and a CI stand-in, and two more
+# agents that are only a folder each, a chat and a researcher, served by adam-agent from the coder's image.
+# Everything binds to 127.0.0.1 and nothing here is a real secret. Start with dev/README.md, "Test it locally".
 #
 #   docker compose --profile app up --build            # the whole system -> http://127.0.0.1:8080
 #   docker compose up -d --wait                        # infrastructure + mocks only (fast, nothing is built)
@@ -14,8 +15,10 @@
 # The `app` profile is offline and deterministic: the model, GitHub and CI are scripts. `dev/coder-e2e.sh`
 # turns one chat message into a pull request, and the job ends `done` when the coder's own checks passed on
 # the pushed commit and the mock CI has reported it green (the coder is gated on both). The coder is the
-# first entry of dev/agents.yaml, so it is the default agent. The other agents need only the default
-# profile: `docker compose up -d --wait` starts no coder.
+# first entry of dev/agents.yaml, so it is the default agent. `chat` and `researcher` answer in role on a scripted
+# model (`mock-model`), the researcher through a mock web search; `dev/agents-e2e.sh` asserts it, and a fourth agent is
+# a folder under dev/agents/ and about a dozen lines here (dev/README.md, "Add a fourth agent by writing a folder").
+# The other agents need only the default profile: `docker compose up -d --wait` starts no coder.
 #
 # Other profiles (each is opt-in, none is part of `app`):
 #
@@ -67,6 +70,8 @@ x-orchestrator-env: &orchestrator-env
   AGENTS_FILE: /etc/orchestrator/agents.yaml
   MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
+  CHAT_A2A_TOKEN: dev-chat-token # the same for `chat` ...
+  RESEARCHER_A2A_TOKEN: dev-researcher-token # ... and for `researcher`
   LOG_FORMAT: text
   # The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and
   # verified with, and the address agents reach the orchestrator at (the compose network name: the edge does not
@@ -81,6 +86,43 @@ x-orchestrator-env: &orchestrator-env
   # 2026-09-30: `ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup
   # (see orchestrator/bin/orchestrator/README.md).
   # No AUTH_DEV_USER: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
+
+# The adam-rs image of every agent that is adam: the coder, and the agents that are only a folder (adam-agent).
+# One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-01 (ghcr API, anonymous pull):
+# `coder:sha-f882b91` is one linux/amd64 manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision f882b910b620ea583130a0517b4e52c5f7939179, and the digest below is the sha-256 of
+# the manifest the registry returned. `adam-agent` ships INSIDE this image beside `adam-coder` (adam-rs ADR 0005): there is no
+# second image to pull, and a service that serves a folder is this image with another entrypoint.
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-f882b91@sha256:7c54961821f93b86e99cd6d0338350d06da1d0e73c2aee46ddfba8ead0f4138d
+
+# What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
+# agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
+x-adam-agent: &adam-agent
+  profiles: [app]
+  image: *adam-image
+  # The image has no arm64 variant: name the platform so an ARM machine runs it under emulation.
+  platform: linux/amd64
+  entrypoint: ["tini", "--", "adam-agent"]
+  depends_on:
+    agents-postgres:
+      condition: service_healthy
+    mock-model:
+      condition: service_healthy
+  healthcheck:
+    # Plain TCP connect: the image is not guaranteed to ship curl.
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+    interval: 3s
+    timeout: 3s
+    retries: 30
+    start_period: 10s
+
+x-adam-agent-env: &adam-agent-env
+  # One database for all of them: runs are scoped by the agent's name (adam-rs, bin/adam-agent/README.md).
+  DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
+  MODEL_BASE_URL: http://mock-model:8080/v1
+  MODEL_API_KEY: mock-api-key # dummy: the mock accepts anything
+  ADAM_AGENT_DIR: /etc/adam/agent # the folder each service mounts there: its name, card, instructions, tools
 
 services:
   postgres:
@@ -322,16 +364,16 @@ services:
       retries: 12
       start_period: 2s
 
-  # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
-  # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.
-  # Verified 2026-10-01 (ghcr API, anonymous pull): coder:sha-7b2d8f9 and its digest below. Since adam-rs 7b2d8f9 the
+  # adam-coder, the default agent, from the image pinned once at the top of this file (`x-adam-image`: the tag is the
+  # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts). Since adam-rs 7b2d8f9 the
   # coder reads its agent folder (instructions, card) at startup from ADAM_AGENT_DIR, the mount below, and falls back to
   # the copy in the image only when it is unset; its card and its name are "Coder", and "hi" gets a greeting that says
   # its name, not a request for a task. Since 31df660 a new
   # task continues the task it references (A2A referenceTaskIds: the coder keeps its repositories and branch), the
   # coder has `run_command` (look around without using a check cycle), bash, a default base branch and a
   # missing-toolchain report; since e9bfea3 a stop without a pull request is a question and it works only on a
-  # repository the person named; since ae540e9 it reports its checks as a `checks` artifact.
+  # repository the person named; since ae540e9 it reports its checks as a `checks` artifact. Since f882b91 the same
+  # image also carries `adam-agent`, which the two services below run (nothing of the coder changed).
   #
   # What the coder says and offers is the folder mounted at /etc/adam/agent (ADAM_AGENT_DIR): dev/coder/agent, vendored
   # from bin/adam-coder/agent upstream (dev/coder/UPSTREAM). It is read once, at startup, so a change to it needs a
@@ -340,7 +382,7 @@ services:
   # readable by uid 10001 (chmod -R a+rX).
   coder:
     profiles: [app]
-    image: ghcr.io/vymalo/another-adam-rs/coder:sha-7b2d8f9@sha256:aa84305aed7fc0f7e3b42c7f7308df2f1efc4f34561b6a9b343c3506c11b4e98
+    image: *adam-image # pinned once, at the top of this file
     # The image has no arm64 variant: name the platform so an ARM machine runs it under emulation
     # instead of refusing to pull.
     platform: linux/amd64
@@ -384,6 +426,82 @@ services:
       timeout: 3s
       retries: 30
       start_period: 10s
+
+  # ---------------------------------------------- agents that are only a folder --
+  # adam-agent (vymalo/another-adam-rs, bin/adam-agent) serves ONE agent from the folder mounted at /etc/adam/agent:
+  # instructions, card, skills and the tools of an `mcp.json`. It is the coder's image with another entrypoint
+  # (`x-adam-agent`), so an agent is a folder of dev/agents/<id>/agent and the dozen lines of a service below, never a build.
+  # Each folder is read once, at startup (a change needs a restart: `docker compose --profile app up -d <id>`), and must
+  # be readable by uid 10001 (chmod -R a+rX). All of them share ONE database: runs are scoped by the agent's name.
+  # `chat` and `researcher` are agents 2 and 3 of dev/agents.yaml; dev/agents-e2e.sh asserts each answers in its role.
+
+  agents-postgres:
+    profiles: [app]
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # local development only
+      POSTGRES_DB: agents
+    volumes:
+      - agents-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agents"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # The model of those agents: an OpenAI-compatible WireMock with one script per model name, in
+  # dev/wiremock/model/mappings (not vendored: ours). `mock-persona` answers `Hi! I'm <name>. <summary>.`, built from the
+  # first two lines of the instructions the agent rendered into its system prompt (`Your name is ...` and
+  # `In one sentence: ...`), so it works for any folder that follows that convention; `mock-researcher` calls
+  # `search__web_search` with the person's words, then answers with the first link of the results. An off-script request
+  # is a 404. Journal: http://127.0.0.1:8094/__admin/requests (and /unmatched).
+  mock-model:
+    <<: *wiremock
+    profiles: [app]
+    ports:
+      - "127.0.0.1:${MOCK_MODEL_PORT:-8094}:8080"
+    volumes:
+      - ./dev/wiremock/model/mappings:/home/wiremock/mappings:ro
+
+  # A casual chat: greets and talks in plain words, no tools of its own, no repository talk.
+  chat:
+    <<: *adam-agent
+    environment:
+      <<: *adam-agent-env
+      MODEL: mock-persona # greets from the persona lines of the folder
+      A2A_BEARER_TOKENS: dev-chat-token # the orchestrator sends it as CHAT_A2A_TOKEN
+      PUBLIC_URL: http://chat:8080/ # what the card advertises and the orchestrator posts to: the compose name
+    ports:
+      - "127.0.0.1:${CHAT_PORT:-8097}:8080"
+    volumes:
+      - ${CHAT_AGENT_DIR:-./dev/agents/chat/agent}:/etc/adam/agent:ro # read-only; CHAT_AGENT_DIR points the mount at a copy
+
+  # A researcher: searches the web through the MCP server its folder names (agent/mcp.json: `search`, the mock web search)
+  # and answers with the sources it found. The folder holds the server's URL and the NAME of the token (`${SEARCH_MCP_TOKEN}`
+  # in its headers); the value is this service's environment. The mock is plain http on the compose network, which a
+  # deployment must allow on purpose (MCP_ALLOW_INSECURE: development only). A worker connects the server at startup, so
+  # it waits for `mock-mcp-search` to be healthy.
+  researcher:
+    <<: *adam-agent
+    depends_on:
+      agents-postgres:
+        condition: service_healthy
+      mock-model:
+        condition: service_healthy
+      mock-mcp-search:
+        condition: service_healthy
+    environment:
+      <<: *adam-agent-env
+      MODEL: mock-researcher # calls search__web_search, then names the first source
+      A2A_BEARER_TOKENS: dev-researcher-token # the orchestrator sends it as RESEARCHER_A2A_TOKEN
+      PUBLIC_URL: http://researcher:8080/
+      SEARCH_MCP_TOKEN: dev-search-token # the bearer token of mock-mcp-search
+      MCP_ALLOW_INSECURE: "true" # development only: the search server is plain http on the compose network
+    ports:
+      - "127.0.0.1:${RESEARCHER_PORT:-8098}:8080"
+    volumes:
+      - ${RESEARCHER_AGENT_DIR:-./dev/agents/researcher/agent}:/etc/adam/agent:ro
 
   # ------------------------------------------------------------- smee (opt-in) --
   # GitHub cannot reach a laptop, so `--profile smee` forwards its webhooks from smee.io (a public relay,
@@ -468,6 +586,7 @@ services:
 volumes:
   postgres-data:
   coder-postgres-data:
+  agents-postgres-data:
   git-data:
   coder-work:
   local-postgres-data:

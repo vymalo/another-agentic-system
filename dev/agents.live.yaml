@@ -25,13 +25,26 @@
 #     The repository in the agent's `branch` artifact must be the repository the webhook reports, as
 #     `owner/name` (the orchestrator compares them spelling-insensitively; docs/api/webhooks.md).
 #
-# The token is CODER_A2A_TOKEN from .env.
+# The tokens are CODER_A2A_TOKEN, CHAT_A2A_TOKEN and RESEARCHER_A2A_TOKEN from .env. `chat` and `researcher` are
+# agents that are only a folder each (dev/agents/, adam-agent): live they talk to the real model of .env
+# (CHAT_MODEL, RESEARCHER_MODEL; MODEL when those are unset), and have no gate: an agent with no gate is done when it says so.
+# The researcher still searches the MOCK web search (canned results): there is no search provider credential in this
+# stack. To search for real, point the `url` of dev/agents/researcher/agent/mcp.json at a search MCP server of your own
+# and give the researcher its token (dev/README.md, "Going live").
 - id: coder
   name: Coder
   cardUrl: http://coder:8080/.well-known/agent-card.json
   tokenEnv: CODER_A2A_TOKEN
   gate:
     require: [agent-checks]
+- id: chat
+  name: Chat
+  cardUrl: http://chat:8080/.well-known/agent-card.json
+  tokenEnv: CHAT_A2A_TOKEN
+- id: researcher
+  name: Researcher
+  cardUrl: http://researcher:8080/.well-known/agent-card.json
+  tokenEnv: RESEARCHER_A2A_TOKEN
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json

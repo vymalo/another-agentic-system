@@ -1,0 +1,164 @@
+{
+  "mappings": [
+    {
+      "name": "researcher script: the search results hold no link, say that no source was found",
+      "priority": 0,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.messages[-1].content",
+              "doesNotMatch": "(?s).*https://.*"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-researcher-script-no-source",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-researcher",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "I searched the web for you, but I did not find a source to give you."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    },
+    {
+      "name": "researcher script: the search results are in, answer with the first source",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-researcher-script-answer",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-researcher",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "I searched the web for you. The best source I found is {{regexExtract (jsonPath request.body '$.messages[-1].content') 'https://[A-Za-z0-9./_-]+'}}."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    },
+    {
+      "name": "researcher script: search the web for the person's words",
+      "priority": 2,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-researcher-script-call-1",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-researcher",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "researcher-call-1",
+                    "type": "function",
+                    "function": {
+                      "name": "search__web_search",
+                      "arguments": "{\"query\":\"{{regexExtract (jsonPath request.body '$.messages[-1].content') '[A-Za-z0-9 ]{1,60}'}}\"}"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    }
+  ]
+}

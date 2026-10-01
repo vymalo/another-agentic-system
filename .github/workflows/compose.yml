@@ -64,16 +64,22 @@ jobs:
         run: |
           docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q
           docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example --profile app config --services | tee services.txt
-          ! grep -E '^(mock-openai|mock-github|git-server|mock-ci)$' services.txt
+          # the chat and the researcher stay, on the real model of .env
+          grep -E '^chat$' services.txt
+          grep -E '^researcher$' services.txt
+          # the offline stand-ins go (last, so that this line's status is the step's: `set -e` ignores a negated command)
+          ! grep -E '^(mock-openai|mock-github|git-server|mock-ci|mock-model)$' services.txt
       - name: Start the infrastructure and the mocks
         run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier
       - name: Every mock scenario answers as documented
         run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083
-      - name: The mock web-search MCP server (built here, profile `app`) answers as documented
+      - name: The mock web-search MCP server (built here) and the scripted models of the agents (WireMock) answer as documented
+        # `mock-persona` greets from the persona lines of an agent folder, `mock-researcher` calls the search tool and
+        # names the first link of the results (dev/wiremock/model, dev/README.md, "Several agents").
         run: |
           docker compose --profile app build mock-mcp-search
-          docker compose --profile app up -d --wait mock-mcp-search
-          dev/check-agent-mocks.sh http://127.0.0.1:8096
+          docker compose --profile app up -d --wait mock-mcp-search mock-model
+          dev/check-agent-mocks.sh http://127.0.0.1:8096 http://127.0.0.1:8094
       - name: The real orchestrator client against the mocks
         run: |
           cd orchestrator
