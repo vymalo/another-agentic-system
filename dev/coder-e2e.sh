@@ -3,6 +3,7 @@
 #
 #   dev/coder-e2e.sh                  # OpenCode (model mock-opencode) makes the change
 #   NO_OPENCODE=1 dev/coder-e2e.sh    # the check command makes it; OpenCode is not started
+#   GITHUB_AUTH=app dev/coder-e2e.sh  # the stack runs the coder as a GitHub App (docker compose -f compose.yaml -f dev/compose.github-app.yaml)
 #
 # Start the `app` profile first (the coder image is about 2.9 GB, linux/amd64 only):
 #
@@ -43,6 +44,15 @@
 #     offset, is the text of the one final agent_message of the log, which starts with "Opened the pull request"; a connection opened
 #     after the run (the replay) reads that message once, plain, with no live frame; no artifact is named `reply`;
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
+#   * the coder reads GitHub through the GitHub MCP server, here the mock `mock-github-mcp` (dev/coder/coder-agent/mcp.json is
+#     mounted over its folder's): its journal, which is not reset (the coder connected the server when it started), holds an
+#     `initialize` and a `tools/list`, and the default script (OpenCode; it reads the repository's branches with
+#     `github__list_branches` right after preparing the workspace) added exactly one `tools/call` of `list_branches`, with the
+#     bearer of the dev file, and the model was given its answer; the variant without OpenCode adds none;
+#   * the coder's GitHub credential, as the stack was started with it (GITHUB_AUTH): `token` (default): every call the coder made
+#     to mock-github's `/repos/...` carried `Authorization: Bearer dev-github-token`; `app`: mock-github's journal holds a
+#     `POST /app/installations/67890/access_tokens` (the trade of a signed JWT for a token) and every call to `/repos/...`, the
+#     pull request's included, carried the installation token it gave (`Bearer ghs_mockinstallationtoken...`), never the JWT;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
 #   * git-server has the branch, and hello.txt on it is `hello`.
 # The models are the scripts vendored in dev/coder/wiremock/mock-openai (see dev/coder/UPSTREAM);
@@ -53,10 +63,13 @@
 #   AUTH_EMAIL       dev@example.com, sent as X-Auth-Request-Email (the edge replaces it; it matters
 #                    only when BASE_URL is an orchestrator without the edge)
 #   MOCK_GITHUB_URL  http://127.0.0.1:${MOCK_GITHUB_PORT:-8092}
+#   MOCK_GITHUB_MCP_URL  http://127.0.0.1:${MOCK_GITHUB_MCP_PORT:-8085}   (the mock's admin API; the endpoint is /mcp)
 #   MOCK_OPENAI_URL  http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}
 #   GIT_SERVER_URL   http://127.0.0.1:${GIT_SERVER_PORT:-8093}   (from the host)
 #   TIMEOUT          300    seconds to wait for the thread to end
 #   NO_OPENCODE      unset  1 = the [mock:no-opencode] script
+#   GITHUB_AUTH      token  how the stack was started: `token` or `app` (see the assertions above)
+#   MOCK_GITHUB_TOKEN dev-github-token   the token of `token` mode (compose.yaml's `${MOCK_GITHUB_TOKEN-dev-github-token}`)
 #
 # Needs curl, jq and git (and /proc or uuidgen for a UUID). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
@@ -67,6 +80,13 @@ base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
 github=${MOCK_GITHUB_URL:-http://127.0.0.1:${MOCK_GITHUB_PORT:-8092}}
 github=${github%/}
+github_mcp=${MOCK_GITHUB_MCP_URL:-http://127.0.0.1:${MOCK_GITHUB_MCP_PORT:-8085}}
+github_mcp=${github_mcp%/}
+github_auth=${GITHUB_AUTH:-token}
+case $github_auth in
+  token | app) ;;
+  *) echo "GITHUB_AUTH must be token or app, not '$github_auth'" >&2; exit 2 ;;
+esac
 openai=${MOCK_OPENAI_URL:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
 openai=${openai%/}
 gitserver=${GIT_SERVER_URL:-http://127.0.0.1:${GIT_SERVER_PORT:-8093}}
@@ -135,6 +155,27 @@ for m in "$github" "$openai"; do
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE "$m/__admin/requests" || true)
   if [ "$code" = 200 ]; then ok "journal reset: $m"; else bad "journal reset: $m answered HTTP $code"; fi
 done
+
+# mock-github-mcp's journal is kept (the coder connected the server at its start, and the stack's other runs are in it): what this
+# run added is the count now minus the count here.
+# mcp_count METHOD [TOOL]: the requests the mock saw with that JSON-RPC method (and tool name).
+mcp_count() {
+  patterns=$(jq -nc --arg m "$1" --arg t "${2:-}" '
+    [{matchesJsonPath: {expression: "$.method", equalTo: $m}}]
+    + (if $t == "" then [] else [{matchesJsonPath: {expression: "$.params.name", equalTo: $t}}] end)')
+  curl -s --max-time 30 -X POST "$github_mcp/__admin/requests/count" -H 'Content-Type: application/json' \
+    -d "{\"method\":\"POST\",\"urlPath\":\"/mcp\",\"bodyPatterns\":$patterns}" | jq -r '.count' 2>/dev/null || echo '?'
+}
+# model_saw_branches: the requests the scripted model got whose history holds the answer of the `github__list_branches` call
+# (the tool message of call `coder-gh-1`, which names the branch main).
+model_saw_branches() {
+  curl -s --max-time 30 -X POST "$openai/__admin/requests/count" -H 'Content-Type: application/json' \
+    -d '{"method":"POST","urlPathPattern":"(/v1)?/chat/completions","bodyPatterns":[{"matchesJsonPath":{"expression":"$.messages[?(@.tool_call_id == '"'"'coder-gh-1'"'"')].content","contains":"main"}}]}' |
+    jq -r '.count' 2>/dev/null || echo '?'
+}
+branches_before=$(mcp_count tools/call list_branches)
+calls_before=$(mcp_count tools/call)
+saw_before=$(model_saw_branches)
 
 # The consumer mints the thread id (a UUID); the first run creates the thread, owned by the edge
 # identity and targeting the agent of the URL. The response streams until the run ends.
@@ -452,6 +493,60 @@ else
   bad "the pull request head is '$head_ref', want '$branch'"
 fi
 if [ "$base_ref" = main ]; then ok "the pull request base is main"; else bad "the pull request base is '$base_ref', want main"; fi
+
+# --- the GitHub MCP server (mock-github-mcp) ----------------------------------------------------------------
+# The coder connected it when it started: `initialize`, then `tools/list`.
+inits=$(mcp_count initialize)
+lists=$(mcp_count tools/list)
+if [ "$inits" != '?' ] && [ "$inits" -ge 1 ]; then ok "mock-github-mcp saw initialize ($inits)"; else bad "mock-github-mcp saw $inits initialize, want at least 1 (is the stack started with the dev mcp.json mounted over the coder's folder?)"; fi
+if [ "$lists" != '?' ] && [ "$lists" -ge 1 ]; then ok "mock-github-mcp saw tools/list ($lists)"; else bad "mock-github-mcp saw $lists tools/list, want at least 1"; fi
+branches_after=$(mcp_count tools/call list_branches)
+calls_after=$(mcp_count tools/call)
+if [ "${NO_OPENCODE:-}" != 1 ]; then
+  # The default script reads the branches of the repository right after preparing the workspace.
+  if [ "$branches_before" != '?' ] && [ "$branches_after" != '?' ] && [ $((branches_after - branches_before)) -eq 1 ]; then
+    ok "mock-github-mcp saw exactly one tools/call of list_branches in this run"
+  else
+    bad "mock-github-mcp saw $branches_before then $branches_after tools/call of list_branches, want exactly one more"
+  fi
+  # The call carried the bearer of the dev mcp.json (GITHUB_MCP_TOKEN, or its default).
+  want_bearer="Bearer ${GITHUB_MCP_TOKEN:-dev-github-mcp-token}"
+  wrong=$(curl -s --max-time 30 -X POST "$github_mcp/__admin/requests/find" -H 'Content-Type: application/json' \
+    -d '{"method":"POST","urlPath":"/mcp"}' |
+    jq -r --arg want "$want_bearer" '[.requests[] | .headers | with_entries(.key |= ascii_downcase) | select(.authorization != $want)] | length' 2>/dev/null || echo '?')
+  if [ "$wrong" = 0 ]; then ok "every request to mock-github-mcp carried '$want_bearer'"; else bad "$wrong request(s) to mock-github-mcp did not carry '$want_bearer'"; fi
+  # And the model was given what it answered: the branch main.
+  saw_after=$(model_saw_branches)
+  if [ "$saw_before" != '?' ] && [ "$saw_after" != '?' ] && [ "$saw_after" -gt "$saw_before" ]; then
+    ok "the model was given the answer of github__list_branches (the branch main)"
+  else
+    bad "the model was not given the answer of github__list_branches ($saw_before then $saw_after requests with it)"
+  fi
+else
+  if [ "$calls_before" != '?' ] && [ "$calls_after" = "$calls_before" ]; then ok "the variant without OpenCode reads nothing over MCP: mock-github-mcp saw no tools/call"; else bad "mock-github-mcp saw tools/call go from $calls_before to $calls_after, want no change"; fi
+fi
+
+# --- the coder's GitHub credential -----------------------------------------------------------------------------
+# Every call the coder made to the repositories' API in this run (mock-github's journal was reset at the start): which `Authorization` it carried.
+repo_calls=$tmp/repo-calls.json
+curl -s --max-time 30 -X POST "$github/__admin/requests/find" -H 'Content-Type: application/json' \
+  -d '{"urlPathPattern":"/repos/.*"}' > "$repo_calls" || true
+n_calls=$(jq -r '.requests | length' "$repo_calls" 2>/dev/null || echo 0)
+auths=$(jq -r '.requests[] | .headers | with_entries(.key |= ascii_downcase) | .authorization // "none"' "$repo_calls" 2>/dev/null | sort | uniq -c | sed 's/^ *//' | tr '\n' ';')
+case $github_auth in
+  token)
+    want="Bearer ${MOCK_GITHUB_TOKEN-dev-github-token}"
+    wrong=$(jq -r --arg want "$want" '[.requests[] | .headers | with_entries(.key |= ascii_downcase) | select(.authorization != $want)] | length' "$repo_calls" 2>/dev/null || echo '?')
+    if [ "$n_calls" -ge 1 ] && [ "$wrong" = 0 ]; then ok "all $n_calls call(s) to the repositories' API carried the token"; else bad "token mode: $wrong of $n_calls call(s) to /repos/... did not carry '$want' ($auths)"; fi
+    ;;
+  app)
+    mints=$(curl -s --max-time 30 -X POST "$github/__admin/requests/find" -H 'Content-Type: application/json' \
+      -d '{"method":"POST","urlPath":"/app/installations/67890/access_tokens"}' | jq -r '.requests | length' 2>/dev/null || echo '?')
+    if [ "$mints" != '?' ] && [ "$mints" -ge 1 ]; then ok "the coder traded a JWT for an installation token ($mints POST /app/installations/67890/access_tokens)"; else bad "mock-github saw $mints POST /app/installations/67890/access_tokens, want at least 1 (is the stack started with -f dev/compose.github-app.yaml?)"; fi
+    wrong=$(jq -r '[.requests[] | .headers | with_entries(.key |= ascii_downcase) | select((.authorization // "") | startswith("Bearer ghs_mockinstallationtoken") | not)] | length' "$repo_calls" 2>/dev/null || echo '?')
+    if [ "$n_calls" -ge 1 ] && [ "$wrong" = 0 ]; then ok "all $n_calls call(s) to the repositories' API carried the installation token"; else bad "app mode: $wrong of $n_calls call(s) to /repos/... did not carry 'Bearer ghs_mockinstallationtoken...' ($auths)"; fi
+    ;;
+esac
 
 # --- mock-openai's journal ---------------------------------------------------------------------
 # Off-script requests are unmatched (a 404), never a canned answer.

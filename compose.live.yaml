@@ -15,7 +15,12 @@
 #
 # What changes, and what does not:
 #   * coder        its whole environment is replaced (nothing of the dummy values or of the development-only
-#                  ALLOW_LOCAL_REPOS / ALLOWED_REPO_HOSTS survives), and it no longer waits for the mocks;
+#                  ALLOW_LOCAL_REPOS / ALLOWED_REPO_HOSTS survives), and it no longer waits for the mocks. Its mounts are
+#                  replaced too: the mock `mcp.json` is gone, so the coder starts the REAL github-mcp-server of its image
+#                  (read only, with the same credential), and a GitHub App's key can be mounted. Its GitHub credential is
+#                  one installation's, a token (GITHUB_TOKEN) or a GitHub App (GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and
+#                  GITHUB_APP_PRIVATE_KEY_FILE, a PEM on this machine), never both; it fails closed when neither is set.
+#                  CREATE_REPO_OWNERS names the owners it may create repositories for, after the person agrees (off when empty);
 #   * chat, researcher
 #                  the same: the real model of .env (CHAT_MODEL / RESEARCHER_MODEL, else MODEL), a bearer token
 #                  of your own each (CHAT_A2A_TOKEN, RESEARCHER_A2A_TOKEN), and they no longer wait for the model
@@ -25,7 +30,7 @@
 #                  plain http on the compose network (still with the thread's own short-lived bearer token). This
 #                  file is a LOCAL stack with real credentials, not a deployment: a deployment serves the
 #                  orchestrator over https and never sets MCP_ALLOW_INSECURE (adam-rs bin/adam-coder/README.md);
-#   * mock-openai, mock-github, git-server, mock-ci, mock-model
+#   * mock-openai, mock-github, mock-github-mcp, git-server, mock-ci, mock-model
 #                  move to the profile `offline-mocks`, which is never enabled: a real model, a real GitHub and
 #                  a real CI replace them. Do not enable that profile with this file;
 #   * orchestrator AGENTS_FILE becomes dev/agents.live.yaml (the coder is gated on its own checks; CI is
@@ -50,7 +55,17 @@ services:
       MODEL: "${MODEL:?set MODEL in .env (the coder's model alias)}"
       OPENCODE_MODEL: "${OPENCODE_MODEL:-${MODEL}}"
       GITHUB_API_URL: "${GITHUB_API_URL:-https://api.github.com}"
-      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN in .env (a token that may push branches and open pull requests)}"
+      # One installation's credential: a token OR a GitHub App, never both (the coder exits at startup when both are set or
+      # when neither is). Empty is "not set". The App's key is a file: GITHUB_APP_PRIVATE_KEY_FILE is mounted below, and its
+      # path in the container is set only when GITHUB_APP_ID is. The same variables reach the github-mcp-server child (its mcp.json).
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
+      GITHUB_APP_INSTALLATION_ID: "${GITHUB_APP_INSTALLATION_ID:-}"
+      GITHUB_APP_PRIVATE_KEY_PATH: "${GITHUB_APP_ID:+/run/github-app/key.pem}"
+      # GitHub Enterprise for the MCP server (https://<host>); GITHUB_API_URL above is the coder's own, separate setting.
+      GITHUB_MCP_HOST: "${GITHUB_MCP_HOST:-}"
+      # The owners (users or organisations) the coder may create repositories for, after the person says yes. Empty: it never creates one.
+      CREATE_REPO_OWNERS: "${CREATE_REPO_OWNERS:-}"
       ALLOWED_REPO_HOSTS: "${ALLOWED_REPO_HOSTS:-github.com}"
       A2A_BEARER_TOKENS: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       PUBLIC_URL: http://coder:8080/
@@ -63,6 +78,12 @@ services:
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
       PR_DRAFT: "${PR_DRAFT:-false}"
+    # `!override`: no mock `mcp.json` over the folder's (the real github-mcp-server runs), and the App's key, when there is one.
+    # An unset GITHUB_APP_PRIVATE_KEY_FILE mounts an empty placeholder (an empty file is not a secret) that nothing reads.
+    volumes: !override
+      - coder-work:/work
+      - ${CODER_AGENT_DIR:-./dev/coder/agent}:/etc/adam/agent:ro
+      - ${GITHUB_APP_PRIVATE_KEY_FILE:-./dev/coder/no-github-app-key.pem}:/run/github-app/key.pem:ro
     # A model served on the host (Ollama, LM Studio, vLLM) is http://host.docker.internal:<port>/v1; Docker
     # Desktop knows that name, a Linux engine needs this line. Harmless when the model is elsewhere.
     extra_hosts:
@@ -110,6 +131,8 @@ services:
   mock-openai:
     profiles: !override [offline-mocks]
   mock-github:
+    profiles: !override [offline-mocks]
+  mock-github-mcp:
     profiles: !override [offline-mocks]
   git-server:
     profiles: !override [offline-mocks]

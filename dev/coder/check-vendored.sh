@@ -3,13 +3,14 @@
 #
 #   dev/coder/check-vendored.sh
 #
-# 1. Every file under dev/coder/wiremock and dev/coder/git-server must equal the file at the same
+# 1. Every file under dev/coder/wiremock, dev/coder/git-server and dev/coder/coder-agent (the `mcp.json`
+#    that points the coder at the mock GitHub MCP server) must equal the file at the same
 #    path below dev/ in the upstream repository at the commit recorded in dev/coder/UPSTREAM, and
 #    every file under dev/coder/agent (the folder the coder reads at run time, mounted at
 #    /etc/adam/agent) must equal the file at the same path below bin/adam-coder/agent/ upstream.
 # 2. Nothing is missing: every body file a vendored WireMock mapping names (bodyFileName) is vendored
-#    too, and dev/coder/git-server and dev/coder/agent hold exactly the files of dev/git-server and
-#    bin/adam-coder/agent upstream at that commit. The mappings themselves are a deliberate subset
+#    too, and dev/coder/git-server, dev/coder/coder-agent and dev/coder/agent hold exactly the files of
+#    dev/git-server, dev/coder-agent and bin/adam-coder/agent upstream at that commit. The mappings themselves are a deliberate subset
 #    (the scripted coder run only); a mapping the coder starts to need upstream shows up as an
 #    unmatched request in dev/coder-e2e.sh.
 # 3. compose.yaml must pin the adam image to the tag sha-<first 7 characters of that commit>, with a digest, so
@@ -52,7 +53,7 @@ upstream_path() {
 
 count=0
 # Sorted, so the output is stable. File names here contain no spaces.
-for f in $(find dev/coder/wiremock dev/coder/git-server dev/coder/agent -type f | sort); do
+for f in $(find dev/coder/wiremock dev/coder/git-server dev/coder/coder-agent dev/coder/agent -type f | sort); do
   upstream=$(upstream_path "$f")
   url=$base/$repo/$commit/$upstream
   count=$((count + 1))
@@ -82,7 +83,7 @@ for m in dev/coder/wiremock/*/mappings/*.json; do
   done < "$tmp"
 done
 
-# dev/coder/git-server and dev/coder/agent must hold exactly the upstream files, no more and no fewer.
+# dev/coder/git-server, dev/coder/coder-agent and dev/coder/agent must hold exactly the upstream files, no more and no fewer.
 api=${GITHUB_API:-https://api.github.com}
 tree_url="$api/repos/$repo/git/trees/$commit?recursive=1"
 if [ -n "${GITHUB_TOKEN:-}" ]; then
@@ -111,6 +112,7 @@ else
     fi
   }
   same_files dev/coder/git-server dev/git-server
+  same_files dev/coder/coder-agent dev/coder-agent
   same_files dev/coder/agent bin/adam-coder/agent
 fi
 

@@ -104,11 +104,12 @@ x-orchestrator-env: &orchestrator-env
 # The adam-rs image of every agent that is adam: the coder, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
 # dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-01 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-cf6ddbb` is one linux/amd64 manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision cf6ddbb45a44afce99f437dbd370ef59bdf095d0, and the digest below is the sha-256 of
-# the manifest the registry returned. `adam-agent` ships INSIDE this image beside `adam-coder` (adam-rs ADR 0005): there is no
+# `coder:sha-1021836` is one linux/amd64 manifest (2.89 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`,
+# `MCP_ALLOW_STDIO=true` (it ships `github-mcp-server`), label org.opencontainers.image.revision
+# 1021836a1887610c4639de15f2289b26245b9ce4, and the digest below is the sha-256 of the manifest the registry returned (its
+# Docker-Content-Digest). `adam-agent` ships INSIDE this image beside `adam-coder` (adam-rs ADR 0005): there is no
 # second image to pull, and a service that serves a folder is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-cf6ddbb@sha256:45f1afd110cfb4fcf6d169703e5e28baaf11b1866162a5fb071bef3091d80b7a
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-1021836@sha256:8dcc66c3d1e3dae53b2feeabeadf7c8328c951168dd38f90c89742890e4d4697
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -326,7 +327,8 @@ services:
       - ./dev/coder/wiremock/mock-openai/mappings:/home/wiremock/mappings:ro
       - ./dev/coder/wiremock/mock-openai/__files:/home/wiremock/__files:ro
 
-  # The GitHub REST subset the coder uses (list and open pull requests).
+  # The GitHub REST subset the coder uses: list and open pull requests, create a repository (`POST /orgs/{o}/repos`, `scratch`
+  # is an organisation), and trade a GitHub App's JWT for an installation token (dev/compose.github-app.yaml).
   # Journal: http://127.0.0.1:8092/__admin/requests
   mock-github:
     <<: *wiremock
@@ -337,13 +339,32 @@ services:
       - ./dev/coder/wiremock/mock-github/mappings:/home/wiremock/mappings:ro
       - ./dev/coder/wiremock/mock-github/__files:/home/wiremock/__files:ro
 
-  # A git remote over smart HTTP, seeded with local/sandbox.git. It accepts any credentials, or none.
+  # The GitHub MCP server's streamable HTTP endpoint, as the coder reads GitHub through it (adam-rs ADR 0009): `initialize`,
+  # `tools/list` (the twelve read tools of the coder's allow-list) and `tools/call` of `get_me` and `list_branches`, behind a
+  # bearer. The production coder starts the real server as a child process (the `mcp.json` of its folder); this stack points the
+  # coder at this mock instead (dev/coder/coder-agent/mcp.json, mounted over the folder's, see `coder`), so no GitHub and no
+  # second binary are needed. The default script of the coder's model calls `list_branches` once, and dev/coder-e2e.sh asserts it.
+  # Endpoint and journal: http://127.0.0.1:8085/mcp, http://127.0.0.1:8085/__admin/requests
+  mock-github-mcp:
+    <<: *wiremock
+    profiles: [app]
+    ports:
+      - "127.0.0.1:${MOCK_GITHUB_MCP_PORT:-8085}:8080"
+    volumes:
+      - ./dev/coder/wiremock/mock-github-mcp/mappings:/home/wiremock/mappings:ro
+
+  # A git remote over smart HTTP, seeded with local/sandbox.git and local/library.git. It accepts any credentials, or none.
+  # A repository of an owner in AUTO_CREATE_OWNERS is made, empty, the first time anything asks for it: what a repository that
+  # was just created on GitHub is like (`create_repository` of the coder, answered by mock-github with a clone URL here).
+  # `/__repos/` lists what it holds, as JSON (mock-ci reads it).
   # From the host: http://127.0.0.1:8093/local/sandbox.git. From the coder: http://git-server:8080/local/sandbox.git.
   git-server:
     profiles: [app]
     build:
       context: ./dev/coder/git-server
     image: another-agentic-system/git-server:dev
+    environment:
+      AUTO_CREATE_OWNERS: scratch
     ports:
       - "127.0.0.1:${GIT_SERVER_PORT:-8093}:8080"
     volumes:
@@ -363,7 +384,10 @@ services:
     image: another-agentic-system/mock-ci:dev
     environment:
       GIT_SERVER_URL: http://git-server:8080
-      MOCK_CI_REPOS: local/sandbox
+      # `<owner>/*` is every repository of that owner, found through git-server's `/__repos/` on every pass (a repository the
+      # coder created on request is watched as soon as it exists). local/library is not watched on purpose: it is seeded and
+      # only read, and dev/workspace-e2e.sh tells from git-server's log whether anything asked for it.
+      MOCK_CI_REPOS: "local/sandbox scratch/*"
       WEBHOOK_URL: http://edge:8080
       WEBHOOK_SECRET: dev-webhook-secret-0123456789abcdef0123 # WEBHOOK_GITHUB_SECRETS / WEBHOOK_GENERIC_SECRETS of `orchestrator`
       MOCK_CI_SHAPE: ${MOCK_CI_SHAPE:-github}
@@ -410,6 +434,12 @@ services:
   # Since cf6ddbb the coder reports its work as steps (`steps/v1`: a step per tool call, OpenCode a sub-agent step with its own steps
   # under it) and streams its model calls and says each answer as it is written (`text-stream/v1`); its card lists both, the
   # orchestrator activates what it lists, and `adam-agent` lists them too (dev/coder-e2e.sh; dev/README.md, "Steps and live text").
+  # Since 1021836 the coder needs no repository to start: it builds in a scratch project and publishes it when the person names a
+  # repository, asks the person before another repository joins its workspace (`request_repository`) and, for the owners of
+  # `CREATE_REPO_OWNERS`, before it creates one (`create_repository`): both questions are forms when the screen's catalog is there.
+  # It reads GitHub over MCP (read only: the `mcp.json` of its folder, here the mock `mock-github-mcp`), and it holds the credential
+  # of its own installation: a token (`GITHUB_TOKEN`), or a GitHub App (`GITHUB_APP_*`, dev/compose.github-app.yaml). Neither ever
+  # goes through the orchestrator, A2A or the log (dev/workspace-e2e.sh; dev/README.md, "Workspaces").
   #
   # What the coder says and offers is the folder mounted at /etc/adam/agent (ADAM_AGENT_DIR): dev/coder/agent, vendored
   # from bin/adam-coder/agent upstream (dev/coder/UPSTREAM). It is read once, at startup, so a change to it needs a
@@ -429,6 +459,8 @@ services:
         condition: service_healthy
       mock-github:
         condition: service_healthy
+      mock-github-mcp:
+        condition: service_healthy
       git-server:
         condition: service_healthy
     environment:
@@ -438,7 +470,9 @@ services:
       MODEL: mock-coder # the coder's script
       OPENCODE_MODEL: mock-opencode # OpenCode's script
       GITHUB_API_URL: http://mock-github:8080
-      GITHUB_TOKEN: dev-github-token # dummy
+      # Dummy. An installation is a token OR a GitHub App, never both: dev/compose.github-app.yaml turns this one off (empty) and
+      # gives the coder an App (GITHUB_APP_*) that mock-github trades JWTs for tokens. MOCK_GITHUB_TOKEN=bad-token makes mock-github answer 401.
+      GITHUB_TOKEN: ${MOCK_GITHUB_TOKEN-dev-github-token}
       A2A_BEARER_TOKENS: dev-coder-token # the orchestrator sends it as CODER_A2A_TOKEN
       # The card advertises this URL and the orchestrator posts to it, so it is the compose name,
       # not 127.0.0.1: an orchestrator on the host cannot use this coder.
@@ -447,6 +481,9 @@ services:
       # Development only: repositories on git-server, over plain http. Never set these in production.
       ALLOWED_REPO_HOSTS: git-server
       ALLOW_LOCAL_REPOS: "true"
+      # The coder may create repositories for this owner, after the person agrees (mock-github makes `scratch` an organisation, and
+      # git-server makes the repository, empty, on first use). Unset, `create_repository` is off.
+      CREATE_REPO_OWNERS: scratch
       # The mounted folder below: what the coder says and offers, read at startup. Unset, it would use the copy in the image.
       ADAM_AGENT_DIR: /etc/adam/agent
       # Development only. Every message the orchestrator sends carries the address of the thread's own tools
@@ -459,6 +496,10 @@ services:
       - coder-work:/work
       # Read-only. CODER_AGENT_DIR points the mount at a copy (dev/agent-folder-e2e.sh does).
       - ${CODER_AGENT_DIR:-./dev/coder/agent}:/etc/adam/agent:ro
+      # The folder's mcp.json starts the real github-mcp-server (a child process, in the image); this stack reads GitHub through
+      # mock-github-mcp instead. This file goes over the folder's mcp.json, so a folder in CODER_AGENT_DIR must have one (a copy
+      # of dev/coder/agent does). compose.live.yaml drops this mount: live, the shipped mcp.json runs.
+      - ./dev/coder/coder-agent/mcp.json:/etc/adam/agent/mcp.json:ro
     healthcheck:
       # Plain TCP connect: the image is not guaranteed to ship curl.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
