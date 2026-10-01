@@ -1,11 +1,13 @@
 # AGENTS_FILE of the compose `orchestrator` service (format: orchestrator/agents.example.yaml).
 #
 # The FIRST entry is the default agent: GET /api/agents keeps this order and the chat UI preselects
-# the first (ADR 0014). That is the coder; the two mocks below are the scripted stand-ins to try the
-# other thread endings (dev/README.md). The coder needs the `app` profile of compose.yaml.
+# the first (ADR 0014). That is the coder, then `chat` and `researcher`, two agents that are only a folder each
+# (dev/agents/, served by adam-agent: dev/README.md, "Several agents" and "Add a fourth agent by writing a folder");
+# the WireMock mocks below are the scripted stand-ins to try the other thread endings (dev/README.md). The
+# coder, the chat and the researcher need the `app` profile of compose.yaml.
 #
-# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN and CODER_A2A_TOKEN are dummies set in
-# compose.yaml, and CODER_A2A_TOKEN equals A2A_BEARER_TOKENS of the `coder` service.
+# The mocks accept any non-empty bearer token; MOCK_AGENT_TOKEN, CODER_A2A_TOKEN, CHAT_A2A_TOKEN and
+# RESEARCHER_A2A_TOKEN are dummies set in compose.yaml, and each equals A2A_BEARER_TOKENS of its service.
 - id: coder
   name: Coder
   cardUrl: http://coder:8080/.well-known/agent-card.json
@@ -25,6 +27,18 @@
     require: [agent-checks, ci]
     ci:
       required: [mock-ci/build]
+- id: chat
+  name: Chat
+  cardUrl: http://chat:8080/.well-known/agent-card.json
+  tokenEnv: CHAT_A2A_TOKEN
+  # A casual chat, an adam-agent over dev/agents/chat/agent. No gate: an agent with no gate is done when it says so,
+  # so "hi" ends the thread `done`, where the coder (it asks which repository) leaves it `blocked`.
+- id: researcher
+  name: Researcher
+  cardUrl: http://researcher:8080/.well-known/agent-card.json
+  tokenEnv: RESEARCHER_A2A_TOKEN
+  # Searches the web through the MCP server of its folder (dev/agents/researcher/agent/mcp.json: the mock web search)
+  # and answers with the sources it found. No gate either: a question ends `done` with its answer.
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json

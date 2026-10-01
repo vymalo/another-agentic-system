@@ -379,6 +379,19 @@ a question (the thread waits, `blocked`), instead of a request for a task
 ([adam-rs#55](https://github.com/vymalo/another-adam-rs/issues/55), `dev/greeting-e2e.sh`). How a live model follows
 the instructions is *unverified*; the mocks prove that the folder reaches the model.
 
+### Agents that are only a folder
+
+The dev stack runs two more agents beside the coder, and neither has a build of its own: a **chat** and a **researcher**. Each is a folder
+([`dev/agents/chat/agent/`](../dev/agents/chat/agent/instructions.md), [`dev/agents/researcher/agent/`](../dev/agents/researcher/agent/instructions.md)) served by
+`adam-agent`, the second binary of the coder's image, so a service is that image with another entrypoint and the folder mounted at `/etc/adam/agent`
+(read once, at startup, like the coder's). To the orchestrator they are two more entries of `AGENTS_FILE`, after the coder, which stays the default
+agent: a card URL and a bearer token, no code path of their own ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md)). The researcher's
+`mcp.json` names an MCP server whose tool (`web_search`) it gets as `search__web_search`; in the dev stack that is the mock web search, and the
+researcher's service allows plain http to it on purpose. An agent with no gate is `done` when it says so, so a chat's greeting ends the thread `done`
+where the coder's (a question) leaves it `blocked`. How each is scripted, the diagrams and how to add a fourth by writing a folder:
+[`dev/README.md`](../dev/README.md#several-agents). Their real behaviour with a live model is *unverified*; the mocks prove that the folder reaches the model and
+that the tool call reaches the server.
+
 ### AG-UI: how it is served
 
 The user-facing protocol is **AG-UI 1.0**, with the event log as the only source of truth

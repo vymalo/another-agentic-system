@@ -1,6 +1,6 @@
 # ADR 0014 — adam-coder is the default agent, over plain A2A
 
-- **Status:** accepted (2026-09-29). Amended (2026-10-01): decision 5 also covers the coder's agent folder (status note at the end).
+- **Status:** accepted (2026-09-29). Amended (2026-10-01): decision 5 also covers the coder's agent folder, and the agents that are only a folder run from the same pinned image (status notes at the end).
 
 ## Context
 
@@ -205,3 +205,30 @@ orchestrator's logs read it, and `dev/agents.yaml` names the agent itself.
   `raw.githubusercontent.com` and the GitHub tree API at that commit.
 - *Unverified where this was written* (no coder image was pulled; the Coder E2E workflow runs it): the coder container on this
   mount, `dev/greeting-e2e.sh` and `dev/agent-folder-e2e.sh` against it, and how a live model follows the new instructions.
+
+### Status note, 2026-10-01: agents that are only a folder run from the same pinned image
+
+Since adam-rs `f882b91` ([#58](https://github.com/vymalo/another-adam-rs/pull/58), MVP slice 2 of [`docs/mvp.md`](../mvp.md)) the coder's image
+also carries `adam-agent`, a second binary that serves any agent folder over A2A (instructions, card, skills, subagents, the tools of an
+`mcp.json`); it has no image or package of its own (a new GHCR package is private until its owner makes it public). The dev stack runs a chat and
+a researcher with it, beside the coder, and decision 5 covers them the same way:
+
+- **One pin, one commit.** `compose.yaml` writes the image once (`x-adam-image`, tag `sha-<7>` and digest) and the coder and the agents that are
+  folders take it by alias, so they can never be two adam-rs commits; `dev/coder/check-vendored.sh` asserts the tag is the commit in
+  `dev/coder/UPSTREAM` and fails on a second pin.
+- **The folders are ours, not vendored.** `dev/agents/chat/agent/` and `dev/agents/researcher/agent/` are this repository's agents, not copies of
+  upstream files (upstream's own example, `dev/agents/assistant`, and its `mock-assistant` model are not vendored). They follow the persona convention of
+  adam-rs's `bin/adam-agent/README.md`, and their model is the WireMock `mock-model` (`dev/wiremock/model/`), also ours.
+- **The orchestrator is unchanged.** The chat and the researcher are two more entries of `AGENTS_FILE` (a card URL and a `tokenEnv`), after the
+  coder, which stays the default agent (decision 2). No code path is specific to them.
+- **Several agents, one database.** They share `agents-postgres`: adam-rs scopes a run by the agent's name. The coder keeps its own database.
+
+How to add one: [`dev/README.md`](../../dev/README.md#add-a-fourth-agent-by-writing-a-folder).
+
+- *Verified 2026-10-01* (anonymous ghcr API): `coder:sha-f882b91` is one `linux/amd64` manifest (2.88 GB of compressed layers), uid 10001,
+  entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` `f882b910b620ea583130a0517b4e52c5f7939179`, digest
+  `sha256:7c549618...` (the sha-256 of the manifest the registry returned); adam-rs's `coder` workflow smoke-tested `adam-agent` in it before pushing.
+  `dev/coder/check-vendored.sh` passes at that commit. The scenario `agents` passed against real `adam-agent`, `adam-coder` and orchestrator
+  processes (debug builds) and the WireMock model mock; the details are in the last section of `dev/README.md`.
+- *Unverified where this was written* (the image was not pulled; the Coder E2E workflow runs it): the two services in containers and the
+  scenario through the `edge`, and how a live model follows the folders' instructions.

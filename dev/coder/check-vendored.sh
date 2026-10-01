@@ -12,8 +12,10 @@
 #    bin/adam-coder/agent upstream at that commit. The mappings themselves are a deliberate subset
 #    (the scripted coder run only); a mapping the coder starts to need upstream shows up as an
 #    unmatched request in dev/coder-e2e.sh.
-# 3. compose.yaml must pin the coder image to the tag sha-<first 7 characters of that commit>, with
-#    a digest, so the image, the mocks and the agent folder are always the same upstream commit.
+# 3. compose.yaml must pin the adam image to the tag sha-<first 7 characters of that commit>, with a digest, so
+#    the image, the mocks and the agent folder are always the same upstream commit. The pin is written once
+#    (`x-adam-image`) and the coder and the agents that are only a folder (`adam-agent` ships in the same image)
+#    all take it by alias: no other line of compose.yaml may name an image of that repository.
 #
 # Environment: RAW_BASE overrides https://raw.githubusercontent.com and GITHUB_API overrides
 # https://api.github.com (for a mirror or a test); GITHUB_TOKEN, when set, authenticates the one API
@@ -113,10 +115,27 @@ else
 fi
 
 short=$(printf '%s' "$commit" | cut -c1-7)
-if grep -Eq "^[[:space:]]+image: ghcr\.io/vymalo/another-adam-rs/coder:sha-$short@sha256:[0-9a-f]{64}([[:space:]]|\$)" compose.yaml; then
-  echo "ok    compose.yaml pins coder:sha-$short@sha256:..."
+image=ghcr.io/vymalo/another-adam-rs/coder
+if grep -Eq "^x-adam-image: &adam-image $image:sha-$short@sha256:[0-9a-f]{64}([[:space:]]|\$)" compose.yaml; then
+  echo "ok    compose.yaml pins x-adam-image to coder:sha-$short@sha256:..."
 else
-  echo "FAIL  compose.yaml does not pin ghcr.io/vymalo/another-adam-rs/coder:sha-$short@sha256:<digest>" >&2
+  echo "FAIL  compose.yaml does not pin 'x-adam-image: &adam-image $image:sha-$short@sha256:<digest>'" >&2
+  fail=1
+fi
+# Every other mention of the repository's images outside comments is an alias of the pin, never a second pin.
+others=$(grep -v '^[[:space:]]*#' compose.yaml | grep -E 'ghcr\.io/vymalo/another-adam-rs/' | grep -vc '^x-adam-image: &adam-image ' || true)
+if [ "$others" = 0 ]; then
+  echo "ok    compose.yaml names no other image of vymalo/another-adam-rs (the services use *adam-image)"
+else
+  echo "FAIL  compose.yaml names an image of vymalo/another-adam-rs outside x-adam-image: use *adam-image" >&2
+  fail=1
+fi
+# The coder (`image: *adam-image`) and the agents that are only a folder (`x-adam-agent` has the same line) use it.
+uses=$(grep -v '^[[:space:]]*#' compose.yaml | grep -c 'image: \*adam-image' || true)
+if [ "$uses" -ge 2 ]; then
+  echo "ok    the coder and the adam-agent services take the pin ($uses uses of *adam-image)"
+else
+  echo "FAIL  compose.yaml uses *adam-image $uses times: the coder and x-adam-agent should both take the pin" >&2
   fail=1
 fi
 

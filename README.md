@@ -103,7 +103,8 @@ orchestrator through the edge. Component, request and state diagrams:
 [WireMock](https://wiremock.org/) stand-ins for an A2A 1.0 coding agent, and, with the `app`
 profile, the real orchestrator and chat UI behind one origin, plus the default agent, adam-coder
 ([ADR 0014](docs/decisions/0014-adam-coder-default-agent-over-a2a.md)), on scripted mocks of its
-model, GitHub and git remote, and a CI stand-in. Docker with Compose v2 is all it needs; the mocks need no agent host,
+model, GitHub and git remote, and a CI stand-in, and two more agents that are only a folder each, a chat and a researcher
+([Several agents](dev/README.md#several-agents)). Docker with Compose v2 is all it needs; the mocks need no agent host,
 model or GitHub token. **Start with [Test it locally](dev/README.md#test-it-locally)** (prerequisites, URLs, what the chat shows, MCP,
 going live, troubleshooting); the rest of [`dev/README.md`](dev/README.md) is the reference and the scenarios.
 
@@ -113,6 +114,7 @@ docker compose --profile app up --build              # the whole system (first b
 open http://127.0.0.1:8080                           # the chat UI; the coder is preselected, "Mock coder" is one click away
 dev/e2e-all.sh                                       # every scenario against the running stack, then a summary (curl, jq, git, openssl)
 dev/greeting-e2e.sh                                  # or one of them: "hi" gets a greeting that says the coder's name, not a request for a task
+dev/agents-e2e.sh                                    # or one of them: the coder, a chat and a researcher each answer in their role (the researcher cites a mock search result)
 dev/coder-e2e.sh                                     # or one of them: a chat message becomes a pull request, gated on the coder's checks and CI
 dev/ci-e2e.sh                                        # a gated mock agent: a signed CI report sends it back, then ends the job
 dev/try-thread.sh "add a health endpoint"            # or drive a mock thread from the terminal (curl, jq)
@@ -133,7 +135,7 @@ dev/split-e2e.sh                                     # kills the worker that hol
 | default | `postgres`, `mock-agent`, `mock-agent-releases`, `mock-verifier` | 5432, 8081, 8082, 8083 |
 | `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
 | `split` | + `orchestrator-worker-1`, `orchestrator-worker-2` (dispatcher only; beside `app`, with `ORCHESTRATOR_ROLE=control-plane`) | none published |
-| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)), `mock-mcp-search` (a mock web-search MCP server with canned results, [`dev/README.md`](dev/README.md#mock-web-search-mcp)). The coder reads its agent folder (name, card, instructions) from [`dev/coder/agent/`](dev/coder/agent/instructions.md), mounted at `/etc/adam/agent`: edit it and `docker compose --profile app up -d coder`, no rebuild ([Change what the coder says](dev/README.md#change-what-the-coder-says)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`), 8096 (`mock-mcp-search`); `coder-postgres` is not published |
+| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)), `mock-mcp-search` (a mock web-search MCP server with canned results, [`dev/README.md`](dev/README.md#mock-web-search-mcp)), `chat`, `researcher`, `agents-postgres` and `mock-model` (two more agents, each only a folder under [`dev/agents/`](dev/agents/) served by `adam-agent` from the coder's image, on a scripted model; the researcher searches through the mock web search; [Several agents](dev/README.md#several-agents), and [how to add a fourth](dev/README.md#add-a-fourth-agent-by-writing-a-folder)). The coder reads its agent folder (name, card, instructions) from [`dev/coder/agent/`](dev/coder/agent/instructions.md), mounted at `/etc/adam/agent`: edit it and `docker compose --profile app up -d coder`, no rebuild ([Change what the coder says](dev/README.md#change-what-the-coder-says)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`), 8094 (`mock-model`), 8096 (`mock-mcp-search`), 8097 (`chat`), 8098 (`researcher`); `coder-postgres` and `agents-postgres` are not published |
 | `smee` | + `smee`, `smee-proxy` (opt-in: forwards GitHub webhooks from smee.io, a third party that sees them; needs `SMEE_URL`) | none published |
 | `local-agent` | `orchestrator-local`, `local-postgres` (opt-in: the orchestrator built with `agent-local`, hosting an `echo` agent) | 8095 |
 
@@ -167,14 +169,14 @@ The mock agent picks its script from a word in your message:
 `mock-agent-releases` declares the release-channels extension, so only it shows the release
 dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
 `POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `MOCK_VERIFIER_PORT`, `EDGE_PORT`, `CODER_PORT`,
-`MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT`, `GIT_SERVER_PORT` and `MOCK_MCP_SEARCH_PORT`. CI keeps the mocks
+`MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT`, `GIT_SERVER_PORT`, `MOCK_MODEL_PORT`, `MOCK_MCP_SEARCH_PORT`, `CHAT_PORT` and `RESEARCHER_PORT`. CI keeps the mocks
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
-[`dev/check-mocks.sh`](dev/check-mocks.sh) (and [`dev/check-agent-mocks.sh`](dev/check-agent-mocks.sh) for the mock web search) and the real orchestrator client against them, and
+[`dev/check-mocks.sh`](dev/check-mocks.sh) (and [`dev/check-agent-mocks.sh`](dev/check-agent-mocks.sh) for the mock web search and the agents' scripted models) and the real orchestrator client against them, and
 [`coder-e2e.yml`](.github/workflows/coder-e2e.yml) runs the whole `app` profile, coder included, and
 checks that the mocks and the agent folder vendored under `dev/coder` still equal upstream.
 
-The coder is not reachable from an orchestrator running on the host (its card advertises
-`http://coder:8080/`), so `dev/agents.local.yaml` leaves it out.
+The coder, the chat and the researcher are not reachable from an orchestrator running on the host (their cards advertise
+`http://coder:8080/` and so on), so `dev/agents.local.yaml` leaves them out.
 
 ## Related
 

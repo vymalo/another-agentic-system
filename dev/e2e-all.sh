@@ -10,6 +10,8 @@
 # The scenarios, each one script of this directory (the header of a script says exactly what it asserts):
 #
 #   greeting          "hi" gets a greeting that says the coder's name, not a task    greeting-e2e.sh
+#   agents            three agents (coder, chat, researcher); each answers in its     agents-e2e.sh
+#                     role on the mocks, the researcher with a source it searched for
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
@@ -39,7 +41,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting coder coder-no-opencode verify verifier mcp ci folder"
+all="greeting agents coder coder-no-opencode verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -74,6 +76,13 @@ for s in "$@"; do
         *" coder "*) ;;
         *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
+    agents)
+      for a in coder chat researcher; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario agents needs the agents coder, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
   esac
 done
 
@@ -123,6 +132,7 @@ run() {
 for s in "$@"; do
   case $s in
     greeting) run greeting sh "$here/greeting-e2e.sh" ;;
+    agents) run agents sh "$here/agents-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;
@@ -142,7 +152,7 @@ if grep -q '^SKIP  ci ' "$summary"; then
   echo "  docker compose --profile app down -v && docker compose --profile app up -d --build --wait"
 fi
 if [ "$failed" -gt 0 ]; then
-  echo "the logs of the stack: docker compose --profile app logs --no-color --tail 100 orchestrator mock-ci coder"
+  echo "the logs of the stack: docker compose --profile app logs --no-color --tail 100 orchestrator mock-ci coder chat researcher"
   exit 1
 fi
 exit 0

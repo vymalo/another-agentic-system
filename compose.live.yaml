@@ -16,7 +16,12 @@
 # What changes, and what does not:
 #   * coder        its whole environment is replaced (nothing of the dummy values or of the development-only
 #                  ALLOW_LOCAL_REPOS / ALLOWED_REPO_HOSTS survives), and it no longer waits for the mocks;
-#   * mock-openai, mock-github, git-server, mock-ci
+#   * chat, researcher
+#                  the same: the real model of .env (CHAT_MODEL / RESEARCHER_MODEL, else MODEL), a bearer token
+#                  of your own each (CHAT_A2A_TOKEN, RESEARCHER_A2A_TOKEN), and they no longer wait for the model
+#                  mock. The researcher still searches the MOCK web search (canned results, `mock-mcp-search`
+#                  stays up): the stack has no search provider credential;
+#   * mock-openai, mock-github, git-server, mock-ci, mock-model
 #                  move to the profile `offline-mocks`, which is never enabled: a real model, a real GitHub and
 #                  a real CI replace them. Do not enable that profile with this file;
 #   * orchestrator AGENTS_FILE becomes dev/agents.live.yaml (the coder is gated on its own checks; CI is
@@ -55,6 +60,44 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # The chat and the researcher are the same adam-agent images and folders as offline; only the model and the secrets are real.
+  # `environment: !override` replaces the offline values (nothing of `mock-persona`, `mock-researcher` or the dummy tokens
+  # survives), and `depends_on: !override` drops the model mock they no longer use.
+  chat:
+    depends_on: !override
+      agents-postgres:
+        condition: service_healthy
+    environment: !override
+      DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
+      MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
+      MODEL_API_KEY: "${MODEL_API_KEY:-}"
+      MODEL: "${CHAT_MODEL:-${MODEL:?set MODEL (or CHAT_MODEL) in .env}}"
+      A2A_BEARER_TOKENS: "${CHAT_A2A_TOKEN:?set CHAT_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      PUBLIC_URL: http://chat:8080/
+      ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  researcher:
+    depends_on: !override
+      agents-postgres:
+        condition: service_healthy
+      mock-mcp-search:
+        condition: service_healthy
+    environment: !override
+      DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
+      MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
+      MODEL_API_KEY: "${MODEL_API_KEY:-}"
+      MODEL: "${RESEARCHER_MODEL:-${MODEL:?set MODEL (or RESEARCHER_MODEL) in .env}}"
+      A2A_BEARER_TOKENS: "${RESEARCHER_A2A_TOKEN:?set RESEARCHER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      PUBLIC_URL: http://researcher:8080/
+      ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
+      # The search server of its mcp.json is the MOCK (plain http on the compose network, bearer dev-search-token).
+      SEARCH_MCP_TOKEN: dev-search-token
+      MCP_ALLOW_INSECURE: "true" # development only: for the mock search. A real search server over https needs neither this nor the mock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   mock-openai:
     profiles: !override [offline-mocks]
   mock-github:
@@ -62,6 +105,8 @@ services:
   git-server:
     profiles: !override [offline-mocks]
   mock-ci:
+    profiles: !override [offline-mocks]
+  mock-model:
     profiles: !override [offline-mocks]
 
   orchestrator:
@@ -71,6 +116,8 @@ services:
       - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
     environment:
       CODER_A2A_TOKEN: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      CHAT_A2A_TOKEN: "${CHAT_A2A_TOKEN:?set CHAT_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
+      RESEARCHER_A2A_TOKEN: "${RESEARCHER_A2A_TOKEN:?set RESEARCHER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       WEBHOOK_GITHUB_SECRETS: "${WEBHOOK_GITHUB_SECRETS:?set WEBHOOK_GITHUB_SECRETS in .env (at least 32 bytes: openssl rand -hex 32)}"
       # The generic signed webhook is not used live: a secret of its own that nothing knows.
       WEBHOOK_GENERIC_SECRETS: "${WEBHOOK_GENERIC_SECRETS:-${WEBHOOK_GITHUB_SECRETS}}"

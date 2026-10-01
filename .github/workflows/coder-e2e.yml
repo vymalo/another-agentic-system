@@ -6,11 +6,14 @@ name: Coder E2E
 # GitHub API stand-in and a git server, and `mock-ci`, a CI stand-in that reports the pushed commit to the
 # orchestrator's GitHub webhook (the coder is gated on CI, ADR 0017). dev/coder-e2e.sh then creates a
 # thread through the AG-UI run route and checks the thread, the artifacts, the CI card, the mocks'
-# journals and the pushed branch.
+# journals and the pushed branch. Two more agents run beside the coder from the SAME image (`adam-agent`, a folder
+# each: a chat and a researcher, on a scripted model and a mock web search), and dev/agents-e2e.sh asserts each
+# answers in its role.
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
-#   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run dev/e2e-all.sh (every scenario: the coder's
-#              greeting, the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
+#   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB; the chat and the researcher use the same image),
+#              run dev/e2e-all.sh (every scenario: the coder's greeting, the three agents each answering in its role,
+#              the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, and the coder restarted on a copy of its agent folder with another name), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
@@ -100,13 +103,16 @@ jobs:
           tags: another-agentic-system/web:dev
           cache-from: type=gha,scope=web
       - name: Pull the coder and build the git server, the mock CI and the mock web search
+        # One adam-rs image is the coder and, with another entrypoint, the chat and the researcher (compose.yaml,
+        # `x-adam-image`): pulling `coder` pulls all three. The model mock of the two is WireMock, pulled by `up`.
         run: |
           docker compose pull coder
           docker compose build git-server mock-ci mock-mcp-search
       - name: Start the stack
         run: docker compose up -d --no-build --wait --wait-timeout 600
       - name: Every scenario of the local stack (dev/e2e-all.sh)
-        # The command the README gives an owner, so it is what CI runs: "hi" gets the coder's greeting, chat -> coder ->
+        # The command the README gives an owner, so it is what CI runs: "hi" gets the coder's greeting, the chat and the
+        # researcher answer in their role (the researcher searches the mock web search and cites a result), chat -> coder ->
         # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone), red once -> sent back -> green and red always -> failed (the mock
         # agent behind `mock-coder-gated`, which a run may not weaken), the verifier's findings -> rework -> pass
         # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
@@ -135,12 +141,16 @@ jobs:
         run: |
           docker compose ps --all || true
           docker compose logs --no-color || true
-          for m in 8091 8092 8083; do
+          for m in 8091 8092 8083 8094; do
             echo "== journal of the mock on port $m"
             curl -s "http://127.0.0.1:$m/__admin/requests" | jq -c '.requests[] | {method: .request.method, url: .request.url, status: .response.status, body: (.request.body // "" | .[0:300])}' || true
           done
-          echo "== unmatched requests of mock-openai"
-          curl -s http://127.0.0.1:8091/__admin/requests/unmatched | jq -c '.requests[] | {method: .method, url: .url, body: (.body // "" | .[0:300])}' || true
+          echo "== unmatched requests of mock-openai (the coder's model) and of mock-model (the chat's and the researcher's)"
+          for m in 8091 8094; do
+            curl -s "http://127.0.0.1:$m/__admin/requests/unmatched" | jq -c '.requests[] | {method: .method, url: .url, body: (.body // "" | .[0:300])}' || true
+          done
+          echo "== calls of the mock web search (the researcher's tool)"
+          curl -s http://127.0.0.1:8096/__journal | jq -c '.calls[]' || true
       - name: Tear down
         if: always()
         env:
