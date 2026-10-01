@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
 import { AGENTS, DEV_USER } from "./fixtures";
+import { LiveOverlay, type LivePiece } from "./live";
 import {
   type Audience,
   type CatalogRef,
@@ -126,6 +127,8 @@ type Run = {
 type Viewer = {
   res: http.ServerResponse;
   projector: Projector;
+  /** The live text of this connection (docs/api/agui.md "Live text"), beside the projection. */
+  overlay: LiveOverlay;
   audience: Audience;
   /** When the response ends: `first-close` at the first run close (a run response), `after-replay` when the replay is over and no run is open (`?mode=run`), else never. */
   end: "first-close" | "after-replay" | "never";
@@ -134,11 +137,17 @@ type Viewer = {
   cutAfter: number | undefined;
 };
 
-export type MockOptions = { stepMs?: number; keepaliveMs?: number };
+export type MockOptions = {
+  stepMs?: number;
+  keepaliveMs?: number;
+  /** How often the text so far of a reply being written is said again from its start (default 1000). */
+  refreshMs?: number;
+};
 
 export function createMockServer(options: MockOptions = {}): http.Server {
   const stepMs = options.stepMs ?? 400;
   const keepaliveMs = options.keepaliveMs ?? 15_000;
+  const refreshMs = options.refreshMs ?? 1000;
 
   const threads = new Map<string, Thread>();
   const events = new Map<string, Event[]>();
@@ -146,9 +155,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const runs = new Map<string, Run>();
   /** The gate each verified thread's job runs under (from its script); absent: none. */
   const gates = new Map<string, GateInfo>();
+  /**
+   * The reply each thread's agent is writing right now (live text): what the relay says again from
+   * the start every `refreshMs`, so a viewer that connects mid-stream, or lost a piece, has the text
+   * so far within a second (ADR 0027). Gone when the log says the reply, when the stream is given
+   * up, and with the run.
+   */
+  const writing = new Map<string, { messageId: string; agent: string; text: string }>();
   let cutNextConnectAfter: number | undefined;
 
   const reset = () => {
+    writing.clear();
     for (const r of runs.values()) clearTimeout(r.timer);
     for (const set of viewers.values()) for (const v of set) closeViewer(v, true);
     threads.clear();
@@ -259,6 +276,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const viewer: Viewer = {
       res,
       projector,
+      overlay: new LiveOverlay(),
       audience: opts.audience ?? {},
       end: opts.end,
       keepalive: setInterval(() => res.write(": keepalive\n\n"), keepaliveMs),
@@ -274,7 +292,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     for (const e of log) {
       if (e.seq <= opts.fromSeq) continue;
       const wasOpen = projector.runOpen;
-      write(viewer, projector.apply(e, viewer.audience));
+      write(viewer, viewer.overlay.logged(projector, projector.apply(e, viewer.audience)));
       if (viewer.end === "first-close" && wasOpen && !projector.runOpen) return closeViewer(viewer);
     }
     if (viewer.end === "after-replay" && !projector.runOpen) return closeViewer(viewer);
@@ -302,11 +320,49 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     for (const v of [...(viewers.get(threadId) ?? [])]) {
       const wasOpen = v.projector.runOpen;
-      write(v, v.projector.apply(event, v.audience));
+      write(v, v.overlay.logged(v.projector, v.projector.apply(event, v.audience)));
       if (v.end !== "never" && wasOpen && !v.projector.runOpen) closeViewer(v);
     }
     return event;
   }
+
+  /**
+   * A piece of the reply the agent is still writing (live text): every open response of the thread
+   * hears it through its own overlay, as the orchestrator's processes do. It is not in the log, and
+   * a viewer that connects later does not hear it.
+   */
+  function relay(threadId: string, piece: LivePiece) {
+    for (const v of [...(viewers.get(threadId) ?? [])])
+      write(v, v.overlay.live(v.projector, piece));
+  }
+
+  /** The sender's side: a piece goes to the viewers and is kept, to be said again from the start. */
+  function send(threadId: string, piece: LivePiece) {
+    const known = writing.get(threadId);
+    if (piece.end === "abandoned") writing.delete(threadId);
+    else if (piece.offset === 0 || known?.messageId !== piece.messageId) {
+      writing.set(threadId, { messageId: piece.messageId, agent: piece.agent, text: piece.text });
+    } else if (known) known.text = known.text.slice(0, piece.offset) + piece.text;
+    relay(threadId, piece);
+  }
+
+  const refresher = setInterval(() => {
+    for (const [threadId, w] of writing) {
+      const closed = ["done", "failed", "cancelled"].includes(threads.get(threadId)?.state ?? "");
+      if (closed || (events.get(threadId) ?? []).some((e) => e.data.messageId === w.messageId)) {
+        writing.delete(threadId);
+        continue;
+      }
+      relay(threadId, {
+        messageId: w.messageId,
+        agent: w.agent,
+        offset: 0,
+        text: w.text,
+        end: "open",
+      });
+    }
+  }, refreshMs);
+  refresher.unref();
 
   /** The seq of the last event of the thread: where the response to what is appended next starts. */
   const lastSeq = (threadId: string) => events.get(threadId)?.length ?? 0;
@@ -352,13 +408,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const step = run.pending.shift();
       if (!step) return;
       if ("pause" in step) return; // waits for cancel
-      append(
-        t.id,
-        step.kind,
-        step.system ? { type: "system", name: "orchestrator" } : agentActor(t),
-        step.data,
-      );
-      if (step.setState) setState(t, step.setState);
+      if ("live" in step) {
+        send(t.id, { ...step.live, agent: agentActor(t).name, end: step.live.end ?? "open" });
+      } else {
+        append(
+          t.id,
+          step.kind,
+          step.system ? { type: "system", name: "orchestrator" } : agentActor(t),
+          step.data,
+        );
+        if (step.setState) setState(t, step.setState);
+      }
       const next = run.pending[0];
       run.timer = setTimeout(tick, next && "quick" in next && next.quick ? 0 : stepMs);
     };
@@ -852,7 +912,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     res.writeHead(202).end();
   }
 
-  server.on("close", reset);
+  server.on("close", () => {
+    clearInterval(refresher);
+    reset();
+  });
   return server;
 }
 

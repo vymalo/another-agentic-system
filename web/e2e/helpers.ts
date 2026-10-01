@@ -4,6 +4,10 @@ import { expect, type Locator, type Page } from "@playwright/test";
 // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
 export const BASE_URL = "http://127.0.0.1:3000";
 
+/** The mock orchestrator's own origin: its test hooks (`/__mock/…`) are reached here. */
+// nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
+export const MOCK_URL = "http://127.0.0.1:4010";
+
 /** ADR 0008: the release channel travels in `forwardedProps` under this URI. */
 export const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 

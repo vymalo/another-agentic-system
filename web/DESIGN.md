@@ -191,6 +191,21 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
   shows this turn), so Enter and Space open it.
 - **Before the first event** a shimmering "Coder is starting…" line under the avatar.
+- **A draft: the words as they are written** (2026-10-01, sys #65: "I want to see the agent's words as they
+  are written"). While the model writes its reply the turn shows what it has so far, after the parts the turn
+  already has and before its cards, **in the type of the finished reply** (15 px, 28 px lines, markdown as it
+  is written: a list is a list as soon as its first item is there), so the words do not change size, weight
+  or place when they are final. What tells them from a finished reply is one thing: a **caret** after the last
+  character, a 2 px bar in `--brand`, 1.1 em high, that blinks in steps once a second and stays on, still,
+  under `prefers-reduced-motion`. Nothing else: no label, no spinner, no box, no fade (the shimmering
+  "starting" line gives way to the draft). The turn's line above it says the agent works, and the header's
+  pill says what the thread is doing; a draft adds no state of its own. It is **not announced**: the draft is
+  `aria-busy` and `aria-live="off"`, and the finished reply, when the log has it, is announced once, whole, as
+  every reply is. When the log's message arrives the draft draws nothing and the reply is drawn where it was,
+  so the swap is one frame and the words are never missing nor there twice; when the agent gives up halfway
+  (the model failed, Stop) the draft goes and nothing is left that looks alive. A reload or a reconnect in the
+  middle of a reply shows the text so far a moment later (the sender says it again every second), or the
+  reply when it is done.
 - **Cards** (after the words): a pull request card (repository, number, title, branch chip, Open
   button), a file card; A2UI surfaces as they are. Errors are soft callouts in the flow, never
   alerts on replay.
@@ -279,14 +294,18 @@ dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11
 
 ## Motion
 
-A new turn fades in and rises 4 px (160 ms, ease-out); the live step and the summary line's spinner spin; "starting" shimmers.
-All of it is off under `prefers-reduced-motion`.
+A new turn fades in and rises 4 px (160 ms, ease-out); the live step and the summary line's spinner spin; "starting" shimmers;
+the caret of a draft blinks. All of it is off under `prefers-reduced-motion` (the caret then stays on, still).
 
 ## Accessibility
 
 The transcript is `role="log"` (name "Conversation"); the state pill is a polite `status`; steps are
 a list whose items carry their full meaning as text; focus rings on every control; everything works
 from the keyboard; axe finds nothing serious in either scheme.
+
+A draft (a reply being written) is `aria-busy` with `aria-live="off"`, inside the log, so a screen reader is not
+read every few words; the finished reply is announced when it arrives. axe and Lighthouse are run with a draft on
+the screen, in both schemes, on a desktop and on a phone.
 
 A turn's summary line is a button that names its steps and where it opens them; the step tree is nested lists with
 native buttons (no ARIA tree), and axe is run with the tree open, a level that scrolls, and a turn that runs, in both

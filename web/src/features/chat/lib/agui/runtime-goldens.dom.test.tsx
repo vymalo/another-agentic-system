@@ -216,6 +216,16 @@ const EXPECTED: Record<string, Summary> = {
       parts: [ACTOR, "status:working", "status:failed"],
     },
   ],
+  // live text (ADR 0027): the reply was written live (a draft, never in the runtime), and the log's
+  // message is the one message of the transcript; the status that repeats the words says no more
+  stream: [
+    USER("write fibonacci in rust"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [ACTOR, "status:working", "text:Fibonacci in Rust.", "status:completed"],
+    },
+  ],
   // nested steps (ADR 0025): a sub-agent step opens its own subagent in the stream, which the
   // runtime turns into one more actor marker; each step is one part, said again in place
   steps: [
@@ -307,6 +317,35 @@ describe("the goldens through the runtime", () => {
       openRun: null,
     });
     agent.stop();
+  });
+
+  it("stream: the words are a draft while they are written and never reach the transcript; the log's message is the one reply, and no draft is left", async () => {
+    const stream = new LiveStream();
+    const mounted = mountRuntime(() => sse(stream.body));
+    mounted.agent.start();
+    const frames = loadGolden("stream");
+    const at = (seq: number) => frames.findIndex((f) => f.id === seq);
+    // the log's first two events, then the live START and the three pieces
+    await act(async () => {
+      stream.frames(frames.slice(0, at(3) - 1));
+    });
+    await waitFor(() => expect(mounted.agent.getDrafts()[0]?.text).toBe("Fibonacci in Rust."));
+    await waitFor(() => expect(mounted.messages()).toHaveLength(2));
+    // the runtime holds the log only: nothing of the reply, and the draft is not a resume point
+    expect(summarize(mounted.messages())[1]?.parts).toEqual([ACTOR, "status:working"]);
+    expect(mounted.agent.getSnapshot().lastSeq).toBe(2);
+
+    // the log says the reply: one message, whole, and the draft is gone by the end
+    await act(async () => {
+      stream.frames(frames.slice(at(3) - 1));
+    });
+    await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(5));
+    await waitFor(() => expect(mounted.runtime().thread.getState().isRunning).toBe(false));
+    await waitFor(() => expect(mounted.agent.getDrafts()).toEqual([]));
+    expect(summarize(mounted.messages())).toEqual(EXPECTED.stream);
+    const texts = mounted.messages().flatMap((m) => m.content.filter((p) => p.type === "text"));
+    expect(texts.map((p) => p.text)).toEqual(["write fibonacci in rust", "Fibonacci in Rust."]);
+    mounted.agent.stop();
   });
 
   it("ask, before the answer: the run ended in an interrupt the runtime holds and the UI can answer", async () => {

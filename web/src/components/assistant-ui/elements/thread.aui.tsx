@@ -15,8 +15,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnswerBubble } from "@/features/chat/components/answer-bubble";
 import { TurnCards } from "@/features/chat/components/cards/turn-cards";
+import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { useThreadView } from "@/features/chat/components/thread-view";
+import { drawnDrafts } from "@/features/chat/lib/agui/live-drafts";
 import { ACTOR_PART, parseActor, parseAnswers } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
 import type { ApiActor } from "@/lib/api/types";
@@ -28,8 +30,9 @@ import { isActive } from "@/lib/api/types";
  * message, drawn as a turn: the agent's mark and name once, one summary line that opens the side
  * panel on this turn (the steps themselves, every status, artifact, check, CI report, rework and
  * action, are the panel's Activity tab), then its parts in order: the agent's words are prose, and
- * a failure or a surface stands on its own; the pull requests and files it shared follow as cards.
- * A `vymalo.actor` marker part says who ran.
+ * a failure or a surface stands on its own; the reply the agent is still writing (live text, never
+ * in the transcript) is drawn after the parts, with a caret; the pull requests and files it shared
+ * follow as cards. A `vymalo.actor` marker part says who ran.
  */
 
 type AnyPart = { type: string; name?: string; data?: unknown; text?: string };
@@ -231,6 +234,15 @@ export const AssistantMessage: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
   const isLast = useAuiState((s) => s.message.isLast);
   const messageId = useAuiState((s) => s.message.id);
+  // the reply being written belongs to the run's message: the newest one of the agent
+  const newest = useAuiState((s) => {
+    const all = s.thread.messages;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i]?.role === "assistant") return all[i]?.id === s.message.id;
+    }
+    return false;
+  });
+  const drafts = useLiveDrafts();
 
   let lastDrawn = -1;
   let lastText = -1;
@@ -245,6 +257,12 @@ export const AssistantMessage: FC = () => {
   });
   if (lastDrawn < 0 && !running && answers.length === 0) return null;
   const lastTextValue = lastText >= 0 ? content[lastText]?.text : undefined;
+  const writing = newest
+    ? drawnDrafts(
+        drafts,
+        content.flatMap((p) => (p.type === "text" && p.text ? [p.text] : [])),
+      )
+    : [];
   const answered = (
     <>
       {answers.map(({ i, data }) => (
@@ -288,12 +306,17 @@ export const AssistantMessage: FC = () => {
                 return <div className="w-full empty:hidden">{part.dataRendererUI}</div>;
               case "indicator":
                 // the turn's line says it works; before its first event there is only this
-                return lastDrawn < 0 ? <Starting name={actor?.name ?? agentId} /> : null;
+                return lastDrawn < 0 && writing.length === 0 ? (
+                  <Starting name={actor?.name ?? agentId} />
+                ) : null;
               default:
                 return null;
             }
           }}
         </MessagePrimitive.GroupedParts>
+        {writing.map((d) => (
+          <LiveDraft key={d.id} id={d.id} text={d.text} />
+        ))}
         <TurnCards />
       </div>
     </MessagePrimitive.Root>

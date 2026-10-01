@@ -2,6 +2,7 @@ import type { BaseEvent, RunAgentInput } from "@ag-ui/client";
 import { EventType } from "@ag-ui/client";
 import { describe, expect, it, vi } from "vitest";
 import { OWN_CATALOG, UI_CATALOG_PROP } from "@/features/chat/lib/a2ui/catalog";
+import { type LiveEvent, liveMark } from "./live-drafts";
 import {
   type Call,
   fakeFetch,
@@ -282,6 +283,329 @@ describe("ThreadAgent: the connect stream", () => {
     const run = (await agent.nextExternalRun()) as ExternalRun;
     expect(run.userMessages).toMatchObject([{ text: "hello" }]);
     expect(kinds(await collect(run)).at(-1)).toBe("RUN_FINISHED");
+    agent.stop();
+  });
+});
+
+describe("ThreadAgent: live text", () => {
+  // The stream golden (docs/api/examples/agui/stream.agui.json): the log's events 1 and 2, then the
+  // live START and three pieces (no `id:`), then the log's message 3 as CONTENT{final} + END{final}.
+  const golden = () => loadGolden("stream");
+  const index = (frames: GoldenFrame[], seq: number) => frames.findIndex((f) => f.id === seq);
+  const text = (agent: ThreadAgent) => agent.getDrafts().map((d) => d.text);
+
+  /** What a reconnect at seq 2 is told first: the run, the invocation and the state, with no resume point. */
+  const preamble = (frames: GoldenFrame[]): GoldenFrame[] => [
+    { event: (frames[0] as GoldenFrame).event },
+    { event: (frames[5] as GoldenFrame).event },
+    { event: (frames[7] as GoldenFrame).event },
+  ];
+
+  it("shows each piece as it arrives, with no `id:` to wait for, and keeps them out of the run", async () => {
+    const frames = golden();
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(frames.slice(0, index(frames, 2) + 1));
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    const seen: BaseEvent[] = [];
+    run.frames.subscribe({ next: (e) => seen.push(e) });
+    await until(() => agent.getSnapshot().lastSeq === 2, "the first two events");
+    const before = seen.length;
+
+    // START + "Fib": a draft, at once
+    stream.frames(frames.slice(8, 10));
+    await until(() => text(agent)[0] === "Fib", "the first piece");
+    expect(agent.getDrafts()[0]).toMatchObject({
+      id: "msg-3",
+      name: "plain",
+      subagentRunId: "sub-2",
+      actor: { type: "agent", name: "plain" },
+    });
+    stream.frames(frames.slice(10, 12));
+    await until(() => text(agent)[0] === "Fibonacci in Rust.", "the next pieces");
+    // not a resume point, not the runtime's: the cursor stays and the run has heard nothing
+    expect(agent.getSnapshot().lastSeq).toBe(2);
+    expect(seen).toHaveLength(before);
+    agent.stop();
+  });
+
+  it("the log's message completes the draft: the runtime reads one plain message, once, and the draft goes with the next group", async () => {
+    const frames = golden();
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(frames.slice(0, 12)); // through the third piece
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    await until(() => text(agent)[0] === "Fibonacci in Rust.", "the draft");
+
+    // the group of event 3: CONTENT{final, offset 18, ""} + END{final}
+    stream.frames(frames.slice(12, index(frames, 3) + 1));
+    await until(() => agent.getSnapshot().lastSeq === 3, "event 3");
+    // delivered, and the draft says the log's words until the transcript has had them
+    expect(agent.getDrafts()).toMatchObject([{ id: "msg-3", final: "Fibonacci in Rust." }]);
+
+    // the next group (the status, the end of the invocation) clears it
+    stream.frames(frames.slice(index(frames, 3) + 1));
+    await until(() => agent.getSnapshot().lastSeq === 5, "the end of the run");
+    expect(agent.getDrafts()).toEqual([]);
+
+    const events = await collect(run);
+    const message = events.filter((e) => "messageId" in e && e.messageId === "msg-3");
+    expect(kinds(message)).toEqual([
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+    ]);
+    expect(message[0]).toMatchObject({ role: "assistant", name: "plain", subagentRunId: "sub-2" });
+    expect(message[1]).toMatchObject({ delta: "Fibonacci in Rust." });
+    // nothing live reaches the runtime
+    expect(JSON.stringify(events)).not.toContain("vymalo.live");
+    agent.stop();
+  });
+
+  it("the runtime gets the same events whether the reply was written live or only said by the log", async () => {
+    const live = new LiveStream();
+    const a = agentWith(() => sse(live.body)).agent;
+    a.start();
+    live.frames(golden());
+    const liveRun = (await a.nextExternalRun()) as ExternalRun;
+    await until(() => a.getSnapshot().lastSeq === 5, "the end of the live run");
+
+    // a viewer that joined after the reply: the plain triad, which `ThreadAgent` already read
+    const plain = golden().filter((f) => {
+      const mark = liveMark(f.event as LiveEvent);
+      return mark === null;
+    });
+    // the plain message of the log, as a connection without a live message says it
+    const at = index(golden(), 3);
+    const triad: GoldenFrame[] = [
+      {
+        event: {
+          type: "TEXT_MESSAGE_START",
+          messageId: "msg-3",
+          role: "assistant",
+          name: "plain",
+          subagentRunId: "sub-2",
+          metadata: { "vymalo.actor": { type: "agent", name: "plain" } },
+        },
+      },
+      {
+        event: {
+          type: "TEXT_MESSAGE_CONTENT",
+          messageId: "msg-3",
+          delta: "Fibonacci in Rust.",
+          subagentRunId: "sub-2",
+        },
+      },
+      { event: { type: "TEXT_MESSAGE_END", messageId: "msg-3", subagentRunId: "sub-2" }, id: 3 },
+    ];
+    const replay = [...plain.slice(0, 8), ...triad, ...golden().slice(at + 1)];
+    const whole = new LiveStream();
+    const b = agentWith(() => sse(whole.body)).agent;
+    b.start();
+    whole.frames(replay);
+    const plainRun = (await b.nextExternalRun()) as ExternalRun;
+    await until(() => b.getSnapshot().lastSeq === 5, "the end of the plain run");
+    expect(await collect(liveRun)).toEqual(await collect(plainRun));
+    a.stop();
+    b.stop();
+  });
+
+  it("a final that continues a draft this connection never held is not delivered: it reconnects at the last resume point and reads the message plainly", async () => {
+    const frames = golden();
+    const first = new LiveStream();
+    const second = new LiveStream();
+    const streams = [first, second];
+    const { agent, calls } = agentWith(() => sse((streams.shift() as LiveStream).body));
+    agent.start();
+    // connection 1 holds events 1 and 2, then (the START was lost) says the final of a reply it never saw
+    first.frames(frames.slice(0, 8));
+    first.frames(frames.slice(12, index(frames, 3) + 1));
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    await until(() => calls.length === 2, "the reconnect");
+    expect(calls[1]).toEqual({
+      method: "GET",
+      path: `/agui/threads/${THREAD_ID}/connect`,
+      lastEventId: "2",
+    });
+    expect(agent.getSnapshot().lastSeq).toBe(2);
+    expect(agent.getSnapshot().error).toBeNull(); // a resync is not a failure
+    expect(first.cancelled).toBe(true);
+
+    // the new connection's overlay is empty: it says the message as the log does
+    second.frames([
+      ...preamble(frames),
+      {
+        event: {
+          type: "TEXT_MESSAGE_START",
+          messageId: "msg-3",
+          role: "assistant",
+          name: "plain",
+          subagentRunId: "sub-2",
+        },
+      },
+      {
+        event: {
+          type: "TEXT_MESSAGE_CONTENT",
+          messageId: "msg-3",
+          delta: "Fibonacci in Rust.",
+          subagentRunId: "sub-2",
+        },
+      },
+      { event: { type: "TEXT_MESSAGE_END", messageId: "msg-3", subagentRunId: "sub-2" }, id: 3 },
+      ...frames.slice(index(frames, 3) + 1),
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 5, "the end of the run");
+    const events = await collect(run);
+    expect(kinds(events.filter((e) => "messageId" in e && e.messageId === "msg-3"))).toEqual([
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+    ]);
+    agent.stop();
+  });
+
+  it("a cut connection forgets its drafts: the new one says the text again from the start", async () => {
+    const frames = golden();
+    const first = new LiveStream();
+    const second = new LiveStream();
+    const streams = [first, second];
+    const { agent } = agentWith(() => sse((streams.shift() as LiveStream).body));
+    agent.start();
+    first.frames(frames.slice(0, 11)); // START, "Fib", "onacci "
+    await agent.nextExternalRun();
+    await until(() => text(agent)[0] === "Fibonacci ", "the draft");
+    first.cut();
+    await until(() => agent.getDrafts().length === 0, "the draft to be forgotten");
+    await until(() => streams.length === 0, "the reconnect");
+
+    second.frames([
+      ...preamble(frames),
+      frames[8] as GoldenFrame, // START
+      { event: { ...(frames[9] as GoldenFrame).event, delta: "Fibonacci " } },
+    ]);
+    await until(() => text(agent)[0] === "Fibonacci ", "the text again");
+    agent.stop();
+  });
+
+  it("an abandoned reply is dropped, and the message the log says later is an ordinary one", async () => {
+    const frames = golden();
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(frames.slice(0, 10)); // through "Fib"
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    await until(() => text(agent)[0] === "Fib", "the draft");
+    stream.frames([
+      {
+        event: {
+          type: "TEXT_MESSAGE_END",
+          messageId: "msg-3",
+          subagentRunId: "sub-2",
+          metadata: { "vymalo.live": { abandoned: true } },
+        },
+      },
+    ]);
+    await until(() => agent.getDrafts().length === 0, "the draft to go");
+    // the log's message under another id (the overlay never reuses one), as a plain triad
+    stream.frames([
+      {
+        event: {
+          type: "TEXT_MESSAGE_START",
+          messageId: "msg-3~final",
+          role: "assistant",
+          name: "plain",
+          subagentRunId: "sub-2",
+        },
+      },
+      {
+        event: {
+          type: "TEXT_MESSAGE_CONTENT",
+          messageId: "msg-3~final",
+          delta: "Fibonacci in Rust.",
+          subagentRunId: "sub-2",
+        },
+      },
+      {
+        event: { type: "TEXT_MESSAGE_END", messageId: "msg-3~final", subagentRunId: "sub-2" },
+        id: 3,
+      },
+      ...frames.slice(index(frames, 3) + 1),
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 5, "the end of the run");
+    const events = await collect(run);
+    expect(events.filter((e) => e.type === "TEXT_MESSAGE_START")).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("vymalo.live");
+    agent.stop();
+  });
+
+  it("an abandoned END inside the group that closes the invocation is read when it arrives, and the group is delivered whole", async () => {
+    const frames = golden();
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(frames.slice(0, 10));
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    await until(() => text(agent)[0] === "Fib", "the draft");
+    // the log says the invocation is over: the overlay ends the live message just before
+    stream.frames([
+      {
+        event: {
+          type: "TEXT_MESSAGE_END",
+          messageId: "msg-3",
+          subagentRunId: "sub-2",
+          metadata: { "vymalo.live": { abandoned: true } },
+        },
+      },
+      { event: { type: "SUBAGENT_FINISHED", subagentRunId: "sub-2" }, id: 3 },
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 3, "the group");
+    expect(agent.getDrafts()).toEqual([]);
+    stream.frames(frames.slice(-2)); // the state and the end of the run
+    await until(() => agent.getSnapshot().lastSeq === 5, "the end of the run");
+    const events = await collect(run);
+    expect(kinds(events)).not.toContain("TEXT_MESSAGE_END");
+    agent.stop();
+  });
+
+  it("the end of the run clears what was still being written", async () => {
+    const frames = golden();
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(frames.slice(0, 10));
+    await agent.nextExternalRun();
+    await until(() => text(agent)[0] === "Fib", "the draft");
+    // a faulty sender: the run closes with the reply still open
+    stream.frames([
+      {
+        event: {
+          type: "RUN_FINISHED",
+          threadId: THREAD_ID,
+          runId: "run-1",
+          outcome: { type: "success" },
+        },
+        id: 3,
+      },
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 3, "the end of the run");
+    expect(agent.getDrafts()).toEqual([]);
+    expect(agent.getSnapshot().openRun).toBeNull();
+    agent.stop();
+  });
+
+  it("a live frame that carries an `id:` anyway is not a resume point", async () => {
+    const frames = golden();
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(frames.slice(0, 9)); // through START
+    await agent.nextExternalRun();
+    await until(() => agent.getDrafts().length === 1, "the draft");
+    stream.frames([{ ...(frames[9] as GoldenFrame), id: 99 }]);
+    await until(() => text(agent)[0] === "Fib", "the piece");
+    expect(agent.getSnapshot().lastSeq).toBe(2);
     agent.stop();
   });
 });
