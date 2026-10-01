@@ -236,7 +236,14 @@ and the agents agree.
   another. Today adam-coder takes one static `GITHUB_TOKEN`.
 - git stays the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)):
   what outlives a workspace is what was pushed.
-- Where a workspace lives across workers is open question 24.
+- Where a workspace lives across workers was open question 24 (closed 2026-10-01: `shared` placement and one coder process by default).
+
+> **Note, 2026-10-01: built (MVP slice 7).** adam-coder (adam-rs `1021836`) starts with no repository, in a scratch project it deletes when the task ends, and publishes it to a repository the person names;
+> a workspace holds several repositories, and a repository the person did not name joins it, or is created for them, only after they say yes to a form (the model never grants). It reads GitHub, read-only, through the
+> official GitHub MCP server, and holds the credential of one installation in its own environment, a GitHub App or a token, never in a message or the log. The trusted tools (the named-repository rule, the checks bound
+> to the pushed commit) stay inside the coder, not in a server of their own (decided for the MVP, 2026-10-01, in [adam-rs ADR 0009](https://github.com/vymalo/another-adam-rs/blob/1021836a1887610c4639de15f2289b26245b9ce4/docs/decisions/0009-github-per-installation-read-through-mcp.md); the owner may revisit it). Still open: a job that pushes to several repositories has the gate judge only the last (question 42), and publishing the
+> coder's checks as GitHub check runs. The orchestrator did not change ([ADR 0014](decisions/0014-adam-coder-default-agent-over-a2a.md#status-note-2026-10-01-workspaces-github-per-installation-and-repositories-created-on-request),
+> [`dev/README.md`](../dev/README.md#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)).
 
 > **Note, 2026-10-01: the work environment.** The owner asked "Can't we use devcontainers to build work
 > environments?" and decided ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md))
