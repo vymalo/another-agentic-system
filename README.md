@@ -1,5 +1,7 @@
 # another-agentic-system
 
+<img src="web/public/brand/panda.svg" alt="A boring giant panda in three colours, the mark of another-agentic-system" width="96" height="96" align="right">
+
 A protocol-agnostic **orchestration layer** for multi-agent work. You start a
 job from a chat — or another system starts one over A2A, MCP or a webhook.
 Agents plan it, work it in parallel, verify it against real checks, review it,

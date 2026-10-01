@@ -212,8 +212,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                   <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
                     {leading}
                   </header>
-                  {/* the one soft glow of the design, behind the greeting and the box (DESIGN.md) */}
-                  <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[radial-gradient(ellipse_60%_45%_at_50%_48%,color-mix(in_oklab,var(--primary)_9%,transparent),transparent)]">
+                  <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
                     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
                       <NewChatGreeting agents={agents} selection={effective} />
                       <AgentsProblem agents={agents} />

@@ -2,8 +2,12 @@
 
 The owner, after trying the previous version: "It should feel like a classical chat, not a machine
 to machine chat interface", "It should look like a gemini chat, with custom components … very cute
-and simple", with the agent's steps always visible. This brief is the contract the components in
-`src/` follow; the screenshots in `e2e/__screens__/` (`pnpm screens`) show the result.
+and simple", with the agent's steps always visible. A day later, on seeing it (2026-10-01): "The UI
+is currently TOO google gemini-like… change the icon to something custom for us… The idea of the
+logo is 'boring giant panda, tri-color'." So the structure stays (a classical chat) and the look is
+ours: the panda, ink actions, one bamboo green, warm neutrals (see "Brand" and "Colour"). This brief
+is the contract the components in `src/` follow; the screenshots in `e2e/__screens__/`
+(`pnpm screens`) show the result.
 
 ## References
 
@@ -12,24 +16,63 @@ structure, not the branding.
 
 | Reference | What we took |
 |---|---|
-| Gemini, home ([965e3a7f](https://refero.design/pages/965e3a7f-d7dc-45ae-8cc1-12025b10b1fd), [6994cae8](https://refero.design/pages/6994cae8-03f9-4ef0-9fb5-95a45469cf52)) | Quiet left sidebar (New chat, Recent), a centered greeting over one pill-shaped composer, lots of air |
-| Gemini, conversation ([dc0889ae](https://refero.design/pages/dc0889ae-1e9f-49de-8465-5d810e0d6f18)) | The user's words in a soft grey bubble on the right; the answer as plain prose under a small label, no bubble; a floating rounded composer with a round send button |
-| ChatGPT, conversation ([2ed2ffc3](https://refero.design/pages/2ed2ffc3-95b2-417c-a3fa-df50f4cb22e4)) | Centered reading column around 760 px; title in a minimal top bar with the actions on the right; a disclaimer line under the composer |
-| Claude ([f42e56ca](https://refero.design/pages/f42e56ca-6f9d-45b8-b501-ce30add0f259)) | "Reply to Claude…" placeholder for the next turn; the model named inside the composer |
-| Meta AI ([6c1e2ac6](https://refero.design/pages/6c1e2ac6-e65a-4290-8ae5-81ad61ea200a)) | The assistant's mark once above its turn, then prose; generous spacing between turns |
+| ChatGPT, conversation ([2ed2ffc3](https://refero.design/pages/2ed2ffc3-95b2-417c-a3fa-df50f4cb22e4)) | Centered reading column around 760 px; title in a minimal top bar with the actions on the right; a disclaimer line under the composer; ink (near-black) for the primary action |
+| Claude ([f42e56ca](https://refero.design/pages/f42e56ca-6f9d-45b8-b501-ce30add0f259)) | "Reply to Claude…" placeholder for the next turn; the model named inside the composer; warm neutrals |
+| Meta AI ([6c1e2ac6](https://refero.design/pages/6c1e2ac6-e65a-4290-8ae5-81ad61ea200a)) | The assistant's avatar once above its turn, then prose; generous spacing between turns |
 | Copilot ([d81060e5](https://refero.design/pages/d81060e5-9955-4fb2-a8d6-b4ccaa97c312)), Grok ([0ac86436](https://refero.design/pages/0ac86436-063a-45a1-a04d-81042b245675)) | A composer with a soft shadow and chips inside it; a two-line greeting (statement, then a muted question) |
 | Cursor agents (flow [9922](https://refero.design/flows/9922): [16261b66](https://refero.design/pages/16261b66-bd9b-4403-94da-7d88c4c15157), [8b09e132](https://refero.design/pages/8b09e132-8a3e-4c4b-b8cf-617b51ba3129), [d7a49941](https://refero.design/pages/d7a49941-aef5-4f63-8d48-a6e66930e104)) | An agent's steps as quiet single lines ("Completing setup", commands in monospace in a light box) between its messages; the follow-up composer names the model |
-| Bard, dark ([195db751](https://refero.design/pages/195db751-c533-4953-9247-824167e79f03)) | Dark mode: near-black canvas, the sidebar one step lighter, the sparkle as the assistant's avatar |
 
 What we reject: bordered cards around every event, uppercase "ARTIFACT" badges, raw JSON names
-(`pull_request`), status lines repeating the agent's words, a filled blue user bubble, gradients
-beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini's home).
+(`pull_request`), status lines repeating the agent's words, a filled user bubble, decorative
+gradients and glows (the fade under the scroll and the shimmer of "starting" are function, not
+decoration).
+
+### What we left behind
+
+The first version took its look from Gemini and Bard; the owner found it too much like them
+(2026-10-01, quoted above). The structure those screens taught is still ours; their look is not.
+
+| Reference | What we took then | What we do now |
+|---|---|---|
+| Gemini, home ([965e3a7f](https://refero.design/pages/965e3a7f-d7dc-45ae-8cc1-12025b10b1fd), [6994cae8](https://refero.design/pages/6994cae8-03f9-4ef0-9fb5-95a45469cf52)) | Quiet left sidebar (New chat, Recent), a centered greeting over one pill-shaped composer, lots of air; a faint radial glow behind the greeting | The sidebar, the greeting and the composer stay. The glow is gone (a plain canvas) and the greeting is "What should we get done?" under the panda |
+| Gemini, conversation ([dc0889ae](https://refero.design/pages/dc0889ae-1e9f-49de-8465-5d810e0d6f18)) | The user's words in a soft grey bubble on the right; the answer as plain prose under a small label, no bubble; a floating rounded composer with a round send button | Same, in warm neutrals; the round send button is ink, not blue |
+| Bard, dark ([195db751](https://refero.design/pages/195db751-c533-4953-9247-824167e79f03)) | Dark mode: near-black canvas, the sidebar one step lighter, the four-pointed sparkle as the assistant's avatar | A warm near-black canvas (`#141614`); the avatar is the agent's own letter, the panda is the product's |
+| Material blue accent, the sparkle's blue-to-pink gradient, a pastel tile behind it | `#0b57d0` / `#a8c7fa`, `#131314` / `#1b1c1e` | Ink for actions and one bamboo green (`--brand`) for what is ours |
+
+## Brand
+
+The mark is a **boring giant panda, in three colours**: bamboo green `#3F7341`, ink `#161D17`, cream
+`#FAF7EF`; half-closed eyes, a bamboo leaf in its mouth. It is the owner's drawing, traced to one SVG
+(`public/brand/panda.svg`, a 512 viewBox, about 12 KB, exactly three fills, clipped to a disc, no outer
+ring). The fills do not change with the colour scheme. Decision (owner, 2026-10-01): **the full mark
+at every size**, with its body and bamboo; a head-only drawing was made and is not shipped.
+
+| Where | What |
+|---|---|
+| Sidebar lockup | the mark at 28 px and the wordmark `another·agentic`: lower case, Inter 600, 15 px, tight tracking, the dot in `--brand` (`components/brand/panda-mark.tsx`) |
+| New chat | the mark at 72 px (96 px from `sm`) over the greeting |
+| Tab icon | `src/app/icon.svg` and `favicon.ico` (16, 32, 48 px): the same drawing framed 1.25 times closer and cropped to a circle round the face, because at 16 px the whole body is a smudge and the face is still a panda |
+| iOS | `src/app/apple-icon.png`, 180 px: the mark on a full square of the green (iOS fills transparency with black) |
+| Install | `src/app/manifest.ts`: `another·agentic`, theme `#3F7341`, icons `public/brand/icon-192.png`, `icon-512.png` and the maskable `icon-maskable-512.png` (the mark inside the 80 % safe circle, on the green) |
+| Browser chrome | `viewport.themeColor`: white in light, `#141614` in dark |
+| README | the repository README shows `public/brand/panda.svg` at 96 px |
+
+`pnpm brand:icons` (`scripts/brand-icons.mjs`) regenerates `icon.svg`, `favicon.ico`, `apple-icon.png` and
+the three manifest icons from `public/brand/panda.svg`, rendered by the Chromium Playwright already
+pins; `components/brand/brand-assets.test.ts` holds the files to three fills, no `<image>`, no
+`<script>`, 16 KB and the right pixel sizes.
+
+**The panda is the house, not an agent.** An agent is a 28 px circle with the first letter of its
+name (Inter 600, 13 px) on one of six sober tints (sage, sand, slate, clay, plum, teal), chosen by a
+stable hash of the agent's id, so an agent keeps its colour everywhere (`components/brand/agent-avatar.tsx`;
+every letter is at least 4.5:1 on its tint, light and dark). It is `aria-hidden`: the name is text
+beside it. The orchestrator's own lines (checks, CI) keep their step icons. The panda itself has no name.
 
 ## Layout
 
-- **Sidebar** 272 px, one step off the canvas (`--sidebar`), no border in light mode. Top: the mark
-  and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
-  Previous 7 days, Previous 30 days, Older, by local calendar day) as single-line rows with a small live dot for a working or waiting
+- **Sidebar** 272 px, one step off the canvas (`--sidebar`), no border in light mode. Top: the panda
+  with the wordmark, and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
+  Previous 7 days, Previous 30 days, Older, by local calendar day) as single-line rows with a small live dot (green when working, amber when waiting) for a working or waiting
   thread. Collapsible on a desktop (remembered per browser); a sheet from the left on a phone.
 - **Top bar** 56 px, transparent: the title (one line), the agent as a pill, the thread's state as a
   pill, and an overflow menu (Export JSON). On a phone the menu button opens the sheet.
@@ -37,16 +80,16 @@ beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini
 - **Composer** sticky at the bottom of the column, a 24 px-radius surface with a soft shadow: the
   text (1 to 8 lines), then a row with the agent pill on the left and a 36 px round Send / Stop
   button on the right. A one-line disclaimer under it.
-- **Empty state** (new chat): the mark, a greeting and what the chosen agent does, the composer in
-  the middle of the page over a faint radial glow of the accent, and suggestion chips under it (a
-  chip fills the box, it does not send); the agent and release pickers are pills inside the
-  composer.
+- **Empty state** (new chat): the panda, the greeting "What should we get done?" and what the chosen
+  agent does, the composer in the middle of the page on the plain canvas (no glow), and suggestion
+  chips under it (a chip fills the box, it does not send); the agent and release pickers are pills
+  inside the composer.
 
 ## A turn
 
 - **The person**: a soft bubble on the right (`--bubble`), 20 px radius with a 6 px corner at the top
   right, max 85 % of the column, markdown inside.
-- **The agent**: its mark (a 28 px sparkle) and its name once, then, in order: the **steps**, its
+- **The agent**: its avatar (a 28 px circle with its first letter, see "Brand") and its name once, then, in order: the **steps**, its
   **words** as prose, and its **cards**. Nothing of the agent's sits in a bubble.
 - **Steps** (always visible, never collapsed behind a toggle): a compact list, one 28 px line per
   step, an icon in a 20 px column joined by a hairline. The live step spins; finished steps are a
@@ -54,7 +97,7 @@ beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini
   "Pushed agent/fix", "Checks passed", "Opened pull request #12", "Checks failed — trying again
   (2/3)". A command (`$ …`) is monospace in a light box, one line, with Show more. Findings open in
   place. Past 30 steps the earliest fold behind "Show N earlier steps".
-- **Before the first event** a shimmering "Coder is starting…" line under the mark.
+- **Before the first event** a shimmering "Coder is starting…" line under the avatar.
 - **Cards** (after the words): a pull request card (repository, number, title, branch chip, Open
   button), a file card; A2UI surfaces as they are. Errors are soft callouts in the flow, never
   alerts on replay.
@@ -75,24 +118,31 @@ beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini
 
 ## Colour
 
-Neutral canvas, one blue accent, semantic colours only for state (always with a word and an icon).
+A warm neutral canvas, **ink for the actions** (the send button, primary buttons: near-black in light,
+near-white in dark), **one bamboo green, `--brand`, for what is ours** (links, the focus ring, the live
+dot, the dot in the wordmark, the live step, a chosen option), and semantic colours only for state (always with a word
+and an icon). The working badge is neutral ink: the green says "alive", the words say what.
 
 | Token | Light | Dark |
 |---|---|---|
-| `--background` | `#ffffff` | `#131314` |
-| `--sidebar` | `#f3f5f8` | `#1b1c1e` |
-| `--bubble` (user) | `#eef2f7` | `#2a2c2f` |
-| `--card` | `#ffffff` | `#1c1d1f` |
-| `--foreground` | `#1b1c1e` | `#e6e7e9` |
-| `--muted-foreground` | `#5b5f66` | `#a3a7ad` |
-| `--border` | `#e4e7ec` | `#2f3237` |
-| `--primary` | `#0b57d0` | `#a8c7fa` |
+| `--brand` | `#3f7341` | `#8dc58b` |
+| `--background` | `#ffffff` | `#141614` |
+| `--sidebar` / `--sidebar-accent` | `#f6f5f0` / `#eae8e0` | `#1b1e1b` / `#2a2e2a` |
+| `--bubble` (user) | `#f1f0ea` | `#282c28` |
+| `--card` / `--popover` | `#ffffff` / `#ffffff` | `#1a1d1a` / `#222622` |
+| `--foreground` | `#1a1d1a` | `#e8e9e4` |
+| `--muted-foreground` | `#5c6058` | `#a6aba3` |
+| `--muted` / `--secondary` | `#f3f2ec` | `#232723` |
+| `--border` / `--input` | `#e7e5dd` / `#dad8cf` | `#2e332e` / `#3a3f3a` |
+| `--primary` (ink) / `--primary-foreground` | `#1a1d1a` / `#ffffff` | `#f2f1ea` / `#141614` |
+| `--ring` | `var(--brand)` | `var(--brand)` |
 | `--success` | `#137333` | `#81c995` |
 | `--destructive` | `#b3261e` | `#f2b8b5` |
 | `--warning` | `#8a5300` | `#f5c46a` |
 | `--verifying` | `#6b3fa0` | `#cfb6f7` |
 
-Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11y.spec.ts`.
+`--brand` as text is at least 4.5:1 on every surface it sits on (5.6:1 on white; 6.9:1 or better in
+dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11y.spec.ts`.
 
 ## Motion
 
@@ -121,8 +171,8 @@ quiet as the rest of the page, and is a form in the plainest sense:
 
 - Each question is a **group** named by its words (the legend: 14 px, weight 500; "(optional)" in muted text after it when it need
   not be answered). Its options are **tiles**: a 12 px-radius, 1 px `--border` row at least 44 px tall (a thumb, not a pointer),
-  the native radio button (a check box for several) in `--primary` at 16 px, the label, and the option's description under it in
-  12 px muted text. The **whole tile** is the click target; a chosen one takes a `--primary` border and a 5 % `--primary` wash; the
+  the native radio button (a check box for several) in `--brand` at 16 px, the label, and the option's description under it in
+  12 px muted text. The **whole tile** is the click target; a chosen one takes a `--brand` border and a 5 % `--brand` wash; the
   focus ring is the page's ring (`ring-3`, `--ring` at 50 %), on the tile.
 - **Other** is a tile of its own: the choice, "Other", and a text box beside it; typing in the box turns the choice on.
 - Under the questions, **one** primary button ("Send answers", or the agent's words) that waits for every required question, and a

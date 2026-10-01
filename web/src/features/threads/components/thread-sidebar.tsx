@@ -10,7 +10,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ReactNode, type Ref, useEffect, useMemo, useState } from "react";
-import { BrandMark } from "@/components/brand-mark";
+import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,7 +33,7 @@ function LiveMark({ state }: { state: ApiThread["state"] }) {
       <span className="flex shrink-0 items-center">
         <span
           aria-hidden="true"
-          className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse"
+          className="size-1.5 rounded-full bg-brand motion-safe:animate-pulse"
         />
         <span className="sr-only"> (working)</span>
       </span>
@@ -142,9 +142,9 @@ function SidebarTop({
         href="/"
         className="flex items-center gap-2 rounded-full text-[0.9375rem] font-semibold tracking-tight text-foreground no-underline"
       >
-        <BrandMark />
+        <PandaMark size={28} />
         <span>
-          another<span className="text-muted-foreground">·</span>agentic
+          another<span className="text-brand">·</span>agentic
         </span>
       </Link>
       {onCollapse ? (
@@ -156,7 +156,10 @@ function SidebarTop({
           aria-label="Close sidebar"
           title="Close sidebar"
           onClick={onCollapse}
-          className="size-9 rounded-full text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+          // colours only: `transition-all` would also transition the `visibility` this button
+          // inherits from the sidebar, and the focus moved here on opening could land on its first
+          // frame, still hidden
+          className="size-9 rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
         >
           <PanelLeftCloseIcon aria-hidden="true" className="size-4.5" />
         </Button>

@@ -28,8 +28,9 @@ const LABELS: Record<ThreadState, string> = {
 const YOUR_TURN = "Your turn";
 
 const TONE: Record<ThreadState, string> = {
-  queued: "bg-primary/10 text-primary",
-  working: "bg-primary/10 text-primary",
+  // neutral ink: the live dot and the live step carry the green, a badge only says it in words
+  queued: "bg-muted text-foreground",
+  working: "bg-muted text-foreground",
   verifying: "bg-verifying/10 text-verifying",
   blocked: "bg-warning-soft text-warning",
   done: "bg-success/10 text-success",

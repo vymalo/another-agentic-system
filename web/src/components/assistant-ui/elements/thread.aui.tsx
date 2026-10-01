@@ -10,7 +10,7 @@ import { ArrowDownIcon, MessageCircleQuestionIcon } from "lucide-react";
 import type { FC, ReactNode } from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
-import { BrandMark } from "@/components/brand-mark";
+import { AgentAvatar } from "@/components/brand/agent-avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnswerBubble } from "@/features/chat/components/answer-bubble";
@@ -185,13 +185,13 @@ export const UserMessage: FC = () => {
   );
 };
 
-/** The agent's mark and name, once per turn: `coder · coder-r47` (the name, then the revision). */
+/** The agent's avatar and name, once per turn: `coder · coder-r47` (the name, then the revision). */
 function TurnHeader({ actor, at }: { actor: ApiActor | undefined; at?: Date | undefined }) {
   const { agentId } = useThreadView();
   const name = actor?.name ?? agentId;
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <BrandMark />
+      <AgentAvatar agentId={agentId ?? name ?? "agent"} name={name ?? "Agent"} />
       {name ? (
         <WithTime at={at}>
           <span data-slot="actor-label" className="min-w-0 truncate text-sm">
