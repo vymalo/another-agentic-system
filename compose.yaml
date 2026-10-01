@@ -89,12 +89,12 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-01 (ghcr API, anonymous pull):
-# `coder:sha-f882b91` is one linux/amd64 manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision f882b910b620ea583130a0517b4e52c5f7939179, and the digest below is the sha-256 of
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 2.9 GB. Verified 2026-10-01 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-c13ddf1` is one linux/amd64 manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision c13ddf1a32a1424affa20043f6bd860d93c536cc, and the digest below is the sha-256 of
 # the manifest the registry returned. `adam-agent` ships INSIDE this image beside `adam-coder` (adam-rs ADR 0005): there is no
 # second image to pull, and a service that serves a folder is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-f882b91@sha256:7c54961821f93b86e99cd6d0338350d06da1d0e73c2aee46ddfba8ead0f4138d
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-c13ddf1@sha256:a77a28902df4759608927f9ab6f4f3257023e2188a73c7ee056351e078b75700
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -123,6 +123,10 @@ x-adam-agent-env: &adam-agent-env
   MODEL_BASE_URL: http://mock-model:8080/v1
   MODEL_API_KEY: mock-api-key # dummy: the mock accepts anything
   ADAM_AGENT_DIR: /etc/adam/agent # the folder each service mounts there: its name, card, instructions, tools
+  # Development only. Plain http between containers, on purpose: the thread's own tools (`thread-tools/v1`, the
+  # orchestrator at http://orchestrator:8080, announced in every message since adam-rs d411249, whose card lists it) and the
+  # MCP servers a folder names (the researcher's mock web search).
+  MCP_ALLOW_INSECURE: "true"
 
 services:
   postgres:
@@ -373,7 +377,10 @@ services:
   # coder has `run_command` (look around without using a check cycle), bash, a default base branch and a
   # missing-toolchain report; since e9bfea3 a stop without a pull request is a question and it works only on a
   # repository the person named; since ae540e9 it reports its checks as a `checks` artifact. Since f882b91 the same
-  # image also carries `adam-agent`, which the two services below run (nothing of the coder changed).
+  # image also carries `adam-agent`, which the two services below run (nothing of the coder changed). Since d411249 the coder asks
+  # with Choices: its card lists A2UI v0.9.1, `ui-catalog/v1` and `thread-tools/v1`, so the orchestrator sends it the screen's catalog
+  # and the address of the thread's own tools (`MCP_ALLOW_INSECURE` below), and `ask_user` may carry several questions at once
+  # that the person answers as one form (dev/choices-e2e.sh; dev/README.md, "Choices"). `adam-agent` lists the same extensions.
   #
   # What the coder says and offers is the folder mounted at /etc/adam/agent (ADAM_AGENT_DIR): dev/coder/agent, vendored
   # from bin/adam-coder/agent upstream (dev/coder/UPSTREAM). It is read once, at startup, so a change to it needs a
@@ -413,6 +420,10 @@ services:
       ALLOW_LOCAL_REPOS: "true"
       # The mounted folder below: what the coder says and offers, read at startup. Unset, it would use the copy in the image.
       ADAM_AGENT_DIR: /etc/adam/agent
+      # Development only. Every message the orchestrator sends carries the address of the thread's own tools
+      # (`thread-tools/v1`, THREAD_TOOLS_URL: http://orchestrator:8080), and that is an MCP server over plain http on
+      # another host, which the coder reaches only when it is allowed on purpose. Without it the coder asks in text.
+      MCP_ALLOW_INSECURE: "true"
     ports:
       - "127.0.0.1:${CODER_PORT:-8090}:8080"
     volumes:
@@ -478,10 +489,11 @@ services:
       - ${CHAT_AGENT_DIR:-./dev/agents/chat/agent}:/etc/adam/agent:ro # read-only; CHAT_AGENT_DIR points the mount at a copy
 
   # A researcher: searches the web through the MCP server its folder names (agent/mcp.json: `search`, the mock web search)
-  # and answers with the sources it found. The folder holds the server's URL and the NAME of the token (`${SEARCH_MCP_TOKEN}`
+  # and answers with the sources it found, and, when the screen's catalog has `Cards` and `Mermaid` (adam-rs c13ddf1), shows
+  # them as cards and a graph beside its words (dev/cards-e2e.sh; dev/README.md, "Cards and Mermaid"). The folder holds the server's URL and the NAME of the token (`${SEARCH_MCP_TOKEN}`
   # in its headers); the value is this service's environment. The mock is plain http on the compose network, which a
-  # deployment must allow on purpose (MCP_ALLOW_INSECURE: development only). A worker connects the server at startup, so
-  # it waits for `mock-mcp-search` to be healthy.
+  # deployment must allow on purpose (MCP_ALLOW_INSECURE: development only, set in `x-adam-agent-env`). A worker connects the
+  # server at startup, so it waits for `mock-mcp-search` to be healthy.
   researcher:
     <<: *adam-agent
     depends_on:
@@ -497,7 +509,6 @@ services:
       A2A_BEARER_TOKENS: dev-researcher-token # the orchestrator sends it as RESEARCHER_A2A_TOKEN
       PUBLIC_URL: http://researcher:8080/
       SEARCH_MCP_TOKEN: dev-search-token # the bearer token of mock-mcp-search
-      MCP_ALLOW_INSECURE: "true" # development only: the search server is plain http on the compose network
     ports:
       - "127.0.0.1:${RESEARCHER_PORT:-8098}:8080"
     volumes:
