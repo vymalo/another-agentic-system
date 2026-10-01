@@ -2,7 +2,7 @@
 
 use jiff::{Timestamp, Unit};
 use orch_core::{
-    Actor, AgentId, AgentTarget, Event, EventBody, Job, ThreadId, ThreadRecord, UserId,
+    Actor, AgentId, AgentTarget, Event, EventBody, ForkedFrom, Job, ThreadId, ThreadRecord, UserId,
 };
 use orch_ports::{
     AgentBinding, InboxId, InboxItem, OutboxId, OutboxItem, OutboxPayload, StoreError,
@@ -17,7 +17,8 @@ use crate::error::store_err;
 /// Column list of `threads`, in the order [`thread_from_row`] reads them by name.
 macro_rules! thread_cols {
     () => {
-        "id, owner, title, agent_id, release, state, job, version, last_seq, created_at, updated_at"
+        "id, owner, title, agent_id, release, state, job, version, last_seq, created_at, updated_at, \
+         forked_from, forked_at, fork_kind"
     };
 }
 
@@ -88,6 +89,21 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
     let job: serde_json::Value = get(row, "job")?;
     let job: Job =
         serde_json::from_value(job).map_err(|e| StoreError::corrupt_with("thread job", e))?;
+    let fork_kind: Option<String> = get(row, "fork_kind")?;
+    let forked_at: Option<i64> = get(row, "forked_at")?;
+    let forked_from = match (fork_kind, forked_at) {
+        (Some(kind), Some(seq)) => Some(ForkedFrom {
+            thread_id: get::<Option<uuid::Uuid>>(row, "forked_from")?.map(ThreadId),
+            seq,
+            kind: parse_enum("fork kind", &kind)?,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(StoreError::corrupt(
+                "a thread row has half of a fork origin",
+            ));
+        }
+    };
     Ok(ThreadRecord {
         id: ThreadId(get(row, "id")?),
         owner: UserId::new(&get::<String>(row, "owner")?),
@@ -99,6 +115,7 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         state: parse_enum("thread state", &state)?,
         job,
         version: get(row, "version")?,
+        forked_from,
         last_seq: get(row, "last_seq")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,

@@ -271,7 +271,12 @@ async fn other_users_threads_are_not_found() {
         app.export_thread(&bob(), t.id).await,
         Err(AppError::NotFound)
     ));
-    assert!(app.list_threads(&bob(), None, 50).await.unwrap().is_empty());
+    assert!(
+        app.list_threads(&bob(), None, 50, false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let random = ThreadId(Uuid::from_u128(5));
     assert!(matches!(
         app.get_thread(&alice(), random).await,
@@ -399,12 +404,15 @@ async fn threads_list_newest_first_with_a_cursor() {
     let a = create(&app, &alice(), "plain", "a").await;
     let b = create(&app, &alice(), "plain", "b").await;
     let c = create(&app, &alice(), "plain", "c").await;
-    let all = app.list_threads(&alice(), None, 50).await.unwrap();
+    let all = app.list_threads(&alice(), None, 50, false).await.unwrap();
     assert_eq!(
         all.iter().map(|t| t.id).collect::<Vec<_>>(),
         [c.id, b.id, a.id]
     );
-    let page = app.list_threads(&alice(), Some(c.id), 1).await.unwrap();
+    let page = app
+        .list_threads(&alice(), Some(c.id), 1, false)
+        .await
+        .unwrap();
     assert_eq!(page.iter().map(|t| t.id).collect::<Vec<_>>(), [b.id]);
 }
 

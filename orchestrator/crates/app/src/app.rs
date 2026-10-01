@@ -6,17 +6,19 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
-    LiveText, Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource,
-    UiCatalogData, UserId, WatchKey, check_title, is_commit_hash, repo_key, report, transition,
+    AgentId, AgentInfo, AgentTarget, BranchPoint, Classify, Command, Event, EventKind, ForkKind,
+    ForkPoint, ForkSource, GatePolicy, Input, Job, LiveText, MAX_FORK_FAMILY, Origin, Replacement,
+    Snapshot, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource,
+    UiCatalogData, UserId, WatchKey, branch_points, check_title, copied, family_root, fork_commit,
+    fork_cut, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
     AgentBinding, AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentListing,
-    AgentRegistry, AgentTransport, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, InboxFinal,
-    InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord,
-    NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry, SourceStatus,
-    StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
+    AgentRegistry, AgentTransport, BindingUpdate, Clock, Commit, CommitOutcome, ForkOrigin, IdGen,
+    InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox,
+    NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry,
+    SourceStatus, StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
@@ -210,6 +212,79 @@ pub enum Creation {
     Exists,
 }
 
+/// Where a person asks to cut a thread, for [`App::fork_thread`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkAt {
+    /// After the turn that holds the event `seq`: "fork from here", and "continue with another
+    /// agent" when the request has a target.
+    AfterTurn {
+        /// An event of the turn to copy.
+        seq: i64,
+    },
+    /// Replace the message of a person at `seq` with `text`: an edit, a branch.
+    Replace {
+        /// The message to replace.
+        seq: i64,
+        /// What the person says instead.
+        text: String,
+        /// The id the screen gives the new message.
+        message_id: Option<String>,
+    },
+}
+
+/// What a person asks of [`App::fork_thread`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkRequest {
+    /// Where to cut.
+    pub at: ForkAt,
+    /// The agent the fork talks to; the parent's when `None`. Validated like a new thread's.
+    pub target: Option<AgentTarget>,
+    /// The id of the new thread, which the caller chose, so that a repeat of the request is
+    /// recognised: the fork it made is answered again, nothing is made twice.
+    pub id: Option<ThreadId>,
+}
+
+/// Result of [`App::fork_thread`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forked {
+    /// The fork.
+    pub thread: ThreadRecord,
+    /// `false` when the request named the id of a fork of this thread that exists already: this
+    /// request made nothing.
+    pub created: bool,
+}
+
+/// The messages of a thread that have other versions (see [`App::branches`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branches {
+    /// The thread the family of edits started from.
+    pub root: ThreadId,
+    /// The messages of the thread asked about that have other versions, in the order they come.
+    pub points: Vec<BranchView>,
+}
+
+/// One message with other versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchView {
+    /// The seq of the message in the thread asked about.
+    pub seq: i64,
+    /// Which of `siblings` is the thread asked about's own.
+    pub index: usize,
+    /// Every version: the original first, then the edits in the order they were made.
+    pub siblings: Vec<SiblingView>,
+}
+
+/// A version of a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiblingView {
+    /// The thread that has it.
+    pub thread_id: ThreadId,
+    /// The seq of the message in that thread.
+    pub seq: i64,
+    /// That thread's title.
+    pub title: String,
+}
+
 /// Result of [`App::apply`].
 // One value per input; the thread carries its job ledger, which makes `Applied` large.
 #[allow(clippy::large_enum_variant)]
@@ -249,6 +324,11 @@ fn validate_text(text: &str) -> Result<(), AppError> {
         )));
     }
     Ok(())
+}
+
+/// Whether `thread` was forked from `parent`.
+fn is_fork_of(thread: &ThreadRecord, parent: ThreadId) -> bool {
+    thread.forked_from.and_then(|f| f.thread_id) == Some(parent)
 }
 
 /// A catalog an input carries is checked again here, as an action's sizes are: whatever surface
@@ -660,14 +740,230 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// The user's threads, newest first.
+    /// The user's threads, newest first. The threads made by an edit of a message are branches of
+    /// a conversation the list already shows: they are listed only with `include_edits`.
     pub async fn list_threads(
         &self,
         user: &UserId,
         before: Option<ThreadId>,
         limit: u32,
+        include_edits: bool,
     ) -> Result<Vec<ThreadRecord>, AppError> {
-        Ok(self.ports.store().list_threads(user, before, limit).await?)
+        Ok(self
+            .ports
+            .store()
+            .list_threads(user, before, limit, include_edits)
+            .await?)
+    }
+
+    /// Makes a new thread from one of the user's (ADR 0029): the parent's events up to a cut,
+    /// copied, then a `thread_forked` event; for an edit, also the message that replaces the
+    /// parent's and its delegation to the agent. The fork has its own A2A context, the parent's
+    /// title and title ledger, the deployment's gate for its agent, and is `done` (a finished job)
+    /// until a message is sent; an edit is `queued` at once.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a thread that is not the user's, [`AppError::Fork`] for a cut
+    /// the thread does not allow (a seq outside the log, a replacement of something that is not a
+    /// person's message, a turn that is still going on), [`AppError::Invalid`] for a text or a
+    /// target that cannot be used, [`AppError::Refused`] for an id that another thread has or a
+    /// family of edits with no room, and what resolving the target says (the registry or the
+    /// agent's card unreachable).
+    pub async fn fork_thread(
+        &self,
+        user: &UserId,
+        parent_id: ThreadId,
+        req: ForkRequest,
+    ) -> Result<Forked, AppError> {
+        let parent = self.get_thread(user, parent_id).await?;
+        if let Some(id) = req.id {
+            match self.find_thread(user, id).await? {
+                Some(existing) if is_fork_of(&existing, parent_id) => {
+                    return Ok(Forked {
+                        thread: existing,
+                        created: false,
+                    });
+                }
+                Some(_) => {
+                    return Err(AppError::Refused(
+                        "a thread with this id exists and is not this fork".to_owned(),
+                    ));
+                }
+                None => {}
+            }
+        }
+        let (point, kind, replacement) = match req.at {
+            ForkAt::AfterTurn { seq } => (ForkPoint::AfterTurn(seq), ForkKind::Fork, None),
+            ForkAt::Replace {
+                seq,
+                text,
+                message_id,
+            } => {
+                validate_text(&text)?;
+                (
+                    ForkPoint::Replace(seq),
+                    ForkKind::Edit,
+                    Some(Replacement {
+                        text,
+                        message_id,
+                        catalog: None,
+                    }),
+                )
+            }
+        };
+        let target = req.target.unwrap_or_else(|| parent.target.clone());
+        self.validate_target(&target).await?;
+        let gate = self.resolve_gate(&target.agent_id, None)?;
+        if kind == ForkKind::Edit {
+            let family = self.ports.store().fork_family(user, parent_id).await?;
+            if family.len() >= MAX_FORK_FAMILY {
+                return Err(AppError::Refused(format!(
+                    "this conversation has {MAX_FORK_FAMILY} branches already"
+                )));
+            }
+        }
+
+        // The parent as it was when read: its state and its log up to `last_seq` agree, whatever
+        // is written to it from now on.
+        let events = self.read_log(parent_id, parent.last_seq).await?;
+        let cut = fork_cut(&events, parent.state, point)?;
+        let data = ThreadForkedData {
+            from: ForkSource {
+                thread_id: parent_id,
+                seq: cut,
+            },
+            kind,
+            title: parent.title.clone(),
+            target: target.clone(),
+        };
+        let (next, cmds) = fork_commit(
+            user,
+            data,
+            copied(&events, cut),
+            gate,
+            parent.job.title,
+            replacement,
+        )?;
+        let now = self.ports.clock().now();
+        let job = (next.job != Job::default()).then_some(next.job);
+        let commit = self.build_commit(&target, next.state, job, cmds, None, None, now);
+        let id = req
+            .id
+            .unwrap_or_else(|| ThreadId(self.ports.ids().new_id()));
+        let new = NewThreadRecord {
+            id,
+            owner: user.clone(),
+            title: parent.title.clone(),
+            target,
+            context_id: id.to_string(),
+            now,
+        };
+        let origin = ForkOrigin {
+            parent: parent_id,
+            cut,
+            kind,
+        };
+        match self.ports.store().fork_thread(new, origin, commit).await {
+            Ok((thread, _)) => {
+                self.notify(Topic::Thread(id)).await;
+                if kind == ForkKind::Edit {
+                    self.notify(Topic::Outbox).await;
+                }
+                Ok(Forked {
+                    thread,
+                    created: true,
+                })
+            }
+            Err(e) => {
+                // A concurrent request with the same id may have made it first.
+                match self.ports.store().get_thread(None, id).await {
+                    Ok(Some(existing))
+                        if &existing.owner == user && is_fork_of(&existing, parent_id) =>
+                    {
+                        Ok(Forked {
+                            thread: existing,
+                            created: false,
+                        })
+                    }
+                    Ok(Some(_)) => Err(AppError::Refused(
+                        "a thread with this id exists and is not this fork".to_owned(),
+                    )),
+                    Ok(None) | Err(_) => Err(e.into()),
+                }
+            }
+        }
+    }
+
+    /// The whole log of a thread up to `last_seq`, read in pages; a log longer than an export
+    /// reads ([`AppConfig::max_export_events`]) is too long to fork.
+    async fn read_log(&self, id: ThreadId, last_seq: i64) -> Result<Vec<Event>, AppError> {
+        let mut events: Vec<Event> = Vec::new();
+        let mut after = 0;
+        while after < last_seq {
+            let page = self
+                .ports
+                .store()
+                .list_events(id, after, EXPORT_PAGE)
+                .await?;
+            let Some(last) = page.last() else { break };
+            after = last.seq;
+            events.extend(page.into_iter().filter(|e| e.seq <= last_seq));
+            if events.len() > self.cfg.max_export_events {
+                return Err(AppError::Invalid(
+                    "the thread is too long to fork".to_owned(),
+                ));
+            }
+        }
+        Ok(events)
+    }
+
+    /// The messages of one of the user's threads that have other versions: the other branches of
+    /// the conversation it is one of, with the title of each (ADR 0029). A thread that was never
+    /// edited, and whose messages nobody edited, has none.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a thread that is not the user's.
+    pub async fn branches(&self, user: &UserId, id: ThreadId) -> Result<Branches, AppError> {
+        let thread = self.get_thread(user, id).await?;
+        let family = self.ports.store().fork_family(user, id).await?;
+        let root = family_root(&family, id).unwrap_or(thread.id);
+        let mut titles: BTreeMap<ThreadId, String> = BTreeMap::new();
+        let mut points = Vec::new();
+        for BranchPoint {
+            seq,
+            siblings,
+            current,
+        } in branch_points(&family, id)
+        {
+            let mut views = Vec::with_capacity(siblings.len());
+            for sibling in siblings {
+                let title = match titles.get(&sibling.thread_id) {
+                    Some(title) => title.clone(),
+                    None => {
+                        let title = self
+                            .ports
+                            .store()
+                            .get_thread(Some(user), sibling.thread_id)
+                            .await?
+                            .map(|t| t.title)
+                            .unwrap_or_default();
+                        titles.insert(sibling.thread_id, title.clone());
+                        title
+                    }
+                };
+                views.push(SiblingView {
+                    thread_id: sibling.thread_id,
+                    seq: sibling.seq,
+                    title,
+                });
+            }
+            points.push(BranchView {
+                seq,
+                index: current,
+                siblings: views,
+            });
+        }
+        Ok(Branches { root, points })
     }
 
     /// One of the user's threads; someone else's thread is `NotFound`.

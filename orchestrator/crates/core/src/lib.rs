@@ -34,9 +34,9 @@ pub use extension::{
 };
 pub use fork::{
     BranchPoint, EditLink, ForkError, ForkHistory, ForkKind, ForkNode, ForkPoint, ForkSource,
-    HistoryEntry, HistoryRole, MAX_FORK_FAMILY, MAX_HISTORY_BYTES, MAX_HISTORY_ENTRY_BYTES,
-    Replacement, Sibling, ThreadForkedData, branch_points, copied, fork_commit, fork_cut,
-    fork_history, forked_snapshot, history_preamble,
+    ForkedFrom, HistoryEntry, HistoryRole, MAX_FORK_FAMILY, MAX_HISTORY_BYTES,
+    MAX_HISTORY_ENTRY_BYTES, Replacement, Sibling, ThreadForkedData, branch_points, copied,
+    family_root, fork_commit, fork_cut, fork_history, forked_snapshot, history_preamble,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,

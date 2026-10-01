@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use orch_app::AppError;
-use orch_core::{Classify, ErrorClass, report};
+use orch_core::{Classify, ErrorClass, ForkError, report};
 use serde::Serialize;
 
 /// RFC 9457 problem details (`application/problem+json`), the contract's `Problem` response.
@@ -19,6 +19,10 @@ pub struct Problem {
     /// Human-readable explanation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// A stable, machine-readable name for the problem, where a client acts on one (`turn_open`:
+    /// try again when the turn has ended). RFC 9457 allows extension members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 impl Problem {
@@ -29,7 +33,15 @@ impl Problem {
             title: status.canonical_reason().unwrap_or("Error").to_owned(),
             status: status.as_u16(),
             detail: Some(detail.into()),
+            code: None,
         }
+    }
+
+    /// The same problem with a machine-readable `code`.
+    #[must_use]
+    pub fn with_code(mut self, code: &str) -> Self {
+        self.code = Some(code.to_owned());
+        self
     }
 
     /// 400.
@@ -104,6 +116,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `NotFound` | 404 |
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
+/// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -134,6 +147,20 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
             Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
         );
+    }
+    if let AppError::Fork(fork) = err {
+        // A cut the thread does not allow: the request is well formed, what it names is not there
+        // (422), or not yet (409, `turn_open`).
+        return match fork {
+            ForkError::OutOfRange | ForkError::NotAMessage => (
+                Problem::new(StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
+                None,
+            ),
+            ForkError::TurnOpen => (
+                Problem::new(StatusCode::CONFLICT, err.to_string()).with_code("turn_open"),
+                None,
+            ),
+        };
     }
     match class {
         ErrorClass::NotFound => (Problem::not_found("no such thread"), None),

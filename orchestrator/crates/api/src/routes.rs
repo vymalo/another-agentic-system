@@ -3,7 +3,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use orch_core::{AgentInfo, ThreadId, ThreadRecord, UserId};
+use orch_core::{AgentInfo, AgentTarget, ThreadId, ThreadRecord, UserId};
 use orch_ports::Ports;
 use serde::{Deserialize, Serialize};
 
@@ -106,6 +106,7 @@ pub(crate) async fn registry_status<P: Ports>(State(state): State<ApiState<P>>) 
 pub(crate) struct ListThreadsQuery {
     limit: Option<i64>,
     before: Option<String>,
+    branches: Option<String>,
 }
 
 pub(crate) async fn list_threads<P: Ports>(
@@ -125,7 +126,18 @@ pub(crate) async fn list_threads<P: Ports>(
         })
         .transpose()?;
     let limit = u32::try_from(limit).unwrap_or(50);
-    Ok(Json(state.app.list_threads(&user, before, limit).await?))
+    // The threads made by an edit are branches of one in the list: hidden unless asked for.
+    let include_edits = match q.branches.as_deref() {
+        None => false,
+        Some("include") => true,
+        Some(_) => return Err(Problem::bad_request("branches must be `include`").into()),
+    };
+    Ok(Json(
+        state
+            .app
+            .list_threads(&user, before, limit, include_edits)
+            .await?,
+    ))
 }
 
 pub(crate) async fn get_thread<P: Ports>(
@@ -204,4 +216,135 @@ pub(crate) async fn export_thread<P: Ports>(
     // The chat, with whatever it holds: never kept by a shared cache or the browser's.
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
+}
+
+/// The body of `POST /api/threads/{id}/fork`: where to cut (`after`, or `replace` with the new
+/// `text`), and optionally the agent the fork talks to and the id of the new thread.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ForkBody {
+    after: Option<i64>,
+    replace: Option<i64>,
+    text: Option<String>,
+    message_id: Option<String>,
+    target: Option<AgentTarget>,
+    id: Option<ThreadId>,
+}
+
+impl ForkBody {
+    fn into_request(self) -> Result<orch_app::ForkRequest, Problem> {
+        let at = match (self.after, self.replace) {
+            (Some(seq), None) => {
+                if self.text.is_some() || self.message_id.is_some() {
+                    return Err(Problem::bad_request(
+                        "`text` and `messageId` go with `replace`, not `after`",
+                    ));
+                }
+                orch_app::ForkAt::AfterTurn { seq }
+            }
+            (None, Some(seq)) => orch_app::ForkAt::Replace {
+                seq,
+                text: self
+                    .text
+                    .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
+                message_id: self.message_id,
+            },
+            (Some(_), Some(_)) => {
+                return Err(Problem::bad_request("give `after` or `replace`, not both"));
+            }
+            (None, None) => return Err(Problem::bad_request("give `after` or `replace`")),
+        };
+        Ok(orch_app::ForkRequest {
+            at,
+            target: self.target,
+            id: self.id,
+        })
+    }
+}
+
+/// Forks the thread (see [`orch_app::App::fork_thread`]): 201 with the new thread and its
+/// `Location`; 200 with the existing one when the body's `id` is a fork of this thread made
+/// already. 400 for a body that cannot be read or a text or target that cannot be used, 404 for a
+/// thread that is not the caller's, 409 while the turn is going on (`turn_open`) or for an id
+/// another thread has, 422 for a point that is not in the log or not a person's message.
+///
+/// The body is read as an object first, so that an array or a member this API does not know is
+/// refused, not skipped.
+pub(crate) async fn fork_thread<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
+) -> ApiResult<Response> {
+    let id = parse_thread_id(&id)?;
+    let body: ForkBody = serde_json::from_value(serde_json::Value::Object(body))
+        .map_err(|e| Problem::bad_request(format!("invalid body: {e}")))?;
+    let forked = state
+        .app
+        .fork_thread(&user, id, body.into_request()?)
+        .await?;
+    let status = if forked.created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    let location = format!("/api/threads/{}", forked.thread.id);
+    let mut response = (status, Json(forked.thread)).into_response();
+    if let Ok(location) = HeaderValue::from_str(&location) {
+        response.headers_mut().insert(header::LOCATION, location);
+    }
+    Ok(response)
+}
+
+/// Contract `Branches`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BranchesView {
+    root: ThreadId,
+    points: Vec<BranchPointView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchPointView {
+    seq: i64,
+    index: usize,
+    siblings: Vec<SiblingBody>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SiblingBody {
+    thread_id: ThreadId,
+    seq: i64,
+    title: String,
+}
+
+/// The messages of the thread that have other versions (see [`orch_app::App::branches`]).
+pub(crate) async fn list_branches<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<BranchesView>> {
+    let branches = state.app.branches(&user, parse_thread_id(&id)?).await?;
+    Ok(Json(BranchesView {
+        root: branches.root,
+        points: branches
+            .points
+            .into_iter()
+            .map(|p| BranchPointView {
+                seq: p.seq,
+                index: p.index,
+                siblings: p
+                    .siblings
+                    .into_iter()
+                    .map(|s| SiblingBody {
+                        thread_id: s.thread_id,
+                        seq: s.seq,
+                        title: s.title,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }))
 }

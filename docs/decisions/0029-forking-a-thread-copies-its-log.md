@@ -3,8 +3,11 @@
 - **Status:** accepted (2026-10-01), on the owner's request of the same day ("chat forking and
   branching"); the defaults below (the transcript for the agent, edits hidden from the list, the
   parent's title kept) are taken on the delegation and the owner may revisit them. Built so far: the
-  core (the event, the cut, the snapshot, the transcript and the edit families). Not built yet: the
-  store and the API, the AG-UI marker, the transcript on the wire, the web.
+  core (the event, the cut, the snapshot, the transcript and the edit families), the store (migration
+  `0010`, `fork_thread`, `fork_family`) and the API (`POST /api/threads/{id}/fork`,
+  `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include`). Not built yet: the AG-UI
+  marker, the transcript on the wire (until then the agent of a fork is **not** told the earlier
+  conversation, so a fork should not be offered to a person before it is), the web.
 
 ## Context
 

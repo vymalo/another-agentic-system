@@ -4,7 +4,8 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    EventKind, Job, PushedRef, ThreadId, ThreadRecord, ThreadState, UiDelivery, UserId, WatchKey,
+    EventKind, ForkKind, ForkNode, Job, PushedRef, ThreadId, ThreadRecord, ThreadState, UiDelivery,
+    UserId, WatchKey,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,6 +40,17 @@ pub struct NewThreadRecord {
     pub context_id: String,
     /// Creation time.
     pub now: Timestamp,
+}
+
+/// Where a new thread is cut from, for [`ThreadStore::fork_thread`] (ADR 0029).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForkOrigin {
+    /// The thread to copy, which must be the new thread's owner's.
+    pub parent: ThreadId,
+    /// The last event of the parent to copy (0 copies none). The parent's log must reach it.
+    pub cut: i64,
+    /// How the fork is made: an `edit` is a sibling of its parent in a family of edits.
+    pub kind: ForkKind,
 }
 
 /// An event to append. `seq` is assigned by the store.
@@ -524,13 +536,48 @@ pub trait ThreadStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Option<ThreadRecord>, StoreError>> + Send;
 
     /// The owner's threads, newest first (id descending; ids are UUIDv7). `before` is an
-    /// exclusive cursor; an unknown or foreign cursor yields an empty list.
+    /// exclusive cursor; an unknown or foreign cursor yields an empty list. A thread made by an
+    /// edit of another's message ([`ForkKind::Edit`]) is listed only with `include_edits`: it is
+    /// a branch of a conversation the list already shows (ADR 0029). The limit counts the threads
+    /// listed, so a page is as long as it can be whatever is hidden.
     fn list_threads(
         &self,
         owner: &UserId,
         before: Option<ThreadId>,
         limit: u32,
+        include_edits: bool,
     ) -> impl Future<Output = Result<Vec<ThreadRecord>, StoreError>> + Send;
+
+    /// Atomically inserts a thread that begins as a copy of another's log (ADR 0029): the thread
+    /// (state, job and events from `first`, version 1, `forked_from` set), its binding (agent from
+    /// the target, context from `new`, then `first.binding`), the parent's events `1..=origin.cut`
+    /// **as they are** (same `seq`, time, actor and data, no idempotency key), then `first`'s
+    /// events as `cut + 1..` and its outbox rows, watches and timers, as
+    /// [`create_thread`](Self::create_thread) does.
+    ///
+    /// The parent must be `new.owner`'s, else [`StoreError::NotFound`] (a foreign thread and a
+    /// missing one look alike) and nothing is written; a parent whose log is shorter than the cut,
+    /// or a `new.id` that exists, is [`StoreError::Corrupt`]. A parent that is deleted afterwards
+    /// leaves the fork whole, with [`ForkedFrom::thread_id`](orch_core::ForkedFrom) unset.
+    fn fork_thread(
+        &self,
+        new: NewThreadRecord,
+        origin: ForkOrigin,
+        first: Commit,
+    ) -> impl Future<Output = Result<(ThreadRecord, Vec<Event>), StoreError>> + Send;
+
+    /// The family of edits `thread` belongs to, the owner's: the thread it started from (found by
+    /// following edit links up while the parent exists), and every thread made from those by an
+    /// edit, oldest first (ties by id), at most 1000. Each [`ForkNode`] says how its thread
+    /// relates to its parent: for a thread made by an edit, the parent, the cut and the seq of
+    /// the message that replaces the parent's at `cut + 1` (the first message of a person after the
+    /// `thread_forked` event). A thread made by [`ForkKind::Fork`], or whose parent is gone, has
+    /// no link. A thread that is not the owner's, or does not exist, has no family: empty.
+    fn fork_family(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+    ) -> impl Future<Output = Result<Vec<ForkNode>, StoreError>> + Send;
 
     /// One transaction. Locks the thread; if `commit.lease` is set and is not the current
     /// claim of its outbox row (see [`Lease`]; the row must belong to this thread) the result

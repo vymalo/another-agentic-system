@@ -1130,3 +1130,33 @@ mod props {
         }
     }
 }
+
+#[test]
+fn the_root_of_a_family_is_where_the_edit_links_end() {
+    let family = [
+        root(1, 0),
+        edit(2, 1, 4, 10),
+        edit(3, 2, 5, 20),
+        root(5, 15),
+        edit(6, 5, 4, 30),
+    ];
+    for (current, want) in [(1, 1), (2, 1), (3, 1), (5, 5), (6, 5)] {
+        assert_eq!(
+            family_root(&family, thread(current)),
+            Some(thread(want)),
+            "thread {current}"
+        );
+    }
+    assert_eq!(family_root(&family, thread(9)), None);
+    // a thread whose parent is not in the family is where its family starts
+    let orphan = ForkNode {
+        id: thread(7),
+        link: Some(EditLink {
+            parent: thread(99),
+            cut: 4,
+            message: 6,
+        }),
+        created: at(1),
+    };
+    assert_eq!(family_root(&[orphan], thread(7)), Some(thread(7)));
+}

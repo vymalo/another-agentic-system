@@ -343,6 +343,7 @@ fn thread_wire_hides_owner_and_version() {
         state: ThreadState::Working,
         job: Job::default(),
         version: 7,
+        forked_from: None,
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
@@ -358,6 +359,48 @@ fn thread_wire_hides_owner_and_version() {
             "createdAt": "2026-09-29T10:00:00Z",
             "updatedAt": "2026-09-29T10:00:01Z"
         })
+    );
+}
+
+/// ADR 0029: a fork says where it came from, and the thread of a deleted parent still says how it
+/// was made; a thread that was not forked says nothing.
+#[test]
+fn a_forked_thread_says_where_it_came_from() {
+    let t = ThreadRecord {
+        id: tid(),
+        owner: UserId::new("a@b.c"),
+        title: "T".into(),
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: ThreadState::Done,
+        job: Job::default(),
+        version: 1,
+        forked_from: Some(ForkedFrom {
+            thread_id: Some(tid()),
+            seq: 41,
+            kind: ForkKind::Edit,
+        }),
+        last_seq: 42,
+        created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
+        updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
+    };
+    assert_eq!(
+        serde_json::to_value(&t).unwrap()["forkedFrom"],
+        json!({"threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000", "seq": 41, "kind": "edit"})
+    );
+    let orphan = ThreadRecord {
+        forked_from: Some(ForkedFrom {
+            thread_id: None,
+            seq: 0,
+            kind: ForkKind::Fork,
+        }),
+        ..t
+    };
+    assert_eq!(
+        serde_json::to_value(&orphan).unwrap()["forkedFrom"],
+        json!({"seq": 0, "kind": "fork"})
     );
 }
 
@@ -381,6 +424,7 @@ fn a_thread_under_a_gate_carries_its_job_and_one_without_carries_none() {
         state: ThreadState::Verifying,
         job,
         version: 7,
+        forked_from: None,
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),

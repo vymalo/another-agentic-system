@@ -168,6 +168,7 @@ struct Resp {
     status: u16,
     content_type: String,
     cache_control: String,
+    location: String,
     body: Vec<u8>,
 }
 
@@ -297,10 +298,17 @@ impl Harness {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        let location = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         Resp {
             status,
             content_type,
             cache_control,
+            location,
             body: resp.bytes().await.unwrap().to_vec(),
         }
     }
@@ -336,10 +344,53 @@ impl Harness {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        let location = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         Resp {
             status,
             content_type,
             cache_control,
+            location,
+            body: resp.bytes().await.unwrap().to_vec(),
+        }
+    }
+
+    /// A `POST` with a body (`None` sends none).
+    async fn post(&self, path: &str, user: Option<&str>, body: Option<&str>) -> Resp {
+        let mut req = self
+            .client
+            .request(reqwest::Method::POST, format!("{}{path}", self.base));
+        if let Some(u) = user {
+            req = req.header("X-Auth-Request-Email", u);
+        }
+        if let Some(body) = body {
+            req = req
+                .header("Content-Type", "application/json")
+                .body(body.to_owned());
+        }
+        let resp = req.send().await.unwrap();
+        let status = resp.status().as_u16();
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        };
+        let (content_type, cache_control, location) = (
+            header("content-type"),
+            header("cache-control"),
+            header("location"),
+        );
+        Resp {
+            status,
+            content_type,
+            cache_control,
+            location,
             body: resp.bytes().await.unwrap().to_vec(),
         }
     }
@@ -481,7 +532,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 6] = [
+    let auth_ops: [(&str, reqwest::Method, String); 8] = [
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
@@ -499,6 +550,16 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "cancelThread",
             reqwest::Method::POST,
             format!("/api/threads/{RANDOM}/cancel"),
+        ),
+        (
+            "forkThread",
+            reqwest::Method::POST,
+            format!("/api/threads/{RANDOM}/fork"),
+        ),
+        (
+            "listBranches",
+            reqwest::Method::GET,
+            format!("/api/threads/{RANDOM}/branches"),
         ),
     ];
     for (op, method, path) in auth_ops {
@@ -823,6 +884,276 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         "A better name",
         "someone else's rename changes nothing"
     );
+
+    // forkThread and listBranches ([ADR 0029]).
+    let parent = h
+        .create(ALICE, Some("Forkable"), "plain", None, "echo fork me")
+        .await;
+    h.wait_state(ALICE, &parent, "done").await;
+    let fork_path = format!("/api/threads/{parent}/fork");
+    // fork from here: 201, a Location, a finished thread that says where it came from
+    let r = h
+        .post(&fork_path, Some(ALICE), Some(r#"{"after":1}"#))
+        .await;
+    assert_eq!(r.status, 201);
+    c.check("forkThread", &r);
+    let forked = r.json();
+    let fork_id = forked["id"].as_str().unwrap().to_owned();
+    assert_ne!(fork_id, parent);
+    assert_eq!(r.location, format!("/api/threads/{fork_id}"));
+    assert_eq!(forked["state"], "done");
+    assert_eq!(forked["title"], "Forkable");
+    assert_eq!(
+        forked["forkedFrom"],
+        json!({"threadId": parent, "seq": 5, "kind": "fork"})
+    );
+    assert_eq!(forked["lastSeq"], 6);
+    assert_eq!(forked["target"], json!({"agentId": "plain"}));
+    let fork_events = h.events(ALICE, &fork_id).await;
+    assert_eq!(
+        shape(&fork_events),
+        [
+            "user_message",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done",
+            "thread_forked"
+        ]
+    );
+    for event in &fork_events {
+        c.contract.validate_component("Event", event);
+    }
+    assert_eq!(
+        fork_events[5]["data"],
+        json!({
+            "from": {"threadId": parent, "seq": 5},
+            "kind": "fork",
+            "title": "Forkable",
+            "target": {"agentId": "plain"}
+        })
+    );
+    // the thread reads back the same, and a fork of a thread that is not a fork has no `forkedFrom`
+    let r = h.get(&format!("/api/threads/{fork_id}"), Some(ALICE)).await;
+    c.check("getThread", &r);
+    assert_eq!(r.json(), forked);
+    let r = h.get(&format!("/api/threads/{parent}"), Some(ALICE)).await;
+    assert!(r.json().get("forkedFrom").is_none());
+
+    // a repeat with the same id answers the fork it made, and writes nothing
+    let chosen = "0190bbbb-0000-7000-8000-000000000001";
+    let body = format!(
+        r#"{{"after":3,"id":"{chosen}","target":{{"agentId":"coder","release":"staging"}}}}"#
+    );
+    let r = h.post(&fork_path, Some(ALICE), Some(&body)).await;
+    assert_eq!(r.status, 201);
+    c.check("forkThread", &r);
+    let chosen_fork = r.json();
+    assert_eq!(chosen_fork["id"], chosen);
+    assert_eq!(
+        chosen_fork["target"],
+        json!({"agentId": "coder", "release": "staging"})
+    );
+    let r = h.post(&fork_path, Some(ALICE), Some(&body)).await;
+    assert_eq!(r.status, 200);
+    c.check("forkThread", &r);
+    assert_eq!(r.json(), chosen_fork);
+    assert_eq!(r.location, format!("/api/threads/{chosen}"));
+
+    // an edit: queued at once, and a branch (left out of the list, found by `listBranches`)
+    let r = h
+        .post(
+            &fork_path,
+            Some(ALICE),
+            Some(r#"{"replace":1,"text":"echo edited","messageId":"m-edit"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 201);
+    c.check("forkThread", &r);
+    let edit = r.json();
+    let edit_id = edit["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        edit["forkedFrom"],
+        json!({"threadId": parent, "seq": 0, "kind": "edit"})
+    );
+    h.wait_state(ALICE, &edit_id, "done").await;
+    let edit_events = h.events(ALICE, &edit_id).await;
+    assert_eq!(
+        shape(&edit_events)[..3],
+        ["thread_forked", "user_message", "job_started"]
+    );
+    assert_eq!(edit_events[1]["data"]["text"], "echo edited");
+    assert_eq!(edit_events[1]["data"]["messageId"], "m-edit");
+    for event in &edit_events {
+        c.contract.validate_component("Event", event);
+    }
+    let r = h.get("/api/threads?limit=100", Some(ALICE)).await;
+    c.check("listThreads", &r);
+    let listed: Vec<String> = r
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        listed.contains(&fork_id) && listed.iter().any(|t| t == chosen) && listed.contains(&parent)
+    );
+    assert!(!listed.contains(&edit_id), "a branch is not listed");
+    let r = h
+        .get("/api/threads?limit=100&branches=include", Some(ALICE))
+        .await;
+    c.check("listThreads", &r);
+    assert!(
+        r.json()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == edit_id.as_str())
+    );
+    let r = h.get("/api/threads?branches=all", Some(ALICE)).await;
+    assert_eq!(r.status, 400);
+    c.check("listThreads", &r);
+
+    let r = h
+        .get(&format!("/api/threads/{edit_id}/branches"), Some(ALICE))
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("listBranches", &r);
+    assert_eq!(
+        r.json(),
+        json!({
+            "root": parent,
+            "points": [{
+                "seq": 2,
+                "index": 1,
+                "siblings": [
+                    {"threadId": parent, "seq": 1, "title": "Forkable"},
+                    {"threadId": edit_id, "seq": 2, "title": "Forkable"}
+                ]
+            }]
+        })
+    );
+    let r = h
+        .get(&format!("/api/threads/{parent}/branches"), Some(ALICE))
+        .await;
+    c.check("listBranches", &r);
+    assert_eq!(r.json()["points"][0]["index"], 0);
+    assert_eq!(r.json()["points"][0]["seq"], 1);
+    let r = h
+        .get(&format!("/api/threads/{fork_id}/branches"), Some(ALICE))
+        .await;
+    c.check("listBranches", &r);
+    assert_eq!(r.json(), json!({"root": fork_id, "points": []}));
+    for (user, path) in [
+        (ALICE, RANDOM),
+        (ALICE, "not-a-uuid"),
+        (BOB, parent.as_str()),
+    ] {
+        let r = h
+            .get(&format!("/api/threads/{path}/branches"), Some(user))
+            .await;
+        assert_eq!(r.status, 404, "{user} {path}");
+        c.check("listBranches", &r);
+    }
+
+    // a body that cannot be used
+    let long = format!(r#"{{"replace":1,"text":"{}"}}"#, "x".repeat(100_001));
+    for bad in [
+        r#"{}"#,
+        r#"{"after":1,"replace":1,"text":"x"}"#,
+        r#"{"after":1,"text":"x"}"#,
+        r#"{"after":1,"messageId":"m"}"#,
+        r#"{"replace":1}"#,
+        r#"{"replace":1,"text":""}"#,
+        r#"{"replace":1,"text":"   "}"#,
+        long.as_str(),
+        r#"{"after":"1"}"#,
+        r#"{"after":1.5}"#,
+        r#"{"after":null}"#,
+        r#"{"after":1,"id":"nope"}"#,
+        r#"{"after":1,"target":{"agentId":"nobody"}}"#,
+        r#"{"after":1,"target":{"agentId":"plain","release":"stable"}}"#,
+        r#"{"after":1,"state":"done"}"#,
+        r#"[1]"#,
+        "not json",
+    ] {
+        let r = h.post(&fork_path, Some(ALICE), Some(bad)).await;
+        assert_eq!(r.status, 400, "{}", &bad[..bad.len().min(60)]);
+        c.check("forkThread", &r);
+    }
+    let r = h.post(&fork_path, Some(ALICE), None).await;
+    assert_eq!(r.status, 400, "no body");
+    c.check("forkThread", &r);
+    // a point that is not there, or not a person's message
+    for bad in [
+        r#"{"after":99}"#,
+        r#"{"after":0}"#,
+        r#"{"replace":99,"text":"x"}"#,
+        r#"{"replace":2,"text":"x"}"#,
+    ] {
+        let r = h.post(&fork_path, Some(ALICE), Some(bad)).await;
+        assert_eq!(r.status, 422, "{bad}");
+        c.check("forkThread", &r);
+    }
+    // an id that is another thread's
+    let taken = format!(r#"{{"after":1,"id":"{parent}"}}"#);
+    let r = h.post(&fork_path, Some(ALICE), Some(&taken)).await;
+    assert_eq!(r.status, 409);
+    c.check("forkThread", &r);
+    assert!(r.json().get("code").is_none());
+    // somebody else's thread, one that is missing, and an id that is not one
+    for (user, path) in [
+        (BOB, parent.as_str()),
+        (ALICE, RANDOM),
+        (ALICE, "not-a-uuid"),
+    ] {
+        let r = h
+            .post(
+                &format!("/api/threads/{path}/fork"),
+                Some(user),
+                Some(r#"{"after":1}"#),
+            )
+            .await;
+        assert_eq!(r.status, 404, "{user} {path}");
+        c.check("forkThread", &r);
+    }
+    // the turn that is going on cannot be copied: 409, and a client can tell why
+    let busy = h.create(ALICE, None, "plain", None, "slow please").await;
+    h.wait_state(ALICE, &busy, "working").await;
+    let r = h
+        .post(
+            &format!("/api/threads/{busy}/fork"),
+            Some(ALICE),
+            Some(r#"{"after":1}"#),
+        )
+        .await;
+    assert_eq!(r.status, 409);
+    c.check("forkThread", &r);
+    assert_eq!(r.json()["code"], "turn_open");
+    // but a message before it can be edited
+    let r = h
+        .post(
+            &format!("/api/threads/{busy}/fork"),
+            Some(ALICE),
+            Some(r#"{"replace":1,"text":"echo instead"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 201);
+    c.check("forkThread", &r);
+    // none of the refusals made a thread
+    let r = h
+        .get("/api/threads?limit=100&branches=include", Some(ALICE))
+        .await;
+    let count = r.json().as_array().unwrap().len();
+    let r = h
+        .post(&fork_path, Some(ALICE), Some(r#"{"after":99}"#))
+        .await;
+    assert_eq!(r.status, 422);
+    let r = h
+        .get("/api/threads?limit=100&branches=include", Some(ALICE))
+        .await;
+    assert_eq!(r.json().as_array().unwrap().len(), count);
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());

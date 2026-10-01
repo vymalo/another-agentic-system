@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::fork::ForkedFrom;
 use crate::gate::{Job, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
 
@@ -126,6 +127,9 @@ pub struct ThreadRecord {
     /// Optimistic-concurrency version (never serialised).
     #[serde(skip)]
     pub version: i64,
+    /// Where the thread was forked from (ADR 0029); `None` for a thread that was not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkedFrom>,
     /// Sequence number of the last event, 0 when empty.
     pub last_seq: i64,
     /// Creation time.

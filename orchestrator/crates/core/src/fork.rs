@@ -60,6 +60,20 @@ pub struct ForkSource {
     pub seq: i64,
 }
 
+/// Where a thread was forked from (contract `Thread.forkedFrom`): what the thread row keeps of the
+/// `thread_forked` event, for a list and a sidebar that must not read the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkedFrom {
+    /// The thread it was forked from; absent once that thread is deleted (the fork is whole).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
+    /// The last event copied (the cut).
+    pub seq: i64,
+    /// How it was made.
+    pub kind: ForkKind,
+}
+
 /// `data` of a `thread_forked`: the thread began as a copy of another (ADR 0029).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,7 +133,7 @@ fn find(events: &[Event], seq: i64) -> Option<&Event> {
 }
 
 /// The cut (the last event to copy) of a fork of a thread whose log is `events` and whose state is
-/// `parent`.
+/// `parent`. `events` is the log, or at least its events from the one asked about to its end.
 ///
 /// [`ForkPoint::AfterTurn`]: the last event before the first message or action of a person after
 /// the given one; when none follows, the end of the log, unless the thread is `queued`, `working`
@@ -531,6 +545,20 @@ fn slot(
         }
     }
     (thread, seq)
+}
+
+/// The thread the family of `current` started from: `current` followed up its edit links while the
+/// parent is in `family`. `None` when `current` is not in it.
+pub fn family_root(family: &[ForkNode], current: ThreadId) -> Option<ThreadId> {
+    let by_id: BTreeMap<ThreadId, &ForkNode> = family.iter().map(|n| (n.id, n)).collect();
+    let mut at = *by_id.get(&current)?;
+    for _ in 0..=by_id.len() {
+        match at.link.and_then(|l| by_id.get(&l.parent)) {
+            Some(parent) => at = parent,
+            None => break,
+        }
+    }
+    Some(at.id)
 }
 
 /// The messages of `current` that have other versions, in the order they come in the thread.

@@ -96,6 +96,14 @@ paths:
       parameters:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
         - { name: before, in: query, description: "Cursor: thread id to page before", schema: { type: string } }
+        - name: branches
+          in: query
+          description: |
+            `include`: list the threads made by an edit of a message too ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)).
+            Without it they are left out: an edit is a branch of a conversation the list already shows
+            (`listBranches` says where its siblings are), and `limit` counts the threads listed. A thread made by
+            "fork from here" is a conversation of its own and is always listed.
+          schema: { type: string, enum: [include] }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
@@ -179,6 +187,81 @@ paths:
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "202": { description: Cancellation requested; the outcome arrives as events }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/fork:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    post:
+      operationId: forkThread
+      summary: Fork a thread from a point, or branch it by editing a message
+      description: |
+        Makes a new thread that begins as a copy of this one ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)):
+        the parent's events up to a cut, with the same `seq`, then a `thread_forked` event, then the new thread's own.
+        The parent is not changed. The fork has its own A2A context, the parent's title (a person's rename of the
+        parent stays theirs in the fork), the deployment's gate for its agent, and the same owner.
+
+        * `after` (a `seq`): **fork from here**. The cut is the end of the turn that holds that event: the last event
+          before the next message or action of a person, or the end of the log. The fork is `done`, a finished job:
+          its next message starts the next job and is sent to its agent with the earlier conversation in front of it.
+          A turn that is still going on (the thread is `queued`, `working` or `verifying`, and nothing follows the
+          event) cannot be copied: 409, `code: turn_open`. With `target`, this is also "continue with another agent".
+        * `replace` (the `seq` of a person's message) with the new `text`: **edit**. The cut is the event before that
+          message, which may be 0; the fork then holds the new message, the next job's start and its delegation to
+          the agent, and is `queued`. The thread is a branch of the one it was made from: it is left out of
+          `listThreads` unless asked for, and `listBranches` finds its siblings. A conversation has room for 256
+          threads made this way (409 after).
+
+        `target` names the agent and release the fork talks to (the parent's when absent), validated as for a new
+        thread. `id` is a UUID the caller chose for the new thread: a repeat of the request with the same `id` answers
+        the fork it made (200) and writes nothing; the id of another thread is a 409. The caller's own threads only;
+        someone else's is a 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForkRequest" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "201":
+          description: The fork
+          headers:
+            Location: { description: "`/api/threads/<id>`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+        "200":
+          description: The fork this request's `id` named, made by an earlier request
+          headers:
+            Location: { description: "`/api/threads/<id>`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+        "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `text` or `messageId` with `after`, `replace` without `text`, an empty or too long text, an unknown agent or release, an unknown member, a thread that is too long to fork", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, or it belongs to someone else (one answer for all three)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's, or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
+        "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person", $ref: "#/components/responses/Problem" }
+        "502": { description: "The target agent could not be reached to validate the release", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the agent registry cannot say whether the target exists; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/branches:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    get:
+      operationId: listBranches
+      summary: The messages of a thread that have other versions
+      description: |
+        The conversation this thread is a branch of ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)):
+        threads made from one another by an edit of a message. `points` are the messages **of this thread** that have
+        other versions, in the order they come, each with every version (the original first, then the edits in the
+        order they were made) and which of them is this thread's, so that a client can show `‹ 2 / 3 ›` under the
+        message and move between the threads. Everything of a thread up to its cut is its parent's, so it shows the
+        parent's versions there. A thread made by "fork from here" is not a version of anything: it starts a
+        conversation of its own. `root` is the thread the conversation started from. A thread that was never
+        edited has no points. Authorised like `getThread`.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The branches
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branches" }
         "404": { $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}:
     parameters: [ { $ref: "#/components/parameters/AgentId" } ]
@@ -296,6 +379,9 @@ components:
               title: { type: string }
               status: { type: integer }
               detail: { type: string }
+              code:
+                type: string
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`: try again when the turn has ended)"
   schemas:
     Agent:
       type: object
@@ -371,6 +457,52 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         lastSeq: { type: integer, format: int64 }
+        forkedFrom:
+          type: object
+          description: |
+            Present only on a thread that began as a copy of another ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)).
+          required: [seq, kind]
+          properties:
+            threadId: { type: string, format: uuid, description: "The thread it was forked from; absent once that thread is deleted (the fork is whole)" }
+            seq: { type: integer, format: int64, minimum: 0, description: "The last event of that thread that was copied" }
+            kind: { type: string, enum: [fork, edit], description: "`fork`: from the end of a turn, a conversation of its own; `edit`: a branch made by editing a message" }
+    ForkRequest:
+      type: object
+      additionalProperties: false
+      description: "Where to cut a thread, and what the fork is. Exactly one of `after` and `replace`; `replace` needs `text`, and `text` and `messageId` go only with `replace`."
+      properties:
+        after: { type: integer, minimum: 1, description: "An event of the turn to copy: the cut is the end of that turn" }
+        replace: { type: integer, minimum: 1, description: "The `seq` of a person's message to replace; the cut is the event before it" }
+        text: { type: string, minLength: 1, maxLength: 100000, description: "What the person says instead (with `replace`)" }
+        messageId: { type: string, maxLength: 256, description: "The id the screen gives the new message (with `replace`)" }
+        target:
+          description: "The agent the fork talks to; the parent's when absent"
+          $ref: "#/components/schemas/AgentTarget"
+        id: { type: string, format: uuid, description: "The id of the new thread, chosen by the caller so that a repeat is recognised" }
+    Branches:
+      type: object
+      required: [root, points]
+      properties:
+        root: { type: string, format: uuid, description: "The thread the conversation started from" }
+        points:
+          type: array
+          items:
+            type: object
+            required: [seq, index, siblings]
+            properties:
+              seq: { type: integer, format: int64, description: "The `seq` of the message in this thread" }
+              index: { type: integer, minimum: 0, description: "Which of `siblings` is this thread's" }
+              siblings:
+                type: array
+                minItems: 2
+                description: "Every version of the message: the original first, then the edits in the order they were made"
+                items:
+                  type: object
+                  required: [threadId, seq, title]
+                  properties:
+                    threadId: { type: string, format: uuid }
+                    seq: { type: integer, format: int64, description: "The `seq` of the message in that thread" }
+                    title: { type: string }
     ThreadExport:
       type: object
       description: |

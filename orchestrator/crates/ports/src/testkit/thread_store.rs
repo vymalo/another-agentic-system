@@ -399,13 +399,17 @@ pub async fn owner_isolation<S: ThreadStore>(store: S) {
     );
     assert!(
         store
-            .list_threads(&bob(), None, 50)
+            .list_threads(&bob(), None, 50, false)
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        store.list_threads(&alice(), None, 50).await.unwrap().len(),
+        store
+            .list_threads(&alice(), None, 50, false)
+            .await
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -416,7 +420,7 @@ pub async fn list_newest_first_before_limit<S: ThreadStore>(store: S) {
     }
     seed(&store, &bob(), 6).await;
     let ids = |v: Vec<orch_core::ThreadRecord>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
-    let all = ids(store.list_threads(&alice(), None, 50).await.unwrap());
+    let all = ids(store.list_threads(&alice(), None, 50, false).await.unwrap());
     assert_eq!(
         all,
         vec![
@@ -427,24 +431,24 @@ pub async fn list_newest_first_before_limit<S: ThreadStore>(store: S) {
             thread_id(1)
         ]
     );
-    let page = ids(store.list_threads(&alice(), None, 2).await.unwrap());
+    let page = ids(store.list_threads(&alice(), None, 2, false).await.unwrap());
     assert_eq!(page, vec![thread_id(5), thread_id(4)]);
     let next = ids(store
-        .list_threads(&alice(), Some(thread_id(3)), 50)
+        .list_threads(&alice(), Some(thread_id(3)), 50, false)
         .await
         .unwrap());
     assert_eq!(next, vec![thread_id(2), thread_id(1)]);
     // A foreign or unknown cursor yields nothing.
     assert!(
         store
-            .list_threads(&alice(), Some(thread_id(6)), 50)
+            .list_threads(&alice(), Some(thread_id(6)), 50, false)
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
         store
-            .list_threads(&alice(), Some(thread_id(77)), 50)
+            .list_threads(&alice(), Some(thread_id(77)), 50, false)
             .await
             .unwrap()
             .is_empty()
@@ -1759,7 +1763,7 @@ pub async fn job_roundtrip<S: ThreadStore>(store: S) {
         .unwrap()
         .unwrap();
     assert_eq!(got, created);
-    let listed = store.list_threads(&alice(), None, 10).await.unwrap();
+    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
     assert_eq!(
         listed.iter().find(|t| t.id == thread_id(2)).unwrap().job,
         busy_job()
@@ -2000,7 +2004,7 @@ pub async fn thread_titled_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(read, events, "the event reads back as it was written");
     let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
     assert_eq!(got.title, "Mine");
-    let listed = store.list_threads(&alice(), None, 10).await.unwrap();
+    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
     assert_eq!(listed[0].title, "Mine", "the sidebar's listing says it");
 
     // A commit with no title leaves it.
@@ -3384,4 +3388,511 @@ pub async fn inbox_only_commit_finishes_the_row_and_leaves_the_thread_alone<S: T
             .unwrap(),
     );
     assert_eq!((record.version, written.len()), (moved.version + 1, 1));
+}
+
+// ---- forks (ADR 0029) -------------------------------------------------------------------------
+
+fn agent_event(text: &str) -> NewEvent {
+    NewEvent {
+        at: at(1),
+        actor: Actor::agent(&AgentId::new("coder"), None),
+        body: EventBody::AgentMessage(orch_core::AgentMessageData {
+            text: text.to_owned(),
+            message_id: format!("m-{text}"),
+            is_final: true,
+        }),
+        idempotency_key: None,
+    }
+}
+
+fn forked_event(parent: u128, cut: i64, kind: orch_core::ForkKind) -> NewEvent {
+    NewEvent {
+        at: at(5),
+        actor: Actor::user(&alice()),
+        body: EventBody::ThreadForked(orch_core::ThreadForkedData {
+            from: orch_core::ForkSource {
+                thread_id: thread_id(parent),
+                seq: cut,
+            },
+            kind,
+            title: "thread".to_owned(),
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: None,
+            },
+        }),
+        idempotency_key: None,
+    }
+}
+
+/// A thread of four events: a message, an answer, a message, an answer; created at `n` seconds.
+async fn seed_conversation<S: ThreadStore>(store: &S, owner: &UserId, n: u128, created: i64) {
+    let mut new = new_thread(owner, n);
+    new.now = at(created);
+    store
+        .create_thread(
+            new,
+            commit(
+                ThreadState::Done,
+                vec![
+                    user_event("first", None),
+                    agent_event("one"),
+                    user_event("second", Some("k2")),
+                    agent_event("two"),
+                ],
+                vec![],
+            ),
+        )
+        .await
+        .unwrap();
+}
+
+/// A fork of thread `parent` as thread `n`, cut after `cut` events, made at `created` seconds, whose
+/// first commit is the `thread_forked` event, then `more`.
+#[allow(clippy::too_many_arguments)]
+async fn fork<S: ThreadStore>(
+    store: &S,
+    parent: u128,
+    n: u128,
+    cut: i64,
+    kind: orch_core::ForkKind,
+    created: i64,
+    more: Vec<NewEvent>,
+    outbox: Vec<NewOutbox>,
+) -> Result<(orch_core::ThreadRecord, Vec<orch_core::Event>), StoreError> {
+    let mut new = new_thread(&alice(), n);
+    new.now = at(created);
+    let mut events = vec![forked_event(parent, cut, kind)];
+    events.extend(more);
+    let state = if outbox.is_empty() {
+        ThreadState::Done
+    } else {
+        ThreadState::Queued
+    };
+    let mut first = commit(state, events, outbox);
+    first.now = at(created);
+    store
+        .fork_thread(
+            new,
+            crate::ForkOrigin {
+                parent: thread_id(parent),
+                cut,
+                kind,
+            },
+            first,
+        )
+        .await
+}
+
+/// A fork is a new thread whose log starts with the parent's events up to the cut, as they are,
+/// then its own: the same seq, time, actor and data, no idempotency key; the thread says where it
+/// came from, has its own binding, and the parent is untouched.
+pub async fn fork_copies_the_parents_log_up_to_the_cut<S: ThreadStore>(store: S) {
+    use orch_core::{EventKind, ForkKind, ForkedFrom};
+    seed_conversation(&store, &alice(), 1, 0).await;
+    let parent_before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let parent_events = store.list_events(thread_id(1), 0, 100).await.unwrap();
+    assert_eq!(parent_events.len(), 4);
+
+    let (record, written) = fork(&store, 1, 2, 2, ForkKind::Fork, 10, vec![], vec![])
+        .await
+        .unwrap();
+    // what the commit wrote: the `thread_forked` event, after the copy
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        (written[0].seq, written[0].kind()),
+        (3, EventKind::ThreadForked)
+    );
+    assert_eq!(written[0].thread_id, thread_id(2));
+    assert_eq!(
+        (record.last_seq, record.version, record.state),
+        (3, 1, ThreadState::Done)
+    );
+    assert_eq!(
+        record.forked_from,
+        Some(ForkedFrom {
+            thread_id: Some(thread_id(1)),
+            seq: 2,
+            kind: ForkKind::Fork
+        })
+    );
+    assert_eq!(record.owner, alice());
+    assert_eq!(record.created_at, at(10));
+
+    // the log: the parent's first two events, as they are, and the new event
+    let events = store.list_events(thread_id(2), 0, 100).await.unwrap();
+    assert_eq!(events.len(), 3);
+    for (copy, original) in events.iter().zip(&parent_events).take(2) {
+        assert_eq!(
+            (copy.seq, copy.at, &copy.actor, &copy.body),
+            (original.seq, original.at, &original.actor, &original.body)
+        );
+        assert_eq!(copy.thread_id, thread_id(2));
+    }
+    assert_eq!(events[2], written[0]);
+
+    // read back, the thread says the same, and has its own context
+    assert_eq!(
+        store
+            .get_thread(Some(&alice()), thread_id(2))
+            .await
+            .unwrap()
+            .unwrap(),
+        record
+    );
+    let binding = store.get_binding(thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(binding.context_id, "ctx-2");
+    assert_eq!(binding.agent_id, AgentId::new("coder"));
+    assert_eq!(binding.task_id, None);
+
+    // the parent did not change, and the idempotency key of a copied event did not travel: the
+    // same key in the fork's own log is new there
+    assert_eq!(
+        store.get_thread(None, thread_id(1)).await.unwrap().unwrap(),
+        parent_before
+    );
+    assert_eq!(
+        store.list_events(thread_id(1), 0, 100).await.unwrap(),
+        parent_events
+    );
+    let (_, again) = applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(
+                    ThreadState::Queued,
+                    vec![user_event("third", Some("k2"))],
+                    vec![],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(again[0].seq, 4);
+
+    // a fork of a fork copies what that one holds: its copy and its own events
+    let (grand, _) = fork(&store, 2, 3, 4, ForkKind::Fork, 20, vec![], vec![])
+        .await
+        .unwrap();
+    assert_eq!(grand.last_seq, 5);
+    let events = store.list_events(thread_id(3), 0, 100).await.unwrap();
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[2].kind(), EventKind::ThreadForked);
+    assert_eq!(events[3].kind(), EventKind::UserMessage);
+}
+
+/// An edit's first commit holds the replacing message and its delegation: one transaction, the
+/// event after the copy, the outbox row for the fork's own thread.
+pub async fn a_fork_commits_its_own_events_and_outbox_after_the_copy<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    let (record, written) = fork(
+        &store,
+        1,
+        2,
+        2,
+        ForkKind::Edit,
+        10,
+        vec![user_event("edited", None)],
+        vec![delegate(2)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        written.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    assert_eq!((record.last_seq, record.state), (4, ThreadState::Queued));
+    let open = store.list_open_outbox(thread_id(2)).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].thread_id, thread_id(2));
+    assert!(
+        store
+            .list_open_outbox(thread_id(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // it is claimable like any row
+    let claimed = claim(&store, "w", at(10)).await;
+    assert_eq!(
+        claimed.iter().map(|r| r.thread_id).collect::<Vec<_>>(),
+        vec![thread_id(2)]
+    );
+}
+
+/// Cutting at 0 copies nothing: the thread starts with its `thread_forked`, as event 1.
+pub async fn a_fork_at_zero_copies_nothing<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    let (record, written) = fork(
+        &store,
+        1,
+        2,
+        0,
+        ForkKind::Edit,
+        10,
+        vec![user_event("instead", None)],
+        vec![delegate(2)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        written.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(record.last_seq, 2);
+    assert_eq!(record.forked_from.map(|f| f.seq), Some(0));
+    assert_eq!(
+        store.list_events(thread_id(2), 0, 100).await.unwrap().len(),
+        2
+    );
+}
+
+/// A thread that is not the owner's looks like a thread that does not exist, and a cut past the
+/// parent's log is refused; either way nothing is written.
+pub async fn a_refused_fork_writes_nothing<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    seed_conversation(&store, &bob(), 5, 0).await;
+
+    let mut new = new_thread(&bob(), 2);
+    new.now = at(10);
+    let foreign = store
+        .fork_thread(
+            new,
+            crate::ForkOrigin {
+                parent: thread_id(1),
+                cut: 2,
+                kind: ForkKind::Fork,
+            },
+            commit(
+                ThreadState::Done,
+                vec![forked_event(1, 2, ForkKind::Fork)],
+                vec![],
+            ),
+        )
+        .await;
+    assert_eq!(class_of(&foreign), Some(ErrorClass::NotFound));
+
+    let missing = fork(&store, 77, 3, 0, ForkKind::Fork, 10, vec![], vec![]).await;
+    assert_eq!(class_of(&missing), Some(ErrorClass::NotFound));
+
+    let past = fork(&store, 1, 4, 5, ForkKind::Fork, 10, vec![], vec![]).await;
+    assert_eq!(class_of(&past), Some(ErrorClass::Corrupt));
+    let negative = fork(&store, 1, 6, -1, ForkKind::Fork, 10, vec![], vec![]).await;
+    assert!(negative.is_err());
+
+    // an id that exists is refused too, and the thread that has it is untouched
+    let before = store.list_events(thread_id(5), 0, 100).await.unwrap();
+    let taken = fork(&store, 1, 1, 2, ForkKind::Fork, 10, vec![], vec![]).await;
+    assert!(taken.is_err());
+    assert_eq!(
+        store.list_events(thread_id(1), 0, 100).await.unwrap().len(),
+        4
+    );
+    assert_eq!(
+        store.list_events(thread_id(5), 0, 100).await.unwrap(),
+        before
+    );
+
+    for n in [2, 3, 4, 6] {
+        assert!(
+            store
+                .get_thread(None, thread_id(n))
+                .await
+                .unwrap()
+                .is_none(),
+            "thread {n} was never made"
+        );
+        assert!(store.get_binding(thread_id(n)).await.unwrap().is_none());
+        assert!(
+            store
+                .list_events(thread_id(n), 0, 100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+/// A thread made by an edit is a branch of one the list shows: it is listed only when asked for,
+/// and a page is as long as it can be whatever is hidden. A fork of the other kind is listed.
+pub async fn list_hides_edits_unless_asked<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    fork(
+        &store,
+        1,
+        2,
+        2,
+        ForkKind::Edit,
+        10,
+        vec![user_event("e", None)],
+        vec![delegate(2)],
+    )
+    .await
+    .unwrap();
+    fork(&store, 1, 3, 4, ForkKind::Fork, 20, vec![], vec![])
+        .await
+        .unwrap();
+    fork(
+        &store,
+        1,
+        4,
+        0,
+        ForkKind::Edit,
+        30,
+        vec![user_event("e", None)],
+        vec![delegate(4)],
+    )
+    .await
+    .unwrap();
+    seed_conversation(&store, &alice(), 5, 40).await;
+
+    let ids = |list: Vec<orch_core::ThreadRecord>| -> Vec<ThreadId> {
+        list.into_iter().map(|t| t.id).collect()
+    };
+    assert_eq!(
+        ids(store.list_threads(&alice(), None, 50, false).await.unwrap()),
+        vec![thread_id(5), thread_id(3), thread_id(1)]
+    );
+    assert_eq!(
+        ids(store.list_threads(&alice(), None, 50, true).await.unwrap()),
+        vec![
+            thread_id(5),
+            thread_id(4),
+            thread_id(3),
+            thread_id(2),
+            thread_id(1)
+        ]
+    );
+    // the limit counts what is listed, and a cursor may be a hidden thread
+    assert_eq!(
+        ids(store.list_threads(&alice(), None, 2, false).await.unwrap()),
+        vec![thread_id(5), thread_id(3)]
+    );
+    assert_eq!(
+        ids(store
+            .list_threads(&alice(), Some(thread_id(4)), 50, false)
+            .await
+            .unwrap()),
+        vec![thread_id(3), thread_id(1)]
+    );
+}
+
+/// The family of edits of a thread: the thread it started from and every edit made from those,
+/// oldest first, each with its parent, its cut and the seq of its replacing message. A fork of the
+/// other kind starts a family of its own; a thread that is not the owner's has none.
+pub async fn fork_family_follows_edits<S: ThreadStore>(store: S) {
+    use orch_core::{EditLink, ForkKind};
+    seed_conversation(&store, &alice(), 1, 0).await;
+    // 2 and 3 replace the message at 3 of 1; 4 replaces the message at 4 of 2 (an edit of an edit,
+    // whose replacing message comes after an event of its own, so it is not at cut + 2); 5 is a
+    // fork of 1; 6 an edit of 5
+    fork(
+        &store,
+        1,
+        2,
+        2,
+        ForkKind::Edit,
+        10,
+        vec![user_event("b", None)],
+        vec![delegate(2)],
+    )
+    .await
+    .unwrap();
+    fork(
+        &store,
+        1,
+        3,
+        2,
+        ForkKind::Edit,
+        20,
+        vec![user_event("c", None)],
+        vec![delegate(3)],
+    )
+    .await
+    .unwrap();
+    // 2 has: 1 2 (copied), 3 thread_forked, 4 "b"; 4 edits that message (cut 3), and an event of
+    // its own comes before its replacing message: thread_forked 4, "noise" 5, "d" 6
+    fork(
+        &store,
+        2,
+        4,
+        3,
+        ForkKind::Edit,
+        30,
+        vec![agent_event("noise"), user_event("d", None)],
+        vec![delegate(4)],
+    )
+    .await
+    .unwrap();
+    fork(&store, 1, 5, 4, ForkKind::Fork, 40, vec![], vec![])
+        .await
+        .unwrap();
+    fork(
+        &store,
+        5,
+        6,
+        3,
+        ForkKind::Edit,
+        50,
+        vec![user_event("e", None)],
+        vec![delegate(6)],
+    )
+    .await
+    .unwrap();
+
+    let family = |n: u128| {
+        let store = &store;
+        async move { store.fork_family(&alice(), thread_id(n)).await.unwrap() }
+    };
+    let link = |parent: u128, cut: i64, message: i64| {
+        Some(EditLink {
+            parent: thread_id(parent),
+            cut,
+            message,
+        })
+    };
+    let expected = vec![
+        (thread_id(1), None, at(0)),
+        (thread_id(2), link(1, 2, 4), at(10)),
+        (thread_id(3), link(1, 2, 4), at(20)),
+        (thread_id(4), link(2, 3, 6), at(30)),
+    ];
+    for member in [1, 2, 3, 4] {
+        let got: Vec<_> = family(member)
+            .await
+            .into_iter()
+            .map(|n| (n.id, n.link, n.created))
+            .collect();
+        assert_eq!(got, expected, "the family of thread {member}");
+    }
+    // the fork of 1 is a root of its own, with its one edit
+    let got: Vec<_> = family(6)
+        .await
+        .into_iter()
+        .map(|n| (n.id, n.link))
+        .collect();
+    assert_eq!(
+        got,
+        vec![(thread_id(5), None), (thread_id(6), link(5, 3, 5))]
+    );
+    assert_eq!(family(5).await.len(), 2);
+    // somebody else's, or nothing: no family
+    assert!(
+        store
+            .fork_family(&bob(), thread_id(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(family(77).await.is_empty());
+    // a thread that was never forked is a family of one
+    seed_conversation(&store, &alice(), 8, 60).await;
+    let alone = family(8).await;
+    assert_eq!(alone.len(), 1);
+    assert_eq!((alone[0].id, alone[0].link), (thread_id(8), None));
 }

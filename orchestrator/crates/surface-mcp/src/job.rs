@@ -245,6 +245,7 @@ mod tests {
             state,
             job,
             version: 3,
+            forked_from: None,
             last_seq: 9,
             created_at: "2026-09-30T10:00:00Z".parse().unwrap(),
             updated_at: "2026-09-30T10:05:00Z".parse().unwrap(),

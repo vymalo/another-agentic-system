@@ -1,5 +1,5 @@
 //! The HTTP edge of the orchestrator over [`orch_app::App`]: proxy-identity auth, RFC 9457
-//! problems, the resource API (agents, thread list and details, export, cancel) and health, in
+//! problems, the resource API (agents, thread list and details, export, cancel, fork, branches) and health, in
 //! `docs/api/chat-api.yaml`.
 //!
 //! Interaction surfaces (AG-UI, MCP) are separate crates. Each builds [`SurfaceRoutes`], and
@@ -200,6 +200,14 @@ pub fn router_with_surfaces<P: Ports>(
         .route(
             "/api/threads/{thread_id}/cancel",
             post(routes::cancel_thread::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/fork",
+            post(routes::fork_thread::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/branches",
+            get(routes::list_branches::<P>),
         )
         .with_state(state);
     let mut plain = resource;
