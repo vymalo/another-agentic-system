@@ -131,6 +131,78 @@ const choicesSurface = (): Step => ({
   },
 });
 
+/** One surface of the web's own catalog, as the fake agent sends it: `createSurface`, then the components. */
+const ownSurface = (components: Record<string, unknown>[]): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "v0.9.1", updateComponents: { surfaceId: UI_SURFACE_ID, components } },
+    ],
+  },
+});
+
+/** A graph of the `cards-mermaid` answer: how a request meets a session. */
+export const SESSION_GRAPH = [
+  "flowchart TD",
+  "  A[Request arrives] --> B{Session cookie?}",
+  "  B -- yes --> C[Look up the session]",
+  "  B -- no --> D[Create a session]",
+  "  C --> E[Handle the request]",
+  "  D --> E",
+].join("\n");
+
+/** The cards of the `cards-mermaid` answer: three ways to keep a login session. */
+export const SESSION_CARDS = [
+  {
+    title: "Server-side sessions in Postgres",
+    subtitle: "Durable, one more query per request",
+    body: "The session lives in a table. Logging out or revoking a device is one delete.",
+    url: "https://www.postgresql.org/docs/current/",
+    tags: ["durable", "simple"],
+  },
+  {
+    title: "Signed cookies",
+    subtitle: "Nothing to look up",
+    body: "The session is in the cookie, signed. Revoking one before it expires needs a deny list.",
+    url: "https://owasp.org/www-community/controls/",
+    tags: ["stateless"],
+  },
+  {
+    title: "A cache in front of the table",
+    subtitle: "Fast, and one more thing to run",
+    tags: ["fast", "extra service"],
+  },
+];
+
+/**
+ * The surface of the `cards-mermaid` script: a sentence, three cards (one of them without a link)
+ * and a graph, in one column of the web's own catalog: what the researcher answers with.
+ */
+const cardsMermaidSurface = (): Step =>
+  ownSurface([
+    { id: "root", component: "Column", children: ["intro", "options", "flow"] },
+    {
+      id: "intro",
+      component: "Text",
+      text: "Compared on how each one handles revocation and lookups.",
+    },
+    {
+      id: "options",
+      component: "Cards",
+      title: "Three ways to keep a session",
+      layout: "list",
+      cards: SESSION_CARDS,
+    },
+    {
+      id: "flow",
+      component: "Mermaid",
+      title: "How a request meets a session",
+      code: SESSION_GRAPH,
+      caption: "A request without a cookie gets a new session.",
+    },
+  ]);
+
 const working: Step = { kind: "agent_status", data: { status: "working" }, setState: "working" };
 
 /** The gate of a verification scenario (ADR 0018): the sources that must pass and the attempts. */
@@ -383,6 +455,53 @@ function finish(artifactText: string): Step[] {
   ];
 }
 
+/** The agent finished, with no artifact: an answer of words and a surface only. */
+const finishQuietly: Step[] = [
+  { kind: "agent_status", data: { status: "completed" } },
+  { kind: "thread_state", data: { state: "done" }, setState: "done", system: true },
+];
+
+/**
+ * A graph written to get out of the picture: front matter and a directive that turn security and HTML
+ * labels off, change the theme and add CSS, a script in a label, an event handler in a label, a click
+ * handler and a link. A page that draws it as an image shows a flowchart and nothing else:
+ * `window.__mermaidFlag` stays unset.
+ */
+export const HOSTILE_GRAPH = [
+  "---",
+  "config:",
+  "  securityLevel: loose",
+  "  htmlLabels: true",
+  "  theme: forest",
+  "---",
+  '%%{init: {"securityLevel": "loose", "htmlLabels": true, "flowchart": {"htmlLabels": true}, "theme": "dark", "look": "handDrawn", "themeCSS": ".node rect { fill: red }"}}%%',
+  "flowchart TD",
+  '  A["<img src=x onerror=window.__mermaidFlag=1>"] --> B["<script>window.__mermaidFlag=2</script>"]',
+  "  B --> C[Plain end]",
+  "  click A call window.__mermaidFlagCallback()",
+  '  click C "https://example.com/" "a link"',
+].join("\n");
+
+/** One small graph of each kind mermaid draws that an agent is likely to write: `mermaid-kinds`. */
+export const GRAPH_KINDS: [string, string][] = [
+  ["Flowchart", "flowchart LR\n  A[Start] --> B{Ok?}\n  B -- yes --> C[Done]\n  B -- no --> A"],
+  [
+    "Sequence",
+    "sequenceDiagram\n  participant W as Web\n  participant O as Orchestrator\n  W->>O: run\n  O-->>W: events",
+  ],
+  ["Class", "classDiagram\n  class Session {\n    +id\n    +expire()\n  }\n  Session <|-- Cookie"],
+  ["State", "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Busy: start\n  Busy --> [*]"],
+  ["Entity relationship", "erDiagram\n  USER ||--o{ SESSION : has\n  USER { string name }"],
+  [
+    "Gantt",
+    "gantt\n  title Plan\n  dateFormat YYYY-MM-DD\n  section A\n  Task :a1, 2026-10-01, 3d",
+  ],
+  ["Pie", 'pie title Share\n  "A" : 60\n  "B" : 40'],
+  ["Mind map", "mindmap\n  root((Sessions))\n    Cookies\n    Tokens"],
+  ["Timeline", "timeline\n  title Steps\n  2026 : Plan\n  2027 : Ship"],
+  ["Git graph", "gitGraph\n  commit\n  branch dev\n  commit\n  checkout main\n  merge dev"],
+];
+
 const nextMessageId = (() => {
   let n = 0;
   return () => `m-${++n}`;
@@ -484,6 +603,8 @@ const coderWork: Step[] = [
  *   and where it runs, with an "Other", a login: the last one several and optional) and asks "Three questions"; the
  *   answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to done, as
  *   `ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order).
+ * - `cards-mermaid`: one answer of text, a surface of the web's own catalog with three Cards (one
+ *   without a link) and a Mermaid graph, then done: what the researcher answers with. No result artifact.
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
@@ -499,6 +620,14 @@ const coderWork: Step[] = [
  *
  * Mock-only, not produced by the current orchestrator:
  * - `ui-bad`: an A2UI surface the renderer refuses, then the result and done.
+ * - `cards-bad`: a Cards whose card has no title and a `javascript:` link: refused (rule `schema`, which
+ *   comes first). `cards-bad-url`: a card whose link passes the schema (it starts with `https://`) and not
+ *   the rule of ADR 0013 (user information in it): refused (rule `url`). The surface is not drawn.
+ * - `mermaid-bad`: a Cards and a graph that does not parse: the cards are drawn, the graph says it
+ *   could not be drawn and shows its source. `mermaid-hostile`: a graph that tries to switch its
+ *   own security off (a directive, front matter, HTML in a label, a click handler): drawn as a plain image.
+ * - `mermaid-kinds`: ten graphs in one surface, one of each kind an agent is likely to write (flowchart,
+ *   sequence, class, state, entity relationship, Gantt, pie, mind map, timeline, git graph).
  * - `catalog-newer`: the thread was opened by a newer version of the app (its UI catalog is version
  *   99) and the agent sends a surface of that catalog with a component this build does not have:
  *   the renderer says it needs a newer version of the app. Then the result and done.
@@ -820,6 +949,93 @@ export function scriptFor(text: string): {
           { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
         ],
         resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
+    case "cards-mermaid":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "I compared three ways to keep a login session. The cards list them; the graph shows how a request meets one.",
+            },
+          },
+          cardsMermaidSurface(),
+          ...finishQuietly,
+        ],
+      };
+    case "cards-bad":
+    case "cards-bad-url": {
+      const bad =
+        word === "cards-bad"
+          ? [{ subtitle: "A card needs a title", url: "javascript:alert(document.domain)" }]
+          : [{ title: "Look here", url: "https://trusted.example@evil.example/login" }];
+      return {
+        start: [
+          working,
+          ownSurface([
+            { id: "root", component: "Column", children: ["intro", "options"] },
+            { id: "intro", component: "Text", text: "Not shown" },
+            { id: "options", component: "Cards", cards: bad },
+          ]),
+          ...finish(`echo: ${text}`),
+        ],
+      };
+    }
+    case "mermaid-bad":
+      return {
+        start: [
+          working,
+          ownSurface([
+            { id: "root", component: "Column", children: ["options", "flow"] },
+            { id: "options", component: "Cards", cards: SESSION_CARDS.slice(0, 1) },
+            {
+              id: "flow",
+              component: "Mermaid",
+              title: "A graph that does not parse",
+              code: "flowchart TD\n  A[Start] --> \n  B{{ not a graph",
+            },
+          ]),
+          ...finishQuietly,
+        ],
+      };
+    case "mermaid-kinds":
+      return {
+        start: [
+          working,
+          ownSurface([
+            {
+              id: "root",
+              component: "Column",
+              children: GRAPH_KINDS.map(([name]) => `g-${name}`),
+            },
+            ...GRAPH_KINDS.map(([name, code]) => ({
+              id: `g-${name}`,
+              component: "Mermaid",
+              title: name,
+              code,
+            })),
+          ]),
+          ...finishQuietly,
+        ],
+      };
+    case "mermaid-hostile":
+      return {
+        start: [
+          working,
+          ownSurface([
+            { id: "root", component: "Column", children: ["flow"] },
+            {
+              id: "flow",
+              component: "Mermaid",
+              title: "A graph that tries things",
+              code: HOSTILE_GRAPH,
+            },
+          ]),
+          ...finishQuietly,
+        ],
       };
     case "ui-bad":
       // mock only: a surface the renderer refuses (a component outside its vocabulary, and a link

@@ -22,6 +22,7 @@ import { compileCatalog, OWN_COMPILED } from "./validate";
 const RELEASED: Record<number, string> = {
   1: "sha256:38baa8cc271178fd944f7ade5ae1578ba4186f444077d2bd10ed6ef9aa98fdbd",
   2: "sha256:4ed91bcc9db52d5e2262aef2091d2b3eeccbf5bfe51519d7326fdc6641fb7856",
+  3: "sha256:9f65f9e6ddd424688b1cf61c47634eafee321a3b6736fb7fea8c0f7db1fc7579",
 };
 
 describe("the digest", () => {
@@ -267,5 +268,110 @@ describe("validating an instance", () => {
 
   it("the name in the instance must be the key's", () => {
     expect(check("Text", { id: "t", component: "Column", text: "hi" })).toMatch(/component/);
+  });
+});
+
+describe("version 3: Cards and Mermaid", () => {
+  const check = (component: string, instance: unknown) =>
+    compileCatalog(OWN_CATALOG.catalog).check(component, instance);
+  const cards = (over: Record<string, unknown> = {}) => ({
+    id: "c",
+    component: "Cards",
+    cards: [{ title: "A" }],
+    ...over,
+  });
+  const mermaid = (over: Record<string, unknown> = {}) => ({
+    id: "m",
+    component: "Mermaid",
+    code: "graph TD; A-->B",
+    ...over,
+  });
+
+  it("are in the catalog, which is at least version 3", () => {
+    expect(lock.version).toBeGreaterThanOrEqual(3);
+    expect(componentNames(OWN_CATALOG.catalog)).toEqual(
+      expect.arrayContaining(["Text", "Column", "Choices", "Cards", "Mermaid"]),
+    );
+  });
+
+  it("accept an instance with every property, and the smallest one", () => {
+    expect(
+      check(
+        "Cards",
+        cards({
+          title: "T",
+          layout: "grid",
+          weight: 1,
+          cards: [
+            {
+              title: "A",
+              subtitle: "s",
+              body: "b",
+              url: "https://example.com/a",
+              tags: ["x", "y"],
+            },
+          ],
+        }),
+      ),
+    ).toBeUndefined();
+    expect(check("Cards", cards())).toBeUndefined();
+    expect(check("Mermaid", mermaid({ title: "T", caption: "C", weight: 2 }))).toBeUndefined();
+    expect(check("Mermaid", mermaid())).toBeUndefined();
+  });
+
+  it("Cards: the limits are exact, and the reason names the place", () => {
+    const n = (count: number) => Array.from({ length: count }, (_, i) => ({ title: `c${i}` }));
+    expect(check("Cards", cards({ cards: n(24) }))).toBeUndefined();
+    expect(check("Cards", cards({ cards: n(25) }))).toMatch(/^cards: /);
+    expect(check("Cards", cards({ cards: [] }))).toMatch(/^cards: /);
+    expect(check("Cards", cards({ cards: [{ subtitle: "x" }] }))).toMatch(/title/);
+    expect(check("Cards", cards({ cards: [{ title: "" }] }))).toMatch(/^cards\.0\.title: /);
+    expect(check("Cards", cards({ cards: [{ title: "t".repeat(201) }] }))).toMatch(
+      /^cards\.0\.title: /,
+    );
+    expect(check("Cards", cards({ cards: [{ title: "a", body: "b".repeat(2001) }] }))).toMatch(
+      /^cards\.0\.body: /,
+    );
+    expect(check("Cards", cards({ cards: [{ title: "a", tags: Array(9).fill("x") }] }))).toMatch(
+      /^cards\.0\.tags: /,
+    );
+    expect(check("Cards", cards({ cards: [{ title: "a", image: "x" }] }))).toMatch(/image/);
+    expect(check("Cards", cards({ title: "t".repeat(121) }))).toMatch(/^title: /);
+    expect(check("Cards", cards({ layout: "masonry" }))).toMatch(/^layout: /);
+  });
+
+  it("Cards: a link starts with http:// or https://, and is at most 2048 characters", () => {
+    const url = (u: string) => check("Cards", cards({ cards: [{ title: "a", url: u }] }));
+    expect(url("https://example.com/")).toBeUndefined();
+    expect(url("http://example.com/")).toBeUndefined();
+    expect(url(`https://e.example/${"p".repeat(2048 - 18)}`)).toBeUndefined();
+    expect(url(`https://e.example/${"p".repeat(2048 - 17)}`)).toMatch(/^cards\.0\.url: /);
+    for (const bad of [
+      "javascript:alert(1)",
+      "data:text/html,x",
+      "/relative",
+      "ftp://x",
+      "HTTPS://x",
+    ]) {
+      expect(url(bad), bad).toMatch(/^cards\.0\.url: /);
+    }
+  });
+
+  it("Mermaid: 1 to 20,000 characters of source, a title of 120 and a caption of 500", () => {
+    expect(check("Mermaid", mermaid({ code: "g".repeat(20_000) }))).toBeUndefined();
+    expect(check("Mermaid", mermaid({ code: "g".repeat(20_001) }))).toMatch(/^code: /);
+    expect(check("Mermaid", mermaid({ code: "" }))).toMatch(/^code: /);
+    expect(check("Mermaid", { id: "m", component: "Mermaid" })).toMatch(/required property "code"/);
+    expect(check("Mermaid", mermaid({ title: "t".repeat(121) }))).toMatch(/^title: /);
+    expect(check("Mermaid", mermaid({ caption: "c".repeat(501) }))).toMatch(/^caption: /);
+    expect(check("Mermaid", mermaid({ theme: "dark" }))).toMatch(/theme/);
+  });
+
+  it("neither takes a binding or a function call where a literal is required", () => {
+    expect(check("Mermaid", mermaid({ code: { path: "/code" } }))).toMatch(/^code: /);
+    expect(check("Cards", cards({ cards: { path: "/cards" } }))).toMatch(/^cards: /);
+    expect(check("Cards", cards({ title: { call: "formatString", args: {} } }))).toMatch(
+      /^title: /,
+    );
   });
 });

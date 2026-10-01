@@ -187,3 +187,32 @@ when the person answers). It is headed "Your answers" (12 px, weight 500, muted)
 the labels chosen under it in the body size, "Other: ..." for their own words and "No answer" for a skipped optional question. It
 is not a step of the agent's list: nothing the person did is the agent's activity. When the surface the answer names is no longer
 in the transcript, the question's id and the raw value stand in.
+
+## Cards and Mermaid
+
+Two components of the UI catalog (version 3, ADR 0023) for what an agent shows. They sit in the surface's card like `Choices`, as
+quiet as the rest of the page: no colour of their own, nothing that moves, nothing that loads.
+
+- **Cards** are tiles inside the surface: 12 px radius, 1 px `--border`, `--background` fill (one step off the surface's `--card`), 14 px
+  of padding. In a **list** they stack with an 8 px gap; a **grid** is two columns from `sm`. Inside a tile: the **title** (14 px, weight
+  500; when the card has a link the title is the link, in `--brand` and underlined, with "(opens in a new tab)" for a screen reader), the
+  **subtitle** under it (12 px, `--muted-foreground`), the **body** (14 px, line breaks kept), and a last row of **tags** as small
+  `--secondary` chips with the **host** of the link at the end (12 px muted, an external-link icon): the person sees where a link goes
+  before they follow it. A card never has an image, a favicon or a preview (ADR 0013 rule 5): where an image would be, there is nothing.
+  A list or grid may have a title in the surface's heading style (16 px, weight 600).
+- **Mermaid** is a figure: an optional **title** (the same heading style), the **picture**, an optional **caption** (12 px muted) and a
+  quiet disclosure, "Diagram source" (12 px muted, a triangle), that opens the graph's text in the page's code block (12 px radius
+  corners at 6, `--muted` fill, monospace, scrolls and takes focus). The picture is drawn **in the page's own tokens**, so a graph is a
+  neighbour of the cards and not a screenshot of another app: nodes `--muted` with a `--input` border, text `--foreground`, lines
+  `--muted-foreground`, the surface's `--card` behind; dark mode is the dark tokens (`prefers-color-scheme`, as everywhere). **Plain
+  shapes**: mermaid's `classic` look, no drop shadows, no gradients, no hand-drawn style. At most its natural size and never wider than
+  the card: on a phone it scales down with its text, and the source is the way to read it at full size.
+- **A graph that cannot be drawn** is the same figure with a destructive-toned callout in place of the picture: a circle-alert icon,
+  "The graph could not be drawn.", the first three lines of mermaid's message in the destructive colour, and the source in the code block
+  (always open: it is what the person and the agent need to see). It is not an `alert` (a replay must not announce it again), and it does
+  not take the surface down: the words and cards beside it stay.
+- **Loading**: until mermaid has drawn, "Drawing the graph…" (12 px muted) holds the picture's place at least 96 px high, and the
+  source disclosure is already there.
+- Accessibility: the picture is an `<img>` named by the title (else the caption, else "Diagram"); the source disclosure is its text
+  alternative; cards are a list of list items; every link says it opens a new tab; the focus ring is the page's.
+

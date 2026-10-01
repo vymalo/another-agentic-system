@@ -148,3 +148,13 @@ the build settled, in the contract: a token is refused unless
 the thread exists and is the token's agent's (an `ask:<n>` token is refused until slice 10 builds the ledger it names),
 and the key and the URL are required in every role when the surface is named, because the adapter of a worker is what
 mints.
+
+## Status note, 2026-10-01: Cards and Mermaid are built in the web (MVP slice 4, web side)
+
+The web's catalog is at version 3: Cards and Mermaid join Text, Column and Choices
+([`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-3-slice-4-version-2-plus-cards-and-mermaid)). Both are output only.
+A card never loads anything (ADR 0013 rule 5); a graph is drawn by mermaid in the browser, loaded only when one is drawn,
+at its strict security level and without HTML labels, and shown as an image, so nothing in it can run or load. A surface that
+breaks either component's schema is refused visibly, as for any component. **Not built yet:** the agent's side (adam-rs
+`show` with Cards and Mermaid, slice 4's researcher) and the stack's pin of it.
+
