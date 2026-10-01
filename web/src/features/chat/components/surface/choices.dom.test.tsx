@@ -321,7 +321,11 @@ describe("the Choices component", () => {
         user: false,
       }),
     ]);
-    expect(screen.getByText("This interface was updated further down.")).toBeTruthy();
+    // the second run renders after the first: wait for it before judging the first copy
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Second copy" })).toBeTruthy();
+      expect(screen.getByText("This interface was updated further down.")).toBeTruthy();
+    });
     // one live copy: the earlier is a note, with no radio buttons
     expect(screen.getAllByRole("radiogroup")).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Send answers" })).toHaveLength(1);
