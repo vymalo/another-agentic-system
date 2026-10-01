@@ -58,6 +58,8 @@ jobs:
           docker compose --profile split config -q
           docker compose --profile app --profile split config -q
           docker compose --profile '*' config -q
+          # the coder as a GitHub App (dev/compose.github-app.yaml; the Coder E2E workflow runs it)
+          docker compose -f compose.yaml -f dev/compose.github-app.yaml --profile '*' config -q
       - name: The live override parses against the example environment
         # compose.live.yaml (going live, dev/README.md) needs Compose v2.24.4 or newer for `!override`; .env.example
         # stands in for a real .env, so the `:?` checks pass. The result must also drop the mocks from the coder.
@@ -68,7 +70,7 @@ jobs:
           grep -E '^chat$' services.txt
           grep -E '^researcher$' services.txt
           # the offline stand-ins go (last, so that this line's status is the step's: `set -e` ignores a negated command)
-          ! grep -E '^(mock-openai|mock-github|git-server|mock-ci|mock-model)$' services.txt
+          ! grep -E '^(mock-openai|mock-github|mock-github-mcp|git-server|mock-ci|mock-model)$' services.txt
       - name: Start the infrastructure and the mocks
         run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier mock-registry
       - name: Every mock scenario answers as documented

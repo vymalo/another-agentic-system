@@ -12,13 +12,19 @@ name: Coder E2E
 # and asserts one form of three questions, the person's answers as one action, and a newer catalog recorded; the
 # researcher answers with cards and a graph: dev/cards-e2e.sh asserts one surface of a Text, three cards and a Mermaid
 # graph under the same catalog, an older screen leaving the thread's catalog alone, and words only for a screen without Cards.
+# The coder needs no repository to start (dev/workspace-e2e.sh): it builds in a scratch project, creates a repository only after the person
+# says yes to a form, and adds a second repository to its workspace only after a yes; GitHub is read over MCP (the mock `mock-github-mcp`),
+# and the coder pass is run twice, once with the coder's GitHub credential a token and once as a GitHub App installation
+# (dev/compose.github-app.yaml: mock-github trades the coder's signed JWT for an installation token).
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB; the chat and the researcher use the same image),
 #              run dev/e2e-all.sh (every scenario: the coder's greeting, the three agents each answering in its role,
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
-#              the edge, the CI webhook, and the coder restarted on a copy of its agent folder with another name), then
+#              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), and the coder
+#              restarted on a copy of its agent folder with another name), then run the coder, with and without OpenCode, and the workspaces again
+#              with the coder as a GitHub App (`-f dev/compose.github-app.yaml`; GITHUB_AUTH=app), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
 #
@@ -71,7 +77,7 @@ jobs:
   coder-e2e:
     needs: vendored
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       COMPOSE_PROFILES: app
     steps:
@@ -130,12 +136,29 @@ jobs:
         # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
         # agent back and then ends the job (`mock-coder-ci`, dev/ci-webhook.sh through the edge's /webhooks/*), and, last, the
         # coder restarted by `docker compose up -d --no-build coder` on a copy of dev/coder/agent that gives it another name
-        # (dev/agent-folder-e2e.sh: a folder change needs a restart, no rebuild), then put back on its own folder.
+        # (dev/agent-folder-e2e.sh: a folder change needs a restart, no rebuild), then put back on its own folder. Before that, the coder's
+        # workspaces (dev/workspace-e2e.sh): a task that names no repository is built in a scratch project and the coder asks where to put it;
+        # a repository it creates (POST /orgs/scratch/repos on mock-github, then an empty repository on git-server) only after the person
+        # answers yes to a form, and none after no; a second repository (local/library) joins the workspace only after a yes, and
+        # git-server's log shows it was never asked for after a no; the gate, the CI card (mock-ci found the new repository) and the pull
+        # request are those of the repository the work reached. The coder's read of GitHub over MCP is asserted by dev/coder-e2e.sh.
         # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:
           VERBOSE: "1"
         run: dev/e2e-all.sh
+      - name: The coder as a GitHub App (the coder scenarios again, dev/compose.github-app.yaml)
+        # The same coder with `GITHUB_TOKEN` off and an App installation instead: an init service makes a throwaway key, the coder signs a JWT
+        # with it and mock-github trades it for an installation token (it lasts four minutes, so the coder renews it all the time). `up coder`
+        # recreates only the coder. Each script asserts the trade and that every call to /repos/... and /orgs/... carried the installation
+        # token, never the JWT (GITHUB_AUTH=app); the credential is the coder's own and is nowhere in a thread's log.
+        env:
+          GITHUB_AUTH: app
+        run: |
+          docker compose -f compose.yaml -f dev/compose.github-app.yaml up -d --no-build --wait --wait-timeout 300 coder
+          sh dev/coder-e2e.sh
+          NO_OPENCODE=1 sh dev/coder-e2e.sh
+          sh dev/workspace-e2e.sh
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.
@@ -153,7 +176,7 @@ jobs:
         run: |
           docker compose ps --all || true
           docker compose logs --no-color || true
-          for m in 8091 8092 8083 8094; do
+          for m in 8091 8092 8083 8094 8085; do
             echo "== journal of the mock on port $m"
             curl -s "http://127.0.0.1:$m/__admin/requests" | jq -c '.requests[] | {method: .request.method, url: .request.url, status: .response.status, body: (.request.body // "" | .[0:300])}' || true
           done

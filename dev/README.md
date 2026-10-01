@@ -16,7 +16,7 @@ bound to `127.0.0.1`.
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
 | Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack). |
-| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
+| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
 
@@ -40,8 +40,8 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 | MCP | http://127.0.0.1:8080/mcp | Bearer token `dev-mcp-token-0123456789abcdef0123456789`; see [Connect Claude Code](#connect-claude-code-over-mcp) |
 | Webhooks | `POST http://127.0.0.1:8080/webhooks/github` and `/webhooks/ci` | Signed with the dummy secret `dev-webhook-secret-0123456789abcdef0123`, no identity. `mock-ci` posts here on its own; [`ci-webhook.sh`](ci-webhook.sh) plays a CI by hand |
 | Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
-| The mocks' journals | http://127.0.0.1:8091/__admin/requests (the coder's model), :8094 (the model of the chat and the researcher), :8092 (GitHub), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
-| The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded; the branches the coder pushes are here |
+| The mocks' journals | http://127.0.0.1:8091/__admin/requests (the coder's model), :8094 (the model of the chat and the researcher), :8092 (GitHub), :8085 (the GitHub MCP server), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
+| The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded (with `local/library.git`, which only a second repository of a workspace reads); the branches the coder pushes are here, and so are the repositories it creates under `scratch/` ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). `/__repos/` lists what it holds, as JSON |
 | The mock web search | http://127.0.0.1:8096/mcp (MCP, bearer `dev-search-token`), `/__journal` | An MCP server with one canned `web_search` tool; [Mock web search (MCP)](#mock-web-search-mcp) |
 
 ### Try it in the chat
@@ -177,6 +177,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `registry` | `dev/registry-e2e.sh` | the platform's agent registry ([`mock-registry`](#the-agent-registry), `agent-registry/v1`): its agent `platform-coder` is listed after the agents of `dev/agents.yaml` (`source: registry`, its title and tags) with the releases of **its own card**, and a thread on it ends `done` with the deployment-wide agent token; an agent added to the registry through WireMock's admin API shows up in `GET /api/agents` within 10 s, no restart; a registry that answers 503 leaves exactly the static agents, `GET /api/registry` says `unavailable` (no URL in it), a run on a registry agent is a 503 with `Retry-After` (never a 404), and a static agent still answers; after a reset it is read again |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once; the coder's work reads as a tree of steps (OpenCode a sub-agent step with its own steps under it, the log bounded per step) and its answer is shown as it is written, then completed by the log's message ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change (no OpenCode step) |
+| `workspace` | `dev/workspace-e2e.sh` | the coder needs no repository to start ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)): a task that names none is built in a scratch project and the thread waits (`blocked`) with nothing pushed; the person asks for `scratch/fib-<id>` and the coder asks for consent as one form (`Choices`, question `consent`, options `yes` and `no`), which one action answers: `yes` makes exactly one `POST /orgs/scratch/repos` (after the answer, private, empty), the work reaches that repository under the gate `ci+agent_checks` with `mock-ci`'s card for it and one pull request, and no credential is in the thread's log; `no` creates nothing and the thread waits again. A second thread names `local/sandbox` and needs the greeting of `local/library`: the coder asks before adding it (a form again); after `yes` the library is read and the pull request is opened, after `no` git-server's log shows it was never asked for. `GITHUB_AUTH=app dev/workspace-e2e.sh` on a stack started with `-f dev/compose.github-app.yaml` asserts the same with the coder as a GitHub App |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
 | `verifier` | `dev/verifier-e2e.sh` | the verifier finds fault, the agent is sent back, the verifier passes it |
 | `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
@@ -186,7 +187,17 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 Every script prints one `ok` or `FAIL` line per check and exits non-zero on a failure; `e2e-all.sh` exits 1 if any scenario
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
 pushed it), so a second run of it is reported as `SKIP`, not as a failure (so is `folder` where there is no `docker compose`): `docker compose --profile app down -v` and
-`up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
+`up` again to run it fresh. The coder's GitHub credential is a token on the stack as `docker compose --profile app up` starts it and a GitHub App
+installation on a stack started with `-f dev/compose.github-app.yaml`; `dev/coder-e2e.sh` and `dev/workspace-e2e.sh` assert whichever they are told
+(`GITHUB_AUTH=token`, the default, or `app`; [Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). To run the coder scenarios as an App:
+
+```sh
+docker compose -f compose.yaml -f dev/compose.github-app.yaml --profile app up -d --no-build --wait coder    # recreates only the coder
+GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app NO_OPENCODE=1 dev/coder-e2e.sh && GITHUB_AUTH=app dev/workspace-e2e.sh
+```
+
+(`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
+after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
 ([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 
 ### Connect Claude Code over MCP
@@ -216,7 +227,7 @@ docker compose -f compose.yaml -f compose.live.yaml --profile app up --build
 ```
 
 [`compose.live.yaml`](../compose.live.yaml) (Compose v2.24.4 or newer, for `!override`) replaces the coder's whole environment
-with the values of `.env`; stops `mock-openai`, `mock-github`, `git-server`, `mock-ci` and `mock-model` (they move to a profile,
+with the values of `.env`; stops `mock-openai`, `mock-github`, `mock-github-mcp`, `git-server`, `mock-ci` and `mock-model` (they move to a profile,
 `offline-mocks`, that is never enabled, and the coder no longer waits for them); puts the real secrets on the orchestrator
 (`CODER_A2A_TOKEN`, `WEBHOOK_GITHUB_SECRETS`, `MCP_TOKEN_DEV`, each 32 bytes or more); and gives the orchestrator
 [`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. The chat and the researcher
@@ -225,7 +236,7 @@ go live with it: `compose.live.yaml` gives them the same model endpoint (`CHAT_M
 searches the mock web search**, canned results whatever the question: this stack has no search provider credential. To search for real,
 write the `url` and the token of a search MCP server of your own into a copy of `dev/agents/researcher/agent/mcp.json` and point
 `RESEARCHER_AGENT_DIR` at it ([Add a fourth agent by writing a folder](#add-a-fourth-agent-by-writing-a-folder) says how a folder names its tools). In the chat, name a repository you can push to
-(`In https://github.com/<you>/<repo>.git (base branch main), ...`; the host must be in `ALLOWED_REPO_HOSTS`). Check the
+(`In https://github.com/<you>/<repo>.git (base branch main), ...`; the host must be in `ALLOWED_REPO_HOSTS`), or name none and let it build in a scratch project. The coder's GitHub credential is one installation's, **a token (`GITHUB_TOKEN`) or a GitHub App** (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, a PEM on your machine), never both; it also authenticates the real read-only `github-mcp-server` the coder starts (the mock `mcp.json` is not mounted live). `CREATE_REPO_OWNERS=<owner>` lets the coder create a private, empty repository for that owner after the person says yes in the chat (with an App the owner must be an organisation); empty, it never does ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). Check the
 files without starting anything: `docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q`.
 
 Notes on going live:
@@ -302,9 +313,10 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings), and an SSE twin of the first two (`*-stream.json`: the agents stream their model calls). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
 | `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. |
-| `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
-| `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`. No authentication. Vendored. |
-| `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
+| `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses: open a pull request, create a repository (`POST /orgs/{owner}/repos`; `scratch` is an organisation), and trade a GitHub App's signed JWT for an installation token (`POST /app/installations/67890/access_tokens`, which lasts four minutes). Vendored. |
+| `mock-github-mcp` | `wiremock/wiremock:3.13.2` | `8085` (`MOCK_GITHUB_MCP_PORT`) | `app` | The GitHub MCP server's streamable HTTP endpoint (`/mcp`, bearer `dev-github-mcp-token`) as the coder reads GitHub through it: `initialize`, `tools/list` (the twelve read-only tools of its allow-list) and `tools/call` of `get_me` and `list_branches`. The coder's folder starts the real `github-mcp-server` as a child process; here [`coder/coder-agent/mcp.json`](coder/coder-agent/mcp.json) is mounted over the folder's `mcp.json` and points the coder at this mock instead. Vendored. |
+| `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git` and `local/library.git` (every `seed/<owner>/<name>/`). A repository of an owner in `AUTO_CREATE_OWNERS` (`scratch` here) is made, empty, the first time anything asks for it: what a repository just created on GitHub is like. `/__repos/` lists what it holds, as JSON. No authentication. Vendored. |
+| `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl, jq and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches, in `local/sandbox` and in every repository of `scratch` (`MOCK_CI_REPOS: "local/sandbox scratch/*"`: `<owner>/*` and `*` are found through git-server's `/__repos/` on every pass, so a repository the coder created is watched as soon as it exists) and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
 | `mock-mcp-search` | built from [`mock-mcp-search/`](mock-mcp-search/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies, nothing is installed) | `8096` (`MOCK_MCP_SEARCH_PORT`) | `app` | A mock web-search MCP server: streamable HTTP at `http://mock-mcp-search:8080/mcp` (bearer `dev-search-token`), one tool `web_search` with an icon, canned results from [`mock-mcp-search/results.json`](mock-mcp-search/results.json). See [Mock web search (MCP)](#mock-web-search-mcp). |
 | `smee-proxy` | `caddy:2.11.4-alpine` | not published | `smee` | A Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and nothing else (404); never the identity-injecting `edge`. See [Going live](#going-live). |
 | `smee` | built from [`smee/`](smee/Dockerfile) (`node:24-alpine3.23` by tag and digest, `smee-client` 5.0.0) | not published | `smee` | Forwards the deliveries smee.io holds for `SMEE_URL` to `smee-proxy`. Opt-in; exits with a message when `SMEE_URL` is unset. smee.io is a third party that sees the payloads. |
@@ -364,25 +376,27 @@ Everything else the coder needs is vendored from the same adam-rs commit, named 
 | Vendored path | Upstream path | What it is |
 |---|---|---|
 | `coder/wiremock/mock-openai/` | `dev/wiremock/mock-openai/` | `mappings/coder-script.json`, `coder-choices.json` ([Choices](#choices-the-coder-asks-with-a-form)) and `opencode-script.json`, and the SSE twins of the first two, `coder-script-stream.json` and `coder-choices-stream.json` ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)), plus the bodies they reference (`opencode-bash.sse`, `opencode-done.sse`, and `chat-text.sse` and `chat-text.json` as OpenCode's fallbacks). Nothing else of the upstream mock: an off-script request must be a 404. |
-| `coder/wiremock/mock-github/` | `dev/wiremock/mock-github/` | `mappings/pulls.json` and its two bodies. |
-| `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint and the seed of `local/sandbox.git`. |
-| `coder/agent/` | `bin/adam-coder/agent/` | The agent folder the coder reads at run time (`instructions.md`: its name, its card, its instructions), mounted at `/etc/adam/agent`. The whole upstream folder, nothing else. |
+| `coder/wiremock/mock-github/` | `dev/wiremock/mock-github/` | `mappings/pulls.json` and its two bodies, `repos.json` (create a repository, `GET /user`, `GET /users/{owner}`) and `app.json` (a GitHub App's JWT for an installation token). |
+| `coder/wiremock/mock-github-mcp/` | `dev/wiremock/mock-github-mcp/` | `mappings/mcp.json`: the GitHub MCP server's endpoint ([below](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). |
+| `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint, `cgi.sh` (creates a repository of an owner in `AUTO_CREATE_OWNERS` on first use) and the seed of `local/sandbox.git` and `local/library.git` (`seed/<owner>/<name>/`). |
+| `coder/coder-agent/` | `dev/coder-agent/` | `mcp.json`: the coder's folder file that points it at `mock-github-mcp`, mounted over the folder's own `mcp.json`. |
+| `coder/agent/` | `bin/adam-coder/agent/` | The agent folder the coder reads at run time (`instructions.md`: its name, its card, its instructions; `mcp.json`: the real `github-mcp-server`, read-only), mounted at `/etc/adam/agent`. The whole upstream folder, nothing else. |
 
 Do not edit them here. [`coder/check-vendored.sh`](coder/check-vendored.sh) compares every one with
 `raw.githubusercontent.com` at the commit in `UPSTREAM`, checks that nothing is missing (every body file
-a vendored mapping names is vendored too, and `coder/git-server/` and `coder/agent/` hold exactly the files of
-`dev/git-server/` and `bin/adam-coder/agent/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
+a vendored mapping names is vendored too, and `coder/git-server/`, `coder/coder-agent/` and `coder/agent/` hold exactly the files of
+`dev/git-server/`, `dev/coder-agent/` and `bin/adam-coder/agent/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
 image of that commit (`sha-<first 7 characters>@sha256:`); CI runs it first. The mappings are a
 deliberate subset, the scripted coder run only: a mapping the coder starts to need upstream shows up
 as an unmatched request in `dev/coder-e2e.sh`. To move to a newer adam-rs
 commit, change the commit in `UPSTREAM`, refresh the copies, and re-pin the image, all in one change. The pin is written **once**,
 as `x-adam-image` at the top of `compose.yaml`: the coder and the agents that are only a folder ([Several agents](#several-agents)) take it by
-alias (`adam-agent` ships inside the same image), and the check fails on a second pin. Not vendored, on purpose: upstream's `mock-assistant` model
+alias (`adam-agent` ships inside the same image), and the check fails on a second pin. Not vendored, on purpose: upstream's `compose.yaml` and `dev/coder-e2e.sh` (ours speak AG-UI and assert the gates), upstream's `dev/compose.github-app.yaml` ([`compose.github-app.yaml`](compose.github-app.yaml) here is a copy with its comments adapted), its `mock-assistant` model
 and its example agent `dev/agents/assistant`; the chat and the researcher here are ours and follow the same persona convention.
 
 **The scripted run.** The coder's model is `mock-coder`, a script the mock follows by looking at which
 tool-call ids the conversation already holds (it keeps no state). The message names the seeded
-repository, and the coder then calls `prepare_workspace`, `delegate_to_opencode`, `run_checks`,
+repository, and the coder then calls `prepare_workspace`, `github__list_branches` (a read of GitHub over MCP, answered by `mock-github-mcp`), `delegate_to_opencode`, `run_checks`,
 `commit_and_push` and `open_pull_request`, and ends with a text. Since adam-rs `ae540e9` the coder also reports its checks: `run_checks` emits a `checks`
 artifact (`passed`, `commit`, `tree`, `summary`, `findings`), and `commit_and_push` emits a second one, bound to the commit it pushed, before the `branch`
 artifact. The orchestrator's gate for the coder (`require: [agent-checks, ci]`) reads the last one: it must have passed on exactly the pushed commit. OpenCode (model `mock-opencode`) runs
@@ -491,6 +505,8 @@ cp -R dev/coder/agent /tmp/my-coder && chmod -R a+rX /tmp/my-coder   # the conta
 CODER_AGENT_DIR=/tmp/my-coder docker compose --profile app up -d coder
 ```
 
+Copy the **whole** folder: it holds an `mcp.json` too (the real GitHub MCP server's), and the offline stack mounts its mock over that file, so the folder in `CODER_AGENT_DIR` must have one (adam-rs's own compose file says the same).
+
 An edit to `dev/coder/agent/` that you commit **fails CI**: `coder/check-vendored.sh` compares it with the file upstream at the
 commit in [`coder/UPSTREAM`](coder/UPSTREAM). Change the instructions in `vymalo/another-adam-rs` (`bin/adam-coder/agent/`), then move
 this directory, the commit and the image pin together ([above](#the-default-agent)). With `compose.live.yaml` the same mount applies
@@ -536,6 +552,77 @@ in a data part).
   gives the next run a fresh repository and fresh databases.
 - The coder does not support `ListTasks`: if the orchestrator dies between sending a message and
   recording the task, the retry starts a second run (ADR 0014).
+
+## Workspaces, GitHub over MCP and a GitHub App: the coder without a repository
+
+Since adam-rs `1021836` ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md), status note of 2026-10-01) the coder needs no repository to
+start, and the credentials it holds are its own. The orchestrator did not change: all of this is the coder's, and the stack only has to be able to show it.
+
+- **A workspace of several repositories, started from nothing.** A task that names no repository is built in a *scratch project* (a local git repository that lives
+  only while the task is open) and the coder asks where to put it; with a repository named, `publish_scratch` puts the files there. A repository the
+  person did not name joins the workspace only when they say yes (`request_repository`), and a no is final for the task. `commit_and_push` and
+  `open_pull_request` act on one repository, and the gate binds the **last** `branch` the coder reported (open question 42: a job that pushes to several repositories).
+- **A repository created on request.** For the owners in the coder's `CREATE_REPO_OWNERS` (`scratch` here), `create_repository` makes a new, empty,
+  private repository, and only after the person says yes, every time. The question is written by the tool, and with the screen's catalog it is **a form**: one `Choices`, one
+  question `consent`, options `yes` and `no`, answered by the same single A2UI action as every other form ([Choices](#choices-the-coder-asks-with-a-form)). Without the
+  catalog it is text, and `yes` or `no` in words answers it. `mock-github` answers `POST /orgs/scratch/repos` with a clone URL on `git-server`, whose `AUTO_CREATE_OWNERS: scratch`
+  makes the repository, empty, the first time anything asks for it; `mock-ci` watches `scratch/*` and finds it by listing `git-server`'s `/__repos/` on every pass.
+- **GitHub over MCP, read-only.** The coder's folder has an `mcp.json` that starts the real `github-mcp-server` (a child process of the image, `--read-only`, twelve tools of an allow-list,
+  seen by the model as `github__get_me`, `github__list_branches` and so on) with the coder's own credential. Offline, [`coder/coder-agent/mcp.json`](coder/coder-agent/mcp.json) is mounted
+  over it and points the coder at the mock `mock-github-mcp`; the default script reads the branches of `local/sandbox` right after `prepare_workspace`, and `dev/coder-e2e.sh` asserts the call.
+  Writes never go through MCP: they are `commit_and_push` and `open_pull_request`.
+- **One installation's credential, in the coder's environment.** A token (`GITHUB_TOKEN`) **or** a GitHub App (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`), never both; the coder
+  exits at startup when neither or both are set. It never goes through an A2A message, the orchestrator or the log (`dev/workspace-e2e.sh` greps a thread's export for it). In App mode the coder signs a short-lived JWT with the key and trades it at
+  `POST {GITHUB_API_URL}/app/installations/{id}/access_tokens` for the installation token that git and the REST API are given; the mock's token lasts four minutes, so the coder renews it all the time, which is what the assertion needs.
+
+```mermaid
+sequenceDiagram
+  actor P as the person (the web)
+  participant O as orchestrator
+  participant C as coder
+  participant G as mock-github
+  participant S as git-server
+  participant I as mock-ci
+  P->>O: "Write fib.sh ... I'll give you a repo later." (with the screen's catalog)
+  O->>C: SendStreamingMessage
+  C-->>O: input-required: "where should it go?" (nothing pushed)
+  P->>O: "Create scratch/fib-x and put it there"
+  O->>C: the message, on the same task
+  C-->>O: create_repository asks: a Choices, question consent (yes / no)
+  P->>O: one a2uiAction: consent = yes
+  O->>C: the answer ("The person answered through the interface: - consent: yes")
+  C->>G: POST /orgs/scratch/repos (private, empty), the coder's own credential
+  G-->>C: 201, clone_url http://git-server:8080/scratch/fib-x.git
+  C->>S: first commit (empty), then publish_scratch, commit and push agent/...
+  C->>G: POST /repos/scratch/fib-x/pulls
+  I->>S: GET /__repos/scratch/, ls-remote: a new branch
+  I->>O: signed check_run mock-ci/build for the pushed commit
+  O-->>P: done (gate ci + agent_checks on that commit)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> NotGranted: a repository the person did not name
+  NotGranted --> Asked: request_repository / create_repository (the question is the tool's)
+  Asked --> Granted: the person's yes (a form's `consent = yes`, or the word yes)
+  Asked --> Refused: the person's no
+  Asked --> Asked: anything else (the question can be asked again)
+  Granted --> [*]: prepare_workspace / publish_scratch may use it
+  Refused --> [*]: final for the task: nothing was fetched, created or opened
+```
+
+`dev/workspace-e2e.sh` runs four threads on the coder ([Run the scenarios](#run-the-scenarios)): `create-repo` and `create-repo-no`, `second-repo` and `second-repo-no`. The second repository is
+`local/library` (seeded: a README and `greeting.txt`, `hello from library`), which no task names: because it is seeded, only `git-server`'s access log shows whether anything asked for it, which is why `mock-ci` does not watch it
+(`MOCK_CI_REPOS: "local/sandbox scratch/*"`). If a consent question arrives as text (the catalog did not reach the coder), the script says so in a `NOTE`, counts it as a `FAIL`, and answers with the word.
+
+**Running as a GitHub App.** `dev/compose.github-app.yaml` turns `GITHUB_TOKEN` off and gives the coder an App: an init service makes a throwaway RSA key into a volume, the coder signs a JWT with it, and `mock-github` trades any
+JWT that looks like one (three base64url parts) for an installation token. That proves the shape of the request and that the coder holds a key it can parse and sign with, not GitHub's signature check
+(adam-rs's `cargo test -p adam-workspace --test github_app` verifies the signature). Start it with `docker compose -f compose.yaml -f dev/compose.github-app.yaml --profile app up -d --wait`, and run
+the scripts with `GITHUB_AUTH=app`: they assert the trade and that every call to `/repos/...` and `/orgs/...`, the pull request's included, carried the installation token and never the JWT.
+
+**Live.** [`compose.live.yaml`](../compose.live.yaml) drops the mock `mcp.json` (the real `github-mcp-server` runs, with the same credential) and the mocks, and takes the credential from `.env`:
+`GITHUB_TOKEN`, or `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID` and `GITHUB_APP_PRIVATE_KEY_FILE` (a PEM on your machine, mounted read-only; unset, an empty placeholder
+[`coder/no-github-app-key.pem`](coder/no-github-app-key.pem) is mounted that nothing reads), plus `CREATE_REPO_OWNERS` and, for GitHub Enterprise, `GITHUB_MCP_HOST`. See [Going live](#going-live).
 
 ## Several agents
 
@@ -1928,3 +2015,29 @@ for a `command` or `tool` step under the OpenCode step and names no label), that
 are unchanged by the agents' streaming (the live words are in a run stream only, where `cards-e2e.sh` counts the assistant messages and wants one: a live message is one `TEXT_MESSAGE_START` that the log's final
 message completes; `title-e2e.sh` asks the model once because the core asks once for an agent that says two things in one reply, here the final message and the status that ends the turn, unless the title came back between the two),
 and how a real model provider takes a streamed request.
+
+Workspaces, GitHub over MCP and a GitHub App (MVP slice 7: the pin to adam-rs `1021836`, the vendored mocks, `dev/workspace-e2e.sh`, `dev/compose.github-app.yaml`):
+
+*Verified 2026-10-01*:
+
+- **The pin.** `coder:sha-1021836@sha256:8dcc66c3...` is the manifest digest the ghcr API returns for that tag (anonymous token, HTTP 200; the `Docker-Content-Digest` header and the sha-256 of the body agree): one
+  `linux/amd64` manifest (2.89 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`, `MCP_ALLOW_STDIO=true`, label `org.opencontainers.image.revision` `1021836a1887610c4639de15f2289b26245b9ce4`. The image was
+  not pulled (about 2.9 GB): the config blob was read from the registry. `dev/coder/check-vendored.sh` passes at that commit over `raw.githubusercontent.com` and the GitHub tree API, now also for `dev/coder/coder-agent/`;
+  of the vendored paths, the new ones are `agent/mcp.json`, `coder-agent/mcp.json`, `git-server/cgi.sh`, `git-server/seed/local/library/*` (the sandbox seed moved to `seed/local/sandbox/`) and the mappings of
+  `mock-github-mcp`, `mock-github` (`app.json`, `repos.json`) and `mock-openai` (`coder-script*.json`: the scripts of `files`, `scratch`, `second-repo` and `create-repo`, and `github__list_branches` in the default one).
+- **The mocks in WireMock itself.** `wiremock-standalone-3.13.2.jar` (the version compose pins) on the vendored `mock-github` and `mock-github-mcp`, in a private network namespace: a `POST /orgs/scratch/repos` is a `201` with a
+  clone URL on `git-server`, a pull request and an installation token are served, and the request-journal calls `dev/workspace-e2e.sh` and `dev/coder-e2e.sh` make (`requests/find` with a method and a `urlPathPattern`,
+  `requests/count` with a JSON-RPC method and a tool name, the reset) return what the scripts read: one creation after one request, `private` and `auto_init` as sent, none after the reset, and one `initialize` and one
+  `tools/call` of `list_branches`.
+- **`mock-ci`'s discovery.** `watched` (`*`, `<owner>/*`, a plain entry, an owner that has no repository yet) against a stub of `git-server`'s `/__repos/` listing in nginx's JSON shape: `local/sandbox scratch/*` is
+  `local/sandbox` and every repository of `scratch`, `*` is every repository of every owner, a missing owner adds nothing. A bug found there: `*` in `MOCK_CI_REPOS` was expanded as a file name by the shell, so the script now runs
+  with `set -f`.
+- The `jq` filters of the new scripts that read a surface (the `Choices` of one question `consent` with the options `yes` and `no`), the `vymalo.ci` card of a repository, and the recorded answer, against samples of the
+  contract's shape. `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh`, `docker compose --profile '*' config -q` (also with `-f dev/compose.github-app.yaml`, and with `-f compose.live.yaml
+  --env-file .env.example`, where the coder's `GITHUB_APP_PRIVATE_KEY_PATH` is set only when `GITHUB_APP_ID` is, and no mock `mcp.json` is mounted), `actionlint` on `coder-e2e.yml` and `compose.yml`, and the docs check are clean.
+
+*Unverified where this was written* (the machine had 2.4 GB of free disk and could not pull the 2.9 GB image or start the stack, so nothing ran in containers): the four threads of `dev/workspace-e2e.sh` and the new
+assertions of `dev/coder-e2e.sh` behind the real orchestrator, which is the Coder E2E workflow of the pull request that pins it; in particular that the coder, given the catalog in the first message, draws the consent
+question as a form that the orchestrator relays (`dev/workspace-e2e.sh` says so in a `NOTE`, fails, and answers with the word when it does not), that a plain message on a blocked thread continues the coder's task,
+that the label and the order of the options are as adam-rs's `consent.rs` writes them, and that `mock-ci` finds `scratch/*` through nginx's JSON listing in the alpine image; the coder as a GitHub App against github.com and the real
+`github-mcp-server` (the stack mocks both); `compose.live.yaml` with a real App key; and what a live model does with the consent tools.

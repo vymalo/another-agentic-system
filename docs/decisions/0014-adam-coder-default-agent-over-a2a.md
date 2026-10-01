@@ -300,3 +300,35 @@ tag and digest at the commit in `dev/coder/UPSTREAM`, and the orchestrator neede
 - *Unverified where this was written* (the stack was not started: the disk of the machine was too small for the orchestrator and web builds): the scenarios in containers, which is the first run of the coder at
   `cf6ddbb` behind the real orchestrator (the Coder E2E workflow of the pull request that pins it); what a real OpenCode reports for its bash call (the script asks for a command or tool step under it and names
   no label); and whether every real model provider accepts a streamed request with `stream_options`.
+
+### Status note, 2026-10-01: workspaces, GitHub per installation, and repositories created on request
+
+Since adam-rs `1021836` ([#64](https://github.com/vymalo/another-adam-rs/pull/64) file tools and workspaces,
+[#65](https://github.com/vymalo/another-adam-rs/pull/65) scratch projects and GitHub as an App installation,
+[#66](https://github.com/vymalo/another-adam-rs/pull/66) GitHub over MCP, a second repository and a created one; MVP slice 7 of
+[`docs/mvp.md`](../mvp.md); adam-rs ADRs
+[0002](https://github.com/vymalo/another-adam-rs/blob/1021836a1887610c4639de15f2289b26245b9ce4/docs/decisions/0002-workspace-placement.md),
+[0008](https://github.com/vymalo/another-adam-rs/blob/1021836a1887610c4639de15f2289b26245b9ce4/docs/decisions/0008-a-workspace-holds-several-repositories.md) and
+[0009](https://github.com/vymalo/another-adam-rs/blob/1021836a1887610c4639de15f2289b26245b9ce4/docs/decisions/0009-github-per-installation-read-through-mcp.md)) the coder is pinned at
+that commit, and **decision 4 no longer holds as written**: the first message does not have to name a repository. Nothing about the decision changes otherwise: the coder is a plain A2A agent, the orchestrator
+reads its card live and fails closed (ADR 0008), the image is pinned by tag and digest at the commit in `dev/coder/UPSTREAM`, and **the orchestrator is unchanged**. What the pin brings:
+
+- **A task needs no repository to start.** A task that names none is built in a scratch project (a local git repository that lives while the run does), and the coder asks where to put it; a repository the
+  person names later receives the files (`publish_scratch`). A workspace holds several repositories and its run's workspace is swept when the run is over. The gate is unchanged: it binds the last `checks`
+  that names the pushed commit of the last `branch` (ADR 0018), so **a job that pushes to two repositories has the gate judge only the last one** (open question 42).
+- **The coder asks before it widens its reach, and the question is a form.** A repository the person did not name joins the workspace only after a yes (`request_repository`), and a repository is created
+  (`create_repository`, for the owners in the coder's `CREATE_REPO_OWNERS` only, private and empty by default) only after a yes to a question the tool writes, each time. Both come to the orchestrator as an
+  `input-required` task with an ordinary `ask_user` form, a `Choices` of one question, so the answer is the single A2UI action of [`choices`](0023-ui-component-catalog-as-an-a2a-extension.md) when the screen's
+  catalog went with the message, and a word (`yes`, `no`) when it did not. The model never grants: only the person's answer to that very call does.
+- **Credentials are per installation, and the coder's own.** One installation's credential, a token (`GITHUB_TOKEN`) or a GitHub App (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, a key file), lives in the coder's
+  environment and secret and is **never sent in an A2A message, the orchestrator's log or an agent card**. The coder reads GitHub, read-only, through the official GitHub MCP server it starts as a child process
+  with the same credential; its writes are its own tools. The orchestrator holds none of it (open question 35 notes this).
+- **In this repository:** the pin and the vendored mocks (`mock-github` creates repositories and trades an App's JWT for an installation token, the new `mock-github-mcp`, `git-server` seeding `local/library` and making the
+  repositories of `scratch` on first use), `dev/compose.github-app.yaml` (the coder as an App), `compose.live.yaml` and `.env.example` (a token or an App, `CREATE_REPO_OWNERS`), `mock-ci` finding
+  `scratch/*` repositories, and the scenario `workspace` (`dev/workspace-e2e.sh`) beside `dev/coder-e2e.sh`'s new assertions (the read over MCP, `GITHUB_AUTH=token|app`); CI runs the coder scenarios in both
+  credential modes ([`dev/README.md`](../../dev/README.md#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)).
+- *Verified 2026-10-01* (anonymous ghcr API, HTTP 200): `coder:sha-1021836` is one `linux/amd64` manifest (2.89 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`, `MCP_ALLOW_STDIO=true`, label
+  `org.opencontainers.image.revision` `1021836a1887610c4639de15f2289b26245b9ce4`, digest `sha256:8dcc66c3...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh`
+  passes at that commit.
+- *Unverified where this was written* (the machine had 2.4 GB of free disk and could not pull the 2.9 GB image or start the stack): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull
+  request that pins it; that a real model uses the consent tools as the script does; the coder as a GitHub App against github.com and the real `github-mcp-server` (the stack mocks both).

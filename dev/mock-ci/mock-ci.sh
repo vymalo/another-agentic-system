@@ -23,7 +23,13 @@
 #
 # Environment (defaults match compose.yaml):
 #   GIT_SERVER_URL      http://git-server:8080   where `git ls-remote` goes: <url>/<repo>.git
-#   MOCK_CI_REPOS       local/sandbox            repositories to watch, space separated
+#   MOCK_CI_REPOS       local/sandbox            repositories to watch, space separated. An entry may be `<owner>/*`
+#                                                (every repository of that owner) or `*` (every repository of every owner):
+#                                                they are found through GET $GIT_SERVER_URL/__repos/ (git-server lists what it
+#                                                holds as JSON: the owners, then each owner's `<name>.git`), and listed again
+#                                                on EVERY pass, so a repository made after this started (the coder created it
+#                                                on request) is watched as soon as it exists. An owner that has no repository
+#                                                yet is not an error.
 #   MOCK_CI_REPO_URL    <GIT_SERVER_URL>         the address reported as the repository: <it>/<repo>. It must
 #                                                name the repository the way the agent's `branch` artifact does
 #   WEBHOOK_URL         http://edge:8080         where the orchestrator's webhooks are served (the edge passes
@@ -35,8 +41,9 @@
 #   MOCK_CI_STATE       /var/lib/mock-ci         what was reported (one empty file per commit)
 #   MOCK_CI_ONCE        unset                    1 = one pass, then exit (non-zero if a post failed)
 #
-# POSIX sh; needs git, curl, openssl, od and awk.
-set -eu
+# POSIX sh; needs git, curl, jq, openssl, od and awk.
+# -f: no globbing, `*` in MOCK_CI_REPOS is an entry and not a file name.
+set -euf
 
 git_server=${GIT_SERVER_URL:-http://git-server:8080}
 git_server=${git_server%/}
@@ -158,9 +165,28 @@ report() {
   esac
 }
 
+# list_owner OWNER: the repositories of one owner, as <owner>/<name> lines; nothing (and no error) when the owner has none yet.
+list_owner() {
+  curl -fsS --max-time 10 "$git_server/__repos/$1/" 2>/dev/null |
+    jq -r --arg o "$1" '.[]? | select(.type == "directory" and (.name | endswith(".git"))) | "\($o)/\(.name[:-4])"' 2>/dev/null || true
+}
+
+# watched: the repositories of this pass, one per line: the entries of MOCK_CI_REPOS, with `<owner>/*` and `*` expanded.
+watched() {
+  for entry in $repos; do
+    case $entry in
+      '*')
+        owners=$(curl -fsS --max-time 10 "$git_server/__repos/" 2>/dev/null | jq -r '.[]? | select(.type == "directory") | .name' 2>/dev/null) || owners=
+        for owner in $owners; do list_owner "$owner"; done ;;
+      */'*') list_owner "${entry%/\*}" ;;
+      *) echo "$entry" ;;
+    esac
+  done
+}
+
 pass() {
   failed=0
-  for repo in $repos; do
+  for repo in $(watched); do
     if ! heads=$(git ls-remote --heads "$git_server/$repo.git" 'refs/heads/agent/*' 2>"$scratch/err"); then
       log "cannot list $repo: $(head -c 200 "$scratch/err")"
       failed=1

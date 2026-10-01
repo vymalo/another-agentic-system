@@ -31,6 +31,12 @@
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
+#   workspace         the coder needs no repository to start: a scratch project, a      workspace-e2e.sh
+#                     repository it creates only after the person says yes (and none
+#                     after no), a second repository that joins the workspace only
+#                     after yes; each question is a form from the web's catalog, one
+#                     action answers it; the gate, the CI card and the pull request
+#                     are those of the repository the work reached
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
 #                     cannot be weakened by a run
 #   verifier          the verifier finds fault -> rework -> the verifier passes      verifier-e2e.sh
@@ -47,7 +53,9 @@
 #
 # Each script's output goes to a file, and only the tail of a failing one is printed; the file is kept in
 # $LOG_DIR (default: a fresh directory under ${TMPDIR:-/tmp}) and named in the summary. Environment that the
-# scripts read (BASE_URL, EDGE_PORT, AUTH_EMAIL, TIMEOUT, ...) is passed through unchanged.
+# scripts read (BASE_URL, EDGE_PORT, AUTH_EMAIL, TIMEOUT, GITHUB_AUTH, ...) is passed through unchanged. (GITHUB_AUTH=app
+# says the stack runs the coder as a GitHub App, `-f dev/compose.github-app.yaml`; `folder` restarts the coder WITHOUT that override, so
+# run `folder` on the default stack.)
 #
 # Exit status: 0 when no scenario failed (a skip is not a failure), 1 when one did, 2 on a usage error or
 # when the stack is not there. Needs curl, jq, git and openssl (and docker compose, only to print logs).
@@ -58,7 +66,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards title fork registry coder coder-no-opencode verify verifier mcp ci folder"
+all="greeting agents choices cards title fork registry coder coder-no-opencode workspace verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -88,7 +96,7 @@ agents=$(curl -fsS --max-time 30 -H "X-Auth-Request-Email: ${AUTH_EMAIL:-dev@exa
 echo "stack: $base, agents: ${agents:-none}"
 for s in "$@"; do
   case $s in
-    greeting | choices | coder | coder-no-opencode | folder)
+    greeting | choices | coder | coder-no-opencode | workspace | folder)
       case " $agents " in
         *" coder "*) ;;
         *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
@@ -167,6 +175,7 @@ for s in "$@"; do
     registry) run registry sh "$here/registry-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
+    workspace) run workspace sh "$here/workspace-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;
     verifier) run verifier sh "$here/verifier-e2e.sh" ;;
     mcp) run mcp sh "$here/mcp-e2e.sh" ;;
