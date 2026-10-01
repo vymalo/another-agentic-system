@@ -1,6 +1,7 @@
 # ADR 0024 — MCP tools attached per conversation, from the UI
 
-- **Status:** proposed (2026-10-01)
+- **Status:** accepted (2026-10-01), on the owner's delegation: open question 35 is decided for the relay, which
+  amends decisions 3 and 6; see the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
 
 ## Context
 
@@ -59,3 +60,25 @@ but nothing passes tools from the person to an agent.
   chat.
 - **Browser-side tools (AG-UI frontend tools).** They need a model in the browser's loop
   ([ADR 0013](0013-a2ui-generative-ui.md) context); our agents are remote.
+
+## Status note, 2026-10-01: accepted on the owner's delegation
+
+The owner delegated the points this ADR left open so that the MVP can be completed (2026-10-01). They were
+decided on that delegation as follows; the owner may revisit them.
+
+- **Credentials: the relay (decision 6, open question 35).** The orchestrator holds the credentials of the servers the
+  deployment lists (configuration and environment) and relays their tools on its per-thread MCP endpoint (extension
+  `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`; see the status note of
+  [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md) and the contract
+  [`api/thread-tools-v1.md`](../api/thread-tools-v1.md)). Credentials never travel in A2A messages and never reach the
+  event log or the outbox.
+- **Decision 3, amended.** The agent receives no server URL: it receives the endpoint (URL, token, expiry) under the
+  thread-tools URI with the names of the attached servers, and finds their tools on the endpoint, named
+  `<server>__<tool>`. An agent whose card does not list the extension gets nothing, and the UI says that it cannot use
+  attached tools, as decided.
+- **Steps and icons (decision 5).** The orchestrator sees every relayed call and reports it as a step
+  ([ADR 0025](0025-nested-steps-events-carry-their-source-path.md)) with the server's icon from the configuration;
+  icons at remote URLs wait for open question 38.
+- **Refusals (decision 4).** A server the deployment does not offer to the thread's agent is refused when it is
+  attached; a call that a server refuses is a failed step and an error result for the agent.
+- Still open: authentication to the servers beyond static credentials (question 11; OIDC for MCP after the MVP).

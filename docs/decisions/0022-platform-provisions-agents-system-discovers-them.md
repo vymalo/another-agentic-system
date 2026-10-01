@@ -1,6 +1,7 @@
 # ADR 0022 — The platform provisions A2A agents; the system discovers them
 
-- **Status:** proposed (2026-10-01)
+- **Status:** accepted (2026-10-01), on the owner's delegation: decision 6 (open question 39) is decided in the
+  [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
 
 ## Context
 
@@ -62,3 +63,33 @@ catalog per service (`/.well-known/api-catalog`, its §12) but no fleet-wide lis
 - **Kubernetes API access to the platform's CRDs.** Ties the system to one host and its RBAC;
   contradicts ADR 0007.
 - **Agent-to-agent discovery only through each card's links.** There is no root to start from.
+
+## Status note, 2026-10-01: accepted on the owner's delegation
+
+The owner delegated the points this ADR left open so that the MVP can be completed (2026-10-01). They were
+decided on that delegation as follows; the owner may revisit them.
+
+- **The registry format (decision 6, open question 39).** A versioned contract in another-agentic-platform,
+  [`docs/extensions/agent-registry-v1.md`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md)
+  (AD-021 there, [another-agentic-platform#8](https://github.com/vymalo/another-agentic-platform/pull/8)), named by
+  the URI `https://agents.vymalo.com/registry/v1`: a JSON linkset in
+  the `api-catalog` shape that lists one agent-card URL per agent service as an `item` link, with the service id and
+  optional tags, and nothing else. Releases stay on each card (decision 4) and no UI concept is in it (decision 5). An
+  api-catalog is `application/linkset+json` with the profile `https://www.rfc-editor.org/info/rfc9727`, and lists its
+  members as `item` links (*verified 2026-10-01*, <https://www.rfc-editor.org/rfc/rfc9727.html>); attributes of a link
+  target beyond the registered ones are arrays (*verified 2026-10-01*, <https://www.rfc-editor.org/rfc/rfc9264.html>,
+  section 4.2.4.3). The document names the contract with a `profile` link to its URI, so a client refuses a version it
+  does not know.
+- **Tags and releases (decision 4, reworded).** A registry item may carry optional `tags`: labels the platform keeps
+  on the service, for the UI to display and to filter by; they route, authorise and select nothing. Decision 4's
+  "releases and tags stay on the agent card" therefore reads: **releases (and their channel tags) stay on the agent
+  card** (release-channels), and a registry item's `tags` are not releases.
+- **The implementations (decision 2).** The port `AgentRegistry` is in `orch-ports` with its conformance testkit,
+  beside the static list and the composition of two registries (static entries first; when both list an id, the static
+  entry wins). The platform reader is a crate of its own, and compose has a WireMock registry (MVP slice 9,
+  [`mvp.md`](../mvp.md#the-new-build-order)).
+- **Fail closed (decision 3)** applies to the list: a registry that cannot be read lists none of its agents and the UI
+  says so. A delegation to one of its agents is retried while it cannot be read, and fails only when the registry
+  answers without that agent.
+- Still open: authentication to the registry and its agents beyond a bearer token (question 11) and the default
+  marker (question 23).

@@ -1,6 +1,7 @@
 # ADR 0023 — A UI component catalog, sent at conversation start, with a refetch seam
 
-- **Status:** proposed (2026-10-01)
+- **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI and open question 36 are
+  decided in the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
 
 ## Context
 
@@ -82,3 +83,42 @@ functions)"; and the specification has no mechanism for an agent to request or r
 - **A format of our own instead of A2UI catalogs.** A2UI already has catalogs and inline catalogs;
   the owner's "redo their semantic here ourselves" is met by our own catalog inside A2UI.
 - **OpenUI.** Rejected in ADR 0013 for lack of a transport binding.
+
+## Status note, 2026-10-01: accepted on the owner's delegation
+
+The owner delegated the points this ADR left open so that the MVP can be completed (2026-10-01). They were
+decided on that delegation as follows; the owner may revisit them.
+
+- **The extension's URI** is `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, after the release-channels
+  pattern of [ADR 0008](0008-platform-integration-via-a2a-extension.md): detected from the card, read live, failing
+  closed, removable without breaking plain A2A. Its contract is [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md)
+  (accepted; not built yet).
+- **The refetch seam (decision 5; the transport of open question 36)** is the tool `get_ui_catalog` on the
+  orchestrator's per-thread MCP endpoint, the "thread tools" (extension
+  `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`; contract
+  [`api/thread-tools-v1.md`](../api/thread-tools-v1.md), accepted; not built yet). The endpoint is
+  `/thread-tools/{threadId}/mcp`: a path under the `/mcp` mount of
+  [ADR 0019](0019-mcp-server-over-streamable-http.md) would collide with it. The A2A adapter gives the agent the
+  endpoint's URL, a token and its expiry in the message metadata under that URI. The token is short-lived (two hours by
+  default, 60 seconds to 24 hours by configuration), scoped to the thread, signed with HMAC (HS256) under a key from
+  the configuration so that any replica can check it, minted when the message is sent, and never written to the event
+  log, the outbox or a log line. Its claims name the thread, the job, the agent, the message, and who is calling
+  (`main`, or an asked agent and its depth, for [ADR 0026](0026-agent-mentions-as-structured-references.md)). The same
+  endpoint carries the tools of [ADR 0024](0024-mcp-tools-attached-per-conversation.md) and `ask_agent`: inside the
+  surface, tools come from the built-in `get_ui_catalog` and from providers composed at build time
+  ([ADR 0009](0009-swappable-implementations-at-build-time.md)), listed in that order.
+- **Versioning (open question 36).** The catalog has an integer `version`, bumped by hand, beside its digest; the
+  newest catalog is the one with the highest `version`. Every digest a thread saw stays in its log as a `ui_catalog`
+  event for as long as the thread exists, and the refetch answers the newest. A UI given a surface that names a
+  component it does not have shows a visible placeholder, "needs a newer version of the app": refused visibly, rule 4
+  of [ADR 0013](0013-a2ui-generative-ui.md). A UI older than the thread's newest catalog sends no catalog.
+- **Refinements of decisions 2 and 4** (the contract has the details). `vymalo.uiCatalog` carries `version` too.
+  Every message about a thread that has a catalog, to an agent that lists the extension, carries
+  `{catalogId, version, digest, inline}` under its URI and lists our `catalogId` first in `supportedCatalogIds`, not
+  only the message that carries the catalog, so that an agent that holds to A2UI never thinks the screen lost it.
+  `inlineCatalogs` is sent on the message that makes a new digest the thread's current one, and only to an agent
+  whose A2UI entry says `acceptsInlineCatalogs: true`; any other agent gets `inline: false` and refetches.
+- **Detection.** The orchestrator reads the extensions a live card lists into a closed set (thread tools, UI catalog,
+  steps, mentions), and the AG-UI capabilities document lists each one under `custom`, so the web can flag an agent
+  before the person sends, as [ADR 0024](0024-mcp-tools-attached-per-conversation.md) (decision 3) and
+  [ADR 0026](0026-agent-mentions-as-structured-references.md) (decision 3) require.

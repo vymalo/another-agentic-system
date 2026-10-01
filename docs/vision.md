@@ -6,6 +6,10 @@
 > [0022](decisions/0022-platform-provisions-agents-system-discovers-them.md) to
 > [0026](decisions/0026-agent-mentions-as-structured-references.md). Statements about this
 > repository's code were checked against `main` at `7b79f77` on 2026-10-01.
+>
+> **Update, 2026-10-01 (later the same day):** the owner delegated the open points, and the five ADRs are
+> accepted, each with a dated status note; open questions 34, 35, 36 and 39 are closed. Where this page says
+> "proposed" or "not decided" below, read those notes: it is kept as it was written.
 
 ## Why this page exists
 

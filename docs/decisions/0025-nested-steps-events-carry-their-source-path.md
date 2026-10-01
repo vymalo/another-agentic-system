@@ -1,6 +1,7 @@
 # ADR 0025 — Nested steps: events carry their source path
 
-- **Status:** proposed (2026-10-01)
+- **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI is decided in the
+  [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
 
 ## Context
 
@@ -53,3 +54,16 @@ produced 336 status events, 197 of them OpenCode's. The work has a shape: orches
 - **Hiding sub-agent detail entirely.** The person loses the ability to see what ran; the owner wants
   more on demand, not nothing.
 - **Every update as its own event, uncoalesced.** It is today's volume problem in the log.
+
+## Status note, 2026-10-01: accepted on the owner's delegation
+
+The owner delegated the points this ADR left open so that the MVP can be completed (2026-10-01). They were
+decided on that delegation as follows; the owner may revisit them.
+
+- **The extension's URI** is `https://agents.vymalo.com/a2a/extensions/steps/v1`, after the release-channels pattern
+  of [ADR 0008](0008-platform-integration-via-a2a-extension.md); its contract is a page under
+  [`docs/api/`](../api/README.md), written with the slice that builds it (MVP slice 5).
+- **Steps the orchestrator reports itself.** A tool call relayed on the per-thread MCP endpoint
+  ([ADR 0024](0024-mcp-tools-attached-per-conversation.md)) is a tool step with the server's icon, and an agent asked
+  through `ask_agent` ([ADR 0026](0026-agent-mentions-as-structured-references.md)) is a sub-agent step under the step
+  of the agent that asked; neither needs the agent's help.
