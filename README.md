@@ -6,7 +6,8 @@ Agents plan it, work it in parallel, verify it against real checks, review it,
 and hand back a pull request. You read the chat surface.
 
 > **Status: MVP steps 1–2 are built** — the orchestrator (`orchestrator/`) and
-> the chat surface (`web/`); later steps are still design ([MVP](docs/mvp.md)).
+> the chat surface (`web/`). The owner judged this plumbing, not yet the system they want; what the
+> system is meant to be is the [vision](docs/vision.md), and the [MVP](docs/mvp.md) is re-planned toward it.
 > What exists, with diagrams: [Architecture: as built](docs/architecture.md#as-built).
 > Decisions are recorded as ADRs; what is not yet verified is listed in
 > [open questions](docs/open-questions.md).
@@ -87,6 +88,11 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Tools, bearer tokens and `wait_for_job` built; OIDC planned* |
 | [0020](docs/decisions/0020-a-thread-is-a-conversation.md) | A thread is a conversation: a message on a finished thread starts its next job (`Job.number`, `job_started`); amends 0012, 0016, 0018, 0019 |
 | [0021](docs/decisions/0021-context-across-a2a-tasks.md) | Context across A2A tasks: same context, `referenceTaskIds` of the previous task on every new task of a thread, never for the verifier |
+| [0022](docs/decisions/0022-platform-provisions-agents-system-discovers-them.md) | The platform provisions A2A agents and the system discovers them through an `AgentRegistry` port; the platform knows nothing about the UI. *Proposed* |
+| [0023](docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md) | A UI component catalog on A2UI catalogs, as an optional A2A extension, sent at conversation start, with a refetch seam. *Proposed* |
+| [0024](docs/decisions/0024-mcp-tools-attached-per-conversation.md) | MCP tools attached per conversation from the UI and passed to agents; credentials open. *Proposed* |
+| [0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md) | Nested steps: events carry their source path; a collapsible tree in the web. *Proposed* |
+| [0026](docs/decisions/0026-agent-mentions-as-structured-references.md) | Agent mentions as structured references; who coordinates is undecided. *Proposed* |
 
 ## Local development
 
