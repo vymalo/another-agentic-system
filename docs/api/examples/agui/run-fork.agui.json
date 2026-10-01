@@ -1,0 +1,179 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "forkedFrom": {
+            "kind": "fork",
+            "seq": 5,
+            "threadId": "<parent-thread-id>"
+          },
+          "jobNumber": 2,
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "<timestamp>",
+        "job": 2
+      },
+      "messageId": "job-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-9",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      },
+      "messageId": "evt-9",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-9",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "forkedFrom": {
+            "kind": "fork",
+            "seq": 5,
+            "threadId": "<parent-thread-id>"
+          },
+          "jobNumber": 2,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "<timestamp>",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo two",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-9",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "completed"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-9",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-9",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "forkedFrom": {
+            "kind": "fork",
+            "seq": 5,
+            "threadId": "<parent-thread-id>"
+          },
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo one"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 12
+  }
+]

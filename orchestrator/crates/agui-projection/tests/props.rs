@@ -215,3 +215,37 @@ proptest! {
         }
     }
 }
+
+/// The generator can make a fork (`Action::Fork`), and one is a well-formed stream: the copy, the
+/// marker, the next message as job 2.
+#[test]
+fn a_log_with_a_fork_in_it_projects_to_a_well_formed_stream() {
+    use orch_core::AgentTaskState;
+    use support::log::{Action, build};
+    let events = build(&[
+        Action::User {
+            text: "go".to_owned(),
+            ids: true,
+        },
+        Action::Status(AgentTaskState::Working, None),
+        Action::Say {
+            slot: 0,
+            more: "done".to_owned(),
+            fin: true,
+        },
+        Action::Status(AgentTaskState::Completed, None),
+        Action::Fork { at: 0, edit: false },
+        Action::User {
+            text: "again".to_owned(),
+            ids: true,
+        },
+    ]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e.body, EventBody::ThreadForked(_))),
+        "{events:#?}"
+    );
+    let frames = flatten(&support::project_each(&events));
+    verify::check(&frames).unwrap_or_else(|e| panic!("{e}"));
+}

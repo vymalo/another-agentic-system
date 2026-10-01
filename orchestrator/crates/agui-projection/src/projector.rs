@@ -48,9 +48,10 @@ use orch_agui_proto::{
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
     ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody,
-    GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, StepKind,
-    StepPhase, SurfaceOp, ThreadId, ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger,
-    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
+    ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData,
+    StepKind, StepPhase, SurfaceOp, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData,
+    UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
+    recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -58,9 +59,10 @@ use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
-    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, ACTIVITY_STEP,
-    AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
-    CODE_VERIFIER_FAILED, actor_metadata, problem_metadata, response_schema, status_content,
+    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS,
+    ACTIVITY_STEP, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED,
+    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, problem_metadata, response_schema,
+    status_content,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -241,6 +243,9 @@ pub struct Projector {
     last_final: Option<String>,
     /// The steps that have not ended, by id (ADR 0025).
     steps: BTreeMap<String, StepView>,
+    /// Where the thread was forked from, once its `thread_forked` has been read (ADR 0029): every
+    /// `STATE_SNAPSHOT` from then on says so, as the thread's own.
+    forked_from: Option<ForkedFrom>,
     /// The time of the event being applied (RFC 3339), for the frames that close what is open
     /// without an event of their own to say when.
     now: String,
@@ -340,6 +345,7 @@ impl Projector {
             last_agent: None,
             last_final: None,
             steps: BTreeMap::new(),
+            forked_from: None,
             now: String::new(),
         }
     }
@@ -492,14 +498,7 @@ impl Projector {
                 self.on_thread_titled(event, d, &mut out);
                 self.pending_error = pending_error;
             }
-            // A fork starts from a finished job with its parent's title (ADR 0029). The frames
-            // that tell a screen so come with the projection of forks; until then the event
-            // moves the state and says nothing.
-            EventBody::ThreadForked(d) => {
-                self.state = ThreadState::Done;
-                self.meta.title.clone_from(&d.title);
-                self.pending_error = pending_error;
-            }
+            EventBody::ThreadForked(d) => self.on_thread_forked(event, d, &mut out),
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -889,6 +888,61 @@ impl Projector {
         }
     }
 
+    /// The thread began as a copy of another (ADR 0029): the copied events came first, and this is
+    /// where the copy ends. A fork is a finished job with its own context, so:
+    ///
+    /// * a run the copy left open (a cut before a message sent mid-run) is closed as a cancelled
+    ///   one, with its invocations, as a `thread_state{cancelled}` would close it;
+    /// * the finished job is forgotten as `job_started` forgets one (what the copy still held of
+    ///   the interrupt, the surfaces, the steps, the attempt and the commit), and so is the UI
+    ///   catalog: the fork's agent has been sent none (the next message that carries one sends
+    ///   it in full);
+    /// * the title is the parent's as it was when the fork was made, and the fork's origin joins
+    ///   every `STATE_SNAPSHOT` from here on (`thread.forkedFrom`);
+    /// * a producer-initiated run of its own says it: `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>",
+    ///   activityType:"vymalo.fork"}`, then the closing `STATE_SNAPSHOT{done}` and `RUN_FINISHED`.
+    ///
+    /// The job number stays: it is the newest job the copy started, and the next message of the
+    /// fork starts the one after it.
+    fn on_thread_forked(&mut self, ev: &Event, d: &ThreadForkedData, out: &mut Vec<agui::Event>) {
+        self.state = ThreadState::Done;
+        self.meta.title.clone_from(&d.title);
+        self.forked_from = Some(ForkedFrom {
+            thread_id: Some(d.from.thread_id),
+            seq: d.from.seq,
+            kind: d.kind,
+        });
+        if self.run.is_some() {
+            self.close_run(RunClose::Cancelled, ev.seq, out);
+        }
+        self.forget_job();
+        self.catalog = UiCatalogLedger::default();
+        self.last_final = None;
+        self.open_run(format!("run-{}", ev.seq), false, out);
+        let mut content = Metadata::new();
+        content.insert(
+            "from".to_owned(),
+            json!({"threadId": d.from.thread_id, "seq": d.from.seq}),
+        );
+        content.insert(
+            "kind".to_owned(),
+            serde_json::to_value(d.kind).unwrap_or(Value::Null),
+        );
+        content.insert("title".to_owned(), Value::from(d.title.clone()));
+        content.insert(
+            "target".to_owned(),
+            serde_json::to_value(&d.target).unwrap_or(Value::Null),
+        );
+        out.push(self.activity(
+            format!("fork-{}", ev.seq),
+            ACTIVITY_FORK,
+            content,
+            ev,
+            false,
+        ));
+        self.settle(ev, out);
+    }
+
     /// The thread's next job started (ADR 0020). Normally the `user_message` that caused it has
     /// begun it already; a redelivered message has no such event, and the boundary alone opens
     /// the run.
@@ -911,9 +965,15 @@ impl Projector {
     /// count goes on, as the core's does.
     fn begin_job(&mut self, number: u32) {
         self.job_number = number;
+        self.state = ThreadState::Queued;
+        self.forget_job();
+    }
+
+    /// What a finished job leaves behind and the next one must not inherit (see
+    /// [`begin_job`](Self::begin_job)); the job number and the state are the caller's.
+    fn forget_job(&mut self) {
         self.attempt = 1;
         self.sha = None;
-        self.state = ThreadState::Queued;
         self.checks_failed = false;
         self.interrupt = None;
         self.failure = None;
@@ -1751,6 +1811,10 @@ impl Projector {
         // The first job says nothing more than before; a later one says which it is.
         if self.job_number > 1 {
             snapshot["thread"]["jobNumber"] = Value::from(self.job_number);
+        }
+        // A thread that was forked says where from (ADR 0029), in the shape of `Thread.forkedFrom`.
+        if let Some(from) = &self.forked_from {
+            snapshot["thread"]["forkedFrom"] = serde_json::to_value(from).unwrap_or(Value::Null);
         }
         // The catalog the agent is told to use, when the thread has one (ADR 0023): a screen
         // compares it with its own to decide whether to send its catalog with the next run.

@@ -1194,6 +1194,10 @@ fn the_golden_transcripts_are_events_of_the_contract() {
             // The goldens replace ids and clocks with placeholders.
             event["threadId"] = json!(RANDOM);
             event["at"] = json!("2026-09-30T10:00:00Z");
+            // and a fork names the thread it was cut from
+            if event["kind"] == "thread_forked" {
+                event["data"]["from"]["threadId"] = json!(RANDOM);
+            }
             contract.validate_component("Event", &event);
             assert_eq!(event["seq"], n + 1, "{name}: seq runs from 1");
         }

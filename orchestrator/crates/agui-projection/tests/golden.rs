@@ -31,7 +31,9 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 18] = [
+/// The thread a fork scenario was cut from.
+const PARENT: &str = "00000000-0000-7000-8000-000000000002";
+const SCENARIOS: [&str; 20] = [
     "echo",
     "ask",
     "cancel",
@@ -50,6 +52,8 @@ const SCENARIOS: [&str; 18] = [
     "steps",
     "steps-ask",
     "title",
+    "fork",
+    "fork-blocked",
 ];
 
 /// The golden streams made of a log and live text.
@@ -112,6 +116,9 @@ fn load_events(name: &str) -> Vec<Event> {
         );
         if e["kind"] == "agent_message" {
             e["data"]["messageId"] = json!(format!("msg-{seq}"));
+        }
+        if e["kind"] == "thread_forked" {
+            e["data"]["from"]["threadId"] = json!(PARENT);
         }
     }
     serde_json::from_value(raw).unwrap()
@@ -214,6 +221,7 @@ fn render(frames: &[Frame]) -> String {
     fn placeholder(v: &mut Value) {
         match v {
             Value::String(s) if s == THREAD => *s = "<thread-id>".to_owned(),
+            Value::String(s) if s == PARENT => *s = "<parent-thread-id>".to_owned(),
             Value::Array(items) => items.iter_mut().for_each(placeholder),
             Value::Object(map) => map.values_mut().for_each(placeholder),
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}

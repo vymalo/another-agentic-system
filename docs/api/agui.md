@@ -37,6 +37,9 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > that is still being written are frames that are not in the log and are never resume points, merged by message id with
 > the final message; the run response and the connect stream carry them (the overlay is `orch-agui-projection`'s, the
 > pieces come from the dispatcher that holds the agent's stream, over the wakeup port), see [Live text](#live-text).
+> **A fork opens with its copied history and a marker** (2026-10-01, [ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)):
+> the `thread_forked` event is a run of its own with a `vymalo.fork` activity, and every `STATE_SNAPSHOT` from it on says
+> `thread.forkedFrom`; see [Forks](#forks).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -105,7 +108,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id, or the id of the stream that wrote it, which is also the `messageId` of its [live text](#live-text)); `st-<seq>` for the words of an `agent_status` (`completed`, `input_required`, `auth_required`). |
-| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity. |
+| activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity; `fork-<seq>` of the `thread_forked` event for the `vymalo.fork` activity. |
 | step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
 | `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
@@ -144,6 +147,7 @@ gets everything.
 | `thread_titled{title, source}` | A person renamed the thread (`patchThread`), or a model titled it (`source: model`, after the agent's first reply); in any state | The title is part of every `STATE_SNAPSHOT`, so the event is said as one. **Inside a run**: `STATE_SNAPSHOT` with the new `thread.title`. **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → `STATE_SNAPSHOT` (new title) → the run's close by the state the thread is in (`RUN_FINISHED{success}` for `done`, `{cancelled}` for `cancelled`, the thread's interrupt again for a `blocked` one that waits for the user, the thread's `RUN_ERROR` again for `failed`), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. No message, activity or subagent frame: the transcript does not change. See [Titles](#titles) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
+| `thread_forked{from:{threadId, seq}, kind, title, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
 | `check_result{source:"verifier", status:"passed"\|"failed"}` | The verdict | The `vymalo.check` snapshot (same id, `replace:true`) → `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{passed}}` |
@@ -603,6 +607,65 @@ the rename has already changed when `patchThread` answers.
 Goldens: `title.events.json` (a rename while the thread works, another after it was cancelled),
 `agui/title.agui.json` (what a live viewer reads for it) and `agui/connect-title.agui.json` (what a viewer that
 connects after a rename of a finished thread reads).
+
+## Forks
+
+*Built 2026-10-01 ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)).* A fork is a new thread whose log is a
+copy of its parent's events up to a cut, then a `thread_forked` event, then its own life
+(`POST /api/threads/{threadId}/fork`, `forkThread` in the [contract](chat-api.yaml)). Nothing new is needed to read the
+copy: it is a log, and the projection folds it like any other. What a viewer of a fork reads is therefore **the
+parent's frames up to the cut, with the parent's ids and resume points, then the marker**:
+
+```mermaid
+sequenceDiagram
+  participant W as Screen
+  participant C as Connect stream
+  participant R as Run route
+  W->>C: GET /agui/threads/{fork}/connect
+  C-->>W: the copied events as frames: runs, messages, cards, ids and resume points of the parent
+  C-->>W: RUN_STARTED run-N, ACTIVITY_SNAPSHOT fork-N (vymalo.fork), STATE_SNAPSHOT done + forkedFrom, RUN_FINISHED
+  W->>R: POST /agui/agents/{agent}: the messages it holds (the copy's ids) and one new message
+  R-->>W: 200: the message starts job n+1 on the fork, no 422 for an id the copy has
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Copied: the parent's events 1..cut, as projected
+  Copied --> Done: thread_forked (the open run is cancelled, the job and the catalog are forgotten)
+  Done --> Queued: the next message (job n+1), or the replacing message of an edit
+  Queued --> [*]: as for any thread
+```
+
+- **The marker** is a run of its own, `run-<seq of the thread_forked event>`, holding one `vymalo.fork` activity
+  (`fork-<seq>`, not attributed to a subagent; [its content](#activity-contents)), the `STATE_SNAPSHOT` and the run's end.
+  A screen draws it as a divider ("forked from …") and drops the run as it drops any run with nothing else in it.
+- **`thread.forkedFrom`** (`{threadId, seq, kind}`, the shape of `Thread.forkedFrom`) is in every `STATE_SNAPSHOT` from the
+  marker on, and not in the ones before it, which are the parent's. The parent is a thread of the same owner. The id stays
+  in the snapshot when the parent is deleted later (the fork is whole); the resource API's `Thread.forkedFrom` then drops
+  it, so a screen links to the parent only when the thread it holds still says it.
+- **The title** is the parent's as it was when the fork was made, from the marker on (`thread_forked.title`); the snapshots
+  of the copy before it say the thread's current title, as in any replay ([Titles](#titles)), and a rename of the fork
+  after the marker is an event like any other.
+- **A fork is a finished job.** Its state is `done` and its job number the newest the copy started, so the next message
+  starts the one after it (`jobNumber` in its first snapshot, `vymalo.job` after the message, as in
+  [`followup.agui.json`](examples/agui/followup.agui.json)). A question the parent was waiting on when it was cut is not an
+  interrupt of the fork: a `resume` for it is ignored with a warning, as on any thread that is not blocked, and the
+  message that comes with it starts the next job. A card of the copy has no surface to act on: an action on it is a 422.
+- **The ids of the copy are known.** Every message, activity and run id the copy holds is one the fork holds, so a screen
+  that goes on with the messages it was shown sends them back and the run is accepted (reconciliation by id; one more
+  user message is the new one). The marker's own id, `fork-<seq>`, is among them.
+- **The UI catalog starts empty.** The projection forgets the catalogs the copy recorded, so `thread.uiCatalog` is absent
+  from the marker on and the first message that carries one sends it in full (ADR 0023): the fork's agent has been sent none.
+- **An edit** (`kind: "edit"`) is the same copy up to just before a person's message, then `thread_forked`, then the
+  replacing message in the same commit: the frames above, then the new run (`user_message`, `job_started`, the agent's
+  events) with `jobNumber` and `forkedFrom` in every snapshot.
+
+Goldens: `fork.events.json` (the second message of a finished thread edited; the fork's log), `agui/fork.agui.json`
+(what a viewer of that log reads), `agui/connect-fork.agui.json` (a viewer that connects to the fork over HTTP),
+`fork-blocked.events.json` and `agui/fork-blocked.agui.json` (a thread waiting for an answer, forked as it is, and the
+next message), `agui/connect-fork-blocked.agui.json` (a screen goes on in the fork with the messages it holds: the run is
+accepted) and `agui/run-fork.agui.json` (the response of such a run). [`examples/README.md`](examples/README.md) says what
+each holds.
 
 ## The UI catalog
 
@@ -1153,6 +1216,27 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "at": { "$ref": "#/$defs/at" }
       }
     },
+    "vymalo.fork": {
+      "type": "object",
+      "description": "The thread began as a copy of another (ADR 0029): where the copy ends.",
+      "required": ["from", "kind", "title", "target", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "object",
+          "required": ["threadId", "seq"],
+          "additionalProperties": false,
+          "properties": {
+            "threadId": { "type": "string", "format": "uuid", "description": "The thread that was forked" },
+            "seq": { "type": "integer", "minimum": 0, "description": "The last event copied; the marker's event is seq + 1" }
+          }
+        },
+        "kind": { "enum": ["fork", "edit"], "description": "fork: a copy to the end of a turn; edit: a copy to just before a person's message, followed by the edited message" },
+        "title": { "type": "string", "description": "The parent's title when the fork was made, which is the fork's" },
+        "target": { "type": "object", "required": ["agentId"], "properties": { "agentId": { "type": "string" }, "release": { "type": "string" } }, "description": "The agent the fork talks to: the parent's, unless the person chose another" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
     "at": { "type": "string", "format": "date-time", "description": "When the activity's log event happened (Event.at)" }
   }
 }
@@ -1169,7 +1253,8 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
 | Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |
-| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
+| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?, forkedFrom?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
+| `STATE_SNAPSHOT.snapshot` | `thread.forkedFrom` | Only on a thread made by a fork, from its `thread_forked` on (ADR 0029): `{threadId, seq, kind}`, the thread it was cut from, the last event copied and `fork` or `edit`; the same object is `Thread.forkedFrom` of the resource API. A thread that was not forked has no member, as before. [Forks](#forks) |
 | `STATE_SNAPSHOT.snapshot` | `thread.uiCatalog` | Only when the thread has recorded a UI catalog (ADR 0023): `{catalogId, version, digest}` of the current one, the highest version recorded. A screen compares it with its own to decide whether to send its catalog with the next run; a thread without one has no member, as before |
 | `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{number?, attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `number` is the job of the thread (present from job 2); `attempt` is the one the agent is on in **this job**, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |
 | Interrupt `responseSchema` | — | `{type:"object", required:["text"], properties:{text:{type:"string"}}}` |

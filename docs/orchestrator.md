@@ -1022,7 +1022,7 @@ stateDiagram-v2
 
 ### Forking a thread (MVP-plan item F, ADR 0029)
 
-**Built** (2026-10-01): the core, the store and the API; the AG-UI marker, the transcript on the wire and the web are the next steps. A fork is a new thread that starts with a
+**Built** (2026-10-01): the core, the store, the API and the AG-UI projection (the marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](api/agui.md#forks)); the transcript on the wire and the web are the next steps. A fork is a new thread that starts with a
 copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)).
 `orch_core::fork` holds the pure rules; nothing in it reads a store:
 

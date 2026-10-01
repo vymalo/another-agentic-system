@@ -38,6 +38,10 @@ fn normalise(events: Vec<Value>) -> Value {
             .map(|mut e| {
                 e["threadId"] = json!("<thread-id>");
                 e["at"] = json!("<timestamp>");
+                // a fork names the thread it was cut from
+                if e["kind"] == "thread_forked" {
+                    e["data"]["from"]["threadId"] = json!("<parent-thread-id>");
+                }
                 if e["kind"] == "agent_message" {
                     e["data"]["messageId"] = json!("<message-id>");
                 }
@@ -210,6 +214,42 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(status, 200, "{thread}");
             (id, "cancelled")
         }
+        // Forking a thread (ADR 0029). The log is the fork's: a copy of the parent's events up to
+        // the cut, `thread_forked`, then its own life. `fork`: the second message of a finished
+        // thread is edited, so the fork holds the first turn and the replacing message, which
+        // starts job 2 at once.
+        "fork" => {
+            let parent = chat.seed_thread("plain", "echo one", None).await;
+            chat.wait_state(&parent, "done").await;
+            let second = chat.seed_message(&parent, "echo two").await;
+            chat.wait_state(&parent, "done").await;
+            let (status, forked) = chat
+                .post(
+                    &format!("/api/threads/{parent}/fork"),
+                    Some(json!({"replace": second["seq"], "text": "echo three"})),
+                )
+                .await;
+            assert_eq!(status, 201, "{forked}");
+            (forked["id"].as_str().unwrap().to_owned(), "done")
+        }
+        // `fork-blocked`: a thread that waits for an answer is forked as it is, with its
+        // question; the fork's next message starts job 2 and the question is never answered.
+        "fork-blocked" => {
+            let parent = chat.seed_thread("plain", "ask about branches", None).await;
+            chat.wait_state(&parent, "blocked").await;
+            let (status, forked) = chat
+                .post(
+                    &format!("/api/threads/{parent}/fork"),
+                    Some(json!({"after": 1})),
+                )
+                .await;
+            assert_eq!(status, 201, "{forked}");
+            let fork = forked["id"].as_str().unwrap().to_owned();
+            assert_eq!(forked["state"], "done");
+            let event = chat.seed_message(&fork, "echo thanks").await;
+            assert_eq!(event["kind"], "user_message");
+            (fork, "done")
+        }
         // The UI's catalog (ADR 0023), through the AG-UI run route, which is the only door a
         // catalog has: the first run of the thread carries version 1; the next job, a message
         // on the finished thread, version 2; the third job version 1 again, from an older
@@ -247,7 +287,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 18] = [
+const SCENARIOS: [&str; 20] = [
     "echo",
     "ask",
     "cancel",
@@ -266,6 +306,8 @@ const SCENARIOS: [&str; 18] = [
     "steps",
     "steps-ask",
     "title",
+    "fork",
+    "fork-blocked",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.

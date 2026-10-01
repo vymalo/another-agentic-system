@@ -601,6 +601,40 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
             }
             responses
         }
+        // A run on a fork (ADR 0029): the screen sends the messages it holds, which are the
+        // copy's, and one more. The ids the copy has are known, so the run is accepted; the
+        // response is the new run alone, and its snapshots say where the thread came from.
+        "fork" => {
+            run(
+                &chat,
+                "plain",
+                &input(thread, "run-1", &[("msg-1", "echo one")], json!({})),
+            )
+            .await;
+            chat.wait_state(thread, "done").await;
+            let last_seq = chat.events(thread).await.last().unwrap()["seq"].clone();
+            let fork = fork_of(thread);
+            let (status, forked) = chat
+                .post(
+                    &format!("/api/threads/{thread}/fork"),
+                    Some(json!({"after": last_seq, "id": fork})),
+                )
+                .await;
+            assert_eq!(status, 201, "{forked}");
+            vec![
+                run(
+                    &chat,
+                    "plain",
+                    &input(
+                        &fork,
+                        "run-2",
+                        &[("msg-1", "echo one"), ("msg-2", "echo two")],
+                        json!({}),
+                    ),
+                )
+                .await,
+            ]
+        }
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -645,13 +679,19 @@ async fn run_responses_match_docs_api_examples() {
         "catalog",
         "steps",
         "steps-ask",
+        "fork",
     ]
     .into_iter()
     .enumerate()
     {
         let world = world_for(name).await;
         let thread = thread_id(100 + u32::try_from(n).unwrap());
-        let text = render(&responses_of(&world, name, &thread).await, &thread);
+        let responses = responses_of(&world, name, &thread).await;
+        let text = if name == "fork" {
+            render_fork(&responses, &thread)
+        } else {
+            render(&responses, &thread)
+        };
         let path = dir.join(format!("run-{name}.agui.json"));
         stale.extend(check_golden(&path, &text));
     }

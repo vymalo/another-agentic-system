@@ -26,6 +26,8 @@ the log itself, which the AG-UI streams below project.)
 | `steps.events.json` | `steps run the tests` on the fake agent with `steps/v1` in its card (ADR 0025, MVP slice 5): a sub-agent step `OpenCode`, a command `npm test` under it that fails with the detail `1 failed`, the sub-agent's end, then the agent's words and `completed`. Step ids are `<task>/<agent's id>`; the task id is normalised to `T` | `done` |
 | `steps-ask.events.json` | `steps-ask clean the build`: the same sub-agent with a command that is `waiting` when the agent asks (`input_required`); after the answer (`yes`) the command and the sub-agent end in the next run | `done` |
 | `title.events.json` | `slow work`, then a person renames the thread while it works (`PATCH /api/threads/{id}`: `thread_titled` with `source: user`), Cancel, and renames it again once it is cancelled: the title is the person's from the first rename on, and a rename of a finished thread is an event like any other (MVP slice 6) | `cancelled` |
+| `fork.events.json` | the log of a **fork** (ADR 0029): `echo one` finished, `echo two` after it, then the second message edited into a branch (`POST /api/threads/{id}/fork {replace, text}`). The fork's log is the first turn copied (events 1-5, as the parent has them), `thread_forked` (`kind: edit`, `from: {threadId, seq: 5}`, the parent's title), the replacing message, `job_started` 2 and the agent's second turn | `done`, job 2 |
+| `fork-blocked.events.json` | a thread that waits for an answer (`ask about branches`), forked as it is (`{after}`: the copy ends with the question and `thread_state: blocked`, `thread_forked` with `kind: fork`), then a message on the fork (`echo thanks`), which starts job 2: the question is not the fork's to answer | `done`, job 2 |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
@@ -33,7 +35,7 @@ pieces and the log travel on different channels and no run can pin their interle
 the agent works, three pieces of the reply arrive (`Fib`, `onacci `, `in Rust.`), the log says the whole message and the
 status that repeats it, and the thread is `done`.
 
-Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>`, an agent
+Ids and clocks are normalised: `threadId` is `<thread-id>` (the thread a fork was cut from, `data.from.threadId` of `thread_forked`, is `<parent-thread-id>`), `at` is `<timestamp>`, an agent
 message's `messageId` is `<message-id>` and the task id in front of a step's id and path is `T`.
 
 - **Producer:** `orchestrator/crates/e2e/tests/golden.rs` (`transcripts_match_docs_api_examples`)
@@ -88,6 +90,13 @@ The `catalog.agui.json`, `run-catalog.agui.json` and `connect-catalog.agui.json`
 is `thread.uiCatalog` (`{catalogId, version, digest}`) in every `STATE_SNAPSHOT`: version 1 in the first job, version 2 from the second job on, and
 still version 2 in the third, whose version-1 catalog was known already. The reference client's `expected/catalog.json` shows the last state it holds.
 
+The `fork.agui.json` and `fork-blocked.agui.json` goldens are the forks a viewer reads ([`../agui.md`](../agui.md#forks), ADR 0029): the
+parent's frames up to the cut, with the parent's ids and resume points (`run-1`, `evt-1` … `id: 5`), then **the marker as a run of
+its own** (`run-<seq of thread_forked>`: `ACTIVITY_SNAPSHOT` `vymalo.fork` with the id `fork-<seq>`, a `STATE_SNAPSHOT` that says `done` and
+`thread.forkedFrom`, `RUN_FINISHED` success), then the fork's own life: its first snapshot says `jobNumber: 2` and `forkedFrom`, and every
+snapshot after the marker does. The copy's snapshots, before the marker, do not. The reference client's `expected/fork.json` shows the
+last state it holds: three runs (the parent's, the marker's, the fork's), the marker among the messages as an activity.
+
 The `steps.agui.json` and `steps-ask.agui.json` goldens are the nested steps a viewer reads
 ([`../agui.md`](../agui.md#nested-steps), ADR 0025): a sub-agent step is a **subagent** of the run
 (`sub-step-<seq>`, started in the agent's invocation) and every step is a `vymalo.step` activity
@@ -135,6 +144,7 @@ responses in order, one run each. The consumer's thread id is `<thread-id>`; its
 | `run-verify-verifier-green.agui.json` | `verify-reviewed fix the login`, `plain` requires the verifier in its own entry, so the run asks for nothing: **one** response for two attempts and two verifications | success, `job.attempt` 2 |
 | `run-verify-verifier-red.agui.json` | the same, against a verifier that never passes | `RUN_ERROR` `checks_failed` |
 | `run-ci.agui.json` | `verify-ci fix the login` with `forwardedProps["vymalo.gate"] = {"require": ["ci"]}`; the test reports CI through the inbox while the run is open: **one** response for two attempts | success, `job.attempt` 2 |
+| `run-fork.agui.json` | `echo one` on a thread, a fork of it (`POST /api/threads/{id}/fork {after}`), then one POST on the **fork** with the messages the screen holds (`msg-1`, the copy's) and a new one (`msg-2`, `echo two`): accepted, one response, job 2, every snapshot with `forkedFrom` | success |
 
 - **Producer:** `orchestrator/crates/e2e/tests/agui_run.rs` (`run_responses_match_docs_api_examples`);
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_run` regenerates them; review the diff.
@@ -159,6 +169,8 @@ everything, including the user messages the requester holds already. The consume
 | `connect-ci.agui.json` | `verify-ci fix the login` under a CI gate, a red report then a green one | the replay of one run across two attempts with a `vymalo.ci` card for each report |
 | `connect-cursor.agui.json` | `gate hold`, the client held log event 2 and reconnects with `Last-Event-ID: 2` | the **preamble** (`RUN_STARTED` of the same run, `SUBAGENT_STARTED`, `STATE_SNAPSHOT`, none with an `id:`), then the rest of the run |
 | `connect-title.agui.json` | `echo hi`, finished, then renamed `Fix the build` | the replay of the run, every snapshot of it saying the title the thread has now, then the rename's own run: `RUN_STARTED`, `STATE_SNAPSHOT`, `RUN_FINISHED` with nothing between |
+| `connect-fork.agui.json` | `echo one`, `echo two`, the second message edited into a fork (`{replace, text}`) | the replay of the fork: the first run of the parent (events 1-5), the marker run, then the edited message's run (job 2, `forkedFrom` in every snapshot) |
+| `connect-fork-blocked.agui.json` | `ask about branches`, forked while it waits (`{after}`), then a run **on the fork** with the messages the screen holds (`msg-1`, the copy's) and `echo thanks` | the parent's run ending in its interrupt, the marker run, then the run of the new message: accepted, job 2; the question is not an interrupt of the fork |
 
 [`agui/capabilities-<agent>.json`](agui/) is the `AgentCapabilities` document
 (`GET /agui/agents/{agentId}/capabilities`, see [`../agui.md`](../agui.md#capabilities-document)) of the two

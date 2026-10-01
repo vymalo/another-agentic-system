@@ -1,0 +1,142 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "interrupt:int-3/input_required"
+    },
+    {
+      "runId": "run-5",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-6",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "suspended:int-3"
+    },
+    {
+      "id": "sub-8",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "ask about branches"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "st-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Which branch?"
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "status": "input_required"
+      }
+    },
+    {
+      "id": "fork-5",
+      "role": "activity",
+      "activityType": "vymalo.fork",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "from": {
+          "seq": 4,
+          "threadId": "<parent-thread-id>"
+        },
+        "kind": "fork",
+        "target": {
+          "agentId": "plain"
+        },
+        "title": "ask about branches"
+      }
+    },
+    {
+      "id": "evt-6",
+      "role": "user",
+      "text": "echo thanks"
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo thanks",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "forkedFrom": {
+        "kind": "fork",
+        "seq": 4,
+        "threadId": "<parent-thread-id>"
+      },
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "ask about branches"
+    }
+  },
+  "pendingInterrupts": []
+}

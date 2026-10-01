@@ -953,7 +953,7 @@ Playwright uses the browser Playwright pins (`@playwright/test` is pinned exactl
 rename, export, cancel) and the AG-UI routes (run, connect with `Last-Event-ID` and `?mode=run`, capabilities). It
 keeps an event log per thread, plays a script against it, and shows it as AG-UI through
 `mock/projection.ts`, its copy of the orchestrator's projection. `mock/server.contract.test.ts`
-validates every response and every AG-UI frame against the contract and the vendored AG-UI schema.
+validates every response and every AG-UI frame against the contract and the vendored AG-UI schema. The mock has no route to fork a thread yet, but its projection reads the fork goldens (`fork`, `fork-blocked`: the copied events, `thread_forked`, the fork's own life) and tells the golden stream (`mock/golden.test.ts`).
 The first word of the first message picks the script, the same words as the orchestrator's fake agent:
 
 | First word | Behaviour |

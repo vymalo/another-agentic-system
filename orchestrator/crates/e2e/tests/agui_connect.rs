@@ -327,6 +327,105 @@ backends!(capabilities_are_the_live_card_in_the_spec_shape);
 
 // ---- goldens ----------------------------------------------------------------------------
 
+/// A fork (ADR 0029): a viewer of it reads the parent's frames up to the cut, in the same order and
+/// with the same ids, then the marker `vymalo.fork` and a snapshot that says where the thread came
+/// from; and a screen that goes on with the messages it holds (the copy's ids) is accepted.
+async fn a_fork_replays_the_parents_frames_then_the_marker_and_takes_a_run_with_the_histories_ids(
+    backend: Backend,
+) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let parent = chat.create_thread("plain", "echo one", None).await;
+    chat.wait_state(&parent, "done").await;
+    let log = chat.events(&parent).await;
+    let cut = log.last().unwrap()["seq"].as_i64().unwrap();
+    let (status, forked) = chat
+        .post(
+            &format!("/api/threads/{parent}/fork"),
+            Some(json!({"after": cut})),
+        )
+        .await;
+    assert_eq!(status, 201, "{forked}");
+    let fork = forked["id"].as_str().unwrap().to_owned();
+
+    let theirs = whole(chat.agui_connect(&parent, None, true).await).await;
+    let ours = whole(chat.agui_connect(&fork, None, true).await).await;
+    let shape = |frames: &[Frame]| -> Vec<(String, Option<i64>)> {
+        frames.iter().map(|f| (kind(f).to_owned(), f.id)).collect()
+    };
+    assert_eq!(
+        shape(&ours[..theirs.len()]),
+        shape(&theirs),
+        "the parent's frames come first, with the parent's resume points"
+    );
+    let marker = &ours[theirs.len()..];
+    assert_eq!(
+        marker.iter().map(kind).collect::<Vec<_>>(),
+        [
+            "RUN_STARTED",
+            "ACTIVITY_SNAPSHOT",
+            "STATE_SNAPSHOT",
+            "RUN_FINISHED"
+        ]
+    );
+    assert_eq!(marker[1].event["activityType"], "vymalo.fork");
+    assert_eq!(marker[1].event["messageId"], format!("fork-{}", cut + 1));
+    assert_eq!(marker[1].event["content"]["from"]["threadId"], parent);
+    assert_eq!(marker[1].event["content"]["from"]["seq"], cut);
+    assert_eq!(marker[1].event["content"]["kind"], "fork");
+    let thread = &marker[2].event["snapshot"]["thread"];
+    assert_eq!(thread["state"], "done");
+    assert_eq!(
+        thread["forkedFrom"],
+        json!({"threadId": parent, "seq": cut, "kind": "fork"})
+    );
+    assert_eq!(marker[3].id, Some(cut + 1));
+
+    // The screen holds what it was shown: every message and activity of the replay. A run with
+    // all of them and one more is accepted, and starts the fork's next job.
+    let mut held: Vec<Value> = Vec::new();
+    for frame in &ours {
+        let e = &frame.event;
+        match e["type"].as_str().unwrap() {
+            "TEXT_MESSAGE_START" => held.push(json!({
+                "id": e["messageId"], "role": e["role"], "content": "text",
+            })),
+            "ACTIVITY_SNAPSHOT" => held.push(json!({
+                "id": e["messageId"], "role": "activity",
+                "activityType": e["activityType"], "content": e["content"],
+            })),
+            _ => {}
+        }
+    }
+    assert!(held.len() >= 3, "{held:?}");
+    let mut body = input(&fork, "run-2", &[("msg-new", "echo more")], json!({}));
+    let messages = body["messages"].as_array_mut().unwrap();
+    for (i, message) in held.into_iter().enumerate() {
+        messages.insert(i, message);
+    }
+    let frames = conforming(
+        chat.agui_run("plain", &body)
+            .await
+            .collect_frames(WAIT)
+            .await,
+    );
+    assert_eq!(
+        frames.last().unwrap().event["outcome"],
+        json!({"type": "success"}),
+        "{:?}",
+        frames.iter().map(kind).collect::<Vec<_>>()
+    );
+    let first = frames.iter().find(|f| kind(f) == "STATE_SNAPSHOT").unwrap();
+    assert_eq!(first.event["snapshot"]["thread"]["jobNumber"], 2);
+    assert_eq!(
+        first.event["snapshot"]["thread"]["forkedFrom"]["kind"],
+        "fork"
+    );
+}
+
+backends!(a_fork_replays_the_parents_frames_then_the_marker_and_takes_a_run_with_the_histories_ids);
+
 /// What a viewer reads for each scripted behaviour, in order.
 async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>> {
     let orch = world.instance("orch-1").await;
@@ -418,6 +517,80 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             assert_eq!(chat.cancel(thread).await, 202);
             whole(sse).await;
             chat.wait_state(thread, "cancelled").await;
+        }
+        // Forking a thread (ADR 0029): what a viewer of the fork reads is the parent's frames up to
+        // the cut, then the marker, then the fork's own life. `fork`: the second message of a
+        // finished thread is edited into a branch, which starts job 2 at once.
+        "fork" => {
+            run(input(thread, "run-1", &[("msg-1", "echo one")], json!({}))).await;
+            chat.wait_state(thread, "done").await;
+            run(input(
+                thread,
+                "run-2",
+                &[("msg-1", "echo one"), ("msg-2", "echo two")],
+                json!({}),
+            ))
+            .await;
+            chat.wait_state(thread, "done").await;
+            let second = chat
+                .events(thread)
+                .await
+                .into_iter()
+                .filter(|e| e["kind"] == "user_message")
+                .nth(1)
+                .unwrap()["seq"]
+                .clone();
+            let fork = fork_of(thread);
+            let (status, forked) = chat
+                .post(
+                    &format!("/api/threads/{thread}/fork"),
+                    Some(json!({"replace": second, "text": "echo three", "messageId": "msg-3", "id": fork})),
+                )
+                .await;
+            assert_eq!(status, 201, "{forked}");
+            chat.wait_state(&fork, "done").await;
+            return vec![whole(chat.agui_connect(&fork, None, true).await).await];
+        }
+        // A thread that waits for an answer is forked as it is, with its question, and the screen
+        // goes on in the fork with the messages it holds: the run is accepted (no 422 for ids the
+        // copy has), the question is not an interrupt of the fork, and the message starts job 2.
+        "fork-blocked" => {
+            run(input(
+                thread,
+                "run-1",
+                &[("msg-1", "ask about branches")],
+                json!({}),
+            ))
+            .await;
+            chat.wait_state(thread, "blocked").await;
+            let fork = fork_of(thread);
+            let (status, forked) = chat
+                .post(
+                    &format!("/api/threads/{thread}/fork"),
+                    Some(json!({"after": 1, "id": fork})),
+                )
+                .await;
+            assert_eq!(status, 201, "{forked}");
+            let frames = conforming(
+                chat.agui_run(
+                    "plain",
+                    &input(
+                        &fork,
+                        "run-2",
+                        &[("msg-1", "ask about branches"), ("msg-2", "echo thanks")],
+                        json!({}),
+                    ),
+                )
+                .await
+                .collect_frames(WAIT)
+                .await,
+            );
+            assert_eq!(
+                frames.last().unwrap().event["outcome"],
+                json!({"type": "success"})
+            );
+            chat.wait_state(&fork, "done").await;
+            return vec![whole(chat.agui_connect(&fork, None, true).await).await];
         }
         "cursor" => {
             // A client that read up to the agent starting to work (log event 2), lost its
@@ -555,13 +728,21 @@ async fn connect_streams_match_docs_api_examples() {
         "steps",
         "steps-ask",
         "title",
+        "fork",
+        "fork-blocked",
     ]
     .into_iter()
     .enumerate()
     {
         let world = world_for(name).await;
         let thread = thread_id(100 + u32::try_from(n).unwrap());
-        let text = render(&viewer_frames(&world, name, &thread).await, &thread);
+        let frames = viewer_frames(&world, name, &thread).await;
+        // The viewer of a fork reads the fork, which has an id of its own.
+        let text = if name.starts_with("fork") {
+            render_fork(&frames, &thread)
+        } else {
+            render(&frames, &thread)
+        };
         stale.extend(check_golden(
             &dir.join(format!("connect-{name}.agui.json")),
             &text,
