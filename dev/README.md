@@ -53,7 +53,7 @@ hi
 ```
 
 The coder answers with a greeting, not a request for a task: it says its name, what it does in one sentence and asks
-which repository to work on, and the thread waits for you (**Blocked**, an A2A `input_required`). The words are the
+which repository to work on, and the thread waits for you (the pill reads **Your turn**, thread state `blocked`, an A2A `input_required`). The words are the
 first lines of the coder's instructions, which the model mock repeats back
 ([Change what the coder says](#change-what-the-coder-says); `greeting-e2e.sh` asserts it).
 
@@ -74,16 +74,17 @@ In http://git-server:8080/local/sandbox.git (base branch main), add hello.txt co
 The scripted model always does the same job (clone `local/sandbox.git`, write `hello.txt`, push a branch, open a
 pull request on the mock GitHub); the text only has to name the seeded repository. What you see, in order:
 
-1. **Working**, with the coder's work as steps in the side panel (one for each tool call, and OpenCode's own under the step labelled OpenCode:
-   [Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) and its artifacts as cards: the coder's `checks` (twice: the run
-   of the checks, then the same result bound to the commit it pushed), the `branch` it pushed and the `pull_request` it
-   opened (JSON, not a link).
-2. The pill turns to **Checking the work…**: the coder is gated on two things, its own checks and CI
-   ([`agents.yaml`](agents.yaml)). A card **Passed · Agent checks** shows at once, with the short commit and the summary.
-3. A second card **Passed · CI** follows within a few seconds: `mock-ci` saw the pushed branch on `git-server` and reported
-   `mock-ci/build` for that commit through the webhook. The badge ends **Done**.
+1. The pill reads **Working…**. Under the coder's name the chat keeps one line ("<the step it is on> · 4 steps"), and the side panel's **Activity** tab lists the coder's
+   work as steps (one for each tool call, and OpenCode's own under the step labelled OpenCode:
+   [Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)). Its artifacts are steps too: **Checks passed** (twice: the run
+   of the checks, then the same result bound to the commit it pushed), **Pushed** `agent/<run id prefix>` for the `branch` it pushed, and the `pull_request` it
+   opened (JSON, not a link: the mock GitHub's URL is plain `http`, which the web does not take for a pull request, so the answer ends in a file card with the JSON, not a **View pull request** button).
+2. The pill turns to **Checking the work…** and the line reads **Verifying**: the coder is gated on two things, its own checks and CI
+   ([`agents.yaml`](agents.yaml)). A check step **Verified the agent's checks**, with the pill **Passed**, the attempt, the short commit and the summary, shows in the panel at once; the CI check reads **Waiting for CI** (pill **Pending**).
+3. A step for the CI report follows within a few seconds: `mock-ci` saw the pushed branch on `git-server` and reported
+   `mock-ci/build` for that commit through the webhook. It reads **CI** `mock-ci/build` with the pill **Success**, and the CI check turns to **CI passed** (pill **Passed**). The pill ends **Done** and the line reads the steps and how long they took ("9 steps · 4s", say).
 
-What those stages look like in the web. The screens are from the web’s own mock server (`pnpm screens`), not from this stack: the agent's name, its steps and its words are the mock's. In the current web the coder's steps and the gate's verdicts, the "cards" of the list above, are lines of the panel's **Activity** tab, and the chat keeps one line for the turn.
+What those stages look like in the web. The screens are from the web’s own mock server (`pnpm screens`), not from this stack: the agent's name, its steps and its words are the mock's.
 
 **Working.** The pill reads **Working…**; the chat holds one line ("Running cargo test -p auth login:: · 4 steps") and the panel lists the steps so far, the last one still running.
 
@@ -116,29 +117,29 @@ Two more agents answer without a pull request: pick **Chat** and say `hi`, or pi
 
 *The agent menu, as the web's mock plays it (`pnpm screens`): the mock lists Coder, Reviewer and Verifier, and the coder has release channels; this stack lists Coder, Chat and Researcher, and only Mock coder (releases) has a release group.*
 
-Which gate, badge and card each agent shows (pick the agent in the chat, send the keyword; the scripts assert all of it):
+Which gate, pill and steps each agent shows (pick the agent in the chat, send the keyword; the scripts assert the same chain over the API, not the screen). The checks, CI reports and reworks are steps of the panel's **Activity** tab:
 
 | Agent | Send | What the chat shows | Script |
 |---|---|---|---|
-| **Coder** | `hi` | a greeting that says "I'm Coder", what it does and asks which repository; the thread is **Blocked**, waiting for you | `greeting-e2e.sh` |
-| **Coder** | the repository message above | the steps above: checks, **Checking the work…**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
+| **Coder** | `hi` | a greeting that says "I'm Coder", what it does and asks which repository; the pill reads **Your turn** (state `blocked`), the chip **Waiting for your reply** sits under the greeting and the box says "Reply…" | `greeting-e2e.sh` |
+| **Coder** | the repository message above | the steps above: the coder's work, **Checking the work…**, the checks **Verified the agent's checks** and **CI passed** with the report **CI** `mock-ci/build` (**Success**), **Done** | `coder-e2e.sh` |
 | **Chat** | `hi` (or anything) | a greeting that says "I'm Chat" and what it does, no repository question, and the thread is **Done** | `agents-e2e.sh` |
 | **Researcher** | `Who won the football world cup in 2014?` | "I searched the web for you. The best source I found is https://example.org/mock-search/world-cup-2014." and **Done** | `agents-e2e.sh` |
-| **Mock coder (gated)** | `red-once fix the login` | **Checking the work…**, a card **Failed · Agent checks** with the finding, a **rework divider** ("Attempt 2 of 3: sent back with 1 finding"), a second card **Passed · Agent checks**, **Done** | `verify-e2e.sh` |
-| **Mock coder (gated)** | `red-always fix the login` | three failed cards, two dividers, the pill **Failed** and "Checks failed after 3 attempts" | `verify-e2e.sh` |
-| **Mock coder (verified)** | `push-flawed fix the login` | the coder, then the **Verifier** as a subagent of its own (a pending card, then **Failed · Verifier** with its findings), the divider, the coder again, the verifier again, **Passed · Verifier**, **Done** | `verifier-e2e.sh` |
-| **Mock coder (CI gated)** | `red-once fix the login`, then play CI from a terminal ([CI](#ci-the-gate-by-webhook)) | **Checking the work…** until a signed report arrives; a red one sends the agent back, a green one for the new commit ends the job | `ci-e2e.sh` |
-| **Mock coder** | anything, or `slow` | no gate: **Working**, then **Done** with a pull-request artifact; `slow` takes 8 s | `mcp-e2e.sh` (over MCP) |
+| **Mock coder (gated)** | `red-once fix the login` | **Checking the work…**, the check **The agent's checks failed** (pill **Failed**) with its finding behind **Findings (1)**, the step **Checks failed — trying again (2/3)**, the pill back to **Starting…** and **Working…**, then **Verified the agent's checks** (pill **Passed**), **Done** | `verify-e2e.sh` |
+| **Mock coder (gated)** | `red-always fix the login` | three failed checks, the steps **Checks failed — trying again (2/3)** and **(3/3)**, the pill **Failed** and, above the message box, **Checks failed after 3 attempts** | `verify-e2e.sh` |
+| **Mock coder (verified)** | `push-flawed fix the login` | the coder's steps, the check **The verifier is reviewing the work** (pill **Pending**) that becomes **The verifier found issues** (pill **Failed**, its findings behind **Findings (1)**), the step **The review found issues — trying again (2/3)**, the coder again, then **The verifier approved the work** (pill **Passed**), **Done** | `verifier-e2e.sh` |
+| **Mock coder (CI gated)** | `red-once fix the login`, then play CI from a terminal ([CI](#ci-the-gate-by-webhook)) | **Checking the work…** and the check **Waiting for CI** until a signed report arrives; a red one is a **CI** step (**Failure**) and sends the agent back (**CI failed — trying again (2/3)**), a green one for the new commit (**Success**) ends the job | `ci-e2e.sh` |
+| **Mock coder** | anything, or `slow` | no gate: **Working…**, then **Done** with a pull-request artifact (a pull request card, **View pull request**); `slow` takes 8 s | `mcp-e2e.sh` (over MCP) |
 
-The web draws the gate's verdicts (`vymalo.check`: a **CI** card is the gate's verdict on the check it required),
-the rework divider and the verifier subagent, and one CI result card per report (`vymalo.ci`: the conclusion, the check
-name, the short commit and a link to the run), which is also where the scripts assert them. The badge, counter and cards come back after a reload: the page replays
-the log.
+The web draws the gate's verdicts (`vymalo.check`: the **CI** check is the gate's verdict on the check it required), each rework (`vymalo.rework`) and one
+CI step per report (`vymalo.ci`: the conclusion, the check name, the short commit and a link to the run) as steps of the panel's **Activity** tab;
+each is an AG-UI activity, which is what the scripts assert. It does not draw the verifier as a subagent of its own: its verdicts are checks. The pill and the steps
+come back after a reload: the page replays the log. There is no attempt counter: the attempts are in the steps.
 
 ### Share a chat with a developer
 
-When something goes wrong in a thread (a card that looks wrong, a job that ended where you did not expect), send the developer
-the whole thread as one file. In the chat, **Export JSON** in the thread's header downloads `thread-<id>.json`. From a
+When something goes wrong in a thread (a step or a card that looks wrong, a job that ended where you did not expect), send the developer
+the whole thread as one file. In the chat, **Export JSON** in the thread's options menu (the `…` in the top bar) downloads `thread-<id>.json`. From a
 terminal, with the stack up:
 
 ```sh
@@ -149,7 +150,7 @@ dev/export-thread.sh <thread-id> chat.json    # or name the file ("-" writes it 
 The file is `GET /api/threads/{id}/export` ([`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml), operation `exportThread`): a
 versioned document (`format` `another-agentic-system/thread-export`, `version` 1) with the thread, its **full job** (the gate, the
 attempt, the pushed commit, what each check said), the agent binding and **every event of the log in order**: your messages, every agent
-status and artifact, the check, CI and verifier cards, each rework and the state changes. Every card of the chat is drawn from that log.
+status and artifact, the check, CI and verifier results, each rework and the state changes. Everything the chat and its panel draw is drawn from that log.
 **Read it before you send it.** It holds what you and the agents wrote in the thread, and your e-mail address as the author of your
 messages; it never holds a credential of the orchestrator (no bearer token, webhook secret or database URL is ever written to the log), but a
 person can paste anything into a chat. Only the owner of a thread can export it (another identity gets a 404, as when reading it).
@@ -258,9 +259,9 @@ Notes on going live:
 | MCP answers `403` | **Host validation**: the server accepts `Host` 127.0.0.1 and localhost only (`MCP_ALLOWED_HOSTS`), and you reached the edge by another name (a LAN address, `host.docker.internal`, a tunnel) | use `http://127.0.0.1:8080/mcp`, or add the name to `MCP_ALLOWED_HOSTS` in `compose.yaml` |
 | MCP answers `401` with `WWW-Authenticate: Bearer` | the token is missing or wrong (nothing says which, on purpose) | send `Authorization: Bearer <MCP_TOKEN_DEV>`; the token is the value in the orchestrator's environment, and `dev/mcp-tokens.yaml` names the variable |
 | a webhook delivery gets `401` | **a secret mismatch** (or, for the generic route only, a timestamp more than `WEBHOOK_GENERIC_MAX_SKEW_SECS`, 300 s, from the clock): the signature matches none of `WEBHOOK_GITHUB_SECRETS` / `WEBHOOK_GENERIC_SECRETS` | the same secret on both sides (`docker compose logs orchestrator` says `webhook delivery refused ... status=401`); GitHub's "Recent Deliveries" shows the response; via smee see the note above |
-| a report is `202` but the job stays **Verifying** | the report is **parked** (the inbox keeps it up to a day) until a job watches its key, host/owner/name of the repository and the commit | compare the two log lines that carry the same `watch_key`: `watching for the CI reports of a pushed commit` (the job, from the coder's `branch` artifact) and `a CI report will be matched to the job that watches this key` (the report); `dev/coder-e2e.sh` prints both when the thread does not end done: `docker compose logs --tail 100 orchestrator mock-ci` |
+| a report is `202` but the pill stays **Checking the work…** (state `verifying`) | the report is **parked** (the inbox keeps it up to a day) until a job watches its key, host/owner/name of the repository and the commit | compare the two log lines that carry the same `watch_key`: `watching for the CI reports of a pushed commit` (the job, from the coder's `branch` artifact) and `a CI report will be matched to the job that watches this key` (the report); `dev/coder-e2e.sh` prints both when the thread does not end done: `docker compose logs --tail 100 orchestrator mock-ci` |
 | the two `watch_key`s differ, and no report ever matches | **repository spelling**: the coder names the repository the way the chat message did (`http://git-server:8080/local/sandbox.git`), CI reports `repository.html_url`; case, `.git` and a trailing slash are ignored, a different host, port or owner is not | name the repository in the chat as the report spells it (`https://github.com/<owner>/<repo>.git`); locally `mock-ci` reports `http://git-server:8080/local/sandbox` |
-| a job ends **Blocked** with `ci_timeout` | no report for the pushed commit arrived within `ORCH_CI_TIMEOUT_SECS` (an hour); no attempt was used | fix the delivery (the rows above) |
+| a job ends `blocked` with `ci_timeout`; the pill reads **Your turn**, because a hold is raised as an interrupt | no report for the pushed commit arrived within `ORCH_CI_TIMEOUT_SECS` (an hour); no attempt was used | fix the delivery (the rows above) |
 | `dev/ci-e2e.sh` says `SKIP`, or a second run of it times out | it passes once per database (a commit belongs to the first job that pushed it) | `docker compose --profile app down -v` and `up` again |
 | an old scenario behaves oddly, or the coder cannot clone | leftovers: the databases, the pushed branches (`coder-work`, `git-data`) | `docker compose --profile app down -v` forgets all of them |
 | `coder` never becomes healthy | the image is still being pulled or is starting (`start_period` 10 s, then 30 tries), or it exited | `docker compose --profile app logs coder`; on an ARM machine it runs under emulation and is slow |
@@ -1170,34 +1171,36 @@ stateDiagram-v2
 ```
 
 **What the chat shows** (the web of the `app` profile at http://127.0.0.1:8080, pick **Mock coder (gated)** and send
-`red-once fix the login`; MVP slice 4):
+`red-once fix the login`; MVP slice 4). The gate's verdicts and reworks are steps of the panel's **Activity** tab (the line under the agent's name opens it on this
+turn); the chat keeps that one line, and the pill says where the thread is:
 
-1. The pill reads **Checking the work…** as soon as the agent says `completed` (there is no attempt counter in the
-   header: the attempts are in the divider). The composer stays open for drafting ("Send a follow-up…") and the
+1. The pill reads **Checking the work…** as soon as the agent says `completed`, and the line reads **Verifying** (there is no attempt counter in the
+   header: the attempts are in the steps). The message box stays open for drafting ("Send a follow-up…") and its
    button is **Stop**.
-2. A card **Failed · Agent checks** appears in the conversation with the attempt, the short commit, the summary
-   ("1 test failed") and the finding as plain text. Then a divider, **Attempt 2 of 3: sent back with 1 finding**,
-   and the pill goes back to **Starting…** and **Working…**: the next attempt is a new
-   subagent in the same run, its status lines and artifacts under the divider.
-3. A second card, **Passed · Agent checks**, on the new commit; the pill ends **Done**.
+2. A check step, **The agent's checks failed**, appears in the panel with the pill **Failed**, the attempt, the short commit, the summary
+   ("1 test failed") and, folded behind **Findings (1)**, the finding as plain text. Then a step, **Checks failed — trying again (2/3)** with
+   "· 1 finding", and the pill goes back to **Starting…** and **Working…**: the next attempt is a new
+   subagent in the same run, and its steps follow in the same turn.
+3. A second check, **Verified the agent's checks**, with the pill **Passed**, on the new commit; the pill ends **Done**. The line keeps a chip for the steps that failed on
+   the way (the failed check and the failed `checks` artifact: "2 failed").
 
-`red-always fix the login` ends with three failed cards, two dividers, the pill **Failed** and
-the notice **Checks failed after 3 attempts** (not "This thread is failed": the agent did its work and the work did
-not pass). Findings are text from a tool: a finding with `<script>` or markdown shows those characters, and a long
-one is cut with **Show more**. Reload the page mid-verification and the same pill and cards come back
+`red-always fix the login` ends with three failed checks, the steps **Checks failed — trying again (2/3)** and **(3/3)**, the pill **Failed** and,
+above the message box, the notice **Checks failed after 3 attempts** (not "This thread is failed": the agent did its work and the work did
+not pass). The box stays open ("Tell the agent how to go on…"). Findings are text from a tool: a finding with `<script>` or markdown shows those characters, and a long
+one is cut with **Show more**. Reload the page mid-verification and the same pill and steps come back
 (the page replays the log). The web's own mock (`pnpm dev:mock`, [`web/README.md`](../web/README.md#mock-server)) plays
 the same story with `verify-red-once` and `verify-red`, and three scenarios for CI and the wait: `verify-ci` (the orchestrator's `ci` golden: a red `ci/build`, a rework, a green one), `verify-ci-stale` (a pending
-card replaced by its answer, a late report of an older push and a stale answer shown apart) and `verify-wait` (stays Verifying until cancelled).
+check replaced by its answer, a late report of an older push and a stale answer shown apart) and `verify-wait` (the pill stays **Checking the work…** until cancelled).
 
-**A CI report is a card of its own** (`mock-coder-ci` or the coder, once a report has arrived, see [CI](#ci-the-gate-by-webhook)):
-a badge with the conclusion in words and an icon (**Success**, **Failure**, **Cancelled**, **Timed out**, **Neutral**,
-**Skipped**, **Action required**, **Stale**, **Startup failure**), the check's name, the short sha (the whole one on hover),
+**A CI report is a step of its own** (`mock-coder-ci` or the coder, once a report has arrived, see [CI](#ci-the-gate-by-webhook)):
+**CI** and the check's name, a pill with the conclusion in words and an icon (**Success**, **Failure**, **Cancelled**, **Timed out**, **Neutral**,
+**Skipped**, **Action required**, **Stale**, **Startup failure**), the short sha (the whole one on hover),
 the branch, the provider and repository in small type, the summary as text (cut with **Show more** when long) and a
-**View run** link that opens in a new tab, only when the report's URL is `http` or `https`. It comes before the
-**Passed** or **Failed · CI** card that says what the gate made of it. The web's mock plays this with `verify-ci fix the login`:
-a red `ci/build` report for the first commit, the agent sent back, a green report for the second.
+**View run** link that opens in a new tab, only when the report's URL is `http` or `https`. The check of the gate says what it made of the report:
+**Waiting for CI** (pill **Pending**) until one arrives, then **CI passed** or **CI failed**. The web's mock plays this with `verify-ci fix the login`:
+a red `ci/build` report for the first commit, the agent sent back (**CI failed — trying again (2/3)**), a green report for the second.
 
-`dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts what a user sees: one run across
+`dev/verify-e2e.sh` drives all of it over AG-UI, like `try-thread.sh`, and asserts the stream the web draws from: one run across
 both attempts with two subagents; a `vymalo.check` that failed and one that passed; the `vymalo.rework`; the final
 `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate `agent_checks`, the second commit) and the thread of the resource
 API with the same `job`; `red-always` ending in `checks_failed` at attempt 3; a run that lowers the attempts with
@@ -1222,7 +1225,9 @@ agent that leaves the checking to someone else; the keywords choose the commit, 
   false and one finding; the orchestrator sends the coder back (a `rework` event, then a **new A2A task in the same
   context** whose text starts "Your work did not pass verification (attempt 1 of 3); this is attempt 2", has the heading
   "### the verifier" and quotes the finding as untrusted data); attempt 2 pushes `bbbb…`, which the verifier passes. The
-  thread ends `done`, `job.attempt` 2, and the chat shows the verifier as a subagent of its own, twice.
+  thread ends `done`, `job.attempt` 2, and the stream shows the verifier as a subagent of its own, twice. The web does not draw that subagent; it draws the
+  verifier's verdicts as checks in the **Activity** tab: **The verifier is reviewing the work** (pill **Pending**), **The verifier found issues** (pill **Failed**, the finding behind
+  **Findings (1)**), the step **The review found issues — trying again (2/3)**, and after the second attempt **The verifier approved the work** (pill **Passed**).
 - `push-clean fix the login`: pushes `cccc…`, passed at once, attempt 1.
 - `push-flawed` with `forwardedProps["vymalo.gate"] = {"maxAttempts": 1}`: the findings are final, `RUN_ERROR`
   `checks_failed`.
@@ -1264,7 +1269,7 @@ stateDiagram-v2
 `GetTask` answers *task not found* on purpose, so a verification whose stream breaks is held (`blocked`) rather than passed, and
 `SubscribeToTask`, `CancelTask` and `ListTasks` answer like the other mocks.
 
-`dev/verifier-e2e.sh` drives all of it over AG-UI and asserts what a user sees: one run across both attempts with four
+`dev/verifier-e2e.sh` drives all of it over AG-UI and asserts the stream the web draws from: one run across both attempts with four
 subagents (the coder twice, the verifier twice, named after it); the verifier's cards (pending and failed at attempt 1,
 pending and passed at attempt 2) and the finding; the `vymalo.rework`; the final `STATE_SNAPSHOT` (`done`, attempt 2 of 3, gate
 `verifier`, the second commit) and the thread of the resource API with the same `job`; `maxAttempts: 1` ending in
@@ -1286,7 +1291,7 @@ the fail-closed reading of "no pushed commit".
 ([ADR 0017](../docs/decisions/0017-ci-results-by-webhook.md), [ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)):
 an agent that says `completed` is not done until a **signed CI report about the commit it pushed** arrives at
 `POST /webhooks/ci`, and **named `ci/build`**: a gate that requires CI names the checks that count (`ci.required`), and a
-report of any other name is a card and nothing else (there is no "first report decides": it let a red commit pass on
+report of any other name is shown and decides nothing (there is no "first report decides": it let a red commit pass on
 a `skipped` report of another check). The orchestrator serves that route because compose sets
 `ORCH_SURFACES=agui,mcp,thread-tools,webhook-generic,webhook-github` and `WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123`
 on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**
@@ -1309,7 +1314,7 @@ dev/ci-e2e.sh                                                                   
 back (attempt 2, which pushes `2222222`); a report about the old commit changes nothing; a green report for the new
 commit ends the job `done` at attempt 2 of 3, and the run ends `RUN_FINISHED` (success); a `skipped` report of a check the
 gate does not name (`docs`) does not decide, even for the new commit; the same report again (same timestamp and body,
-another delivery id) is accepted twice and counted once; and that the chat shows a `vymalo.ci` card per report, each with
+another delivery id) is accepted twice and counted once; and that each report is a `vymalo.ci` activity (a **CI** step in the web's **Activity** tab), each with
 an id of its own and none replacing another (the conclusion, the short sha, the link and the summary). The rework prompt quotes the report's summary, and the mock picks its answer by keyword, so the red
 report's summary keeps `red-once`. The mock pushes the same two commits every time and a commit is watched by the first
 job that pushed it, so the script passes once per database (`docker compose down -v` to run it again; a second run is recognised and reported as a skip, exit status 77, `CI_E2E_FORCE=1` runs it anyway). CI runs it in
@@ -1329,7 +1334,7 @@ matches a report to a job by `host/owner/name` and the commit. The **coder is ga
 (when the thread does not end `done`, it prints the tail of the orchestrator's and `mock-ci`'s logs, whose info lines
 `watching for the CI reports of a pushed commit` and `a CI report will be matched to the job that watches this key` carry the same
 `watch_key` from both sides); in
-the chat, send the coder a task and the card appears when `mock-ci` has reported. `MOCK_CI_SHAPE=generic` (or `github-workflow`) `docker compose --profile app up -d mock-ci`
+the chat, send the coder a task and the **CI** step appears in the panel's **Activity** tab when `mock-ci` has reported. `MOCK_CI_SHAPE=generic` (or `github-workflow`) `docker compose --profile app up -d mock-ci`
 makes it use the generic route instead.
 
 ```mermaid
@@ -1396,8 +1401,8 @@ stateDiagram-v2
 
 Its card declares `https://agents.vymalo.com/a2a/extensions/release-channels/v1` with the example of
 the extension contract: default channel `production`; channels `production` = `coder-r47`, `staging` =
-`coder-r51`, `latest` = `coder-r53`; revisions `coder-r53`, `coder-r51`, `coder-r47`. The UI's
-release dropdown appears for it, and only for it. The scenario keywords above work the same.
+`coder-r51`, `latest` = `coder-r53`; revisions `coder-r53`, `coder-r51`, `coder-r47`. On a new chat the
+agent menu in the top bar lists a **Release** group for it (the channels, then **Revisions**), and only for it. The scenario keywords above work the same.
 
 On a new task the mock reads `params.message.metadata[<extension URI>].release`, resolves it and
 echoes `{"requested": …, "revision": …}` in the task metadata of every event (no release means the
@@ -1429,7 +1434,7 @@ web, and a web search attached to a chat, run offline and give the same answer e
 | Endpoint | `POST http://mock-mcp-search:8080/mcp` from the other containers, `http://127.0.0.1:8096/mcp` from the host |
 | Protocol | MCP 2025-11-25 over streamable HTTP, without sessions: one JSON answer per POST (never an SSE stream), no `Mcp-Session-Id`; `GET` and `DELETE` answer 405, as the transport spec has a server do that offers no SSE stream. Clients of 2025-06-18 and 2025-03-26 are answered too |
 | Authentication | `Authorization: Bearer dev-search-token` (`MOCK_MCP_TOKEN` in [`compose.yaml`](../compose.yaml)); 401 without it. `/healthz` and `/__journal` take none |
-| Tool | `web_search { query: string }`, with a title, an `annotations` hint (read-only) and `icons`: one `data:image/svg+xml;base64,…` entry (a magnifying glass, under 400 bytes), which is what the UI shows on the step of a call |
+| Tool | `web_search { query: string }`, with a title, an `annotations` hint (read-only) and `icons`: one `data:image/svg+xml;base64,…` entry (a magnifying glass, under 400 bytes), for a client that draws a tool's icon; the web's steps use the icon names of `steps/v1` and do not read it |
 | Answer | One `text` content: `1. <title> — <url>` and the snippet on the next line, one entry per result |
 | Keywords | The first keyword of [`results.json`](mock-mcp-search/results.json) (in file order, case-insensitive) that the query contains picks the list (`world cup`: the 2014 final; `rust`; `async`: three sources on async programming, what the [`[mock:cards]`](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph) script searches for); any other query gets `default`: `https://example.org/mock-search/1` and `/2` |
 | Scenarios | `[mock:empty]` in the query answers `No results.`; `[mock:error]` answers a tool execution error (`isError: true`); a missing or empty `query` is one too, not a protocol error (the spec's way to let a model correct itself); an unknown tool is `-32602` |

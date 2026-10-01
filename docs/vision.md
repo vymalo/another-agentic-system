@@ -200,8 +200,8 @@ In one real thread, 7 messages produced 336 status events, 197 of them from Open
 cute, sober, but still rich."
 
 **Today.**
-- The web groups an agent's activities into one flat step list
-  ([`lib/steps.ts`](../web/src/features/chat/lib/steps.ts), [`web/DESIGN.md`](../web/DESIGN.md)).
+- The web draws an agent's activities as a tree of steps in the side panel's **Activity** tab and keeps one line per turn in the chat
+  ([`lib/step-tree.ts`](../web/src/features/chat/lib/step-tree.ts), [`web/DESIGN.md`](../web/DESIGN.md)).
 - An agent's progress reaches the log as `agent_status` with a free-text `detail`
   ([`core/src/event.rs`](../orchestrator/crates/core/src/event.rs)): "opencode: …". Nothing says
   which agent or sub-agent produced it.

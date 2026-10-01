@@ -175,8 +175,8 @@ The mock agent picks its script from a word in your message:
 | `fail` / `reject` / `error` | ends `failed` (agent failure / agent rejection / JSON-RPC error) |
 | `slow` | like the default, over 8 seconds |
 
-`mock-agent-releases` declares the release-channels extension, so only it shows the release
-dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
+`mock-agent-releases` declares the release-channels extension, so only it has a **Release** group in the
+agent menu of a new chat: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
 `POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `MOCK_VERIFIER_PORT`, `EDGE_PORT`, `CODER_PORT`,
 `MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT`, `GIT_SERVER_PORT`, `MOCK_MODEL_PORT`, `MOCK_MCP_SEARCH_PORT`, `CHAT_PORT` and `RESEARCHER_PORT`. CI keeps the mocks
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
