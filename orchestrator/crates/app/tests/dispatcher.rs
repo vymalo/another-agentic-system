@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use orch_app::NewThread;
-use orch_core::{AgentId, AgentTarget, EventBody, ThreadState};
+use orch_core::{AgentId, AgentTarget, EventBody, ThreadState, ToolsGrant};
 use orch_ports::memory::Call;
 use orch_ports::{AgentError, Clock, OutboxStatus, SystemClock, ThreadStore};
 use support::*;
@@ -286,6 +286,50 @@ async fn permanent_rejection_fails_the_thread_without_retrying() {
             "thread_state:done"
         ]
     );
+    run.shutdown().await;
+}
+
+/// Every delegation carries the **non-secret** grant of the thread's tools (ADR 0023): the thread,
+/// the job the message belongs to, the agent it goes to, `main` and depth 0. The token is not
+/// there (the adapter mints it when it sends), nor in the outbox row the dispatcher worked from.
+#[tokio::test]
+async fn a_delegation_carries_the_grant_of_the_threads_tools_and_no_secret() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.post_message(&alice(), t.id, "echo again".into())
+        .await
+        .unwrap();
+    eventually("the second job is done", || async {
+        let ev = events(&app, &alice(), t.id).await;
+        (shape(&ev)
+            .iter()
+            .filter(|s| *s == "thread_state:done")
+            .count()
+            == 2)
+            .then_some(())
+    })
+    .await;
+    let grants: Vec<_> = w
+        .agent
+        .sends()
+        .into_iter()
+        .map(|call| match call {
+            Call::Send { thread_tools, .. } => thread_tools.map(|grant| *grant),
+            other => panic!("not a send: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        grants,
+        [
+            Some(ToolsGrant::main(t.id, 1, AgentId::new("plain"))),
+            Some(ToolsGrant::main(t.id, 2, AgentId::new("plain"))),
+        ],
+        "the job of each message, and the thread's agent"
+    );
+    assert!(grants.iter().flatten().all(ToolsGrant::is_consistent));
     run.shutdown().await;
 }
 

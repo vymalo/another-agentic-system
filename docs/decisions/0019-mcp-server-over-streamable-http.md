@@ -419,6 +419,6 @@ route like this one, over streamable HTTP and stateless like this one. It is not
 swallow it), and it does not use this ADR's tokens: its bearer is a short-lived token signed with HMAC and scoped to
 one thread, which the A2A adapter mints when it sends a message and hands to the agent under the extension
 `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`. Its contract is
-[`api/thread-tools-v1.md`](../api/thread-tools-v1.md) (accepted; not built yet). The decisions of this ADR stand:
-`/mcp` is unchanged, and `start_job` is not what an agent uses to ask another agent (`ask_agent` on the thread tools
+[`api/thread-tools-v1.md`](../api/thread-tools-v1.md) (accepted and built, 2026-10-01, in `orch-thread-token`, `orch-surface-thread-tools`
+and the A2A adapter's grant; the tools of later slices are not). The decisions of this ADR stand: `/mcp` is unchanged, and `start_job` is not what an agent uses to ask another agent (`ask_agent` on the thread tools
 is).

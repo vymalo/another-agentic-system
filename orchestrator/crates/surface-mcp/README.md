@@ -31,6 +31,7 @@ feature `surface-mcp`, on by default) and is mounted by `ORCH_SURFACES` (name `m
 | `job_id_for(&UserId, client_request_id) -> ThreadId` | the deterministic job id of a `start_job` with a `client_request_id`: UUID version 8, which no other surface may create (`ThreadId::is_derived`) |
 | `JobSummary` (and `Branch`, `PullRequest`, `LastCheck`, `Findings`) | what `get_job` says |
 | `MCP_PATH` | `/mcp` |
+| `is_host_authority(&str)` | whether a string is a `Host` value; now defined in [`orch-api`](../api/README.md), which the thread-tools surface shares, and re-exported here under its old name |
 
 ### Authentication
 

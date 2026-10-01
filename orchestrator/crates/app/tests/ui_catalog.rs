@@ -52,8 +52,13 @@ fn deliveries(w: &World) -> Vec<(Option<UiDelivery>, Option<ThreadId>)> {
         .into_iter()
         .map(|call| match call {
             Call::Send {
-                ui_catalog, thread, ..
-            } => (ui_catalog.map(|boxed| *boxed), thread),
+                ui_catalog,
+                thread_tools,
+                ..
+            } => (
+                ui_catalog.map(|boxed| *boxed),
+                thread_tools.map(|grant| grant.thread),
+            ),
             other => panic!("not a send: {other:?}"),
         })
         .collect()
@@ -186,14 +191,14 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
     let Call::Send {
         action: Some(_),
         ui_catalog,
-        thread,
+        thread_tools,
         ..
     } = &sends[1]
     else {
         panic!("the action is the second send: {sends:?}");
     };
     assert_eq!(ui_catalog.as_deref(), Some(&UiDelivery::Inline(v1)));
-    assert_eq!(thread, &Some(t.id));
+    assert_eq!(thread_tools.as_ref().map(|grant| grant.thread), Some(t.id));
     run.shutdown().await;
 }
 
@@ -299,4 +304,107 @@ async fn a_thread_created_with_a_catalog_records_it_first_and_delivers_it_inline
         "{err:?}"
     );
     assert!(app.find_thread(&alice(), other).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn the_thread_tools_endpoint_reads_the_thread_and_the_newest_catalog_without_a_user() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (v1, v2, older) = (catalog(1, "a"), catalog(2, "a"), catalog(1, "b"));
+
+    // nothing has this id: no thread, no catalog
+    let unknown = ThreadId(orch_ports::IdGen::new_id(&w.ids));
+    assert!(app.thread_for_tools(unknown).await.unwrap().is_none());
+    assert!(app.thread_ui_catalog(unknown).await.unwrap().is_none());
+
+    // a thread the web sent no catalog for: it exists (whoever its owner is), and has none
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let found = app.thread_for_tools(t.id).await.unwrap().unwrap();
+    assert_eq!(found.owner, alice());
+    assert_eq!(found.target.agent_id.as_str(), "plain");
+    assert!(app.thread_ui_catalog(t.id).await.unwrap().is_none());
+
+    // version 1, then version 2: the newest, with its catalog
+    for (text, sent) in [("echo two", &v1), ("echo three", &v2)] {
+        app.submit(&alice(), t.id, message(text, Some(sent)), None)
+            .await
+            .unwrap();
+        wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    }
+    assert_eq!(app.thread_ui_catalog(t.id).await.unwrap(), Some(v2.clone()));
+
+    // an older screen joins: recorded, but the newest stays
+    app.submit(&alice(), t.id, message("echo four", Some(&older)), None)
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(app.thread_ui_catalog(t.id).await.unwrap(), Some(v2));
+    run.shutdown().await;
+}
+
+/// The ledger records every new digest and only a version at least the current one becomes
+/// current, so any number of lower-versioned catalogs can follow the current one in the log. Its
+/// event is found by its digest, not by a window of the newest events (which 33 or more such
+/// catalogs would push it out of).
+#[tokio::test]
+async fn the_current_catalog_is_found_however_many_older_ones_were_recorded_after_it() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let current = catalog(50, "current");
+
+    let t = create(&app, &alice(), "plain", "echo first").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.submit(
+        &alice(),
+        t.id,
+        message("echo current", Some(&current)),
+        None,
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(
+        app.thread_ui_catalog(t.id).await.unwrap(),
+        Some(current.clone())
+    );
+
+    // 40 older screens, each its own digest, after the newest one
+    for n in 0..40 {
+        let older = catalog(1 + n % 9, &format!("old-{n}"));
+        app.submit(&alice(), t.id, message("echo older", Some(&older)), None)
+            .await
+            .unwrap();
+        wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    }
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(catalog_events(&ev).len(), 41, "every digest was recorded");
+    let record = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(
+        record.job.catalog.current().map(|c| c.version),
+        Some(50),
+        "the thread keeps the newest"
+    );
+    // more than 32 `ui_catalog` events came after the current one's: a window of the newest 32 of
+    // the kind does not hold it
+    let newest_32: Vec<_> = ev
+        .iter()
+        .rev()
+        .filter(|e| e.kind() == EventKind::UiCatalog)
+        .take(32)
+        .collect();
+    assert!(
+        newest_32
+            .iter()
+            .all(|e| !matches!(&e.body, orch_core::EventBody::UiCatalog(d) if *d == current)),
+        "the current catalog's event is outside the newest 32"
+    );
+    assert_eq!(
+        app.thread_ui_catalog(t.id).await.unwrap(),
+        Some(current),
+        "still the current one"
+    );
+    run.shutdown().await;
 }

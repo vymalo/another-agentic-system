@@ -43,7 +43,7 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
         content: SendContent::Text(text.to_owned()),
         release: None,
         ui_catalog: None,
-        thread: None,
+        thread_tools: None,
     }
 }
 

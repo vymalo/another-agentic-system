@@ -18,6 +18,8 @@ orch-api.workspace = true
 orch-agui-proto = { workspace = true, features = ["testkit"] }
 orch-agent-a2a.workspace = true
 orch-surface-mcp.workspace = true
+orch-surface-thread-tools.workspace = true
+orch-thread-token.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 secrecy.workspace = true
 orch-agent-adam = { workspace = true, features = ["testkit"] }

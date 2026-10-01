@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, KnownExtension, Releases,
-    ThreadId, Timestamp, UiActionData, UiDelivery, UiVersion,
+    Timestamp, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -177,11 +177,13 @@ pub struct SendRequest {
     /// (it is told nothing of the author's screen). An adapter sends it only to an agent whose
     /// live card lists the `ui-catalog/v1` extension.
     pub ui_catalog: Option<UiDelivery>,
-    /// The thread the message is about, for the adapters that give the agent a way back to it
-    /// (the `thread-tools/v1` extension). `None` for the verifier: it works in a context of its
-    /// own and gets no tools on the author's thread. Not a secret; what authorises the agent is
-    /// minted by the adapter at send time and never stored.
-    pub thread: Option<ThreadId>,
+    /// Who the agent is to be given the thread's tools as (`thread-tools/v1`, ADR 0023): the
+    /// thread, the job, the agent, the caller and the depth. `None` for the verifier: it works in
+    /// a context of its own and gets no tools on the author's thread. **Not a secret**: what
+    /// authorises the agent is a token the adapter mints from this at send time, only when the
+    /// live card lists the extension and the adapter has keys, and it never enters the request,
+    /// the outbox or the log.
+    pub thread_tools: Option<ToolsGrant>,
 }
 
 /// A task on an agent.

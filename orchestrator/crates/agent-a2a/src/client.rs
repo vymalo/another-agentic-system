@@ -18,11 +18,14 @@ use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
-use orch_core::{BoxError, KnownExtension, UI_CATALOG_EXTENSION, UiDelivery, UiVersion};
+use orch_core::{
+    BoxError, KnownExtension, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UiDelivery, UiVersion,
+};
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
     SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
+use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use serde_json::json;
 
 use crate::a2ui::{
@@ -31,6 +34,7 @@ use crate::a2ui::{
 use crate::errors::classify;
 use crate::extensions::extensions_from_card;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
+use crate::thread_tools::{mint, thread_tools_metadata};
 
 /// Tunables of the A2A client. The defaults suit production.
 #[derive(Debug, Clone)]
@@ -47,6 +51,11 @@ pub struct A2aConfig {
     pub call_timeout: Duration,
     /// Honour `HTTP(S)_PROXY`/`NO_PROXY` from the environment (tests turn this off).
     pub use_system_proxy: bool,
+    /// What mints the thread-tools grants (`thread-tools/v1`, ADR 0023): the keys, the URL agents
+    /// reach the orchestrator at and the token lifetime. With it, a message to an agent whose live
+    /// card lists the extension carries `{url, token, expiresAt}` for the request's thread; without
+    /// it (the default) no agent is given a grant. `Debug` shows no key.
+    pub thread_tools: Option<Arc<ThreadToolsIssuer>>,
 }
 
 impl Default for A2aConfig {
@@ -57,6 +66,7 @@ impl Default for A2aConfig {
             read_timeout: Duration::from_secs(90),
             call_timeout: Duration::from_secs(30),
             use_system_proxy: true,
+            thread_tools: None,
         }
     }
 }
@@ -345,12 +355,13 @@ fn catalog_for<'r>(
 }
 
 /// The extensions this message uses, by URI: release channels when a release is selected, A2UI
-/// when the live card lists it, and the UI catalog when the message carries one (ADR 0008: read
-/// for this very call, never remembered).
+/// when the live card lists it, the UI catalog when the message carries one and the thread tools
+/// when it carries a grant (ADR 0008: read for this very call, never remembered).
 fn extensions_of(
     req: &SendRequest,
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
+    thread_tools: Option<&ThreadToolsGrant>,
 ) -> Vec<String> {
     let mut uris = Vec::new();
     if req.release.is_some() {
@@ -365,6 +376,9 @@ fn extensions_of(
     if catalog.is_some() {
         uris.push(UI_CATALOG_EXTENSION.to_owned());
     }
+    if thread_tools.is_some() {
+        uris.push(THREAD_TOOLS_EXTENSION.to_owned());
+    }
     uris
 }
 
@@ -372,6 +386,7 @@ fn user_message(
     req: &SendRequest,
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
+    thread_tools: Option<&ThreadToolsGrant>,
 ) -> Message {
     let part = match &req.content {
         SendContent::Text(text) => Part::text(text.clone()),
@@ -412,7 +427,15 @@ fn user_message(
             ui_catalog_metadata(delivery, inline),
         );
     }
-    let extensions = extensions_of(req, ui, catalog);
+    // The endpoint of the thread and the token that opens it: only in the message, never stored
+    // or logged anywhere else (see `crate::thread_tools`).
+    if let Some(grant) = thread_tools {
+        metadata.insert(
+            THREAD_TOOLS_EXTENSION.to_owned(),
+            thread_tools_metadata(grant),
+        );
+    }
+    let extensions = extensions_of(req, ui, catalog, thread_tools);
     if !metadata.is_empty() {
         message.metadata = Some(metadata);
     }
@@ -447,15 +470,23 @@ impl AgentClient for A2aAgentClient {
         let ui = ui_from_card(&card);
         let known = extensions_from_card(&card);
         let catalog = catalog_for(&req, &known);
+        // Minted for this message only, from the card read for this very call (ADR 0008).
+        let thread_tools = mint(
+            self.cfg.thread_tools.as_deref(),
+            req.thread_tools.as_ref(),
+            &req.message_id,
+            &known,
+            jiff::Timestamp::now(),
+        );
         let client = self
             .client_for(
                 &req.endpoint,
                 &card,
-                extensions_of(&req, ui.as_ref(), catalog),
+                extensions_of(&req, ui.as_ref(), catalog, thread_tools.as_ref()),
             )
             .await?;
         let request = SendMessageRequest {
-            message: user_message(&req, ui.as_ref(), catalog),
+            message: user_message(&req, ui.as_ref(), catalog, thread_tools.as_ref()),
             configuration: None,
             metadata: None,
             tenant: None,

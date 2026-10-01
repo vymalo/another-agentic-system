@@ -1970,6 +1970,144 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(digests, [v2.digest.clone(), v1.digest.clone()]);
 }
 
+/// `ui_catalog_event`: the `ui_catalog` event with a digest is found by the digest, however many
+/// events and catalogs come after it, and only on the thread asked for. The ledger records every
+/// new digest and only a version at least the current one becomes current, so the current
+/// catalog's event can be followed by any number of lower-versioned ones (more than a window of
+/// the newest events would hold).
+pub async fn ui_catalog_event_by_digest<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    let catalog_event = |data: &UiCatalogData| NewEvent {
+        at: t0(),
+        actor: Actor::user(&alice()),
+        body: EventBody::UiCatalog(data.clone()),
+        idempotency_key: None,
+    };
+    // The current catalog (version 50) first, then 70 older ones, each its own digest, then an
+    // event of another kind that has a `digest` member of its own.
+    let current = catalog_data(50, "chat");
+    let older: Vec<UiCatalogData> = (0..70)
+        .map(|n| catalog_data(1 + n % 9, &format!("old-{n}")))
+        .collect();
+    let mut events = vec![catalog_event(&current)];
+    events.extend(older.iter().map(catalog_event));
+    events.push(user_event("after", None));
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Working, events, vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    // Another thread has a catalog of its own (and one that thread 1 also has).
+    let other = catalog_data(7, "other");
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![catalog_event(&other), catalog_event(&older[0])],
+                    vec![],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+
+    // far behind the newest events, and still found, whole, at its place in the log
+    let found = store
+        .ui_catalog_event(thread_id(1), &current.digest)
+        .await
+        .unwrap()
+        .expect("the current catalog's event");
+    // (the thread's first event is its first message: the catalogs are events 2 to 72)
+    assert_eq!(found.seq, 2);
+    assert_eq!(found.body, EventBody::UiCatalog(current.clone()));
+    assert_eq!(found.thread_id, thread_id(1));
+    let newest = store
+        .latest_events(thread_id(1), orch_core::EventKind::UiCatalog, 32)
+        .await
+        .unwrap();
+    assert!(
+        newest.iter().all(|e| e.seq != 2),
+        "the event is outside the newest 32 of its kind: a window would miss it"
+    );
+    // each of the others too
+    for (n, data) in older.iter().enumerate() {
+        let found = store
+            .ui_catalog_event(thread_id(1), &data.digest)
+            .await
+            .unwrap()
+            .expect("an older catalog's event");
+        assert_eq!(found.seq, 3 + n as i64);
+        assert_eq!(found.body, EventBody::UiCatalog(data.clone()));
+    }
+    // only the thread asked for: thread 2's own catalog is not thread 1's, and the one both
+    // recorded is each one's own event
+    assert!(
+        store
+            .ui_catalog_event(thread_id(1), &other.digest)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let shared = store
+        .ui_catalog_event(thread_id(2), &older[0].digest)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(shared.seq, 3);
+    assert_eq!(shared.thread_id, thread_id(2));
+    // a digest nobody recorded, one that is only a prefix or another case of a recorded one, and a
+    // thread that does not exist
+    for digest in [
+        "sha256:".to_owned() + &"0".repeat(64),
+        current.digest[..current.digest.len() - 1].to_owned(),
+        current.digest.to_uppercase(),
+        String::new(),
+    ] {
+        assert!(
+            store
+                .ui_catalog_event(thread_id(1), &digest)
+                .await
+                .unwrap()
+                .is_none(),
+            "{digest}"
+        );
+    }
+    assert!(
+        store
+            .ui_catalog_event(thread_id(9), &current.digest)
+            .await
+            .unwrap()
+            .is_none(),
+        "no thread, no event"
+    );
+    // the same digest recorded twice (the ledger would not, a store must not care): the newest
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(ThreadState::Working, vec![catalog_event(&current)], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    let again = store
+        .ui_catalog_event(thread_id(1), &current.digest)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.seq, 74);
+}
+
 /// The events of the gate (and `job_started`) are stored and read back, and `verifying` is a
 /// state a thread can be in.
 pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {

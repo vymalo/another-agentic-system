@@ -27,8 +27,10 @@ orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-surface-agui = { path = "crates/surface-agui" }
 orch-surface-mcp = { path = "crates/surface-mcp" }
+orch-surface-thread-tools = { path = "crates/surface-thread-tools" }
 orch-surface-webhook = { path = "crates/surface-webhook" }
 orch-testsupport = { path = "crates/testsupport" }
+orch-thread-token = { path = "crates/thread-token" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
 # The adam-rs crates (ADR 0015), all pinned to one full commit sha, never a branch or a tag; a PR
@@ -87,3 +89,5 @@ sha2 = "0.10"
 # Webhook signatures (ADR 0017): HMAC-SHA-256, verified in constant time by `Mac::verify_slice`
 # (digest 0.10.7, `ct_eq`), over the same sha2 as the MCP tokens. Secrets are `secrecy` strings.
 hmac = "0.12"
+# The thread-tools token (`orch-thread-token`): base64url without padding, the encoding of a JWS.
+base64 = "0.22"

@@ -1,9 +1,15 @@
 # A2A extension: thread tools (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); not built yet.** MVP slice 3 builds the
-  endpoint, the token and `get_ui_catalog`; slice 8 adds the relayed tools of attached MCP servers; slice 10 adds
-  `ask_agent` ([`mvp.md`](../mvp.md#the-new-build-order)). The owner may revisit anything here.
+- **Status:** **built (MVP slice 3, 2026-10-01), apart from the tools of later slices.** Accepted on the owner's
+  delegation; the owner may revisit anything here. Built: `orch-thread-token` (the token, with the known-answer vectors
+  below), `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools), the binary's
+  `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send
+  time, only for an agent whose live card lists the extension). Slice 8 adds the relayed tools of attached MCP servers
+  and the `attached` member of the message; slice 10 adds `ask_agent` and the `ask:<n>` ledger
+  ([`mvp.md`](../mvp.md#the-new-build-order)). "Not yet" is marked where it matters below. The adam-rs side (an agent
+  that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
+  support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
   endpoint, the token, the refetch), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) (the relay)
   and [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) (`ask_agent`); a second MCP endpoint
@@ -86,8 +92,9 @@ flag an agent before the person sends ([`agui.md`](agui.md#capabilities-document
 
 ## The message
 
-Only when **all three** hold: the card lists the extension, the request belongs to a thread (a request to the
-verifier agent does not), and the orchestrator has a key and a base URL configured. The message metadata then has:
+Only when **all three** hold: the card lists the extension (read for this very message, exact URI), the request belongs
+to a thread (a request to the verifier agent does not), and the orchestrator has a key and a base URL configured
+(`THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL`). The message metadata then has:
 
 ```json
 {"metadata": {"https://agents.vymalo.com/a2a/extensions/thread-tools/v1": {
@@ -107,6 +114,26 @@ The orchestrator never writes the token to the event log, to the outbox payload 
 travels inside the orchestrator is a non-secret grant (the thread, the job, the agent, the caller and the depth) on the
 send request; only the A2A adapter mints the token, at the moment it sends, and the types that hold it print
 `[redacted]`. The agent must treat it as a secret: not in the model's context, not in its own logs.
+
+*Built and tested (2026-10-01):* a message to a card without the exact URI (another version, a trailing slash, another
+scheme or case), from an adapter with no keys, or for a request with no grant (the verifier's) is exactly the message it
+was before the extension existed; the card is read for every message, so an agent that drops the extension gets nothing
+from the next one; each message has a token of its own (`jti` is its message id). The token is searched for in
+everything the system keeps or says: the adapter's tests capture every log line of a send at the most verbose level and
+find neither the token, nor a segment of it, nor the key; the end-to-end test reads the event log, the thread, its
+export, every AG-UI frame of the runs and, on Postgres, **every row of every table of the schema**, and finds none; a
+test that makes the adapter log the metadata fails.
+
+### Trying it
+
+The fake agent of the test support (`orch-fake-agent`, `FAKE_AGENT_EXTENSIONS=thread-tools`, or `FakeAgentOptions::extensions`
+in a Rust test) lists the extension, records the grant of each message (`threadTools` in its `/__control/<agent>/calls`),
+and its `thread-tools` script is what an agent does with it: it calls the endpoint with rmcp's own client, lists the tools,
+calls `get_ui_catalog` twice (the second time with the digest it was given) and reports one line, for example
+`thread-tools: tools=get_ui_catalog; catalog=<id> v2 <digest>; again unchanged=true`, or `no catalog: this thread has no UI
+catalog; answer in text`, or `no grant`. In the dev stack ([`dev/README.md`](../../dev/README.md#the-thread-tools)) every
+orchestrator process has `THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL=http://orchestrator:8080`, and `orchestrator` serves
+the endpoint (the edge does not route it); an agent of the stack that lists the extension receives the grant.
 
 ## The token
 
@@ -159,17 +186,61 @@ no detail in the body, nothing written, nothing called.
 6. `exp` is later than now minus 30 seconds, and `iat` is not later than now plus 30 seconds.
 7. `sub` equals the thread id in the path.
 8. The thread exists, and the caller is its agent: for `main`, the thread's agent is `agt`. For `ask:<n>` (slice 10),
-   ask n of the job is on the thread's ledger and is the agent `agt`.
+   ask n of the job is on the thread's ledger and is the agent `agt`. *Built:* `main`. Nothing writes an ask ledger
+   yet, so an `ask:<n>` token is refused here until slice 10 builds it (the token crate already reads and writes it).
 
-A request without an `Authorization` header gets a `401` with `WWW-Authenticate: Bearer` and no error code, as RFC
-6750 says to answer a request that carries no credentials. The Host header is checked against
-`THREAD_TOOLS_ALLOWED_HOSTS` (403 when it is not listed).
+A thread that cannot be read because the store fails is **not** a failed token: the answer is `503` with
+`Retry-After`, so that an agent does not take a transient fault for a dead token.
+
+A request without an `Authorization` header (or with two of them, or with another scheme) gets a `401` with
+`WWW-Authenticate: Bearer` and no error code, as RFC 6750 says to answer a request that carries no credentials. The
+Host header is checked against `THREAD_TOOLS_ALLOWED_HOSTS` (403 when it is not listed), after the token: a stranger
+with no token learns nothing of the hosts. A request that carries an `Origin` header is refused with 403 (an agent is
+not a browser).
 
 ### Known-answer vectors
 
-*Filled in when the crate is built.* A fixed key, fixed claims and a fixed time, and the exact token they produce, are
-generated by the change that builds the token crate (`orch-thread-token`, MVP slice 3), pinned in that crate's tests
-and written here. Until then there is no vector, and none is invented here.
+A fixed key, fixed claims and a fixed time give exactly these bytes. They were computed with an implementation that
+shares no code with the orchestrator (Python's `hmac`, `hashlib` and `base64`, 2026-10-01, *verified*), and the token
+crate's tests (`crates/thread-token/tests/vectors.rs`) pin the same strings: a change that moves a byte of one of them
+is a change of this contract, a `v2` URI, not an edit. The key is the bytes of the string as written (here 64
+characters of hexadecimal, which is what `openssl rand -hex 32` gives); `kid` is the first 16 hexadecimal characters of
+the SHA-256 of those bytes; the header and the claims are compact JSON in the order shown (no spaces); the signature is
+HMAC-SHA-256 over the first two segments with the dot, as written.
+
+**These are test vectors, not credentials.** Each token below is signed with the made-up test key printed beside it (a counting
+sequence, a descending one), names a made-up thread, agent and message, and expired on the day it was written; no
+deployment holds these keys, so the tokens open nothing. (A secret scanner reports each as a JWT: that is what a
+known-answer vector is.) Never use these keys in a deployment: `openssl rand -hex 32` gives a real one.
+
+**Vector 1: the thread's addressed agent**, signed with key 1, minted at 2026-10-01T12:00:00Z (`iat` 1790856000) for
+two hours.
+
+```text
+key 1   000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+kid     6c86c6aac5fb24bc
+header  {"alg":"HS256","typ":"JWT","kid":"6c86c6aac5fb24bc"}
+claims  {"iss":"orch","aud":"thread-tools","sub":"01927a4e-3b00-7000-8000-000000000001","job":3,"agt":"coder","caller":"main","depth":0,"jti":"5b0b9c2e-7f61-4d1c-9a43-2f3f6d0f9c11","iat":1790856000,"exp":1790863200}
+token   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjZjODZjNmFhYzVmYjI0YmMifQ.eyJpc3MiOiJvcmNoIiwiYXVkIjoidGhyZWFkLXRvb2xzIiwic3ViIjoiMDE5MjdhNGUtM2IwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiam9iIjozLCJhZ3QiOiJjb2RlciIsImNhbGxlciI6Im1haW4iLCJkZXB0aCI6MCwianRpIjoiNWIwYjljMmUtN2Y2MS00ZDFjLTlhNDMtMmYzZjZkMGY5YzExIiwiaWF0IjoxNzkwODU2MDAwLCJleHAiOjE3OTA4NjMyMDB9.jloITlRjG0bpM62IXeLGZq-mUH1badzKsCjKn0E5vvM
+```
+
+**Vector 2: an asked agent**, signed with key 2 (a replica holding key 2 as its current key, or as its previous key,
+verifies it; one holding neither refuses it), valid for 60 seconds.
+
+```text
+key 2   ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100
+kid     8588cdfcd6d2b0d5
+header  {"alg":"HS256","typ":"JWT","kid":"8588cdfcd6d2b0d5"}
+claims  {"iss":"orch","aud":"thread-tools","sub":"01927a4e-3b00-7000-8000-000000000001","job":3,"agt":"researcher","caller":"ask:2","depth":1,"jti":"a7d2e1c0-0b3f-4e55-8d7a-9c1e4f6b2a30","iat":1790856000,"exp":1790856060}
+token   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ijg1ODhjZGZjZDZkMmIwZDUifQ.eyJpc3MiOiJvcmNoIiwiYXVkIjoidGhyZWFkLXRvb2xzIiwic3ViIjoiMDE5MjdhNGUtM2IwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiam9iIjozLCJhZ3QiOiJyZXNlYXJjaGVyIiwiY2FsbGVyIjoiYXNrOjIiLCJkZXB0aCI6MSwianRpIjoiYTdkMmUxYzAtMGIzZi00ZTU1LThkN2EtOWMxZTRmNmIyYTMwIiwiaWF0IjoxNzkwODU2MDAwLCJleHAiOjE3OTA4NTYwNjB9.aIdaJXz3PRX8xbeV4LHMn9V3bH1tpaoa_ReeOq5STmg
+```
+
+Reading rules the tests pin as well: base64url is the strict, unpadded alphabet (a padded token, the standard alphabet
+or non-canonical trailing bits is refused, so no two spellings stand for one token); the header may hold exactly `alg`,
+`typ` and `kid`, and the claims exactly the ten above (an extra member is refused); `caller` is `main` or `ask:<n>` with
+n from 1 and no leading zero; a `main` caller has `depth` 0 and an `ask` at least 1; `job` is at least 1; `agt` and
+`jti` are non-empty and at most 256 bytes; `exp` is not before `iat`. At the boundaries: a token is read from 30
+seconds before its `iat` to 29 seconds after its `exp`, and refused at 30.
 
 ## The endpoint
 
@@ -195,8 +266,14 @@ and written here. Until then there is no vector, and none is invented here.
 | `THREAD_TOOLS_ALLOWED_HOSTS` | The Host values accepted; default the host and port of `THREAD_TOOLS_URL`. |
 
 The process exits with 78 (as for other configuration errors) when the surface is mounted without a key; when the URL
-is set without a key or the key without a URL; and for a bad URL, lifetime or host. The A2A adapter mints whenever the
-key and the URL are set, so every role gets the same variables: **workers mint, the control plane serves**.
+is set without a key or the key without a URL; when the previous key is set without a current one, is the current one,
+or is too short; and for a bad URL, lifetime or host. The A2A adapter mints whenever the key and the URL are set, so
+every role gets the same variables: **workers mint, the control plane serves**. That is why naming the surface
+`thread-tools` in `ORCH_SURFACES` requires the key and the URL in **every** role (a worker mounts no routes, but it is
+the one that mints), and why a process that does not name the surface still reads and checks them when they are set
+(another replica serves the endpoint). The default for `THREAD_TOOLS_ALLOWED_HOSTS` is the host of the URL, with the
+port when the URL names one; a name without a port matches any port. A build without the Cargo feature
+`surface-thread-tools` does not read these variables and naming the surface is refused.
 
 ## The tools
 
@@ -209,12 +286,19 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 
 | Slice | Tools | Provider | Contract |
 |---|---|---|---|
-| 3 | `get_ui_catalog` | built in | below |
+| 3 (built) | `get_ui_catalog` | built in | below |
 | 8 | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration and environment), sees each call and reports it as a tool step with the server's icon. | relay | written with slice 8 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), status note) |
 | 10 | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | written with slice 10 ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), status note) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
 each model turn: it is not hard-wired to `get_ui_catalog`.
+
+The seam is built (`ThreadToolProvider` in `orch-surface-thread-tools`, added to the surface's configuration by the
+binary): a provider gets, for each request, a context with the thread's **owner**, the verified **claims** (thread, job,
+agent, caller, depth), the request's `_meta`, a sink for progress notifications and a cancellation token. A provider
+that offers a name a built-in tool, or an earlier provider, already has is left out of the listing (the first owner
+keeps it), and a provider that is slow to list leaves its tools out rather than failing the listing. The built-in tools
+are cut off after 30 seconds; a provider bounds its own calls, because a tool such as `ask_agent` may run much longer.
 
 ### `get_ui_catalog`
 
@@ -274,12 +358,15 @@ answer in text". The call times out after 30 seconds. It reads the thread's cata
 - MCP streamable HTTP: a server "MAY assign a session ID", so a stateless server is allowed; servers "MUST validate
   the Origin header" on all incoming connections (MCP specification 2025-11-25, transports,
   <https://modelcontextprotocol.io/specification/2025-11-25/basic/transports>). The Host check named in
-  `THREAD_TOOLS_ALLOWED_HOSTS` is the orchestrator's reading of that rule for agent-to-server calls; whether the
-  library's check also covers `Origin` is *unverified*.
+  `THREAD_TOOLS_ALLOWED_HOSTS` is the orchestrator's reading of that rule for agent-to-server calls (the library's
+  own `Origin` check is on, with no origin allowed: see below).
 - MCP tools: `structuredContent` should be accompanied by the same JSON as text; an unknown tool is a protocol error
   (`-32602`); a tool's own failure is a result with `isError: true` (MCP specification 2025-11-25, tools,
   <https://modelcontextprotocol.io/specification/2025-11-25/server/tools>).
 
-*Unverified (settled by the slice-3 tests):* that the MCP server library serves a stateless service on the exact path
-`/thread-tools/{threadId}/mcp` (otherwise it is nested with the path parameter); the library's Host check as
-configured above; the exact `401` framing through the library's middleware.
+*Verified 2026-10-01, by this repository's tests* (`crates/surface-thread-tools/tests/`, rmcp 3.5.0): the MCP server
+library serves a stateless service on the exact parametrised path `/thread-tools/{threadId}/mcp` (it ignores the path
+it is called at; the guard reads the thread from it); its Host check refuses a host that is not listed with `403`; with
+the list of allowed origins empty, a request that carries an `Origin` header is refused with `403` (so the library's
+check does cover `Origin`, as configured here); a request with no `Authorization` header, a bad token and a good token
+for another thread are the two `401` answers above, through the library's own middleware order (the guard runs first).

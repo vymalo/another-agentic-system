@@ -124,6 +124,10 @@ pub struct Setup {
     /// Bearer tokens the orchestrator is configured with.
     pub coder_token: Option<String>,
     pub plain_token: Option<String>,
+    /// Whether the A2A adapter mints thread-tools grants ([`THREAD_TOOLS_KEY`]) and the grant's
+    /// URL is the first instance made with [`World::instance_with_thread_tools`] (its address is
+    /// bound beforehand, so the adapter can be told it). An agent still has to list the extension.
+    pub thread_tools: bool,
     /// The gate new threads start under (the deployment's; empty: no gate).
     pub gate: GatePolicy,
     /// The `gate` key of an agent's `AGENTS_FILE` entry, by agent id.
@@ -144,6 +148,7 @@ impl Default for Setup {
             reviewer: None,
             coder_token: None,
             plain_token: None,
+            thread_tools: false,
             // No source is required, but `ci/build` is the check a request that adds `ci` waits
             // for: a gate that requires CI must name its checks (`GateError::CiWithoutChecks`).
             gate: GatePolicy {
@@ -196,6 +201,9 @@ pub struct World {
     gate: GatePolicy,
     target_gates: BTreeMap<AgentId, GateLayer>,
     gate_rules: GateRules,
+    /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
+    /// the first instance with the thread-tools surface serves on it.
+    thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
 }
 
 impl World {
@@ -217,10 +225,28 @@ impl World {
                 Db::Postgres(db)
             }
         };
+        // The address the thread-tools grants name, and what mints them.
+        let thread_tools_listener = setup.thread_tools.then(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        });
+        let thread_tools = thread_tools_listener.as_ref().map(|listener| {
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            Arc::new(
+                orch_thread_token::ThreadToolsIssuer::new(
+                    thread_tools_keys(),
+                    &base,
+                    Duration::from_secs(7200),
+                )
+                .unwrap(),
+            )
+        });
         World {
             db,
             agents: A2aAgentClient::new(A2aConfig {
                 use_system_proxy: false,
+                thread_tools,
                 ..A2aConfig::default()
             })
             .unwrap(),
@@ -241,6 +267,7 @@ impl World {
             gate: setup.gate,
             target_gates: setup.target_gates,
             gate_rules: setup.gate_rules,
+            thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
 
@@ -314,16 +341,37 @@ impl World {
 
     /// Starts an instance named `owner`; `dispatch: false` serves the API only.
     pub async fn instance_with(&self, owner: &str, dispatch: bool) -> TestInstance {
-        self.instance_full(owner, dispatch, false).await
+        self.instance_full(owner, dispatch, Surfaces::NONE).await
     }
 
     /// Like [`World::instance_with`], and the MCP server is mounted at `/mcp` with the tokens
     /// [`ALICE_TOKEN`] and [`BOB_TOKEN`].
     pub async fn instance_with_mcp(&self, owner: &str, dispatch: bool) -> TestInstance {
-        self.instance_full(owner, dispatch, true).await
+        self.instance_full(owner, dispatch, Surfaces::MCP).await
     }
 
-    async fn instance_full(&self, owner: &str, dispatch: bool, mcp: bool) -> TestInstance {
+    /// Like [`World::instance_with`], and the thread-tools endpoint is mounted at
+    /// `/thread-tools/{threadId}/mcp`, verifying the tokens of [`THREAD_TOOLS_KEY`] (and of
+    /// [`THREAD_TOOLS_OLD_KEY`], the previous one of a rotation).
+    pub async fn instance_with_thread_tools(&self, owner: &str, dispatch: bool) -> TestInstance {
+        self.instance_full(owner, dispatch, Surfaces::THREAD_TOOLS)
+            .await
+    }
+
+    /// The listener the grants name, for the first instance that serves the thread tools; a later
+    /// one binds a port of its own (a replica the grants do not name).
+    async fn listener_for(&self, surfaces: Surfaces) -> tokio::net::TcpListener {
+        let reserved = surfaces
+            .thread_tools
+            .then(|| self.thread_tools_listener.lock().unwrap().take())
+            .flatten();
+        match reserved {
+            Some(listener) => tokio::net::TcpListener::from_std(listener).unwrap(),
+            None => tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        }
+    }
+
+    async fn instance_full(&self, owner: &str, dispatch: bool, surfaces: Surfaces) -> TestInstance {
         let dispatcher = dispatch.then(fast_dispatcher);
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
@@ -332,8 +380,9 @@ impl World {
         match &self.db {
             Db::Memory { store, wakeup } => {
                 let app = self.app(store.clone(), wakeup.clone());
-                let extra = mcp_routes(&app, mcp);
-                TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
+                let extra = extra_routes(&app, surfaces);
+                let listener = self.listener_for(surfaces).await;
+                TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
@@ -343,10 +392,57 @@ impl World {
                     "the wakeup listener did not attach"
                 );
                 let app = self.app(PgStore::from_pool(pool), wakeup);
-                let extra = mcp_routes(&app, mcp);
-                TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
+                let extra = extra_routes(&app, surfaces);
+                let listener = self.listener_for(surfaces).await;
+                TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
         }
+    }
+
+    /// The grants the thread tools' agent was given, in the order of its messages: the
+    /// `{url, token, expiresAt}` of each message of `plain` that carried one.
+    pub fn grants_of_plain(&self) -> Vec<Value> {
+        self.plain
+            .executions()
+            .into_iter()
+            .filter_map(|call| call.thread_tools)
+            .collect()
+    }
+
+    /// The tables of the test database whose rows mention `needle` anywhere (each row read as
+    /// JSON text): empty on the memory store, where there is no database to read. A secret that
+    /// was never stored is in none.
+    pub async fn tables_mentioning(&self, needle: &str) -> Vec<String> {
+        let Db::Postgres(db) = &self.db else {
+            return Vec::new();
+        };
+        let pool = db.pool("scan", 2).await;
+        let tables: Vec<(String,)> = sqlx::query_as(
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(
+            tables.len() >= 5,
+            "the schema has the orchestrator's tables: {tables:?}"
+        );
+        let mut found = Vec::new();
+        for (table,) in tables {
+            let query = format!(
+                "SELECT count(*) FROM \"{table}\" t WHERE row_to_json(t)::text LIKE '%' || $1 || '%'"
+            );
+            let (hits,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(query))
+                .bind(needle)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            if hits > 0 {
+                found.push(table);
+            }
+        }
+        found
     }
 
     /// A client for `instance` acting as [`ALICE`], which can also read the event log.
@@ -358,19 +454,68 @@ impl World {
 pub const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
 pub const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
 
-/// The MCP surface over `app`, when asked for.
-fn mcp_routes<P: orch_ports::Ports>(app: &Arc<App<P>>, mcp: bool) -> Vec<orch_api::SurfaceRoutes> {
-    if !mcp {
-        return Vec::new();
-    }
+/// The thread-tools key of these tests (what `THREAD_TOOLS_SECRET` would be), and the previous one
+/// of a rotation: made-up values, not credentials.
+pub const THREAD_TOOLS_KEY: &str =
+    "not-a-real-secret-e2e-thread-tools-0123456789abcdef0123456789abcdef";
+pub const THREAD_TOOLS_OLD_KEY: &str =
+    "not-a-real-secret-e2e-thread-tools-old-fedcba9876543210fedcba9876543210";
+
+/// The extra surfaces an instance mounts beside AG-UI.
+#[derive(Debug, Clone, Copy)]
+struct Surfaces {
+    mcp: bool,
+    thread_tools: bool,
+}
+
+impl Surfaces {
+    const NONE: Surfaces = Surfaces {
+        mcp: false,
+        thread_tools: false,
+    };
+    const MCP: Surfaces = Surfaces {
+        mcp: true,
+        ..Surfaces::NONE
+    };
+    const THREAD_TOOLS: Surfaces = Surfaces {
+        thread_tools: true,
+        ..Surfaces::NONE
+    };
+}
+
+/// The thread-tools keys: the current one, and the previous one a rotation still verifies.
+pub fn thread_tools_keys() -> orch_thread_token::ThreadToolsKeys {
     let secret = |s: &str| secrecy::SecretString::from(s.to_owned());
-    let tokens = orch_surface_mcp::TokenTable::new([
-        (orch_core::UserId::new(ALICE), secret(ALICE_TOKEN)),
-        (orch_core::UserId::new(BOB), secret(BOB_TOKEN)),
-    ])
-    .unwrap();
-    let config = orch_surface_mcp::McpConfig::new(tokens, ["127.0.0.1"]).unwrap();
-    vec![orch_surface_mcp::routes(Arc::clone(app), config)]
+    orch_thread_token::ThreadToolsKeys::new(
+        secret(THREAD_TOOLS_KEY),
+        Some(secret(THREAD_TOOLS_OLD_KEY)),
+    )
+    .unwrap()
+}
+
+/// The extra surfaces over `app`, when asked for.
+fn extra_routes<P: orch_ports::Ports>(
+    app: &Arc<App<P>>,
+    surfaces: Surfaces,
+) -> Vec<orch_api::SurfaceRoutes> {
+    let mut routes = Vec::new();
+    if surfaces.mcp {
+        let secret = |s: &str| secrecy::SecretString::from(s.to_owned());
+        let tokens = orch_surface_mcp::TokenTable::new([
+            (orch_core::UserId::new(ALICE), secret(ALICE_TOKEN)),
+            (orch_core::UserId::new(BOB), secret(BOB_TOKEN)),
+        ])
+        .unwrap();
+        let config = orch_surface_mcp::McpConfig::new(tokens, ["127.0.0.1"]).unwrap();
+        routes.push(orch_surface_mcp::routes(Arc::clone(app), config));
+    }
+    if surfaces.thread_tools {
+        let config =
+            orch_surface_thread_tools::ThreadToolsConfig::new(thread_tools_keys(), ["127.0.0.1"])
+                .unwrap();
+        routes.push(orch_surface_thread_tools::routes(Arc::clone(app), config));
+    }
+    routes
 }
 
 /// Asserts `seq` is exactly 1..=n.

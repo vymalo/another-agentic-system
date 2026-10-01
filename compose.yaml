@@ -68,9 +68,15 @@ x-orchestrator-env: &orchestrator-env
   MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
   LOG_FORMAT: text
+  # The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and
+  # verified with, and the address agents reach the orchestrator at (the compose network name: the edge does not
+  # route the endpoint). EVERY role gets them: a worker mints the grant it sends with a message, the control plane
+  # serves the endpoint. A real deployment sets its own key (.env.example, `openssl rand -hex 32`).
+  THREAD_TOOLS_SECRET: ${THREAD_TOOLS_SECRET:-dev-thread-tools-secret-0123456789abcdef0123456789abcdef} # local development only
+  THREAD_TOOLS_URL: http://orchestrator:8080
   # No ORCH_SURFACES here: the default is `agui`, the AG-UI routes beside the resource API (ADR 0012),
-  # which is all a worker needs; the `orchestrator` service adds `mcp` (ADR 0019) and the CI webhook
-  # (ADR 0017). The web and the
+  # which is all a worker needs; the `orchestrator` service adds `mcp` (ADR 0019), the thread tools and the
+  # CI webhook (ADR 0017). The web and the
   # dev scripts speak AG-UI (and MCP, dev/mcp-e2e.sh). The legacy chat API surface was removed on
   # 2026-09-30: `ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup
   # (see orchestrator/bin/orchestrator/README.md).
@@ -144,7 +150,11 @@ services:
       # The CI webhooks are machine routes too: `POST /webhooks/ci` (the generic signed report) and
       # `POST /webhooks/github` (GitHub's own deliveries), signed with the secrets below
       # (docs/api/webhooks.md; dev/ci-webhook.sh plays a CI, `mock-ci` is one). The workers serve no routes.
-      ORCH_SURFACES: agui,mcp,webhook-generic,webhook-github
+      # `thread-tools` is the per-thread MCP endpoint (/thread-tools/{threadId}/mcp) an agent whose card lists
+      # thread-tools/v1 calls back with the token in its message. The edge does not route it (agents call the
+      # orchestrator directly, on the compose network), so its `Host` is the service's own address.
+      ORCH_SURFACES: agui,mcp,thread-tools,webhook-generic,webhook-github
+      THREAD_TOOLS_ALLOWED_HOSTS: orchestrator:8080,127.0.0.1:8080,localhost:8080
       WEBHOOK_GENERIC_SECRETS: dev-webhook-secret-0123456789abcdef0123 # local development only
       WEBHOOK_GITHUB_SECRETS: dev-webhook-secret-0123456789abcdef0123 # local development only; the secret `mock-ci` signs with
       MCP_TOKENS_FILE: /etc/orchestrator/mcp-tokens.yaml

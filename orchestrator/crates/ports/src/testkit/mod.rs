@@ -27,6 +27,7 @@ macro_rules! thread_store_conformance {
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
             job_roundtrip job_is_written_with_the_state gate_events_roundtrip ui_catalog_roundtrip
+            ui_catalog_event_by_digest
             inbox_dedupes_by_source_and_key inbox_claims_are_leases_and_lapse
             inbox_claimers_never_share_a_row inbox_parks_and_rearms_in_one_commit
             inbox_park_finds_a_watch_that_appeared inbox_commit_is_fenced_and_marks_applied

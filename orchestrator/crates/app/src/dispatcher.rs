@@ -14,8 +14,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, Classify, Input, ThreadId, ThreadState, TransitionError,
-    report,
+    AgentId, AgentTaskState, AgentUpdate, Classify, Input, ThreadId, ThreadState, ToolsGrant,
+    TransitionError, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
@@ -412,8 +412,8 @@ impl<P: Ports> Dispatcher<P> {
         let Some(Loaded {
             ctx,
             state,
+            job,
             binding,
-            ..
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -520,7 +520,9 @@ impl<P: Ports> Dispatcher<P> {
             content,
             release,
             ui_catalog,
-            thread: Some(row.thread_id),
+            // Who the agent is to be given the thread's tools as. The adapter turns it into a
+            // token when it sends, if the card lists the extension; nothing of it is stored.
+            thread_tools: Some(ToolsGrant::main(row.thread_id, job, ctx.agent.clone())),
         };
         match self.app.ports().agents().send_stream(req).await {
             Ok(stream) => {

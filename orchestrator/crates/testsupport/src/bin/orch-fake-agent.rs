@@ -16,7 +16,8 @@
 //!
 //! - `POST /__control/<agent>/release-gate`: lets one waiting `gate` task continue;
 //! - `GET /__control/<agent>/calls`: JSON array of what the agent's executor saw, in order (with
-//!   `uiCatalog`, the message's `ui-catalog/v1` metadata, and `inlineCatalogs`).
+//!   `uiCatalog`, the message's `ui-catalog/v1` metadata, `inlineCatalogs`, and `threadTools`, the
+//!   grant `{url, token, expiresAt}` of the thread's MCP endpoint when the message carried one).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::SocketAddr;
@@ -66,6 +67,7 @@ fn call_json(c: &Call) -> Value {
         "release": c.release,
         "uiCatalog": c.ui_catalog,
         "inlineCatalogs": c.inline_catalogs,
+        "threadTools": c.thread_tools,
     })
 }
 

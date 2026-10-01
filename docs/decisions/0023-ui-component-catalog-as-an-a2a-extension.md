@@ -96,7 +96,7 @@ decided on that delegation as follows; the owner may revisit them.
 - **The refetch seam (decision 5; the transport of open question 36)** is the tool `get_ui_catalog` on the
   orchestrator's per-thread MCP endpoint, the "thread tools" (extension
   `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`; contract
-  [`api/thread-tools-v1.md`](../api/thread-tools-v1.md), accepted; not built yet). The endpoint is
+  [`api/thread-tools-v1.md`](../api/thread-tools-v1.md), accepted; built, see the last status note). The endpoint is
   `/thread-tools/{threadId}/mcp`: a path under the `/mcp` mount of
   [ADR 0019](0019-mcp-server-over-streamable-http.md) would collide with it. The A2A adapter gives the agent the
   endpoint's URL, a token and its expiry in the message metadata under that URI. The token is short-lived (two hours by
@@ -129,7 +129,22 @@ The web's catalog and Choices (versions 1 and 2) and the orchestrator's side of 
 `forwardedProps["vymalo.uiCatalog"]` on a run (checked before anything is written), the `ui_catalog` event (migration
 `0006`) and the thread's ledger in the core, `thread.uiCatalog` in the state snapshot, the closed `KnownExtension` set
 read from the live card and listed in the capabilities document, and the A2A adapter's metadata, `supportedCatalogIds`
-and `inlineCatalogs`. The contract is [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md). **Not built yet:** the
-thread tools and `get_ui_catalog` (the refetch seam above) and the adam-rs side. One detail the contract now says:
-an A2A server reads the numbers of message metadata as doubles, so an agent recomputing a digest writes whole numbers as
-integers first.
+and `inlineCatalogs`. The contract is [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md). **Not built yet:** the adam-rs
+side. One detail the contract now says: an A2A server reads the numbers of message metadata as doubles, so an agent
+recomputing a digest writes whole numbers as integers first.
+
+## Status note, 2026-10-01: the refetch seam is built (MVP slice 3)
+
+The thread tools of the decision above are built: the token (`orch-thread-token`: HS256, the ten claims with the caller
+as a closed `main` | `ask:<n>`, the current and the previous key, known-answer vectors computed by an independent
+implementation and pinned in its tests and in [`api/thread-tools-v1.md`](../api/thread-tools-v1.md)), the endpoint
+(`orch-surface-thread-tools`, a machine route at `/thread-tools/{threadId}/mcp`, stateless, any replica serves it) with
+the built-in `get_ui_catalog` (the newest catalog the thread recorded, `knownDigest` for "unchanged", an error to read
+for a thread with no catalog) and the provider seam slices 8 and 10 add their tools through, and the binary's
+`thread-tools` surface with `THREAD_TOOLS_*`, and the A2A adapter's grant (minted at send time from the non-secret
+`ToolsGrant` on the send request, only for a card that lists the extension; the token is in the message and nowhere
+else, which a test of every log line, of the log, of the export and of every row of the database checks). Two details
+the build settled, in the contract: a token is refused unless
+the thread exists and is the token's agent's (an `ask:<n>` token is refused until slice 10 builds the ledger it names),
+and the key and the URL are required in every role when the surface is named, because the adapter of a worker is what
+mints.

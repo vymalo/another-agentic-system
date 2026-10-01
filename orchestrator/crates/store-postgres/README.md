@@ -52,7 +52,7 @@ Each test gets its own schema (`search_path`), so tests run in parallel on one
 database; stale test schemas older than an hour are dropped.
 
 * `tests/conformance.rs`: the `orch-ports` testkit (`thread_store_conformance!`,
-  `wakeup_conformance!`) against Postgres.
+  `wakeup_conformance!`) against Postgres. `ui_catalog_event(thread, digest)` is `WHERE kind = 'ui_catalog' AND data ->> 'digest' = $2 ORDER BY seq DESC LIMIT 1` (a thread has few such events, so it needs no index of its own); the case `ui_catalog_event_by_digest` finds an event behind 70 others.
 * `tests/postgres.rs`: behaviour specific to this implementation, including that a legacy bare `"cancel"` outbox row reads as `Cancel { job: None }` and `Cancel { job: Some(n) }` round-trips, including that migration 0003 upgrades a
   database that ran 0001 and 0002 and holds a thread (its job reads back as the default, the widened
   constraints take the new values and still refuse others); that migration 0004 upgrades one that ran

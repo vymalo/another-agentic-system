@@ -597,6 +597,45 @@ impl<P: Ports> App<P> {
             .ok_or(AppError::NotFound)
     }
 
+    /// The thread `id` for the thread-tools endpoint (`thread-tools/v1`), whatever its owner: what
+    /// authorises the call is the token the endpoint has verified, not a user, so there is no
+    /// ownership check here. `None` when nothing has this id. The endpoint reads the owner off
+    /// the record, and the agent the thread is addressed to.
+    pub async fn thread_for_tools(&self, id: ThreadId) -> Result<Option<ThreadRecord>, AppError> {
+        Ok(self.ports.store().get_thread(None, id).await?)
+    }
+
+    /// The UI catalog `get_ui_catalog` gives for thread `id`: the one its ledger names as current
+    /// (the highest version recorded, ADR 0023), read from the `ui_catalog` event that carried it,
+    /// found by its digest ([`ThreadStore::ui_catalog_event`]) however many catalogs of lower
+    /// versions were recorded after it. `None` when the thread has none (the web that opened it
+    /// sent none) or does not exist.
+    ///
+    /// No user check: the token the endpoint verified authorised this thread.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Store`] when the store fails, and [`AppError::Internal`] when the ledger names
+    /// a catalog the log does not hold (the ledger and the log disagree: a bug).
+    pub async fn thread_ui_catalog(&self, id: ThreadId) -> Result<Option<UiCatalogData>, AppError> {
+        let store = self.ports.store();
+        let Some(thread) = store.get_thread(None, id).await? else {
+            return Ok(None);
+        };
+        let Some(current) = thread.job.catalog.current() else {
+            return Ok(None);
+        };
+        match store.ui_catalog_event(id, &current.digest).await? {
+            Some(Event {
+                body: orch_core::EventBody::UiCatalog(data),
+                ..
+            }) => Ok(Some(data)),
+            _ => Err(AppError::internal(
+                "the thread's current UI catalog is not in its log",
+            )),
+        }
+    }
+
     /// A snapshot of one of the user's threads for sharing: the thread with its job ledger, its
     /// binding and its whole event log. Someone else's thread is `NotFound`, like every read.
     ///

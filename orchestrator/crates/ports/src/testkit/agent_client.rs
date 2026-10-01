@@ -99,7 +99,7 @@ fn request(
         content: crate::SendContent::Text(text),
         release: None,
         ui_catalog: None,
-        thread: None,
+        thread_tools: None,
     }
 }
 

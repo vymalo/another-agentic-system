@@ -2029,12 +2029,16 @@ dependencies = [
  "orch-core",
  "orch-ports",
  "orch-testsupport",
+ "orch-thread-token",
  "reqwest",
  "rustls",
+ "secrecy",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2160,8 +2164,10 @@ dependencies = [
  "orch-ports",
  "orch-store-postgres",
  "orch-surface-mcp",
+ "orch-surface-thread-tools",
  "orch-surface-webhook",
  "orch-testsupport",
+ "orch-thread-token",
  "reqwest",
  "rmcp",
  "secrecy",
@@ -2259,6 +2265,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-surface-thread-tools"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures",
+ "jiff",
+ "orch-api",
+ "orch-app",
+ "orch-core",
+ "orch-ports",
+ "orch-testsupport",
+ "orch-thread-token",
+ "reqwest",
+ "rmcp",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "orch-surface-webhook"
 version = "0.1.0"
 dependencies = [
@@ -2297,10 +2328,29 @@ dependencies = [
  "orch-ports",
  "orch-surface-agui",
  "reqwest",
+ "rmcp",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "orch-thread-token"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hmac 0.12.1",
+ "jiff",
+ "orch-core",
+ "proptest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "url",
  "uuid",
 ]
 
@@ -2322,8 +2372,10 @@ dependencies = [
  "orch-store-postgres",
  "orch-surface-agui",
  "orch-surface-mcp",
+ "orch-surface-thread-tools",
  "orch-surface-webhook",
  "orch-testsupport",
+ "orch-thread-token",
  "reqwest",
  "secrecy",
  "serde",

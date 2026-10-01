@@ -724,6 +724,26 @@ impl ThreadStore for PgStore {
         .collect()
     }
 
+    async fn ui_catalog_event(
+        &self,
+        thread: ThreadId,
+        digest: &str,
+    ) -> Result<Option<Event>, StoreError> {
+        sqlx::query(
+            "SELECT seq, at, kind, actor, data FROM events \
+             WHERE thread_id = $1 AND kind = 'ui_catalog' AND data ->> 'digest' = $2 \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(thread.0)
+        .bind(digest)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_err)?
+        .as_ref()
+        .map(|row| event_from_row(thread, row))
+        .transpose()
+    }
+
     async fn latest_events(
         &self,
         thread: ThreadId,

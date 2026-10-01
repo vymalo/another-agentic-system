@@ -1,0 +1,38 @@
+[package]
+name = "orch-surface-thread-tools"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The thread-tools surface (thread-tools/v1): a per-thread MCP endpoint at /thread-tools/{threadId}/mcp, opened by the HMAC token the A2A adapter mints, with the built-in get_ui_catalog and a seam for the tools later slices add. Mounted by ORCH_SURFACES=thread-tools."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-app.workspace = true
+orch-ports.workspace = true
+orch-api.workspace = true
+orch-thread-token.workspace = true
+rmcp.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+orch-testsupport.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+reqwest.workspace = true
+jiff.workspace = true
+secrecy.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

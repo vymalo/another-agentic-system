@@ -85,11 +85,11 @@ async fn a_first_run_with_a_catalog_records_it_first_and_says_which_in_every_sna
     assert_eq!(events[0]["actor"], json!({"type": "user", "name": ALICE}));
     assert_eq!(events[0]["data"], v1, "stored as the web sent it");
 
-    // the agent was told: the catalog inline, and the thread it is about
+    // the agent was told: the catalog inline, and given the grant of the thread it is about
     let sends = h.agent.sends();
     let Call::Send {
         ui_catalog,
-        thread: named,
+        thread_tools: grant,
         ..
     } = &sends[0]
     else {
@@ -99,7 +99,10 @@ async fn a_first_run_with_a_catalog_records_it_first_and_says_which_in_every_sna
         serde_json::to_value(ui_catalog).unwrap()["inline"]["digest"],
         v1["digest"]
     );
-    assert_eq!(named.map(|t| t.to_string()), Some(thread));
+    assert_eq!(
+        grant.as_ref().map(|grant| grant.thread.to_string()),
+        Some(thread)
+    );
 }
 
 #[tokio::test]

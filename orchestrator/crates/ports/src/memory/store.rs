@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, EventKind, Job, ThreadId, ThreadRecord, UserId};
+use orch_core::{Event, EventBody, EventKind, Job, ThreadId, ThreadRecord, UserId};
 
 use crate::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxItem, InboxLease,
@@ -425,6 +425,24 @@ impl ThreadStore for MemoryStore {
         let (thread, events) =
             write_commit(&mut inner, thread, commit).ok_or(StoreError::NotFound)?;
         Ok(CommitOutcome::Applied { thread, events })
+    }
+
+    async fn ui_catalog_event(
+        &self,
+        thread: ThreadId,
+        digest: &str,
+    ) -> Result<Option<Event>, StoreError> {
+        let inner = self.lock();
+        Ok(inner.threads.get(&thread).and_then(|e| {
+            e.events
+                .iter()
+                .rev()
+                .map(|s| &s.event)
+                .find(|event| {
+                    matches!(&event.body, EventBody::UiCatalog(data) if data.digest == digest)
+                })
+                .cloned()
+        }))
     }
 
     async fn latest_events(

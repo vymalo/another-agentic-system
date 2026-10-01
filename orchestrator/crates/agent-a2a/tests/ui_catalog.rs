@@ -76,7 +76,7 @@ async fn send(client: &A2aAgentClient, fake: &FakeAgent, delivery: Option<UiDeli
         content: SendContent::Text("echo hi".to_owned()),
         release: None,
         ui_catalog: delivery,
-        thread: None,
+        thread_tools: None,
     };
     drain(client.send_stream(request).await.unwrap()).await;
     fake.executions().pop().unwrap()
