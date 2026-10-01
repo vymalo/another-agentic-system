@@ -1,19 +1,36 @@
 import { expect, test } from "@playwright/test";
-import { badge, conversation, expectNoHorizontalScroll, startThread, threadList } from "./helpers";
+import {
+  activityTab,
+  badge,
+  conversation,
+  expectNoHorizontalScroll,
+  hideActivity,
+  showActivity,
+  startThread,
+  threadList,
+  turnSummaries,
+} from "./helpers";
 
 /*
  * The turn as a classical chat (web/DESIGN.md), against the mock's coder scenarios
- * (mock/scripts.ts: `Fix …`, `Refactor …`, `Make …`, `Upgrade …`, `Deploy …`).
+ * (mock/scripts.ts: `Fix …`, `Refactor …`, `Make …`, `Upgrade …`, `Deploy …`). The conversation has
+ * the agent's words, its cards and one line for its steps; the steps are the panel's Activity tab.
  */
 
+/** The steps of the last turn, in the panel's Activity tab (shown first). */
 const steps = (page: import("@playwright/test").Page) =>
-  conversation(page).getByRole("list", { name: "Steps" });
+  activityTab(page).getByRole("list", { name: /^Steps of turn \d+$/ });
 
 test("a coder's run: its steps in words, its answer as prose, its pull request as a card", async ({
   page,
 }) => {
   await startThread(page, "Fix the redirect loop after signing in");
   await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+  // the conversation says it in one line
+  await expect(turnSummaries(page)).toHaveCount(1);
+  await expect(conversation(page).getByRole("list", { name: "Steps" })).toHaveCount(0);
+  await expect(conversation(page).getByText("Preparing the workspace")).toHaveCount(0);
+  await showActivity(page);
   const list = steps(page);
   await expect(list.getByText("Started working")).toBeVisible();
   await expect(list.getByText("Preparing the workspace", { exact: true })).toBeVisible();
@@ -50,13 +67,20 @@ test("while the coder runs, its current step spins and the composer offers Stop"
   page,
 }) => {
   await startThread(page, "Refactor the session store behind a trait");
+  // the line names the step the agent is on and spins
+  await expect(turnSummaries(page)).toContainText("Running cargo test -p auth login::");
+  await expect(turnSummaries(page).locator('[data-glyph="spinner"]')).toBeVisible();
+  await showActivity(page);
   const live = steps(page).locator('[data-slot="step"][data-state="live"]');
   await expect(live).toHaveCount(1);
   await expect(live).toContainText("cargo test -p auth login::");
+  await hideActivity(page);
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(badge(page)).toHaveText("Stopped");
+  await showActivity(page);
   await expect(live).toHaveCount(0);
   await expect(steps(page).getByText("Stopped", { exact: true })).toBeVisible();
+  await expect(turnSummaries(page)).toContainText("Stopped ·");
 });
 
 test("before the first event the agent is starting", async ({ page }) => {
@@ -73,6 +97,7 @@ test("checks that fail send the coder back: a rework step, then the second try p
   test.setTimeout(60_000);
   await startThread(page, "Make sessions expire after 30 idle minutes");
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+  await showActivity(page);
   const rework = steps(page).locator('[data-slot="rework-step"]');
   await expect(rework).toHaveCount(1);
   await expect(rework).toContainText("Checks failed — trying again (2/3)");
@@ -88,6 +113,8 @@ test("checks that fail send the coder back: a rework step, then the second try p
   await expect(
     steps(page).getByRole("listitem", { name: "Check: Agent checks, attempt 2, passed" }),
   ).toBeVisible();
+  // the pull request is a card in the conversation, not a step
+  await hideActivity(page);
   await expect(conversation(page).locator('[data-slot="pull-request-card"]')).toHaveCount(1);
 });
 

@@ -10,6 +10,7 @@ import {
   parseJob,
   parseRework,
   parseStatus,
+  parseStep,
   parseUiCatalog,
 } from "./vymalo";
 
@@ -439,5 +440,86 @@ describe("an action's context and the answer it may be", () => {
     expect(parseAnswers(base)).toBeNull();
     expect(parseAnswers("x")).toBeNull();
     expect(parseAnswers({ context: { answers: [{ id: "a", values: [] }] } })).toBeNull();
+  });
+});
+
+describe("vymalo.step (ADR 0025)", () => {
+  const step = {
+    id: "T/tool:c2",
+    path: ["T/root"],
+    kind: "subagent",
+    label: "OpenCode",
+    state: "running",
+    icon: "agent",
+    detail: "plan: 1 of 3 done",
+    startedAt: "2027-01-15T08:00:03Z",
+    at: "2027-01-15T08:00:04Z",
+    actor: { type: "agent", name: "coder", extra: 1 },
+    unknown: true,
+  };
+
+  it("keeps what the activity says and drops what it does not", () => {
+    expect(parseStep(step)).toEqual({
+      id: "T/tool:c2",
+      path: ["T/root"],
+      kind: "subagent",
+      label: "OpenCode",
+      state: "running",
+      icon: "agent",
+      detail: "plan: 1 of 3 done",
+      startedAt: "2027-01-15T08:00:03Z",
+      at: "2027-01-15T08:00:04Z",
+      actor: { type: "agent", name: "coder" },
+    });
+  });
+
+  it("needs an id, a label and a state it knows, and is nothing without them", () => {
+    expect(parseStep({ ...step, id: "" })).toBeNull();
+    expect(parseStep({ ...step, id: undefined })).toBeNull();
+    expect(parseStep({ ...step, label: undefined })).toBeNull();
+    expect(parseStep({ ...step, state: "exploded" })).toBeNull();
+    expect(parseStep({ ...step, state: undefined })).toBeNull();
+    expect(parseStep("a step")).toBeNull();
+    expect(parseStep(null)).toBeNull();
+    expect(parseStep([step])).toBeNull();
+  });
+
+  it("reads every state of the extension", () => {
+    for (const state of ["running", "waiting", "completed", "failed", "canceled"]) {
+      expect(parseStep({ ...step, state })?.state).toBe(state);
+    }
+  });
+
+  it("reads an unknown kind as a tool, and an empty label as a label", () => {
+    expect(parseStep({ ...step, kind: "mystery" })?.kind).toBe("tool");
+    expect(parseStep({ ...step, kind: undefined })?.kind).toBe("tool");
+    expect(parseStep({ ...step, label: "" })?.label).toBe("");
+  });
+
+  it("ignores an icon outside the vocabulary (the orchestrator's mcp-server:<id> included)", () => {
+    expect(parseStep({ ...step, icon: "mcp-server:search" })).not.toHaveProperty("icon");
+    expect(parseStep({ ...step, icon: 7 })).not.toHaveProperty("icon");
+    for (const icon of ["agent", "read", "edit", "delete", "move", "search", "execute", "think"]) {
+      expect(parseStep({ ...step, icon })?.icon).toBe(icon);
+    }
+    for (const icon of ["fetch", "web", "git", "test", "file", "tool"]) {
+      expect(parseStep({ ...step, icon })?.icon).toBe(icon);
+    }
+  });
+
+  it("reads a path that is not a list of strings as the top level, and drops the strays", () => {
+    expect(parseStep({ ...step, path: "T/root" })?.path).toEqual([]);
+    expect(parseStep({ ...step, path: undefined })?.path).toEqual([]);
+    expect(parseStep({ ...step, path: ["a", 7, "b", null] })?.path).toEqual(["a", "b"]);
+  });
+
+  it("keeps a time only when a Date can read it", () => {
+    expect(parseStep({ ...step, startedAt: "yesterday", at: "soon" })).not.toHaveProperty("at");
+    expect(parseStep({ ...step, startedAt: "yesterday" })).not.toHaveProperty("startedAt");
+  });
+
+  it("keeps a detail that is empty out", () => {
+    expect(parseStep({ ...step, detail: "" })).not.toHaveProperty("detail");
+    expect(parseStep({ ...step, detail: 3 })).not.toHaveProperty("detail");
   });
 });

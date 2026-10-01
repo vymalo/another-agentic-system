@@ -98,7 +98,8 @@ test("the tabs are Activity and Sources, and the arrows move between them", asyn
   await expect(badge(page)).toHaveText("Done");
   const tabs = panel(page).getByRole("tablist", { name: "Sections" }).getByRole("tab");
   await expect(tabs).toHaveCount(2);
-  await expect(panel(page).getByRole("tabpanel")).toContainText("What the agents do shows up here");
+  // the Activity tab holds the agent's steps (one turn here)
+  await expect(panel(page).getByRole("tabpanel")).toContainText("Turn 1");
 
   await panelTab(page, "Activity").focus();
   await page.keyboard.press("ArrowRight");

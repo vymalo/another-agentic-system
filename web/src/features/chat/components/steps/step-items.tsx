@@ -9,7 +9,6 @@ import {
   MousePointerClickIcon,
   PlayIcon,
   RotateCcwIcon,
-  TerminalIcon,
 } from "lucide-react";
 import type {
   ActionContent,
@@ -20,7 +19,6 @@ import type {
 import { pluralFindings, shortCommit } from "@/features/chat/lib/findings";
 import {
   checksPayload,
-  commandOf,
   pullRequestOf,
   reworkLabel,
   shortRepository,
@@ -28,7 +26,6 @@ import {
 import { ActorLabel } from "../actor-label";
 import { ExpandableText } from "../parts/expandable-text";
 import { FindingsList } from "../parts/findings-list";
-import { CommandText } from "./command-text";
 import { StepRow, type StepState } from "./step-row";
 
 /** A step's words longer than this are cut, with a control to read the rest. */
@@ -53,24 +50,15 @@ export function BranchChip({ branch }: { branch: string }) {
   );
 }
 
-/** An agent status that is a step: working (with the agent's words), queued, stopped, sign-in. */
+/**
+ * An agent status that is a step: working (with the agent's words), queued, stopped, sign-in. A
+ * `working` status whose words are a command (`$ …`) is a command step of the tree, not this.
+ */
 export function StatusStep({ data, live }: { data: StatusContent } & Live) {
   switch (data.status) {
     case "working": {
       const detail = data.detail?.trim();
       if (!detail) return <StepRow state={doneOr(live)} icon={PlayIcon} label="Started working" />;
-      const command = commandOf(detail);
-      if (command) {
-        return (
-          <StepRow
-            state={doneOr(live)}
-            icon={TerminalIcon}
-            label={<span className="text-muted-foreground">Ran a command</span>}
-          >
-            <CommandText command={command} />
-          </StepRow>
-        );
-      }
       return (
         <StepRow
           state={doneOr(live)}

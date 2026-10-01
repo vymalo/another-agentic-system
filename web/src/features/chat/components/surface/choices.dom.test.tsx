@@ -11,7 +11,7 @@ import {
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { OWN_CATALOG } from "@/features/chat/lib/a2ui/catalog";
 import { surface } from "@/features/chat/lib/a2ui/testing";
-import { actionRun, mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
+import { actionRun, mountSurfaces, resetSeq, STEPS_PANE, stubLayout, surfaceRun } from "./testing";
 
 configure({ asyncUtilTimeout: 10_000 });
 beforeAll(stubLayout);
@@ -343,10 +343,20 @@ describe("the person's answer in the transcript", () => {
     ...over,
   });
 
-  async function transcript(content: Rec, surfaceOps: unknown[] | null = choicesSurface()) {
-    const m = mountSurfaces({ canSend: false, state: "done" }, {}, undefined, {
-      catalogVersion: OWN_CATALOG.version,
-    });
+  async function transcript(
+    content: Rec,
+    surfaceOps: unknown[] | null = choicesSurface(),
+    /** The steps are the side panel's: mounted beside the transcript for the tests that read one. */
+    withSteps = false,
+  ) {
+    const m = mountSurfaces(
+      { canSend: false, state: "done" },
+      {},
+      withSteps ? STEPS_PANE : undefined,
+      {
+        catalogVersion: OWN_CATALOG.version,
+      },
+    );
     const frames = [
       ...(surfaceOps ? surfaceRun([surfaceOps], { end: "interrupt" }) : []),
       ...actionRun(content),
@@ -449,6 +459,7 @@ describe("the person's answer in the transcript", () => {
     const button = await transcript(
       { surfaceId: "s1", name: "go", sourceComponentId: "go", context: { choice: "a" } },
       null,
+      true,
     );
     expect(bubble()).toBeNull();
     expect(document.querySelector('[data-slot="action-step"]')?.textContent).toContain("Chose go");
@@ -458,6 +469,7 @@ describe("the person's answer in the transcript", () => {
     const odd = await transcript(
       { surfaceId: "s1", name: "answer", sourceComponentId: "pick", context: { answers: "x" } },
       null,
+      true,
     );
     expect(bubble()).toBeNull();
     expect(document.querySelector('[data-slot="action-step"]')).not.toBeNull();

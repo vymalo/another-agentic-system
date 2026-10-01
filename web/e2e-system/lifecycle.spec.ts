@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import {
+  activityTab,
   actorLabel,
   agentMessage,
   badge,
@@ -11,6 +12,7 @@ import {
   resetDb,
   seqs,
   shape,
+  showActivity,
   startThread,
   threadId,
 } from "./helpers";
@@ -23,8 +25,10 @@ test("echo: user message, its steps, the PR card, Done", async ({ page }) => {
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(log.getByText("echo hello", { exact: true })).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
-  await expect(log.getByText("Started working")).toBeVisible();
-  await expect(log.getByText("Opened pull request #1")).toBeVisible();
+  // the steps are the side panel's, the conversation has the line for them and the card
+  await showActivity(page);
+  await expect(activityTab(page).getByText("Started working")).toBeVisible();
+  await expect(activityTab(page).getByText("Opened pull request #1")).toBeVisible();
 
   const pr = log.getByRole("link", { name: "Pull request acme/demo#1" });
   await expect(pr).toHaveAttribute("href", PR_URL);
@@ -44,7 +48,10 @@ test("agent text renders once, with the actor", async ({ page }) => {
   await startThread(page, "talk please", "Plain");
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(badge(page)).toHaveText("Done");
-  await expect(log.getByText("Reading the repository", { exact: true })).toBeVisible();
+  await showActivity(page);
+  await expect(
+    activityTab(page).getByText("Reading the repository", { exact: true }),
+  ).toBeVisible();
   const bubble = agentMessage(page, "Plan: add a test");
   await expect(bubble).toHaveCount(1);
   await expect(actorLabel(bubble)).toHaveText("plain");

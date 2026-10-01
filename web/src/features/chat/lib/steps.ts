@@ -7,18 +7,20 @@ import {
   parseAnswers,
   parseArtifact,
   parseStatus,
+  parseStep,
   type ReworkContent,
 } from "@/features/chat/lib/agui/vymalo";
 import { detectPullRequest, locatePullRequest } from "./artifact";
 import { sourceLabel, truncate } from "./findings";
 
 /*
- * How an agent's turn reads (web/DESIGN.md, "A turn"): its activities are steps in one compact
- * list, its words are prose, and a pull request or a file is a card after the words. These are the
- * pure decisions behind that; the components are in components/steps and components/cards.
+ * How an agent's turn reads (web/DESIGN.md, "A turn"): its activities are steps, which the side
+ * panel lists as a tree and the chat sums up in one line, its words are prose, and a pull request
+ * or a file is a card after the words. These are the pure decisions behind that (`step-tree.ts`
+ * builds the tree); the components are in components/steps and components/cards.
  */
 
-/** The data parts that are lines of the step list (or nothing at all, like the actor marker). */
+/** The data parts that are steps of the tree (or nothing at all, like the actor marker). */
 const STEP_PARTS = new Set(
   [
     ACTIVITY.status,
@@ -27,6 +29,7 @@ const STEP_PARTS = new Set(
     ACTIVITY.ci,
     ACTIVITY.rework,
     ACTIVITY.action,
+    ACTIVITY.step,
     ACTIVITY.job,
   ].map(activityPartName),
 );
@@ -74,6 +77,7 @@ export function drawsStep(part: PartLike): boolean {
     return status !== "completed" && status !== "input_required" && status !== undefined;
   }
   if (part.name === activityPartName(ACTIVITY.artifact)) return parseArtifact(part.data) !== null;
+  if (part.name === activityPartName(ACTIVITY.step)) return parseStep(part.data) !== null;
   return true;
 }
 

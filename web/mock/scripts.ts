@@ -14,6 +14,8 @@ export type Step =
       setState?: ThreadState;
       /** Emitted by the orchestrator rather than the agent. */
       system?: boolean;
+      /** Played at once after the step before it, not `stepMs` later (a burst of steps). */
+      quick?: boolean;
     }
   | { pause: "cancel" };
 
@@ -630,6 +632,56 @@ const coderWork: Step[] = [
   doing("$ cargo test -p auth"),
 ];
 
+/** One child of OpenCode's: a read, an edit, a search or a command, reported once, as it ended. */
+const openCodeChild = (
+  n: number,
+  label: string,
+  kind: "tool" | "command",
+  icon: string,
+  failed?: string,
+): Step => ({
+  ...agentStep(
+    `acp:c2:${n}`,
+    ["tool:c2"],
+    kind,
+    label,
+    failed ? "failed" : "completed",
+    "end",
+    icon,
+    failed,
+  ),
+  quick: true,
+});
+
+/** What OpenCode does in the `Delegate` scenarios, in order: a failing test run among them. */
+const OPENCODE_WORK: [string, "tool" | "command", string, string?][] = [
+  ["read src/auth/login.rs", "tool", "read"],
+  ["read src/auth/session.rs", "tool", "read"],
+  ["search the repository for next=", "tool", "search"],
+  ["read tests/login.rs", "tool", "read"],
+  ["cargo build -p auth", "command", "execute"],
+  ["cargo test -p auth login::", "command", "execute", "1 failed, 41 passed"],
+  ["read the failing test's output", "tool", "read"],
+  ["edit src/auth/login.rs", "tool", "edit"],
+  ["edit tests/login.rs", "tool", "edit"],
+  ["cargo fmt --all", "command", "execute"],
+  ["cargo clippy -p auth", "command", "execute"],
+  ["cargo test -p auth login::", "command", "execute"],
+  ["cargo test -p auth", "command", "execute"],
+  ["git diff --stat", "command", "git"],
+];
+
+/** The coder hands the work to OpenCode: `count` of its steps from the list above, then its end. */
+const openCodeSteps = (count: number, finish: boolean): Step[] => [
+  agentStep("tool:c2", [], "subagent", "OpenCode", "running", "start", "agent"),
+  ...OPENCODE_WORK.slice(0, count).map(([label, kind, icon, failed], i) =>
+    openCodeChild(i + 1, label, kind, icon, failed),
+  ),
+  ...(finish
+    ? [agentStep("tool:c2", [], "subagent", "OpenCode", "completed", "end", "agent")]
+    : []),
+];
+
 /**
  * The scripts tell the story the real orchestrator tells (`docs/api/examples/*.events.json`,
  * written by `orchestrator/crates/e2e/tests/golden.rs`): agent text arrives as one final
@@ -700,6 +752,11 @@ const coderWork: Step[] = [
  * - `Deploy …`: asks where to deploy and waits; the answer finishes it.
  * - `Also …`: a short follow-up: one step, a push and an answer.
  * - `Migrate …`: fails after two steps with the agent's reason.
+ * - `Delegate …`: the coder hands the work to OpenCode (ADR 0025): a sub-agent step with fourteen steps
+ *   under it (reads, a search, edits and commands), one of them a test run that fails and is run again,
+ *   then the push, the checks, the pull request and the answer; done. `Investigate …`: the same, still
+ *   running a command when it stops, until cancelled. `steps-many …`: a sub-agent step with 120 steps
+ *   under it, played at once (a level long enough to be a scroll box), a read among them failing; done.
  */
 export function scriptFor(text: string): {
   start: Step[];
@@ -800,6 +857,55 @@ export function scriptFor(text: string): {
         ],
       };
     }
+    case "Delegate":
+      return {
+        start: [
+          working,
+          doing("Preparing the workspace"),
+          ...openCodeSteps(OPENCODE_WORK.length, true),
+          ...coderPushed(commitOf(12), { passed: true, summary: "42 tests passed" }),
+          coderPullRequest,
+          { kind: "agent_status", data: { status: "completed", detail: CODER_SUMMARY } },
+          done,
+        ],
+      };
+    case "Investigate":
+      return {
+        start: [
+          working,
+          doing("Preparing the workspace"),
+          ...openCodeSteps(6, false),
+          agentStep(
+            "acp:c2:7",
+            ["tool:c2"],
+            "command",
+            "cargo test -p auth",
+            "running",
+            "start",
+            "execute",
+          ),
+          { pause: "cancel" },
+        ],
+      };
+    case "steps-many":
+      return {
+        start: [
+          working,
+          agentStep("tool:c2", [], "subagent", "OpenCode", "running", "start", "agent"),
+          ...Array.from({ length: 120 }, (_, i) =>
+            openCodeChild(
+              i + 1,
+              i === 40 ? "read the file that is missing" : `read src/module_${i}.rs`,
+              "tool",
+              "read",
+              i === 40 ? "no such file" : undefined,
+            ),
+          ),
+          agentStep("tool:c2", [], "subagent", "OpenCode", "completed", "end", "agent"),
+          { kind: "agent_status", data: { status: "completed", detail: "Read them all." } },
+          done,
+        ],
+      };
     case "Upgrade":
       return { start: [{ pause: "cancel" }] };
     case "Deploy":

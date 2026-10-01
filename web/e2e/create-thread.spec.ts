@@ -1,10 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import {
+  activityTab,
   actorLabel,
   agentMessage,
   badge,
+  hideActivity,
   openThreadList,
+  showActivity,
   startThread,
   threadList,
 } from "./helpers";
@@ -14,7 +17,10 @@ test("create a thread and watch it finish", async ({ page }) => {
 
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(log.getByText("Implement the thing", { exact: true })).toBeVisible();
-  await expect(log.getByText("Started working")).toBeVisible();
+  // the steps are in the panel, the conversation has a line for them
+  await showActivity(page);
+  await expect(activityTab(page).getByText("Started working")).toBeVisible();
+  await hideActivity(page);
 
   const pr = page.getByRole("link", { name: "Pull request acme/demo#1" });
   await expect(pr).toBeVisible();
@@ -39,8 +45,12 @@ test("agent text renders once, with a status line and the actor", async ({ page 
 
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(badge(page)).toHaveText("Done");
-  // a working status's words are a step
-  await expect(log.getByText("Reading the repository", { exact: true })).toBeVisible();
+  // a working status's words are a step, the panel's
+  await showActivity(page);
+  await expect(
+    activityTab(page).getByText("Reading the repository", { exact: true }),
+  ).toBeVisible();
+  await hideActivity(page);
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
   await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("coder · coder-r47");
 });

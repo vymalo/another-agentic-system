@@ -82,6 +82,9 @@ afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
 });
 beforeEach(() => {
+  // a wide window: the panel is docked and open, which is where a thread's steps are listed
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true, writable: true });
+  window.localStorage.clear();
   calls = [];
   failing = undefined;
   holding = undefined;
@@ -114,6 +117,11 @@ async function makeThread(text: string, agent = "coder", untilStarted = false): 
 }
 
 const log = () => screen.getByRole("log", { name: "Conversation" });
+/** The right-hand panel's Activity tab: the steps of every agent turn, as a tree. */
+const activity = () =>
+  within(screen.getByRole("complementary", { name: "Thread details" })).getByRole("tabpanel", {
+    name: "Activity",
+  });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
 /** `coder · coder-r47` at the top of each agent turn, in order. */
 const actorLabels = () =>
@@ -201,12 +209,17 @@ describe("ChatShell over AG-UI", () => {
     expect(screen.queryByRole("button", { name: "Thread details" })).toBeNull();
     cleanup();
 
+    // a window of 1024 px: the panel is a sheet there, closed until asked for
+    Object.defineProperty(window, "innerWidth", {
+      value: 1024,
+      configurable: true,
+      writable: true,
+    });
     const id = await makeThread("Implement the thing");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     const toggle = screen.getByRole("button", { name: "Thread details" });
     expect(toggle.getAttribute("aria-controls")).toBe("thread-panel");
-    // a jsdom window is 1024 px wide: the panel is a sheet there, closed until asked for
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
     const dialog = await screen.findByRole("dialog", { name: "Thread details" });
@@ -276,9 +289,14 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     const transcript = within(log());
     await waitFor(() => transcript.getByText("Implement the thing"));
-    // the steps, then the pull request as a card
-    await waitFor(() => transcript.getByText("Opened pull request #1"));
-    expect(transcript.getByText("Started working")).toBeTruthy();
+    // the steps are the panel's, the chat has the one line of the turn, then the pull request as a card
+    await waitFor(() => within(activity()).getByText("Opened pull request #1"));
+    expect(within(activity()).getByText("Started working")).toBeTruthy();
+    expect(transcript.queryByText("Started working")).toBeNull();
+    expect(transcript.queryByRole("list", { name: "Steps" })).toBeNull();
+    expect(
+      transcript.getByRole("button", { name: /^Coder's steps: 2 steps.* Show in the side panel$/ }),
+    ).toBeTruthy();
     const pr = transcript.getByRole("link", { name: /pull request acme\/demo#1/i });
     expect(pr.getAttribute("href")).toBe("https://github.com/acme/demo/pull/1");
     expect(transcript.getByText("echo: Implement the thing")).toBeTruthy();
@@ -295,6 +313,61 @@ describe("ChatShell over AG-UI", () => {
     expect(calls.filter((c) => c.includes("/connect"))).toEqual([
       `GET /agui/threads/${id}/connect 200`,
     ]);
+  });
+
+  it("a turn with nested steps is one line in the chat, and the line opens the panel on that turn", async () => {
+    const id = await makeThread("steps run the tests");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const transcript = within(log());
+    const line = await transcript.findByRole("button", {
+      name: "Coder's steps: 3 steps, 1 failed. Show in the side panel",
+    });
+    // one line: no list of steps and none of the step's words in the conversation
+    expect(transcript.queryByRole("list", { name: "Steps" })).toBeNull();
+    expect(transcript.queryByText("npm test")).toBeNull();
+    expect(transcript.queryByText("OpenCode")).toBeNull();
+    expect(transcript.getAllByRole("button", { name: /steps:/ })).toHaveLength(1);
+    // the failure is said in the line, with its words
+    expect(within(line).getByText("1 failed")).toBeTruthy();
+    expect(line.getAttribute("aria-expanded")).toBe("false");
+
+    // the panel lists the tree: the sub-agent as one line, its command inside
+    const turn = screen.getByRole("region", { name: /^Turn 1/ });
+    const opencode = within(turn).getByRole("button", { name: /^OpenCode/ });
+    expect(within(turn).queryByText("Command failed")).toBeNull();
+    fireEvent.click(opencode);
+    expect(within(turn).getByText("Command failed")).toBeTruthy();
+
+    fireEvent.click(line);
+    await waitFor(() => expect(line.getAttribute("aria-expanded")).toBe("true"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(turn).getByRole("heading", { level: 3 })),
+    );
+  });
+
+  it("each turn's line focuses its own turn in the panel", async () => {
+    const id = await makeThread("steps run the tests");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    await waitFor(() => within(log()).getByText("steps run the tests"));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "steps once more" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(within(log()).getAllByRole("button", { name: /steps:/ })).toHaveLength(2),
+    );
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const [first, second] = within(log()).getAllByRole("button", { name: /steps:/ });
+    const headings = () => within(activity()).getAllByRole("heading", { level: 3 });
+    expect(headings().map((h) => h.textContent?.slice(0, 6))).toEqual(["Turn 1", "Turn 2"]);
+    fireEvent.click(first as HTMLElement);
+    await waitFor(() => expect(document.activeElement).toBe(headings()[0]));
+    fireEvent.click(second as HTMLElement);
+    await waitFor(() => expect(document.activeElement).toBe(headings()[1]));
+    // a second click on the same line asks again: the focus comes back to the header
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.click(second as HTMLElement);
+    await waitFor(() => expect(document.activeElement).toBe(headings()[1]));
   });
 
   it("a follow-up after Done starts the next job in the same conversation: both jobs stay in the transcript", async () => {
@@ -555,7 +628,8 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     const transcript = within(log());
     await waitFor(() => expect(transcript.getAllByText("answered: ui-action go")).toHaveLength(1));
-    expect(transcript.getByText("Chose")).toBeTruthy();
+    // the person's click is a step of the turn, so the panel's
+    expect(within(activity()).getByText("Chose")).toBeTruthy();
     // one POST, the action; the surface is still there, and its button is off now
     expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
       "POST /agui/agents/reviewer 200",
@@ -628,7 +702,9 @@ describe("ChatShell over AG-UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
     expect(calls).toContain(`POST /api/threads/${id}/cancel 202`);
-    await waitFor(() => expect(within(log()).getAllByText("Stopped").length).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(within(activity()).getAllByText("Stopped").length).toBeGreaterThan(0),
+    );
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     // stopped is not closed: the next message goes on
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe(

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  activityTab,
   badge,
   callsFor,
   ECHO,
@@ -9,6 +10,7 @@ import {
   resetDb,
   seqs,
   shape,
+  showActivity,
   startOrchestrator,
   startThread,
   threadId,
@@ -33,7 +35,8 @@ test("orchestrator restart mid-thread: the page recovers and finishes", async ({
   await expect(page.getByText("Reconnecting…")).toHaveCount(0);
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(log.getByText("echo: gate restart")).toHaveCount(1);
-  await expect(log.getByText("Started working", { exact: true })).toHaveCount(1);
+  await showActivity(page);
+  await expect(activityTab(page).getByText("Started working", { exact: true })).toHaveCount(1);
 
   const frames = await framesOf(page.request, id);
   expect(shape(frames)).toEqual(ECHO);

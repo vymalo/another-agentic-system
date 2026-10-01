@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { badge, startThread } from "./helpers";
+import { activityTab, badge, hideActivity, showActivity, startThread } from "./helpers";
 
 test("cancel calls the endpoint and the thread ends cancelled", async ({ page }) => {
   await startThread(page, "slow task");
@@ -15,6 +15,9 @@ test("cancel calls the endpoint and the thread ends cancelled", async ({ page })
   await request;
 
   await expect(badge(page)).toHaveText("Stopped");
-  await expect(page.getByRole("log").getByText("Stopped", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
+  // the stop is a step of the turn, so the panel's
+  await showActivity(page);
+  await expect(activityTab(page).getByText("Stopped", { exact: true }).first()).toBeVisible();
+  await hideActivity(page);
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
 });

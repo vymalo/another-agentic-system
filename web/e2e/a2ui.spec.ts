@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { badge, conversation, startThread } from "./helpers";
+import { activityTab, badge, conversation, showActivity, startThread } from "./helpers";
 
 /**
  * A2UI surfaces (ADR 0013) against the mock orchestrator, which plays the orchestrator's `ui`
@@ -38,7 +38,9 @@ test.describe("A2UI surfaces", () => {
     await expect(badge(page)).toHaveText("Done");
     // the artifact text sits in a collapsed disclosure (in the DOM, hidden)
     await expect(conversation(page).getByText("answered: ui-action go")).toHaveCount(1);
-    await expect(conversation(page).getByText("Chose")).toBeVisible();
+    // the person's click is a step of the turn, so the panel's
+    await showActivity(page);
+    await expect(activityTab(page).getByText("Chose")).toBeVisible();
     expect(posts).toHaveLength(2);
     // the action: no message, no resume, the action of the runtime's convention
     const action = posts[1]?.body as {

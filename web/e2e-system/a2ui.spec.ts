@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { allCalls, badge, conversation, resetDb, startThread } from "./helpers";
+import {
+  activityTab,
+  allCalls,
+  badge,
+  conversation,
+  resetDb,
+  showActivity,
+  startThread,
+} from "./helpers";
 
 test.beforeEach(resetDb);
 
@@ -29,7 +37,9 @@ test("a surface from the agent is drawn, and its button reaches the agent as an 
   await go.click();
   await expect(badge(page)).toHaveText("Done");
   await expect(conversation(page).getByText("answered: ui-action go")).toHaveCount(1);
-  await expect(conversation(page).getByText("Chose")).toBeVisible();
+  // the person's click is a step of the turn, so the side panel's
+  await showActivity(page);
+  await expect(activityTab(page).getByText("Chose")).toBeVisible();
   expect(posts).toHaveLength(1);
   expect(posts[0]).toMatchObject({
     messages: [],

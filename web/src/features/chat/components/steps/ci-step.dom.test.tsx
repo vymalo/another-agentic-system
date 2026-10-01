@@ -10,7 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { mountSurfaces, stubLayout } from "@/features/chat/components/surface/testing";
+import { mountSurfaces, STEPS_PANE, stubLayout } from "@/features/chat/components/surface/testing";
 import { type GoldenFrame, loadGolden, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import type { CiContent } from "@/features/chat/lib/agui/vymalo";
 import { CI_CONCLUSIONS, conclusionLabel } from "@/features/chat/lib/ci";
@@ -309,7 +309,7 @@ const checks = () => screen.queryAllByRole("listitem", { name: /^Check: / });
 
 describe("the CI card in the transcript", () => {
   it("the ci golden: a card for each report, next to the check it decided, in the order of the log", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(m, loadGolden("ci"));
     await waitFor(() => expect(cards()).toHaveLength(2));
     expect(cards().map((c) => c.getAttribute("aria-label"))).toEqual([
@@ -340,7 +340,8 @@ describe("the CI card in the transcript", () => {
       "Check: CI, attempt 2, passed",
     ]);
     // document order: check, CI report, rework, check, CI report
-    const log = screen.getByRole("log", { name: "Conversation" });
+    // the steps are the side panel's: the tree is where the cards are
+    const log = document.querySelector('[data-slot="steps-pane"]') as HTMLElement;
     const order = [
       ...log.querySelectorAll(
         "[data-slot='check-card'], [data-slot='ci-card'], [data-slot='rework-step']",
@@ -360,7 +361,7 @@ describe("the CI card in the transcript", () => {
   });
 
   it("the connect stream of the real orchestrator draws the same two cards", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(m, loadGolden("connect-ci"));
     await waitFor(() => expect(cards()).toHaveLength(2));
     expect(cards().map((c) => c.getAttribute("data-conclusion"))).toEqual(["failure", "success"]);
@@ -368,7 +369,7 @@ describe("the CI card in the transcript", () => {
   });
 
   it("a card is replaced in place by whatever id the wire gives it, and is not keyed by sha and name", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(m, activities([["any-id-1", "vymalo.ci", content()]]).slice(0, 2));
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(cards()[0]?.getAttribute("data-conclusion")).toBe("failure");
@@ -409,7 +410,7 @@ describe("the CI card in the transcript", () => {
   });
 
   it("a malformed payload draws nothing, unknown fields are ignored, and the rest of the run renders", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(
       m,
       activities([
@@ -432,7 +433,7 @@ describe("the CI card in the transcript", () => {
   });
 
   it("a javascript: url from the wire is no link", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(
       m,
       activities([
@@ -440,7 +441,8 @@ describe("the CI card in the transcript", () => {
       ]),
     );
     await waitFor(() => expect(cards()).toHaveLength(1));
-    const log = screen.getByRole("log", { name: "Conversation" });
+    // the steps are the side panel's: the tree is where the cards are
+    const log = document.querySelector('[data-slot="steps-pane"]') as HTMLElement;
     expect(within(log).getByText("<b>hi</b>")).toBeTruthy();
     expect(log.querySelector("a, b")).toBeNull();
     expect(screen.queryByText(/View run/)).toBeNull();

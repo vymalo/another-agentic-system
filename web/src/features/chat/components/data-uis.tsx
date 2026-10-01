@@ -18,12 +18,12 @@ import { SurfaceActivity } from "./surface/surface-activity";
  * `render`, and the thread renders it through `part.dataRendererUI`.
  *
  * The activities that are steps (a working status, an artifact, a check, a CI report, a rework, an
- * action) are not drawn here: the thread groups them into one step list per stretch of the turn
- * (`steps/step-list.tsx`, grouping in `lib/steps.ts`). A shape a renderer does not know renders
- * nothing.
+ * action, a step of steps/v1) are not drawn here, nor in the chat: the thread groups them and
+ * draws nothing for the group, and the side panel's step tree (`lib/step-tree.ts`,
+ * `steps/steps-pane.tsx`) is where they are. A shape a renderer does not know renders nothing.
  */
 
-/** A status that reaches a leaf is a failure (lib/steps.ts keeps the others in the step list). */
+/** A status that reaches a leaf is a failure (lib/steps.ts keeps the others in the panel's tree). */
 const StatusDataUI = makeAssistantDataUI<unknown>({
   name: activityPartName(ACTIVITY.status),
   render: ({ data }) => {

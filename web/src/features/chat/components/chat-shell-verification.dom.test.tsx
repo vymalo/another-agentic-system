@@ -9,7 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { uuidv7 } from "@/lib/uuid";
 import { createMockServer } from "../../../../mock/server";
@@ -59,6 +59,11 @@ afterAll(async () => {
   server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));
 });
+beforeEach(() => {
+  // a wide window: the panel is docked and open, which is where a thread's steps are listed
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true, writable: true });
+  window.localStorage.clear();
+});
 afterEach(cleanup);
 
 const shell = (threadId: string) =>
@@ -84,7 +89,11 @@ async function makeThread(text: string, agent = "reviewer"): Promise<string> {
   return threadId;
 }
 
-const log = () => screen.getByRole("log", { name: "Conversation" });
+/** The right-hand panel's Activity tab: the steps of every agent turn, as a tree. */
+const activity = () =>
+  within(screen.getByRole("complementary", { name: "Thread details" })).getByRole("tabpanel", {
+    name: "Activity",
+  });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
 const cards = () => screen.queryAllByRole("listitem", { name: /^Check: / });
 const dividers = () => [...document.querySelectorAll("[data-slot='rework-step']")];
@@ -144,7 +153,7 @@ describe("a thread under the verification gate, in the app", () => {
     expect(within(passed).getByText("0000000").getAttribute("title")).toMatch(/0002$/);
     expect(dividers().map(lineOf)).toEqual(["Checks failed — trying again (2/3)"]);
     const order = [
-      ...log().querySelectorAll("[data-slot='check-card'], [data-slot='rework-step']"),
+      ...activity().querySelectorAll("[data-slot='check-card'], [data-slot='rework-step']"),
     ];
     expect(order.map((n) => n.getAttribute("data-slot"))).toEqual([
       "check-card",
