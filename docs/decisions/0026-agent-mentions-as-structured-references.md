@@ -1,7 +1,7 @@
 # ADR 0026 — Agent mentions as structured references
 
-- **Status:** proposed (2026-10-01). The reference is proposed; **who coordinates is not decided**
-  (open question 34).
+- **Status:** accepted (2026-10-01), on the owner's delegation: open question 34 is decided for option A in
+  the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
 
 ## Context
 
@@ -56,3 +56,21 @@ open question 34.
   agent was meant.
 - **One thread per mentioned agent.** The person asked one question; the answer should be one
   conversation.
+
+## Status note, 2026-10-01: accepted on the owner's delegation
+
+The owner delegated the points this ADR left open so that the MVP can be completed (2026-10-01). They were
+decided on that delegation as follows; the owner may revisit them.
+
+- **Who coordinates (open question 34): option A.** The addressed agent coordinates through the tool `ask_agent` on
+  the orchestrator's per-thread MCP endpoint (see the status note of
+  [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md) and the contract
+  [`api/thread-tools-v1.md`](../api/thread-tools-v1.md)) rather than `start_job` of
+  [ADR 0019](0019-mcp-server-over-streamable-http.md), so it needs no other credential. The orchestrator runs the
+  mentioned agent as a nested child task in the same thread, its steps under the step of the agent that asked
+  ([ADR 0025](0025-nested-steps-events-carry-their-source-path.md)), and returns the result to the tool call, with
+  progress notifications as `wait_for_job` sends them. The token of an asked agent names its caller (`ask:<n>`) and
+  its depth, so the endpoint tells the addressed agent's calls from an asked agent's. Option B (a planner agent) can
+  be added beside it later; C and D are not taken.
+- **The extension's URI** is `https://agents.vymalo.com/a2a/extensions/mentions/v1`; its contract is a page under
+  [`docs/api/`](../api/README.md), written with the slice that builds it (MVP slice 10).

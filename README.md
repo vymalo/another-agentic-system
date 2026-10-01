@@ -61,6 +61,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health), the AG-UI operations (the legacy REST interaction endpoints were removed on 2026-09-30) |
 | [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
 | [Webhooks](docs/api/webhooks.md) | CI results by webhook: the generic signed shape (built) and the GitHub adapter (planned): headers, HMAC, body, conclusions, response codes, a worked signature and known-answer vectors |
+| [API index](docs/api/README.md) | What is in `docs/api/`, and the optional A2A extensions the orchestrator speaks: [`ui-catalog/v1`](docs/api/ui-catalog-v1.md) (the web's component catalog, sent to agents) and [`thread-tools/v1`](docs/api/thread-tools-v1.md) (a per-thread MCP endpoint for agents, with an HMAC token); contracts accepted 2026-10-01, not built yet |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
 | [Lessons from Agent Canvas](docs/lessons-from-agent-canvas.md) | What running OpenHands Agent Canvas taught us, as requirements |
 
@@ -88,11 +89,11 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0019](docs/decisions/0019-mcp-server-over-streamable-http.md) | MCP server over streamable HTTP, bearer tokens first, OIDC later; bypasses the inbox. *Tools, bearer tokens and `wait_for_job` built; OIDC planned* |
 | [0020](docs/decisions/0020-a-thread-is-a-conversation.md) | A thread is a conversation: a message on a finished thread starts its next job (`Job.number`, `job_started`); amends 0012, 0016, 0018, 0019 |
 | [0021](docs/decisions/0021-context-across-a2a-tasks.md) | Context across A2A tasks: same context, `referenceTaskIds` of the previous task on every new task of a thread, never for the verifier |
-| [0022](docs/decisions/0022-platform-provisions-agents-system-discovers-them.md) | The platform provisions A2A agents and the system discovers them through an `AgentRegistry` port; the platform knows nothing about the UI. *Proposed* |
-| [0023](docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md) | A UI component catalog on A2UI catalogs, as an optional A2A extension, sent at conversation start, with a refetch seam. *Proposed* |
-| [0024](docs/decisions/0024-mcp-tools-attached-per-conversation.md) | MCP tools attached per conversation from the UI and passed to agents; credentials open. *Proposed* |
-| [0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md) | Nested steps: events carry their source path; a collapsible tree in the web. *Proposed* |
-| [0026](docs/decisions/0026-agent-mentions-as-structured-references.md) | Agent mentions as structured references; who coordinates is undecided. *Proposed* |
+| [0022](docs/decisions/0022-platform-provisions-agents-system-discovers-them.md) | The platform provisions A2A agents and the system discovers them through an `AgentRegistry` port; the platform knows nothing about the UI. *Accepted 2026-10-01 (owner's delegation)* |
+| [0023](docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md) | A UI component catalog on A2UI catalogs, as an optional A2A extension, sent at conversation start, with a refetch seam. *Accepted 2026-10-01 (owner's delegation)* |
+| [0024](docs/decisions/0024-mcp-tools-attached-per-conversation.md) | MCP tools attached per conversation from the UI and relayed to agents by the orchestrator, which holds the credentials. *Accepted 2026-10-01 (owner's delegation)* |
+| [0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md) | Nested steps: events carry their source path; a collapsible tree in the web. *Accepted 2026-10-01 (owner's delegation)* |
+| [0026](docs/decisions/0026-agent-mentions-as-structured-references.md) | Agent mentions as structured references; the addressed agent coordinates the mentioned agents with `ask_agent`. *Accepted 2026-10-01 (owner's delegation)* |
 
 ## Local development
 

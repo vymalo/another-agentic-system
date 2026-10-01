@@ -10,7 +10,9 @@
   goes through the inbox" of [`orchestrator.md`](../orchestrator.md#event-flow) for MCP, and the
   "needs the inbox" note of MVP step 6. Refines [ADR 0004](0004-closed-enums-over-dyn-registry.md)
   (the tool set is a closed enum) and uses the machine routes of
-  [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md).
+  [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md). **Status note (2026-10-01):** a second MCP
+  endpoint, per thread and for agents, joins this one; see the
+  [status note](#status-note-2026-10-01-a-second-mcp-endpoint-per-thread-for-agents).
 
 ## Context
 
@@ -404,3 +406,19 @@ tool descriptions say so. The decision stands.
 _Status note, 2026-09-30:_ `answer` has no idempotency key (as before). A retry of an `answer` whose reply was lost,
 made after the job it answered has finished, is a message on a finished thread and therefore starts the next job
 (job n+2 if job n+1 had already finished). A client that retries should call `get_job` first.
+
+### Status note, 2026-10-01: a second MCP endpoint, per thread, for agents
+
+This ADR is about the MCP server that other systems use: `/mcp`, a bearer token that names a person, tools that start
+and follow jobs. The decisions of 2026-10-01 on the owner's delegation
+([ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md),
+[ADR 0024](0024-mcp-tools-attached-per-conversation.md) and
+[ADR 0026](0026-agent-mentions-as-structured-references.md), status notes) add a second MCP server to the
+orchestrator, for the agents it sends work to: the **thread tools**, at `/thread-tools/{threadId}/mcp`, a machine
+route like this one, over streamable HTTP and stateless like this one. It is not under `/mcp` (that mount would
+swallow it), and it does not use this ADR's tokens: its bearer is a short-lived token signed with HMAC and scoped to
+one thread, which the A2A adapter mints when it sends a message and hands to the agent under the extension
+`https://agents.vymalo.com/a2a/extensions/thread-tools/v1`. Its contract is
+[`api/thread-tools-v1.md`](../api/thread-tools-v1.md) (accepted; not built yet). The decisions of this ADR stand:
+`/mcp` is unchanged, and `start_job` is not what an agent uses to ask another agent (`ask_agent` on the thread tools
+is).
