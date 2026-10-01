@@ -293,14 +293,23 @@ services:
 
   # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
   # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.
-  # Verified 2026-09-30 (ghcr API, anonymous pull): coder:sha-31df660 and its digest below. Since adam-rs 31df660 a new
+  # Verified 2026-10-01 (ghcr API, anonymous pull): coder:sha-7b2d8f9 and its digest below. Since adam-rs 7b2d8f9 the
+  # coder reads its agent folder (instructions, card) at startup from ADAM_AGENT_DIR, the mount below, and falls back to
+  # the copy in the image only when it is unset; its card and its name are "Coder", and "hi" gets a greeting that says
+  # its name, not a request for a task. Since 31df660 a new
   # task continues the task it references (A2A referenceTaskIds: the coder keeps its repositories and branch), the
   # coder has `run_command` (look around without using a check cycle), bash, a default base branch and a
   # missing-toolchain report; since e9bfea3 a stop without a pull request is a question and it works only on a
   # repository the person named; since ae540e9 it reports its checks as a `checks` artifact.
+  #
+  # What the coder says and offers is the folder mounted at /etc/adam/agent (ADAM_AGENT_DIR): dev/coder/agent, vendored
+  # from bin/adam-coder/agent upstream (dev/coder/UPSTREAM). It is read once, at startup, so a change to it needs a
+  # restart, not a build: edit dev/coder/agent/instructions.md (or point CODER_AGENT_DIR at a copy) and run
+  # `docker compose --profile app up -d coder` (dev/README.md, "Change what the coder says"). The folder must be
+  # readable by uid 10001 (chmod -R a+rX).
   coder:
     profiles: [app]
-    image: ghcr.io/vymalo/another-adam-rs/coder:sha-31df660@sha256:dafa562b861f37f8effcb888412a52a1ad2f0fe596d6e4b43dbf06c51f113da0
+    image: ghcr.io/vymalo/another-adam-rs/coder:sha-7b2d8f9@sha256:aa84305aed7fc0f7e3b42c7f7308df2f1efc4f34561b6a9b343c3506c11b4e98
     # The image has no arm64 variant: name the platform so an ARM machine runs it under emulation
     # instead of refusing to pull.
     platform: linux/amd64
@@ -329,10 +338,14 @@ services:
       # Development only: repositories on git-server, over plain http. Never set these in production.
       ALLOWED_REPO_HOSTS: git-server
       ALLOW_LOCAL_REPOS: "true"
+      # The mounted folder below: what the coder says and offers, read at startup. Unset, it would use the copy in the image.
+      ADAM_AGENT_DIR: /etc/adam/agent
     ports:
       - "127.0.0.1:${CODER_PORT:-8090}:8080"
     volumes:
       - coder-work:/work
+      # Read-only. CODER_AGENT_DIR points the mount at a copy (dev/agent-folder-e2e.sh does).
+      - ${CODER_AGENT_DIR:-./dev/coder/agent}:/etc/adam/agent:ro
     healthcheck:
       # Plain TCP connect: the image is not guaranteed to ship curl.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]

@@ -4,13 +4,16 @@
 #   dev/coder/check-vendored.sh
 #
 # 1. Every file under dev/coder/wiremock and dev/coder/git-server must equal the file at the same
-#    path below dev/ in the upstream repository at the commit recorded in dev/coder/UPSTREAM.
+#    path below dev/ in the upstream repository at the commit recorded in dev/coder/UPSTREAM, and
+#    every file under dev/coder/agent (the folder the coder reads at run time, mounted at
+#    /etc/adam/agent) must equal the file at the same path below bin/adam-coder/agent/ upstream.
 # 2. Nothing is missing: every body file a vendored WireMock mapping names (bodyFileName) is vendored
-#    too, and dev/coder/git-server holds exactly the files of dev/git-server upstream at that commit.
-#    The mappings themselves are a deliberate subset (the scripted coder run only); a mapping the
-#    coder starts to need upstream shows up as an unmatched request in dev/coder-e2e.sh.
+#    too, and dev/coder/git-server and dev/coder/agent hold exactly the files of dev/git-server and
+#    bin/adam-coder/agent upstream at that commit. The mappings themselves are a deliberate subset
+#    (the scripted coder run only); a mapping the coder starts to need upstream shows up as an
+#    unmatched request in dev/coder-e2e.sh.
 # 3. compose.yaml must pin the coder image to the tag sha-<first 7 characters of that commit>, with
-#    a digest, so the image and the mocks are always the same upstream commit.
+#    a digest, so the image, the mocks and the agent folder are always the same upstream commit.
 #
 # Environment: RAW_BASE overrides https://raw.githubusercontent.com and GITHUB_API overrides
 # https://api.github.com (for a mirror or a test); GITHUB_TOKEN, when set, authenticates the one API
@@ -36,10 +39,19 @@ esac
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
+# upstream_path FILE: the path upstream of a vendored file. The agent folder lives below
+# bin/adam-coder/agent upstream, everything else below dev/ at the same relative path.
+upstream_path() {
+  case $1 in
+    dev/coder/agent/*) echo "bin/adam-coder/agent/${1#dev/coder/agent/}" ;;
+    *) echo "dev/${1#dev/coder/}" ;;
+  esac
+}
+
 count=0
 # Sorted, so the output is stable. File names here contain no spaces.
-for f in $(find dev/coder/wiremock dev/coder/git-server -type f | sort); do
-  upstream=dev/${f#dev/coder/}
+for f in $(find dev/coder/wiremock dev/coder/git-server dev/coder/agent -type f | sort); do
+  upstream=$(upstream_path "$f")
   url=$base/$repo/$commit/$upstream
   count=$((count + 1))
   if ! curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
@@ -68,7 +80,7 @@ for m in dev/coder/wiremock/*/mappings/*.json; do
   done < "$tmp"
 done
 
-# dev/coder/git-server must hold exactly the upstream files, no more and no fewer.
+# dev/coder/git-server and dev/coder/agent must hold exactly the upstream files, no more and no fewer.
 api=${GITHUB_API:-https://api.github.com}
 tree_url="$api/repos/$repo/git/trees/$commit?recursive=1"
 if [ -n "${GITHUB_TOKEN:-}" ]; then
@@ -83,16 +95,21 @@ elif [ "$(printf '%s' "$listed" | jq -r '.truncated')" != "false" ]; then
   echo "FAIL  the tree of $repo at $commit is truncated; cannot check completeness" >&2
   fail=1
 else
-  upstream_set=$(printf '%s' "$listed" | jq -r '.tree[] | select(.type == "blob") | .path | select(startswith("dev/git-server/"))' | sort)
-  local_set=$(find dev/coder/git-server -type f | sed 's|^dev/coder/|dev/|' | sort)
-  if [ "$upstream_set" = "$local_set" ]; then
-    echo "ok    dev/coder/git-server holds every file of dev/git-server"
-  else
-    echo "FAIL  dev/coder/git-server and dev/git-server at $commit hold different files:" >&2
-    printf '%s\n' "$upstream_set" > "$tmp"
-    printf '%s\n' "$local_set" | diff "$tmp" - | sed -n 's/^< /  missing here: /p; s/^> /  not upstream: /p' >&2
-    fail=1
-  fi
+  # same_files LOCAL_DIR UPSTREAM_DIR: the files below LOCAL_DIR are exactly those below UPSTREAM_DIR upstream.
+  same_files() {
+    upstream_set=$(printf '%s' "$listed" | jq -r --arg p "$2/" '.tree[] | select(.type == "blob") | .path | select(startswith($p))' | sort)
+    local_set=$(find "$1" -type f | while IFS= read -r lf; do upstream_path "$lf"; done | sort)
+    if [ "$upstream_set" = "$local_set" ]; then
+      echo "ok    $1 holds every file of $2"
+    else
+      echo "FAIL  $1 and $2 at $commit hold different files:" >&2
+      printf '%s\n' "$upstream_set" > "$tmp"
+      printf '%s\n' "$local_set" | diff "$tmp" - | sed -n 's/^< /  missing here: /p; s/^> /  not upstream: /p' >&2
+      fail=1
+    fi
+  }
+  same_files dev/coder/git-server dev/git-server
+  same_files dev/coder/agent bin/adam-coder/agent
 fi
 
 short=$(printf '%s' "$commit" | cut -c1-7)

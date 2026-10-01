@@ -366,6 +366,19 @@ The `branch` and `pull_request` artifacts arrive as JSON data parts, so the chat
 stack runs the published image against scripted mocks, and [`dev/coder-e2e.sh`](../dev/coder-e2e.sh)
 turns one chat message into a pull request (how: [`dev/README.md`](../dev/README.md#the-default-agent)).
 
+**What the coder says is a folder, not code.** The coder reads its agent folder (its name, card and
+instructions) once, at startup, from the directory its `ADAM_AGENT_DIR` names, and falls back to the copy
+embedded in the image only when that is unset. The dev stack mounts
+[`dev/coder/agent/`](../dev/coder/agent/instructions.md), vendored byte for byte from adam-rs
+(`bin/adam-coder/agent/`, the commit in `dev/coder/UPSTREAM`, drift-checked like the mocks), at `/etc/adam/agent`: a change
+to it, or `CODER_AGENT_DIR` pointed at a copy, needs a restart of the coder and no build
+([`dev/README.md`](../dev/README.md#change-what-the-coder-says); `dev/agent-folder-e2e.sh` proves it). The orchestrator
+changes nothing for this: it reads the card of the restarted coder when it delegates, like any agent's, and it sends
+the chat text unchanged, so "hi" reaches the coder as "hi" and gets a greeting back, with the coder's name, what it does and
+a question (the thread waits, `blocked`), instead of a request for a task
+([adam-rs#55](https://github.com/vymalo/another-adam-rs/issues/55), `dev/greeting-e2e.sh`). How a live model follows
+the instructions is *unverified*; the mocks prove that the folder reaches the model.
+
 ### AG-UI: how it is served
 
 The user-facing protocol is **AG-UI 1.0**, with the event log as the only source of truth

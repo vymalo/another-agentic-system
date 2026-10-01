@@ -9,6 +9,7 @@
 #
 # The scenarios, each one script of this directory (the header of a script says exactly what it asserts):
 #
+#   greeting          "hi" gets a greeting that says the coder's name, not a task    greeting-e2e.sh
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
@@ -16,9 +17,13 @@
 #   verifier          the verifier finds fault -> rework -> the verifier passes      verifier-e2e.sh
 #   mcp               an MCP client starts a job and follows it, with progress       mcp-e2e.sh
 #   ci                a signed CI report sends the agent back, then ends the job     ci-e2e.sh
+#   folder            the coder restarted on a copy of its agent folder with another  agent-folder-e2e.sh
+#                     name says that name, then on its own folder says its own again
 #
 # `ci` passes once per database (a commit belongs to the first job that pushed it): on a second run it is
 # SKIPPED, not failed, and the summary says how to reset (`docker compose --profile app down -v`).
+# `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
+# `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list.
 #
 # Each script's output goes to a file, and only the tail of a failing one is printed; the file is kept in
@@ -34,7 +39,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="coder coder-no-opencode verify verifier mcp ci"
+all="greeting coder coder-no-opencode verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -64,7 +69,7 @@ agents=$(curl -fsS --max-time 30 -H "X-Auth-Request-Email: ${AUTH_EMAIL:-dev@exa
 echo "stack: $base, agents: ${agents:-none}"
 for s in "$@"; do
   case $s in
-    coder | coder-no-opencode)
+    greeting | coder | coder-no-opencode | folder)
       case " $agents " in
         *" coder "*) ;;
         *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
@@ -117,12 +122,14 @@ run() {
 
 for s in "$@"; do
   case $s in
+    greeting) run greeting sh "$here/greeting-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;
     verifier) run verifier sh "$here/verifier-e2e.sh" ;;
     mcp) run mcp sh "$here/mcp-e2e.sh" ;;
     ci) run ci sh "$here/ci-e2e.sh" ;;
+    folder) run folder sh "$here/agent-folder-e2e.sh" ;;
   esac
 done
 
@@ -130,8 +137,8 @@ echo
 echo "== summary ($base)"
 cat "$summary"
 echo "$passed passed, $failed failed, $skipped skipped; logs in $log_dir"
-if [ "$skipped" -gt 0 ]; then
-  echo "a skipped scenario passed in an earlier run of this database; to run it again from scratch:"
+if grep -q '^SKIP  ci ' "$summary"; then
+  echo "ci passed in an earlier run of this database; to run it again from scratch:"
   echo "  docker compose --profile app down -v && docker compose --profile app up -d --build --wait"
 fi
 if [ "$failed" -gt 0 ]; then

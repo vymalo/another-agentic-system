@@ -46,6 +46,7 @@ services:
       A2A_BEARER_TOKENS: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       PUBLIC_URL: http://coder:8080/
       WORKSPACE_ROOT: /work
+      ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there (volumes are merged, not replaced)
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
       PR_DRAFT: "${PR_DRAFT:-false}"

@@ -44,7 +44,17 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 
 ### Try it in the chat
 
-Open http://127.0.0.1:8080, keep **Coder** selected and send:
+Open http://127.0.0.1:8080, keep **Coder** selected and say hello first:
+
+```text
+hi
+```
+
+The coder answers with a greeting, not a request for a task: it says its name, what it does in one sentence and asks
+which repository to work on, and the thread waits for you (**Blocked**, an A2A `input_required`). The words are the
+first lines of the coder's instructions, which the model mock repeats back
+([Change what the coder says](#change-what-the-coder-says); `greeting-e2e.sh` asserts it). Then send, in the same
+thread or a new one:
 
 ```text
 In http://git-server:8080/local/sandbox.git (base branch main), add hello.txt containing hello.
@@ -65,7 +75,8 @@ Which gate, badge and card each agent shows (pick the agent in the chat, send th
 
 | Agent | Send | What the chat shows | Script |
 |---|---|---|---|
-| **Coder** | the message above | the steps above: checks, **Checking the work…**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
+| **Coder** | `hi` | a greeting that says "I'm Coder", what it does and asks which repository; the thread is **Blocked**, waiting for you | `greeting-e2e.sh` |
+| **Coder** | the repository message above | the steps above: checks, **Checking the work…**, **Agent checks** and **CI** cards, **Done** | `coder-e2e.sh` |
 | **Mock coder (gated)** | `red-once fix the login` | **Checking the work…**, a card **Failed · Agent checks** with the finding, a **rework divider** ("Attempt 2 of 3: sent back with 1 finding"), a second card **Passed · Agent checks**, **Done** | `verify-e2e.sh` |
 | **Mock coder (gated)** | `red-always fix the login` | three failed cards, two dividers, the pill **Failed** and "Checks failed after 3 attempts" | `verify-e2e.sh` |
 | **Mock coder (verified)** | `push-flawed fix the login` | the coder, then the **Verifier** as a subagent of its own (a pending card, then **Failed · Verifier** with its findings), the divider, the coder again, the verifier again, **Passed · Verifier**, **Done** | `verifier-e2e.sh` |
@@ -109,16 +120,18 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 
 | Scenario | Script | It proves |
 |---|---|---|
+| `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks which repository, and the thread waits (`blocked`); the model got the folder's instructions |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
 | `verifier` | `dev/verifier-e2e.sh` | the verifier finds fault, the agent is sent back, the verifier passes it |
 | `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
 | `ci` | `dev/ci-e2e.sh` | a red signed report sends the agent back, a green one for the new commit ends the job |
+| `folder` | `dev/agent-folder-e2e.sh` | the coder restarted on a copy of its agent folder with another name (`docker compose up -d --no-build`, no rebuild) greets as that name, then on its own folder as its own again. It restarts the coder, so it runs last; without `docker compose` on the machine that runs the stack it is `SKIP` |
 
 Every script prints one `ok` or `FAIL` line per check and exits non-zero on a failure; `e2e-all.sh` exits 1 if any scenario
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
-pushed it), so a second run of it is reported as `SKIP`, not as a failure: `docker compose --profile app down -v` and
+pushed it), so a second run of it is reported as `SKIP`, not as a failure (so is `folder` where there is no `docker compose`): `docker compose --profile app down -v` and
 `up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
 ([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the mocks alone and needs only `docker compose up -d --wait`.
 
@@ -219,7 +232,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
-| `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. |
+| `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
@@ -284,11 +297,12 @@ Everything else the coder needs is vendored from the same adam-rs commit, named 
 | `coder/wiremock/mock-openai/` | `dev/wiremock/mock-openai/` | `mappings/coder-script.json` and `opencode-script.json`, plus the bodies they reference (`opencode-bash.sse`, `opencode-done.sse`, and `chat-text.sse` and `chat-text.json` as OpenCode's fallbacks). Nothing else of the upstream mock: an off-script request must be a 404. |
 | `coder/wiremock/mock-github/` | `dev/wiremock/mock-github/` | `mappings/pulls.json` and its two bodies. |
 | `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint and the seed of `local/sandbox.git`. |
+| `coder/agent/` | `bin/adam-coder/agent/` | The agent folder the coder reads at run time (`instructions.md`: its name, its card, its instructions), mounted at `/etc/adam/agent`. The whole upstream folder, nothing else. |
 
 Do not edit them here. [`coder/check-vendored.sh`](coder/check-vendored.sh) compares every one with
 `raw.githubusercontent.com` at the commit in `UPSTREAM`, checks that nothing is missing (every body file
-a vendored mapping names is vendored too, and `coder/git-server/` holds exactly the files of
-`dev/git-server/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
+a vendored mapping names is vendored too, and `coder/git-server/` and `coder/agent/` hold exactly the files of
+`dev/git-server/` and `bin/adam-coder/agent/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
 image of that commit (`sha-<first 7 characters>@sha256:`); CI runs it first. The mappings are a
 deliberate subset, the scripted coder run only: a mapping the coder starts to need upstream shows up
 as an unmatched request in `dev/coder-e2e.sh`. To move to a newer adam-rs
@@ -303,6 +317,11 @@ artifact. The orchestrator's gate for the coder (`require: [agent-checks, ci]`) 
 one `bash` call, `echo hello > hello.txt`. With `[mock:no-opencode]` in the message OpenCode is not
 started and `run_checks` makes the file itself. The result is a branch `agent/<run id prefix>` on
 `git-server` with `hello.txt` = `hello`, and one pull request created on `mock-github`.
+
+A greeting (`hi`, `hello`, `hey`) is not a task: `mock-coder` answers it with
+`Hi! I'm <name>. <summary>. Which repository should I work on, and what should I change?`, built from the first two
+lines of the instructions the coder rendered into its system prompt (`Your name is {{display_name}}.` and
+`In one sentence: <summary>.`), and the person's next message (the repository) continues with the script above.
 
 ```mermaid
 sequenceDiagram
@@ -342,6 +361,69 @@ stateDiagram-v2
   Verified --> [*]
 ```
 
+### Change what the coder says
+
+What the coder says and offers is a folder, not code: [`coder/agent/instructions.md`](coder/agent/instructions.md) holds its
+name (`display_name` and `card.name`), its card and its instructions. `compose.yaml` mounts that folder read-only at
+`/etc/adam/agent` and sets `ADAM_AGENT_DIR` to it; the coder reads it **once, at startup**, so a change needs a restart and
+no rebuild ([adam-rs, "A folder at run time"](https://github.com/vymalo/another-adam-rs/blob/7b2d8f95ffd9abe8af990bd79d7d690e8183c392/bin/adam-coder/README.md#a-folder-at-run-time-adam_agent_dir)):
+
+```sh
+$EDITOR dev/coder/agent/instructions.md            # for example: display_name: Cody (and card.name: Cody)
+docker compose --profile app up -d coder           # recreates only the coder: the same image, a few seconds
+docker compose --profile app logs coder | grep 'agent files'   # source=folder, the path, a digest, the agent, the warnings
+```
+
+```mermaid
+sequenceDiagram
+  actor P as person
+  participant F as dev/coder/agent (mounted at /etc/adam/agent)
+  participant D as docker compose
+  participant C as coder
+  participant O as orchestrator
+  participant M as mock-openai
+  P->>F: edit instructions.md (the name, the first two lines)
+  P->>D: up -d coder
+  D->>C: new container, same image, the folder mounted read-only
+  C->>F: read once at startup (ADAM_AGENT_DIR)
+  C-->>D: healthy, or exit 78 with every problem as path:line
+  P->>O: "hi" in a new thread
+  O->>C: GET the card, then SendStreamingMessage "hi"
+  C->>M: chat completions, system prompt = the folder's instructions
+  M-->>C: "Hi! I'm name. summary. Which repository ...?"
+  C-->>O: input_required with that question
+  O-->>P: the greeting, and the thread waits (blocked)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Reading: container starts
+  Reading --> Running: the folder is valid (warnings are logged)
+  Reading --> Refused: an error in the files, or not the coder's name (exit 78)
+  Running --> Reading: up -d coder after an edit (a restart, no build)
+  Refused --> Reading: fix the folder, up -d coder
+```
+
+Then say `hi` in the chat (a new thread): the greeting follows the new first two lines. A folder with an error (YAML, a tool that does not exist in
+`tools:`, a `name` other than `coder`, no `max_check_cycles` var) stops the coder at startup with every problem as `path:line`
+(exit status 78): `docker compose --profile app logs coder` says which. What a folder cannot change is what the tools do (a folder
+may narrow them with `tools:`). Runs that were in flight when the coder restarted are durable and go on, and a changed tool
+set can fail them on replay, as any new version of the code would
+([adam-rs ADR 0004](https://github.com/vymalo/another-adam-rs/blob/7b2d8f95ffd9abe8af990bd79d7d690e8183c392/docs/decisions/0004-agent-folders-at-run-time.md)).
+
+To try a change **without touching the vendored copy**, copy the folder and point the mount at the copy (`dev/agent-folder-e2e.sh`
+does exactly this and puts the coder back):
+
+```sh
+cp -R dev/coder/agent /tmp/my-coder && chmod -R a+rX /tmp/my-coder   # the container runs as uid 10001
+CODER_AGENT_DIR=/tmp/my-coder docker compose --profile app up -d coder
+```
+
+An edit to `dev/coder/agent/` that you commit **fails CI**: `coder/check-vendored.sh` compares it with the file upstream at the
+commit in [`coder/UPSTREAM`](coder/UPSTREAM). Change the instructions in `vymalo/another-adam-rs` (`bin/adam-coder/agent/`), then move
+this directory, the commit and the image pin together ([above](#the-default-agent)). With `compose.live.yaml` the same mount applies
+(`ADAM_AGENT_DIR` is in its replaced environment).
+
 **Run it.**
 
 ```sh
@@ -373,8 +455,9 @@ in a data part).
 - The coder's card advertises `PUBLIC_URL`, `http://coder:8080/` in compose, so **an orchestrator on the
   host cannot use it**: [`agents.local.yaml`](agents.local.yaml) leaves it out, and its default is
   `mock-coder`. Run the orchestrator in the compose network to use the coder.
-- The model is a script, not a model: any task text other than the one above runs the same script
-  (it always clones `local/sandbox.git` and writes `hello.txt`). `mock-openai` has no fallback for
+- The model is a script, not a model: any text other than a greeting runs the same script
+  (it always clones `local/sandbox.git` and writes `hello.txt`), and the greeting is the instructions' first two lines repeated back.
+  How a live model follows the instructions is *unverified* here (`compose.live.yaml`). `mock-openai` has no fallback for
   `mock-coder`, so a change of the coder's tool calls upstream shows up as a 404 and a failed thread.
 - `mock-openai`, `mock-github` and `git-server` are the adam-rs mocks with all their limits (no
   authentication, no state beyond the journal and the repository). `docker compose down -v` is what
@@ -1102,3 +1185,14 @@ The complete local stack (slice 13: `compose.live.yaml`, `.env.example`, the `sm
 - **`dev/agents.live.yaml`** is accepted by the orchestrator binary with the placeholder secrets of `.env.example` (5 agents, startup); so are its two documented variations, `gate: {}` and `require: [agent-checks, ci]` with `ci.required: [build]`. The base image digest and tag come from the Docker Hub registry API; the npm package version from the npm registry.
 
 *Unverified*: `docker compose up` itself (the machine that wrote this has the Compose CLI but no Docker daemon): the builds of `dev/smee/Dockerfile` and of the orchestrator with `agent-local`, the `smee` and `local-agent` profiles running, the coder container with the new image, `mock-ci` and the real `coder-e2e.sh`, and `dev/e2e-all.sh` `coder` scenarios against them (the first run is the `Coder E2E` workflow); that Compose v2.24.4 is the first release that parses `!override` (from Docker's documentation, not run on it); Claude Code against the MCP server; smee.io itself and GitHub deliveries through it (the body re-serialisation caveat above); the disk and memory estimates.
+
+The coder reads its agent folder (MVP slice 1: the pin to adam-rs `7b2d8f9`, `dev/coder/agent/`, `dev/greeting-e2e.sh`, `dev/agent-folder-e2e.sh`):
+
+*Verified 2026-10-01*:
+
+- **The pin.** `coder:sha-7b2d8f9@sha256:aa84305a...` is the manifest digest the ghcr API returns for that tag (anonymous token), and the sha-256 of the manifest body it returned; one `linux/amd64` manifest (2.86 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` = `7b2d8f95ffd9abe8af990bd79d7d690e8183c392`. adam-rs `7b2d8f9` (#57) reads `ADAM_AGENT_DIR` at startup, names the coder `Coder` and answers a greeting with a greeting; the vendored `coder-script.json` gained the greeting mappings.
+- **The vendored set.** `dev/coder/check-vendored.sh` passes against `raw.githubusercontent.com` and the GitHub tree API at that commit, including the new `dev/coder/agent/` (compared with `bin/adam-coder/agent/`, completeness included).
+- **The scripts' logic.** `dev/greeting-e2e.sh` and `dev/agent-folder-e2e.sh` were run in a private network namespace against a stand-in for the edge, the model mock's journal, the coder's card and `docker compose` (a fake that records the `CODER_AGENT_DIR` it is called with): every check printed `ok` (the greeting, the persona read back from the folder, the copy named Cody, the restart on the copy and back), and each check failed as it must when the stand-in answered with "give me a task" instead of a greeting; a SIGTERM during the restart scenario put the folder back (exit 130). This proves the scripts' `jq` and shell logic, the frames' shape (taken from [`docs/api/examples/agui/ask.agui.json`](../docs/api/examples/agui/ask.agui.json)) and the restore trap, not the real coder or WireMock.
+- `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh` is clean, and `docker compose --profile '*' config -q` and the live override against `.env.example` pass; the merged live model keeps the folder mount and sets `ADAM_AGENT_DIR`.
+
+*Unverified*: the coder container on that mount (the image was not pulled where this was written), the real `dev/greeting-e2e.sh` and `dev/agent-folder-e2e.sh` against the stack (the `Coder E2E` workflow runs them; `folder` needs the Docker daemon of the machine that runs the stack), that the orchestrator's connection to the old coder container does not trip the first greeting after a restart (the script retries up to three times), the text of the answer when the first message is not a bare greeting, and how a live model follows the instructions.

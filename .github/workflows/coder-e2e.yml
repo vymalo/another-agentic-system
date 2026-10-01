@@ -9,9 +9,10 @@ name: Coder E2E
 # journals and the pushed branch.
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
-#   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run dev/e2e-all.sh (every scenario: the coder
-#              twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through the edge, the
-#              CI webhook), then restart the orchestrator as a control plane beside two workers (profile `split`) and run
+#   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB), run dev/e2e-all.sh (every scenario: the coder's
+#              greeting, the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
+#              the edge, the CI webhook, and the coder restarted on a copy of its agent folder with another name), then
+#              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
 #
 # The path filters are broad on purpose: a change to the orchestrator, the web UI, the API contract
@@ -105,12 +106,14 @@ jobs:
       - name: Start the stack
         run: docker compose up -d --no-build --wait --wait-timeout 600
       - name: Every scenario of the local stack (dev/e2e-all.sh)
-        # The command the README gives an owner, so it is what CI runs: chat -> coder -> branch -> mock-ci -> green -> pull
-        # request (OpenCode, then the check command alone), red once -> sent back -> green and red always -> failed (the mock
+        # The command the README gives an owner, so it is what CI runs: "hi" gets the coder's greeting, chat -> coder ->
+        # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone), red once -> sent back -> green and red always -> failed (the mock
         # agent behind `mock-coder-gated`, which a run may not weaken), the verifier's findings -> rework -> pass
         # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
-        # agent back and then ends the job (`mock-coder-ci`, dev/ci-webhook.sh through the edge's /webhooks/*).
-        # The gates are the orchestrator's, so scripted agents are enough for all but the first two; the script also reads the mock
+        # agent back and then ends the job (`mock-coder-ci`, dev/ci-webhook.sh through the edge's /webhooks/*), and, last, the
+        # coder restarted by `docker compose up -d --no-build coder` on a copy of dev/coder/agent that gives it another name
+        # (dev/agent-folder-e2e.sh: a folder change needs a restart, no rebuild), then put back on its own folder.
+        # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:
           VERBOSE: "1"

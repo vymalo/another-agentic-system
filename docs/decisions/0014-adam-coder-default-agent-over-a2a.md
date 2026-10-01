@@ -1,6 +1,6 @@
 # ADR 0014 — adam-coder is the default agent, over plain A2A
 
-- **Status:** accepted (2026-09-29)
+- **Status:** accepted (2026-09-29). Amended (2026-10-01): decision 5 also covers the coder's agent folder (status note at the end).
 
 ## Context
 
@@ -183,3 +183,25 @@ process; in the default build it is still refused with `LocalAgentsNotCompiled` 
 with `--features agent-local`. The default agent, `adam-coder`, stays a plain A2A agent.
 - *Verified 2026-09-30* (`bin/orchestrator/src/config.rs`, its unit tests in both flavours, and
   `bin/orchestrator/tests/smoke.rs`, `transport_local_exits_78_naming_agent_local`).
+
+### Status note, 2026-10-01: the dev stack also vendors the coder's agent folder
+
+Decision 5 vendors what the published image needs beside it, from the same adam-rs commit as the image. Since adam-rs
+`7b2d8f9` ([#57](https://github.com/vymalo/another-adam-rs/pull/57), MVP slice 1 of [`docs/mvp.md`](../mvp.md)) the coder reads
+its agent folder (instructions, card, name) at startup from `ADAM_AGENT_DIR` instead of only from the copy embedded in the
+image, and the folder is part of what the stack runs. So the vendored set now includes it: `dev/coder/agent/` is a byte-for-byte
+copy of `bin/adam-coder/agent/` at the commit in `dev/coder/UPSTREAM`, `compose.yaml` mounts it read-only at `/etc/adam/agent` and
+sets `ADAM_AGENT_DIR` there (`CODER_AGENT_DIR` points the mount at a copy; `compose.live.yaml` keeps the same environment variable),
+and `dev/coder/check-vendored.sh` compares each file and checks that no file is missing or extra, exactly as for the mocks.
+Nothing else of the decision changes: the image is still pinned by tag and digest at that commit, the coder is still a plain A2A
+agent, and the orchestrator knows nothing of the folder (it reads the card of the restarted coder when it delegates). A change to the
+instructions is made upstream and moved here with the commit and the pin; to try one here first, mount a copy
+([`dev/README.md`](../../dev/README.md#change-what-the-coder-says)). The coder's card name is now `Coder` (was `adam-coder`); only the
+orchestrator's logs read it, and `dev/agents.yaml` names the agent itself.
+
+- *Verified 2026-10-01* (anonymous ghcr API): `coder:sha-7b2d8f9` is one `linux/amd64` manifest, uid 10001, entrypoint
+  `tini -- adam-coder`, label `org.opencontainers.image.revision` `7b2d8f95ffd9abe8af990bd79d7d690e8183c392`, digest
+  `sha256:aa84305a...` (the sha-256 of the manifest the registry returned). `dev/coder/check-vendored.sh` passes against
+  `raw.githubusercontent.com` and the GitHub tree API at that commit.
+- *Unverified where this was written* (no coder image was pulled; the Coder E2E workflow runs it): the coder container on this
+  mount, `dev/greeting-e2e.sh` and `dev/agent-folder-e2e.sh` against it, and how a live model follows the new instructions.
