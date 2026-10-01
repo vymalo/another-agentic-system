@@ -9,12 +9,14 @@
 //! | `FAKE_CODER_ADDR` | `127.0.0.1:4021` | the `coder` agent, with the sample release channels |
 //! | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
 //! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
+//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions` |
 //!
 //! Control endpoints (`<agent>` is `coder` or `plain`), so a browser test can drive the `gate`
 //! script and assert what reached the agent:
 //!
 //! - `POST /__control/<agent>/release-gate`: lets one waiting `gate` task continue;
-//! - `GET /__control/<agent>/calls`: JSON array of what the agent's executor saw, in order.
+//! - `GET /__control/<agent>/calls`: JSON array of what the agent's executor saw, in order (with
+//!   `uiCatalog`, the message's `ui-catalog/v1` metadata, and `inlineCatalogs`).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::SocketAddr;
@@ -25,6 +27,7 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
+use orch_core::{A2UI_EXTENSION_V0_9_1, KnownExtension};
 use orch_testsupport::{Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases};
 use serde_json::{Value, json};
 
@@ -61,7 +64,43 @@ fn call_json(c: &Call) -> Value {
         "extensionsHeader": c.extensions_header,
         "activatesReleaseChannels": c.activates_release_channels(),
         "release": c.release,
+        "uiCatalog": c.ui_catalog,
+        "inlineCatalogs": c.inline_catalogs,
     })
+}
+
+/// `FAKE_AGENT_EXTENSIONS`: the extensions the agents list, by short name (default: none).
+fn extensions() -> Vec<KnownExtension> {
+    let Ok(list) = std::env::var("FAKE_AGENT_EXTENSIONS") else {
+        return Vec::new();
+    };
+    list.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| match name {
+            "ui-catalog" => KnownExtension::UiCatalog,
+            "thread-tools" => KnownExtension::ThreadTools,
+            "steps" => KnownExtension::Steps,
+            "mentions" => KnownExtension::Mentions,
+            other => panic!("FAKE_AGENT_EXTENSIONS: unknown extension '{other}'"),
+        })
+        .collect()
+}
+
+/// The card options the extensions ask for: their URIs, and for `ui-catalog` the A2UI entry that
+/// takes the catalog inline (the catalog rides on A2UI's `inlineCatalogs`).
+fn with_extensions(options: FakeAgentOptions, extensions: &[KnownExtension]) -> FakeAgentOptions {
+    let ui = extensions.contains(&KnownExtension::UiCatalog);
+    FakeAgentOptions {
+        extensions: extensions.iter().map(|e| e.uri().to_owned()).collect(),
+        ui_extensions: if ui {
+            vec![A2UI_EXTENSION_V0_9_1.to_owned()]
+        } else {
+            options.ui_extensions
+        },
+        accepts_inline_catalogs: ui,
+        ..options
+    }
 }
 
 async fn release_gate(State(agents): State<Arc<Agents>>, Path(name): Path<String>) -> StatusCode {
@@ -86,16 +125,23 @@ async fn calls(
 
 #[tokio::main]
 async fn main() {
-    let coder = FakeAgent::spawn(FakeAgentOptions {
-        releases: Some(FakeReleases::sample()),
-        bind: Some(addr("FAKE_CODER_ADDR", "127.0.0.1:4021")),
-        ..FakeAgentOptions::default()
-    })
+    let listed = extensions();
+    let coder = FakeAgent::spawn(with_extensions(
+        FakeAgentOptions {
+            releases: Some(FakeReleases::sample()),
+            bind: Some(addr("FAKE_CODER_ADDR", "127.0.0.1:4021")),
+            ..FakeAgentOptions::default()
+        },
+        &listed,
+    ))
     .await;
-    let plain = FakeAgent::spawn(FakeAgentOptions {
-        bind: Some(addr("FAKE_PLAIN_ADDR", "127.0.0.1:4022")),
-        ..FakeAgentOptions::default()
-    })
+    let plain = FakeAgent::spawn(with_extensions(
+        FakeAgentOptions {
+            bind: Some(addr("FAKE_PLAIN_ADDR", "127.0.0.1:4022")),
+            ..FakeAgentOptions::default()
+        },
+        &listed,
+    ))
     .await;
     println!("coder: {}", coder.card_url());
     println!("plain: {}", plain.card_url());

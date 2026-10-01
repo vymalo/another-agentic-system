@@ -57,3 +57,27 @@ pub fn ui_catalog(version: u32) -> Value {
 pub fn with_ui_catalog(version: u32) -> Value {
     json!({"forwardedProps": {"vymalo.uiCatalog": ui_catalog(version)}})
 }
+
+/// `value` with every number that is a whole number written as an integer.
+///
+/// An A2A server holds the numbers of a message's metadata as doubles (they are a protobuf
+/// `Struct`), so a catalog that arrived inline reads `maxLength: 256.0`. RFC 8785 writes `256.0` as
+/// `256`, and so must whoever recomputes the digest of such a catalog: after this, the digest of what
+/// the agent received is the digest the orchestrator sent.
+pub fn integral_numbers(value: &Value) -> Value {
+    match value {
+        Value::Number(n) => match n.as_f64() {
+            Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 => {
+                Value::from(f as i64)
+            }
+            Some(_) | None => value.clone(),
+        },
+        Value::Array(items) => Value::Array(items.iter().map(integral_numbers).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), integral_numbers(v)))
+                .collect(),
+        ),
+        Value::Null | Value::Bool(_) | Value::String(_) => value.clone(),
+    }
+}

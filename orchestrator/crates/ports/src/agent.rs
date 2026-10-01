@@ -1,11 +1,12 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases, ThreadId,
-    Timestamp, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, KnownExtension, Releases,
+    ThreadId, Timestamp, UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -85,6 +86,11 @@ pub struct UiSupport {
     /// The advertised versions, once each, in the order of [`UiSupport::preferred`]: the current
     /// release first.
     pub versions: Vec<UiVersion>,
+    /// Whether the entry of the version [`preferred`](UiSupport::preferred) says
+    /// `acceptsInlineCatalogs: true` in its `params` (A2UI: "should only be provided if the agent
+    /// declares `acceptsInlineCatalogs: true`"; absent means `false`): the agent takes a catalog
+    /// inline in the renderer's capabilities (ADR 0023).
+    pub accepts_inline_catalogs: bool,
 }
 
 impl UiSupport {
@@ -106,6 +112,17 @@ pub struct AgentCardInfo {
     pub releases: Option<Releases>,
     /// Present only when the card advertises the A2UI extension in a version this build knows.
     pub ui: Option<UiSupport>,
+    /// The extensions of the orchestrator's own that the card lists, by their exact URIs
+    /// ([`KnownExtension`]); empty for a card that lists none. Read live like the rest of the
+    /// card (ADR 0008).
+    pub extensions: BTreeSet<KnownExtension>,
+}
+
+impl AgentCardInfo {
+    /// Whether the card lists `extension`.
+    pub fn offers(&self, extension: KnownExtension) -> bool {
+        self.extensions.contains(&extension)
+    }
 }
 
 /// What a [`SendRequest`] delivers: a closed enum, so the compiler lists every `match` that a new

@@ -13,8 +13,11 @@ use std::time::Duration;
 
 use common::*;
 use orch_agui_proto::testkit::{assert_capabilities_json_conforms, assert_json_conforms};
-use orch_core::{A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0};
-use orch_testsupport::{Chat, FakeAgentOptions, Frame, SseClient};
+use orch_core::{A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, UI_CATALOG_EXTENSION};
+use orch_testsupport::{
+    Chat, FakeAgentOptions, Frame, SseClient, UI_CATALOG_ID, integral_numbers, ui_catalog,
+    with_ui_catalog,
+};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -338,7 +341,108 @@ async fn capabilities_follow_the_live_card(backend: Backend) {
     assert!(get().await.get("custom").is_none(), "never cached");
 }
 
+/// The `choices` story of the web (ADR 0023): the agent lists `ui-catalog/v1`, is told the screen's
+/// catalog, draws a `Choices` under it and asks; the person's answers come back as one action named
+/// `answer` whose `context.answers` the agent reads.
+async fn choices_under_the_screens_catalog_and_the_answers_back(backend: Backend) {
+    let world = World::with(
+        backend,
+        Setup {
+            plain: FakeAgentOptions {
+                ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                extensions: vec![UI_CATALOG_EXTENSION.to_owned()],
+                accepts_inline_catalogs: true,
+                ..FakeAgentOptions::default()
+            },
+            ..Setup::default()
+        },
+    )
+    .await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = thread_id(7);
+
+    let first = whole(
+        chat.agui_run(
+            "plain",
+            &input(
+                &thread,
+                "run-1",
+                &[("m-1", "choices now")],
+                with_ui_catalog(2),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let seen = surfaces(&first);
+    assert_eq!(seen.len(), 2);
+    let ops = seen[1].event["content"]["a2ui_operations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(ops[0]["createSurface"]["catalogId"], UI_CATALOG_ID);
+    let components = ops[1]["updateComponents"]["components"].as_array().unwrap();
+    let pick = components.iter().find(|c| c["id"] == "pick").unwrap();
+    assert_eq!(pick["component"], "Choices");
+    assert_eq!(pick["questions"].as_array().unwrap().len(), 3);
+    assert_eq!(first.last().unwrap().event["outcome"]["type"], "interrupt");
+
+    // the agent was told which catalog, and got it inline in this first message
+    let catalog = ui_catalog(2);
+    let calls = world.plain.executions();
+    // (an A2A server reads the numbers of metadata as doubles: whole ones are made integers again)
+    assert_eq!(
+        calls[0].ui_catalog.as_ref().map(integral_numbers),
+        Some(json!({
+            "catalogId": UI_CATALOG_ID, "version": 2,
+            "digest": catalog["digest"], "inline": true,
+        }))
+    );
+    let inline: Vec<Value> = calls[0]
+        .inline_catalogs
+        .iter()
+        .map(integral_numbers)
+        .collect();
+    assert_eq!(inline, [catalog["catalog"].clone()]);
+
+    // the answers: one action, no message; the agent reads what was chosen
+    let answers = json!([
+        {"id": "db", "values": [], "other": "Cockroach"},
+        {"id": "auth", "values": ["none"]},
+        {"id": "deploy", "values": ["k8s", "compose"]},
+    ]);
+    let second = whole(
+        chat.agui_run(
+            "plain",
+            &action_input(
+                &thread,
+                "run-2",
+                json!({"name": "answer", "surfaceId": "s1", "sourceComponentId": "pick",
+                       "context": {"answers": answers}, "timestamp": "2026-01-01T00:00:00Z"}),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let answered = second
+        .iter()
+        .find(|f| f.event["activityType"] == "vymalo.artifact")
+        .unwrap();
+    assert_eq!(
+        answered.event["content"]["text"],
+        "answered: ui-action answer db=other:Cockroach auth=none deploy=k8s,compose"
+    );
+    let calls = world.plain.executions();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].task_id, calls[1].task_id, "the same task");
+    assert_eq!(calls[1].actions[0]["action"]["context"]["answers"], answers);
+    // the second message refers to the catalog and does not repeat it
+    assert_eq!(calls[1].ui_catalog.as_ref().unwrap()["inline"], false);
+    assert!(calls[1].inline_catalogs.is_empty());
+}
+
 backends!(
+    choices_under_the_screens_catalog_and_the_answers_back,
     surface_then_action,
     unknown_and_oversized_actions_never_reach_the_agent,
     a_part_that_fails_the_envelope_is_an_error_line_and_the_run_goes_on,

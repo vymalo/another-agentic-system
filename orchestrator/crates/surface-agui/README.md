@@ -78,7 +78,7 @@ connection never cancels a run.
 ### The capabilities request
 
 `App::describe_agent` reads the agent's card live (bounded by `AppConfig::card_timeout`, never
-cached) and `orch_agui_projection::agent_capabilities` builds the document; the answer is
+cached) and `orch_agui_projection::agent_capabilities` builds the document, which lists the A2UI extensions and the extensions of the orchestrator's own (`ui-catalog/v1`, …) the card lists under `custom`, so the web can flag an agent before it sends anything; the answer is
 `application/json` with `Cache-Control: no-store`. An unreadable card gives the smaller document;
 an unknown agent is a 404 problem.
 

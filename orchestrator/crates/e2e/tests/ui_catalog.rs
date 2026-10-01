@@ -9,7 +9,10 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use orch_testsupport::{Chat, Frame, ui_catalog, with_ui_catalog};
+use orch_core::{A2UI_EXTENSION_V0_9_1, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION};
+use orch_testsupport::{
+    Chat, FakeAgentOptions, Frame, UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -164,6 +167,116 @@ async fn a_catalog_that_breaks_a_rule_is_refused_before_anything_is_written(back
     assert!(world.plain.executions().is_empty());
 }
 
+// ---- the extension: what the agent is told (ADR 0023, ui-catalog/v1) ------------------------------
+
+/// A world whose `plain` agent lists A2UI (taking catalogs inline) and `ui-catalog/v1`.
+async fn world_with_the_extension(backend: Backend) -> World {
+    World::with(
+        backend,
+        Setup {
+            plain: FakeAgentOptions {
+                ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                extensions: vec![UI_CATALOG_EXTENSION.to_owned()],
+                accepts_inline_catalogs: true,
+                ..FakeAgentOptions::default()
+            },
+            ..Setup::default()
+        },
+    )
+    .await
+}
+
+async fn two_screens_of_different_versions_reach_the_agent_as_the_extension_says(backend: Backend) {
+    let world = world_with_the_extension(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = Uuid::now_v7().to_string();
+    let (v1, v2) = (ui_catalog(1), ui_catalog(2));
+
+    // the first message of the context: the agent gets version 1 inline
+    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    wait_for_jobs(&chat, &thread, 1).await;
+    // a newer screen opens the chat: version 2 inline
+    run(&chat, &thread, "run-2", "echo two", with_ui_catalog(2)).await;
+    wait_for_jobs(&chat, &thread, 2).await;
+    // an older screen joins with version 1: the agent is told the newest, with no catalog
+    run(&chat, &thread, "run-3", "echo three", with_ui_catalog(1)).await;
+    wait_for_jobs(&chat, &thread, 3).await;
+    // a message that carries none: the same reference
+    run(&chat, &thread, "run-4", "echo four", json!({})).await;
+    wait_for_jobs(&chat, &thread, 4).await;
+
+    let calls = world.plain.executions();
+    assert_eq!(calls.len(), 4);
+    let told = |call: &orch_testsupport::Call, v: &Value, inline: bool| {
+        // the agent's A2A server holds metadata numbers as doubles: `2` arrives as `2.0`
+        let mut seen = call.ui_catalog.clone().unwrap();
+        seen["version"] = json!(seen["version"].as_f64().unwrap() as u64);
+        assert_eq!(
+            seen,
+            json!({"catalogId": v["catalogId"], "version": v["version"],
+                   "digest": v["digest"], "inline": inline})
+        );
+        assert!(call.activates(UI_CATALOG_EXTENSION));
+    };
+    told(&calls[0], &v1, true);
+    let inline = |call: &orch_testsupport::Call| -> Vec<Value> {
+        call.inline_catalogs.iter().map(integral_numbers).collect()
+    };
+    assert_eq!(inline(&calls[0]), vec![v1["catalog"].clone()]);
+    told(&calls[1], &v2, true);
+    assert_eq!(inline(&calls[1]), vec![v2["catalog"].clone()]);
+    told(&calls[2], &v2, false);
+    assert!(
+        calls[2].inline_catalogs.is_empty(),
+        "the older screen's catalog is not sent"
+    );
+    told(&calls[3], &v2, false);
+    assert!(calls[3].inline_catalogs.is_empty());
+    // our catalog is listed first in every message, whether or not it is inline
+    for call in &calls {
+        let ids = &call.a2ui_capabilities.as_ref().unwrap()["v0.9.1"]["supportedCatalogIds"];
+        assert_eq!(ids[0], UI_CATALOG_ID);
+    }
+}
+
+async fn a_card_without_the_extension_is_sent_no_catalog_though_the_log_holds_it(backend: Backend) {
+    // `plain` of the default world lists neither A2UI nor the extension
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = Uuid::now_v7().to_string();
+
+    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    wait_for_jobs(&chat, &thread, 1).await;
+
+    assert_eq!(
+        count(&chat.events(&thread).await, "ui_catalog"),
+        1,
+        "the log records it"
+    );
+    let calls = world.plain.executions();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].ui_catalog, None);
+    assert!(calls[0].inline_catalogs.is_empty());
+    assert_eq!(calls[0].a2ui_capabilities, None, "plain A2A, as before");
+    assert!(!calls[0].activates(UI_CATALOG_EXTENSION));
+}
+
+async fn the_capabilities_document_lists_the_extensions_the_card_lists(backend: Backend) {
+    let world = world_with_the_extension(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let (status, doc) = chat.agui_capabilities("plain").await;
+    assert_eq!(status, 200);
+    assert_eq!(doc["custom"][UI_CATALOG_EXTENSION], json!({}));
+    assert!(doc["custom"].get(THREAD_TOOLS_EXTENSION).is_none());
+    // the card is read live: an agent that drops it is not flagged on the next read
+    world.plain.set_extensions(&[]);
+    let (_, doc) = chat.agui_capabilities("plain").await;
+    assert!(doc["custom"].get(UI_CATALOG_EXTENSION).is_none());
+}
+
 /// The catalog the web ships (`web/src/features/chat/lib/a2ui/catalog/`): `catalog.json` and the
 /// lock that says its version and digest, as `ThreadAgent` sends them.
 fn the_web_catalog() -> (Value, Value) {
@@ -220,4 +333,7 @@ backends!(
     the_catalog_the_web_ships_is_accepted_as_it_sends_it,
     the_screens_catalog_is_recorded_once_per_digest_and_the_snapshot_names_the_newest,
     a_catalog_that_breaks_a_rule_is_refused_before_anything_is_written,
+    two_screens_of_different_versions_reach_the_agent_as_the_extension_says,
+    a_card_without_the_extension_is_sent_no_catalog_though_the_log_holds_it,
+    the_capabilities_document_lists_the_extensions_the_card_lists,
 );

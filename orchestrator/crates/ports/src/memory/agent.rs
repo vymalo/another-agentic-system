@@ -1,9 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, Releases, ThreadId, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, KnownExtension, Releases, ThreadId, UiActionData,
+    UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -181,6 +182,7 @@ impl ScriptedAgent {
                 version: Some("1.0.0".to_owned()),
                 releases: Some(releases),
                 ui: None,
+                extensions: BTreeSet::new(),
             },
         );
         self
@@ -196,7 +198,19 @@ impl ScriptedAgent {
             .or_insert_with(default_card);
         card.ui = (!versions.is_empty()).then(|| UiSupport {
             versions: versions.to_vec(),
+            accepts_inline_catalogs: false,
         });
+    }
+
+    /// Makes `agent`'s card list these extensions of the orchestrator's own (an empty list
+    /// removes them). Takes effect on the next read: nothing is cached.
+    pub fn set_extensions(&self, agent: &str, extensions: &[KnownExtension]) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.extensions = extensions.iter().copied().collect();
     }
 
     /// Makes reading `agent`'s card fail.
@@ -272,6 +286,7 @@ fn default_card() -> AgentCardInfo {
         version: Some("1.0.0".to_owned()),
         releases: None,
         ui: None,
+        extensions: BTreeSet::new(),
     }
 }
 

@@ -8,6 +8,7 @@
 mod agent;
 mod error;
 mod event;
+mod extension;
 mod gate;
 mod ids;
 mod thread;
@@ -21,6 +22,10 @@ pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData,
     Event, EventBody, EventKind, JobStartedData, Origin, ThreadStateData, UserMessageData,
+};
+pub use extension::{
+    KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, THREAD_TOOLS_EXTENSION,
+    UI_CATALOG_EXTENSION,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,

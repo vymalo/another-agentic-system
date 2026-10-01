@@ -644,6 +644,7 @@ configured.
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1` and `…/mentions/v1` (ADR 0008; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
@@ -711,6 +712,13 @@ that sends a message and for every capabilities request.
   `custom[<uri>] = {supportedCatalogIds}`.
 - **Not listed** (or the card unreadable): nothing A2UI-specific is sent or declared. The next message
   after a card changes follows the new card.
+- **The UI catalog** (ADR 0023) rides on A2UI and is its own extension, `ui-catalog/v1`: it is sent only when the card **also** lists
+  `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1` (read for that very message). Then the message carries
+  `metadata["https://agents.vymalo.com/a2a/extensions/ui-catalog/v1"] = {catalogId, version, digest, inline}`, the A2UI
+  `supportedCatalogIds` start with our `catalogId` in **every** such message (so a strict A2UI agent never thinks the screen lost the
+  catalog), and the catalog is in `inlineCatalogs` only in the message that made it current, when the agent's A2UI entry says
+  `acceptsInlineCatalogs: true` (`inline: true`); in every other message, `inline: false`: the agent has the catalog or asks for it
+  again. A card without the URI gets exactly the message it got before.
 - A surface is **relayed whether or not the card lists the extension**: activation is optional in
   A2UI and a part is recognised by its media type. An **action** goes to the agent that sent the surface
   whatever the card says now, in the version its surface spoke.

@@ -1,8 +1,10 @@
 # A2A extension: UI catalog (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); not built yet.** MVP slice 3 builds the
-  handshake and the first components (version 1 and 2), slice 4 adds Cards and Mermaid (version 3); see
+- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side of the handshake is
+  built (MVP slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter);
+  the [thread tools](thread-tools-v1.md) and `get_ui_catalog` (section 6) are not built yet.** The web's catalog and
+  Choices (versions 1 and 2) are built; slice 4 adds Cards and Mermaid (version 3); see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
   the A2UI transport is [ADR 0013](../decisions/0013-a2ui-generative-ui.md); the optional-extension pattern is
@@ -316,7 +318,8 @@ attaches to a thread ignores it.
   The same rule is applied by the core and by the projection, so a replay agrees with the live run.
 - **Delivery.** When an input delegates to an agent, the orchestrator decides what the agent is told: **inline** when
   the input carried a catalog that became current; a **reference** to the current catalog otherwise; **none** when the
-  thread has no catalog. A redelivery of a message is a reference. A request to the verifier agent carries none.
+  thread has no catalog. A redelivery of a message, and the rework prompt the verification gate sends back to the
+  agent, are references. A request to the verifier agent carries none.
   Because "inline" means "this input made it current", it covers the first message of a thread and the first message
   after a digest change with no bookkeeping of what each agent has seen; a lost delivery is healed by the
   [refetch](#6-the-refetch).
@@ -349,6 +352,12 @@ the A2UI entry the orchestrator speaks (`false` when absent, as A2UI says).
 - the URI is added to the `A2A-Extensions` header and to `message.extensions`, as ADR 0013 does for A2UI.
 
 A card without the URI gets exactly today's message: basic capabilities only.
+
+**Numbers in the metadata.** An A2A server holds the numbers of a message's metadata as doubles (they are a protobuf
+`Struct`), so a catalog that arrives in `inlineCatalogs` reads `maxLength: 256.0`, and `version` reads `2.0`. An agent
+that recomputes the digest of a catalog it received must write every whole number as an integer (RFC 8785 writes `256.0`
+as `256`) before hashing; the digest it computes is then the one the orchestrator sent. *Verified 2026-10-01* against
+the orchestrator's adapter and its fake agent in `orchestrator/crates/e2e/tests/ui_catalog.rs`.
 
 **What the agent does with it.** Turns the catalog into model calls, emits A2UI surfaces whose `createSurface` names
 our `catalogId`, and treats the thread's digest as the version of its copy: a message whose `digest` differs from its
@@ -388,8 +397,8 @@ the newest components.
 only when the thread has one, so the goldens of threads without one do not change. This is how the web decides
 whether to send its catalog ([section 3](#3-from-the-web-to-the-orchestrator)) and what it does with a surface from a
 newer one. The capabilities document lists the extension under `custom` when the live card lists it
-([`agui.md`](agui.md#capabilities-document)). The wire changes land in `agui.md` and `chat-api.yaml` with the slice that
-builds them.
+([`agui.md`](agui.md#capabilities-document)). The wire changes are in `agui.md` (the run member, the snapshot field,
+the capabilities) and `chat-api.yaml` (the `ui_catalog` event kind and its fields).
 
 ## 8. What the web does with a surface
 

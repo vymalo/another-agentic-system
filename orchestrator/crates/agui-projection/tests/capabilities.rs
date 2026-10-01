@@ -1,11 +1,13 @@
 //! The capabilities document of an agent.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_projection::{CardFacts, RELEASE_CHANNELS_URI, agent_capabilities};
 use orch_agui_proto::testkit::assert_capabilities_conform;
-use orch_core::{A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, AgentId, Releases, UiVersion};
+use orch_core::{
+    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, AgentId, KnownExtension, Releases, UiVersion,
+};
 use serde_json::json;
 
 fn releases() -> Releases {
@@ -26,6 +28,7 @@ fn a_card_with_releases_is_declared_under_the_extension_uri() {
         version: Some("2.1.0".to_owned()),
         releases: Some(releases()),
         ui: vec![],
+        extensions: BTreeSet::new(),
     };
     let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
     assert_capabilities_conform(&doc);
@@ -58,6 +61,7 @@ fn a_card_without_the_extension_declares_no_releases() {
         version: None,
         releases: None,
         ui: vec![],
+        extensions: BTreeSet::new(),
     };
     let doc = agent_capabilities(&AgentId::new("plain"), "Plain", Some(&card));
     assert_capabilities_conform(&doc);
@@ -114,5 +118,66 @@ fn a_card_with_a2ui_declares_the_catalogs_the_web_renders_under_each_uri() {
 #[test]
 fn an_unreadable_card_declares_no_a2ui() {
     let doc = agent_capabilities(&AgentId::new("ui"), "UI", None);
+    assert!(serde_json::to_value(&doc).unwrap().get("custom").is_none());
+}
+
+#[test]
+fn a_card_that_lists_our_extensions_declares_each_under_its_uri() {
+    for listed in [
+        vec![],
+        vec![KnownExtension::UiCatalog],
+        vec![KnownExtension::ThreadTools, KnownExtension::Mentions],
+        KnownExtension::ALL.to_vec(),
+    ] {
+        let card = CardFacts {
+            extensions: listed.iter().copied().collect(),
+            ..CardFacts::default()
+        };
+        let doc = agent_capabilities(&AgentId::new("x"), "X", Some(&card));
+        assert_capabilities_conform(&doc);
+        let json = serde_json::to_value(&doc).unwrap();
+        if listed.is_empty() {
+            assert!(json.get("custom").is_none(), "{json}");
+            continue;
+        }
+        let custom = json["custom"].as_object().unwrap();
+        assert_eq!(custom.len(), listed.len(), "{json}");
+        for ext in listed {
+            // the key is the signal: there is nothing more to say about these
+            assert_eq!(custom[ext.uri()], json!({}), "{ext}");
+        }
+    }
+}
+
+#[test]
+fn our_extensions_come_beside_the_a2ui_ones_and_the_releases() {
+    let card = CardFacts {
+        releases: Some(releases()),
+        ui: vec![UiVersion::V0_9_1],
+        extensions: BTreeSet::from([KnownExtension::UiCatalog]),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("x"), "X", Some(&card));
+    assert_capabilities_conform(&doc);
+    let json = serde_json::to_value(&doc).unwrap();
+    let mut keys: Vec<&str> = json["custom"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    let mut want = vec![
+        RELEASE_CHANNELS_URI,
+        A2UI_EXTENSION_V0_9_1,
+        KnownExtension::UiCatalog.uri(),
+    ];
+    want.sort_unstable();
+    assert_eq!(keys, want);
+}
+
+#[test]
+fn an_unreadable_card_declares_none_of_our_extensions() {
+    let doc = agent_capabilities(&AgentId::new("x"), "X", None);
     assert!(serde_json::to_value(&doc).unwrap().get("custom").is_none());
 }

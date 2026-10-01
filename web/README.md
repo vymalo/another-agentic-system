@@ -737,7 +737,7 @@ agent, the failure shape, the 409 on a finished thread, releases, a dropped stre
 orchestrator, history by URL (the connect stream closes on a finished thread), paging of the
 thread list, and A2UI (the fake agent's `ui` surface drawn, the button answering the agent's open
 question as an action with no message and no `resume`, delivered to the same A2A task; `ui-delete`; a
-payload the orchestrator refuses), and the verification gate (`gated` is the `plain` fake agent under `gate: {require: [agent-checks]}` in `e2e-system/agents.yaml`: `verify-red-once` is sent back in a new task of the same context and ends done on attempt 2 of 3, `verify-red` ends `checks_failed` after three, `verify-pass` is green at once). Every test starts on an empty database; the orchestrator log of a run is
+payload the orchestrator refuses), the UI catalog and Choices (`choices.spec.ts`: the fake agents list `ui-catalog/v1` through `FAKE_AGENT_EXTENSIONS` in `playwright.system.config.ts`; the web's catalog goes with the run that creates the thread, whole, and the agent is told it inline; the fake agent's `choices` draws a Choices under it, the answers reach the agent as one action with the catalog as a reference, and the log holds the `ui_catalog` event once, first), and the verification gate (`gated` is the `plain` fake agent under `gate: {require: [agent-checks]}` in `e2e-system/agents.yaml`: `verify-red-once` is sent back in a new task of the same context and ends done on attempt 2 of 3, `verify-red` ends `checks_failed` after three, `verify-pass` is green at once). Every test starts on an empty database; the orchestrator log of a run is
 `e2e-system/.run/orchestrator.log`. CI runs it as the `system-e2e` job of
 `.github/workflows/system.yml`.
 

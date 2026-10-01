@@ -8,7 +8,7 @@ every page below is a view of it or of a decision about it ([`../architecture.md
 | [`chat-api.yaml`](chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, export, cancel, health) and the AG-UI operations | Built |
 | [`agui.md`](agui.md) | The AG-UI 1.0 binding: run, connect and capabilities, the log-to-AG-UI mapping, the `vymalo.*` schemas, A2UI | Built |
 | [`webhooks.md`](webhooks.md) | CI results by webhook: the generic signed shape and the GitHub adapter | Built |
-| [`ui-catalog-v1.md`](ui-catalog-v1.md) | The web's component catalog, sent to agents (A2A extension `ui-catalog/v1`) | Contract accepted; not built yet |
+| [`ui-catalog-v1.md`](ui-catalog-v1.md) | The web's component catalog, sent to agents (A2A extension `ui-catalog/v1`) | Contract accepted; the orchestrator's handshake is built (the thread-tools refetch is not) |
 | [`thread-tools-v1.md`](thread-tools-v1.md) | A per-thread MCP endpoint for agents, with the HMAC token that opens it (A2A extension `thread-tools/v1`) | Contract accepted; not built yet |
 | [`examples/`](examples/README.md) | Golden event transcripts and AG-UI streams that tests pin | Built |
 
@@ -23,7 +23,7 @@ change is a `v2` URI and a new page, not an edit.
 
 | Extension | URI suffix | Contract | Decided in |
 |---|---|---|---|
-| UI catalog | `ui-catalog/v1` | [`ui-catalog-v1.md`](ui-catalog-v1.md) (accepted; not built yet) | [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) |
+| UI catalog | `ui-catalog/v1` | [`ui-catalog-v1.md`](ui-catalog-v1.md) (accepted; built except the refetch) | [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) |
 | Thread tools | `thread-tools/v1` | [`thread-tools-v1.md`](thread-tools-v1.md) (accepted; not built yet) | ADR 0023, [0024](../decisions/0024-mcp-tools-attached-per-conversation.md), [0026](../decisions/0026-agent-mentions-as-structured-references.md) |
 | Steps | `steps/v1` | A page here, written with MVP slice 5 | [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md) |
 | Mentions | `mentions/v1` | A page here, written with MVP slice 10 | ADR 0026 |

@@ -17,7 +17,7 @@ mod instance;
 mod sse;
 mod wait;
 
-pub use catalog::{UI_CATALOG_ID, ui_catalog, with_ui_catalog};
+pub use catalog::{UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog};
 pub use fake::{Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases, VerifierScript};
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};

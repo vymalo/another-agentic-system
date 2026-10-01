@@ -171,6 +171,7 @@ impl AgentClient for LocalAgentClient {
             version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             releases: None,
             ui: None,
+            extensions: std::collections::BTreeSet::new(),
         })
     }
 

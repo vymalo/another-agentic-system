@@ -19,6 +19,7 @@
 //! | `messages` | `working`, two agent `Message` frames (`message one`, `message two`, ids `<task>-msg-<n>`), artifact `echo: <text>`, `completed`; when the text also contains the word `gate`, it waits for [`FakeAgent::release_gate`] after the messages |
 //! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
 //! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
+//! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
 //! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
@@ -48,13 +49,19 @@
 //! and [`FakeAgent::set_ui_extensions`] changes them while the agent runs (the card is produced
 //! on every request). Each call records the renderer capabilities the message carried.
 //!
+//! With [`FakeAgentOptions::extensions`] the card lists extensions of the orchestrator's own by
+//! URI (`ui-catalog/v1`, `thread-tools/v1`, …), and [`FakeAgent::set_extensions`] changes them while
+//! the agent runs; [`FakeAgentOptions::accepts_inline_catalogs`] makes its A2UI entries say
+//! `acceptsInlineCatalogs: true`. Each call records the message's `ui-catalog/v1` metadata and the
+//! catalogs it carried inline ([`Call::ui_catalog`], [`Call::inline_catalogs`]).
+//!
 //! With [`FakeAgentOptions::releases`] the card declares the release-channels extension, a new
 //! task starts with a `Task` frame whose metadata records `{requested, revision}`, every event
 //! echoes that metadata, and an unknown release fails the task (never the default).
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use a2a::{
@@ -202,6 +209,12 @@ pub struct FakeAgentOptions {
     pub bind: Option<SocketAddr>,
     /// URIs the card lists as A2UI extensions (empty: the card does not mention A2UI).
     pub ui_extensions: Vec<String>,
+    /// URIs the card lists as extensions of the orchestrator's own (`ui-catalog/v1`,
+    /// `thread-tools/v1`, …; empty: none). Plain strings, so that a test can list a near miss.
+    pub extensions: Vec<String>,
+    /// The A2UI entries of the card say `acceptsInlineCatalogs: true` (A2UI: the agent takes a
+    /// catalog in `inlineCatalogs`).
+    pub accepts_inline_catalogs: bool,
     /// Play the verifier: every message is answered as this script says (see the module
     /// documentation). `None` (the default): the scripts chosen by the first word.
     pub verifier: Option<VerifierScript>,
@@ -215,6 +228,8 @@ impl Default for FakeAgentOptions {
             resubscribe: true,
             bind: None,
             ui_extensions: Vec::new(),
+            extensions: Vec::new(),
+            accepts_inline_catalogs: false,
             verifier: None,
         }
     }
@@ -257,6 +272,11 @@ pub struct Call {
     pub a2ui_capabilities: Option<Value>,
     /// The A2UI action messages the message carried (the array elements of its A2UI data parts).
     pub actions: Vec<Value>,
+    /// `metadata[<ui-catalog/v1 URI>]` of the message: `{catalogId, version, digest, inline}`, when
+    /// it carried one (ADR 0023).
+    pub ui_catalog: Option<Value>,
+    /// The catalogs the message carried inline: the `inlineCatalogs` of its renderer capabilities.
+    pub inline_catalogs: Vec<Value>,
 }
 
 impl Call {
@@ -288,6 +308,10 @@ struct Shared {
     releases: Option<FakeReleases>,
     /// The A2UI extension URIs the card lists right now.
     ui_extensions: Mutex<Vec<String>>,
+    /// The URIs of the orchestrator's own extensions the card lists right now.
+    extensions: Mutex<Vec<String>>,
+    /// Whether the A2UI entries of the card say `acceptsInlineCatalogs: true` right now.
+    accepts_inline_catalogs: AtomicBool,
     /// The `verify-*` script each context started with, so that its rework prompts (which do
     /// not repeat the word) run the same one.
     verifying: Mutex<HashMap<String, String>>,
@@ -331,6 +355,8 @@ impl FakeAgent {
             rpcs: Mutex::new(HashMap::new()),
             releases: opts.releases.clone(),
             ui_extensions: Mutex::new(opts.ui_extensions.clone()),
+            extensions: Mutex::new(opts.extensions.clone()),
+            accepts_inline_catalogs: AtomicBool::new(opts.accepts_inline_catalogs),
             verifying: Mutex::new(HashMap::new()),
             verifier: opts.verifier,
         });
@@ -417,6 +443,20 @@ impl FakeAgent {
         *lock(&self.shared.ui_extensions) = uris.iter().map(|u| (*u).to_owned()).collect();
     }
 
+    /// Changes which extensions of the orchestrator's own the card lists, from the next card
+    /// request on.
+    pub fn set_extensions(&self, uris: &[&str]) {
+        *lock(&self.shared.extensions) = uris.iter().map(|u| (*u).to_owned()).collect();
+    }
+
+    /// Changes whether the A2UI entries of the card say `acceptsInlineCatalogs: true`, from the
+    /// next card request on.
+    pub fn set_accepts_inline_catalogs(&self, accepts: bool) {
+        self.shared
+            .accepts_inline_catalogs
+            .store(accepts, Ordering::SeqCst);
+    }
+
     /// Lets one waiting `gate` task continue (a permit is kept if none waits yet).
     pub fn release_gate(&self) {
         self.shared.gate.notify_one();
@@ -449,15 +489,29 @@ impl a2a_server::agent_card::AgentCardProducer for LiveCard {
     fn card(&self) -> AgentCard {
         let mut card = self.base.clone();
         let uris = lock(&self.shared.ui_extensions).clone();
+        let own = lock(&self.shared.extensions).clone();
+        let accepts_inline = self.shared.accepts_inline_catalogs.load(Ordering::SeqCst);
         let extensions = card.capabilities.extensions.get_or_insert_with(Vec::new);
-        extensions.extend(uris.into_iter().map(|uri| AgentExtension {
-            uri,
-            description: Some("Ability to render A2UI".to_owned()),
-            required: Some(false),
-            params: Some(HashMap::from([(
+        extensions.extend(uris.into_iter().map(|uri| {
+            let mut params = HashMap::from([(
                 "supportedCatalogIds".to_owned(),
                 json!(["https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"]),
-            )])),
+            )]);
+            if accepts_inline {
+                params.insert("acceptsInlineCatalogs".to_owned(), json!(true));
+            }
+            AgentExtension {
+                uri,
+                description: Some("Ability to render A2UI".to_owned()),
+                required: Some(false),
+                params: Some(params),
+            }
+        }));
+        extensions.extend(own.into_iter().map(|uri| AgentExtension {
+            uri,
+            description: Some("An extension of the orchestrator's own".to_owned()),
+            required: Some(false),
+            params: None,
         }));
         if card
             .capabilities
@@ -794,9 +848,39 @@ fn text_of(message: Option<&Message>) -> String {
     }
     a2ui_messages(message)
         .iter()
-        .find_map(|m| m.get("action")?.get("name")?.as_str())
-        .map(|name| format!("ui-action {name}"))
+        .find_map(|m| {
+            let action = m.get("action")?;
+            let name = action.get("name")?.as_str()?;
+            let answers = action.get("context").map(chosen).unwrap_or_default();
+            Some(format!("ui-action {name}{answers}"))
+        })
         .unwrap_or_default()
+}
+
+/// What the answers of a `Choices` chose, for the script's echo: ` db=pg auth=none
+/// deploy=k8s,compose` (each question's chosen values, then `other:<text>`, in question order);
+/// nothing for any other action.
+fn chosen(context: &Value) -> String {
+    let Some(answers) = context.get("answers").and_then(Value::as_array) else {
+        return String::new();
+    };
+    answers
+        .iter()
+        .filter(|a| a.is_object())
+        .map(|a| {
+            let values = a["values"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+            let other = a["other"].as_str().map(|text| format!("other:{text}"));
+            let chosen: Vec<String> = values.chain(other).collect();
+            let id = a["id"]
+                .as_str()
+                .map_or_else(|| a["id"].to_string(), str::to_owned);
+            format!(" {id}={}", chosen.join(","))
+        })
+        .collect()
 }
 
 fn capabilities_of(message: Option<&Message>) -> Option<Value> {
@@ -805,6 +889,27 @@ fn capabilities_of(message: Option<&Message>) -> Option<Value> {
         .get("a2uiClientCapabilities")
         .or_else(|| metadata.get("a2uiRendererCapabilities"))
         .cloned()
+}
+
+/// `metadata[ui-catalog/v1]` of the message (ADR 0023).
+fn ui_catalog_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::UI_CATALOG_EXTENSION)
+        .cloned()
+}
+
+/// The `inlineCatalogs` of the renderer capabilities of the message, whatever the dialect.
+fn inline_catalogs_of(message: Option<&Message>) -> Vec<Value> {
+    capabilities_of(message)
+        .and_then(|capabilities| {
+            capabilities
+                .as_object()?
+                .values()
+                .find_map(|dialect| dialect.get("inlineCatalogs")?.as_array().cloned())
+        })
+        .unwrap_or_default()
 }
 
 fn requested_release(message: Option<&Message>) -> Option<String> {
@@ -844,6 +949,8 @@ impl Shared {
             authorization: header("authorization").first().cloned(),
             a2ui_capabilities: capabilities_of(ctx.message.as_ref()),
             actions: a2ui_messages(ctx.message.as_ref()),
+            ui_catalog: ui_catalog_of(ctx.message.as_ref()),
+            inline_catalogs: inline_catalogs_of(ctx.message.as_ref()),
         });
     }
 
@@ -895,6 +1002,30 @@ fn surface_ops(surface: &str) -> Value {
             {"id": "go_label", "component": "Text", "text": "Go"},
             {"id": "go", "component": "Button", "child": "go_label", "variant": "primary",
              "action": {"event": {"name": "go", "context": {"choice": "a"}}}}
+        ]}}
+    ])
+}
+
+/// The surface of the `choices` script: a title and one `Choices` of three questions under the
+/// web's own catalog (the mock of the web plays the same words, `web/mock/scripts.ts`): a database
+/// with an "Other", a login, and where it runs (several, optional, with an "Other").
+fn choices_ops(surface: &str) -> Value {
+    json!([
+        {"version": "v0.9.1", "createSurface": {"surfaceId": surface, "catalogId": crate::UI_CATALOG_ID}},
+        {"version": "v0.9.1", "updateComponents": {"surfaceId": surface, "components": [
+            {"id": "root", "component": "Column", "children": ["intro", "pick"]},
+            {"id": "intro", "component": "Text", "text": "A few quick choices", "variant": "h3"},
+            {"id": "pick", "component": "Choices", "questions": [
+                {"id": "db", "question": "Which database?", "allowOther": true, "options": [
+                    {"value": "pg", "label": "Postgres", "description": "Relational, the default"},
+                    {"value": "sqlite", "label": "SQLite"}]},
+                {"id": "auth", "question": "Which login?", "options": [
+                    {"value": "keycloak", "label": "Keycloak"},
+                    {"value": "none", "label": "No login"}]},
+                {"id": "deploy", "question": "Where does it run?", "multiple": true,
+                 "required": false, "allowOther": true, "options": [
+                    {"value": "k8s", "label": "Kubernetes"},
+                    {"value": "compose", "label": "Docker Compose"}]}]}
         ]}}
     ])
 }
@@ -1104,6 +1235,30 @@ async fn script(
                 .await?;
             }
             emit(&tx, ctx.status(TaskState::InputRequired, Some("Pick one"))).await?;
+        }
+        "choices" if !answering => {
+            lock(&shared.asking).insert(ctx.task_id.clone());
+            let ops = choices_ops("s1");
+            let ops = ops.as_array().cloned().unwrap_or_default();
+            for op in ops {
+                let id = shared.next_artifact_id();
+                emit(
+                    &tx,
+                    ctx.artifact(
+                        &id,
+                        "form",
+                        vec![ui_part(Value::Array(vec![op]))],
+                        false,
+                        Some(true),
+                    ),
+                )
+                .await?;
+            }
+            emit(
+                &tx,
+                ctx.status(TaskState::InputRequired, Some("Three questions")),
+            )
+            .await?;
         }
         "ui-msg" => {
             let mut m = Message::new(
