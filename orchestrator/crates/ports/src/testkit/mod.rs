@@ -78,6 +78,34 @@ macro_rules! wakeup_conformance {
                 None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
             }
         }
+        #[tokio::test]
+        async fn wakeup_delivers_live_text() {
+            match $make().await {
+                Some(w) => $crate::testkit::wakeup::delivers_live_text(w).await,
+                None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn wakeup_live_text_reaches_every_subscriber_in_order() {
+            match $make().await {
+                Some(w) => $crate::testkit::wakeup::live_reaches_every_subscriber(w).await,
+                None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn wakeup_live_text_does_not_disturb_topics() {
+            match $make().await {
+                Some(w) => $crate::testkit::wakeup::live_does_not_disturb_topics(w).await,
+                None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn wakeup_accepts_a_full_piece_of_live_text() {
+            match $make().await {
+                Some(w) => $crate::testkit::wakeup::live_accepts_a_full_piece(w).await,
+                None => eprintln!("skipped: no wakeup available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
     };
 }
 

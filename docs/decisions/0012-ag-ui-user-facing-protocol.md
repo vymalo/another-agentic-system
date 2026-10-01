@@ -101,6 +101,13 @@
   `detail` now finds the words in the transcript instead. Details:
   [`api/agui.md`](../api/agui.md#the-agents-words). The decision stands.
 
+  Status note (2026-10-01): live text is decided in [ADR 0027](0027-live-text-relayed-not-stored.md). The
+  connect stream and the run response carry, beside the fold of the log, frames that are not in it: the
+  words of a reply that is still being written, `TEXT_MESSAGE_*` with `metadata["vymalo.live"]`, which are
+  never given an `id:` and so are never resume points; the log's final message completes the same message
+  id. "AG-UI is a view of the log" becomes "a view of the log, plus live frames that are never resume
+  points". The decision stands.
+
 ## Context
 
 The owner: "I prefer we use standards. Because the industry might use it in the future."

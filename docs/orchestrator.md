@@ -194,8 +194,8 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup`, `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
-| `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres | **Built** |
+| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
+| `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
@@ -1432,7 +1432,7 @@ field (no column; it is in the event's `data`; **built** with the MCP surface). 
 
 ### Live updates
 
-Postgres `LISTEN/NOTIFY` carries hints, never data. `PgStore` sends
+Postgres `LISTEN/NOTIFY` carries hints, never stored data (the one exception is live text, below). `PgStore` sends
 `pg_notify` inside the writing transaction (channels `orch_thread` with the thread id as payload,
 and `orch_outbox`), and every orchestrator replica holds one `LISTEN` connection (`PgWakeup`) that
 fans the hints out to its own subscribers: its dispatcher (claim outbox rows) and its open streams
@@ -1440,6 +1440,18 @@ fans the hints out to its own subscribers: its dispatcher (claim outbox rows) an
 subscriber receives `Topic::Resync` and re-reads the store. A stream also polls every 5 s and the
 dispatcher every 2 s, so a lost notification costs latency, not correctness. The streams are served
 by the orchestrator: the web has no server-side code and never touches Postgres. No separate broker.
+
+**Live text** ([ADR 0027](decisions/0027-live-text-relayed-not-stored.md)). The words of a reply
+that is still being written are the one thing besides hints that travels on the same listener, on a
+channel of its own, `orch_live`: `Wakeup::publish_live(LiveText)` and `Wakeup::subscribe_live()`,
+a piece being `{thread, agent, stream id, UTF-8 byte offset, text, end}` (`orch_core::LiveText`).
+They are **best effort and never stored**: nothing is written to the log, a failed publish costs the
+viewers a moment, a subscriber that lags loses pieces without a `Resync`, and the final message in
+the log is the truth. A `NOTIFY` carries less than 8000 bytes, so `PgWakeup` sends a piece of up to
+6 KiB as one payload when its JSON fits and as several in order when it does not
+(`WakeupCapabilities.live` says whether an implementation does it at all). The port and the Postgres
+implementation are built; what publishes (the dispatcher's relay) and what shows it (the AG-UI
+overlay) are the next steps of the same slice.
 
 **How an AG-UI stream is produced.** `App::event_stream` is the only source of live events, and it
 feeds the AG-UI run response and the AG-UI connect stream alike (and fed the legacy stream, removed on 2026-09-30). It is a read of

@@ -96,6 +96,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0024](docs/decisions/0024-mcp-tools-attached-per-conversation.md) | MCP tools attached per conversation from the UI and relayed to agents by the orchestrator, which holds the credentials. *Accepted 2026-10-01 (owner's delegation)* |
 | [0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md) | Nested steps: events carry their source path; a collapsible tree in the web. *Accepted 2026-10-01 (owner's delegation)* |
 | [0026](docs/decisions/0026-agent-mentions-as-structured-references.md) | Agent mentions as structured references; the addressed agent coordinates the mentioned agents with `ask_agent`. *Accepted 2026-10-01 (owner's delegation)* |
+| [0027](docs/decisions/0027-live-text-relayed-not-stored.md) | Live text is relayed, not stored: an agent's words while it writes them go over the `Wakeup` port (`orch_live`) to every process and are shown by an overlay; the log keeps only the final message; amends 0012. *Accepted 2026-10-01 (owner's delegation); the port is built, the relay follows* |
 
 ## Local development
 
