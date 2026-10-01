@@ -681,7 +681,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
 | `CancelledBeforeStart` | → `cancelled`; `thread_state` | → `cancelled` | No-op |
 | `CancelRejected` | State kept; append `error` | Same | No-op |
-| Agent message (final) or a status that ends or interrupts the turn with words, **while the thread has the first message's words** | As the row of the update, and `RequestTitle { ask }` is appended when the ledger may ask (fewer than 2 asks, none in flight): see [Thread titles](#thread-titles-mvp-slice-6) | Same | `Err(InvalidInState)` |
+| Agent message (final) or a status that ends or interrupts the turn with words, **while the thread has the first message's words** | As the row of the update, and `RequestTitle { ask }` is appended when the ledger may ask (fewer than 2 asks, none in flight, none yet in this reply): see [Thread titles](#thread-titles-mvp-slice-6) | Same | `Err(InvalidInState)` |
 | `Titled { ask, title }` / `TitleDeclined { ask }` (the title worker's inputs) | `Titled`: if the thread still has the first words, append `thread_titled { title, source: model }` and `SetTitle`, ledger `Model`; else nothing. `TitleDeclined`: nothing. Both mark the ask answered | Same | Same: valid in every state |
 | `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
 
@@ -959,7 +959,7 @@ stateDiagram-v2
 and `patchThread` in [`api/chat-api.yaml`](api/chat-api.yaml), the projection is [`agui.md`](api/agui.md#titles)). A thread
 is created with the first words of its first message as its title. Two things change it, and both are one commit of
 the event, the stored title (`Commit.title`) and the ledger (`Job.title`: whose title it is, how many times the model was
-asked, which ask was answered):
+asked, which ask was answered, whether the reply that is going on has asked):
 
 ```mermaid
 sequenceDiagram
@@ -968,7 +968,7 @@ sequenceDiagram
   participant D as Dispatcher (title worker)
   participant M as ChatModel (OpenAI-compatible)
   A->>A: the agent says something (final message, or completed / input_required with words)
-  A->>A: ledger: source first_message, asks < 2, the last ask answered: asks + 1
+  A->>A: ledger: source first_message, asks < 2, the last ask answered, this reply has not asked: asks + 1
   A-->>D: outbox row `title` {ask}, in the same commit (only when ORCH_TITLE_MODEL is set)
   D->>D: read the head of the log, build the prompt (6 messages, fenced, as data)
   D->>M: POST /chat/completions (timeout, up to 3 tries on transient errors)
@@ -991,11 +991,19 @@ stateDiagram-v2
 
 - **When it asks.** `Input::Agent` appends a final `agent_message`, or a `completed`, `input_required` or `auth_required`
   status with words, and the ledger says the thread still has the first words (`TitleSource::FirstMessage`), has used
-  fewer than `MAX_TITLE_ASKS` (2) asks and has no ask in flight (`answered >= asks`: an agent that says two things in
-  one reply asks once): `asks += 1` and `Command::RequestTitle { ask }`. The second ask therefore comes only after the
-  first was answered with none. The ledger counts the ask whether or not the application can act on it: with
-  `ORCH_TITLE_MODEL` unset the `App` drops the command (no row, no model), so a thread asked while titles were off keeps
-  the first words for good; titles apply to the threads whose first reply comes after the model is configured.
+  fewer than `MAX_TITLE_ASKS` (2) asks, has no ask in flight (`answered >= asks`) and the reply that is going on has not
+  asked (`asked_in_reply`): `asks += 1`, `asked_in_reply = true` and `Command::RequestTitle { ask }`. **A reply asks once**,
+  however soon the model answers: an agent that says two things in one reply (a final message, then the status that ends
+  the turn with the same words) asks at the first, and the second finds the reply has asked. `answered >= asks` alone
+  cannot say so, because the answer can be applied between the two (the title worker and the agent's updates commit on
+  their own tasks, and a conflict re-decides the input against the newer ledger): the second ask would be spent on the
+  words the first was shown, and the next reply, the one that may have a topic, would find the asks used up. A reply
+  is over when the thread stops working, that is when a transition leaves it `blocked`, `verifying`, `done`, `failed`
+  or `cancelled` (`TitleLedger::reply_over`); the next reply, a job's or the answer to an interrupt, may ask. The
+  second ask therefore comes only after the first was answered with none, in a later reply. The ledger counts the ask
+  whether or not the application can act on it: with `ORCH_TITLE_MODEL` unset the `App` drops the command (no row, no
+  model), so a thread asked while titles were off keeps the first words for good; titles apply to the threads whose
+  first reply comes after the model is configured.
 - **What the model is shown** (`orch_core::title_prompt`, pure): the first six messages of the people and the agent
   (final messages, and the words of a status that ends or interrupts the turn), each cut at 500 characters and all of
   them at 4 KiB, in a code fence their text cannot close (the same `fenced` the verifier's prompt uses), and an

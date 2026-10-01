@@ -44,7 +44,8 @@ asks of every boundary:
   deployment choice. The same endpoint and key as the agents' is the usual setup (`compose.live.yaml`).
 - **What it may do.** After the agent's first reply (a final message, or a status that ends or interrupts the turn with
   words) the core asks for a title (`Command::RequestTitle`, an outbox row of kind `title`), at most **twice** per
-  thread, the second time only after the first was answered with none; the answer comes back as `Input::Titled` or
+  thread and **once per reply** (a reply is over when the thread stops working), the second time only after the
+  first was answered with none; the answer comes back as `Input::Titled` or
   `Input::TitleDeclined`, and a title the model wrote is a `thread_titled` event (`source: model`) and the thread's
   title. **A person's rename is final** (`source: user`): the model is never asked once a person has renamed, and a
   title the model wrote after is dropped. A thread keeps the first words of its first message when the model has no

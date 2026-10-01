@@ -221,6 +221,20 @@ async fn a_reply_gets_a_title_and_a_persons_rename_is_final(backend: Backend) {
         (world.model.calls().len() == 1).then_some(())
     })
     .await;
+    // The model has answered, and the title worker commits that on its own, a moment later.
+    // The next reply asks only when no earlier ask is still waiting for its answer, so the
+    // person writes again once the first ask is over: the call is not the answer.
+    let probe = world.node("probe").await;
+    let tid = id.parse().unwrap();
+    eventually("the first ask to be answered", || async {
+        probe
+            .open_outbox(tid)
+            .await
+            .iter()
+            .all(|row| row.kind != orch_ports::OutboxKind::Title)
+            .then_some(())
+    })
+    .await;
     // "no topic yet": the thread keeps the first words
     let (_, thread) = chat.get(&format!("/api/threads/{id}")).await;
     assert_eq!(thread["title"], "stream hello");

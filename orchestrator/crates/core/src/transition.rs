@@ -453,6 +453,16 @@ pub fn transition(
         | ThreadState::Failed
         | ThreadState::Cancelled => job.hold = None,
     }
+    // A reply lasts while the thread works: once it blocks, is verified or finishes, whatever the
+    // agent says next is another reply, which may ask the model for a title again.
+    match state {
+        ThreadState::Queued | ThreadState::Working => {}
+        ThreadState::Blocked
+        | ThreadState::Verifying
+        | ThreadState::Done
+        | ThreadState::Failed
+        | ThreadState::Cancelled => job.title.reply_over(),
+    }
     Ok((Snapshot { state, job }, commands))
 }
 
@@ -721,7 +731,7 @@ fn decide(
 
 /// The agent has said something: when it is words the conversation can be titled by, and the
 /// thread still has the first message's words, the model is asked for a title (once for the
-/// input, [`MAX_TITLE_ASKS`](crate::MAX_TITLE_ASKS) times for the thread).
+/// reply, [`MAX_TITLE_ASKS`](crate::MAX_TITLE_ASKS) times for the thread).
 fn ask_for_title(job: &mut Job, cmds: &mut Vec<Command>) {
     let said = cmds
         .iter()

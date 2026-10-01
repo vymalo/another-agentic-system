@@ -283,6 +283,59 @@ fn an_agent_that_says_two_things_before_the_model_answers_asks_once() {
 }
 
 #[test]
+fn a_reply_asks_once_however_soon_the_model_answers() {
+    // The agent states its reply (a final message) and the status that ends the turn repeats it:
+    // two inputs, one reply. The model may answer between them (a fast model, or the answer
+    // winning the race for the thread's next commit): the status must not ask again, or the
+    // thread's second ask is spent on words the first ask was shown.
+    let (snap, first) = transition(&Snapshot::new(Working), &says("Streaming a reply")).unwrap();
+    assert_eq!(requests(&first), [1]);
+    let (snap, _) = transition(&snap, &Input::TitleDeclined { ask: 1 }).unwrap();
+    let (snap, ended) = transition(
+        &snap,
+        &status(AgentTaskState::Completed, Some("Streaming a reply")),
+    )
+    .unwrap();
+    assert_eq!(snap.state, Done);
+    assert!(
+        requests(&ended).is_empty(),
+        "the same reply asks once: {ended:?}"
+    );
+    assert_eq!(snap.job.title.asks(), 1);
+    // the next reply is a reply of its own, and asks
+    let (snap, _) = transition(&snap, &message("write a fibonacci function")).unwrap();
+    let (snap, next) = transition(&snap, &says("Here it is")).unwrap();
+    assert_eq!(requests(&next), [2]);
+    assert_eq!(snap.job.title.asks(), 2);
+}
+
+#[test]
+fn every_way_a_reply_can_end_lets_the_next_reply_ask() {
+    let endings = [
+        status(AgentTaskState::Completed, Some("Streaming a reply")),
+        status(AgentTaskState::InputRequired, Some("Which branch?")),
+        status(AgentTaskState::AuthRequired, Some("Sign in to GitHub")),
+        status(AgentTaskState::Failed, Some("boom")),
+        status(AgentTaskState::Canceled, None),
+        status(AgentTaskState::Rejected, None),
+    ];
+    for ending in endings {
+        let (snap, first) =
+            transition(&Snapshot::new(Working), &says("Streaming a reply")).unwrap();
+        assert_eq!(requests(&first), [1], "{ending:?}");
+        let (snap, _) = transition(&snap, &Input::TitleDeclined { ask: 1 }).unwrap();
+        let (snap, _) = transition(&snap, &ending).unwrap();
+        assert!(
+            !matches!(snap.state, Queued | Working),
+            "{ending:?}: the reply is over"
+        );
+        let (snap, _) = transition(&snap, &message("and now this")).unwrap();
+        let (_, next) = transition(&snap, &says("One more thing")).unwrap();
+        assert_eq!(requests(&next), [2], "{ending:?}");
+    }
+}
+
+#[test]
 fn a_user_message_or_a_rename_asks_nothing() {
     for input in [message("hello"), rename("Mine")] {
         let (after, cmds) = transition(&Snapshot::new(Queued), &input).unwrap();
@@ -293,23 +346,25 @@ fn a_user_message_or_a_rename_asks_nothing() {
 
 #[test]
 fn the_model_is_asked_twice_at_most_for_a_thread_that_keeps_the_first_words() {
-    let mut snap = Snapshot::new(Working);
+    let mut snap = Snapshot::new(Queued);
     let mut asked = Vec::new();
     for n in 0..5 {
-        let (next, cmds) = transition(&snap, &says(&format!("word {n}"))).unwrap();
+        // a reply of its own each time: the person writes, the agent says something, the turn ends
+        let (next, _) = transition(&snap, &message(&format!("question {n}"))).unwrap();
+        let (next, cmds) = transition(&next, &says(&format!("word {n}"))).unwrap();
         asked.extend(requests(&cmds));
+        snap = next.clone();
         // the model had no topic yet: declined
-        let (declined, nothing) = transition(
-            &next,
-            &Input::TitleDeclined {
-                ask: u8::try_from(n + 1).unwrap(),
-            },
-        )
-        .unwrap();
-        assert!(nothing.is_empty(), "a decline logs and stores nothing");
-        assert_eq!(declined.state, next.state);
-        assert_eq!(declined.job.title.source(), TitleSource::FirstMessage);
-        snap = declined;
+        for ask in requests(&cmds) {
+            let (declined, nothing) = transition(&next, &Input::TitleDeclined { ask }).unwrap();
+            assert!(nothing.is_empty(), "a decline logs and stores nothing");
+            assert_eq!(declined.state, next.state);
+            assert_eq!(declined.job.title.source(), TitleSource::FirstMessage);
+            snap = declined;
+        }
+        let (ended, _) = transition(&snap, &status(AgentTaskState::Completed, None)).unwrap();
+        assert_eq!(ended.state, Done);
+        snap = ended;
     }
     assert_eq!(asked, [1, 2]);
     assert_eq!(snap.job.title.asks(), MAX_TITLE_ASKS);
@@ -419,14 +474,24 @@ fn the_next_job_keeps_the_asks() {
 fn a_ledger_stores_its_asks_and_a_stored_one_without_them_has_none() {
     let (asked, _) = transition(&Snapshot::new(Working), &says("one")).unwrap();
     let stored = serde_json::to_value(&asked.job).unwrap();
-    assert_eq!(stored["title"], json!({"asks": 1}));
+    // the reply that asked is still going on
+    assert_eq!(stored["title"], json!({"asks": 1, "askedInReply": true}));
     let (answered, _) = transition(&asked, &Input::TitleDeclined { ask: 1 }).unwrap();
     assert_eq!(
         serde_json::to_value(&answered.job).unwrap()["title"],
+        json!({"asks": 1, "answered": 1, "askedInReply": true})
+    );
+    // and when it is over, the ledger says no more than the asks and the answers
+    let (over, _) = transition(&answered, &status(AgentTaskState::Completed, None)).unwrap();
+    assert_eq!(
+        serde_json::to_value(&over.job).unwrap()["title"],
         json!({"asks": 1, "answered": 1})
     );
     let read: Job = serde_json::from_value(stored).unwrap();
     assert_eq!(read, asked.job);
+    // a ledger stored before the reply was remembered has no ask in its reply
+    let old: Job = serde_json::from_value(json!({"title": {"asks": 1, "answered": 1}})).unwrap();
+    assert!(old.title.may_ask());
     let old: Job = serde_json::from_value(json!({"title": {"source": "user"}})).unwrap();
     assert_eq!(old.title.asks(), 0);
 }
