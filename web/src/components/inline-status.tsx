@@ -8,13 +8,13 @@ const ROWS = ["a", "b", "c", "d", "e"];
 
 type Action = { label: string; onClick: () => void };
 
-function ActionButton({ action }: { action: Action }) {
+function ActionButton({ action, className }: { action: Action; className?: string }) {
   return (
     <Button
       type="button"
       variant="link"
       size="sm"
-      className="h-auto px-0 py-1"
+      className={cn("h-auto px-0 py-1", className)}
       onClick={action.onClick}
     >
       {action.label}
@@ -24,7 +24,9 @@ function ActionButton({ action }: { action: Action }) {
 
 /**
  * Empty, loading and error states are a quiet inline line, never a hero. An error is a
- * destructive `Alert` (a live region unless `role` says otherwise).
+ * destructive `Alert` (a live region unless `role` says otherwise). A warning is a line on the
+ * warning colours: something is missing or degraded, and the rest works (a source of agents that
+ * could not be read).
  */
 export function InlineStatus({
   children,
@@ -33,7 +35,7 @@ export function InlineStatus({
   role,
 }: {
   children: ReactNode;
-  tone?: "muted" | "error";
+  tone?: "muted" | "warning" | "error";
   action?: Action;
   role?: "status" | "alert";
 }) {
@@ -45,6 +47,17 @@ export function InlineStatus({
           {action ? <ActionButton action={action} /> : null}
         </AlertDescription>
       </Alert>
+    );
+  }
+  if (tone === "warning") {
+    return (
+      <p
+        className="my-1 flex flex-wrap items-baseline gap-x-2 rounded-md bg-warning-soft px-3 py-2 text-sm text-warning"
+        role={role}
+      >
+        <span>{children}</span>
+        {action ? <ActionButton action={action} className="text-warning" /> : null}
+      </p>
     );
   }
   return (

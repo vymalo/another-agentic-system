@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RegistryMenuNotice } from "@/features/agents/components/registry-notice";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
 import { newChatWith, selectedAgent } from "@/features/agents/lib/selection";
 import type { Selection } from "@/features/chat/hooks/use-chat-runtime";
@@ -26,9 +27,10 @@ import { cn } from "@/lib/utils";
 type Common = {
   agents: AgentsView;
   /**
-   * A line under the lists, inside the menu: the slot for what is true of all agents at once.
-   * Plan 05 PR 5 puts its "The agent registry is unreachable; showing the configured agents only."
-   * (`InlineStatus tone="warning"`) here; a failed refresh of the list is drawn above it.
+   * A line under the lists, inside the menu: the slot for what is true of all agents at once. By
+   * default it is the registry's "unreachable; showing the configured agents only"
+   * (`RegistryMenuNotice`, nothing while every source answers); a failed refresh of the list is
+   * drawn above it.
    */
   notice?: ReactNode;
   className?: string;
@@ -60,7 +62,7 @@ function AgentLabel({
   agent,
   release,
 }: {
-  agent: Pick<ApiAgent, "id" | "name" | "description">;
+  agent: Pick<ApiAgent, "id" | "name" | "description" | "tags">;
   release?: string | null;
 }) {
   return (
@@ -74,6 +76,12 @@ function AgentLabel({
         {agent.description ? (
           <span className="line-clamp-1 text-xs leading-4 text-muted-foreground">
             {agent.description}
+          </span>
+        ) : null}
+        {agent.tags?.length ? (
+          // the labels the platform keeps on the agent: a hint of what it is for, nothing more
+          <span className="line-clamp-1 text-xs leading-4 text-muted-foreground/80">
+            {agent.tags.join(" · ")}
           </span>
         ) : null}
       </span>
@@ -274,7 +282,7 @@ export function AgentMenu(props: AgentMenuProps) {
           </>
         )}
         {error && list.length > 0 ? <Problem message={error} onRetry={retry} /> : null}
-        {notice}
+        {notice ?? <RegistryMenuNotice agents={agents} />}
       </DropdownMenuContent>
     </DropdownMenu>
   );

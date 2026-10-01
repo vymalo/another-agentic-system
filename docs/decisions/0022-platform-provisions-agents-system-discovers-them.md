@@ -103,4 +103,6 @@ decided on that delegation as follows; the owner may revisit them.
   `AGENTS_FILE`, which the startup checks know. **A delegation** to a registry agent is retried with the
   usual backoff while the registry cannot be read, never dead-lettered for that, and dead-lettered ("agent
   '<id>' is no longer listed") only when the registry answers without the agent; a person's request that
-  names an agent only the registry could list is a 503 while it is down, not a 404.
+  names an agent only the registry could list is a 503 while it is down, not a 404. **The web** reads
+  `GET /api/agents` and `GET /api/registry` together: the picker lists what the registry added (with its
+  tags) and, when a source could not be read, says so beside the list, which stays on screen, with Retry.
