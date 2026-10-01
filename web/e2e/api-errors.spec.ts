@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { badge, conversation, errorLine, startThread } from "./helpers";
+import { agentPicker, badge, conversation, errorLine, startThread } from "./helpers";
 
 const problem = (status: number, title: string, detail: string) => ({
   status,
@@ -29,14 +29,14 @@ test("a failed agent list shows the problem and Retry loads it", async ({ page }
 
   await page.unroute("**/api/agents");
   await alert.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByLabel("Agent")).toBeVisible();
+  await expect(agentPicker(page)).toBeVisible();
   await expect(errorLine(page)).toHaveCount(0);
 });
 
 test("a rejected new thread shows the problem and keeps the text", async ({ page }) => {
   await failNext(page, "**/agui/agents/*", "POST", 400, "text must be 1 to 100000 characters");
   await page.goto("/");
-  await expect(page.getByLabel("Agent")).toBeVisible();
+  await expect(agentPicker(page)).toBeVisible();
   await page.getByLabel("Message").fill("keep me");
   await page.getByRole("button", { name: "Send" }).click();
 

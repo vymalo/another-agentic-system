@@ -12,9 +12,8 @@ export const THREAD_URL = /\/threads\/[0-9a-f-]{36}$/;
 /** Start a thread from the home page with the given agent (default: the first, Coder). */
 export async function startThread(page: Page, text: string, agent?: string) {
   await page.goto("/");
-  const select = page.getByLabel("Agent");
-  await expect(select).toBeVisible();
-  if (agent) await select.selectOption({ label: agent });
+  await expect(agentPicker(page)).toBeVisible();
+  if (agent) await chooseAgent(page, agent);
   await page.getByLabel("Message").fill(text);
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page).toHaveURL(THREAD_URL);
@@ -31,10 +30,11 @@ export async function expectNoHorizontalScroll(page: Page) {
 
 /**
  * Shared locators. Specs go through these (never a CSS selector), so a markup change touches this
- * file only. They rely on roles and accessible names: labels `Agent`, `Release`, `Message`; buttons
- * `Send`, `Stop`, `Threads` (phone), `Thread options`, `Load older`, `Retry`; the link `New chat`;
- * the `log` "Conversation"; the `status` "Thread state: ..."; the `navigation` "Threads"; a check
- * or CI report is a step, a `listitem` named "Check: …" or "CI: …".
+ * file only. They rely on roles and accessible names: the button `Agent: <name>` (the picker in the
+ * top bar, a menu), the label `Message`; buttons `Send`, `Stop`, `Threads` (phone), `Thread
+ * options`, `Load older`, `Retry`; the link `New chat`; the `log` "Conversation"; the `status`
+ * "Thread state: ..."; the `navigation` "Threads"; a check or CI report is a step, a `listitem`
+ * named "Check: …" or "CI: …".
  */
 export const badge = (page: Page) => page.getByRole("status", { name: /^Thread state:/ });
 
@@ -71,12 +71,48 @@ export async function exportMenuItem(page: Page): Promise<Locator> {
   return item;
 }
 
-/** The option a native `<select>` shows. */
-export const selectedOption = (select: Locator) => select.getByRole("option", { selected: true });
+/** The agent picker of the top bar: a button, "Agent: Coder", that opens a menu. */
+export const agentPicker = (page: Page) => page.getByRole("button", { name: /^Agent:/ });
+
+/** The open agent menu. */
+export const agentMenu = (page: Page) => page.getByRole("menu");
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** An item of the agent menu (an agent, a channel or a revision) by the start of its name. */
+export const agentMenuItem = (page: Page, name: string) =>
+  agentMenu(page).getByRole("menuitemradio", { name: new RegExp(`^${escapeRegExp(name)}\\b`) });
 
 /**
- * The options of the release picker's "Revisions" group. Playwright's role engine does not expose
- * options inside an `<optgroup>`, so this is the one CSS selector.
+ * Opens the agent menu (when it is not open) and returns it. Whether it is open is the button's
+ * `aria-expanded`: a menu that was just closed stays on the page for its exit animation. (While it
+ * is open the rest of the page is `aria-hidden`, the button included, hence `includeHidden`.)
  */
-export const revisionOptions = (select: Locator) =>
-  select.locator('optgroup[label="Revisions"] option');
+export async function openAgentMenu(page: Page) {
+  const button = page.getByRole("button", { name: /^Agent:/, includeHidden: true });
+  if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+  const menu = agentMenu(page);
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+/** Closes the agent menu with Escape and waits for it to be gone; the focus is back on its button. */
+export async function closeAgentMenu(page: Page) {
+  await page.keyboard.press("Escape");
+  await expect(agentMenu(page)).toBeHidden();
+  await expect(agentPicker(page)).toBeFocused();
+}
+
+/** Chooses an agent of a new chat by its name: opens the menu, clicks the agent; the menu closes. */
+export async function chooseAgent(page: Page, name: string) {
+  await openAgentMenu(page);
+  await agentMenuItem(page, name).click();
+  await expect(agentMenu(page)).toBeHidden();
+}
+
+/** Chooses a release (a channel or a revision) of the agent of a new chat. */
+export async function chooseRelease(page: Page, value: string) {
+  await openAgentMenu(page);
+  await agentMenuItem(page, value).click();
+  await expect(agentMenu(page)).toBeHidden();
+}

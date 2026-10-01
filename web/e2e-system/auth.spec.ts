@@ -2,10 +2,14 @@ import { expect, test } from "@playwright/test";
 import { WEB } from "./env";
 import {
   ALICE,
+  agentMenu,
+  agentPicker,
   BOB,
   badge,
+  chooseAgent,
   errorLine,
   framesOf,
+  openAgentMenu,
   resetDb,
   startThread,
   threadCount,
@@ -17,11 +21,13 @@ test.beforeEach(resetDb);
 test("the proxy identity reaches the orchestrator", async ({ page }) => {
   await page.goto("/");
   // /api/agents answered 200 through the app's rewrite, with the identity header
-  const agent = page.getByLabel("Agent");
-  await expect(agent).toBeVisible();
-  await expect(agent.locator("option")).toHaveText(["Coder", "Plain", "Gated"]);
+  await expect(agentPicker(page)).toBeVisible();
+  await openAgentMenu(page);
+  await expect(
+    agentMenu(page).getByRole("group", { name: "Agents" }).getByRole("menuitemradio"),
+  ).toContainText(["Coder", "Plain", "Gated"]);
 
-  await page.getByLabel("Agent").selectOption({ label: "Plain" });
+  await chooseAgent(page, "Plain");
   await page.getByLabel("Message").fill("echo hello");
   await page.getByRole("button", { name: "Send" }).click();
   // the connect stream carries the header too: the events arrive and the badge follows

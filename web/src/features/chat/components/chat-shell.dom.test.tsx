@@ -128,22 +128,92 @@ async function exportItem(): Promise<HTMLElement> {
   return screen.findByRole("menuitem", { name: /Export JSON|Exporting…/ });
 }
 
+/** The agent picker of the top bar: "Agent: Coder", a menu button. */
+const agentPicker = () => screen.findByRole("button", { name: /^Agent:/ });
+/** Opens the agent menu from the keyboard, as `exportItem` opens the thread's. */
+async function openAgentMenu(): Promise<HTMLElement> {
+  const trigger = await agentPicker();
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+  return screen.findByRole("menu");
+}
+const radio = (menu: HTMLElement, name: RegExp) =>
+  within(menu).getByRole("menuitemradio", { name });
+
 describe("ChatShell over AG-UI", () => {
-  it("the new-thread page offers the agents and, for the coder, its releases", async () => {
+  it("the new-thread page offers the agents in the header's menu and, for the coder, its releases", async () => {
     shell(null);
-    await screen.findByLabelText("Agent");
-    expect(screen.getByLabelText("Release")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "reviewer" } });
-    await waitFor(() => expect(screen.queryByLabelText("Release")).toBeNull());
+    expect((await agentPicker()).textContent).toContain("Coder");
+    const menu = await openAgentMenu();
+    // the agents, the first checked, each with what it does
+    expect(radio(menu, /^Coder/).getAttribute("aria-checked")).toBe("true");
+    expect(radio(menu, /^Reviewer/).getAttribute("aria-checked")).toBe("false");
+    expect(radio(menu, /^Coder/).textContent).toContain("Implements a change");
+    // the coder's releases, in the same menu
+    await waitFor(() =>
+      expect(radio(menu, /^production/).getAttribute("aria-checked")).toBe("true"),
+    );
+    expect(radio(menu, /^production/).textContent).toContain("coder-r47");
+    // choosing the reviewer closes the menu and the releases are gone
+    fireEvent.click(radio(menu, /^Reviewer/));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect((await agentPicker()).textContent).toContain("Reviewer");
+    expect(within(await openAgentMenu()).queryByRole("group", { name: "Release" })).toBeNull();
+  });
+
+  it("opening the menu reads the agents again (releases are the card right now)", async () => {
+    shell(null);
+    await agentPicker();
+    const reads = () => calls.filter((c) => c === "GET /api/agents 200").length;
+    const before = reads();
+    expect(before).toBeGreaterThan(0);
+    await openAgentMenu();
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  });
+
+  it("a thread's header names its agent and offers the others as a new chat, not as a switch", async () => {
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const trigger = await agentPicker();
+    expect(trigger.textContent).toContain("Coder");
+    // the title is the page's heading, next to the picker
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
+        "Implement the thing",
+      ),
+    );
+    const menu = await openAgentMenu();
+    expect(radio(menu, /^Coder/).getAttribute("aria-checked")).toBe("true");
+    // the other agents start a new chat with them; nothing here changes the thread's agent
+    expect(within(menu).queryByRole("menuitemradio", { name: /^Reviewer/ })).toBeNull();
+    const link = within(
+      within(menu).getByRole("group", { name: "Start a new chat with" }),
+    ).getByRole("menuitem", { name: /^Reviewer/ });
+    expect(link.getAttribute("href")).toBe("/?agent=reviewer");
+  });
+
+  it("a new chat opened from a link starts with the agent it names", async () => {
+    window.history.replaceState(null, "", "/?agent=reviewer");
+    try {
+      shell(null);
+      await waitFor(async () => expect((await agentPicker()).textContent).toContain("Reviewer"));
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("a first message mints a UUIDv7, posts it, and goes to the thread", async () => {
     shell(null);
-    await screen.findByLabelText("Agent");
+    await agentPicker();
+    const menu = await openAgentMenu();
     await waitFor(() =>
-      expect((screen.getByLabelText("Release") as HTMLSelectElement).value).toBe("production"),
+      expect(radio(menu, /^production/).getAttribute("aria-checked")).toBe("true"),
     );
-    fireEvent.change(screen.getByLabelText("Release"), { target: { value: "staging" } });
+    fireEvent.click(radio(menu, /^staging/));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "echo hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(push).toHaveBeenCalledTimes(1));
@@ -159,7 +229,7 @@ describe("ChatShell over AG-UI", () => {
 
   it("a rejected first message shows the problem and gives the text back once", async () => {
     shell(null);
-    await screen.findByLabelText("Agent");
+    await agentPicker();
     failing = {
       key: "POST /agui/agents/coder",
       status: 400,
@@ -207,6 +277,9 @@ describe("ChatShell over AG-UI", () => {
     const id = await makeThread("echo hi");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    // the badge can say Done from the thread's own resource while the connect stream is still
+    // replaying the first job; a follow-up sent into that gap would land before its history
+    await waitFor(() => within(log()).getByText("echo hi"));
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
     expect(box.disabled).toBe(false);
     fireEvent.change(box, { target: { value: "echo and now the tests" } });

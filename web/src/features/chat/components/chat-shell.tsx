@@ -5,13 +5,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { InlineStatus } from "@/components/inline-status";
+import { AgentMenu } from "@/features/agents/components/agent-menu";
 import {
-  AgentPicker,
   AgentsProblem,
   NewChatGreeting,
   Suggestions,
 } from "@/features/agents/components/new-thread-panel";
 import { useAgents } from "@/features/agents/hooks/use-agents";
+import { effectiveSelection, requestedAgent } from "@/features/agents/lib/selection";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
@@ -23,7 +24,6 @@ import {
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
 import { problemMessage } from "@/lib/api/client";
-import { AgentPill } from "./agent-pill";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
 import { LiveRuns } from "./live-runs";
@@ -64,27 +64,25 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
   const meta = useThreadMeta(threadId);
   const [threadsKey, setThreadsKey] = useState("");
   const threads = useThreads(threadsKey);
-  const agents = useAgents(threadId === null);
+  // the list also names the agent of an open thread and offers the others (the header's menu)
+  const agents = useAgents(true);
   const [selection, setSelection] = useState<Selection>({ agentId: null, release: null });
   const [sendError, setSendError] = useState<string | null>(null);
 
-  // Default to the first agent so the composer works without an extra click.
-  const firstAgent = agents.agents[0]?.id ?? null;
+  // Default to the agent a link asked for (`/?agent=reviewer`, "Start a new chat with …"), else
+  // the first, so the composer works without an extra click.
+  const loadedAgents = agents.agents;
   useEffect(() => {
-    if (firstAgent) {
-      setSelection((s) => (s.agentId === null ? { agentId: firstAgent, release: null } : s));
-    }
-  }, [firstAgent]);
+    if (loadedAgents.length === 0) return;
+    const first = loadedAgents[0]?.id ?? null;
+    const asked = requestedAgent(loadedAgents, window.location.search) ?? first;
+    setSelection((s) => (s.agentId === null ? { agentId: asked, release: null } : s));
+  }, [loadedAgents]);
 
-  const effective = useMemo<Selection>(() => {
-    const agent = agents.agents.find((a) => a.id === selection.agentId);
-    if (!agent?.releases) return { agentId: selection.agentId, release: null };
-    const r = agent.releases;
-    const ok =
-      selection.release !== null &&
-      (selection.release in r.channels || (r.revisions ?? []).includes(selection.release));
-    return { agentId: agent.id, release: ok ? selection.release : r.defaultChannel };
-  }, [agents.agents, selection]);
+  const effective = useMemo<Selection>(
+    () => effectiveSelection(agents.agents, selection),
+    [agents.agents, selection],
+  );
 
   // A send goes to the thread's own agent; only a new thread takes the picker's choice.
   const target = useMemo<Selection>(
@@ -163,13 +161,6 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
       sendError={sendError}
       onCancel={cancel}
       inputRef={composerRef}
-      toolbar={
-        threadId === null ? (
-          <AgentPicker agents={agents} selection={effective} onSelect={setSelection} />
-        ) : thread ? (
-          <AgentPill agentId={thread.target.agentId} release={thread.target.release} />
-        ) : null
-      }
     />
   );
   const leading = (
@@ -209,8 +200,14 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
             <main className="flex min-h-0 min-w-0 flex-1 flex-col">
               {threadId === null ? (
                 <>
-                  <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
+                  <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
                     {leading}
+                    <AgentMenu
+                      mode="new"
+                      agents={agents}
+                      value={effective}
+                      onChange={setSelection}
+                    />
                   </header>
                   <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
                     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
@@ -236,6 +233,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                 <>
                   <ThreadHeader
                     thread={thread}
+                    agents={agents}
                     state={state}
                     waiting={snapshot.waiting}
                     connection={snapshot.connection}

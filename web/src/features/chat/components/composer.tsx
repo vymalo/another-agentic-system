@@ -24,7 +24,10 @@ type Props = {
   onCancel: () => void;
   /** The textarea, so an A2UI `userMessage` can focus it. */
   inputRef?: RefObject<HTMLTextAreaElement | null>;
-  /** The left of the box's bottom row: the agent (a pill, or its pickers on a new thread). */
+  /**
+   * The left of the box's bottom row. Empty today: the agent is picked in the top bar
+   * (agent-menu.tsx), and this is where the tools picker and mentions will go (plan 05).
+   */
   toolbar?: ReactNode;
 };
 

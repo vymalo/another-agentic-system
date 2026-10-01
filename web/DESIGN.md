@@ -16,7 +16,7 @@ structure, not the branding.
 
 | Reference | What we took |
 |---|---|
-| ChatGPT, conversation ([2ed2ffc3](https://refero.design/pages/2ed2ffc3-95b2-417c-a3fa-df50f4cb22e4)) | Centered reading column around 760 px; title in a minimal top bar with the actions on the right; a disclaimer line under the composer; ink (near-black) for the primary action |
+| ChatGPT, conversation ([2ed2ffc3](https://refero.design/pages/2ed2ffc3-95b2-417c-a3fa-df50f4cb22e4)) | Centered reading column around 760 px; title in a minimal top bar with the actions on the right; a disclaimer line under the composer; ink (near-black) for the primary action; **the model picker**: a button in the top bar that names the choice ("GPT ⌄") and opens a menu of one row per model, a name with a line under it and a check on the current one (our agent picker, see "Agent picker") |
 | Claude ([f42e56ca](https://refero.design/pages/f42e56ca-6f9d-45b8-b501-ce30add0f259)) | "Reply to Claude…" placeholder for the next turn; the model named inside the composer; warm neutrals |
 | Meta AI ([6c1e2ac6](https://refero.design/pages/6c1e2ac6-e65a-4290-8ae5-81ad61ea200a)) | The assistant's avatar once above its turn, then prose; generous spacing between turns |
 | Copilot ([d81060e5](https://refero.design/pages/d81060e5-9955-4fb2-a8d6-b4ccaa97c312)), Grok ([0ac86436](https://refero.design/pages/0ac86436-063a-45a1-a04d-81042b245675)) | A composer with a soft shadow and chips inside it; a two-line greeting (statement, then a muted question) |
@@ -74,16 +74,48 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
   with the wordmark, and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
   Previous 7 days, Previous 30 days, Older, by local calendar day) as single-line rows with a small live dot (green when working, amber when waiting) for a working or waiting
   thread. Collapsible on a desktop (remembered per browser); a sheet from the left on a phone.
-- **Top bar** 56 px, transparent: the title (one line), the agent as a pill, the thread's state as a
-  pill, and an overflow menu (Export JSON). On a phone the menu button opens the sheet.
+- **Top bar** 56 px, transparent: the **agent picker** (a button with the agent's name and a chevron,
+  see "Agent picker"), the title (one line, muted, from `md`; below it the title is for screen readers
+  only, and stays the page's heading), the thread's state as a pill, and an overflow menu (Export
+  JSON). On a phone the menu button opens the sheet, in front of the picker.
 - **Reading column** max 768 px (`max-w-3xl`), 16 px gutters on a phone, 24 px from `md`.
 - **Composer** sticky at the bottom of the column, a 24 px-radius surface with a soft shadow: the
-  text (1 to 8 lines), then a row with the agent pill on the left and a 36 px round Send / Stop
-  button on the right. A one-line disclaimer under it.
+  text (1 to 8 lines), then a row with a 36 px round Send / Stop button on the right; the left of the
+  row is empty and kept for the tools picker and mentions (plan 05): the agent is picked in the top
+  bar, not in the box. A one-line disclaimer under it.
 - **Empty state** (new chat): the panda, the greeting "What should we get done?" and what the chosen
   agent does, the composer in the middle of the page on the plain canvas (no glow), and suggestion
-  chips under it (a chip fills the box, it does not send); the agent and release pickers are pills
-  inside the composer.
+  chips under it (a chip fills the box, it does not send); the agent picker is in the top bar, in the
+  same place as on a thread.
+
+## Agent picker
+
+Choosing the agent is like choosing a model in ChatGPT, not a form field (owner, 2026-10-01: "a little more
+like the new ChatGPT"). It is a menu button in the top bar, on the new chat and on every thread
+(`features/agents/components/agent-menu.tsx`).
+
+- **The button**: ghost, 36 px, the agent's name (16 px, weight 500), then muted "· production" when the
+  agent offers releases (the one that will be used, the default channel until another is chosen), then a
+  chevron. Its name is "Agent: Coder · production" (a menu button: `aria-haspopup="menu"`,
+  `aria-expanded`). While the list loads it is a skeleton; if it could not be read it says "Agents
+  unavailable" and the menu holds Retry.
+- **The menu** (300 to 380 px, `--popover`, 12 px radius, shadow like the composer's): the label "Agents",
+  then one **radio item** per agent (`role="menuitemradio"`, `aria-checked`): its avatar (24 px), its
+  name (14 px, weight 500) and what it does in one muted line (12 px, from its live card), and a check
+  in `--brand` on the chosen one. When the chosen agent offers releases, a separator and a second group,
+  "Release": the channels (`production — coder-r47`) and then the revisions, in the **same menu**, not
+  a sub-menu, so it works from a phone and from the keyboard. Choosing an item closes the menu. The list
+  is read again each time the menu opens: releases are the agent's card right now (ADR 0008).
+- **Keyboard**: Enter, Space or the down arrow on the button opens it; the arrows move over the items,
+  letters jump to an agent, Enter or Space chooses, Escape closes it and the focus goes back to the button.
+- **On an existing thread** a thread has one agent, so the menu shows it (checked, with its pinned
+  release) and offers the others as **"Start a new chat with …"** links: they open a new chat with that
+  agent already chosen (`/?agent=reviewer`). They are not radio items, because nothing in this chat changes.
+  Changing the agent of a thread will be a fork (plan 08, F-series): the conversation so far copied into a
+  new thread that talks to the other agent; until it is built, this is what the menu offers.
+- **A notice slot** under the lists, inside the menu: a failed refresh of the list is said there ("Could not
+  refresh the agents: …", with Retry, the list stays as it was), and the agent registry's "unreachable,
+  showing the configured agents only" (plan 05) goes in the same place.
 
 ## A turn
 
