@@ -44,6 +44,16 @@ async function waitForState(id: string, state: Thread["state"]) {
   throw new Error(`thread ${id} never reached ${state}`);
 }
 
+async function rename(id: string, title: string): Promise<Thread> {
+  const res = await fetch(`${base}/api/threads/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  expect(res.status).toBe(200);
+  return (await res.json()) as Thread;
+}
+
 let n = 0;
 const newThreadId = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
 
@@ -283,6 +293,23 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(answer.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // a person renames the thread while it works, cancels it, and renames it again (`patchThread`)
+    title: async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "slow work" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "working");
+      await rename(id, "Fix the login");
+      expect((await fetch(`${base}/api/threads/${id}/cancel`, { method: "POST" })).status).toBe(
+        202,
+      );
+      await waitForState(id, "cancelled");
+      await rename(id, "Fix the login page");
+      return { agent: "reviewer", last: "cancelled" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,
@@ -314,6 +341,31 @@ function untimed(list: Frame[]): Frame[] {
       timed.startedAt = "<timestamp>";
     }
     return { ...f, event: { ...f.event, content: timed } };
+  });
+}
+
+/**
+ * A replay says the title the thread has when the viewer connects, in every snapshot before a
+ * rename (docs/api/agui.md, "Titles"); the golden's projection starts from the first message's
+ * words, which is what the thread was created with. Until the first rename's own frame the
+ * golden's title is put back.
+ */
+function atCreation(list: Frame[], name: string): Frame[] {
+  if (name !== "title") return list;
+  const log = JSON.parse(
+    readFileSync(path.join(DIR, "..", `${name}.events.json`), "utf8"),
+  ) as Event[];
+  const rename = log.find((e) => e.kind === "thread_titled");
+  const created = log.find((e) => e.kind === "user_message");
+  if (!rename || !created) throw new Error("the golden has no rename or no message");
+  // the first rename's own frame is the snapshot with its seq as the resume point
+  const cut = list.findIndex((f) => f.id === rename.seq);
+  expect(cut).toBeGreaterThan(0);
+  return list.map((f, i) => {
+    if (i >= cut || f.event.type !== "STATE_SNAPSHOT") return f;
+    const snapshot = f.event.snapshot as { thread: Record<string, unknown> };
+    const thread = { ...snapshot.thread, title: String(created.data.text) };
+    return { ...f, event: { ...f.event, snapshot: { ...snapshot, thread } } };
   });
 }
 
@@ -357,7 +409,7 @@ describe("the mock server against the AG-UI goldens", () => {
       const { last } = await run(id);
       await waitForState(id, last);
       const viewer = await frames(await connect(base, id, { mode: "run" }));
-      expect(untimed(normalise(viewer, id))).toEqual(untimed(golden));
+      expect(untimed(atCreation(normalise(viewer, id), name))).toEqual(untimed(golden));
     });
   }
 

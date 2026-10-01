@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::ids::{AgentId, ThreadId};
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
+use crate::title::TitleLedger;
 use crate::ui_catalog::UiCatalogLedger;
 
 /// Most findings a source keeps, and so most the rework prompt quotes (ADR 0018).
@@ -309,6 +310,11 @@ pub struct Job {
     /// ledger stored before the field existed has none.
     #[serde(skip_serializing_if = "StepLedger::is_empty")]
     pub steps: StepLedger,
+    /// Whose words the thread's title is (a person's rename is never replaced). Belongs to the
+    /// conversation, not to a job: a new job keeps it ([`Job::next`]). A ledger stored before the
+    /// field existed has the first message's words, which is what its thread has.
+    #[serde(skip_serializing_if = "TitleLedger::is_empty")]
+    pub title: TitleLedger,
 }
 
 fn is_first_job(number: &u32) -> bool {
@@ -330,6 +336,7 @@ impl Default for Job {
             hold: None,
             catalog: UiCatalogLedger::default(),
             steps: StepLedger::default(),
+            title: TitleLedger::default(),
         }
     }
 }
@@ -357,6 +364,7 @@ impl Job {
             gate: self.gate.clone(),
             verification: self.verification,
             catalog: self.catalog.clone(),
+            title: self.title,
             ..Job::default()
         }
     }

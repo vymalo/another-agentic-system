@@ -75,7 +75,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0002](docs/decisions/0002-verification-over-consensus.md) | Verification over consensus |
 | [0003](docs/decisions/0003-git-as-durable-state-ephemeral-workers.md) | git is the durable artifact; workers are ephemeral |
 | [0004](docs/decisions/0004-closed-enums-over-dyn-registry.md) | Protocols as closed enums, not a dynamic adapter registry |
-| [0005](docs/decisions/0005-openai-compatible-model-endpoint.md) | Model access through any OpenAI-compatible endpoint |
+| [0005](docs/decisions/0005-openai-compatible-model-endpoint.md) | Model access through any OpenAI-compatible endpoint. *Amended 2026-10-01: the orchestrator's first model call, thread titles, through the `ChatModel` port* |
 | [0006](docs/decisions/0006-assistant-ui-external-store.md) | Chat surface: Next.js + assistant-ui (an external store at first, now the AG-UI runtime per 0012) |
 | [0007](docs/decisions/0007-protocol-only-dependencies.md) | Protocol-only dependencies: an agnostic orchestration layer |
 | [0008](docs/decisions/0008-platform-integration-via-a2a-extension.md) | Optional another-agentic-platform integration via an A2A extension |
@@ -96,7 +96,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0024](docs/decisions/0024-mcp-tools-attached-per-conversation.md) | MCP tools attached per conversation from the UI and relayed to agents by the orchestrator, which holds the credentials. *Accepted 2026-10-01 (owner's delegation)* |
 | [0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md) | Nested steps: events carry their source path; a collapsible tree in the web. *Accepted 2026-10-01 (owner's delegation)* |
 | [0026](docs/decisions/0026-agent-mentions-as-structured-references.md) | Agent mentions as structured references; the addressed agent coordinates the mentioned agents with `ask_agent`. *Accepted 2026-10-01 (owner's delegation)* |
-| [0027](docs/decisions/0027-live-text-relayed-not-stored.md) | Live text is relayed, not stored: an agent's words while it writes them go over the `Wakeup` port (`orch_live`) to every process and are shown by an overlay; the log keeps only the final message; amends 0012. *Accepted 2026-10-01 (owner's delegation); the port is built, the relay follows* |
+| [0027](docs/decisions/0027-live-text-relayed-not-stored.md) | Live text is relayed, not stored: an agent's words while it writes them go over the `Wakeup` port (`orch_live`) to every process and are shown by an overlay; the log keeps only the final message; amends 0012. *Accepted 2026-10-01 (owner's delegation); built: the port, the overlay, the relay and `text-stream/v1`* |
 | [0028](docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md) | A repository's `devcontainer.json` is its work environment: the coder builds it with the official CLI against a rootless Podman service; the first repository of a workspace decides and the `workspace` image is the default; Kubernetes waits for the platform's sandbox provider. *Accepted 2026-10-01 (owner's decision); not built (MVP slice 7b)* |
 
 ## Local development

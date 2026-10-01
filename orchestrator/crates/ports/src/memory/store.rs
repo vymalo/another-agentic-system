@@ -78,6 +78,17 @@ impl MemoryStore {
         }
     }
 
+    /// Every outbox row of `thread`, whatever its status, oldest first: what a test looks at to see
+    /// what was asked and how each request ended (the port reads only the open ones).
+    pub fn outbox_of(&self, thread: ThreadId) -> Vec<OutboxItem> {
+        self.lock()
+            .outbox
+            .iter()
+            .filter(|r| r.thread_id == thread)
+            .cloned()
+            .collect()
+    }
+
     /// How many commits have been refused so far because the claim they carried was lost: what
     /// a test waits for to know that a worker whose claim was taken over has tried to write.
     pub fn fenced_commits(&self) -> usize {
@@ -135,6 +146,9 @@ fn write_commit(
     entry.record.state = commit.new_state;
     if let Some(job) = commit.job {
         entry.record.job = job;
+    }
+    if let Some(title) = commit.title {
+        entry.record.title = title;
     }
     entry.record.version += 1;
     entry.record.updated_at = commit.now;
@@ -284,6 +298,7 @@ impl ThreadStore for MemoryStore {
         let first = Commit {
             inbox: None,
             finishes_outbox: None,
+            title: None,
             ..first
         };
         let mut inner = self.lock();
@@ -515,7 +530,7 @@ impl ThreadStore for MemoryStore {
                 continue;
             }
             let blocked = match row.kind {
-                OutboxKind::Cancel | OutboxKind::Verify => false,
+                OutboxKind::Cancel | OutboxKind::Verify | OutboxKind::Title => false,
                 OutboxKind::Delegate => inner.outbox[..i].iter().any(|older| {
                     older.thread_id == row.thread_id
                         && older.kind == OutboxKind::Delegate

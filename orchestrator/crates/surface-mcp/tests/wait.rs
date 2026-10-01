@@ -19,7 +19,8 @@ use orch_surface_mcp::wait::{ProgressSink, WaitEnd, WaitRequest, Waited, wait_fo
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
+type Ports =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
 
 const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
@@ -108,6 +109,7 @@ impl World {
                     agents: self.agent.clone(),
                     clock: SystemClock,
                     ids: SeqIds::default(),
+                    model: orch_ports::NoModel,
                 },
                 AgentDirectory::new(vec![entry]),
                 AppConfig {

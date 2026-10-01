@@ -396,7 +396,7 @@ fn fence_for(text: &str) -> String {
 }
 
 /// `text` in a code fence that it cannot escape, with `label` after the opening fence.
-fn fenced(label: &str, text: &str) -> String {
+pub(crate) fn fenced(label: &str, text: &str) -> String {
     let fence = fence_for(text);
     format!("{fence}{label}\n{text}\n{fence}")
 }

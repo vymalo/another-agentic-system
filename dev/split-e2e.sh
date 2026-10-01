@@ -19,8 +19,11 @@
 #   * that worker is killed (`docker compose kill -s SIGKILL`) mid-task, and the thread still ends
 #     `done` on the other worker: it takes the row over when the 5 s lease lapses;
 #   * the delegate row was claimed twice (attempts = 2) and ended `delivered`;
-#   * the thread's frames (GET /agui/threads/{id}/connect?mode=run) hold exactly one RUN_FINISHED
-#     (success) and no RUN_ERROR: the task finished once, not once per worker;
+#   * the thread's frames (GET /agui/threads/{id}/connect?mode=run) hold exactly one run of the agent that
+#     ends RUN_FINISHED (success) and no RUN_ERROR: the task finished once, not once per worker. A run that
+#     holds nothing but a state snapshot is not the agent's: the title the orchestrator's model writes after
+#     the reply (ADR 0005, `thread_titled`) is one, a run of its own after the agent's, and may or may not be
+#     there yet when the frames are read;
 #   * the control plane's /metrics then reports no due and no leased row;
 #   * live text across the processes (ADR 0027): a thread with the keyword `stream` (a reply in six
 #     chunks over about 6 s, dev/README.md) is held by the surviving worker, and a viewer connected
@@ -212,12 +215,20 @@ else
 fi
 
 # --- the events -----------------------------------------------------------------------------------------------------
-dones=$(jq -r '[.[] | select(.type == "RUN_FINISHED" and (.outcome.type // "success") == "success")] | length' "$events" 2>/dev/null || echo '?')
+# The frames are cut into runs at each RUN_STARTED. A run whose frames are all RUN_STARTED, STATE_SNAPSHOT and
+# RUN_FINISHED holds no work of the agent (a title or a rename outside a run is one: docs/api/agui.md "Titles"),
+# so only the other runs are the agent's. Any RUN_ERROR frame counts, in whatever run.
+# shellcheck disable=SC2016 # a jq program: its $ are jq's
+agent_runs='def runs: reduce .[] as $f ([]; if $f.type == "RUN_STARTED" then . + [[$f]] elif length == 0 then . else .[length - 1] += [$f] end);
+  def state_only: all(.[]; .type == "RUN_STARTED" or .type == "STATE_SNAPSHOT" or .type == "RUN_FINISHED");
+  [runs[] | select(state_only | not)]'
+dones=$(jq -r "$agent_runs"' | [.[] | select(.[-1].type == "RUN_FINISHED" and (.[-1].outcome.type // "success") == "success")] | length' "$events" 2>/dev/null || echo '?')
+agent_total=$(jq -r "$agent_runs"' | length' "$events" 2>/dev/null || echo '?')
 errors=$(jq -r '[.[] | select(.type == "RUN_ERROR")] | length' "$events" 2>/dev/null || echo '?')
-if [ "$dones" = 1 ] && [ "$errors" = 0 ]; then
-  ok "exactly one RUN_FINISHED (success) and no RUN_ERROR"
+if [ "$dones" = 1 ] && [ "$agent_total" = 1 ] && [ "$errors" = 0 ]; then
+  ok "exactly one run of the agent, ended RUN_FINISHED (success), and no RUN_ERROR"
 else
-  bad "$dones RUN_FINISHED (success) and $errors RUN_ERROR frames, want exactly 1 and 0 ($(jq -c '[.[] | .type]' "$events" 2>/dev/null))"
+  bad "$dones of $agent_total runs of the agent ended RUN_FINISHED (success) and $errors RUN_ERROR frames, want exactly 1 of 1 and 0 ($(jq -c '[.[] | .type]' "$events" 2>/dev/null))"
 fi
 
 # --- the queue is empty again ------------------------------------------------------------------------------------------

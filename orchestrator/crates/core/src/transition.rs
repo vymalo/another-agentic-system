@@ -30,6 +30,7 @@ use crate::gate::{
 use crate::ids::{AgentId, UserId};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
+use crate::title::{ThreadTitledData, TitleSource, TitledBy, check_title, speaks};
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
 use crate::ui_catalog::{UiCatalogData, UiDelivery};
 use crate::verify;
@@ -149,6 +150,34 @@ pub enum Input {
     },
     /// A deadline armed by [`Command::Schedule`] passed.
     TimerFired(Timer),
+    /// The user renamed the thread. Valid in every state, finished or not: a title is a label of
+    /// the conversation, not a step of a job. The caller has checked `title`
+    /// ([`check_title`](crate::check_title)). From then on the thread's title is the person's, and
+    /// nothing else replaces it.
+    Rename {
+        /// Who renamed it.
+        user: UserId,
+        /// The new title.
+        title: String,
+    },
+    /// The model wrote a title for the thread, asked for by [`Command::RequestTitle`]. The
+    /// dispatcher built it from the model's answer ([`clean_title`](crate::clean_title)). It is the
+    /// thread's title if the thread still has the first message's words, in any state of the
+    /// thread; a title a person wrote (or the model already wrote) is not replaced, and nothing
+    /// is logged. The core checks the title again ([`check_title`]).
+    Titled {
+        /// The request it answers.
+        ask: u8,
+        /// The title.
+        title: String,
+    },
+    /// The model had no title to give for the request `ask` (the conversation has no topic yet, it
+    /// could not be reached, the answer was not usable): nothing changes, and the next reply of
+    /// the agent asks again while there are asks left.
+    TitleDeclined {
+        /// The request it answers.
+        ask: u8,
+    },
 }
 
 impl Input {
@@ -168,6 +197,9 @@ impl Input {
             Input::VerifierReported { .. } => "verifier report",
             Input::VerifierFailed { .. } => "verifier failure",
             Input::TimerFired(_) => "timer",
+            Input::Rename { .. } => "rename",
+            Input::Titled { .. } => "title",
+            Input::TitleDeclined { .. } => "title declined",
         }
     }
 }
@@ -224,6 +256,17 @@ pub enum Command {
         after: SignedDuration,
         /// What to feed back.
         timer: Timer,
+    },
+    /// Store this as the thread's title (`threads.title`), in the commit of the `thread_titled`
+    /// event that says so.
+    SetTitle(String),
+    /// Ask the model for a title of the thread (outbox kind `title`); `ask` is the number of the
+    /// request, from 1 ([`MAX_TITLE_ASKS`](crate::MAX_TITLE_ASKS) at most per thread). The
+    /// dispatcher answers with exactly one [`Input::Titled`] or [`Input::TitleDeclined`] for it.
+    /// An application with no model to ask drops it.
+    RequestTitle {
+        /// Which request.
+        ask: u8,
     },
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
     /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
@@ -534,13 +577,17 @@ fn decide(
             agent,
             revision,
             update,
-        } => agent_input(
-            state,
-            job,
-            Actor::agent(agent, revision.clone()),
-            update,
-            input,
-        ),
+        } => {
+            let (next, mut cmds) = agent_input(
+                state,
+                job,
+                Actor::agent(agent, revision.clone()),
+                update,
+                input,
+            )?;
+            ask_for_title(job, &mut cmds);
+            Ok((next, cmds))
+        }
         Input::Step { actor, report } => match state {
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
                 Err(TransitionError::InvalidInState {
@@ -625,6 +672,63 @@ fn decide(
             reason,
         } => Ok(verifier_failed(state, job, *attempt, *verification, reason)),
         Input::TimerFired(timer) => Ok(timer_fired(state, job, *timer)),
+        Input::Titled { ask, title } => {
+            job.title.answered_ask(*ask);
+            let usable = check_title(title).ok();
+            match usable {
+                Some(title) if job.title.source() == TitleSource::FirstMessage => {
+                    job.title.written_by(TitledBy::Model);
+                    Ok((
+                        state,
+                        vec![
+                            append(
+                                Actor::system(),
+                                EventBody::ThreadTitled(ThreadTitledData {
+                                    title: title.clone(),
+                                    source: TitledBy::Model,
+                                }),
+                            ),
+                            Command::SetTitle(title),
+                        ],
+                    ))
+                }
+                // a person's rename (or an earlier title) came first, or the title is not usable
+                Some(_) | None => Ok((state, vec![])),
+            }
+        }
+        Input::TitleDeclined { ask } => {
+            job.title.answered_ask(*ask);
+            Ok((state, vec![]))
+        }
+        Input::Rename { user, title } => {
+            job.title.written_by(TitledBy::User);
+            Ok((
+                state,
+                vec![
+                    append(
+                        Actor::user(user),
+                        EventBody::ThreadTitled(ThreadTitledData {
+                            title: title.clone(),
+                            source: TitledBy::User,
+                        }),
+                    ),
+                    Command::SetTitle(title.clone()),
+                ],
+            ))
+        }
+    }
+}
+
+/// The agent has said something: when it is words the conversation can be titled by, and the
+/// thread still has the first message's words, the model is asked for a title (once for the
+/// input, [`MAX_TITLE_ASKS`](crate::MAX_TITLE_ASKS) times for the thread).
+fn ask_for_title(job: &mut Job, cmds: &mut Vec<Command>) {
+    let said = cmds
+        .iter()
+        .any(|c| matches!(c, Command::Append(d) if speaks(&d.body)));
+    if said && job.title.may_ask() {
+        let ask = job.title.asked();
+        cmds.push(Command::RequestTitle { ask });
     }
 }
 

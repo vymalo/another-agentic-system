@@ -17,7 +17,8 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
+pub type Ports =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
@@ -263,6 +264,7 @@ impl Harness {
                     agents: agent.clone(),
                     clock: SystemClock,
                     ids: SeqIds::default(),
+                    model: orch_ports::NoModel,
                 },
                 AgentDirectory::new(vec![entry("coder", "Coder"), entry("plain", "Plain")]),
                 AppConfig {

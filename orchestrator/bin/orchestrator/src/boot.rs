@@ -40,6 +40,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ConfigError, Surface};
 use crate::local::{self, Agents, Local};
+use crate::model::ConfiguredModel;
 
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
 /// retrying in the background, and consumers poll in the meantime.
@@ -225,7 +226,7 @@ fn thread_tools_routes<P: orch_ports::Ports>(
     Ok(orch_surface_thread_tools::routes(Arc::clone(app), config))
 }
 
-type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids>;
+type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids, ConfiguredModel>;
 
 /// The A2A client's configuration: the defaults, and the issuer of the thread-tools grants when the
 /// keys and the URL are set (every role has them: the worker sends, the control plane serves).
@@ -309,6 +310,8 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                 agents,
                 clock: SystemClock,
                 ids: UuidV7Ids,
+                model: ConfiguredModel::build(cfg.model.as_ref())
+                    .context("cannot build the title model (ORCH_MODEL_BASE_URL)")?,
             },
             AgentDirectory::new(cfg.agents.clone()),
             cfg.app_config(),

@@ -131,3 +131,8 @@ services:
       # The generic signed webhook is not used live: a secret of its own that nothing knows.
       WEBHOOK_GENERIC_SECRETS: "${WEBHOOK_GENERIC_SECRETS:-${WEBHOOK_GITHUB_SECRETS}}"
       MCP_TOKEN_DEV: "${MCP_TOKEN_DEV:?set MCP_TOKEN_DEV in .env (at least 32 bytes: openssl rand -hex 32)}"
+      # The model that writes the thread titles: the agents' endpoint and key, and `TITLE_MODEL` (a cheap model is enough),
+      # else MODEL. The offline `mock-model` is gone from this stack.
+      ORCH_MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
+      ORCH_MODEL_API_KEY: "${MODEL_API_KEY:-}"
+      ORCH_TITLE_MODEL: "${TITLE_MODEL:-${MODEL:?set MODEL in .env (the model alias)}}"

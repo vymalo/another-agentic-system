@@ -162,6 +162,8 @@ fn appended(cmds: &[Command]) -> impl Iterator<Item = &EventBody> {
         | Command::RequestCancel { .. }
         | Command::Watch { .. }
         | Command::Schedule { .. }
+        | Command::SetTitle(_)
+        | Command::RequestTitle { .. }
         | Command::RequestVerification { .. } => None,
     })
 }

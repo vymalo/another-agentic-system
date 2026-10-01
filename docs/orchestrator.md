@@ -69,7 +69,7 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has seventeen
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has eighteen
 library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
@@ -80,12 +80,13 @@ flowchart TB
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
   subgraph G_PORTS["Ports: traits only"]
-    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
+    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, ChatModel, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
   end
   subgraph G_ADAPT["Adapters: implement the ports"]
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
     a2a["<b>orch-agent-a2a</b><br/>AgentClient over A2A 1.0<br/>a2a-client-lf"]
     adam["<b>orch-agent-adam</b><br/>AgentClient over adam-rs agents<br/>hosted in this process (feature agent-local)"]
+    openai["<b>orch-model-openai</b><br/>ChatModel over an OpenAI-compatible<br/>chat completions endpoint (thread titles)"]
   end
   subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
@@ -197,6 +198,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
+| `orch-model-openai` (`crates/model-openai`) | `ChatModel` over an OpenAI-compatible `POST {base}/chat/completions`: the orchestrator's first model call, the title of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); `reqwest` only, no vendor SDK, the key never in an error or a `Debug` | **Built** |
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
@@ -446,8 +448,8 @@ The turn as the code runs it, step by step, is a sequence diagram in
 
 ## Command (outbox) lifecycle
 
-**Built.** Two outbox kinds exist: `delegate` (send the user's text to the agent) and `cancel`
-(ask the agent to cancel its task). Rows have the statuses below (`outbox.status`, `OutboxStatus`
+**Built.** Four outbox kinds exist: `delegate` (send the user's text to the agent), `cancel`
+(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) and `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)). A `cancel`, a `verify` and a `title` row are claimable whatever the thread's older delegations. Rows have the statuses below (`outbox.status`, `OutboxStatus`
 in `orch-ports`):
 
 ```mermaid
@@ -673,6 +675,9 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
 | `CancelledBeforeStart` | → `cancelled`; `thread_state` | → `cancelled` | No-op |
 | `CancelRejected` | State kept; append `error` | Same | No-op |
+| Agent message (final) or a status that ends or interrupts the turn with words, **while the thread has the first message's words** | As the row of the update, and `RequestTitle { ask }` is appended when the ledger may ask (fewer than 2 asks, none in flight): see [Thread titles](#thread-titles-mvp-slice-6) | Same | `Err(InvalidInState)` |
+| `Titled { ask, title }` / `TitleDeclined { ask }` (the title worker's inputs) | `Titled`: if the thread still has the first words, append `thread_titled { title, source: model }` and `SetTitle`, ledger `Model`; else nothing. `TitleDeclined`: nothing. Both mark the ask answered | Same | Same: valid in every state |
+| `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
 
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
 `cancelled`; entering `queued` or `working` is implied by `user_message` and `agent_status`. The
@@ -695,6 +700,7 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `attempt` | 1 |
 | `task` | the new message |
 | `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
+| `title` | kept: whose title the thread has (the first message's words, the model's or a person's) and how often the model was asked belong to the conversation, not to a job |
 | `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps` | cleared |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
@@ -940,6 +946,65 @@ stateDiagram-v2
   its own credentials; it never receives the worker's.
 - **The chat.** The verifier is a subagent of its own (`sub-verify-<n>`, named after the agent); its verdict is a
   `vymalo.check` card with source `verifier` ([`api/agui.md`](api/agui.md#verification-the-gate)).
+
+### Thread titles (MVP slice 6)
+
+**Built** ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md) status note; the contract is `thread_titled`
+and `patchThread` in [`api/chat-api.yaml`](api/chat-api.yaml), the projection is [`agui.md`](api/agui.md#titles)). A thread
+is created with the first words of its first message as its title. Two things change it, and both are one commit of
+the event, the stored title (`Commit.title`) and the ledger (`Job.title`: whose title it is, how many times the model was
+asked, which ask was answered):
+
+```mermaid
+sequenceDiagram
+  participant P as Person
+  participant A as App / core
+  participant D as Dispatcher (title worker)
+  participant M as ChatModel (OpenAI-compatible)
+  A->>A: the agent says something (final message, or completed / input_required with words)
+  A->>A: ledger: source first_message, asks < 2, the last ask answered: asks + 1
+  A-->>D: outbox row `title` {ask}, in the same commit (only when ORCH_TITLE_MODEL is set)
+  D->>D: read the head of the log, build the prompt (6 messages, fenced, as data)
+  D->>M: POST /chat/completions (timeout, up to 3 tries on transient errors)
+  M-->>D: a line of text, NONE, or a failure
+  D->>A: Input::Titled {ask, title} or Input::TitleDeclined {ask}, key title:<row>, row delivered
+  A->>A: Titled while first_message: thread_titled {model} and SetTitle (otherwise nothing)
+  P->>A: PATCH /api/threads/{id} {title} (any state): Input::Rename
+  A->>A: thread_titled {user}, SetTitle, source user: final
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> FirstMessage: the thread is created
+  FirstMessage --> FirstMessage: the model said NONE, failed, or is not configured (the next reply asks again, 2 asks at most)
+  FirstMessage --> Model: Titled (thread_titled, source model)
+  FirstMessage --> User: Rename
+  Model --> User: Rename
+  User --> User: Rename (the last one is the title)
+```
+
+- **When it asks.** `Input::Agent` appends a final `agent_message`, or a `completed`, `input_required` or `auth_required`
+  status with words, and the ledger says the thread still has the first words (`TitleSource::FirstMessage`), has used
+  fewer than `MAX_TITLE_ASKS` (2) asks and has no ask in flight (`answered >= asks`: an agent that says two things in
+  one reply asks once): `asks += 1` and `Command::RequestTitle { ask }`. The second ask therefore comes only after the
+  first was answered with none. The ledger counts the ask whether or not the application can act on it: with
+  `ORCH_TITLE_MODEL` unset the `App` drops the command (no row, no model), so a thread asked while titles were off keeps
+  the first words for good; titles apply to the threads whose first reply comes after the model is configured.
+- **What the model is shown** (`orch_core::title_prompt`, pure): the first six messages of the people and the agent
+  (final messages, and the words of a status that ends or interrupts the turn), each cut at 500 characters and all of
+  them at 4 KiB, in a code fence their text cannot close (the same `fenced` the verifier's prompt uses), and an
+  instruction that says it is data to title and never instructions to follow, and to answer with 3 to 6 words or
+  exactly `NONE`. The worker reads the head of the log (128 events) when the row is worked, so the row holds nothing of it.
+- **What comes back** (`orch_core::clean_title`, pure): the first line, quotes, markdown and control characters taken
+  off, spaces collapsed, 80 characters at most (cut at a word, with `…`), and `None` for nothing or `NONE`; the core
+  checks the title again (`check_title`) before it appends anything, and every screen renders it as text.
+- **It never fails a thread.** A transient failure (a timeout, a 5xx, a rate limit: `Classify`) is tried up to three times
+  with the dispatcher's backoff, each try bounded by `ORCH_MODEL_TIMEOUT_SECS`; a refusal for good, a missing key and
+  `NoModel` are declined at once. A declined request is `Input::TitleDeclined`: nothing is logged and the thread keeps
+  its words. A row whose thread was renamed meanwhile ends `skipped` and the model is not asked.
+- **A person's title is final.** `Input::Rename` is valid in every state, appends `thread_titled { source: user }` and
+  makes the ledger say `User`; nothing the model writes afterwards is logged, and the model is not asked again.
+  `Job::next()` keeps the ledger: a title is the conversation's, not a job's.
 
 ### Exporting a thread
 
@@ -1327,7 +1392,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1382,6 +1447,11 @@ so that parallel slices do not collide:
 - **`0007` (steps, built):** `events.kind` gains `agent_step` ([ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md)).
   The ledger of open steps lives inside `threads.job` (`steps`; a ledger without it has none open), so no column is
   added.
+- **`0008` (thread titles, built):** `events.kind` gains `thread_titled` (a person renamed the thread). The title is
+  written to `threads.title` in the commit of the event that says so (`Commit.title`, `COALESCE`d: a commit without
+  one leaves it), and whose title the thread has lives inside `threads.job` (`title`; a ledger without it has the
+  first message's words), so no column is added.
+- **`0009` (title requests, built):** `outbox.kind` gains `title` ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); the payload is `{"title": {"ask": n}}` inside the existing JSON column. Roll out the build that understands it before one writes a row (an older build dead-letters a row it cannot read).
 
 ```mermaid
 erDiagram
@@ -1422,6 +1492,7 @@ erDiagram
 | `threads.job` | The job ledger: the gate policy copied at creation, the attempt, the pushed commit, the check results, a hold | One thread, one job for steps 2 to 6; step 4's child jobs get a separate table later |
 | `inbox` | Webhook reports and timers | `UNIQUE (source, idempotency_key)` dedupes; timers are rows with `source = 'timer'` and `available_at = now + after`; a row that matches no watch is `parked` and expires after `INBOX_PARKED_TTL_SECS`; claimed with `SKIP LOCKED` under a lease fenced like an outbox lease |
 | `watches` | Which thread waits for which key | Inserted by a commit that carries `Watch { key }`, in the same transaction that re-arms parked rows with that key |
+| `outbox.kind = 'title'` | A request to the model for the thread's title (**built**, slice 6, migration `0009`); payload `{"title": {"ask": n}}` | Written in the commit of the agent's reply that asks; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Titled` or `Input::TitleDeclined`, key `title:<row>`) or `skipped` (the person renamed first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'verify'`, `outbox.task_id` | A verification request to the verifier agent, and its A2A task (**built**, slice 10) | The dispatcher never turns a verifier's envelopes into `Input::Agent`; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; a `verify` row is not ordered behind the thread's delegations |
 
 **Built:** `Commit` gains `watches`, `timers` and `inbox: Option<InboxLease>`, and the inbox methods

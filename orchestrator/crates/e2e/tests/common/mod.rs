@@ -21,7 +21,7 @@ use orch_core::{
     AgentId, AgentTarget, CiConclusion, CiPolicy, CiProvider, CiReport, Event, GatePolicy, Input,
     ThreadId, ThreadRecord, UserId,
 };
-use orch_ports::memory::{MemoryStore, MemoryWakeup};
+use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedModel};
 use orch_ports::{
     AgentEndpoint, InboxItem, InboxLease, InboxPayload, PortSet, Ports, SystemClock, ThreadStore,
     UuidV7Ids, Wakeup,
@@ -42,7 +42,7 @@ pub use orch_testsupport::{eventually, shape};
 #[path = "../../../store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
-pub type Stack<S, W> = PortSet<S, W, A2aAgentClient, SystemClock, UuidV7Ids>;
+pub type Stack<S, W> = PortSet<S, W, A2aAgentClient, SystemClock, UuidV7Ids, ScriptedModel>;
 
 /// Which store a scenario runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +135,9 @@ pub struct Setup {
     /// Which sources the instances honour (the build's rules by default; a test of a machinery
     /// underneath a source this build still refuses, such as the verifier, widens it).
     pub gate_rules: GateRules,
+    /// Whether the instances have a title model (the scripted one, `World::model`, asked as
+    /// `mock-title`): without it a thread keeps the first words of its first message.
+    pub titles: bool,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -176,6 +179,7 @@ impl Default for Setup {
             },
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
+            titles: false,
         }
     }
 }
@@ -217,6 +221,9 @@ pub struct World {
     gate: GatePolicy,
     target_gates: BTreeMap<AgentId, GateLayer>,
     gate_rules: GateRules,
+    /// The model that titles threads; asked only when the setup has [`Setup::titles`].
+    pub model: ScriptedModel,
+    titles: bool,
     /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
     /// the first instance with the thread-tools surface serves on it.
     thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
@@ -283,6 +290,8 @@ impl World {
             gate: setup.gate,
             target_gates: setup.target_gates,
             gate_rules: setup.gate_rules,
+            model: ScriptedModel::default(),
+            titles: setup.titles,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
@@ -318,10 +327,12 @@ impl World {
                     agents: self.agents.clone(),
                     clock: SystemClock,
                     ids: UuidV7Ids,
+                    model: self.model.clone(),
                 },
                 self.directory(),
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
+                    title_model: self.titles.then(|| "mock-title".to_owned()),
                     gate: self.gate.clone(),
                     target_gates: self.target_gates.clone(),
                     gate_rules: self.gate_rules.clone(),

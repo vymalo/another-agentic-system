@@ -1,0 +1,27 @@
+[package]
+name = "orch-model-openai"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "ChatModel over an OpenAI-compatible chat completions endpoint (POST {base}/chat/completions)."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+secrecy.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["time", "net"] }
+
+[lints]
+workspace = true

@@ -29,7 +29,8 @@ const SHA: &str = "cccccccccccccccccccccccccccccccccccccccc";
 const REPO: &str = "github.com/o/r";
 const CI_TIMEOUT_SECS: i64 = 60;
 
-type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds>;
+type Ports =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds, orch_ports::NoModel>;
 type TestApp = App<Ports>;
 
 fn t0() -> Timestamp {
@@ -68,6 +69,7 @@ impl Rig {
                     agents: ScriptedAgent::new(),
                     clock: clock.clone(),
                     ids: SeqIds::default(),
+                    model: orch_ports::NoModel,
                 },
                 directory(),
                 app_config(),
@@ -1101,6 +1103,7 @@ async fn a_watch_that_lands_between_the_lookup_and_the_park_is_not_missed() {
                 agents: ScriptedAgent::new(),
                 clock: clock.clone(),
                 ids: SeqIds::default(),
+                model: orch_ports::NoModel,
             },
             directory(),
             app_config(),

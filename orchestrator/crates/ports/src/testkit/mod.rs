@@ -1,5 +1,6 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
-//! [`Wakeup`](crate::Wakeup) and [`AgentClient`](crate::AgentClient) implementation must pass it.
+//! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient) and [`ChatModel`](crate::ChatModel)
+//! implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -8,6 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 pub mod agent_client;
+pub mod chat_model;
 pub mod thread_store;
 pub mod wakeup;
 
@@ -27,7 +29,8 @@ macro_rules! thread_store_conformance {
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
             job_roundtrip job_is_written_with_the_state gate_events_roundtrip ui_catalog_roundtrip
-            ui_catalog_event_by_digest agent_step_roundtrip
+            ui_catalog_event_by_digest agent_step_roundtrip thread_titled_roundtrip
+            title_rows_are_unordered_and_roundtrip
             inbox_dedupes_by_source_and_key inbox_claims_are_leases_and_lapse
             inbox_claimers_never_share_a_row inbox_parks_and_rearms_in_one_commit
             inbox_park_finds_a_watch_that_appeared inbox_commit_is_fenced_and_marks_applied
@@ -134,6 +137,32 @@ macro_rules! agent_client_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::agent_client::$case(fixture).await,
                     None => eprintln!("skipped: no agent available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `ChatModel` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated [`ModelFixture`](chat_model::ModelFixture)
+/// (`None` skips the suite). Each case gives up after 10 s. The calling crate needs `tokio`
+/// (with `macros` and `rt`) as a dev-dependency.
+#[macro_export]
+macro_rules! chat_model_conformance {
+    ($make:path) => {
+        $crate::chat_model_conformance!(@cases $make;
+            the_answer_is_the_models_text an_endpoint_that_fails_is_transient
+            nonsense_is_not_an_answer a_rate_limit_is_rate_limited a_refusal_is_permanent
+            a_refused_credential_is_unauthenticated the_credential_is_never_in_an_error
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::chat_model::$case(fixture).await,
+                    None => eprintln!("skipped: no model available"),
                 }
             }
         )*

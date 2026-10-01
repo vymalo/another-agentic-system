@@ -48,6 +48,7 @@ orch-surface-thread-tools = { workspace = true, optional = true }
 orch-thread-token = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
+orch-model-openai.workspace = true
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true

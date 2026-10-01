@@ -16,7 +16,8 @@ use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock};
 use tokio::task::JoinHandle;
 
-type Stack = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
+type Stack =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
 
 const ALICE: &str = "alice@example.com";
 
@@ -53,6 +54,7 @@ fn new_app() -> Arc<App<Stack>> {
                 agents: ScriptedAgent::new(),
                 clock: SystemClock,
                 ids: SeqIds::default(),
+                model: orch_ports::NoModel,
             },
             AgentDirectory::new(vec![entry]),
             AppConfig::default(),

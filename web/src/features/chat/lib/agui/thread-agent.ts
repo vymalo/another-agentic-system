@@ -68,6 +68,8 @@ export class ExternalRun {
   readonly userMessages: ExternalUserMessage[] = [];
   /** Resolves when the run's first material is here: a user message, agent output or the end. */
   readonly leadIn: Promise<void>;
+  /** Whether the run has been queued for the runtime: only once it has something to show (`ThreadAgent.material`). */
+  offered = false;
   private release: () => void = () => {};
 
   constructor(readonly runId: string) {
@@ -366,11 +368,11 @@ export class ThreadAgent extends AbstractAgent {
           // The POST answered RUN_STARTED to `run()`, which emitted it: not again.
           this.route = { kind: "claimed", runId, sink };
         } else {
+          // queued for the runtime at its first material event, not here: a run that holds only
+          // a snapshot (a rename of a finished thread) has nothing for the transcript
           const run = new ExternalRun(runId);
           this.route = { kind: "external", runId, run };
-          this.queue.push(run);
           run.frames.next(event);
-          this.waiter?.(this.queue.shift() ?? null);
         }
         this.patch({ openRun: runId, failure: null, waiting: false });
         return;
@@ -415,8 +417,16 @@ export class ThreadAgent extends AbstractAgent {
       if (this.startedInvocations.has(invocation)) return; // the preamble of a resumed run
       this.startedInvocations.add(invocation);
     }
+    const ends = event.type === EventType.RUN_FINISHED || event.type === EventType.RUN_ERROR;
+    if (route.kind === "external" && !route.run.offered && ends) {
+      // A run that ends with nothing for the transcript but its snapshots: the snapshots have
+      // updated this snapshot (the title, the state), and the runtime never hears of the run. A
+      // failure or a wait it says again is the page's already (`failure`, `waiting`).
+      this.finish(route, true);
+      return;
+    }
     if (route.kind === "external" && event.type !== EventType.STATE_SNAPSHOT) {
-      route.run.markLeadIn();
+      this.material(route.run);
     }
     for (const out of this.normalize(event)) this.emit(route, out);
     if (event.type === EventType.RUN_FINISHED || event.type === EventType.RUN_ERROR) {
@@ -440,9 +450,22 @@ export class ThreadAgent extends AbstractAgent {
       this.userTexts.delete(id);
       if (m && route.kind === "external") {
         route.run.userMessages.push(m);
-        route.run.markLeadIn();
+        this.material(route.run);
       }
     }
+  }
+
+  /**
+   * The external run has something for the transcript: hand it to the runtime (`nextExternalRun`),
+   * once, and let `leadIn` go.
+   */
+  private material(run: ExternalRun) {
+    if (!run.offered) {
+      run.offered = true;
+      this.queue.push(run);
+      this.waiter?.(this.queue.shift() ?? null);
+    }
+    run.markLeadIn();
   }
 
   private emit(route: Route, event: BaseEvent) {

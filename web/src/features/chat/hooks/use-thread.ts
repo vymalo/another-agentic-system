@@ -9,6 +9,8 @@ export type ThreadMeta = {
   error: string | null;
   /** Fetch again soon (debounced): the conversation moved on. */
   refetchSoon: () => void;
+  /** The thread as the server just said it (the answer to a rename), without another fetch. */
+  apply: (thread: ApiThread) => void;
   reload: () => void;
 };
 
@@ -56,11 +58,19 @@ export function useThreadMeta(threadId: string | null): ThreadMeta {
     }, REFETCH_DEBOUNCE_MS);
   }, [fetchThread]);
 
+  const apply = useCallback(
+    (next: ApiThread) => {
+      if (next.id === threadId) setThread(next);
+    },
+    [threadId],
+  );
+
   return {
     thread,
     notFound,
     error,
     refetchSoon,
+    apply,
     reload: () => setReloadKey((k) => k + 1),
   };
 }

@@ -1,0 +1,60 @@
+# orch-model-openai
+
+`ChatModel` over an OpenAI-compatible chat completions endpoint: one JSON
+`POST {base}/chat/completions` with `stream: false`, and the text of the first
+choice as the answer.
+
+## Where it sits
+
+An **adapter** of the `ChatModel` port in [`orch-ports`](../ports/README.md)
+([ADR 0009](../../../docs/decisions/0009-swappable-implementations-at-build-time.md)). It is the one
+protocol every model endpoint speaks (a hosted model, a gateway, a local server), so nothing
+here is specific to a vendor: no host SDK, no gateway product
+([ADR 0005](../../../docs/decisions/0005-openai-compatible-model-endpoint.md),
+[ADR 0007](../../../docs/decisions/0007-protocol-only-dependencies.md)). Only the binary
+([`orchestrator`](../../bin/orchestrator/README.md)) depends on it, and only to build the model
+the dispatcher asks for thread titles.
+
+## API at a glance
+
+| Item | What |
+|---|---|
+| `OpenAiChat::new(OpenAiConfig) -> Result<_, BuildError>` | implements `ChatModel`; installs the `rustls` crypto provider if none is installed. Cheap to clone (the HTTP client is shared) |
+| `OpenAiConfig::new(base_url)`, `.with_api_key(SecretString)`, `.with_timeout(Duration)` | `base_url` is up to and not including `/chat/completions` (`https://api.openai.com/v1`; a trailing slash is fine); `api_key` is the bearer token, none by default (an empty one is none); `timeout` covers connecting and answering together (20 s); `use_system_proxy` is off by default |
+| `BuildError` | `BadBaseUrl` (not `http://` or `https://`), `BadApiKey` (not a header value), `Http` (the TLS backend did not start) |
+
+The request is `{"model", "messages": [{"role": "system", ...}, {"role": "user", ...}], "max_tokens",
+"stream": false}`; `max_tokens` is the member every compatible server reads (a hosted model that
+asks for `max_completion_tokens` instead is not supported yet).
+
+How an answer maps to the port's errors (`Classify`):
+
+| The endpoint | `ModelError` | Class |
+|---|---|---|
+| 2xx with a choice that has text | the text | |
+| 2xx that is not a chat completion, has no text, or is over 256 KiB | `Protocol` | transient |
+| 429 | `RateLimited` (its `Retry-After` in seconds, at most an hour) | rate limited |
+| 401, 403 | `Unauthenticated` | permanent |
+| 408, 5xx, a timeout, a connection that failed | `Unreachable` (no URL in the text) | transient |
+| a redirect | `Rejected` ("configure the final URL") | permanent |
+| any other 4xx | `Rejected` (the endpoint's own `error.message`, cut at 300 characters, never the request) | permanent |
+
+The credential is sent as a **sensitive** `Authorization: Bearer` header, is never part of an error,
+and `OpenAiConfig` and `OpenAiChat` print `<redacted>` for it in `Debug`. A redirect is never
+followed, so the token goes to the configured endpoint and nowhere else. Nothing is retried here:
+the caller decides by the error's class.
+
+## Tests
+
+Offline: an in-process `axum` stub of the endpoint, over real HTTP. No environment variables.
+
+* `tests/openai.rs`: the `ChatModel` conformance suite of `orch-ports` (`chat_model_conformance!`:
+  the answer is the model's text and the endpoint was asked as put, a failing endpoint and nonsense
+  are transient, a rate limit is rate limited, a refusal is permanent, a refused credential is
+  unauthenticated, and the key is in no error), and what only this adapter says: the exact request
+  body and bearer token, an endpoint that wants no key is sent none, the base URL with a trailing
+  slash or a path, an answer with no text (six shapes) is a retryable protocol error, the wait asked
+  for passed on and bounded, a refusal's words cut and never the request, a redirect not followed, a
+  timeout and a port nobody listens on (unreachable, no address in what is logged), an answer over
+  the bound not read, a bad base URL or key refused when the adapter is built, and `Debug` redacting
+  the key.

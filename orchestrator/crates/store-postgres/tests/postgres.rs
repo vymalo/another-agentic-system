@@ -16,7 +16,7 @@ use orch_core::{
 };
 use orch_ports::{
     BindingUpdate, Commit, CommitOutcome, InboxId, InboxPayload, InboxStatus, NewEvent, NewInbox,
-    NewOutbox, NewThreadRecord, OutboxId, OutboxPayload, Parking, Received, StoreError,
+    NewOutbox, NewThreadRecord, OutboxId, OutboxKind, OutboxPayload, Parking, Received, StoreError,
     ThreadStore, Topic, Wakeup,
 };
 use orch_store_postgres::{PgStore, PgWakeup};
@@ -67,6 +67,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         timers: Vec::new(),
         inbox: None,
         finishes_outbox: None,
+        title: None,
     }
 }
 
@@ -1273,6 +1274,221 @@ async fn migration_0007_upgrades_a_database_that_holds_a_log() {
         &events[1].body,
         EventBody::AgentStep(s) if s.id == "t/tool:c1" && s.label == "OpenCode"
     ));
+}
+
+/// Migration 0008 on a database that has run 0001 to 0007 and holds a thread with a log: the old
+/// events stay, the old constraint refuses a `thread_titled`, the new one takes it and still refuses
+/// a kind nobody knows, and a rename the core wrote reads back.
+#[tokio::test]
+async fn migration_0008_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let insert = |seq: i64, kind: &'static str, data: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"user\",\"name\":\"alice@example.com\"}', $4::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    insert(1, "user_message", r#"{"text":"hi"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        insert(2, "thread_titled", "{}")
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0007 has no `thread_titled`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    insert(
+        2,
+        "thread_titled",
+        r#"{"title":"Fix the build","source":"user"}"#,
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    assert!(
+        insert(3, "nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let events = store.list_events(ThreadId(thread), 0, 10).await.unwrap();
+    assert_eq!(events.len(), 2, "the old event is untouched");
+    assert!(matches!(
+        &events[1].body,
+        EventBody::ThreadTitled(t) if t.title == "Fix the build" && t.source == orch_core::TitledBy::User
+    ));
+}
+
+/// Migration 0009 on a database that has run 0001 to 0008 and holds a thread with a log: the old
+/// events stay, the old constraint refuses a `thread_titled`, the new one takes it and still refuses
+/// a kind nobody knows, and a rename the core wrote reads back.
+#[tokio::test]
+async fn migration_0009_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 0, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let insert = |kind: &'static str, payload: &'static str| {
+        sqlx::query(
+            "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
+             created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
+        )
+        .bind(Uuid::now_v7())
+        .bind(thread)
+        .bind(kind)
+        .bind(payload)
+    };
+    insert(
+        "delegate",
+        r#"{"delegate": {"text": "hi", "release": null}}"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        insert("title", r#"{"title": {"ask": 1}}"#)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0008 has no outbox kind `title`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    insert("title", r#"{"title": {"ask": 1}}"#)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        insert("nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    // the old row is untouched, and the title row reads back as a title request and is claimed at
+    // once whatever delegation of its thread is in flight
+    let claimed = store
+        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 10)
+        .await
+        .unwrap();
+    let kinds: Vec<_> = claimed.iter().map(|r| r.kind).collect();
+    assert!(kinds.contains(&OutboxKind::Delegate), "{kinds:?}");
+    assert!(kinds.contains(&OutboxKind::Title), "{kinds:?}");
+    let title = claimed
+        .iter()
+        .find(|r| r.kind == OutboxKind::Title)
+        .unwrap();
+    assert_eq!(title.payload, OutboxPayload::Title { ask: 1 });
 }
 
 /// A row this build cannot read (written by a newer build, or damaged) is handed out like any

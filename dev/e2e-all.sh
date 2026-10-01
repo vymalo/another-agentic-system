@@ -17,6 +17,9 @@
 #   cards             the researcher searches and answers with one surface of cards    cards-e2e.sh
 #                     and a graph under the web's catalog; an older screen keeps the
 #                     thread's catalog; a screen without Cards gets words only
+#   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
+#                     agent's first reply; none or a failing model keeps the first
+#                     words; a person's rename is final
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
@@ -46,7 +49,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards coder coder-no-opencode verify verifier mcp ci folder"
+all="greeting agents choices cards title coder coder-no-opencode verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -145,6 +148,7 @@ for s in "$@"; do
     agents) run agents sh "$here/agents-e2e.sh" ;;
     choices) run choices sh "$here/choices-e2e.sh" ;;
     cards) run cards sh "$here/cards-e2e.sh" ;;
+    title) run title sh "$here/title-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;

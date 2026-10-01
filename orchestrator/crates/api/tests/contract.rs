@@ -29,7 +29,8 @@ const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const RANDOM: &str = "0190aaaa-0000-7000-8000-000000000123";
 
-type Stack = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
+type Stack =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
 
 // ---- the contract -------------------------------------------------------------------------
 
@@ -234,6 +235,7 @@ impl Harness {
                     agents: agent,
                     clock: SystemClock,
                     ids: SeqIds::default(),
+                    model: orch_ports::NoModel,
                 },
                 AgentDirectory::new(vec![
                     entry("coder", "Coder"),
@@ -295,6 +297,34 @@ impl Harness {
 
     async fn get(&self, path: &str, user: Option<&str>) -> Resp {
         self.send(reqwest::Method::GET, path, user).await
+    }
+
+    /// A `PATCH` with a body (`None` sends none).
+    async fn patch(&self, path: &str, user: Option<&str>, body: Option<&str>) -> Resp {
+        let mut req = self
+            .client
+            .request(reqwest::Method::PATCH, format!("{}{path}", self.base));
+        if let Some(u) = user {
+            req = req.header("X-Auth-Request-Email", u);
+        }
+        if let Some(body) = body {
+            req = req
+                .header("Content-Type", "application/json")
+                .body(body.to_owned());
+        }
+        let resp = req.send().await.unwrap();
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        Resp {
+            status,
+            content_type,
+            body: resp.bytes().await.unwrap().to_vec(),
+        }
     }
 
     /// Creates a thread through the application (the resource API cannot create one) and
@@ -658,6 +688,109 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .await;
     assert_eq!(r.status, 404);
     c.check("cancelThread", &r);
+
+    // patchThread: a rename is 200 with the thread; 400 for what cannot be a title; 404; 401.
+    let r = h
+        .patch(
+            &format!("/api/threads/{RANDOM}"),
+            None,
+            Some(r#"{"title":"x"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 401);
+    c.check("patchThread", &r);
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+            Some(r#"{"title":"  A better name  "}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("patchThread", &r);
+    let renamed = r.json();
+    assert_eq!(renamed["title"], "A better name", "the title is trimmed");
+    assert_eq!(renamed["id"], id.as_str());
+    assert_eq!(renamed["state"], "done", "a finished thread can be renamed");
+    let r = h.get(&format!("/api/threads/{id}"), Some(ALICE)).await;
+    assert_eq!(r.json()["title"], "A better name");
+    let listed = h.get("/api/threads", Some(ALICE)).await.json();
+    let titles: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap())
+        .collect();
+    assert!(titles.contains(&"A better name"), "{titles:?}");
+    let events = h.events(ALICE, &id).await;
+    let last = events.last().unwrap();
+    assert_eq!(last["kind"], "thread_titled");
+    assert_eq!(
+        last["data"],
+        json!({"title": "A better name", "source": "user"})
+    );
+    assert_eq!(last["actor"], json!({"type": "user", "name": ALICE}));
+    c.contract.validate_component("Event", last);
+    // the same title again writes nothing
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+            Some(r#"{"title":"A better name"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    assert_eq!(h.events(ALICE, &id).await.len(), events.len());
+    let long = format!(r#"{{"title":"{}"}}"#, "x".repeat(201));
+    for bad in [
+        r#"{"title":""}"#,
+        r#"{"title":"   "}"#,
+        r#"{"title":"two\nlines"}"#,
+        r#"{"title":"nul\u0000"}"#,
+        r#"{"title":3}"#,
+        r#"{"title":null}"#,
+        r#"{}"#,
+        r#"{"title":"x","state":"done"}"#,
+        r#"["title"]"#,
+        "not json",
+        long.as_str(),
+    ] {
+        let r = h
+            .patch(&format!("/api/threads/{id}"), Some(ALICE), Some(bad))
+            .await;
+        assert_eq!(r.status, 400, "{bad}");
+        c.check("patchThread", &r);
+    }
+    let r = h
+        .patch(&format!("/api/threads/{id}"), Some(ALICE), None)
+        .await;
+    assert_eq!(r.status, 400, "no body");
+    c.check("patchThread", &r);
+    assert_eq!(
+        h.get(&format!("/api/threads/{id}"), Some(ALICE))
+            .await
+            .json()["title"],
+        "A better name",
+        "a refused rename changes nothing"
+    );
+    for (user, path) in [(ALICE, RANDOM), (BOB, id.as_str()), (ALICE, "not-a-uuid")] {
+        let r = h
+            .patch(
+                &format!("/api/threads/{path}"),
+                Some(user),
+                Some(r#"{"title":"Mine"}"#),
+            )
+            .await;
+        assert_eq!(r.status, 404, "{user} {path}");
+        c.check("patchThread", &r);
+    }
+    assert_eq!(
+        h.get(&format!("/api/threads/{id}"), Some(ALICE))
+            .await
+            .json()["title"],
+        "A better name",
+        "someone else's rename changes nothing"
+    );
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());

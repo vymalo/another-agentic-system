@@ -74,6 +74,7 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
                 agents: client,
                 clock: SystemClock,
                 ids: UuidV7Ids,
+                model: orch_ports::NoModel,
             },
             AgentDirectory::new(entries),
             AppConfig {

@@ -7,6 +7,7 @@
 //!   ADR 0027);
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
 //!   and [`ByTransport`], which serves one endpoint set from two clients (remote A2A, in-process);
+//! - [`ChatModel`]: one question to a language model and its answer (the orchestrator's titles);
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -17,6 +18,7 @@ mod agent;
 mod bundle;
 mod clock;
 mod inbox;
+mod model;
 mod route;
 mod store;
 mod wakeup;
@@ -36,6 +38,7 @@ pub use inbox::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
 };
+pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
 pub use route::ByTransport;
 pub use store::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,

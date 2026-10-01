@@ -153,6 +153,8 @@ pub fn describe(event: &Event) -> Option<String> {
         },
         // bookkeeping about the person's screen, not progress of the job
         EventBody::UiCatalog(_) => return None,
+        // a label of the conversation, not progress of the job
+        EventBody::ThreadTitled(_) => return None,
     };
     Some(format!("#{} {}", event.seq, one_line(&text)))
 }

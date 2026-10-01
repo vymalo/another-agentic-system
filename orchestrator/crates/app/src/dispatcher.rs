@@ -29,6 +29,7 @@ use tracing::Instrument as _;
 use crate::{App, AppError, ApplyOutcome};
 
 mod live;
+mod title;
 mod verify;
 
 use live::{LiveRelay, LiveTiming};
@@ -292,6 +293,7 @@ impl<P: Ports> Dispatcher<P> {
             OutboxKind::Delegate => self.delegate(row).await,
             OutboxKind::Cancel => self.cancel(row).await,
             OutboxKind::Verify => self.verify(row).await,
+            OutboxKind::Title => self.title(row).await,
         }
     }
 
@@ -414,7 +416,9 @@ impl<P: Ports> Dispatcher<P> {
                 false,
                 ui_catalog,
             ),
-            OutboxPayload::Cancel { .. } | OutboxPayload::Verify { .. } => {
+            OutboxPayload::Cancel { .. }
+            | OutboxPayload::Verify { .. }
+            | OutboxPayload::Title { .. } => {
                 return self
                     .finish(
                         &row,

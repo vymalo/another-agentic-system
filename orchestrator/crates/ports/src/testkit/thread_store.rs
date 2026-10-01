@@ -127,6 +127,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         timers: Vec::new(),
         inbox: None,
         finishes_outbox: None,
+        title: None,
     }
 }
 
@@ -1694,6 +1695,7 @@ fn busy_job() -> Job {
         hold: Some(Hold::CiTimeout),
         catalog,
         steps: orch_core::StepLedger::default(),
+        title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -1888,6 +1890,169 @@ pub async fn job_is_written_with_the_state<S: ThreadStore>(store: S) {
     let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
     assert_eq!(after.job, winners[0]);
     assert_eq!(after.version, 3);
+}
+
+/// A `title` row (a request to the model for the thread's title) is the orchestrator's own and
+/// depends on nothing: it is claimable at once, whatever delegation of its thread is still in
+/// flight (it is requested by the very reply that delegation is delivering), it does not hold the
+/// next delegation back, and its payload reads back as written.
+pub async fn title_rows_are_unordered_and_roundtrip<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    // The delegate is claimed and still in flight when the agent's reply asks for a title.
+    assert_eq!(claim(&store, "a", t0()).await.len(), 1);
+    let title = NewOutbox {
+        id: outbox_id(101),
+        payload: OutboxPayload::Title { ask: 2 },
+    };
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Working, vec![], vec![title]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Title);
+    assert_eq!(stored.payload, OutboxPayload::Title { ask: 2 });
+    assert_eq!(stored.task_id, None);
+
+    let got = claim(&store, "t", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(101)],
+        "not held back by the inflight delegate"
+    );
+    assert_eq!(got[0].kind, OutboxKind::Title);
+
+    // A later delegate still waits for the first one, not for the title request.
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(ThreadState::Queued, vec![], vec![delegate(102)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(claim(&store, "a", t0()).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", t0())
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(102)],
+        "the title request is still inflight and does not hold the delegate back"
+    );
+    // and it ends like any row
+    assert!(
+        store
+            .complete_outbox(&lease(101, "t", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+}
+
+/// A rename is one transaction: the `thread_titled` event, the thread's title and the ledger that
+/// remembers whose it is. A commit that does not set a title leaves it; one that is refused (a
+/// stale version, a replayed key, a stale claim) writes none.
+pub async fn thread_titled_roundtrip<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let title_event = |title: &str, key: Option<&str>| NewEvent {
+        at: t0(),
+        actor: Actor::user(&alice()),
+        body: EventBody::ThreadTitled(orch_core::ThreadTitledData {
+            title: title.to_owned(),
+            source: orch_core::TitledBy::User,
+        }),
+        idempotency_key: key.map(str::to_owned),
+    };
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(before.title, "thread 1");
+
+    // The title, the event and the ledger are written together.
+    let mut rename = commit(
+        ThreadState::Queued,
+        vec![title_event("Mine", Some("k"))],
+        vec![],
+    );
+    rename.title = Some("Mine".to_owned());
+    rename.job = Some(Job {
+        title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
+        ..Job::default()
+    });
+    let (record, events) = applied(store.commit(thread_id(1), 1, rename).await.unwrap());
+    assert_eq!(record.title, "Mine");
+    assert_eq!(record.job.title.source(), orch_core::TitleSource::User);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind(), orch_core::EventKind::ThreadTitled);
+    let read = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    assert_eq!(read, events, "the event reads back as it was written");
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(got.title, "Mine");
+    let listed = store.list_threads(&alice(), None, 10).await.unwrap();
+    assert_eq!(listed[0].title, "Mine", "the sidebar's listing says it");
+
+    // A commit with no title leaves it.
+    let plain = commit(ThreadState::Queued, vec![user_event("more", None)], vec![]);
+    let (record, _) = applied(store.commit(thread_id(1), 2, plain).await.unwrap());
+    assert_eq!(record.title, "Mine");
+
+    // A refused commit writes no title: a stale version, a replayed key, a stale claim.
+    let mut stale = commit(
+        ThreadState::Queued,
+        vec![title_event("Stale", None)],
+        vec![],
+    );
+    stale.title = Some("Stale".to_owned());
+    let res = store.commit(thread_id(1), 1, stale).await;
+    assert_eq!(class_of(&res), Some(ErrorClass::Conflict), "{res:?}");
+    let mut replay = commit(
+        ThreadState::Queued,
+        vec![title_event("Replay", Some("k"))],
+        vec![],
+    );
+    replay.title = Some("Replay".to_owned());
+    assert_eq!(
+        store.commit(thread_id(1), 3, replay).await.unwrap(),
+        CommitOutcome::Duplicate
+    );
+    let held = claim(&store, "a", t0()).await;
+    let lease = held[0].lease().unwrap();
+    let mut fenced = under(
+        commit(
+            ThreadState::Queued,
+            vec![title_event("Fenced", None)],
+            vec![],
+        ),
+        Lease {
+            attempt: lease.attempt + 1,
+            ..lease
+        },
+    );
+    fenced.title = Some("Fenced".to_owned());
+    assert_eq!(
+        store.commit(thread_id(1), 3, fenced).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(got.title, "Mine");
+    assert_eq!(got.version, 3);
+
+    // Another thread's title is its own.
+    seed(&store, &alice(), 2).await;
+    let other = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(other.title, "thread 2");
 }
 
 /// The `ui_catalog` event, the thread's catalog ledger and the delivery in an outbox row are

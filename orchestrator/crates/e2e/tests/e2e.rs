@@ -195,7 +195,91 @@ async fn concurrent_threads_of_two_users_do_not_interfere(backend: Backend) {
     }
 }
 
+/// The orchestrator's own model call (ADR 0005): after the agent's first reply the thread is
+/// titled, the sidebar's list says the title, the log says who wrote it, and a person's rename
+/// afterwards is final.
+async fn a_reply_gets_a_title_and_a_persons_rename_is_final(backend: Backend) {
+    let world = World::with(
+        backend,
+        Setup {
+            titles: true,
+            ..Setup::default()
+        },
+    )
+    .await;
+    // the first reply has no topic yet; the second has
+    world
+        .model
+        .then_answer("NONE")
+        .then_answer("\"Fix the build\"\nA longer explanation that is not the title");
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+
+    let id = chat.seed_thread("plain", "stream hello", None).await;
+    chat.wait_state(&id, "done").await;
+    eventually("the model's answer to the first ask", || async {
+        (world.model.calls().len() == 1).then_some(())
+    })
+    .await;
+    // "no topic yet": the thread keeps the first words
+    let (_, thread) = chat.get(&format!("/api/threads/{id}")).await;
+    assert_eq!(thread["title"], "stream hello");
+
+    // the next job's reply asks again, and the model has a title
+    chat.seed_message(&id, "stream write a fibonacci function")
+        .await;
+    eventually("the model's title", || async {
+        let (_, t) = chat.get(&format!("/api/threads/{id}")).await;
+        (t["title"] == "Fix the build").then_some(())
+    })
+    .await;
+    chat.wait_state(&id, "done").await;
+    let (_, listed) = chat.get("/api/threads").await;
+    let titles: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Fix the build"], "the sidebar's list says it");
+    let titled: Vec<serde_json::Value> = chat
+        .events(&id)
+        .await
+        .into_iter()
+        .filter(|e| e["kind"] == "thread_titled")
+        .collect();
+    assert_eq!(titled.len(), 1);
+    assert_eq!(
+        titled[0]["data"],
+        json!({"title": "Fix the build", "source": "model"})
+    );
+    assert_eq!(
+        titled[0]["actor"],
+        json!({"type": "system", "name": "orchestrator"})
+    );
+    // the model was asked about the conversation, as data
+    let calls = world.model.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].model, "mock-title");
+    assert!(
+        calls[1].user.contains("stream write a fibonacci function"),
+        "{}",
+        calls[1].user
+    );
+
+    // a person renames it: that title is final, and the model is not asked again
+    let (status, renamed) = chat.rename(&id, "My own title").await;
+    assert_eq!(status, 200, "{renamed}");
+    chat.seed_message(&id, "stream one more thing").await;
+    chat.wait_state(&id, "done").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (_, thread) = chat.get(&format!("/api/threads/{id}")).await;
+    assert_eq!(thread["title"], "My own title");
+    assert_eq!(world.model.calls().len(), 2);
+}
+
 backends!(
+    a_reply_gets_a_title_and_a_persons_rename_is_final,
     a_run_streams_the_expected_sequence_and_the_log_agrees,
     concurrent_threads_of_two_users_do_not_interfere,
     the_legacy_interaction_routes_are_gone,

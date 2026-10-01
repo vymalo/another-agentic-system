@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 17] = [
+const SCENARIOS: [&str; 18] = [
     "echo",
     "ask",
     "cancel",
@@ -49,6 +49,7 @@ const SCENARIOS: [&str; 17] = [
     "catalog",
     "steps",
     "steps-ask",
+    "title",
 ];
 
 /// The golden streams made of a log and live text.

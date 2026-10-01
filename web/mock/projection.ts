@@ -344,7 +344,7 @@ export class Projector {
   /** The time of the event being applied, for the frames that close what is open. */
   private now = "";
 
-  constructor(private readonly info: ThreadInfo) {}
+  constructor(private info: ThreadInfo) {}
 
   get runOpen(): boolean {
     return this.run !== null;
@@ -636,12 +636,15 @@ export class Projector {
   private openRun(e: Event, out: Ev[]) {
     const runId = str(e.data.runId) ?? `run-${e.seq}`;
     this.run = { runId };
-    this.interrupt = null;
-    this.failure = null;
-    this.state =
-      e.kind === "agent_step" || (e.kind === "agent_status" && e.data.status === "working")
-        ? "working"
-        : "queued";
+    // a rename says what the thread is in and changes none of it
+    if (e.kind !== "thread_titled") {
+      this.interrupt = null;
+      this.failure = null;
+      this.state =
+        e.kind === "agent_step" || (e.kind === "agent_status" && e.data.status === "working")
+          ? "working"
+          : "queued";
+    }
     out.push({
       type: "RUN_STARTED",
       threadId: this.info.threadId,
@@ -704,6 +707,66 @@ export class Projector {
     ];
   }
 
+  /**
+   * The event that ends the open run, by the state the thread stands in: the wait again, the
+   * failure, cancelled or success (the real projection's `close_run`). `thread_state` ends the
+   * run with it, and so does a rename that opened a run of its own.
+   */
+  private runEnd(): Ev {
+    const threadId = this.info.threadId;
+    const runId = this.run?.runId ?? "";
+    if (this.state === "blocked" && this.interrupt && !this.lastWasError) {
+      const i = this.interrupt;
+      return {
+        type: "RUN_FINISHED",
+        threadId,
+        runId,
+        outcome: {
+          type: "interrupt",
+          interrupts: [
+            {
+              id: i.id,
+              reason: i.reason,
+              ...(i.message !== undefined ? { message: i.message } : {}),
+              subagentRunId: i.sub,
+              responseSchema: {
+                type: "object",
+                required: ["text"],
+                properties: { text: { type: "string" } },
+              },
+            },
+          ],
+        },
+      };
+    }
+    if (this.state === "blocked" || this.state === "failed") {
+      const f = this.failure ?? { message: "the agent failed", code: "agent_failed" };
+      return {
+        type: "RUN_ERROR",
+        message: f.message,
+        code: f.code,
+        metadata: {
+          "vymalo.problem": {
+            type: "about:blank",
+            title:
+              f.code === "agent_failed"
+                ? "Agent failed"
+                : f.code === "delivery_failed"
+                  ? "Delivery failed"
+                  : f.code === "checks_failed"
+                    ? "Checks failed"
+                    : "Error",
+            detail: f.message,
+          },
+        },
+      };
+    }
+    if (this.state === "cancelled") {
+      return { type: "RUN_FINISHED", threadId, runId, outcome: { type: "cancelled" } };
+    }
+    return { type: "RUN_FINISHED", threadId, runId, outcome: { type: "success" } };
+  }
+
   /** Frames of one log event. `id` (the seq) goes on the last frame, unless a message is open. */
   apply(e: Event, audience: Audience = {}): Frame[] {
     // The UI's catalog is not part of the transcript: the ledger moves and nothing is said (no
@@ -715,6 +778,9 @@ export class Projector {
     }
     const out: Ev[] = [];
     this.now = e.at;
+    // the title is part of every snapshot: a rename's own say it
+    if (e.kind === "thread_titled")
+      this.info = { ...this.info, title: str(e.data.title) ?? this.info.title };
     // a message on a finished thread starts the next job; so does a bare `job_started` (a
     // message redelivered to the agent), whose run it opens
     const finished = this.state === "done" || this.state === "failed" || this.state === "cancelled";
@@ -1057,6 +1123,22 @@ export class Projector {
         this.lastWasError = true;
         break;
       }
+      // A person renamed the thread (the real projection's `on_thread_titled`): inside a run a
+      // snapshot with the new title; outside any, a run of its own that holds the snapshot (said by
+      // `openRun`) and ends as the thread's state ends a run, which the web drops as material-less
+      case "thread_titled": {
+        if (wasOpen) out.push(this.snapshot());
+        else if (
+          this.state !== "queued" &&
+          this.state !== "working" &&
+          this.state !== "verifying"
+        ) {
+          out.push(this.runEnd());
+          this.run = null;
+          this.invocation = null;
+        }
+        break;
+      }
       case "thread_state": {
         if (!this.run) this.openRun(e, out);
         this.state = e.data.state as ThreadState;
@@ -1064,61 +1146,12 @@ export class Projector {
         // another source decided the round); the run's success is its pass
         this.closeVerifier(this.state === "done" ? { passed: true } : "abandoned", out);
         out.push(this.snapshot());
-        const threadId = this.info.threadId;
-        const runId = this.run?.runId ?? "";
-        if (this.state === "blocked" && this.interrupt && !this.lastWasError) {
-          const i = this.interrupt;
-          out.push({
-            type: "RUN_FINISHED",
-            threadId,
-            runId,
-            outcome: {
-              type: "interrupt",
-              interrupts: [
-                {
-                  id: i.id,
-                  reason: i.reason,
-                  ...(i.message !== undefined ? { message: i.message } : {}),
-                  subagentRunId: i.sub,
-                  responseSchema: {
-                    type: "object",
-                    required: ["text"],
-                    properties: { text: { type: "string" } },
-                  },
-                },
-              ],
-            },
-          });
-        } else if (this.state === "blocked" || this.state === "failed") {
-          const f = this.failure ?? { message: "the agent failed", code: "agent_failed" };
-          out.push({
-            type: "RUN_ERROR",
-            message: f.message,
-            code: f.code,
-            metadata: {
-              "vymalo.problem": {
-                type: "about:blank",
-                title:
-                  f.code === "agent_failed"
-                    ? "Agent failed"
-                    : f.code === "delivery_failed"
-                      ? "Delivery failed"
-                      : f.code === "checks_failed"
-                        ? "Checks failed"
-                        : "Error",
-                detail: f.message,
-              },
-            },
-          });
-        } else if (this.state === "cancelled") {
-          out.push({ type: "RUN_FINISHED", threadId, runId, outcome: { type: "cancelled" } });
-        } else {
-          out.push({ type: "RUN_FINISHED", threadId, runId, outcome: { type: "success" } });
-        }
+        out.push(this.runEnd());
         this.run = null;
         this.invocation = null;
+        // a thread that waits or failed says it again when a rename closes a run of its own
         this.interrupt = this.state === "blocked" ? this.interrupt : null;
-        this.failure = null;
+        this.failure = this.state === "blocked" || this.state === "failed" ? this.failure : null;
         break;
       }
     }

@@ -15,6 +15,7 @@ mod live;
 mod step;
 mod thread;
 mod thread_tools;
+mod title;
 mod transition;
 mod ui;
 mod ui_catalog;
@@ -48,6 +49,10 @@ pub use step::{
 };
 pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
+pub use title::{
+    MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
+    TitleLedger, TitleSource, TitledBy, check_title, clean_title, title_prompt,
+};
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
 pub use ui::{
     A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES,

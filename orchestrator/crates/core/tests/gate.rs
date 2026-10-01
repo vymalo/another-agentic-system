@@ -126,6 +126,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
+            | Command::SetTitle(_)
+            | Command::RequestTitle { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -1561,7 +1563,11 @@ fn agent_updates_while_verifying_are_logged_but_do_not_touch_the_ledger() {
             is_final: true,
         }),
     );
-    assert_eq!(snap, verifying);
+    // (the first words of the conversation ask for a title: that is the thread's, not the gate's)
+    let mut asked = verifying.clone();
+    asked.job.title = snap.job.title;
+    assert_eq!(asked.job.title.asks(), 1);
+    assert_eq!(snap, asked);
     // Repeats and late updates of a finished task change nothing.
     for late in [
         AgentTaskState::Submitted,

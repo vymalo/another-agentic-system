@@ -13,7 +13,8 @@ use orch_ports::{InboxItem, PortSet, ThreadStore};
 /// 2026-09-30T12:00:00Z, the time the clock starts at.
 pub const NOW: i64 = 1_790_769_600;
 
-pub type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds>;
+pub type Ports =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, FixedClock, SeqIds, orch_ports::NoModel>;
 
 pub struct Rig {
     pub base: String,
@@ -35,6 +36,7 @@ impl Rig {
                     agents: ScriptedAgent::new(),
                     clock: clock.clone(),
                     ids: SeqIds::default(),
+                    model: orch_ports::NoModel,
                 },
                 AgentDirectory::new(Vec::new()),
                 AppConfig::default(),

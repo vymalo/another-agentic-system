@@ -65,6 +65,8 @@ pub enum OutboxKind {
     /// Ask the verifier agent to review the pushed commit (ADR 0018). Its task is the row's own
     /// ([`OutboxItem::task_id`]), never the thread's binding: the verifier is not the worker.
     Verify,
+    /// Ask the model for a title of the thread (an orchestrator's own request, not an agent's).
+    Title,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -130,6 +132,13 @@ pub enum OutboxPayload {
         /// The prompt, written by the core.
         text: String,
     },
+    /// Ask the model for a title of the thread (`orch_core::Command::RequestTitle`). `ask` is the
+    /// number of the request in the thread's ledger. The conversation to title is read from the
+    /// log when the row is worked, so the row holds nothing of it.
+    Title {
+        /// Which request.
+        ask: u8,
+    },
 }
 
 impl OutboxPayload {
@@ -139,6 +148,7 @@ impl OutboxPayload {
             OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
             OutboxPayload::Cancel { .. } => OutboxKind::Cancel,
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
+            OutboxPayload::Title { .. } => OutboxKind::Title,
         }
     }
 }
@@ -218,11 +228,16 @@ pub struct Commit {
     /// so a crash between the two cannot leave the work done and the row claimable again.
     /// Ignored without a lease and by [`ThreadStore::create_thread`].
     pub finishes_outbox: Option<OutboxFinal>,
+    /// The thread's new title ([`Command::SetTitle`](orch_core::Command::SetTitle)), written to
+    /// the thread in the same transaction as the `thread_titled` event that says so; `None`
+    /// leaves the title as it is. Ignored by [`ThreadStore::create_thread`], which takes the
+    /// title from the new thread.
+    pub title: Option<String>,
 }
 
 impl Commit {
     /// Whether this commit writes nothing to the thread but the completion of its inbox row:
-    /// an `inbox` claim and no events, outbox rows, binding update, job, watches or timers.
+    /// an `inbox` claim and no events, outbox rows, binding update, job, title, watches or timers.
     /// (A store also requires `new_state` to be the thread's current state before it leaves the
     /// thread untouched.)
     pub fn only_finishes_inbox(&self) -> bool {
@@ -231,6 +246,7 @@ impl Commit {
             && self.outbox.is_empty()
             && self.binding.is_none()
             && self.job.is_none()
+            && self.title.is_none()
             && self.watches.is_empty()
             && self.timers.is_empty()
     }

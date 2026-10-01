@@ -141,6 +141,7 @@ gets everything.
 | `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
 | `ui_catalog{catalogId, version, digest, catalog}` (ADR 0023) | — | **No frame**, and no resume point: the catalog is not part of the transcript. The projector keeps which catalog is the thread's current one (the highest version it has recorded), and every later `STATE_SNAPSHOT` says so in `thread.uiCatalog`; an `error` before it still explains the `thread_state` after it. See [The UI catalog](#the-ui-catalog) |
+| `thread_titled{title, source}` | A person renamed the thread (`patchThread`), or a model titled it (`source: model`, after the agent's first reply); in any state | The title is part of every `STATE_SNAPSHOT`, so the event is said as one. **Inside a run**: `STATE_SNAPSHOT` with the new `thread.title`. **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → `STATE_SNAPSHOT` (new title) → the run's close by the state the thread is in (`RUN_FINISHED{success}` for `done`, `{cancelled}` for `cancelled`, the thread's interrupt again for a `blocked` one that waits for the user, the thread's `RUN_ERROR` again for `failed`), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. No message, activity or subagent frame: the transcript does not change. See [Titles](#titles) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
@@ -568,6 +569,36 @@ stateDiagram-v2
   completing) and [`steps-ask`](examples/agui/steps-ask.agui.json) (a step waiting when the agent asks: the step subagent
   suspends with the invocation, and its end is said in the next run) are this section as streams; the reference client reads
   them in CI.
+
+## Titles
+
+A thread is created with the first words of its first message as its title, and a person can rename it at any
+time, in any state of the thread, finished ones included (`PATCH /api/threads/{threadId}`, `patchThread` in the
+[contract](chat-api.yaml)). The rename is one commit: the `thread_titled{title, source: "user"}` event and the
+thread's new title, so a listing that says the title has the event in the log. AG-UI says it as a
+`STATE_SNAPSHOT`, because the title is a member of `snapshot.thread`, and has no frame of its own:
+
+- **A live viewer** reads the snapshot where the rename happened in the log: the screen's title changes, nothing
+  else does. A run that holds only that snapshot (a rename of a thread that is not running) has no message, no
+  activity and no subagent: a client with nothing to show for a run drops it after it has read its snapshot.
+- **A viewer that connects later** reads the *current* title in every snapshot of the replay that comes before a
+  rename and the title of each rename where it happened, so the replay may change the title more than once
+  (`connect-title.agui.json`: the thread's title is `Fix the build` from the first snapshot, because that is what the
+  thread has when the viewer connects) and always ends on the title the thread has. A client that keeps the last
+  title it was told is right at the end of the replay.
+- **A requester's response** carries the snapshot of a rename that happens during its run.
+
+`source` is `user` for a rename and `model` for a title the orchestrator had a model write after the agent's first reply
+([ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): at most twice per thread, never once a person has
+renamed it, and never at all when no title model is configured); the log has no event for the first words of the first
+message. The event is attributed to the person who renamed, or to the orchestrator for a model's title. A model's title
+comes after the agent's reply, so a live viewer reads it as a `STATE_SNAPSHOT` in the run that is still open, or as a run of
+its own that holds only that snapshot (the thread has finished by then), which the web drops. The sidebar's list (`GET /api/threads`) reads the thread's stored title, which
+the rename has already changed when `patchThread` answers.
+
+Goldens: `title.events.json` (a rename while the thread works, another after it was cancelled),
+`agui/title.agui.json` (what a live viewer reads for it) and `agui/connect-title.agui.json` (what a viewer that
+connects after a rename of a finished thread reads).
 
 ## The UI catalog
 

@@ -345,6 +345,15 @@ impl Chat {
         .await
     }
 
+    /// `PATCH /api/threads/{id}` with `{"title": title}`: renames the thread, as `(status, body)`.
+    pub async fn rename(&self, id: &str, title: &str) -> (u16, Value) {
+        Self::finish(
+            self.request(reqwest::Method::PATCH, &format!("/api/threads/{id}"))
+                .json(&serde_json::json!({ "title": title })),
+        )
+        .await
+    }
+
     async fn finish(req: reqwest::RequestBuilder) -> (u16, Value) {
         let resp = req.send().await.unwrap();
         let status = resp.status().as_u16();

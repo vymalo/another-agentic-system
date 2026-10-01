@@ -756,6 +756,7 @@ fn try_app(w: &World, cfg: AppConfig) -> Result<TestApp, GateError> {
             agents: w.agent.clone(),
             clock: SystemClock,
             ids: w.ids.clone(),
+            model: w.model.clone(),
         },
         directory(),
         cfg,
