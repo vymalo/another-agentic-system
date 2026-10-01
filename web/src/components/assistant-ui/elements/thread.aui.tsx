@@ -15,7 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnswerBubble } from "@/features/chat/components/answer-bubble";
 import { TurnCards } from "@/features/chat/components/cards/turn-cards";
-import { StepList } from "@/features/chat/components/steps/step-list";
+import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { useThreadView } from "@/features/chat/components/thread-view";
 import { ACTOR_PART, parseActor, parseAnswers } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
@@ -25,10 +25,11 @@ import { isActive } from "@/lib/api/types";
 /*
  * Pruned from the assistant-ui `thread` registry item and rebuilt as a classical chat
  * (web/DESIGN.md). The person's words are a soft bubble on the right. A run is one assistant
- * message, drawn as a turn: the agent's mark and name once, then its parts in order, where every
- * stretch of activities (statuses, artifacts, checks, CI reports, reworks, actions) is one compact
- * step list, the agent's words are prose, and a failure or a surface stands on its own; the pull
- * requests and files it shared follow as cards. A `vymalo.actor` marker part says who ran.
+ * message, drawn as a turn: the agent's mark and name once, one summary line that opens the side
+ * panel on this turn (the steps themselves, every status, artifact, check, CI report, rework and
+ * action, are the panel's Activity tab), then its parts in order: the agent's words are prose, and
+ * a failure or a surface stands on its own; the pull requests and files it shared follow as cards.
+ * A `vymalo.actor` marker part says who ran.
  */
 
 type AnyPart = { type: string; name?: string; data?: unknown; text?: string };
@@ -44,7 +45,7 @@ const useRunActor = (): ApiActor | undefined => {
   return parseActor(data);
 };
 
-/** Every stretch of step parts is one group, drawn as one list. */
+/** Every stretch of step parts is one group, which the chat draws as nothing: the panel has them. */
 const byStep = (part: PartState): readonly "group-steps"[] =>
   isStepPart(part as AnyPart) ? ["group-steps"] : [];
 
@@ -244,7 +245,6 @@ export const AssistantMessage: FC = () => {
   });
   if (lastDrawn < 0 && !running && answers.length === 0) return null;
   const lastTextValue = lastText >= 0 ? content[lastText]?.text : undefined;
-  const lastIsSteps = lastDrawn >= 0 && isStepPart(content[lastDrawn] as AnyPart);
   const answered = (
     <>
       {answers.map(({ i, data }) => (
@@ -269,16 +269,13 @@ export const AssistantMessage: FC = () => {
       {answers.length > 0 ? <div className="mb-3 flex flex-col gap-3">{answered}</div> : null}
       <TurnHeader actor={actor} at={createdAt} />
       <div className="flex min-w-0 flex-col gap-4 sm:pl-10">
+        <TurnSummaryLine turnId={messageId} />
         <MessagePrimitive.GroupedParts groupBy={byStep} indicator="always">
           {({ part }) => {
             switch (part.type) {
               case "group-steps":
-                return (
-                  <StepList
-                    indices={part.indices}
-                    last={part.indices.includes(lastDrawn) || lastDrawn < 0}
-                  />
-                );
+                // the steps are the panel's Activity tab; the line above opens it on this turn
+                return null;
               case "text":
                 return (
                   <AgentText
@@ -290,12 +287,8 @@ export const AssistantMessage: FC = () => {
                 if (isAnswerPart(part as AnyPart)) return null;
                 return <div className="w-full empty:hidden">{part.dataRendererUI}</div>;
               case "indicator":
-                if (lastDrawn < 0) return <Starting name={actor?.name ?? agentId} />;
-                return lastIsSteps ? null : (
-                  <p data-slot="working" className="text-shimmer text-sm">
-                    Working…
-                  </p>
-                );
+                // the turn's line says it works; before its first event there is only this
+                return lastDrawn < 0 ? <Starting name={actor?.name ?? agentId} /> : null;
               default:
                 return null;
             }

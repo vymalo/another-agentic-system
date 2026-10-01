@@ -359,7 +359,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         step.data,
       );
       if (step.setState) setState(t, step.setState);
-      run.timer = setTimeout(tick, stepMs);
+      const next = run.pending[0];
+      run.timer = setTimeout(tick, next && "quick" in next && next.quick ? 0 : stepMs);
     };
     run.timer = setTimeout(tick, stepMs);
   }

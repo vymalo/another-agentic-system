@@ -1,7 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { proxyOrigin, WEB } from "./env";
 import { FlakyProxy } from "./flaky-proxy";
-import { badge, releaseGate, resetDb, startThread, waitForExecution } from "./helpers";
+import {
+  activityTab,
+  badge,
+  releaseGate,
+  resetDb,
+  showActivity,
+  startThread,
+  waitForExecution,
+} from "./helpers";
 
 const PROXY_PORT = 3101;
 
@@ -29,8 +37,9 @@ test("a dropped stream resumes without duplicates", async ({ page }) => {
   await expect(badge(page)).toHaveText("Done");
   await expect(page.getByText("Reconnecting…")).toHaveCount(0);
   await expect(log.getByText("gate reconnect", { exact: true })).toHaveCount(1);
-  await expect(log.getByText("Started working", { exact: true })).toHaveCount(1);
-  await expect(log.getByText("Opened pull request #1")).toHaveCount(1);
+  await showActivity(page);
+  await expect(activityTab(page).getByText("Started working", { exact: true })).toHaveCount(1);
+  await expect(activityTab(page).getByText("Opened pull request #1")).toHaveCount(1);
   await expect(log.getByRole("link", { name: /^View pull request / })).toHaveCount(1);
   await expect(log.getByText("echo: gate reconnect")).toHaveCount(1);
 });

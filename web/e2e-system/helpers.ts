@@ -4,6 +4,7 @@ import path from "node:path";
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
 import pg from "pg";
 import {
+  activityTab,
   actorLabel,
   agentMenu,
   agentMenuItem,
@@ -18,6 +19,7 @@ import {
   exportMenuItem,
   openAgentMenu,
   openThreadList,
+  showActivity,
   startThread,
   THREAD_URL,
   threadList,
@@ -27,6 +29,7 @@ import { uuidv7 } from "../src/lib/uuid";
 import { DATABASE_URL, FAKE_CONTROL, ORCH, ORCH_SCRIPT, orchestratorEnv, RUN_DIR } from "./env";
 
 export {
+  activityTab,
   actorLabel,
   agentMenu,
   agentMenuItem,
@@ -41,6 +44,7 @@ export {
   exportMenuItem,
   openAgentMenu,
   openThreadList,
+  showActivity,
   startThread,
   THREAD_URL,
   threadList,

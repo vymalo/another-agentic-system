@@ -8,7 +8,10 @@ import {
   panel,
   panelTab,
   panelToggle,
+  showActivity,
   startThread,
+  turnSections,
+  turnSummaries,
 } from "./helpers";
 
 /*
@@ -104,9 +107,9 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "Make sessions expire after 30 idle minutes");
       await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
       await shot(page, "rework-done");
-      await conversation(page)
-        .getByText(/trying again/)
-        .scrollIntoViewIfNeeded();
+      // the rework is a step of the turn: the panel's (a sheet on a phone)
+      const tab = await showActivity(page);
+      await tab.getByText(/trying again/).scrollIntoViewIfNeeded();
       await shot(page, "rework");
     });
 
@@ -152,6 +155,50 @@ for (const scheme of ["light", "dark"] as const) {
       await panelTab(page, "Sources").click();
       await expect(panel(page).getByRole("region", { name: "Links" })).toBeVisible();
       await shot(page, "panel-sources");
+    });
+
+    test("steps: a delegation to OpenCode, one line in the chat and the tree in the panel", async ({
+      page,
+    }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "Delegate the login fix to OpenCode");
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      await expect(turnSummaries(page)).toHaveCount(1);
+      // the conversation: the line, the answer, the pull request (the panel docked beside it on a desktop)
+      await shot(page, "steps-chat");
+      await turnSummaries(page).click();
+      const turn = turnSections(page).first();
+      await expect(turn.getByRole("heading", { level: 3 })).toBeFocused();
+      await shot(page, "steps-collapsed");
+      await turn.getByRole("button", { name: /^OpenCode/ }).click();
+      await expect(turn.getByRole("list", { name: "Steps of OpenCode" })).toBeVisible();
+      await shot(page, "steps-opened");
+      await turn.getByRole("button", { name: /^Show 10 more steps of OpenCode/ }).click();
+      await expect(
+        turn.getByRole("list", { name: "Steps of OpenCode" }).getByRole("listitem"),
+      ).toHaveCount(13);
+      await shot(page, "steps-more");
+    });
+
+    test("steps while the agent works", async ({ page }) => {
+      await startThread(page, "Investigate the login redirect");
+      await expect(turnSummaries(page)).toContainText("Running cargo test -p auth");
+      await expect(turnSummaries(page).locator('[data-glyph="spinner"]')).toBeVisible();
+      await page.waitForTimeout(400);
+      await shot(page, "steps-running");
+      if (await panelToggle(page).isVisible()) {
+        if ((await panelToggle(page).getAttribute("aria-expanded")) !== "true") {
+          await panelToggle(page).click();
+        }
+        await expect(panel(page)).toBeVisible();
+        await expect(turnSections(page).first()).toBeVisible();
+        await shot(page, "steps-running-panel");
+        if (await page.getByRole("dialog", { name: "Thread details" }).isVisible()) {
+          await page.keyboard.press("Escape");
+        }
+      }
+      await page.getByRole("button", { name: "Stop" }).click();
+      await expect(badge(page)).toHaveText("Stopped");
     });
 
     test("sidebar", async ({ page, isMobile }) => {

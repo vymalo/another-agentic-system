@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { badge, conversation, startThread } from "./helpers";
+import { activityTab, badge, conversation, showActivity, startThread } from "./helpers";
 
 test("a second tab follows a run it did not start, and sees it cancelled from the first", async ({
   page,
@@ -12,11 +12,12 @@ test("a second tab follows a run it did not start, and sees it cancelled from th
   await other.goto(page.url());
   await expect(badge(other)).toHaveText("Working…");
   await expect(conversation(other).getByText("slow task", { exact: true })).toBeVisible();
-  await expect(conversation(other).getByText("Started working", { exact: true })).toBeVisible();
+  await showActivity(other);
+  await expect(activityTab(other).getByText("Started working", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(badge(other)).toHaveText("Stopped");
-  await expect(conversation(other).getByText("Stopped", { exact: true }).first()).toBeVisible();
+  await expect(activityTab(other).getByText("Stopped", { exact: true }).first()).toBeVisible();
   await expect(badge(page)).toHaveText("Stopped");
 });
 

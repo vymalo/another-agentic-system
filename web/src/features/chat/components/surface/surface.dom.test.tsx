@@ -26,7 +26,7 @@ import {
 import { loadGolden } from "@/features/chat/lib/agui/testing";
 import { SurfaceNewer } from "./surface-activity";
 import { SurfaceView, surfaceLibrary } from "./surface-view";
-import { mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
+import { mountSurfaces, resetSeq, STEPS_PANE, stubLayout, surfaceRun } from "./testing";
 
 configure({ asyncUtilTimeout: 10_000 });
 beforeAll(stubLayout);
@@ -112,7 +112,8 @@ describe("the golden A2UI story, through the runtime and the renderer", () => {
   });
 
   it("the action of the second run is a quiet line, and the surface stays where it was", async () => {
-    const m = mountSurfaces({ canSend: false, state: "done" });
+    // the person's click is a step of the turn: the side panel's tree has it
+    const m = mountSurfaces({ canSend: false, state: "done" }, {}, STEPS_PANE);
     await act(async () => {
       m.stream.frames(loadGolden("a2ui"));
     });

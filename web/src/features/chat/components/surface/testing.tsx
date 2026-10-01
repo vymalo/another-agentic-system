@@ -6,6 +6,8 @@ import { type ThreadView, ThreadViewProvider } from "@/features/chat/components/
 import { type GoldenFrame, LiveStream, sse, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import { mountRuntime } from "@/features/chat/lib/agui/testing-runtime";
 import type { ThreadAgentOptions } from "@/features/chat/lib/agui/thread-agent";
+import { StepsPanelTestProvider } from "@/features/panel/hooks/use-steps-panel";
+import { StepsPanelContent } from "../steps/steps-panel-content";
 import { type SurfaceHost, SurfaceHostContext } from "./surface-host";
 
 /**
@@ -190,6 +192,17 @@ export function actionRun(
 export const resetSeq = () => {
   seq = 0;
 };
+
+/**
+ * The side panel's step tree, for the tests that look at a step: the steps are not in the
+ * transcript, so it is mounted beside it (as `extra` of `mountSurfaces`), where the panel's
+ * Activity tab has it.
+ */
+export const STEPS_PANE = (
+  <StepsPanelTestProvider>
+    <StepsPanelContent />
+  </StepsPanelTestProvider>
+);
 
 /**
  * The runtime, the transcript and the renderers over a stream the test writes to, with `host`

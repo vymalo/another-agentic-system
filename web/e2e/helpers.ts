@@ -131,3 +131,41 @@ export const panelTab = (page: Page, name: "Activity" | "Sources") =>
   panel(page).getByRole("tab", { name: new RegExp(`^${name}`) });
 export const panelResizer = (page: Page) =>
   page.getByRole("separator", { name: "Resize the details panel" });
+
+/**
+ * The Activity tab of the panel: what the agents did, turn by turn, as a tree. The steps of a
+ * turn are not in the conversation (it keeps one line per turn), so a spec that looks at a step
+ * looks here: `showActivity` first, because on a phone the panel is a sheet that has to be opened.
+ */
+export const activityTab = (page: Page) => panel(page).getByRole("tabpanel", { name: "Activity" });
+
+/** The one line an agent turn keeps in the conversation: the button that opens its steps. */
+export const turnSummaries = (page: Page) =>
+  // not through the log's role: behind a phone's sheet the page is hidden from the accessibility tree
+  page.locator('[role="log"][aria-label="Conversation"] [data-slot="turn-summary"]');
+
+/** The sections of the Activity tab, one per agent turn that did something. */
+export const turnSections = (page: Page) => activityTab(page).locator('[data-slot="turn-section"]');
+
+/**
+ * Makes the Activity tab show and returns it: the docked panel is open already on a wide window
+ * (and is opened when the person closed it), a phone's sheet is opened by the header's toggle.
+ */
+export async function showActivity(page: Page): Promise<Locator> {
+  if ((await panelToggle(page).getAttribute("aria-expanded")) !== "true") {
+    await panelToggle(page).click();
+  }
+  await expect(panel(page)).toBeVisible();
+  const tab = panelTab(page, "Activity");
+  if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
+  return activityTab(page);
+}
+
+/** Closes the sheet of a phone, so the page behind it can be read and used again; a docked panel stays. */
+export async function hideActivity(page: Page) {
+  const sheet = page.getByRole("dialog", { name: "Thread details" });
+  if (await sheet.isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+  }
+}

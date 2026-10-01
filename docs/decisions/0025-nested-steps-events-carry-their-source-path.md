@@ -95,3 +95,17 @@ The orchestrator's side is built; the contract an agent reports under is
   a step from the metadata of a `working` status message, whatever was activated; one that does not validate is read as a
   plain status. The agent-side work (adam-rs reporting its tool calls and its OpenCode bridge's as steps) and the web's tree
   are their own slices.
+
+## Status note, 2026-10-01: the tree is in the side panel (MVP slice 5, the web)
+
+Decision 5 says steps are a tree in the web, each level collapsed. The owner's requirement of the same day (a
+collapsible right panel; "the agents (and sub-agents) work better with a cleaner interface") settled **where**: the
+tree is the **Activity** tab of the thread's side panel, and the conversation keeps **one line per agent turn**
+(what it is on while it runs, "14 steps · 2m 10s" when it is done, a "1 failed" chip whenever a step failed), which
+opens the panel on that turn. Depth 1 of a turn is always listed, each deeper level is one collapsed line (its name,
+how many steps are under it, a failure chip at every collapsed level); a click lists the latest three children and
+every failed one, "Show 10 more" ten earlier ones, and a level of more than 50 rows is a scroll box that draws only the
+rows in view. The tree is read from the step parts the runtime already holds, so the line and the panel cannot
+disagree and nothing is fetched. This replaces `web/DESIGN.md`'s "steps always visible, never collapsed behind a
+toggle" for the conversation; inside the panel, depth 1 is still always visible. See
+[the web README](../../web/README.md#the-step-tree) and [DESIGN.md](../../web/DESIGN.md#steps-panel).

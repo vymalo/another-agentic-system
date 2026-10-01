@@ -5,7 +5,9 @@ to machine chat interface", "It should look like a gemini chat, with custom comp
 and simple", with the agent's steps always visible. A day later, on seeing it (2026-10-01): "The UI
 is currently TOO google gemini-like… change the icon to something custom for us… The idea of the
 logo is 'boring giant panda, tri-color'." So the structure stays (a classical chat) and the look is
-ours: the panda, ink actions, one bamboo green, warm neutrals (see "Brand" and "Colour"). This brief
+ours: the panda, ink actions, one bamboo green, warm neutrals (see "Brand" and "Colour"). The same day the
+steps left the conversation for the side panel, "the agents (and sub-agents) work better with a cleaner
+interface" ("A turn", "Steps panel"). This brief
 is the contract the components in `src/` follow; the screenshots in `e2e/__screens__/`
 (`pnpm screens`) show the result.
 
@@ -140,10 +142,11 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   `chat.panel.tab` in localStorage; a head script sets `data-panel` on `<html>` before the first paint, as the
   sidebar's does); with nothing remembered it is open from 1280 px and closed below. A sheet is never open by
   itself and never remembered: it is for this visit.
-- **Activity** is where the step tree goes (plan 03, S5.4): one section per agent turn, fed by the shell's
-  small contract, `useStepsPanel()` (`hooks/use-steps-panel.tsx`: the panel's id, whether it shows, the tab, a
-  request to focus a turn, and `openSteps(turnId)`). Until the tree exists the steps stay in the
-  conversation, as "A turn" says, and the tab says so.
+- **Activity** is where the agents' steps are: one section per agent turn that did something, as a tree
+  ("Steps panel" says how it reads). It is fed by the shell's small contract, `useStepsPanel()`
+  (`hooks/use-steps-panel.tsx`: the panel's id, whether it shows, the tab, a request to focus a turn, and
+  `openSteps(turnId)`), and by the runtime's messages, so what the chat says in its one line per turn and what
+  the panel lists can never disagree.
 - **Sources** is what the agents shared, derived in the browser from what the runtime already holds: the pull
   requests and branches they opened or pushed, their CI reports that link to a run, the files with a link,
   and the links in their words. Four groups (Pull requests & branches, Checks, Files, Links), each item once
@@ -169,14 +172,24 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
 
 - **The person**: a soft bubble on the right (`--bubble`), 20 px radius with a 6 px corner at the top
   right, max 85 % of the column, markdown inside.
-- **The agent**: its avatar (a 28 px circle with its first letter, see "Brand") and its name once, then, in order: the **steps**, its
-  **words** as prose, and its **cards**. Nothing of the agent's sits in a bubble.
-- **Steps** (always visible, never collapsed behind a toggle): a compact list, one 28 px line per
-  step, an icon in a 20 px column joined by a hairline. The live step spins; finished steps are a
-  quiet check; a failure is a cross. Labels are human: "Started working", "Preparing the workspace",
-  "Pushed agent/fix", "Checks passed", "Opened pull request #12", "Checks failed — trying again
-  (2/3)". A command (`$ …`) is monospace in a light box, one line, with Show more. Findings open in
-  place. Past 30 steps the earliest fold behind "Show N earlier steps".
+- **The agent**: its avatar (a 28 px circle with its first letter, see "Brand") and its name once, then, in order:
+  one **summary line** for its steps, its **words** as prose, and its **cards**. Nothing of the agent's sits in
+  a bubble.
+- **The steps are not in the chat** (amended 2026-10-01; before it, "steps always visible, never collapsed": a
+  compact list of one 28 px line per step, the live one spinning, past 30 steps the earliest folded). The owner
+  asked for a cleaner interface where agents and sub-agents work ("the right side of the page is usually unused"),
+  and a turn that delegates to a sub-agent has hundreds of steps. They are the panel's Activity tab ("Steps
+  panel"), and the chat keeps **one line per turn**, which opens the panel on that turn.
+- **The summary line** is a quiet 28 px button under the agent's name (13 px, `--muted-foreground`, a soft pill
+  on hover and while the panel shows this turn, a chevron at its end). It says: while the turn runs, a spinner
+  and what the agent is on with how many steps it has ("Running npm test · 14 steps"); when it paused on a
+  question, a pause and "Paused · 9 steps"; while the gate checks the work, the `--verifying` shield and
+  "Verifying"; when it is done, a check and "14 steps · 2m 10s"; "Failed · 14 steps" with a cross; "Stopped · 5
+  steps" with a ban. Whenever a step failed it adds a destructive chip with an icon and the words, "1 failed",
+  **even in a turn that went well**: a failure is never hidden by the summary. A turn of words only, which is
+  not running, has no line. Its accessible name says it all: "Coder's steps: 14 steps · 2m 10s, 1 failed.
+  Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
+  shows this turn), so Enter and Space open it.
 - **Before the first event** a shimmering "Coder is starting…" line under the avatar.
 - **Cards** (after the words): a pull request card (repository, number, title, branch chip, Open
   button), a file card; A2UI surfaces as they are. Errors are soft callouts in the flow, never
@@ -185,6 +198,46 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   composer says "Reply…".
 - **Choices** (a surface component, below): the agent's several questions with fixed answers, in the
   surface's card; **the person's answers** to them are a bubble, see below.
+
+## Steps panel
+
+The Activity tab of the panel is the agents' work, for the person who wants to see it
+(`features/chat/components/steps/`, the tree itself `features/chat/lib/step-tree.ts`). It reads the steps the
+runtime already holds, so it is the same on the live stream, on a replay and after a reload.
+
+- **A turn is a section.** One per agent turn that did something (a turn of words has none, and "Turn n" is
+  numbered as the chat and the Sources tab number turns), oldest first. Its header is a heading with a button:
+  "Turn 3 · Coder · 2m 10s", the turn's state as a glyph, a destructive "1 failed" chip, a chevron. It opens and
+  closes the turn. Open by default: the turn the shell asked to show (the chat's line, or a source's
+  Turn button), else the turn that is running while the thread runs, else the last one. Once the person opens or
+  closes a turn the pane stops choosing for them. A request to show a turn opens it, scrolls to it, moves the
+  focus to its header and marks it (a `--brand` wash for 1.5 s, no transition under reduced motion); asking
+  again for the same turn does it again.
+- **Depth 1 is always there, deeper levels collapse.** What the agent did at its own level (a status, a push, a
+  command, a sub-agent) is one line each. A step with children is one line too: a chevron, its name, "· 14
+  steps" (everything under it), and a destructive "1 failed" chip when something under it failed, **at every
+  collapsed level**. A first click lists its latest three children (and every failed one, wherever it is); "Show
+  10 more" lists ten earlier ones, again and again. The same button closes it. A level of more than 50 rows
+  is a scroll box (360 px at most) that draws only the rows in view, so a thousand steps cost what a few dozen
+  do. What the person opened is kept above the panel: closing the panel keeps it, a new thread starts closed.
+- **One line looks like the step list did**: an icon on a hairline rail, the words (13 px, one line, cut, the
+  whole in a tooltip and in the accessible name), a duration (12 px, muted) once it ended. A sub-agent, a tool and
+  a command have their own glyph (the icon vocabulary of steps/v1: agent, read, edit, delete, move, search,
+  execute, think, fetch, web, git, test, file, tool); a running step spins, one that waits for the person is a
+  pause, a failed one a cross in `--destructive`, one that was stopped a ban. **A command is monospace in a light
+  box**, one line, with Show more; a step's detail is a muted line under it. The activities of before (a push, a
+  check, a CI report, a rework, the person's click) are drawn by the renderers that always drew them, as leaves.
+  The checks, CI reports and reworks of the verification gate are steps of the turn after the agent's own.
+- **A turn that is not running holds no running step**: paused on a question, its steps wait (a pause); ended,
+  they are stopped. A turn that ended on a question stays "Paused" in the history after it was answered.
+- **While the thread runs** the pane keeps the step the agent is on in view, until the person scrolls or opens or
+  closes a turn.
+- **Fits** 280 to 560 px and the width of a phone's sheet; nothing scrolls sideways.
+- **Accessibility.** A section per turn named by its heading; each level a nested list (`ol`) named for what it
+  holds ("Steps of OpenCode"); every toggle a native button with `aria-expanded`, in the tab order (it is
+  **not** an ARIA tree: "steps are a list" stays true, no roving tabindex); a step that is not simply done says
+  its state in words before its name ("Failed: …", "Waiting: …") for a screen reader; a scroll box is a
+  labelled, focusable region; there is no live region in the pane (the state pill stays the one polite status).
 
 ## Type, spacing, radii
 
@@ -226,7 +279,7 @@ dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11
 
 ## Motion
 
-A new turn fades in and rises 4 px (160 ms, ease-out); the live step spins; "starting" shimmers.
+A new turn fades in and rises 4 px (160 ms, ease-out); the live step and the summary line's spinner spin; "starting" shimmers.
 All of it is off under `prefers-reduced-motion`.
 
 ## Accessibility
@@ -234,6 +287,10 @@ All of it is off under `prefers-reduced-motion`.
 The transcript is `role="log"` (name "Conversation"); the state pill is a polite `status`; steps are
 a list whose items carry their full meaning as text; focus rings on every control; everything works
 from the keyboard; axe finds nothing serious in either scheme.
+
+A turn's summary line is a button that names its steps and where it opens them; the step tree is nested lists with
+native buttons (no ARIA tree), and axe is run with the tree open, a level that scrolls, and a turn that runs, in both
+schemes, on a desktop and on a phone's sheet.
 
 The panel is a `complementary` landmark named "Thread details" (hidden and inert while it is closed, so it is
 neither tabbed into nor read); in a sheet it is a dialog with the same name that traps the focus, closes

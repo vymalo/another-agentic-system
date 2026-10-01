@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { StateBadge } from "@/features/chat/components/state-badge";
-import { mountSurfaces, stubLayout } from "@/features/chat/components/surface/testing";
+import { mountSurfaces, STEPS_PANE, stubLayout } from "@/features/chat/components/surface/testing";
 import { type GoldenFrame, loadGolden, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import type { CheckContent } from "@/features/chat/lib/agui/vymalo";
 import { FINDING_PREVIEW, FINDINGS_SHOWN } from "../parts/findings-list";
@@ -294,7 +294,7 @@ const lineOf = (step: Element | undefined) =>
 
 describe("the renderers in the transcript", () => {
   it("verify-green: the failed check, the rework and the passed check, in that order", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(m, loadGolden("verify-green"));
     await waitFor(() => expect(regions()).toHaveLength(2));
     const [first, second] = regions() as [HTMLElement, HTMLElement];
@@ -318,7 +318,7 @@ describe("the renderers in the transcript", () => {
   });
 
   it("verify-red: three failed checks and two reworks, the last attempt without one", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(m, loadGolden("verify-red"));
     await waitFor(() => expect(regions()).toHaveLength(3));
     expect(regions().map((r) => r.getAttribute("aria-label"))).toEqual([
@@ -334,7 +334,7 @@ describe("the renderers in the transcript", () => {
   });
 
   it("a card is replaced in place by its id: pending, then the answer (one card, not two)", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     const id = "check-1-1-ci";
     await feed(m, [
       ...activities([
@@ -369,7 +369,7 @@ describe("the renderers in the transcript", () => {
   });
 
   it("a stale check has an id of its own and is shown next to the current one, muted", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(
       m,
       activities([
@@ -383,7 +383,7 @@ describe("the renderers in the transcript", () => {
   });
 
   it("a malformed payload draws nothing and does not crash; the rest of the run still renders", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(
       m,
       activities([
@@ -415,7 +415,7 @@ describe("the renderers in the transcript", () => {
   });
 
   it("findings that arrive as markup are text all the way from the wire", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     await feed(
       m,
       activities([
@@ -442,7 +442,8 @@ describe("the renderers in the transcript", () => {
       ]),
     );
     await waitFor(() => expect(regions()).toHaveLength(1));
-    const log = screen.getByRole("log", { name: "Conversation" });
+    // the steps are the side panel's: the tree is where the cards are
+    const log = document.querySelector('[data-slot="steps-pane"]') as HTMLElement;
     expect(within(log).getByText("<script>window.pwned = 1</script>")).toBeTruthy();
     expect(within(log).getByText("**bold**")).toBeTruthy();
     expect(within(log).getByText("[x](javascript:alert(1))")).toBeTruthy();
@@ -452,7 +453,7 @@ describe("the renderers in the transcript", () => {
   });
 
   it("a hold while verifying is an interrupt the user can answer (no delivery failure, no subagent)", async () => {
-    const m = mountSurfaces();
+    const m = mountSurfaces({}, {}, STEPS_PANE);
     const thread = { state: "blocked", target: { agentId: "plain" }, title: "t" };
     await feed(m, [
       {

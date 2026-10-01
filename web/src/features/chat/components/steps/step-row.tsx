@@ -75,7 +75,7 @@ type Props = Omit<ComponentProps<"li">, "children"> & {
 
 /**
  * One line of an agent's step list: the icon on a hairline rail, the words, and what belongs to
- * the step under them. The list is `steps/step-list.tsx`.
+ * the step under them. The lists are `steps/steps-pane.tsx` and `steps/step-node.tsx`.
  */
 export function StepRow({ state, icon, label, children, className, ...li }: Props) {
   const placed = useContext(RowPropsContext);
