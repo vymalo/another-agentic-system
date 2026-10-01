@@ -5,6 +5,7 @@ import {
   agentMessage,
   badge,
   ECHO,
+  exportMenuItem,
   framesOf,
   PR_URL,
   resetDb,
@@ -16,14 +17,14 @@ import {
 
 test.beforeEach(resetDb);
 
-test("echo: user message, Working, PR card, Completed, Done", async ({ page }) => {
+test("echo: user message, its steps, the PR card, Done", async ({ page }) => {
   await startThread(page, "echo hello", "Plain");
 
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(log.getByText("echo hello", { exact: true })).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
-  await expect(log.getByText("Working")).toBeVisible();
-  await expect(log.getByText("Completed")).toBeVisible();
+  await expect(log.getByText("Started working")).toBeVisible();
+  await expect(log.getByText("Opened pull request #1")).toBeVisible();
 
   const pr = log.getByRole("link", { name: "Pull request acme/demo#1" });
   await expect(pr).toHaveAttribute("href", PR_URL);
@@ -41,7 +42,7 @@ test("agent text renders once, with the actor", async ({ page }) => {
   await startThread(page, "talk please", "Plain");
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(badge(page)).toHaveText("Done");
-  await expect(log.getByText("Working: Reading the repository")).toBeVisible();
+  await expect(log.getByText("Reading the repository", { exact: true })).toBeVisible();
   const bubble = agentMessage(page, "Plan: add a test");
   await expect(bubble).toHaveCount(1);
   await expect(actorLabel(bubble)).toHaveText("plain");
@@ -60,7 +61,7 @@ test("Export JSON: the real orchestrator's whole log in one downloaded file", as
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("button", { name: "Export JSON" }).click(),
+    (await exportMenuItem(page)).click(),
   ]);
   expect(download.suggestedFilename()).toBe(`thread-${id}.json`);
   const doc = JSON.parse(await readFile(await download.path(), "utf8"));

@@ -33,7 +33,7 @@ test("orchestrator restart mid-thread: the page recovers and finishes", async ({
   await expect(page.getByText("Reconnecting…")).toHaveCount(0);
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(log.getByText("echo: gate restart")).toHaveCount(1);
-  await expect(log.getByText("Working")).toHaveCount(1);
+  await expect(log.getByText("Started working", { exact: true })).toHaveCount(1);
 
   const frames = await framesOf(page.request, id);
   expect(shape(frames)).toEqual(ECHO);

@@ -89,8 +89,9 @@ const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
 const reports = () => screen.queryAllByRole("listitem", { name: /^CI: / });
 const checks = () => screen.queryAllByRole("listitem", { name: /^Check: / });
 const dividers = () => [...document.querySelectorAll("[data-slot='rework-step']")];
-/** The one line of a rework step (its findings are folded under it). */
-const lineOf = (step: Element) => step.querySelector(":scope > div > div:first-child")?.textContent;
+/** The words of a rework step ("Checks failed — trying again (2/3)"), without its count. */
+const lineOf = (step: Element) =>
+  step.querySelector(":scope > div > div:first-child > span:first-child")?.textContent;
 
 describe("CI results, in the app", () => {
   it("ci: a red report sends the agent back, a green one finishes the job; every report is a card", async () => {

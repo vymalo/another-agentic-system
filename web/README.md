@@ -33,7 +33,7 @@ contract).
 | `GET /agui/threads/{id}/connect` | the conversation: replay, then follow across runs, resuming with `Last-Event-ID` |
 | `GET /api/agents`, `GET /api/threads`, `GET /api/threads/{id}` | the agent list, the thread list, a thread's title and target |
 | `POST /api/threads/{id}/cancel` | Cancel (AG-UI has no consumer cancel) |
-| `GET /api/threads/{id}/export` | **Export JSON** in the thread header: the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer |
+| `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer |
 
 The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
 `streamEvents`) were removed from the contract and the orchestrator on 2026-09-30 (ADR 0012); the web
@@ -116,7 +116,7 @@ stateDiagram-v2
   composer is never disabled. While a run is live the box is for drafting: Enter does not send
   (`submitMode: none`), the button says **Stop** (`POST /api/threads/{id}/cancel`) and the draft survives it; once the
   run has ended the button is Send, and a message on a `done`, `failed` or `cancelled` thread is the next job's first
-  word, in the same transcript. The placeholder says what fits: "Describe the task…" (new), "Reply…" (the agent
+  word, in the same transcript. The placeholder says what fits: "Describe a task for the agent…" (new), "Reply…" (the agent
   asked), "Tell the agent how to go on…" (failed or stopped), "Send a follow-up…" (otherwise). Nothing tells the
   person to start a new thread; the `vymalo.job` marker of a later job draws nothing. A replay that holds several jobs
   applies their runs one after the other (`live-runs.ts`, `quiesce`: the runtime's transcript lags a render, and a
@@ -132,11 +132,17 @@ stateDiagram-v2
 - **A send the server refuses** (a problem before the stream) is a `SendError`, assistant-ui's
   `MessageNotSentError`: the composer takes its text back, the failed message is removed from the
   transcript (`dropFailedSend`) and the problem's `detail` is shown.
-- **Renderers** are `agui-activity/vymalo.status`, `.artifact` and `.error` (`data-uis.tsx`, reusing
-  the status line, artifact card and error line), `.action` (a quiet "Chose <name>" line for what the
-  owner did on a surface), `.check` and `.rework` (the verification gate, see
-  [Verification](#verification-the-gate)), `.ci` (a CI report, see [CI results](#ci-results-vymalo-ci)) and `.a2ui-surface` (the A2UI renderer, see
-  [A2UI surfaces](#a2ui-surfaces)). A shape a renderer does not know renders nothing.
+- **A turn** (one run, one assistant message) is drawn by `thread.aui.tsx` as a classical chat
+  ([DESIGN.md](DESIGN.md), "A turn"): the agent's mark and name once, then its parts in order through
+  `MessagePrimitive.GroupedParts`. Every stretch of step parts (`lib/steps.ts`: a status but a
+  failure, an artifact, `.check`, `.ci`, `.rework`, `.action`, the actor and job markers) is one
+  compact step list (`steps/step-list.tsx`, always in view, the last step spinning while the run
+  is open); the agent's words (`TEXT_MESSAGE_*`, including the words of a `completed` or
+  `input_required` status, `st-<seq>`) are prose; a failed status and `.error` are soft callouts
+  and `.a2ui-surface` the A2UI renderer (`data-uis.tsx`, see [A2UI surfaces](#a2ui-surfaces)); the
+  pull requests and files the agent shared follow as cards (`cards/turn-cards.tsx`). The statuses
+  that come with words (`completed`, `input_required`) draw no step: the words and the state pill
+  say it. A shape a renderer does not know renders nothing.
 - **Thread ids** are UUIDv7 (`src/lib/uuid.ts`): the consumer mints them, and the orchestrator lists
   threads by id, newest first.
 
@@ -194,7 +200,7 @@ sequenceDiagram
   participant O as Orchestrator
   participant T as ThreadAgent
   participant R as Runtime (react-ag-ui)
-  participant V as Renderers (parts/)
+  participant V as Renderers (steps/)
   participant H as Header and composer
   O-->>T: STATE_SNAPSHOT verifying, job {attempt 1, maxAttempts 3, gate, sha}
   T->>H: state = verifying, job (the pill, "Checking the work…")
@@ -203,9 +209,9 @@ sequenceDiagram
   R->>V: the data part, replaced in place by its message id
   V->>V: parseCheck: a payload it does not know draws nothing, findings are text
   O-->>T: ACTIVITY_SNAPSHOT vymalo.rework rework-2, then SUBAGENT_STARTED, STATE_SNAPSHOT queued (attempt 2)
-  R->>V: the divider "Attempt 2 of 3: sent back with 1 finding", then the next attempt's parts
+  R->>V: the step "Checks failed — trying again (2/3)", then the next attempt's steps
   O-->>T: a check passed, STATE_SNAPSHOT done, RUN_FINISHED success
-  T->>H: state = done (the attempts are in the divider, not in the header)
+  T->>H: state = done (the attempts are in the steps, not in the header)
   Note over O,T: out of attempts: STATE_SNAPSHOT failed, then RUN_ERROR checks_failed
   T->>H: failure = checks_failed: "Checks failed after 3 attempts"
 ```
@@ -215,7 +221,7 @@ stateDiagram-v2
   [*] --> Queued
   Queued --> Working: the agent works
   Working --> Verifying: completed, and the run stays open
-  Verifying --> Queued: a check failed, attempts left (divider)
+  Verifying --> Queued: a check failed, attempts left (a rework step)
   Verifying --> Done: every required check passed
   Verifying --> Failed: a check failed on the last attempt (Checks failed after N attempts)
   Verifying --> Cancelled: Stop
@@ -224,36 +230,36 @@ stateDiagram-v2
   Cancelled --> Queued: a message
 ```
 
-The badge follows that lifecycle. A check card has a smaller one of its own: `pending` becomes `passed` or `failed` by
-the same message id (in place, never a second card), and an answer that arrived too late is a card of its own, stale.
+The badge follows that lifecycle. A check step has a smaller pill of its own: `pending` becomes `passed` or `failed` by
+the same message id (in place, never a second step), and an answer that arrived too late is a step of its own, stale.
 
 
 | Piece | Where | What it does |
 |---|---|---|
-| State pill | `state-badge.tsx` | One pill, in words a person uses: queued "Starting…", working "Working…", verifying "Checking the work…" (its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), blocked "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise, done "Done", failed "Failed", cancelled "Stopped". There is no attempt counter: attempts show inside the turn, in the rework divider |
-| Check card | `parts/check-card.tsx` | `vymalo.check`: status in words with an icon (Passed, Failed, Pending), the source ("Agent checks", "CI", "Verifier"; an unknown one as it came), the attempt, the short commit (seven hex digits, else cut to 12; the full value in `title`), the CI check `name`, the summary, the findings. One card per source in one verification of one attempt (`check-<attempt>-<verification>-<source>`), replaced in place; a `stale` answer has its own id, a dashed muted card marked "Stale" that says it decided nothing |
+| State pill | `state-badge.tsx` | One pill, in words a person uses: queued "Starting…", working "Working…", verifying "Checking the work…" (its own colour, `--verifying`, a violet that keeps 4.5:1 in both schemes; spoken "Thread state: Checking the agent's work"), blocked "Your turn" when the agent asked (an interrupt is open) and "Needs attention" otherwise, done "Done", failed "Failed", cancelled "Stopped". There is no attempt counter: attempts show inside the turn, in the rework step |
+| Check step | `steps/check-step.tsx` | `vymalo.check` as a step of the list, a `listitem` named "Check: <source>, attempt <n>, <status>[, stale]": what the source does or said ("Waiting for CI", "The verifier is reviewing the work", "The agent's checks failed"; an unknown source by its own name), a pill with the status in words and an icon (Passed, Failed, Pending), the attempt, the short commit (seven hex digits, else cut to 12; the full value in `title`), the CI check `name`, the summary, and the findings folded behind "Findings (n)". The verifier is named; the orchestrator is not. One step per source in one verification of one attempt (`check-<attempt>-<verification>-<source>`), replaced in place; a `stale` answer has its own id, a muted step marked "Stale" that says it decided nothing; a pending check whose run ended says no answer came |
 | Findings | `parts/findings-list.tsx` | A list of **plain text**: React text nodes, never `dangerouslySetInnerHTML`, never the markdown renderer, so `<script>`, `**bold**`, `[x](javascript:...)` and `<img onerror>` show as the characters they are. A finding over 240 characters is cut (never in the middle of a surrogate pair) with "Show more" / "Show less" (`aria-expanded`); more than five findings are folded behind "Show all N findings" |
-| Rework divider | `parts/rework-divider.tsx` | `vymalo.rework`: a rule with "Attempt 2 of 3: sent back with N findings" (N is the findings of all sources). The next attempt's `SUBAGENT_STARTED` is the runtime's new invocation, its parts below the rule; the findings themselves are on the check cards above |
+| Rework step | `steps/step-items.tsx` | `vymalo.rework`: a warning step "Checks failed — trying again (2/3)" ("CI failed", "The review found issues" when one source sent it back), the findings of every source folded under it. The next attempt's steps follow in the same list |
 | Checks failed | `composer.tsx` | A failed thread whose run ended in `RUN_ERROR` `checks_failed` says "Checks failed after N attempts" (a destructive notice, with no link to a new thread: write a message to go on); any other finished thread says nothing above the box |
 | Parsing | `lib/agui/vymalo.ts` | `parseCheck` (needs a `source`, an `attempt` >= 1 and a status of pending, passed or failed), `parseRework` (an `attempt` and `maxAttempts`) and `parseJob` return null for anything else, ignore unknown fields, keep only string findings (at most 100 read), and treat `stale` as true only when it is `true`. `lib/findings.ts` holds the shortening |
 
 Not in this slice: the verifier as its own subagent comes with its slice; a check of a source this UI has not heard of is
-already drawn from its own name. The CI card is the next section.
+already drawn from its own name. The CI step is the next section.
 
 ### CI results (`vymalo.ci`)
 
-A CI system's report on a commit (ADR 0017, [`docs/api/agui.md`](../docs/api/agui.md#ci-results-vymalo-ci)) is a card of
-its own, **for every report**, whether or not the gate counted it; the `vymalo.check` card of the source `ci` next to
+A CI system's report on a commit (ADR 0017, [`docs/api/agui.md`](../docs/api/agui.md#ci-results-vymalo-ci)) is a step of
+its own, **for every report**, whether or not the gate counted it; the `vymalo.check` step of the source `ci` next to
 it shows what the gate made of it. The orchestrator's order is check (pending), report, check (answered), rework.
 
 | Piece | Where | What it does |
 |---|---|---|
-| CI card | `parts/ci-card.tsx` | The conclusion as a badge: words first ("Success", "Failure", "Cancelled", "Timed out", "Neutral", "Skipped", "Action required", "Stale", "Startup failure"), an icon of its own for each, colour last (success green; failure, timed out and startup failure red; action required amber; the rest muted). A conclusion this UI does not know is shown by its own name, cut short, with a generic icon, and `passed` picks green or red. Then the check `name`, the short sha (`shortSha`, the full `sha` in `title`), the branch when there is one, the provider ("GitHub", "Generic webhook") and repository in small muted text, the `summary` and a "View run" link. Its accessible name is "CI: <name>, <conclusion>", apart from "Check: ..." |
+| CI step | `steps/ci-step.tsx` | A `listitem` named "CI: <name>, <conclusion>". The conclusion as a pill: words first ("Success", "Failure", "Cancelled", "Timed out", "Neutral", "Skipped", "Action required", "Stale", "Startup failure"), an icon of its own for each, colour last (success green; failure, timed out and startup failure red; action required amber; the rest muted). A conclusion this UI does not know is shown by its own name, cut short, with a generic icon, and `passed` picks green or red. Then the check `name`, the short sha (`shortSha`, the full `sha` in `title`), the branch when there is one, the provider ("GitHub", "Generic webhook") and repository in small muted text, the `summary` and a "View run" link. Its accessible name is "CI: <name>, <conclusion>", apart from "Check: ..." |
 | Text | `parts/expandable-text.tsx` | `name`, `branch` and `summary` come from whoever runs the CI: plain text nodes, never markdown or HTML, never a link. A summary over 240 characters is cut with "Show more" / "Show less" (`aria-expanded`), like a finding; a name or branch over 120 is cut with the whole in `title` |
-| Link | `parts/ci-card.tsx` | "View run" is drawn only when `url` passes `safeHttpUrl` (the A2UI rule: `http:` or `https:`, no control character, no user information); any other scheme (`javascript:`, `data:`, `file:`, a relative path) draws no link. `target="_blank"` and `rel="noopener noreferrer"`. `parseCi` drops such a url and the card checks it again |
+| Link | `steps/ci-step.tsx` | "View run" is drawn only when `url` passes `safeHttpUrl` (the A2UI rule: `http:` or `https:`, no control character, no user information); any other scheme (`javascript:`, `data:`, `file:`, a relative path) draws no link. `target="_blank"` and `rel="noopener noreferrer"`. `parseCi` drops such a url and the card checks it again |
 | Parsing | `lib/agui/vymalo.ts` | `parseCi` needs `name`, `conclusion`, a boolean `passed`, `sha`, `shortSha`, `provider` and `repository`, and returns null for anything else (nothing is drawn); it ignores unknown fields. `lib/ci.ts` holds the conclusions and their words |
 
-The web never reads the card's message id: like any activity, a card is kept under the id the wire gives it (one card
+The web never reads the step's message id: like any activity, a step is kept under the id the wire gives it (one step
 per report today, and a later snapshot with the same id and `replace: true` would replace it).
 
 ## A2UI surfaces
@@ -436,21 +442,28 @@ src/app/                       routes only: thin pages that compose features
 src/components/ui/             shadcn primitives (generated by the shadcn CLI, then formatted)
 src/components/assistant-ui/   assistant-ui registry items, pruned to what a run's parts need
 src/components/inline-status.tsx   shared empty, loading and error lines
-src/features/chat/             the conversation: components (shell, composer, renderers, LiveRuns,
-                               surface/ the A2UI renderer, parts/ the cards of
-                               the activities, the verification cards among them), hooks (runtime,
+src/features/chat/             the conversation: components (shell, top bar, composer, LiveRuns,
+                               steps/ the step list of a turn, the check and CI steps among them,
+                               cards/ the pull request and file cards, parts/ callouts and text,
+                               surface/ the A2UI renderer), hooks (runtime,
                                thread details), lib/agui (ThreadAgent, SSE reader, live runs, the
-                               vymalo vocabulary), lib/findings.ts (shortening untrusted text),
+                               vymalo vocabulary), lib/steps.ts (what a turn draws as a step, a card
+                               or prose), lib/findings.ts (shortening untrusted text),
                                lib/a2ui (the validator: limits, URLs, pointers, preparing a surface)
-src/features/threads/          thread list: sidebar (desktop) and sheet (phone), paging hook
-src/features/agents/           new-thread panel: agent and release pickers, agents hook
+src/features/threads/          thread list: collapsible sidebar (desktop) and sheet (phone), grouped by
+                               recency (lib/recency.ts), paging hook
+src/features/agents/           the new chat: greeting, suggestion chips, agent and release pickers
+                               (pills in the composer), agents hook
 src/lib/                       api client and types (schema.d.ts is generated, never committed), uuidv7
 patches/                       pnpm patches of dependencies, and the drafts of their upstream twins
 e2e/, e2e-system/, mock/       Playwright suites (mock / real orchestrator) and the mock orchestrator
 ```
 
-The theme is `src/app/globals.css`: the design tokens (light, and dark under
-`prefers-color-scheme`) mapped onto shadcn's names. There is no theme toggle. To add a primitive
+The look is [DESIGN.md](DESIGN.md), the brief with the references it is drawn from; the theme is
+`src/app/globals.css`: its tokens (light, and dark under `prefers-color-scheme`) mapped onto
+shadcn's names, Inter self-hosted (`@fontsource-variable/inter`). There is no theme toggle.
+`pnpm screens` writes a screenshot of every state, desktop and phone, light and dark, to
+[`e2e/__screens__/`](e2e/__screens__/) (`e2e/screens.spec.ts`); look at them after a visual change. To add a primitive
 (the CLI is pinned, see `components.json`; run `pnpm format` afterwards):
 
 ```sh
@@ -472,6 +485,7 @@ pnpm test          # vitest: SSE reader, ThreadAgent, the goldens through the ru
 pnpm build         # production build (standalone)
 pnpm test:e2e      # Playwright + axe + Lighthouse (>= 95 accessibility) against the mock orchestrator
 pnpm test:e2e:system   # Playwright against the REAL orchestrator, see "System tests"
+pnpm screens       # the screenshots of e2e/__screens__/ (mock server, production build)
 ```
 
 Playwright uses the browser Playwright pins (`@playwright/test` is pinned exactly; CI runs
@@ -502,6 +516,7 @@ The first word of the first message picks the script, the same words as the orch
 | `verify-wait` | mock only: the same gate, CI never answers; the thread stays `verifying` (a pending card, no report card) until it is cancelled |
 | `partial` | mock only, **not produced by the current orchestrator**: a partial agent message replaced by its final version |
 | `unreachable` | mock only: an error activity, `RUN_ERROR` `delivery_failed`, thread blocked |
+| `Fix`, `Refactor`, `Make`, `Upgrade`, `Deploy`, `Also`, `Migrate` | mock only, the coder scenarios of `pnpm screens` (plain words, so the titles read well): steps with commands, a push, the agent's checks, a pull request and a markdown answer (`Fix`); the same, still running a command (`Refactor`); a failed check, a rework and a pass (`Make`); nothing after the message (`Upgrade`); a question (`Deploy`); a short follow-up (`Also`); a failure with the agent's reason (`Migrate`). The wording of the steps is the mock's, not adam-coder's |
 
 The mock tells the orchestrator's story: `mock/golden.test.ts` drives every scenario of
 [`docs/api/examples`](../docs/api/examples/README.md) through the mock's run route and requires the
@@ -516,8 +531,8 @@ Agents: `coder` (has `releases`) and `reviewer` (none).
 
 | Command | What | Count (2026-09-30) |
 |---|---|---|
-| `pnpm test` | vitest: the SSE reader; `ThreadAgent` (groups, reconnect with `Last-Event-ID`, dedupe by seq, acceptance at `RUN_STARTED`, problems, abort is not cancel); the AG-UI goldens through the patched runtime (messages, activities, interrupts, the cancelled outcome); the app in jsdom against the mock (new thread, replay, answer, refused send, cancel, not found, a surface and its action); **the A2UI validator and its security tests** (every bad URL scheme and trick, each limit at and one over, an expansion bomb and a reference bomb, the vocabulary, reserved names, function values, inputs), **the renderer** (the golden through the runtime, replace in place, delete, a refusal, a later run, no auto-send under fake timers, a click sends once, disabled states, `openUrl` as a link, `userMessage` in the composer unsent, no image ever) and **the app's side of an action** (what a click puts on the wire, with and without an open interrupt); **the verification gate** (the parsing of `vymalo.check`, `vymalo.rework` and `job`: malformed payloads draw nothing and unknown fields are ignored; the cards, the divider, the counter and the badge; findings that are markup or markdown shown as text, long ones cut and expandable; `verify-green` and `verify-red` through the runtime and through the whole `ChatShell` against the mock: the badge goes verifying, queued, working, verifying, done or failed, the counter 1/3 to 2/3, the cards and the divider in order, "Checks failed after 3 attempts", a reconnect mid-verification and a fresh page showing the same); **CI results** (`parseCi`: every required member needed, unknown fields ignored, a url that is not http(s) dropped; the card for every conclusion with its words, icon and tone, an unknown conclusion, a missing url, a `javascript:` url handed straight to the card, markdown and HTML in the name, branch and summary shown as text, a long summary and name cut; the `ci` golden through the runtime and through the whole `ChatShell` against the mock, a card replaced by whatever id the wire gives it, malformed payloads drawing nothing); **Export JSON** (the file name the server gives and never a path, the download through the API client, a refused export saying why and downloading nothing, the mock's export against the contract); the mock against the contract and the goldens (`a2ui`, all four `verify-*` and `ci` included, the verifier's subagent among them) | 477 (23 files) |
-| `pnpm test:e2e` | Playwright on the production build against the mock: axe (no serious or critical issue, light and dark; new, finished and blocked thread, and a thread with an A2UI surface waiting, finished and refused) and Lighthouse accessibility >= 95 in both schemes; create, follow-up, cancel, failure, releases, API errors; reconnect (a dropped stream, a cut in the middle of a message); two tabs; A2UI (a surface is drawn and only a click sends the action, read-only after the thread finishes and after a reload, a refusal, no remote content); verification (sent back and done on attempt 2 of 3, `Checks failed after 3 attempts`, a pending check while verifying that survives a reload and ends with Cancel, a verifier agent's findings and pass, a pending check of the verifier that ends with Cancel, no counter without a gate; axe on a thread being verified, on one waiting for its verifier, on a stale check and on failed checks, both schemes); CI results (a red report and a green one as cards with their links, a late report of an older push, no card while CI has not answered; axe on the CI cards, both schemes); Export JSON (the thread downloads as `thread-<id>.json` with its events, and a failed export is said and leaves the page usable) | 74 pass and 1 is skipped (57 chromium, 17 mobile) |
+| `pnpm test` | vitest: the SSE reader; `ThreadAgent` (groups, reconnect with `Last-Event-ID`, dedupe by seq, acceptance at `RUN_STARTED`, problems, abort is not cancel); the AG-UI goldens through the patched runtime (messages, activities, interrupts, the cancelled outcome); the app in jsdom against the mock (new thread, replay, answer, refused send, cancel, not found, a surface and its action); **the A2UI validator and its security tests** (every bad URL scheme and trick, each limit at and one over, an expansion bomb and a reference bomb, the vocabulary, reserved names, function values, inputs), **the renderer** (the golden through the runtime, replace in place, delete, a refusal, a later run, no auto-send under fake timers, a click sends once, disabled states, `openUrl` as a link, `userMessage` in the composer unsent, no image ever) and **the app's side of an action** (what a click puts on the wire, with and without an open interrupt); **the verification gate** (the parsing of `vymalo.check`, `vymalo.rework` and `job`: malformed payloads draw nothing and unknown fields are ignored; the check and rework steps, the counter and the badge; findings that are markup or markdown shown as text, long ones cut and expandable; `verify-green` and `verify-red` through the runtime and through the whole `ChatShell` against the mock: the badge goes verifying, queued, working, verifying, done or failed, the counter 1/3 to 2/3, the check and rework steps in order, "Checks failed after 3 attempts", a reconnect mid-verification and a fresh page showing the same); **CI results** (`parseCi`: every required member needed, unknown fields ignored, a url that is not http(s) dropped; the CI step for every conclusion with its words, icon and tone, an unknown conclusion, a missing url, a `javascript:` url handed straight to the step, markdown and HTML in the name, branch and summary shown as text, a long summary and name cut; the `ci` golden through the runtime and through the whole `ChatShell` against the mock, a step replaced by whatever id the wire gives it, malformed payloads drawing nothing); **the turn** (what is a step, a card or prose, `lib/steps.ts`; the pull request and file cards; the thread list's recency groups); **Export JSON** (the file name the server gives and never a path, the download through the API client, a refused export saying why and downloading nothing, the mock's export against the contract); the mock against the contract and the goldens (`a2ui`, all four `verify-*` and `ci` included, the verifier's subagent among them) | 514 (28 files) |
+| `pnpm test:e2e` | Playwright on the production build against the mock: axe (no serious or critical issue, light and dark; new, finished and blocked thread, and a thread with an A2UI surface waiting, finished and refused) and Lighthouse accessibility >= 95 in both schemes; create, follow-up, cancel, failure, releases, API errors; reconnect (a dropped stream, a cut in the middle of a message); two tabs; A2UI (a surface is drawn and only a click sends the action, read-only after the thread finishes and after a reload, a refusal, no remote content); verification (sent back and done on attempt 2 of 3, `Checks failed after 3 attempts`, a pending check while verifying that survives a reload and ends with Cancel, a verifier agent's findings and pass, a pending check of the verifier that ends with Cancel, no counter without a gate; axe on a thread being verified, on one waiting for its verifier, on a stale check and on failed checks, both schemes); CI results (a red report and a green one as steps with their links, a late report of an older push, no card while CI has not answered; axe on the CI cards, both schemes); Export JSON, from the thread's menu (the thread downloads as `thread-<id>.json` with its events, and a failed export is said and leaves the page usable); the turn (a coder's steps in words, a command, the push, the checks, the pull request card and its link, the markdown answer said once; the live step and Stop; "is starting…" before the first event; a rework step and the folded findings; the question waiting for a reply; a suggestion that fills the box and sends nothing; the sidebar closed, remembered and opened) | 91 pass and 1 is skipped |
 | `pnpm test:e2e:system` | the same UI against the real orchestrator, see below (Export JSON included: the downloaded file is the log the connect stream replays) | 23 |
 
 ## System tests

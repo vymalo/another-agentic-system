@@ -29,8 +29,8 @@ test("a dropped stream resumes without duplicates", async ({ page }) => {
   await expect(badge(page)).toHaveText("Done");
   await expect(page.getByText("Reconnecting…")).toHaveCount(0);
   await expect(log.getByText("gate reconnect", { exact: true })).toHaveCount(1);
-  await expect(log.getByText("Working")).toHaveCount(1);
-  await expect(log.getByText("Completed")).toHaveCount(1);
-  await expect(log.getByRole("link", { name: /^Pull request / })).toHaveCount(1);
+  await expect(log.getByText("Started working", { exact: true })).toHaveCount(1);
+  await expect(log.getByText("Opened pull request #1")).toHaveCount(1);
+  await expect(log.getByRole("link", { name: /^View pull request / })).toHaveCount(1);
   await expect(log.getByText("echo: gate reconnect")).toHaveCount(1);
 });

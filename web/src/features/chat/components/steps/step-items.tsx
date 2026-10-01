@@ -17,7 +17,7 @@ import type {
   ReworkContent,
   StatusContent,
 } from "@/features/chat/lib/agui/vymalo";
-import { shortCommit, sourceLabel } from "@/features/chat/lib/findings";
+import { pluralFindings, shortCommit } from "@/features/chat/lib/findings";
 import {
   checksPayload,
   commandOf,
@@ -185,21 +185,27 @@ export function FindingsDisclosure({ findings }: { findings: readonly string[] }
   );
 }
 
-/** The gate failed and the agent is sent back (ADR 0018): "Checks failed — trying again (2/3)". */
+/**
+ * The gate failed and the agent is sent back (ADR 0018): "Checks failed — trying again (2/3)" and
+ * how many findings it took back; the findings themselves are on the check steps above.
+ */
 export function ReworkStep({ data }: { data: ReworkContent }) {
-  const all = data.findings.flatMap((f) =>
-    data.findings.length > 1 ? f.findings.map((x) => `${sourceLabel(f.source)}: ${x}`) : f.findings,
-  );
+  const count = data.findings.reduce((sum, f) => sum + f.findings.length, 0);
   return (
     <StepRow
       state="warning"
       icon={RotateCcwIcon}
       data-slot="rework-step"
       data-attempt={data.attempt}
-      label={<span className="font-medium text-foreground">{reworkLabel(data)}</span>}
-    >
-      {all.length > 0 ? <FindingsDisclosure findings={all} /> : null}
-    </StepRow>
+      label={
+        <>
+          <span className="font-medium text-foreground">{reworkLabel(data)}</span>
+          {count > 0 ? (
+            <span className="text-muted-foreground">· {pluralFindings(count)}</span>
+          ) : null}
+        </>
+      }
+    />
   );
 }
 

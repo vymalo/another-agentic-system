@@ -27,6 +27,8 @@ async function shot(page: Page, name: string) {
     path: `${DIR}/${device}-${scheme}-${name}.png`,
     animations: "disabled",
     caret: "hide",
+    // one pixel per CSS pixel keeps the files small; the phone renders at 2x and is scaled down
+    scale: "css",
   });
 }
 

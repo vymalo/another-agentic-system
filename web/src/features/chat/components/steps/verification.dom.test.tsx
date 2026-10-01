@@ -187,25 +187,23 @@ describe("the rework step", () => {
     })),
   });
 
-  it("names what sent the agent back and the attempt that starts, with the findings folded", () => {
+  it("names what sent the agent back, the attempt that starts and how many findings it took back", () => {
     const { container } = render(<ReworkStep data={rework([1])} />);
     expect(screen.getByText("Checks failed — trying again (2/3)")).toBeTruthy();
+    expect(screen.getByText("· 1 finding")).toBeTruthy();
     const step = container.querySelector("[data-slot='rework-step']");
     expect(step?.getAttribute("data-attempt")).toBe("2");
     expect(step?.getAttribute("data-state")).toBe("warning");
-    expect(screen.getByText("Findings (1)").closest("details")?.open).toBe(false);
-    expect(screen.getByText("f0")).toBeTruthy();
+    // the findings themselves are on the check steps above
+    expect(screen.queryByText("f0")).toBeNull();
     cleanup();
-    // from two sources, each finding says whose it is
     render(<ReworkStep data={rework([2, 3])} />);
     expect(screen.getByText("Checks failed — trying again (2/3)")).toBeTruthy();
-    expect(screen.getByText("Findings (5)")).toBeTruthy();
-    expect(screen.getByText("Agent checks: f0")).toBeTruthy();
-    expect(screen.getByText("CI: f2")).toBeTruthy();
+    expect(screen.getByText("· 5 findings")).toBeTruthy();
     cleanup();
     render(<ReworkStep data={{ attempt: 3, maxAttempts: 3, findings: [] }} />);
     expect(screen.getByText("Checks failed — trying again (3/3)")).toBeTruthy();
-    expect(screen.queryByText(/Findings/)).toBeNull();
+    expect(screen.queryByText(/finding/)).toBeNull();
   });
 });
 
@@ -290,9 +288,9 @@ function activities(list: [string, string, unknown][], first = 1): GoldenFrame[]
 
 const regions = () => screen.queryAllByRole("listitem", { name: /^Check: / });
 const dividers = () => document.querySelectorAll("[data-slot='rework-step']");
-/** The one line of a rework step (its findings are folded under it). */
+/** The words of a rework step ("Checks failed — trying again (2/3)"), without its count. */
 const lineOf = (step: Element | undefined) =>
-  step?.querySelector(":scope > div > div:first-child")?.textContent;
+  step?.querySelector(":scope > div > div:first-child > span:first-child")?.textContent;
 
 describe("the renderers in the transcript", () => {
   it("verify-green: the failed check, the rework and the passed check, in that order", async () => {

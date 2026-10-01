@@ -88,8 +88,9 @@ const log = () => screen.getByRole("log", { name: "Conversation" });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
 const cards = () => screen.queryAllByRole("listitem", { name: /^Check: / });
 const dividers = () => [...document.querySelectorAll("[data-slot='rework-step']")];
-/** The one line of a rework step (its findings are folded under it). */
-const lineOf = (step: Element) => step.querySelector(":scope > div > div:first-child")?.textContent;
+/** The words of a rework step ("Checks failed — trying again (2/3)"), without its count. */
+const lineOf = (step: Element) =>
+  step.querySelector(":scope > div > div:first-child > span:first-child")?.textContent;
 
 /** Every distinct text the state pill shows, in order, until the test ends. */
 function recordHistory() {

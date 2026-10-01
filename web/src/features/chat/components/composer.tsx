@@ -157,9 +157,11 @@ export function Composer({
           )}
         </div>
       </ComposerPrimitive.Root>
-      <p className="px-4 text-center text-xs text-muted-foreground">
-        Agents can make mistakes. Check their work before you merge it.
-      </p>
+      {isNew ? null : (
+        <p className="px-4 text-center text-xs text-muted-foreground">
+          Agents can make mistakes. Check their work.
+        </p>
+      )}
     </div>
   );
 }

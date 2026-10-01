@@ -31,7 +31,7 @@ test("newest first, Load older pages, selecting navigates", async ({ page }) => 
   await expect(rows.last()).toHaveText("echo n0");
   await expect(list.getByRole("button", { name: "Load older" })).toHaveCount(0);
 
-  await list.getByRole("button", { name: "echo n7", exact: true }).click();
+  await list.getByRole("link", { name: "echo n7", exact: true }).click();
   await expect(page).toHaveURL(THREAD_URL);
   await expect(page.getByRole("heading", { name: "echo n7", exact: true })).toBeVisible();
 });

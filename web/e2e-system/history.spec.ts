@@ -25,9 +25,9 @@ test("a finished thread opened by URL renders once and the connect stream closes
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(badge(page)).toHaveText("Done");
   await expect(log.getByText("echo history", { exact: true })).toHaveCount(1);
-  await expect(log.getByText("Working")).toHaveCount(1);
-  await expect(log.getByText("Completed")).toHaveCount(1);
-  await expect(log.getByRole("link", { name: /^Pull request / })).toHaveCount(1);
+  await expect(log.getByText("Started working", { exact: true })).toHaveCount(1);
+  await expect(log.getByText("Opened pull request #1")).toHaveCount(1);
+  await expect(log.getByRole("link", { name: /^View pull request / })).toHaveCount(1);
   await expect(log.getByText("echo: echo history")).toHaveCount(1);
 
   // the history was replayed through the connect stream once, and the stream is closed afterwards
