@@ -127,6 +127,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 |---|---|---|
 | `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks which repository, and the thread waits (`blocked`); the model got the folder's instructions |
 | `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `coder chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it; the coder still greets and waits (`blocked`); the model mock matched every request |
+| `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
@@ -311,7 +312,7 @@ Everything else the coder needs is vendored from the same adam-rs commit, named 
 
 | Vendored path | Upstream path | What it is |
 |---|---|---|
-| `coder/wiremock/mock-openai/` | `dev/wiremock/mock-openai/` | `mappings/coder-script.json` and `opencode-script.json`, plus the bodies they reference (`opencode-bash.sse`, `opencode-done.sse`, and `chat-text.sse` and `chat-text.json` as OpenCode's fallbacks). Nothing else of the upstream mock: an off-script request must be a 404. |
+| `coder/wiremock/mock-openai/` | `dev/wiremock/mock-openai/` | `mappings/coder-script.json`, `coder-choices.json` ([Choices](#choices-the-coder-asks-with-a-form)) and `opencode-script.json`, plus the bodies they reference (`opencode-bash.sse`, `opencode-done.sse`, and `chat-text.sse` and `chat-text.json` as OpenCode's fallbacks). Nothing else of the upstream mock: an off-script request must be a 404. |
 | `coder/wiremock/mock-github/` | `dev/wiremock/mock-github/` | `mappings/pulls.json` and its two bodies. |
 | `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint and the seed of `local/sandbox.git`. |
 | `coder/agent/` | `bin/adam-coder/agent/` | The agent folder the coder reads at run time (`instructions.md`: its name, its card, its instructions), mounted at `/etc/adam/agent`. The whole upstream folder, nothing else. |
@@ -509,9 +510,11 @@ there); the three facts that matter here:
 - **The persona lines.** The body of every folder here opens with `Your name is {{display_name}}.` and `In one sentence: <summary>.`
   (the summary without `"` and ending at its first period; `display_name` is a var of the frontmatter, kept in step with `card.name`). The model mock
   greets from those two lines as the agent rendered them into its system prompt, so **editing them changes the mocked answer**, for any folder.
-- **The tools of a folder** are `ask_user`, one tool per MCP tool of its `mcp.json` (the `tools` allow-list of a server keeps only the ones
-  listed) and the tools of its skills and subagents. Which kinds of MCP server a folder may name is the deployment's, not the file's: plain `http` to
-  another container needs `MCP_ALLOW_INSECURE=true` in the service (the researcher's has it: development only), and a `${VAR}` in the `headers` of a server
+- **The tools of a folder** are `ask_user`, `show` and `ui_catalog` (the person's screen: [Choices](#choices-the-coder-asks-with-a-form)), one tool per
+  MCP tool of its `mcp.json` (the `tools` allow-list of a server keeps only the ones listed), the tools of its skills and subagents, and the tools of
+  the conversation the orchestrator announces ([the thread tools](#the-thread-tools): `get_ui_catalog`). Which kinds of MCP server a folder may name is
+  the deployment's, not the file's: plain `http` to another container needs `MCP_ALLOW_INSECURE=true` (set for every folder service in `x-adam-agent-env`:
+  development only; the thread tools are plain `http` to the orchestrator too), and a `${VAR}` in the `headers` of a server
   reads the service's environment (`SEARCH_MCP_TOKEN`), so the folder holds a name and never a secret.
 - **One database for all of them.** The agents that are folders share `agents-postgres`: a run belongs to the agent's `name`, so no agent reads
   another's. (The coder keeps its own, `coder-postgres`.)
@@ -592,7 +595,7 @@ what the model mock gives any folder; to script more, add a model name to `wirem
    file, and every `{{var}}` the body uses must be declared. Optional: a `mcp.json` (the tools of an MCP server: copy the researcher's), `skills/`
    and `subagents/` (adam-rs's [authoring guide](https://github.com/vymalo/another-adam-rs/blob/f882b910b620ea583130a0517b4e52c5f7939179/docs/authoring.md)).
 2. **Add the service** to `compose.yaml`, copying `chat` (the anchors `x-adam-agent` and `x-adam-agent-env` carry the image, the entrypoint, the
-   healthcheck and the database; a folder that names an MCP server also copies `researcher`'s `depends_on`, `SEARCH_MCP_TOKEN` and `MCP_ALLOW_INSECURE`):
+   healthcheck and the database; a folder that names an MCP server also copies `researcher`'s `depends_on` and `SEARCH_MCP_TOKEN`; `MCP_ALLOW_INSECURE` is in the anchor):
 
    ```yaml
      poet:
@@ -691,8 +694,10 @@ What an agent of the stack receives, **only if its card lists** `https://agents.
 | The tool | `get_ui_catalog`: the newest UI catalog the thread's screen sent, or an error "this thread has no UI catalog; answer in text" |
 | `split` profile | the control plane serves it, the workers (same variables) mint |
 
-None of the agents of the stack lists the extension yet (the mocks are WireMock; `adam-coder` gets it with the adam-rs
-change that pins here), so nothing in the stack calls the endpoint until one does; the endpoint answers the checks of
+The coder and the agents that are folders (`chat`, `researcher`) list the extension since adam-rs `d411249` (the WireMock agents do not), and
+list the endpoint's tools at every model turn with the grant of the message, so the model is offered what it lists (`get_ui_catalog` today) under its listed
+name; the URL is plain `http` on the compose network, so these services set `MCP_ALLOW_INSECURE` ([Choices](#choices-the-coder-asks-with-a-form)).
+The endpoint answers the checks of
 [`orchestrator/crates/surface-thread-tools`](../orchestrator/crates/surface-thread-tools/README.md) and the whole loop is
 tested by [`orchestrator/crates/e2e/tests/thread_tools.rs`](../orchestrator/crates/e2e/tests/thread_tools.rs) (the real
 dispatcher and A2A adapter, a fake agent that lists the extension and calls back with the grant it was given, on the
@@ -705,6 +710,66 @@ orchestrator `THREAD_TOOLS_SECRET` (32 bytes or more: `openssl rand -hex 32`) an
 endpoint back and its artifact says what it got (`thread-tools: tools=get_ui_catalog; …`); `GET /__control/<agent>/calls`
 on the fake agent shows the grant under `threadTools`. A `401` from the endpoint is the same answer for a missing,
 expired, foreign or forged token (nothing else says why, on purpose); a `403` is a `Host` it does not list.
+
+## Choices: the coder asks with a form
+
+Since adam-rs `d411249` ([#59](https://github.com/vymalo/another-adam-rs/pull/59), MVP slice 3 of [`docs/mvp.md`](../docs/mvp.md)) the coder, and
+every agent served by `adam-agent`, draws from the component catalog of the person's screen
+([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md)): `ask_user`
+takes `choices` (up to eight questions of two to eight options), and the coder asks several questions at once as **one form** instead of a
+paragraph, `show` and `ui_catalog` draw other blocks. The person answers all of them with one submit, which is one action; the answers come back as the result of the
+tool call, `- db: pg` per question, which the model quotes in its next words.
+
+| What | Where |
+|---|---|
+| The catalog | the web's own, `web/src/features/chat/lib/a2ui/catalog/catalog.json` and its `catalog.lock.json`. The web sends it under `forwardedProps["vymalo.uiCatalog"]` on the run that opens a thread, and the orchestrator hands it to the agent (inline on the first message, by reference after). `dev/choices-e2e.sh` reads the same two files |
+| What the coder says it can do | its card lists A2UI v0.9.1 with `acceptsInlineCatalogs`, `ui-catalog/v1` and `thread-tools/v1`; the orchestrator reads the card at every send (ADR 0008), so nothing is configured for it here |
+| The thread's own tools | `get_ui_catalog` at `http://orchestrator:8080/thread-tools/<id>/mcp` ([above](#the-thread-tools)): plain `http` between containers, so the coder has `MCP_ALLOW_INSECURE: "true"` in `compose.yaml` (so have the folder agents, in `x-adam-agent-env`). Without it the grant is refused, the agent has no thread tools, and a catalog that comes only by reference (a later message, a coder that has not kept it) cannot be fetched: the coder asks in text, with the options listed |
+| The mock model | `dev/coder/wiremock/mock-openai/mappings/coder-choices.json` (vendored, [`coder/UPSTREAM`](coder/UPSTREAM)): a task that holds `[mock:choices]` makes `mock-coder` call `ask_user` with three questions (database, login, where it runs); a request that holds the call's result and `db: pg` gets "Going with Postgres, Keycloak and Compose." |
+| The scenario | `dev/choices-e2e.sh`, `choices` in `dev/e2e-all.sh` |
+
+```mermaid
+sequenceDiagram
+  actor U as choices-e2e.sh
+  participant O as orchestrator
+  participant C as coder
+  participant M as mock-openai
+  U->>O: run 1: "[mock:choices] ...", forwardedProps vymalo.uiCatalog (the web's catalog)
+  O->>C: SendStreamingMessage: ui-catalog/v1 (inline), A2UI capabilities, thread-tools/v1 {url, token}
+  C->>O: tools/list at the thread's endpoint (plain http, MCP_ALLOW_INSECURE)
+  C->>M: chat completions, model mock-coder, tools ask_user, show, ui_catalog, get_ui_catalog
+  M-->>C: ask_user with three questions
+  C-->>O: input-required: the question and one a2ui-surface (a Choices, under the catalog's id)
+  O-->>U: the frames, then RUN_FINISHED (interrupt)
+  U->>O: run 2: forwardedProps.a2uiAction.userAction (answers db=pg, auth=keycloak, deploy=compose)
+  O->>C: one A2UI action on the same task
+  C->>M: the tool result "db: pg, auth: keycloak, deploy: compose"
+  M-->>C: "Going with Postgres, Keycloak and Compose."
+  O-->>U: the frames, then RUN_FINISHED (interrupt)
+  U->>O: run 3: a message with a newer catalog (version + 1, a dummy component)
+  O-->>U: the export holds a second ui_catalog, the state says the newer one is the thread's
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Asking: run 1 with the catalog
+  Asking --> Form: the catalog is read and has Choices
+  Asking --> TextQuestion: no catalog, none with Choices, or it cannot be read
+  Form --> Waiting: input-required with the surface
+  TextQuestion --> Waiting: input-required, the options in the text
+  Waiting --> Answered: run 2, the A2UI action
+  Answered --> Waiting: the coder's next words (it parks them as a question)
+  Waiting --> NewerScreen: run 3, a catalog of a higher version
+  NewerScreen --> Waiting: two ui_catalog events in the log, the newer is current
+  Waiting --> [*]
+```
+
+The script prints one `ok` or `FAIL` line per check, and what it asserts is at the top of the file: the card, the one surface and its
+`Choices`, the state's `thread.uiCatalog`, the tools the model was offered (`get_ui_catalog` among them: the grant arrived), the action and the
+quoted answers, the second `ui_catalog`, and a model mock that answered every request. **To try it in the chat**, send the coder `[mock:choices] set up
+the project`: a form with three questions should appear, and your answers come back as your own message, "Your answers". (That click path is covered by the
+web's own tests on a fake agent; against the coder in containers it is *unverified* here, the script drives the same requests without a browser.)
+The vendored mapping is a deliberate part of the mocks: without it the coder's model mock answers `[mock:choices]` with a 404, like any off-script request.
 
 ## The split profile: a control plane and two workers
 
@@ -1505,3 +1570,22 @@ The chat and the researcher (MVP slice 2: the pin to adam-rs `f882b91`, `dev/age
 network, the folders readable by uid 10001), `dev/agents-e2e.sh` through the `edge` in the `Coder E2E` workflow (the first run is CI), the web's agent
 picker with three agents, and how a live model follows the two folders' instructions (the mocks prove that a folder reaches the model and that a tool call
 reaches the server, not that a model behaves).
+
+Choices (MVP slice 3, `dev/choices-e2e.sh`; the pin to adam-rs `c13ddf1`, whose image holds `d411249`'s Choices):
+
+*Verified 2026-10-01*:
+
+- **The pin.** `coder:sha-c13ddf1@sha256:a77a2890...` is the manifest digest the ghcr API returns for that tag (anonymous token, HTTP 200), and the sha-256 of the manifest
+  body it returned; one `linux/amd64` manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` =
+  `c13ddf1a32a1424affa20043f6bd860d93c536cc`. Upstream's `coder` workflow smoke-tested both binaries in it and ran its own compose scenarios before it pushed (`dev/coder-choices-e2e.sh`: the coder and the mock
+  model, no orchestrator; `dev/agent-cards-e2e.sh`: the researcher folder). Of the vendored paths, upstream changed two since `f882b91`, both by `d411249` and none by
+  `c13ddf1`: the new mapping `coder-choices.json` and `bin/adam-coder/agent/instructions.md` (the paragraph on `choices`); `dev/coder/check-vendored.sh` passes at `c13ddf1`.
+- `dev/choices-e2e.sh` (`shellcheck` clean, `sh` syntax) against a Python stand-in for the edge, the coder's card and the model mock's journal (the AG-UI frames shaped like
+  `docs/api/examples/agui/a2ui.agui.json`, the export like the contract's), in a private network namespace: every check printed `ok` (exit 0); the stand-in made to quote only
+  Postgres, and then to withhold `get_ui_catalog` from the model's tools, made exactly the checks that read those fail (exit 1). That tests the script's own reading (the
+  `jq`, the sequence of the three runs, the digest it computes with `jq` and `sha256sum`, which equals the lock's for the shipped catalog), not the stack.
+- `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh`, `docker compose --profile '*' config -q`, the live override against `.env.example`, and the docs check are clean.
+
+*Unverified*: the scenario in containers (the Docker stack was not started here: not enough disk for the orchestrator and web builds; it runs first in the Coder E2E workflow of the pull
+request that introduced it), so that the thread-tools grant reaches the coder over plain `http` with `MCP_ALLOW_INSECURE`, that the real orchestrator's frames hold the surface in the shape
+the script reads (`createSurface` and `updateComponents` with one `Choices`), and what a *live* model does with `choices`.

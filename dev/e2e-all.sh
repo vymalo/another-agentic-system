@@ -12,6 +12,8 @@
 #   greeting          "hi" gets a greeting that says the coder's name, not a task    greeting-e2e.sh
 #   agents            three agents (coder, chat, researcher); each answers in its     agents-e2e.sh
 #                     role on the mocks, the researcher with a source it searched for
+#   choices           the coder asks three questions as one form drawn from the web's  choices-e2e.sh
+#                     catalog, one action answers them, a newer catalog is recorded too
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
@@ -41,7 +43,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents coder coder-no-opencode verify verifier mcp ci folder"
+all="greeting agents choices coder coder-no-opencode verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -71,7 +73,7 @@ agents=$(curl -fsS --max-time 30 -H "X-Auth-Request-Email: ${AUTH_EMAIL:-dev@exa
 echo "stack: $base, agents: ${agents:-none}"
 for s in "$@"; do
   case $s in
-    greeting | coder | coder-no-opencode | folder)
+    greeting | choices | coder | coder-no-opencode | folder)
       case " $agents " in
         *" coder "*) ;;
         *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
@@ -133,6 +135,7 @@ for s in "$@"; do
   case $s in
     greeting) run greeting sh "$here/greeting-e2e.sh" ;;
     agents) run agents sh "$here/agents-e2e.sh" ;;
+    choices) run choices sh "$here/choices-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;

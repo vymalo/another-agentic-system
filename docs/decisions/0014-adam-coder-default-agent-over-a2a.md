@@ -232,3 +232,29 @@ How to add one: [`dev/README.md`](../../dev/README.md#add-a-fourth-agent-by-writ
   processes (debug builds) and the WireMock model mock; the details are in the last section of `dev/README.md`.
 - *Unverified where this was written* (the image was not pulled; the Coder E2E workflow runs it): the two services in containers and the
   scenario through the `edge`, and how a live model follows the folders' instructions.
+
+### Status note, 2026-10-01: the coder asks with Choices (adam-rs d411249, pinned at c13ddf1)
+
+Since adam-rs `d411249` ([#59](https://github.com/vymalo/another-adam-rs/pull/59), MVP slice 3 of [`docs/mvp.md`](../mvp.md), [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md))
+the coder, and `adam-agent` with it, draws from the component catalog of the person's screen. Nothing about the decision changes: the coder is still a plain
+A2A agent, the orchestrator still knows nothing of it beyond its card, and the image is still pinned by tag and digest at the commit in `dev/coder/UPSTREAM`.
+What the pin brings, and what this repository does for it:
+
+- **Two extensions on the card, read live.** The coder's card lists A2UI v0.9.1 (with `acceptsInlineCatalogs`), `ui-catalog/v1` and `thread-tools/v1`, so the
+  orchestrator's adapter (ADR 0008: detected from the live card at every send, fail closed) sends the screen's catalog and a thread-tools grant. No orchestrator
+  change is needed.
+- **The thread's tools are plain `http` between containers**, `http://orchestrator:8080/thread-tools/<id>/mcp` (`THREAD_TOOLS_URL`), which an adam agent
+  reaches only when `MCP_ALLOW_INSECURE=true` allows it. `compose.yaml` sets it for the coder and, in `x-adam-agent-env`, for the folder agents (their card lists the
+  same extensions), and `compose.live.yaml` keeps it for all three: development only, as for the mock web search.
+- **One more vendored mapping**, `dev/coder/wiremock/mock-openai/mappings/coder-choices.json` (a task that holds `[mock:choices]` makes `mock-coder` ask three questions with
+  `ask_user`; the answers `db: pg` get "Going with Postgres, Keycloak and Compose."), and the coder's `instructions.md` copy gains the paragraph on `choices`. The mappings stay a
+  deliberate subset of upstream's (the scripted coder run, now with this one).
+- **A scenario**, `choices` (`dev/choices-e2e.sh`, in `e2e-all.sh` and so in the Coder E2E workflow): the web's own catalog goes with a run, the coder asks three questions as one
+  `Choices` surface under the catalog's id, one `a2uiAction` answers them, the coder's next words quote the answers, and a message from a newer screen records a second `ui_catalog`.
+
+- *Verified 2026-10-01* (anonymous ghcr API, HTTP 200): `coder:sha-c13ddf1`, which holds `d411249`, is one
+  `linux/amd64` manifest (2.88 GB of compressed layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` `c13ddf1a32a1424affa20043f6bd860d93c536cc`, digest
+  `sha256:a77a2890...` (the sha-256 of the manifest the registry returned), published by adam-rs's `coder` workflow after its smoke tests and its own compose scenario of the Choices chain
+  (`dev/coder-choices-e2e.sh` upstream, without the orchestrator) passed. None of the vendored files changed between `d411249` and `c13ddf1`; `dev/coder/check-vendored.sh` passes at `c13ddf1`.
+- *Unverified where this was written* (the image was not pulled, and the stack was not started: the disk of the machine was too small): the scenario `choices` in containers, through the
+  `edge` and the real orchestrator, which is the first run of the chain across the two repositories (the Coder E2E workflow runs it); how a live model uses `choices`.

@@ -12,4 +12,4 @@
 # its example agent (dev/agents/assistant). The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and
 # dev/wiremock/model/, which follow the same persona convention (adam-rs bin/adam-agent/README.md).
 repo=vymalo/another-adam-rs
-commit=f882b910b620ea583130a0517b4e52c5f7939179
+commit=c13ddf1a32a1424affa20043f6bd860d93c536cc
