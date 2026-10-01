@@ -489,7 +489,8 @@ services:
       - ${CHAT_AGENT_DIR:-./dev/agents/chat/agent}:/etc/adam/agent:ro # read-only; CHAT_AGENT_DIR points the mount at a copy
 
   # A researcher: searches the web through the MCP server its folder names (agent/mcp.json: `search`, the mock web search)
-  # and answers with the sources it found. The folder holds the server's URL and the NAME of the token (`${SEARCH_MCP_TOKEN}`
+  # and answers with the sources it found, and, when the screen's catalog has `Cards` and `Mermaid` (adam-rs c13ddf1), shows
+  # them as cards and a graph beside its words (dev/cards-e2e.sh; dev/README.md, "Cards and Mermaid"). The folder holds the server's URL and the NAME of the token (`${SEARCH_MCP_TOKEN}`
   # in its headers); the value is this service's environment. The mock is plain http on the compose network, which a
   # deployment must allow on purpose (MCP_ALLOW_INSECURE: development only, set in `x-adam-agent-env`). A worker connects the
   # server at startup, so it waits for `mock-mcp-search` to be healthy.

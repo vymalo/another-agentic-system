@@ -14,6 +14,9 @@
 #                     role on the mocks, the researcher with a source it searched for
 #   choices           the coder asks three questions as one form drawn from the web's  choices-e2e.sh
 #                     catalog, one action answers them, a newer catalog is recorded too
+#   cards             the researcher searches and answers with one surface of cards    cards-e2e.sh
+#                     and a graph under the web's catalog; an older screen keeps the
+#                     thread's catalog; a screen without Cards gets words only
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
@@ -43,7 +46,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices coder coder-no-opencode verify verifier mcp ci folder"
+all="greeting agents choices cards coder coder-no-opencode verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -77,6 +80,11 @@ for s in "$@"; do
       case " $agents " in
         *" coder "*) ;;
         *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
+    cards)
+      case " $agents " in
+        *" researcher "*) ;;
+        *) echo "scenario cards needs the agent 'researcher', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     agents)
       for a in coder chat researcher; do
@@ -136,6 +144,7 @@ for s in "$@"; do
     greeting) run greeting sh "$here/greeting-e2e.sh" ;;
     agents) run agents sh "$here/agents-e2e.sh" ;;
     choices) run choices sh "$here/choices-e2e.sh" ;;
+    cards) run cards sh "$here/cards-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;

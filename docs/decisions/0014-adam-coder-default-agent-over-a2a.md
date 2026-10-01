@@ -258,3 +258,16 @@ What the pin brings, and what this repository does for it:
   (`dev/coder-choices-e2e.sh` upstream, without the orchestrator) passed. None of the vendored files changed between `d411249` and `c13ddf1`; `dev/coder/check-vendored.sh` passes at `c13ddf1`.
 - *Unverified where this was written* (the image was not pulled, and the stack was not started: the disk of the machine was too small): the scenario `choices` in containers, through the
   `edge` and the real orchestrator, which is the first run of the chain across the two repositories (the Coder E2E workflow runs it); how a live model uses `choices`.
+
+### Status note, 2026-10-01: the researcher answers with cards and a graph (adam-rs c13ddf1)
+
+Since adam-rs `c13ddf1` ([#60](https://github.com/vymalo/another-adam-rs/pull/60), MVP slice 4 of [`docs/mvp.md`](../mvp.md)) the image's `show` tool (`adam-ui`) takes `Cards` and `Mermaid` blocks of a
+catalog of version 3 and checks them against its schemas, and adam-rs's example researcher folder tells its agent to show the sources it found. Nothing about the decision changes, and the pin is the one of the note above (`c13ddf1`). The researcher folder here stays **ours**
+(`dev/agents/researcher/agent/`, not vendored): its `instructions.md` takes adam-rs's paragraph on showing sources by hand, and its `mcp.json` still names the mock web search.
+The model mock gains the script `[mock:cards]` (`dev/wiremock/model/mappings/researcher-cards.json`: search, `ui_catalog`, `show`, words), the mock web search an `async` keyword with three
+results, and `dev/e2e-all.sh` the scenario `cards` (`dev/cards-e2e.sh`).
+
+- *Verified 2026-10-01*: the new script against WireMock 3.13.2 (`dev/check-agent-mocks.sh`, every check `ok` including the six of this script), its `show` blocks against the schemas of the web's catalog
+  (JSON Schema 2020-12, with `id` added as `show` does), and `dev/cards-e2e.sh` against a stand-in for the edge (see the last section of `dev/README.md`).
+- *Unverified where this was written* (the stack was not started: the disk was too small): the scenario `cards` in containers, through the `edge` and the real orchestrator and researcher, and how a
+  live model chooses to show cards.

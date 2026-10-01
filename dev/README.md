@@ -128,6 +128,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `greeting` | `dev/greeting-e2e.sh` | "hi" gets a greeting that says the coder's name and what it does and asks which repository, and the thread waits (`blocked`); the model got the folder's instructions |
 | `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `coder chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it; the coder still greets and waits (`blocked`); the model mock matched every request |
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
+| `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
@@ -494,7 +495,7 @@ in a data part).
 |---|---|---|---|---|
 | `coder` | adam-coder, the default agent ([above](#the-default-agent)) | a greeting that asks which repository to work on; the thread waits (`blocked`) | `agent-checks` and `ci` | `greeting-e2e.sh`, `coder-e2e.sh` |
 | `chat` | `adam-agent` over the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md): greets, chats in plain words, has no tool of its own and does not talk about repositories | `Hi! I'm Chat. I chat with you and answer your questions in plain words.`; the thread is `done` | none | `agents-e2e.sh` |
-| `researcher` | `adam-agent` over [`agents/researcher/agent/`](agents/researcher/agent/instructions.md): searches the web before it answers and cites every source as a link. Its `mcp.json` names the [mock web search](#mock-web-search-mcp) | it calls `search__web_search` with your words, then `I searched the web for you. The best source I found is <the first link of the results>.`; the thread is `done` | none | `agents-e2e.sh` |
+| `researcher` | `adam-agent` over [`agents/researcher/agent/`](agents/researcher/agent/instructions.md): searches the web before it answers and cites every source as a link. Its `mcp.json` names the [mock web search](#mock-web-search-mcp) | it calls `search__web_search` with your words, then `I searched the web for you. The best source I found is <the first link of the results>.`; the thread is `done`. With `[mock:cards]` in the question it goes on to show the sources as cards and a graph ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) | none | `agents-e2e.sh`, `cards-e2e.sh` |
 
 An agent with no gate is `done` when it says so (an agent whose answer is a question parks the thread `blocked`, as the coder's greeting does).
 
@@ -526,9 +527,10 @@ model name; an off-script request is a 404, and `/__admin/requests/unmatched` li
 |---|---|---|
 | `mock-persona` | `Hi! I'm <name>. <summary>.` to any request; a fixed text when the last message is a tool result | `<name>` and `<summary>` are taken from the first message (the system prompt) by the two persona lines. Any folder that follows the convention works: it is what a fourth agent uses |
 | `mock-researcher` | a tool call `search__web_search` with the person's words as `query`, then `I searched the web for you. The best source I found is <link>.` | the turn is told by the **last** message: a tool result means the search came back, so it answers with the first `https://` link of it (or says no source was found); anything else is a question, so it searches. The query is the first run of letters, digits and spaces of the question (at most 60 characters), because a template must not put a quote or a backslash into JSON, and `[mock:empty]` or `[mock:error]` therefore cannot reach the search through this model |
+| `mock-researcher` with `[mock:cards]` in the conversation | four turns, told by the call ids the history holds: `search__web_search` for `async programming` (`cards-call-1`), then `ui_catalog` (`cards-call-2`), then `show` with a Text, a Cards of the three links of the search's `async` results and a Mermaid `graph TD` (`cards-call-3`), then `Here are the three sources I found: <the three links>.` | [`researcher-cards.json`](wiremock/model/mappings/researcher-cards.json). The three scripts above carry `doesNotContain "[mock:cards]"`, so a conversation that holds the keyword never reaches them; the blocks were validated against the web's catalog schemas when the file was written |
 
-Limits of the scripts: they ignore the history (a second question in the thread is searched like the first, with the same tool call id
-`researcher-call-1`), and a real model is what makes the agent *good*, which the mocks cannot show ([Going live](#going-live)).
+Limits of the scripts: the first three ignore the history (a second question in the thread is searched like the first, with the same tool call id
+`researcher-call-1`; `[mock:cards]` reads the history, by its call ids, and once `cards-call-3` is in it answers in words only), and a real model is what makes the agent *good*, which the mocks cannot show ([Going live](#going-live)).
 
 ```mermaid
 sequenceDiagram
@@ -770,6 +772,66 @@ quoted answers, the second `ui_catalog`, and a model mock that answered every re
 the project`: a form with three questions should appear, and your answers come back as your own message, "Your answers". (That click path is covered by the
 web's own tests on a fake agent; against the coder in containers it is *unverified* here, the script drives the same requests without a browser.)
 The vendored mapping is a deliberate part of the mocks: without it the coder's model mock answers `[mock:choices]` with a 404, like any off-script request.
+
+## Cards and Mermaid: the researcher answers with cards and a graph
+
+Since adam-rs `c13ddf1` ([#60](https://github.com/vymalo/another-adam-rs/pull/60), MVP slice 4 of [`docs/mvp.md`](../docs/mvp.md)) the researcher
+folder tells its agent to show what it found: after it searched it reads which components the screen has (`ui_catalog`) and, when there is a `Cards`, calls `show`
+with one `Cards` block of the sources it used (title, site, a sentence, the link exactly as the search returned it, tags), and a `Mermaid` block when the question
+is about how things relate. The blocks come back as **one surface**, a Column of a Text, the Cards and the Mermaid, under the screen's own catalogId; the words still
+carry every link ([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md) version 3: the web draws
+the cards and the graph, and a surface whose card has no title or a link that is not a plain `http(s)` URL is refused, visibly).
+
+| What | Where |
+|---|---|
+| The folder | [`agents/researcher/agent/instructions.md`](agents/researcher/agent/instructions.md): the stack's own text plus adam-rs's paragraph "Show what you found, when the screen can draw it" and the card's skill line, as in adam-rs's `dev/agents/researcher/agent/instructions.md` at `c13ddf1`. Not vendored (the folder is ours and `check-vendored.sh` does not read it): the paragraph is copied by hand when adam-rs changes it. `mcp.json` is ours (it names the mock web search). The folder is read at startup: `docker compose --profile app up -d researcher` after an edit |
+| The sources | the mock web search's keyword `async` ([`results.json`](mock-mcp-search/results.json)): three results, `https://example.org/mock-search/async-book`, `/async-futures`, `/async-tokio` |
+| The script | `mock-researcher` with `[mock:cards]` in the question: search for `async programming`, `ui_catalog`, `show` (a Text, three cards, a `graph TD`), then the words that name the links ([above](#several-agents)) |
+| The catalog | the web's own (`catalog.json` and its lock, version 3): `dev/cards-e2e.sh` sends it as the web does |
+| The scenario | `dev/cards-e2e.sh`, `cards` in `dev/e2e-all.sh` |
+
+```mermaid
+sequenceDiagram
+  actor U as cards-e2e.sh
+  participant O as orchestrator
+  participant R as researcher (adam-agent)
+  participant M as mock-model
+  participant S as mock-mcp-search
+  U->>O: run 1: "[mock:cards] what is async rust?", forwardedProps vymalo.uiCatalog (version 3)
+  O->>R: SendStreamingMessage: ui-catalog/v1 (inline), A2UI capabilities, thread-tools/v1
+  R->>M: chat completions, model mock-researcher
+  M-->>R: search__web_search "async programming"
+  R->>S: tools/call web_search
+  S-->>R: three results with links
+  R->>M: the results
+  M-->>R: ui_catalog, then show (Text, Cards of three, Mermaid)
+  R-->>O: artifact ui (application/a2ui+json) under the catalog's id, then the words
+  O-->>U: one agent message and one a2ui-surface, RUN_FINISHED
+  U->>O: run 2: the same thread from an older screen (no catalog sent)
+  O-->>U: the thread's catalog is still version 3, no new ui_catalog in the log
+  U->>O: run 3: a new thread from a screen whose catalog has no Cards (version 2)
+  O->>R: the older catalog inline
+  R-->>O: show is refused, the words only
+  O-->>U: no a2ui-surface, the three links in the words
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Searching: the question carries [mock:cards]
+  Searching --> ReadingCatalog: results in
+  ReadingCatalog --> Showing: the mock calls show whatever the catalog says
+  Showing --> Surface: show accepted (the catalog has Cards), one ui artifact
+  Showing --> Words: show refused (it has none), the model goes on
+  Surface --> Words: the answer names every link
+  Words --> [*]
+```
+
+An **older screen** is one whose own catalog version is below the thread's: by the contract it sends no catalog (it sends one only when the thread has none or its own is
+newer), so the orchestrator tells the agent the thread's current catalog **by reference** and the agent keeps drawing against it; what the old browser does with a
+`Cards` it does not know is the web's business (a visible "needs a newer version of the app" placeholder, covered by the web's tests). The scenario therefore asserts, for
+that run, what the orchestrator owns: **no `ui_catalog` is added to the log and the thread's catalog stays at its version**. A screen that really is on a catalog without
+`Cards` (run 3, a new thread) is the case the agent can see, and the researcher answers it in words. The catalog the script uses for it is the shipped one without `Cards` and
+`Mermaid` and one version down, its digest recomputed with `jq` and `sha256sum`.
 
 ## The split profile: a control plane and two workers
 
@@ -1212,7 +1274,7 @@ web, and a web search attached to a chat, run offline and give the same answer e
 | Authentication | `Authorization: Bearer dev-search-token` (`MOCK_MCP_TOKEN` in [`compose.yaml`](../compose.yaml)); 401 without it. `/healthz` and `/__journal` take none |
 | Tool | `web_search { query: string }`, with a title, an `annotations` hint (read-only) and `icons`: one `data:image/svg+xml;base64,…` entry (a magnifying glass, under 400 bytes), which is what the UI shows on the step of a call |
 | Answer | One `text` content: `1. <title> — <url>` and the snippet on the next line, one entry per result |
-| Keywords | The first keyword of [`results.json`](mock-mcp-search/results.json) (in file order, case-insensitive) that the query contains picks the list (`world cup`: the 2014 final; `rust`); any other query gets `default`: `https://example.org/mock-search/1` and `/2` |
+| Keywords | The first keyword of [`results.json`](mock-mcp-search/results.json) (in file order, case-insensitive) that the query contains picks the list (`world cup`: the 2014 final; `rust`; `async`: three sources on async programming, what the [`[mock:cards]`](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph) script searches for); any other query gets `default`: `https://example.org/mock-search/1` and `/2` |
 | Scenarios | `[mock:empty]` in the query answers `No results.`; `[mock:error]` answers a tool execution error (`isError: true`); a missing or empty `query` is one too, not a protocol error (the spec's way to let a model correct itself); an unknown tool is `-32602` |
 | Journal | `GET /__journal` lists the calls of the tool, `{"calls": [{"tool", "arguments", "at"}]}` (a call refused with 401 is not in it; the last 1000 are kept); `DELETE /__journal` empties it |
 
@@ -1589,3 +1651,22 @@ Choices (MVP slice 3, `dev/choices-e2e.sh`; the pin to adam-rs `c13ddf1`, whose 
 *Unverified*: the scenario in containers (the Docker stack was not started here: not enough disk for the orchestrator and web builds; it runs first in the Coder E2E workflow of the pull
 request that introduced it), so that the thread-tools grant reaches the coder over plain `http` with `MCP_ALLOW_INSECURE`, that the real orchestrator's frames hold the surface in the shape
 the script reads (`createSurface` and `updateComponents` with one `Choices`), and what a *live* model does with `choices`.
+
+Cards and Mermaid (MVP slice 4, `dev/cards-e2e.sh`; the image is the one pinned for Choices, adam-rs `c13ddf1`):
+
+*Verified 2026-10-01*:
+
+- **The script, in WireMock itself.** `wiremock-standalone-3.13.2.jar` (the version compose pins, run with `--global-response-templating --disable-banner` on `dev/wiremock/model`) and the real
+  `mock-mcp-search` (`server.mjs`, Node) against `dev/check-agent-mocks.sh`: every check `ok`, among them the new keyword `async` (three links) and the six of `[mock:cards]` (search for `async
+  programming`, `ui_catalog`, `show` with a Text, a Cards whose links are the search's and a `graph TD`, the words, and the words again when `show` was refused); the earlier checks of the persona and
+  the researcher are unchanged by the `doesNotContain "[mock:cards]"` added to their stubs. `node --test dev/mock-mcp-search/server.test.mjs`: 22 pass.
+- **The `show` blocks of the script against the web's catalog.** Each block, with an `id` added as adam-rs's `show` does, validates against its schema in `catalog.json` (JSON Schema 2020-12,
+  `jsonschema` 4.26).
+- **`dev/cards-e2e.sh`** (`shellcheck` clean) against a Python stand-in for the edge, the researcher's card, the model mock's journal and the search's (AG-UI frames shaped like
+  `docs/api/examples/agui/a2ui.agui.json`) in a private network namespace: every check printed `ok` (46 lines, exit 0), and `dev/e2e-all.sh cards` passed; with the stand-in made to accept `show` for a
+  catalog without `Cards`, or to send two agent messages, exactly the checks that read those failed (exit 1). That tests the script's own reading (the `jq`, the three runs, the digest of the older
+  catalog), not the stack.
+
+*Unverified*: the scenario in containers (the Docker stack was not started: the disk was too small for the builds), so that the researcher in the image really answers with a surface of those three
+components, one agent message, from the `ui` artifact the orchestrator maps to an `a2ui-surface`, and that the `ui_catalog` and `show` results read as the script expects (`Cards` and `Mermaid` named in the
+first, "Shown to the person." in the second, from adam-rs's README); what an older screen's browser does with a `Cards` (the web's tests); and what a live model chooses to show.

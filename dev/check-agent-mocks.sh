@@ -4,7 +4,8 @@
 #   * the mock web-search MCP server, `mock-mcp-search` (dev/mock-mcp-search, dev/README.md "Mock web search (MCP)");
 #   * the scripted models of the agents that are only a folder, on the WireMock `mock-model` (dev/wiremock/model,
 #     dev/README.md "Several agents"): `mock-persona` greets from the persona lines, `mock-researcher` calls
-#     `search__web_search` and then names the first link of the results.
+#     `search__web_search` and then names the first link of the results, and for a question that carries
+#     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers.
 # CI runs it after `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 #
 #   dev/check-agent-mocks.sh [SEARCH_URL [MODEL_URL]]
@@ -94,6 +95,9 @@ check "tools/call: the default results, numbered, with their links" \
   "true true true"
 check "tools/call: a keyword picks its own results" \
   "$(mcp "$(search 'Who won the football World Cup in 2014?')" | jq -r '.result.content[0].text | contains("https://example.org/mock-search/world-cup-2014")')" "true"
+check "tools/call: the keyword async gives three results, the sources of the [mock:cards] script" \
+  "$(mcp "$(search 'async programming')" | jq -r '[.result.content[0].text | scan("https://example.org/mock-search/[a-z-]+")] | join(" ")')" \
+  "https://example.org/mock-search/async-book https://example.org/mock-search/async-futures https://example.org/mock-search/async-tokio"
 check "tools/call: [mock:empty] -> No results." \
   "$(mcp "$(search 'x [mock:empty]')" | jq -r '[.result.content[0].text, .result.isError] | join(" ")')" "No results. false"
 check "tools/call: [mock:error] -> a tool execution error" \
@@ -122,7 +126,7 @@ check "an unsupported MCP-Protocol-Version -> 400" \
 journal=$(curl -fsS "$SEARCH/__journal")
 check "journal: the calls of the tool, in order, with their arguments" \
   "$(printf '%s' "$journal" | jq -r '[.calls[] | "\(.tool):\(.arguments.query // "-")"] | join("|")')" \
-  "web_search:anything at all|web_search:Who won the football World Cup in 2014?|web_search:x [mock:empty]|web_search:[mock:error]|web_search:-"
+  "web_search:anything at all|web_search:Who won the football World Cup in 2014?|web_search:async programming|web_search:x [mock:empty]|web_search:[mock:error]|web_search:-"
 check "journal: every call has a time" \
   "$(printf '%s' "$journal" | jq -r '[.calls[] | (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$"))] | unique | join(",")')" "true"
 check "journal: DELETE empties it" \
@@ -173,6 +177,34 @@ check "mock-researcher: results without a link: no source is given" \
 check "mock-researcher: a follow-up question (a tool result is in the history, not last) searches again" \
   "$(completion mock-researcher "[$(system Researcher x), $(user first), $(call researcher-call-1 search__web_search), $(result researcher-call-1 '1. A — https://example.org/mock-search/1'), $(user 'And Rust?')]" | jq -r '[.finish_reason, (.message.tool_calls[0].function.arguments | fromjson | .query)] | join(" | ")')" \
   "tool_calls | And Rust"
+
+# `[mock:cards]`: search, read the catalog, show cards and a graph, answer. Each turn is told by the call ids the history holds,
+# and a conversation that carries the keyword never reaches the scripts above.
+cards_system=$(system Researcher 'I search the web for you and answer with the sources I found')
+cards_user=$(user '[mock:cards] what is async rust?')
+cards_search_results=$(printf '1. A (mock) — https://example.org/mock-search/async-book\n   x\n2. B — https://example.org/mock-search/async-futures\n   y\n3. C — https://example.org/mock-search/async-tokio\n   z')
+t1=$(completion mock-researcher "[$cards_system, $cards_user]")
+check "mock-researcher [mock:cards]: the first turn searches for async programming (id cards-call-1)" \
+  "$(printf '%s' "$t1" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .query)] | join(" | ")')" \
+  "tool_calls | cards-call-1 | search__web_search | async programming"
+t2=$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results")]")
+check "mock-researcher [mock:cards]: the results are in, it reads which components the screen has (ui_catalog, cards-call-2)" \
+  "$(printf '%s' "$t2" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
+  "tool_calls | cards-call-2 | ui_catalog"
+t3=$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results"), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{"Cards":{},"Mermaid":{}}')]")
+check "mock-researcher [mock:cards]: then it shows (cards-call-3): a Text, a Cards and a Mermaid" \
+  "$(printf '%s' "$t3" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | [.blocks[].component] | join("+"))] | join(" | ")')" \
+  "tool_calls | cards-call-3 | show | Text+Cards+Mermaid"
+check "mock-researcher [mock:cards]: the three cards carry the links the search returned, and the graph is a graph TD" \
+  "$(printf '%s' "$t3" | jq -r '.message.tool_calls[0].function.arguments | fromjson | [([.blocks[] | select(.component == "Cards") | .cards[].url] | join(" ")), (.blocks[] | select(.component == "Mermaid") | .code | startswith("graph TD") | tostring)] | join(" | ")')" \
+  "https://example.org/mock-search/async-book https://example.org/mock-search/async-futures https://example.org/mock-search/async-tokio | true"
+t4=$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results"), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'Shown to the person.')]")
+check "mock-researcher [mock:cards]: once show is answered it says the three links in words" \
+  "$(printf '%s' "$t4" | jq -r '[.finish_reason, .message.content] | join(" | ")')" \
+  "stop | Here are the three sources I found: https://example.org/mock-search/async-book, https://example.org/mock-search/async-futures and https://example.org/mock-search/async-tokio."
+check "mock-researcher [mock:cards]: a refused show (the screen has no Cards) is answered in words too" \
+  "$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 x), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'unknown component Cards')]" | jq -r .finish_reason)" \
+  "stop"
 
 check "an unknown model is a 404, not an invented answer" \
   "$(jq -cn '{model: "no-such-model", messages: [{role: "user", content: "hi"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"

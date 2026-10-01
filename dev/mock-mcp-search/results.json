@@ -30,6 +30,23 @@
         "url": "https://example.org/mock-search/rust",
         "snippet": "A canned snippet about Rust: a language for reliable and efficient software."
       }
+    ],
+    "async": [
+      {
+        "title": "Asynchronous programming in Rust (mock)",
+        "url": "https://example.org/mock-search/async-book",
+        "snippet": "A canned snippet about async and await: a function that returns a future, and how an executor runs it."
+      },
+      {
+        "title": "How a future is polled (mock)",
+        "url": "https://example.org/mock-search/async-futures",
+        "snippet": "A future does nothing until it is polled; a waker tells the executor when to poll it again."
+      },
+      {
+        "title": "Tokio, an asynchronous runtime (mock)",
+        "url": "https://example.org/mock-search/async-tokio",
+        "snippet": "A canned snippet about a runtime for writing reliable asynchronous applications."
+      }
     ]
   }
 }

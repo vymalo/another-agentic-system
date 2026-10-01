@@ -21,6 +21,9 @@
               "expression": "$.messages[-1].content",
               "doesNotMatch": "(?s).*https://.*"
             }
+          },
+          {
+            "doesNotContain": "[mock:cards]"
           }
         ]
       },
@@ -69,6 +72,9 @@
           },
           {
             "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "doesNotContain": "[mock:cards]"
           }
         ]
       },
@@ -117,6 +123,9 @@
           },
           {
             "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "doesNotContain": "[mock:cards]"
           }
         ]
       },

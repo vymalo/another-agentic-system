@@ -9,12 +9,14 @@ name: Coder E2E
 # journals and the pushed branch. Two more agents run beside the coder from the SAME image (`adam-agent`, a folder
 # each: a chat and a researcher, on a scripted model and a mock web search), and dev/agents-e2e.sh asserts each
 # answers in its role. The coder also asks with Choices: dev/choices-e2e.sh sends the web's UI catalog with a run,
-# and asserts one form of three questions, the person's answers as one action, and a newer catalog recorded.
+# and asserts one form of three questions, the person's answers as one action, and a newer catalog recorded; the
+# researcher answers with cards and a graph: dev/cards-e2e.sh asserts one surface of a Text, three cards and a Mermaid
+# graph under the same catalog, an older screen leaving the thread's catalog alone, and words only for a screen without Cards.
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB; the chat and the researcher use the same image),
 #              run dev/e2e-all.sh (every scenario: the coder's greeting, the three agents each answering in its role,
-#              the coder asking with Choices, the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
+#              the coder asking with Choices, the researcher answering with cards and a graph, the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, and the coder restarted on a copy of its agent folder with another name), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
@@ -115,7 +117,9 @@ jobs:
         # The command the README gives an owner, so it is what CI runs: "hi" gets the coder's greeting, the chat and the
         # researcher answer in their role (the researcher searches the mock web search and cites a result), the coder asks three
         # questions as one form from the web's catalog and goes on with the answers of one action (dev/choices-e2e.sh; a newer
-        # catalog is recorded too, and the coder's thread tools, plain http to the orchestrator, are offered to its model), chat -> coder ->
+        # catalog is recorded too, and the coder's thread tools, plain http to the orchestrator, are offered to its model), the researcher
+        # searches the mock web search and answers with one surface of a Text, three cards and a Mermaid graph (dev/cards-e2e.sh; a screen
+        # without Cards gets words only), chat -> coder ->
         # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone), red once -> sent back -> green and red always -> failed (the mock
         # agent behind `mock-coder-gated`, which a run may not weaken), the verifier's findings -> rework -> pass
         # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
