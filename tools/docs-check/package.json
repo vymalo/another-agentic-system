@@ -1,7 +1,7 @@
 {
   "name": "docs-check",
   "private": true,
-  "description": "Validates every Mermaid diagram and every relative Markdown link in the repository.",
+  "description": "Validates every Mermaid diagram, every relative Markdown link and every relative image of an HTML tag in the repository.",
   "type": "module",
   "scripts": {
     "check": "node check-docs.mjs"

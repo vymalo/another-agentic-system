@@ -1,7 +1,8 @@
 name: Docs
 
-# Every Mermaid diagram must parse and every relative Markdown link must
-# resolve. Same script agents and humans run locally (see CLAUDE.md).
+# Every Mermaid diagram must parse and every relative Markdown link, and every relative image of an
+# HTML tag (<img src>, <source srcset>), must resolve. Same script agents and humans run locally
+# (see CLAUDE.md).
 #
 # The AG-UI golden streams (docs/api/examples/agui) must also read cleanly through the
 # reference client, @ag-ui/client 1.0.0 (tools/agui-conformance). That is a behavioural check the
@@ -29,7 +30,7 @@ jobs:
           node-version: 24
       - name: Install pinned checker dependencies
         run: npm --prefix tools/docs-check ci --no-fund --no-audit
-      - name: Check diagrams and links
+      - name: Check diagrams, links and images
         run: node tools/docs-check/check-docs.mjs
 
   agui-goldens:

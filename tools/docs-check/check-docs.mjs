@@ -1,7 +1,9 @@
 // Validates the repository's Markdown:
 //   1. every ```mermaid block parses with the pinned Mermaid version, and
-//   2. every relative Markdown link points at a file or directory that exists, and
-//   3. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
+//   2. every relative Markdown link points at a file or directory that exists,
+//   3. every relative src="..." and srcset="..." of an HTML tag in the Markdown (an <img>, or the
+//      <source> of a <picture>) does too, and
+//   4. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
 //      orchestrator/bin/) has a README.md next to it.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
 // Exits 1 on any failure, listing file:line for each.
@@ -33,7 +35,7 @@ const { default: mermaid } = await import('mermaid');
 mermaid.initialize({ startOnLoad: false });
 
 const lineOf = (src, index) => src.slice(0, index).split('\n').length;
-let diagrams = 0, links = 0;
+let diagrams = 0, links = 0, images = 0;
 const failures = [];
 
 for (const file of markdownFiles(root)) {
@@ -60,6 +62,24 @@ for (const file of markdownFiles(root)) {
       failures.push(`${rel}:${lineOf(src, m.index)} broken link: ${m[1]}`);
     }
   }
+
+  // HTML in Markdown: the files an <img> or a <picture>'s <source> names (GitHub shows both
+  // themes of a screenshot this way, where ![alt](path) cannot). A srcset is a comma-separated
+  // list of "path [descriptor]"; external URLs and data: URIs are not files of this repository.
+  for (const tag of prose.matchAll(/<[a-z][^>]*>/gi)) {
+    for (const attr of tag[0].matchAll(/\s(src|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+      const value = attr[2] ?? attr[3];
+      const candidates = attr[1].toLowerCase() === 'srcset' ? value.split(',') : [value];
+      for (const candidate of candidates) {
+        const target = candidate.trim().split(/\s+/)[0].split('#')[0];
+        if (!target || /^([a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) continue; // http(s):, data:, //host
+        images++;
+        if (!fs.existsSync(path.resolve(path.dirname(file), decodeURI(target)))) {
+          failures.push(`${rel}:${lineOf(src, tag.index + attr.index)} broken ${attr[1].toLowerCase()}: ${target}`);
+        }
+      }
+    }
+  }
 }
 
 // Every crate documents itself: a directory under these roots with a Cargo.toml needs a
@@ -81,7 +101,7 @@ for (const crateRoot of crateRoots) {
   }
 }
 
-console.log(`${diagrams} diagrams, ${links} relative links, ${crates} crate READMEs checked`);
+console.log(`${diagrams} diagrams, ${links} relative links, ${images} image paths, ${crates} crate READMEs checked`);
 if (failures.length) {
   console.error(failures.join('\n'));
   console.error(`${failures.length} problem(s)`);
