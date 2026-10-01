@@ -20,9 +20,11 @@
 #                  the same: the real model of .env (CHAT_MODEL / RESEARCHER_MODEL, else MODEL), a bearer token
 #                  of your own each (CHAT_A2A_TOKEN, RESEARCHER_A2A_TOKEN), and they no longer wait for the model
 #                  mock. The researcher still searches the MOCK web search (canned results, `mock-mcp-search`
-#                  stays up): the stack has no search provider credential. All three keep MCP_ALLOW_INSECURE
-#                  (development only): the thread's own tools, the orchestrator's endpoint they are told about in
-#                  every message, are plain http on the compose network;
+#                  stays up): the stack has no search provider credential. All three keep MCP_ALLOW_INSECURE:
+#                  the thread's own tools, the orchestrator's endpoint they are told about in every message, are
+#                  plain http on the compose network (still with the thread's own short-lived bearer token). This
+#                  file is a LOCAL stack with real credentials, not a deployment: a deployment serves the
+#                  orchestrator over https and never sets MCP_ALLOW_INSECURE (adam-rs bin/adam-coder/README.md);
 #   * mock-openai, mock-github, git-server, mock-ci, mock-model
 #                  move to the profile `offline-mocks`, which is never enabled: a real model, a real GitHub and
 #                  a real CI replace them. Do not enable that profile with this file;
@@ -55,7 +57,8 @@ services:
       WORKSPACE_ROOT: /work
       ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there (volumes are merged, not replaced)
       # The thread's own tools (thread-tools/v1: the screen's catalog for Choices) are plain http to the orchestrator on the
-      # compose network, which an agent reaches only when allowed on purpose. Development only; without it the coder asks in text.
+      # compose network, which an agent reaches only when allowed on purpose. Local stacks only (see the header: never in a
+      # deployment, which serves the orchestrator over https); without it the coder asks in text.
       MCP_ALLOW_INSECURE: "true"
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
@@ -80,7 +83,7 @@ services:
       A2A_BEARER_TOKENS: "${CHAT_A2A_TOKEN:?set CHAT_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       PUBLIC_URL: http://chat:8080/
       ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
-      MCP_ALLOW_INSECURE: "true" # development only: the thread's own tools are plain http to the orchestrator (see the coder)
+      MCP_ALLOW_INSECURE: "true" # local stacks only: the thread's own tools are plain http to the orchestrator (see the coder)
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -100,7 +103,7 @@ services:
       ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
       # The search server of its mcp.json is the MOCK (plain http on the compose network, bearer dev-search-token).
       SEARCH_MCP_TOKEN: dev-search-token
-      MCP_ALLOW_INSECURE: "true" # development only: for the mock search and the thread's own tools (plain http). A real search server over https needs neither this nor the mock
+      MCP_ALLOW_INSECURE: "true" # local stacks only: for the mock search and the thread's own tools (plain http). A real search server over https needs neither this nor the mock
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
