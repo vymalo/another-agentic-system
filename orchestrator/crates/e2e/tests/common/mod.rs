@@ -314,16 +314,24 @@ impl World {
 
     /// Starts an instance named `owner`; `dispatch: false` serves the API only.
     pub async fn instance_with(&self, owner: &str, dispatch: bool) -> TestInstance {
-        self.instance_full(owner, dispatch, false).await
+        self.instance_full(owner, dispatch, Surfaces::NONE).await
     }
 
     /// Like [`World::instance_with`], and the MCP server is mounted at `/mcp` with the tokens
     /// [`ALICE_TOKEN`] and [`BOB_TOKEN`].
     pub async fn instance_with_mcp(&self, owner: &str, dispatch: bool) -> TestInstance {
-        self.instance_full(owner, dispatch, true).await
+        self.instance_full(owner, dispatch, Surfaces::MCP).await
     }
 
-    async fn instance_full(&self, owner: &str, dispatch: bool, mcp: bool) -> TestInstance {
+    /// Like [`World::instance_with`], and the thread-tools endpoint is mounted at
+    /// `/thread-tools/{threadId}/mcp`, verifying the tokens of [`THREAD_TOOLS_KEY`] (and of
+    /// [`THREAD_TOOLS_OLD_KEY`], the previous one of a rotation).
+    pub async fn instance_with_thread_tools(&self, owner: &str, dispatch: bool) -> TestInstance {
+        self.instance_full(owner, dispatch, Surfaces::THREAD_TOOLS)
+            .await
+    }
+
+    async fn instance_full(&self, owner: &str, dispatch: bool, surfaces: Surfaces) -> TestInstance {
         let dispatcher = dispatch.then(fast_dispatcher);
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
@@ -332,7 +340,7 @@ impl World {
         match &self.db {
             Db::Memory { store, wakeup } => {
                 let app = self.app(store.clone(), wakeup.clone());
-                let extra = mcp_routes(&app, mcp);
+                let extra = extra_routes(&app, surfaces);
                 TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
             }
             Db::Postgres(db) => {
@@ -343,7 +351,7 @@ impl World {
                     "the wakeup listener did not attach"
                 );
                 let app = self.app(PgStore::from_pool(pool), wakeup);
-                let extra = mcp_routes(&app, mcp);
+                let extra = extra_routes(&app, surfaces);
                 TestInstance::spawn_with_surfaces(app, api, dispatcher, owner, extra).await
             }
         }
@@ -358,19 +366,68 @@ impl World {
 pub const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
 pub const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
 
-/// The MCP surface over `app`, when asked for.
-fn mcp_routes<P: orch_ports::Ports>(app: &Arc<App<P>>, mcp: bool) -> Vec<orch_api::SurfaceRoutes> {
-    if !mcp {
-        return Vec::new();
-    }
+/// The thread-tools key of these tests (what `THREAD_TOOLS_SECRET` would be), and the previous one
+/// of a rotation.
+pub const THREAD_TOOLS_KEY: &str =
+    "e2e-thread-tools-key-0123456789abcdef0123456789abcdef0123456789abcdef";
+pub const THREAD_TOOLS_OLD_KEY: &str =
+    "e2e-thread-tools-old-key-fedcba9876543210fedcba9876543210fedcba98765432";
+
+/// The extra surfaces an instance mounts beside AG-UI.
+#[derive(Debug, Clone, Copy)]
+struct Surfaces {
+    mcp: bool,
+    thread_tools: bool,
+}
+
+impl Surfaces {
+    const NONE: Surfaces = Surfaces {
+        mcp: false,
+        thread_tools: false,
+    };
+    const MCP: Surfaces = Surfaces {
+        mcp: true,
+        ..Surfaces::NONE
+    };
+    const THREAD_TOOLS: Surfaces = Surfaces {
+        thread_tools: true,
+        ..Surfaces::NONE
+    };
+}
+
+/// The thread-tools keys: the current one, and the previous one a rotation still verifies.
+pub fn thread_tools_keys() -> orch_thread_token::ThreadToolsKeys {
     let secret = |s: &str| secrecy::SecretString::from(s.to_owned());
-    let tokens = orch_surface_mcp::TokenTable::new([
-        (orch_core::UserId::new(ALICE), secret(ALICE_TOKEN)),
-        (orch_core::UserId::new(BOB), secret(BOB_TOKEN)),
-    ])
-    .unwrap();
-    let config = orch_surface_mcp::McpConfig::new(tokens, ["127.0.0.1"]).unwrap();
-    vec![orch_surface_mcp::routes(Arc::clone(app), config)]
+    orch_thread_token::ThreadToolsKeys::new(
+        secret(THREAD_TOOLS_KEY),
+        Some(secret(THREAD_TOOLS_OLD_KEY)),
+    )
+    .unwrap()
+}
+
+/// The extra surfaces over `app`, when asked for.
+fn extra_routes<P: orch_ports::Ports>(
+    app: &Arc<App<P>>,
+    surfaces: Surfaces,
+) -> Vec<orch_api::SurfaceRoutes> {
+    let mut routes = Vec::new();
+    if surfaces.mcp {
+        let secret = |s: &str| secrecy::SecretString::from(s.to_owned());
+        let tokens = orch_surface_mcp::TokenTable::new([
+            (orch_core::UserId::new(ALICE), secret(ALICE_TOKEN)),
+            (orch_core::UserId::new(BOB), secret(BOB_TOKEN)),
+        ])
+        .unwrap();
+        let config = orch_surface_mcp::McpConfig::new(tokens, ["127.0.0.1"]).unwrap();
+        routes.push(orch_surface_mcp::routes(Arc::clone(app), config));
+    }
+    if surfaces.thread_tools {
+        let config =
+            orch_surface_thread_tools::ThreadToolsConfig::new(thread_tools_keys(), ["127.0.0.1"])
+                .unwrap();
+        routes.push(orch_surface_thread_tools::routes(Arc::clone(app), config));
+    }
+    routes
 }
 
 /// Asserts `seq` is exactly 1..=n.

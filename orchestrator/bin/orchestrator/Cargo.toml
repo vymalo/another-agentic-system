@@ -13,13 +13,20 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-webhook"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
 # has it; it is mounted only when ORCH_SURFACES names `mcp`, and then it needs MCP_TOKENS_FILE and
 # MCP_ALLOWED_HOSTS.
 surface-mcp = ["dep:orch-surface-mcp"]
+# The thread-tools endpoint (`/thread-tools/{threadId}/mcp`, `thread-tools/v1`, ADR 0023): the MCP
+# endpoint an agent that lists the extension is given for its thread, opened by the HMAC token the
+# A2A adapter mints. Compiled in by default; it is mounted only when ORCH_SURFACES names
+# `thread-tools`, and then it needs THREAD_TOOLS_SECRET and THREAD_TOOLS_URL. The same two
+# variables make the A2A adapter mint grants, so every role gets them. Without the feature the
+# variables are not read and no agent is given a grant.
+surface-thread-tools = ["dep:orch-surface-thread-tools", "dep:orch-thread-token"]
 # The webhook routes (ADR 0017): signed CI results, machine routes outside the identity layer.
 # On by default, but a route is mounted only when ORCH_SURFACES names it and its secrets are set.
 surface-webhook = ["dep:orch-surface-webhook"]
@@ -37,6 +44,8 @@ orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui = { workspace = true, optional = true }
 orch-surface-mcp = { workspace = true, optional = true }
+orch-surface-thread-tools = { workspace = true, optional = true }
+orch-thread-token = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-agent-adam = { workspace = true, optional = true }

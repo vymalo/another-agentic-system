@@ -69,7 +69,7 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has fourteen
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has seventeen
 library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
@@ -87,8 +87,9 @@ flowchart TB
     a2a["<b>orch-agent-a2a</b><br/>AgentClient over A2A 1.0<br/>a2a-client-lf"]
     adam["<b>orch-agent-adam</b><br/>AgentClient over adam-rs agents<br/>hosted in this process (feature agent-local)"]
   end
-  subgraph G_MAP["Pure helper of the A2A and local adapters: no async, no I/O"]
+  subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
+    token["<b>orch-thread-token</b><br/>the thread-tools token: HS256 JWS,<br/>claims, keys, issuer, vectors"]
   end
   subgraph G_APP["Application: written against the ports"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, receive<br/>Dispatcher: durable outbox worker<br/>InboxWorker: timers and stored reports"]
@@ -100,13 +101,14 @@ flowchart TB
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
     surfwh["<b>orch-surface-webhook</b><br/>POST /webhooks/ci, /webhooks/github<br/>machine routes, HMAC guard"]
     surfmcp["<b>orch-surface-mcp</b><br/>/mcp, streamable HTTP, stateless<br/>machine route, bearer tokens"]
+    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-webhook (default), agent-local (off)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, surface-webhook (default), agent-local (off)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -132,6 +134,8 @@ flowchart TB
   bin -. "feature agent-local" .-> adam
   bin -. "feature surface-agui" .-> surfagui
   bin -. "feature surface-mcp" .-> surfmcp
+  bin -. "feature surface-thread-tools" .-> surftt
+  bin -. "feature surface-thread-tools" .-> token
   surfagui --> api
   surfagui --> app
   surfagui --> proj
@@ -140,6 +144,9 @@ flowchart TB
   surfwh --> app
   surfmcp --> api
   surfmcp --> app
+  surftt --> api
+  surftt --> app
+  surftt --> token
   bin -. "feature surface-webhook" .-> surfwh
   ts --> api
   ts --> app
@@ -197,6 +204,8 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
+| `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
+| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog`, and the `ThreadToolProvider` seam later slices add their tools through; feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root | **Built** |
@@ -206,6 +215,7 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
 | `orchestrator` | `surface-mcp` | yes | Compiles in `orch-surface-mcp` (`rmcp`, its tower service and the bearer check). Mounted only when `ORCH_SURFACES` names `mcp`, and then `MCP_TOKENS_FILE` and `MCP_ALLOWED_HOSTS` are required |
+| `orchestrator` | `surface-thread-tools` | yes | Compiles in `orch-surface-thread-tools` and `orch-thread-token`. Mounted only when `ORCH_SURFACES` names `thread-tools`, and then `THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL` are required, in every role (a worker mounts no route, but it mints the tokens); without the feature those variables are not read and naming the surface is refused |
 | `orchestrator` | `surface-agui` | yes | Compiles in `orch-surface-agui`, the AG-UI routes (run, connect, capabilities); it decides what *can* be mounted, `ORCH_SURFACES` what *is*. (`surface-chat-api` and its crate were removed on 2026-09-30.) |
 | `orchestrator` | `surface-webhook` | yes | Compiles in `orch-surface-webhook`: the CI webhooks, `ORCH_SURFACES` names `webhook-generic` (needs `WEBHOOK_GENERIC_SECRETS`) and `webhook-github` (needs `WEBHOOK_GITHUB_SECRETS`), exit 78 without. Default-on, but a route exists only when `ORCH_SURFACES` names it |
 | `orchestrator` | `agent-local` | no | Compiles in `orch-agent-adam` and the adam-rs runtime: `transport: local` agents in `AGENTS_FILE` are served in this process (below). Without it such an entry is refused at startup (exit 78) and nothing of adam-rs's runtime is linked |

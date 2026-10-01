@@ -15,6 +15,8 @@ use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "surface-thread-tools")]
+use std::sync::Arc;
 use std::time::Duration;
 
 use adam_host::Role;
@@ -30,6 +32,10 @@ use orch_core::{
 use orch_ports::AgentEndpoint;
 #[cfg(feature = "surface-webhook")]
 use orch_surface_webhook::{GenericConfig, GithubConfig, Secrets};
+#[cfg(feature = "surface-thread-tools")]
+use orch_thread_token::{
+    DEFAULT_TTL_SECS, MAX_TTL_SECS, MIN_TTL_SECS, ThreadToolsIssuer, ThreadToolsKeys,
+};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use url::Url;
@@ -63,7 +69,7 @@ pub enum ConfigError {
     Missing(&'static str),
     /// A surface is mounted and a variable it cannot run without is unset or empty. Fail closed:
     /// a webhook route without its secret would be a route anyone can call.
-    #[cfg(feature = "surface-webhook")]
+    #[cfg(any(feature = "surface-webhook", feature = "surface-thread-tools"))]
     #[error("{var} is required when ORCH_SURFACES mounts {surface:?}")]
     MissingForSurface {
         /// The variable.
@@ -241,6 +247,22 @@ impl fmt::Debug for McpSettings {
     }
 }
 
+/// The thread-tools endpoint's configuration (`thread-tools/v1`), read when `THREAD_TOOLS_SECRET`
+/// and `THREAD_TOOLS_URL` are set: by every role, because the A2A adapter of a worker mints the
+/// grants the control plane's endpoint verifies.
+#[cfg(feature = "surface-thread-tools")]
+#[derive(Clone, Debug)]
+pub struct ThreadToolsSettings {
+    /// The keys (`THREAD_TOOLS_SECRET`, and `THREAD_TOOLS_SECRET_PREVIOUS` for a rotation), the
+    /// base URL agents reach the orchestrator at (`THREAD_TOOLS_URL`) and the lifetime of a
+    /// token (`THREAD_TOOLS_TOKEN_TTL_SECS`). The A2A adapter mints with it, and the endpoint
+    /// verifies with its keys. Its `Debug` shows key ids, never a key.
+    pub issuer: Arc<ThreadToolsIssuer>,
+    /// `THREAD_TOOLS_ALLOWED_HOSTS`: the `Host` values the endpoint accepts; by default the host
+    /// (and port, when the URL names one) of `THREAD_TOOLS_URL`.
+    pub allowed_hosts: Vec<String>,
+}
+
 /// One entry of `MCP_TOKENS_FILE`, as written.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -385,6 +407,10 @@ pub enum Surface {
     /// The MCP server (`orch-surface-mcp`: `/mcp`, a machine route guarded by bearer tokens):
     /// Claude Code, opencode or any MCP client starts and follows jobs (ADR 0019).
     Mcp,
+    /// The per-thread MCP endpoint (`orch-surface-thread-tools`: `/thread-tools/{threadId}/mcp`, a
+    /// machine route guarded by the HMAC token the A2A adapter mints): the tools an agent that
+    /// lists `thread-tools/v1` calls back (`thread-tools/v1`, ADR 0023).
+    ThreadTools,
     /// `POST /webhooks/ci` (`orch-surface-webhook`): the generic signed CI report, a machine route
     /// outside the identity layer (ADR 0017).
     WebhookGeneric,
@@ -434,6 +460,7 @@ impl Surface {
     pub const ALL: &'static [Surface] = &[
         Surface::Agui,
         Surface::Mcp,
+        Surface::ThreadTools,
         Surface::WebhookGeneric,
         Surface::WebhookGithub,
     ];
@@ -443,6 +470,7 @@ impl Surface {
         match self {
             Surface::Agui => "agui",
             Surface::Mcp => "mcp",
+            Surface::ThreadTools => "thread-tools",
             Surface::WebhookGeneric => "webhook-generic",
             Surface::WebhookGithub => "webhook-github",
         }
@@ -453,6 +481,7 @@ impl Surface {
         match self {
             Surface::Agui => "surface-agui",
             Surface::Mcp => "surface-mcp",
+            Surface::ThreadTools => "surface-thread-tools",
             Surface::WebhookGeneric | Surface::WebhookGithub => "surface-webhook",
         }
     }
@@ -462,6 +491,7 @@ impl Surface {
         match self {
             Surface::Agui => cfg!(feature = "surface-agui"),
             Surface::Mcp => cfg!(feature = "surface-mcp"),
+            Surface::ThreadTools => cfg!(feature = "surface-thread-tools"),
             Surface::WebhookGeneric | Surface::WebhookGithub => cfg!(feature = "surface-webhook"),
         }
     }
@@ -581,7 +611,9 @@ pub struct Args {
 
     /// Interaction surfaces to mount, comma separated (default agui, as far as the build has
     /// it). Known: agui, mcp (the MCP server at /mcp; it needs MCP_TOKENS_FILE and
-    /// MCP_ALLOWED_HOSTS), webhook-generic (POST /webhooks/ci; needs WEBHOOK_GENERIC_SECRETS),
+    /// MCP_ALLOWED_HOSTS), thread-tools (the per-thread MCP endpoint at
+    /// /thread-tools/{threadId}/mcp; it needs THREAD_TOOLS_SECRET and THREAD_TOOLS_URL, which every
+    /// role should get), webhook-generic (POST /webhooks/ci; needs WEBHOOK_GENERIC_SECRETS),
     /// webhook-github (POST /webhooks/github; needs WEBHOOK_GITHUB_SECRETS). The webhooks are
     /// machine routes with no user identity, guarded by a signature. The removed legacy `chat-api` is refused at
     /// startup. The resource API and health are always mounted.
@@ -644,6 +676,47 @@ pub struct Args {
     /// are not affected. Default: none.
     #[arg(long, env = "MCP_ALLOWED_ORIGINS", value_name = "LIST")]
     pub mcp_allowed_origins: Option<String>,
+
+    /// The HMAC key of the thread-tools tokens, at least 32 bytes (`openssl rand -hex 32`). With
+    /// THREAD_TOOLS_URL it makes the A2A adapter give a grant (the endpoint's address and a token)
+    /// to every agent whose card lists the `thread-tools/v1` extension, and it opens the surface
+    /// `thread-tools`; required (exit 78 otherwise) when ORCH_SURFACES mounts it. Give every role
+    /// the same value: workers mint, the control plane serves. Never logged.
+    #[arg(
+        long,
+        env = "THREAD_TOOLS_SECRET",
+        value_name = "KEY",
+        hide_env_values = true
+    )]
+    pub thread_tools_secret: Option<String>,
+
+    /// The previous thread-tools key, for verifying only: a token signed with it is still
+    /// accepted, so the key can be rotated without refusing the tokens in flight. Remove it once
+    /// the longest token lifetime has passed. Never logged.
+    #[arg(
+        long,
+        env = "THREAD_TOOLS_SECRET_PREVIOUS",
+        value_name = "KEY",
+        hide_env_values = true
+    )]
+    pub thread_tools_secret_previous: Option<String>,
+
+    /// The base URL under which agents reach this orchestrator, `http` or `https`, for example
+    /// `http://orchestrator:8080`. The grant tells an agent
+    /// `<URL>/thread-tools/<threadId>/mcp`. Set with THREAD_TOOLS_SECRET or not at all.
+    #[arg(long, env = "THREAD_TOOLS_URL", value_name = "URL")]
+    pub thread_tools_url: Option<String>,
+
+    /// Seconds a thread-tools token lives, between 60 and 86400 (default 7200). A task can run
+    /// long, and a call that fails in the middle of one is hard for an agent to recover from.
+    #[arg(long, env = "THREAD_TOOLS_TOKEN_TTL_SECS", value_name = "SECS")]
+    pub thread_tools_token_ttl_secs: Option<String>,
+
+    /// Host names the surface `thread-tools` accepts in the Host header, comma separated, for
+    /// example `orchestrator:8080,localhost:8080` (default: the host, and port if the URL has one,
+    /// of THREAD_TOOLS_URL; a name without a port matches any port). Guards against DNS rebinding.
+    #[arg(long, env = "THREAD_TOOLS_ALLOWED_HOSTS", value_name = "LIST")]
+    pub thread_tools_allowed_hosts: Option<String>,
 
     /// Seconds the verifier has to answer before the thread waits for the user, at least 1
     /// (default 1800). Waiting does not use an attempt.
@@ -786,6 +859,11 @@ pub struct Config {
     /// `MCP_TOKENS_FILE`, `MCP_ALLOWED_HOSTS` and `ORCH_PUBLIC_URL`: set when the surface `mcp` is
     /// mounted by a role that serves HTTP.
     pub mcp: Option<McpSettings>,
+    /// `THREAD_TOOLS_SECRET`, `THREAD_TOOLS_URL` and the variables that go with them: set when
+    /// both are (in every role; refused when only one is, and when the surface `thread-tools` is
+    /// named without them). Its `Debug` shows key ids, never a key.
+    #[cfg(feature = "surface-thread-tools")]
+    pub thread_tools: Option<ThreadToolsSettings>,
     /// `WEBHOOK_GENERIC_SECRETS` and `WEBHOOK_GENERIC_MAX_SKEW_SECS`: the generic webhook route
     /// (`None` when its secrets are unset, which is refused only if the route is to be mounted).
     /// Its `Debug` shows how many secrets there are, never their values.
@@ -840,6 +918,8 @@ impl fmt::Debug for Config {
             .field("shutdown_grace", &self.shutdown_grace);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
+        #[cfg(feature = "surface-thread-tools")]
+        debug.field("thread_tools", &self.thread_tools);
         #[cfg(feature = "surface-webhook")]
         debug
             .field("webhook_generic", &self.webhook_generic)
@@ -967,6 +1047,19 @@ impl Config {
         } else {
             None
         };
+        // Every role reads these: the A2A adapter of a worker mints what the control plane's
+        // endpoint verifies, so the surface being named is what makes them required, not the role.
+        #[cfg(feature = "surface-thread-tools")]
+        let thread_tools = thread_tools(
+            ThreadToolsVars {
+                secret: clean(args.thread_tools_secret),
+                previous: clean(args.thread_tools_secret_previous),
+                url: clean(args.thread_tools_url),
+                ttl_secs: clean(args.thread_tools_token_ttl_secs),
+                allowed_hosts: clean(args.thread_tools_allowed_hosts),
+            },
+            surfaces.contains(&Surface::ThreadTools),
+        )?;
         #[cfg(feature = "surface-webhook")]
         let webhook_generic = webhook_generic(
             clean(args.webhook_generic_secrets),
@@ -1074,6 +1167,8 @@ impl Config {
             role,
             surfaces,
             mcp,
+            #[cfg(feature = "surface-thread-tools")]
+            thread_tools,
             #[cfg(feature = "surface-webhook")]
             webhook_generic,
             #[cfg(feature = "surface-webhook")]
@@ -1445,6 +1540,129 @@ fn parse_mcp_tokens(
     Ok(tokens)
 }
 
+/// The raw values of the thread-tools variables (blank already counted as unset).
+#[cfg(feature = "surface-thread-tools")]
+struct ThreadToolsVars {
+    secret: Option<String>,
+    previous: Option<String>,
+    url: Option<String>,
+    ttl_secs: Option<String>,
+    allowed_hosts: Option<String>,
+}
+
+/// The thread-tools settings (`THREAD_TOOLS_*`): none when neither the secret nor the URL is set
+/// and the surface is not named; both or neither otherwise. `mounted` is whether `ORCH_SURFACES`
+/// names `thread-tools`, in which case they are required, in every role.
+#[cfg(feature = "surface-thread-tools")]
+fn thread_tools(
+    vars: ThreadToolsVars,
+    mounted: bool,
+) -> Result<Option<ThreadToolsSettings>, ConfigError> {
+    const SECRET: &str = "THREAD_TOOLS_SECRET";
+    const PREVIOUS: &str = "THREAD_TOOLS_SECRET_PREVIOUS";
+    const URL: &str = "THREAD_TOOLS_URL";
+    let ttl = number(
+        vars.ttl_secs,
+        "THREAD_TOOLS_TOKEN_TTL_SECS",
+        DEFAULT_TTL_SECS,
+        MIN_TTL_SECS,
+    )?;
+    if ttl > MAX_TTL_SECS {
+        return Err(ConfigError::Invalid {
+            var: "THREAD_TOOLS_TOKEN_TTL_SECS",
+            reason: format!("must be at most {MAX_TTL_SECS}"),
+        });
+    }
+    // Read whatever else is set, so that a typo is refused here and not quietly ignored.
+    let explicit_hosts = vars
+        .allowed_hosts
+        .map(|raw| parse_host_list("THREAD_TOOLS_ALLOWED_HOSTS", &raw))
+        .transpose()?;
+    let (secret, url) = match (vars.secret, vars.url) {
+        (Some(secret), Some(url)) => (secret, url),
+        (None, None) if mounted => {
+            return Err(ConfigError::MissingForSurface {
+                var: SECRET,
+                surface: Surface::ThreadTools.name(),
+            });
+        }
+        (None, None) => {
+            // A previous key with no current one is a mistake to say, not to ignore.
+            if vars.previous.is_some() {
+                return Err(ConfigError::Invalid {
+                    var: PREVIOUS,
+                    reason: format!("{SECRET} is not set; the previous key only verifies"),
+                });
+            }
+            return Ok(None);
+        }
+        (Some(_), None) => {
+            return Err(ConfigError::Invalid {
+                var: SECRET,
+                reason: format!("{URL} is not set; set both or neither"),
+            });
+        }
+        (None, Some(_)) => {
+            return Err(ConfigError::Invalid {
+                var: URL,
+                reason: format!("{SECRET} is not set; set both or neither"),
+            });
+        }
+    };
+    let keys = ThreadToolsKeys::new(
+        SecretString::from(secret),
+        vars.previous.map(SecretString::from),
+    )
+    .map_err(|e| ConfigError::Invalid {
+        var: match e {
+            orch_thread_token::KeyError::TooShort { which: "previous" }
+            | orch_thread_token::KeyError::Same => PREVIOUS,
+            _ => SECRET,
+        },
+        reason: e.to_string(),
+    })?;
+    let issuer = ThreadToolsIssuer::new(keys, &url, Duration::from_secs(ttl)).map_err(|e| {
+        ConfigError::Invalid {
+            var: URL,
+            reason: e.to_string(),
+        }
+    })?;
+    let allowed_hosts = explicit_hosts.unwrap_or_else(|| vec![issuer.host().to_owned()]);
+    Ok(Some(ThreadToolsSettings {
+        issuer: Arc::new(issuer),
+        allowed_hosts,
+    }))
+}
+
+/// A comma-separated list of `Host` values: at least one, each a name or an address with or
+/// without a port.
+#[cfg(feature = "surface-thread-tools")]
+fn parse_host_list(var: &'static str, raw: &str) -> Result<Vec<String>, ConfigError> {
+    let hosts: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if hosts.is_empty() {
+        return Err(ConfigError::Invalid {
+            var,
+            reason: "the list is empty; name the hosts agents use, such as orchestrator:8080"
+                .to_owned(),
+        });
+    }
+    if let Some(bad) = hosts.iter().find(|h| !is_authority(h)) {
+        return Err(ConfigError::Invalid {
+            var,
+            reason: format!(
+                "{bad:?} is not a host name or address, with or without a port (no scheme, \
+                 path, wildcard or credentials): write orchestrator:8080 or orch.example.com"
+            ),
+        });
+    }
+    Ok(hosts)
+}
+
 /// The generic webhook route's settings (`WEBHOOK_GENERIC_*`). The secrets are required exactly
 /// when the route is to be mounted (`mounted`: `webhook-generic` is in `ORCH_SURFACES` and this
 /// role serves HTTP routes), so a worker that shares the environment of a control plane does not
@@ -1766,6 +1984,11 @@ mod tests {
                 "MCP_WAIT_MAX_CONCURRENT" => &mut args.mcp_wait_max_concurrent,
                 "MCP_WAIT_MAX_PER_USER" => &mut args.mcp_wait_max_per_user,
                 "MCP_ALLOWED_ORIGINS" => &mut args.mcp_allowed_origins,
+                "THREAD_TOOLS_SECRET" => &mut args.thread_tools_secret,
+                "THREAD_TOOLS_SECRET_PREVIOUS" => &mut args.thread_tools_secret_previous,
+                "THREAD_TOOLS_URL" => &mut args.thread_tools_url,
+                "THREAD_TOOLS_TOKEN_TTL_SECS" => &mut args.thread_tools_token_ttl_secs,
+                "THREAD_TOOLS_ALLOWED_HOSTS" => &mut args.thread_tools_allowed_hosts,
                 "ORCH_VERIFIER_TIMEOUT_SECS" => &mut args.verifier_timeout_secs,
                 "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
                 "ORCH_CI_TIMEOUT_SECS" => &mut args.ci_timeout_secs,
@@ -2784,6 +3007,11 @@ mod tests {
             "MCP_WAIT_MAX_CONCURRENT",
             "MCP_WAIT_MAX_PER_USER",
             "MCP_ALLOWED_ORIGINS",
+            "THREAD_TOOLS_SECRET",
+            "THREAD_TOOLS_SECRET_PREVIOUS",
+            "THREAD_TOOLS_URL",
+            "THREAD_TOOLS_TOKEN_TTL_SECS",
+            "THREAD_TOOLS_ALLOWED_HOSTS",
             "ORCH_VERIFIER_TIMEOUT_SECS",
             "ORCH_VERIFIER_WATCH_SECS",
             "AUTH_DEV_USER",
@@ -3757,5 +3985,225 @@ mod tests {
                 "{shown}"
             );
         }
+    }
+
+    // ---- the thread-tools endpoint (thread-tools/v1, ADR 0023) ------------------------------
+
+    const TT_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const TT_PREVIOUS: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    fn thread_tools_env<'a>() -> Vec<(&'a str, &'a str)> {
+        let mut env = base();
+        env.extend([
+            ("ORCH_SURFACES", "agui,thread-tools"),
+            ("THREAD_TOOLS_SECRET", TT_SECRET),
+            ("THREAD_TOOLS_URL", "http://orchestrator:8080"),
+        ]);
+        env
+    }
+
+    #[cfg(feature = "surface-thread-tools")]
+    #[test]
+    fn the_thread_tools_endpoint_reads_its_keys_url_lifetime_and_hosts() {
+        let cfg = load(&thread_tools_env(), AGENTS).unwrap();
+        assert_eq!(cfg.surfaces, vec![Surface::Agui, Surface::ThreadTools]);
+        assert_eq!(Surface::ThreadTools.name(), "thread-tools");
+        assert_eq!(Surface::ThreadTools.feature(), "surface-thread-tools");
+        let tt = cfg.thread_tools.as_ref().unwrap();
+        assert_eq!(tt.issuer.base_url(), "http://orchestrator:8080");
+        assert_eq!(tt.issuer.ttl(), Duration::from_secs(7200), "the default");
+        // The default host list is the host, and the port, of the URL.
+        assert_eq!(tt.allowed_hosts, ["orchestrator:8080"]);
+        assert_eq!(tt.issuer.keys().previous_kid(), None);
+
+        // Everything set: a rotation, a lifetime, hosts of its own.
+        let mut env = thread_tools_env();
+        env.extend([
+            ("THREAD_TOOLS_SECRET_PREVIOUS", TT_PREVIOUS),
+            ("THREAD_TOOLS_TOKEN_TTL_SECS", "3600"),
+            (
+                "THREAD_TOOLS_ALLOWED_HOSTS",
+                "orchestrator:8080, 127.0.0.1:8080,localhost,",
+            ),
+        ]);
+        let cfg = load(&env, AGENTS).unwrap();
+        let tt = cfg.thread_tools.as_ref().unwrap();
+        assert_eq!(tt.issuer.ttl(), Duration::from_secs(3600));
+        assert!(tt.issuer.keys().previous_kid().is_some());
+        assert_eq!(
+            tt.allowed_hosts,
+            ["orchestrator:8080", "127.0.0.1:8080", "localhost"]
+        );
+
+        // A URL without a port: the host alone; a name without a port matches any port.
+        let mut env = thread_tools_env();
+        env.retain(|(k, _)| *k != "THREAD_TOOLS_URL");
+        env.push(("THREAD_TOOLS_URL", "https://orch.example.com/"));
+        let cfg = load(&env, AGENTS).unwrap();
+        let tt = cfg.thread_tools.as_ref().unwrap();
+        assert_eq!(tt.issuer.base_url(), "https://orch.example.com");
+        assert_eq!(tt.allowed_hosts, ["orch.example.com"]);
+    }
+
+    #[cfg(feature = "surface-thread-tools")]
+    #[test]
+    fn the_keys_and_url_are_read_by_every_role_and_without_the_surface() {
+        // Workers mint, the control plane serves: a worker is given the same variables, and
+        // needs them when the surface is named.
+        let mut env = thread_tools_env();
+        env.push(("ORCH_ROLE", "worker"));
+        assert!(load(&env, AGENTS).unwrap().thread_tools.is_some());
+        env.retain(|(k, _)| !k.starts_with("THREAD_TOOLS"));
+        assert!(matches!(
+            load(&env, AGENTS).unwrap_err(),
+            ConfigError::MissingForSurface {
+                var: "THREAD_TOOLS_SECRET",
+                surface: "thread-tools"
+            }
+        ));
+        // The surface is not named here (the control plane elsewhere serves it): the adapter
+        // still mints, so the keys and the URL are read.
+        let mut env = thread_tools_env();
+        env.retain(|(k, _)| *k != "ORCH_SURFACES");
+        assert!(load(&env, AGENTS).unwrap().thread_tools.is_some());
+        // And neither being set is no thread tools, and not an error.
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(cfg.thread_tools.is_none());
+    }
+
+    #[cfg(feature = "surface-thread-tools")]
+    #[test]
+    fn the_thread_tools_endpoint_fails_closed_on_every_missing_or_bad_piece() {
+        type Env = Vec<(&'static str, &'static str)>;
+        let err = |change: &dyn Fn(&mut Env)| {
+            let mut env = thread_tools_env();
+            change(&mut env);
+            load(&env, AGENTS).unwrap_err().to_string()
+        };
+        let without = |var: &'static str| move |env: &mut Env| env.retain(|(k, _)| *k != var);
+        let setting = |var: &'static str, value: &'static str| {
+            move |env: &mut Env| {
+                env.retain(|(k, _)| *k != var);
+                env.push((var, value));
+            }
+        };
+        // the surface is named and the secret is not (the URL alone is the other mistake)
+        assert!(
+            err(&|env| {
+                without("THREAD_TOOLS_SECRET")(env);
+                without("THREAD_TOOLS_URL")(env);
+            })
+            .contains("THREAD_TOOLS_SECRET is required when ORCH_SURFACES mounts \"thread-tools\"")
+        );
+        assert!(
+            err(&without("THREAD_TOOLS_SECRET"))
+                .contains("THREAD_TOOLS_URL is invalid: THREAD_TOOLS_SECRET is not set")
+        );
+        assert!(
+            err(&without("THREAD_TOOLS_URL"))
+                .contains("THREAD_TOOLS_SECRET is invalid: THREAD_TOOLS_URL is not set")
+        );
+        // a key that is too short, and a previous one that is
+        assert!(
+            err(&setting("THREAD_TOOLS_SECRET", "too-short"))
+                .contains("THREAD_TOOLS_SECRET is invalid: the current key is shorter than 32")
+        );
+        assert!(
+            err(&setting("THREAD_TOOLS_SECRET_PREVIOUS", "too-short"))
+                .contains("THREAD_TOOLS_SECRET_PREVIOUS is invalid")
+        );
+        // a previous key that is the current one, and one with no current key
+        assert!(
+            err(&setting("THREAD_TOOLS_SECRET_PREVIOUS", TT_SECRET))
+                .contains("THREAD_TOOLS_SECRET_PREVIOUS is invalid: the previous key is the same")
+        );
+        let mut only_previous = base();
+        only_previous.push(("THREAD_TOOLS_SECRET_PREVIOUS", TT_PREVIOUS));
+        assert!(
+            load(&only_previous, AGENTS)
+                .unwrap_err()
+                .to_string()
+                .contains("THREAD_TOOLS_SECRET_PREVIOUS is invalid")
+        );
+        // a URL that is not an http(s) URL with a host
+        for bad in [
+            "orchestrator:8080",
+            "ftp://orchestrator",
+            "http://u:p@orchestrator",
+            "http://orchestrator?x=1",
+        ] {
+            assert!(
+                err(&setting("THREAD_TOOLS_URL", bad)).contains("THREAD_TOOLS_URL is invalid"),
+                "{bad}"
+            );
+        }
+        // a lifetime outside 60 to 86400
+        for bad in ["59", "86401", "0", "soon", "-1"] {
+            assert!(
+                err(&setting("THREAD_TOOLS_TOKEN_TTL_SECS", bad))
+                    .contains("THREAD_TOOLS_TOKEN_TTL_SECS is invalid"),
+                "{bad}"
+            );
+        }
+        // hosts that are not Host values
+        for bad in [
+            "*",
+            "https://orchestrator:8080",
+            "orchestrator/",
+            ",",
+            "orch:port",
+        ] {
+            assert!(
+                err(&setting("THREAD_TOOLS_ALLOWED_HOSTS", bad))
+                    .contains("THREAD_TOOLS_ALLOWED_HOSTS is invalid"),
+                "{bad}"
+            );
+        }
+        // The boundaries pass.
+        for ok in ["60", "86400"] {
+            let mut env = thread_tools_env();
+            env.push(("THREAD_TOOLS_TOKEN_TTL_SECS", ok));
+            assert!(load(&env, AGENTS).is_ok(), "{ok}");
+        }
+    }
+
+    #[cfg(feature = "surface-thread-tools")]
+    #[test]
+    fn the_configuration_never_prints_a_thread_tools_key() {
+        let mut env = thread_tools_env();
+        env.push(("THREAD_TOOLS_SECRET_PREVIOUS", TT_PREVIOUS));
+        let cfg = load(&env, AGENTS).unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(shown.contains("thread_tools"), "{shown}");
+        assert!(!shown.contains(TT_SECRET), "{shown}");
+        assert!(!shown.contains(TT_PREVIOUS), "{shown}");
+        // Nor does an error: a key that is refused is not echoed.
+        let mut env = thread_tools_env();
+        env.retain(|(k, _)| *k != "THREAD_TOOLS_URL");
+        let shown = load(&env, AGENTS).unwrap_err().to_string();
+        assert!(!shown.contains(TT_SECRET), "{shown}");
+    }
+
+    #[cfg(not(feature = "surface-thread-tools"))]
+    #[test]
+    fn thread_tools_is_refused_in_a_build_without_the_feature() {
+        let mut env = thread_tools_env();
+        env.retain(|(k, _)| *k != "ORCH_SURFACES");
+        env.push(("ORCH_SURFACES", "thread-tools"));
+        let err = load(&env, AGENTS).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::SurfaceNotCompiled {
+                    surface: "thread-tools",
+                    feature: "surface-thread-tools"
+                }
+            ),
+            "{err}"
+        );
+        // The variables alone are not read in such a build.
+        let mut env = base();
+        env.extend([("THREAD_TOOLS_SECRET", "x")]);
+        assert!(load(&env, AGENTS).is_ok());
     }
 }

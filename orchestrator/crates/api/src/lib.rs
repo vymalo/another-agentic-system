@@ -16,6 +16,7 @@
 mod auth;
 mod export;
 mod extract;
+mod host;
 mod metrics;
 mod problem;
 mod routes;
@@ -42,6 +43,7 @@ use tower_http::trace::TraceLayer;
 pub use auth::{AuthConfig, IDENTITY_HEADER};
 pub use export::{FORMAT as EXPORT_FORMAT, VERSION as EXPORT_VERSION};
 pub use extract::{ApiJson, ApiQuery};
+pub use host::is_host_authority;
 pub use problem::{ApiError, Problem};
 pub use routes::parse_thread_id;
 

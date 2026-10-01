@@ -63,7 +63,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [API contract](docs/api/chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, cancel, health), the AG-UI operations (the legacy REST interaction endpoints were removed on 2026-09-30) |
 | [AG-UI binding](docs/api/agui.md) | How the orchestrator speaks AG-UI 1.0: run and connect endpoints, log-to-AG-UI mapping, `vymalo.*` schemas |
 | [Webhooks](docs/api/webhooks.md) | CI results by webhook: the generic signed shape (built) and the GitHub adapter (planned): headers, HMAC, body, conclusions, response codes, a worked signature and known-answer vectors |
-| [API index](docs/api/README.md) | What is in `docs/api/`, and the optional A2A extensions the orchestrator speaks: [`ui-catalog/v1`](docs/api/ui-catalog-v1.md) (the web's component catalog, sent to agents) and [`thread-tools/v1`](docs/api/thread-tools-v1.md) (a per-thread MCP endpoint for agents, with an HMAC token); contracts accepted 2026-10-01, not built yet |
+| [API index](docs/api/README.md) | What is in `docs/api/`, and the optional A2A extensions the orchestrator speaks: [`ui-catalog/v1`](docs/api/ui-catalog-v1.md) (the web's component catalog, sent to agents) and [`thread-tools/v1`](docs/api/thread-tools-v1.md) (a per-thread MCP endpoint for agents, with an HMAC token); contracts accepted 2026-10-01, built (the catalog handshake; the token, the endpoint and `get_ui_catalog`) except what [`thread-tools/v1`](docs/api/thread-tools-v1.md) marks as later slices |
 | [Open questions](docs/open-questions.md) | Open, closed, and moved to the platform |
 | [Lessons from Agent Canvas](docs/lessons-from-agent-canvas.md) | What running OpenHands Agent Canvas taught us, as requirements |
 

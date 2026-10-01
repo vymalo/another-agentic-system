@@ -1,0 +1,32 @@
+[package]
+name = "orch-thread-token"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The token of the thread-tools endpoint (thread-tools/v1): an HS256 JWS minted at send time and verified by any replica. Pure: no I/O, no clock, no async."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The tests write tokens by hand, to show what a forger who held the key still cannot do.
+base64.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

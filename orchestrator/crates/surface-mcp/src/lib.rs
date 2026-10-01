@@ -70,8 +70,10 @@ use rmcp::transport::streamable_http_server::session::never::NeverSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
 pub use auth::{MIN_TOKEN_BYTES, McpUser, TokenError, TokenTable};
+// Moved to `orch-api`, which every surface shares; kept here under its old name.
 pub use id::{MAX_CLIENT_REQUEST_ID_BYTES, job_id_for};
 pub use job::{Branch, Findings, JobSummary, LastCheck, PullRequest};
+pub use orch_api::is_host_authority;
 pub use slots::{Busy, WaitPermit, WaitSlots};
 pub use tools::{
     AnswerArgs, CancelJobArgs, GateArgs, GetJobArgs, NoArgs, StartJobArgs, ToolName, WaitForJobArgs,
@@ -118,32 +120,6 @@ pub const DEFAULT_WAIT_MAX_PER_USER: usize = 16;
 /// How long any other tool may take before it is cut off. A machine route has no request
 /// timeout of its own (only `wait_for_job` is meant to stay open).
 pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Whether `host` is a `Host` value: a name or an address, with or without a port, and nothing
-/// else (no scheme, credentials, path or wildcard).
-pub fn is_host_authority(host: &str) -> bool {
-    if host.contains(['@', '*', '/', '?', '#', ' ']) {
-        return false;
-    }
-    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
-        return false;
-    };
-    if authority.as_str() != host {
-        return false;
-    }
-    // A port, if there is one, is a number: anything else after a colon parses as a strange host
-    // name, and matches nothing.
-    let after_host = &host[authority.host().len()..];
-    match after_host.strip_prefix(':') {
-        None => after_host.is_empty() && !authority.host().is_empty(),
-        Some(port) => {
-            !authority.host().is_empty()
-                && !port.is_empty()
-                && port.bytes().all(|b| b.is_ascii_digit())
-                && authority.port_u16().is_some()
-        }
-    }
-}
 
 /// Whether `origin` is an `Origin` value: `http(s)://host[:port]` and nothing after it.
 pub fn is_origin(origin: &str) -> bool {
@@ -351,36 +327,6 @@ pub fn routes<P: Ports>(app: Arc<App<P>>, config: McpConfig) -> SurfaceRoutes {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hosts_are_authorities_and_nothing_else() {
-        for ok in [
-            "localhost",
-            "localhost:8080",
-            "orch.example.com",
-            "orch.example.com:443",
-            "127.0.0.1:8080",
-            "[::1]:8080",
-        ] {
-            assert!(is_host_authority(ok), "{ok}");
-        }
-        for bad in [
-            "",
-            "*",
-            "*.example.com",
-            "https://orch.example.com",
-            "orch.example.com/",
-            "orch.example.com/mcp",
-            "user@orch.example.com",
-            "orch.example.com:",
-            "orch.example.com:notaport",
-            "orch.example.com:99999",
-            ":8080",
-            "orch example.com",
-        ] {
-            assert!(!is_host_authority(bad), "{bad:?}");
-        }
-    }
 
     #[test]
     fn origins_are_a_scheme_a_host_and_optionally_a_port() {

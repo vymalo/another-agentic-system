@@ -300,3 +300,41 @@ async fn a_thread_created_with_a_catalog_records_it_first_and_delivers_it_inline
     );
     assert!(app.find_thread(&alice(), other).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn the_thread_tools_endpoint_reads_the_thread_and_the_newest_catalog_without_a_user() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (v1, v2, older) = (catalog(1, "a"), catalog(2, "a"), catalog(1, "b"));
+
+    // nothing has this id: no thread, no catalog
+    let unknown = ThreadId(orch_ports::IdGen::new_id(&w.ids));
+    assert!(app.thread_for_tools(unknown).await.unwrap().is_none());
+    assert!(app.thread_ui_catalog(unknown).await.unwrap().is_none());
+
+    // a thread the web sent no catalog for: it exists (whoever its owner is), and has none
+    let t = create(&app, &alice(), "plain", "echo one").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let found = app.thread_for_tools(t.id).await.unwrap().unwrap();
+    assert_eq!(found.owner, alice());
+    assert_eq!(found.target.agent_id.as_str(), "plain");
+    assert!(app.thread_ui_catalog(t.id).await.unwrap().is_none());
+
+    // version 1, then version 2: the newest, with its catalog
+    for (text, sent) in [("echo two", &v1), ("echo three", &v2)] {
+        app.submit(&alice(), t.id, message(text, Some(sent)), None)
+            .await
+            .unwrap();
+        wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    }
+    assert_eq!(app.thread_ui_catalog(t.id).await.unwrap(), Some(v2.clone()));
+
+    // an older screen joins: recorded, but the newest stays
+    app.submit(&alice(), t.id, message("echo four", Some(&older)), None)
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(app.thread_ui_catalog(t.id).await.unwrap(), Some(v2));
+    run.shutdown().await;
+}

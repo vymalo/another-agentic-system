@@ -12,6 +12,7 @@ mod extension;
 mod gate;
 mod ids;
 mod thread;
+mod thread_tools;
 mod transition;
 mod ui;
 mod ui_catalog;
@@ -38,6 +39,7 @@ pub use gate::{
 };
 pub use ids::{AgentId, ThreadId, UserId};
 pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
+pub use thread_tools::{Caller, CallerError, ToolsGrant};
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
 pub use ui::{
     A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES,

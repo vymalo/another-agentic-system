@@ -250,6 +250,17 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         ("--mcp-wait-max-concurrent", "MCP_WAIT_MAX_CONCURRENT"),
         ("--mcp-wait-max-per-user", "MCP_WAIT_MAX_PER_USER"),
         ("--mcp-allowed-origins", "MCP_ALLOWED_ORIGINS"),
+        ("--thread-tools-secret", "THREAD_TOOLS_SECRET"),
+        (
+            "--thread-tools-secret-previous",
+            "THREAD_TOOLS_SECRET_PREVIOUS",
+        ),
+        ("--thread-tools-url", "THREAD_TOOLS_URL"),
+        (
+            "--thread-tools-token-ttl-secs",
+            "THREAD_TOOLS_TOKEN_TTL_SECS",
+        ),
+        ("--thread-tools-allowed-hosts", "THREAD_TOOLS_ALLOWED_HOSTS"),
         ("--gate", "ORCH_GATE"),
         ("--ci-timeout-secs", "ORCH_CI_TIMEOUT_SECS"),
         ("--webhook-generic-secrets", "WEBHOOK_GENERIC_SECRETS"),
@@ -300,6 +311,14 @@ fn every_setting_is_read_from_its_variable() {
         ("MCP_WAIT_MAX_CONCURRENT", "0"),
         ("MCP_WAIT_MAX_PER_USER", "many"),
         ("MCP_ALLOWED_ORIGINS", "*"),
+        // The thread-tools settings are read whatever the surfaces are, too.
+        ("THREAD_TOOLS_TOKEN_TTL_SECS", "59"),
+        ("THREAD_TOOLS_ALLOWED_HOSTS", "*"),
+        ("THREAD_TOOLS_URL", "http://orchestrator:8080"),
+        (
+            "THREAD_TOOLS_SECRET",
+            "not-paired-with-a-url-0123456789abcdef0123",
+        ),
     ] {
         let mut run = spawn(
             &scratch,
@@ -321,6 +340,67 @@ fn every_setting_is_read_from_its_variable() {
         assert!(
             log.contains(&format!("{var} is invalid")),
             "{var}={bad}: {log}"
+        );
+    }
+}
+
+/// The surface `thread-tools` (the per-thread MCP endpoint) fails closed: named with no key, with a
+/// key and no URL, with a key that is too short, or with a URL that is not one, the process exits 78
+/// before it connects to anything, names the variable, and never prints the key. A worker is asked
+/// the same: it is the one that mints.
+#[test]
+fn the_thread_tools_surface_fails_closed_and_never_prints_its_key() {
+    const KEY: &str = "hunter2-0123456789abcdef0123456789abcdef0123456789abcdef";
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    for (n, (role, extra, var)) in [
+        ("all", vec![], "THREAD_TOOLS_SECRET"),
+        ("worker", vec![], "THREAD_TOOLS_SECRET"),
+        (
+            "all",
+            vec![("THREAD_TOOLS_SECRET", KEY)],
+            "THREAD_TOOLS_SECRET",
+        ),
+        (
+            "all",
+            vec![
+                ("THREAD_TOOLS_SECRET", "hunter2-short"),
+                ("THREAD_TOOLS_URL", "http://orchestrator:8080"),
+            ],
+            "THREAD_TOOLS_SECRET",
+        ),
+        (
+            "all",
+            vec![
+                ("THREAD_TOOLS_SECRET", KEY),
+                ("THREAD_TOOLS_URL", "orchestrator:8080"),
+            ],
+            "THREAD_TOOLS_URL",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut env = vec![
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("ORCH_SURFACES", "agui,thread-tools"),
+            ("ORCH_ROLE", role),
+        ];
+        env.extend(extra);
+        let mut run = spawn_logging_to(&scratch, &format!("thread-tools-{n}.log"), &env);
+        let status = run.wait(Duration::from_secs(10));
+        let log = run.log();
+        assert_eq!(status.code(), Some(78), "case {n}: EX_CONFIG; {log}");
+        assert!(log.contains(var), "case {n}: {log}");
+        assert!(
+            !log.contains("hunter2"),
+            "case {n}: a key leaked into the log"
+        );
+        assert!(
+            !log.contains("cannot connect to Postgres"),
+            "nothing connects before the configuration is accepted: {log}"
         );
     }
 }
@@ -865,6 +945,174 @@ async fn mcp_call(
     (status, rpc_messages(&resp.text().await.unwrap()))
 }
 
+/// The thread-tools endpoint in the real binary: it is there only when named, it is a machine route
+/// that a token minted with the configured key opens (and nothing else does), and the thread the
+/// token names has to exist and be the token's agent's.
+#[cfg(feature = "surface-thread-tools")]
+#[tokio::test]
+async fn the_thread_tools_endpoint_is_mounted_by_its_name_and_a_minted_token_opens_it() {
+    use orch_core::{AgentId, ThreadId, ToolsGrant};
+    use orch_thread_token::{ThreadToolsIssuer, ThreadToolsKeys};
+    use secrecy::{ExposeSecret, SecretString};
+
+    const KEY: &str = "smoke-thread-tools-key-0123456789abcdef0123456789abcdef";
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let agent = FakeAgent::spawn(FakeAgentOptions {
+        bearer: Some(TOKEN.to_owned()),
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml(&agent.card_url()));
+    let addr = format!("127.0.0.1:{}", free_port());
+    let base = format!("http://{addr}");
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", &database_url),
+            ("LISTEN_ADDR", &addr),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+            ("ORCH_SURFACES", "agui,thread-tools"),
+            ("THREAD_TOOLS_SECRET", KEY),
+            ("THREAD_TOOLS_URL", &base),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    // A thread to open the endpoint of: one run through AG-UI, to the fake agent `fake`.
+    let chat = Chat::new(&base, "alice@example.com");
+    let id = uuid::Uuid::now_v7().to_string();
+    let input = Chat::agui_input(
+        &id,
+        "run-1",
+        &[("msg-1", "echo smoke")],
+        serde_json::json!({}),
+    );
+    let frames = chat
+        .agui_run("fake", &input)
+        .await
+        .collect_frames(Duration::from_secs(20))
+        .await;
+    assert_eq!(
+        frames.last().map(|f| f.event["type"].clone()),
+        Some("RUN_FINISHED".into())
+    );
+    let thread: ThreadId = id.parse().unwrap();
+
+    // Tokens as the A2A adapter would mint them, with the key and the URL the binary was given.
+    let issuer = ThreadToolsIssuer::new(
+        ThreadToolsKeys::new(SecretString::from(KEY.to_owned()), None).unwrap(),
+        &base,
+        Duration::from_secs(7200),
+    )
+    .unwrap();
+    let mint = |thread: ThreadId, agent: &str| {
+        issuer
+            .grant(
+                &ToolsGrant::main(thread, 1, AgentId::new(agent)),
+                "smoke-message",
+                jiff::Timestamp::now(),
+            )
+            .unwrap()
+    };
+    let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let post = |url: String, token: Option<String>| {
+        let client = client.clone();
+        let list = list.clone();
+        async move {
+            let mut req = client
+                .post(url)
+                .header("Accept", "application/json, text/event-stream")
+                // an edge identity changes nothing on a machine route
+                .header("X-Auth-Request-Email", "mallory@example.com")
+                .json(&list);
+            if let Some(token) = token {
+                req = req.bearer_auth(token);
+            }
+            let resp = req.send().await.unwrap();
+            let status = resp.status().as_u16();
+            let challenge = resp
+                .headers()
+                .get("www-authenticate")
+                .map(|v| v.to_str().unwrap().to_owned());
+            (
+                status,
+                challenge,
+                rpc_messages_or_empty(&resp.text().await.unwrap()),
+            )
+        }
+    };
+
+    let url = issuer.url_for(thread);
+    // no token; a token that is not one; a token for a thread that does not exist
+    let (status, challenge, _) = post(url.clone(), None).await;
+    assert_eq!((status, challenge.as_deref()), (401, Some("Bearer")));
+    let invalid = Some(r#"Bearer error="invalid_token""#);
+    let (status, challenge, _) = post(url.clone(), Some("not-a-token".to_owned())).await;
+    assert_eq!((status, challenge.as_deref()), (401, invalid));
+    let nobody = ThreadId(uuid::Uuid::now_v7());
+    let (status, challenge, _) = post(
+        issuer.url_for(nobody),
+        Some(mint(nobody, "fake").token.expose_secret().to_owned()),
+    )
+    .await;
+    assert_eq!((status, challenge.as_deref()), (401, invalid));
+    // a token for another agent than the thread's
+    let (status, challenge, _) = post(
+        url.clone(),
+        Some(mint(thread, "other").token.expose_secret().to_owned()),
+    )
+    .await;
+    assert_eq!((status, challenge.as_deref()), (401, invalid));
+    // the thread's agent: the one tool, over a route that is not under /mcp
+    let (status, _, messages) = post(
+        url,
+        Some(mint(thread, "fake").token.expose_secret().to_owned()),
+    )
+    .await;
+    assert_eq!(status, 200, "{messages:?}");
+    let tools: Vec<&str> = messages
+        .iter()
+        .find_map(|m| m["result"]["tools"].as_array())
+        .expect("a tools/list result")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["get_ui_catalog"]);
+    // and the token never reached the log
+    assert!(
+        !run.borrow().log().contains(KEY),
+        "the key leaked into the log"
+    );
+}
+
+/// The JSON-RPC messages of a response, or none for an empty or non-JSON body (a refusal).
+fn rpc_messages_or_empty(body: &str) -> Vec<serde_json::Value> {
+    if body.trim().is_empty() || !(body.trim_start().starts_with('{') || body.contains("data:")) {
+        return Vec::new();
+    }
+    let trimmed = body.trim_start();
+    if trimmed.starts_with('{') {
+        return serde_json::from_str(trimmed).into_iter().collect();
+    }
+    rpc_messages(body)
+}
+
 #[cfg(feature = "surface-mcp")]
 #[tokio::test]
 async fn mcp_is_mounted_by_its_name_and_a_token_lists_the_tools() {
@@ -1015,6 +1263,41 @@ async fn mcp_is_not_there_unless_it_is_named() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 404);
+    assert!(resp.headers().get("www-authenticate").is_none());
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    assert!(status.success(), "{}", run.borrow().log());
+}
+
+/// Without `thread-tools` in `ORCH_SURFACES` there is no endpoint, even when the key and the URL are
+/// set (the adapter of this process mints; another replica serves).
+#[tokio::test]
+async fn thread_tools_is_not_there_unless_it_is_named() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (run, base, client) = serve_with(
+        &db,
+        &scratch,
+        "no-thread-tools.log",
+        &[
+            "--thread-tools-secret",
+            "smoke-thread-tools-key-0123456789abcdef0123456789abcdef",
+            "--thread-tools-url",
+            "http://orchestrator:8080",
+        ],
+    )
+    .await;
+    let resp = client
+        .post(format!("{base}/thread-tools/{}/mcp", uuid::Uuid::now_v7()))
+        .bearer_auth("anything")
+        .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .send()
+        .await
+        .unwrap();
+    // Not a machine route here: the identity layer answers every path it does not know.
+    assert_eq!(resp.status().as_u16(), 401);
     assert!(resp.headers().get("www-authenticate").is_none());
     let status = run.borrow_mut().terminate(Duration::from_secs(20));
     assert!(status.success(), "{}", run.borrow().log());
