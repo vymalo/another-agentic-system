@@ -78,10 +78,10 @@ connection never cancels a run.
 
 ### The capabilities request
 
-`App::describe_agent` reads the agent's card live (bounded by `AppConfig::card_timeout`, never
+`App::describe_agent` reads the agent from the registry now (ADR 0022) and its card live (bounded by `AppConfig::card_timeout`, never
 cached) and `orch_agui_projection::agent_capabilities` builds the document, which lists the A2UI extensions and the extensions of the orchestrator's own (`ui-catalog/v1`, …) the card lists under `custom`, so the web can flag an agent before it sends anything; the answer is
 `application/json` with `Cache-Control: no-store`. An unreadable card gives the smaller document;
-an unknown agent is a 404 problem.
+an agent the registry answers without is a 404 problem, and a registry that cannot say is a 503 ("the agent registry is unreachable"), as for a run: `App::resolve_agent` is how both ask.
 
 ## Features and environment
 
@@ -114,6 +114,7 @@ serve `tests/contract.rs`.
   at or beyond the end, `?mode=run` on an idle thread and on a running one, a closed connection not
   cancelling, the stream ending at shutdown, every refusal (404 for missing, malformed and foreign
   threads with one body, 401, 400, 406).
+- `tests/registry.rs`: the registry's agents on the AG-UI routes, over a `CompositeRegistry` of the static agents and a `MemoryRegistry` the tests change: an agent is a 404 until the registry lists it, then its capabilities are described and a run streams and finishes, and a 404 again once the registry stops listing it; a registry that is down is a 503 with `Retry-After` and the fixed detail "the agent registry is unreachable" for the registry's agent and for an agent nobody lists (never a 404), the static agents still run, and a registry that is back is read again. `tests/contract.rs` also drives the capabilities 503 against the documented statuses.
 - `tests/capabilities.rs`: the document conforms and describes the agent, release channels are declared
   only while the live card lists them, 404 and 401.
 - `tests/a2ui.rs`: a surface reaches the requester and a later viewer whole; an action is delivered to the same task and answers the wait; an action for an unknown surface, on a new thread, malformed, oversized (413), beside a message, on someone else's thread, on another agent's thread, on a finished thread, or under a reused run id is refused before the stream with nothing written or sent; the capabilities document declares A2UI only while the live card lists it (each URI, both, card down, card changed).

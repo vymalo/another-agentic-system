@@ -57,7 +57,7 @@ pub(crate) async fn method_not_allowed() -> Problem {
 pub(crate) async fn list_agents<P: Ports>(
     State(state): State<ApiState<P>>,
 ) -> Json<Vec<AgentInfo>> {
-    Json(state.app.list_agents().await)
+    Json(state.app.list_agents().await.agents)
 }
 
 #[derive(Deserialize)]

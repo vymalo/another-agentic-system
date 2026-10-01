@@ -101,6 +101,7 @@ impl World {
             ),
             name: "Plain".to_owned(),
         };
+        let directory = AgentDirectory::new(vec![entry]);
         Arc::new(
             App::new(
                 PortSet {
@@ -110,8 +111,9 @@ impl World {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    registry: directory.fixed_registry(),
                 },
-                AgentDirectory::new(vec![entry]),
+                directory,
                 AppConfig {
                     stream_poll: NO_POLL,
                     ..AppConfig::default()

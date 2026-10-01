@@ -128,6 +128,7 @@ async fn rig<S: ThreadStore, W: Wakeup>(
                 clock: clock.clone(),
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                registry: directory.fixed_registry(),
             },
             directory,
             AppConfig {

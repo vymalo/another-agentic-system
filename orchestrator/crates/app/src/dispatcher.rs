@@ -362,24 +362,41 @@ impl<P: Ports> Dispatcher<P> {
             .get_binding(row.thread_id)
             .await?
             .ok_or_else(|| StoreError::corrupt("binding missing"))?;
-        let Some(entry) = self.app.directory().get(&binding.agent_id) else {
-            self.apply_quiet(
-                row,
-                Input::DeliveryFailed {
-                    reason: format!("agent '{}' is no longer configured", binding.agent_id),
-                    retryable: false,
-                },
-                format!("dead:{}", row.id),
-            )
-            .await?;
-            self.finish(
-                row,
-                OutboxFinal::Dead {
-                    error: "agent not configured".to_owned(),
-                },
-            )
-            .await?;
-            return Ok(None);
+        // The registry is read now, for every row: an agent the platform removed is dead-lettered
+        // when the registry answers without it (ADR 0022), and a registry that cannot answer
+        // leaves the row to be tried again, never dead.
+        let entry = match self.app.resolve_agent(&binding.agent_id).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                self.apply_quiet(
+                    row,
+                    Input::DeliveryFailed {
+                        reason: format!("agent '{}' is no longer listed", binding.agent_id),
+                        retryable: false,
+                    },
+                    format!("dead:{}", row.id),
+                )
+                .await?;
+                self.finish(
+                    row,
+                    OutboxFinal::Dead {
+                        error: "agent not listed".to_owned(),
+                    },
+                )
+                .await?;
+                return Ok(None);
+            }
+            Err(AppError::RegistryUnavailable { source }) => {
+                tracing::warn!(id = %row.id, agent = %binding.agent_id, attempt = row.attempts, error = %report(&source), "the agent registry cannot say where the agent is; will retry");
+                self.retry(
+                    row,
+                    self.backoff(row.attempts),
+                    format!("the agent registry is unreachable: {}", report(&source)),
+                )
+                .await?;
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
         };
         let ctx = Ctx {
             row: row.clone(),

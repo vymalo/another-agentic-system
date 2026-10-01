@@ -302,6 +302,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     }
 
     // The database is migrated and reachable by now, so the app starts ready.
+    let directory = AgentDirectory::new(cfg.agents.clone());
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
@@ -312,8 +313,9 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                 ids: UuidV7Ids,
                 model: ConfiguredModel::build(cfg.model.as_ref())
                     .context("cannot build the title model (ORCH_MODEL_BASE_URL)")?,
+                registry: directory.fixed_registry(),
             },
-            AgentDirectory::new(cfg.agents.clone()),
+            directory,
             cfg.app_config(),
         )
         .map_err(|e| ConfigError::Gate {

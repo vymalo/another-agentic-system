@@ -227,6 +227,15 @@ impl Harness {
             ),
             name: name.to_owned(),
         };
+        let directory = AgentDirectory::new(vec![
+            entry("coder", "Coder"),
+            entry("plain", "Plain"),
+            // Hosted in-process (ADR 0015): the only agent without a card URL.
+            AgentEntry {
+                endpoint: AgentEndpoint::local(AgentId::new("helper"), "echo"),
+                name: "Helper".to_owned(),
+            },
+        ]);
         let app = Arc::new(
             App::new(
                 PortSet {
@@ -236,16 +245,9 @@ impl Harness {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    registry: directory.fixed_registry(),
                 },
-                AgentDirectory::new(vec![
-                    entry("coder", "Coder"),
-                    entry("plain", "Plain"),
-                    // Hosted in-process (ADR 0015): the only agent without a card URL.
-                    AgentEntry {
-                        endpoint: AgentEndpoint::local(AgentId::new("helper"), "echo"),
-                        name: "Helper".to_owned(),
-                    },
-                ]),
+                directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     ..AppConfig::default()
@@ -504,6 +506,9 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             .clone()
     };
     let coder = by_id("coder");
+    // Every agent of this deployment is in its own list (ADR 0022); `tags` is absent, not empty.
+    assert_eq!(coder["source"], "static");
+    assert!(coder.get("tags").is_none(), "{coder}");
     assert_eq!(coder["releases"]["defaultChannel"], "stable");
     assert_eq!(coder["releases"]["channels"]["staging"], "rev-2");
     let plain = by_id("plain");

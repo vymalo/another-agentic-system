@@ -21,7 +21,7 @@ pub(crate) async fn capabilities<P: Ports>(
     State(state): State<SurfaceState<P>>,
     Path(agent_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let Some(agent) = state.app.describe_agent(&AgentId::new(agent_id)).await else {
+    let Some(agent) = state.app.describe_agent(&AgentId::new(agent_id)).await? else {
         return Err(Problem::not_found("no such agent").into());
     };
     let facts = agent.card.map(|card| CardFacts {

@@ -152,7 +152,18 @@ impl ThreadRecord {
     }
 }
 
-/// Contract `Agent`: a configured agent, with its live release data when it offers any.
+/// Where an agent is listed from (contract `Agent.source`; ADR 0022).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSource {
+    /// The deployment's own list (`AGENTS_FILE`), fixed for the life of the process.
+    #[default]
+    Static,
+    /// A registry the orchestrator reads live (the platform's `agent-registry/v1`).
+    Registry,
+}
+
+/// Contract `Agent`: a listed agent, with its live release data when it offers any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
@@ -170,4 +181,11 @@ pub struct AgentInfo {
     /// Present only when the live card advertises the release-channels extension (ADR 0008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub releases: Option<Releases>,
+    /// Where the agent is listed from.
+    #[serde(default)]
+    pub source: AgentSource,
+    /// Labels the registry keeps on the agent, for the UI to show and to filter by; they route,
+    /// authorise and select nothing. Omitted when there are none (a static agent has none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }

@@ -11,14 +11,24 @@ use orch_agui_proto::testkit::assert_json_conforms;
 use orch_api::{ApiConfig, AuthConfig};
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig};
 use orch_core::{AgentId, UserId};
-use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds, sample_releases};
-use orch_ports::{AgentEndpoint, PortSet, SystemClock};
+use orch_ports::memory::{
+    MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds, sample_releases,
+};
+use orch_ports::{AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, SystemClock};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub type Ports =
-    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
+/// The deployment's own agents in front of a registry the tests change (ADR 0022).
+pub type Ports = PortSet<
+    MemoryStore,
+    MemoryWakeup,
+    ScriptedAgent,
+    SystemClock,
+    SeqIds,
+    orch_ports::NoModel,
+    CompositeRegistry<FixedRegistry, MemoryRegistry>,
+>;
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
@@ -201,6 +211,9 @@ pub struct Harness {
     pub client: reqwest::Client,
     pub agent: ScriptedAgent,
     pub store: MemoryStore,
+    /// The registry behind the static agents: empty until a test lists an agent in it, and
+    /// `set_down` makes it unreachable.
+    pub registry: MemoryRegistry,
     pub app: Arc<App<Ports>>,
     server: JoinHandle<()>,
     dispatcher: JoinHandle<()>,
@@ -256,6 +269,8 @@ impl Harness {
             ),
             name: name.to_owned(),
         };
+        let directory = AgentDirectory::new(vec![entry("coder", "Coder"), entry("plain", "Plain")]);
+        let registry = MemoryRegistry::new();
         let app = Arc::new(
             App::new(
                 PortSet {
@@ -265,8 +280,9 @@ impl Harness {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
                 },
-                AgentDirectory::new(vec![entry("coder", "Coder"), entry("plain", "Plain")]),
+                directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     ..AppConfig::default()
@@ -295,6 +311,7 @@ impl Harness {
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
             agent,
             store,
+            registry,
             app,
             server,
             dispatcher,

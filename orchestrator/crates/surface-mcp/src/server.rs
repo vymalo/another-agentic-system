@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use orch_app::{AgentDirectory, App, AppError, Creation, Inbound, NewThread};
+use orch_app::{App, AppError, Creation, Inbound, NewThread};
 use orch_core::{
     AgentId, AgentTarget, Classify, ErrorClass, Input, Origin, ThreadId, UserId, report,
 };
@@ -181,8 +181,9 @@ fn failure(err: &AppError) -> Result<CallToolResult, ErrorData> {
 
 impl<P: Ports> McpServer<P> {
     async fn list_agents(&self) -> Result<CallToolResult, ErrorData> {
-        let agents = self.app.list_agents().await;
-        let agents: Vec<Value> = agents
+        let list = self.app.list_agents().await;
+        let agents: Vec<Value> = list
+            .agents
             .iter()
             .map(|a| {
                 json!({
@@ -193,11 +194,6 @@ impl<P: Ports> McpServer<P> {
             })
             .collect();
         success(&json!({ "agents": agents }))
-    }
-
-    /// The agent `start_job` uses when it is not named: the first configured one (ADR 0014).
-    fn default_agent(directory: &AgentDirectory) -> Option<AgentId> {
-        directory.iter().next().map(|e| e.endpoint.id.clone())
     }
 
     async fn start_job(
@@ -228,7 +224,8 @@ impl<P: Ports> McpServer<P> {
             .map(AgentId::new);
         let agent_id = match &named_agent {
             Some(id) => id.clone(),
-            None => match Self::default_agent(self.app.directory()) {
+            // The first agent listed (ADR 0014), read now from the registry (ADR 0022).
+            None => match self.app.default_agent().await {
                 Some(id) => id,
                 None => return Ok(refused("no agent is configured")),
             },

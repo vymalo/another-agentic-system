@@ -60,7 +60,6 @@ const MIN_MCP_TOKEN_BYTES: usize = 32;
 /// `WEBHOOK_GENERIC_MAX_SKEW_SECS`, when unset (ADR 0017).
 #[cfg(feature = "surface-webhook")]
 const DEFAULT_WEBHOOK_MAX_SKEW_SECS: u64 = orch_surface_webhook::generic::DEFAULT_MAX_SKEW_SECS;
-const MAX_AGENT_ID_LEN: usize = 63;
 
 /// A configuration problem. The message is what the operator sees.
 #[derive(Debug, thiserror::Error)]
@@ -1863,17 +1862,6 @@ where
     Ok(value)
 }
 
-/// `^[a-z0-9][a-z0-9-]{0,62}$`: safe in URLs, file names and labels.
-fn valid_agent_id(id: &str) -> bool {
-    let mut chars = id.chars();
-    let first_ok = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    first_ok
-        && id.len() <= MAX_AGENT_ID_LEN
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
 fn invalid(id: &str, reason: impl Into<String>) -> ConfigError {
     ConfigError::InvalidAgent {
         id: id.to_owned(),
@@ -1925,7 +1913,7 @@ fn parse_agents_full(
     let mut entries: Vec<AgentEntry> = Vec::with_capacity(specs.len());
     let mut gates: BTreeMap<AgentId, GateLayer> = BTreeMap::new();
     for spec in specs {
-        if !valid_agent_id(&spec.id) {
+        if !orch_core::is_valid_agent_id(&spec.id) {
             return Err(invalid(
                 &spec.id,
                 "id must match ^[a-z0-9][a-z0-9-]{0,62}$ (lower-case letters, digits, dashes)",
@@ -2341,9 +2329,9 @@ mod tests {
                 "{bad:?} must be refused"
             );
         }
-        assert!(valid_agent_id("a"));
-        assert!(valid_agent_id("coder-2"));
-        assert!(valid_agent_id(&"a".repeat(63)));
+        assert!(orch_core::is_valid_agent_id("a"));
+        assert!(orch_core::is_valid_agent_id("coder-2"));
+        assert!(orch_core::is_valid_agent_id(&"a".repeat(63)));
     }
 
     #[test]
@@ -3758,6 +3746,7 @@ mod tests {
             &agents_with_gate("{maxAttempts: 4}"),
         )
         .unwrap();
+        let directory = AgentDirectory::new(cfg.agents.clone());
         let app = App::new(
             PortSet {
                 store: MemoryStore::new(),
@@ -3766,8 +3755,9 @@ mod tests {
                 clock: SystemClock,
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                registry: directory.fixed_registry(),
             },
-            AgentDirectory::new(cfg.agents.clone()),
+            directory,
             cfg.app_config(),
         )
         .unwrap();

@@ -81,6 +81,7 @@ impl World {
                     clock: SystemClock,
                     ids: self.ids.clone(),
                     model: self.model.clone(),
+                    registry: directory().fixed_registry(),
                 },
                 directory(),
                 cfg,

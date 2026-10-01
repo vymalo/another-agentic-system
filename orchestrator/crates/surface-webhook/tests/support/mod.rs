@@ -28,6 +28,7 @@ impl Rig {
     pub async fn start(routes: impl FnOnce(Arc<App<Ports>>) -> SurfaceRoutes) -> Rig {
         let store = MemoryStore::new();
         let clock = FixedClock::new(Timestamp::from_second(NOW).unwrap());
+        let directory = AgentDirectory::new(Vec::new());
         let app: Arc<App<Ports>> = Arc::new(
             App::new(
                 PortSet {
@@ -37,8 +38,9 @@ impl Rig {
                     clock: clock.clone(),
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    registry: directory.fixed_registry(),
                 },
-                AgentDirectory::new(Vec::new()),
+                directory,
                 AppConfig::default(),
             )
             .unwrap(),

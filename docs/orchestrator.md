@@ -80,7 +80,7 @@ flowchart TB
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
   subgraph G_PORTS["Ports: traits only"]
-    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, ChatModel, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
+    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, AgentRegistry, ChatModel, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
   end
   subgraph G_ADAPT["Adapters: implement the ports"]
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
@@ -195,7 +195,7 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` and `agent_registry_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
 | `orch-model-openai` (`crates/model-openai`) | `ChatModel` over an OpenAI-compatible `POST {base}/chat/completions`: the orchestrator's first model call, the title of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); `reqwest` only, no vendor SDK, the key never in an error or a `Debug` | **Built** |

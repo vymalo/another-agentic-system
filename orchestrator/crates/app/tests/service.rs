@@ -8,10 +8,10 @@ use std::time::Duration;
 use futures::StreamExt;
 use orch_app::{AppError, ApplyOutcome, NewThread};
 use orch_core::{
-    AgentId, AgentTarget, AgentTaskState, AgentUpdate, Classify, ErrorClass, EventKind, Input,
-    ThreadId, ThreadState,
+    AgentId, AgentSource, AgentTarget, AgentTaskState, AgentUpdate, Classify, ErrorClass,
+    EventKind, Input, ThreadId, ThreadState,
 };
-use orch_ports::{StoreError, ThreadStore};
+use orch_ports::{SourceStatus, StoreError, ThreadStore};
 use support::*;
 use uuid::Uuid;
 
@@ -162,10 +162,22 @@ async fn validation() {
 async fn list_agents_reads_live_cards_and_fails_closed() {
     let w = World::new();
     let app = w.app();
-    let agents = app.list_agents().await;
+    let list = app.list_agents().await;
+    let agents = list.agents;
     assert_eq!(
         agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
         ["coder", "plain"]
+    );
+    assert!(
+        agents
+            .iter()
+            .all(|a| a.source == AgentSource::Static && a.tags.is_empty()),
+        "the deployment's own agents are static and carry no tags"
+    );
+    assert_eq!(
+        list.sources,
+        [SourceStatus::ok("static")],
+        "the static list is a source that is always there"
     );
     assert_eq!(agents[0].name, "Coder");
     assert_eq!(
@@ -174,7 +186,7 @@ async fn list_agents_reads_live_cards_and_fails_closed() {
     );
     assert!(agents[1].releases.is_none());
     w.agent.set_card_down("coder", true);
-    let agents = app.list_agents().await;
+    let agents = app.list_agents().await.agents;
     assert_eq!(
         agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
         ["coder", "plain"],
@@ -187,31 +199,43 @@ async fn list_agents_reads_live_cards_and_fails_closed() {
     assert!(agents[0].description.is_none());
     // Live, never cached: back up, back to offering releases.
     w.agent.set_card_down("coder", false);
-    assert!(app.list_agents().await[0].releases.is_some());
+    assert!(app.list_agents().await.agents[0].releases.is_some());
 }
 
 #[tokio::test]
 async fn describe_agent_is_one_agent_with_its_live_card() {
     let w = World::new();
     let app = w.app();
-    let coder = app.describe_agent(&AgentId::new("coder")).await.unwrap();
+    let coder = app
+        .describe_agent(&AgentId::new("coder"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(coder.name, "Coder");
     let card = coder.card.unwrap();
     assert_eq!(card.version.as_deref(), Some("1.0.0"));
     assert_eq!(card.releases.unwrap().default_channel, "stable");
     assert!(
-        app.describe_agent(&AgentId::new("nobody")).await.is_none(),
-        "not configured"
+        app.describe_agent(&AgentId::new("nobody"))
+            .await
+            .unwrap()
+            .is_none(),
+        "not listed"
     );
     // Fail closed, live, never cached.
     w.agent.set_card_down("coder", true);
-    let down = app.describe_agent(&AgentId::new("coder")).await.unwrap();
+    let down = app
+        .describe_agent(&AgentId::new("coder"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(down.name, "Coder");
     assert!(down.card.is_none());
     w.agent.set_card_down("coder", false);
     assert!(
         app.describe_agent(&AgentId::new("coder"))
             .await
+            .unwrap()
             .unwrap()
             .card
             .is_some()

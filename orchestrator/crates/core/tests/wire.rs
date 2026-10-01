@@ -455,21 +455,51 @@ fn agent_info_card_url_is_optional_and_absent_when_none() {
         description: None,
         card_url: Some("https://coder.example.com/.well-known/agent-card.json".into()),
         releases: None,
+        source: AgentSource::Static,
+        tags: Vec::new(),
     };
     assert_eq!(
         serde_json::to_value(&info).unwrap(),
         json!({
             "id": "coder",
             "name": "Coder",
-            "cardUrl": "https://coder.example.com/.well-known/agent-card.json"
+            "cardUrl": "https://coder.example.com/.well-known/agent-card.json",
+            "source": "static"
         })
     );
     info.card_url = None;
     let wire = serde_json::to_value(&info).unwrap();
-    assert_eq!(wire, json!({"id": "coder", "name": "Coder"}));
+    assert_eq!(
+        wire,
+        json!({"id": "coder", "name": "Coder", "source": "static"})
+    );
     // And a client that never learned the key reads it back.
     let back: AgentInfo = serde_json::from_value(wire).unwrap();
     assert_eq!(back, info);
+}
+
+#[test]
+fn agent_info_says_where_it_is_listed_from_and_carries_the_registry_tags() {
+    let info = AgentInfo {
+        id: AgentId::new("platform-coder"),
+        name: "Coder".into(),
+        description: None,
+        card_url: None,
+        releases: None,
+        source: AgentSource::Registry,
+        tags: vec!["coding".into(), "git".into()],
+    };
+    let wire = serde_json::to_value(&info).unwrap();
+    assert_eq!(
+        wire,
+        json!({"id": "platform-coder", "name": "Coder", "source": "registry", "tags": ["coding", "git"]})
+    );
+    let back: AgentInfo = serde_json::from_value(wire).unwrap();
+    assert_eq!(back, info);
+    // A document from before the field reads as a static agent with no tags.
+    let old: AgentInfo = serde_json::from_value(json!({"id": "coder", "name": "Coder"})).unwrap();
+    assert_eq!(old.source, AgentSource::Static);
+    assert!(old.tags.is_empty());
 }
 
 #[test]

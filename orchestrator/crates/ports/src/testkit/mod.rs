@@ -1,6 +1,6 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
-//! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient) and [`ChatModel`](crate::ChatModel)
-//! implementation must pass it.
+//! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel)
+//! and [`AgentRegistry`](crate::AgentRegistry) implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -10,6 +10,7 @@
 
 pub mod agent_client;
 pub mod chat_model;
+pub mod registry;
 pub mod thread_store;
 pub mod wakeup;
 
@@ -163,6 +164,32 @@ macro_rules! chat_model_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::chat_model::$case(fixture).await,
                     None => eprintln!("skipped: no model available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `AgentRegistry` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated
+/// [`RegistryFixture`](registry::RegistryFixture) (`None` skips the suite). Each case gives up
+/// after 10 s. The calling crate needs `tokio` (with `macros` and `rt`) as a dev-dependency.
+#[macro_export]
+macro_rules! agent_registry_conformance {
+    ($make:path) => {
+        $crate::agent_registry_conformance!(@cases $make;
+            lists_in_order get_finds_by_id unknown_id_is_none a_change_shows_on_the_next_read
+            down_lists_nothing_and_says_so get_while_down_is_unavailable_not_none
+            recovers_when_up invalid_entries_never_listed an_id_is_listed_once
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::registry::$case(fixture).await,
+                    None => eprintln!("skipped: no registry available"),
                 }
             }
         )*

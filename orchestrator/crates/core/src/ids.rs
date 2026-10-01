@@ -79,3 +79,46 @@ impl fmt::Display for AgentId {
         f.write_str(&self.0)
     }
 }
+
+/// The longest agent id, in bytes.
+pub const MAX_AGENT_ID_LEN: usize = 63;
+
+/// Whether `id` is an agent id: `^[a-z0-9][a-z0-9-]{0,62}$` (lower-case letters, digits and
+/// dashes, starting with a letter or a digit). Such an id is safe in a URL, a file name and a
+/// label, which is why every source of agents, the `AGENTS_FILE` and a registry document alike,
+/// is held to it.
+pub fn is_valid_agent_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    let first_ok = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    first_ok
+        && id.len() <= MAX_AGENT_ID_LEN
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_ids_are_safe_slugs() {
+        for good in ["a", "0", "coder", "coder-2", "a-", &"a".repeat(63)] {
+            assert!(is_valid_agent_id(good), "{good:?} is an id");
+        }
+        for bad in [
+            "",
+            "Coder",
+            "-x",
+            "has space",
+            "a/b",
+            "a_b",
+            "a.b",
+            "é",
+            "a\n",
+            &"a".repeat(64),
+        ] {
+            assert!(!is_valid_agent_id(bad), "{bad:?} is not an id");
+        }
+    }
+}

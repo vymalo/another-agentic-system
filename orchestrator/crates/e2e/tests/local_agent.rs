@@ -176,6 +176,7 @@ fn app<S: ThreadStore, W: Wakeup>(
                 clock: SystemClock,
                 ids: UuidV7Ids,
                 model: orch_ports::NoModel,
+                registry: World::directory().fixed_registry(),
             },
             World::directory(),
             AppConfig {

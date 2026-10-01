@@ -40,14 +40,14 @@ pub use gate::{
     is_commit_hash, parse_verdict, pull_request_url, recognise_artifact, repo_key,
     verifier_context,
 };
-pub use ids::{AgentId, ThreadId, UserId};
+pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use step::{
     AgentStepData, MAX_OPEN_STEPS, MAX_STEP_DEPTH, MAX_STEP_DETAIL_CHARS, MAX_STEP_ID_BYTES,
     MAX_STEP_LABEL_CHARS, MAX_STEP_UPDATES, MAX_STEPS_PER_JOB, MCP_SERVER_ICON_PREFIX, STEP_ICONS,
     StepKind, StepLedger, StepPhase, StepReport, StepSource, StepState, record_step,
 };
-pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
+pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
 pub use title::{
     MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
