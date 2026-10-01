@@ -11,12 +11,15 @@ use orch_app::{
 use orch_core::{
     AgentId, AgentTarget, Event, EventKind, ThreadId, ThreadRecord, ThreadState, UserId,
 };
-use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds, sample_releases};
+use orch_ports::memory::{
+    MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds, sample_releases,
+};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, ThreadStore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub type Ports = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
+pub type Ports =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, ScriptedModel>;
 pub type TestApp = App<Ports>;
 
 pub fn alice() -> UserId {
@@ -46,6 +49,8 @@ pub struct World {
     pub wakeup: MemoryWakeup,
     pub agent: ScriptedAgent,
     pub ids: SeqIds,
+    /// The title model: scripted by a test, asked only when `AppConfig::title_model` is set.
+    pub model: ScriptedModel,
 }
 
 impl World {
@@ -55,6 +60,7 @@ impl World {
             wakeup: MemoryWakeup::new(),
             agent: ScriptedAgent::new().with_releases("coder", sample_releases()),
             ids: SeqIds::default(),
+            model: ScriptedModel::default(),
         }
     }
 
@@ -74,6 +80,7 @@ impl World {
                     agents: self.agent.clone(),
                     clock: SystemClock,
                     ids: self.ids.clone(),
+                    model: self.model.clone(),
                 },
                 directory(),
                 cfg,

@@ -54,6 +54,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::Watch { .. }
             | Command::Schedule { .. }
             | Command::SetTitle(_)
+            | Command::RequestTitle { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -1056,6 +1057,7 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::Watch { .. }
         | Command::Schedule { .. }
         | Command::SetTitle(_)
+        | Command::RequestTitle { .. }
         | Command::RequestVerification { .. } => None,
     });
     let only = found.next().expect("a delegation");

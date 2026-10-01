@@ -30,8 +30,14 @@ use tokio_util::sync::CancellationToken;
 #[path = "../../store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
-type Stack<S, W> =
-    PortSet<S, W, ByTransport<A2aAgentClient, LocalAgentClient>, SystemClock, UuidV7Ids>;
+type Stack<S, W> = PortSet<
+    S,
+    W,
+    ByTransport<A2aAgentClient, LocalAgentClient>,
+    SystemClock,
+    UuidV7Ids,
+    orch_ports::NoModel,
+>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
@@ -169,6 +175,7 @@ fn app<S: ThreadStore, W: Wakeup>(
                 agents,
                 clock: SystemClock,
                 ids: UuidV7Ids,
+                model: orch_ports::NoModel,
             },
             World::directory(),
             AppConfig {

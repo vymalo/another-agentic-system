@@ -1,4 +1,4 @@
-use crate::{AgentClient, Clock, IdGen, ThreadStore, Wakeup};
+use crate::{AgentClient, ChatModel, Clock, IdGen, ThreadStore, Wakeup};
 
 /// A static-dispatch bundle of every port (ADR 0009: composition happens at build time).
 pub trait Ports: Send + Sync + 'static {
@@ -12,6 +12,8 @@ pub trait Ports: Send + Sync + 'static {
     type Clock: Clock;
     /// The id generator.
     type Ids: IdGen;
+    /// The language model (`NoModel` in a deployment without one).
+    type Model: ChatModel;
 
     /// The store.
     fn store(&self) -> &Self::Store;
@@ -23,11 +25,13 @@ pub trait Ports: Send + Sync + 'static {
     fn clock(&self) -> &Self::Clock;
     /// The id generator.
     fn ids(&self) -> &Self::Ids;
+    /// The language model.
+    fn model(&self) -> &Self::Model;
 }
 
 /// The plain struct implementation of [`Ports`].
 #[derive(Debug, Clone)]
-pub struct PortSet<S, W, A, C, I> {
+pub struct PortSet<S, W, A, C, I, M> {
     /// The store.
     pub store: S,
     /// The wakeup channel.
@@ -38,21 +42,25 @@ pub struct PortSet<S, W, A, C, I> {
     pub clock: C,
     /// The id generator.
     pub ids: I,
+    /// The language model.
+    pub model: M,
 }
 
-impl<S, W, A, C, I> Ports for PortSet<S, W, A, C, I>
+impl<S, W, A, C, I, M> Ports for PortSet<S, W, A, C, I, M>
 where
     S: ThreadStore,
     W: Wakeup,
     A: AgentClient,
     C: Clock,
     I: IdGen,
+    M: ChatModel,
 {
     type Store = S;
     type Wakeup = W;
     type Agents = A;
     type Clock = C;
     type Ids = I;
+    type Model = M;
 
     fn store(&self) -> &S {
         &self.store
@@ -68,5 +76,8 @@ where
     }
     fn ids(&self) -> &I {
         &self.ids
+    }
+    fn model(&self) -> &M {
+        &self.model
     }
 }

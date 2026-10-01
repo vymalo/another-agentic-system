@@ -169,7 +169,9 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::VerifierFailed { .. }
         | Input::Step { .. }
         | Input::TimerFired(_)
-        | Input::Rename { .. }) => other,
+        | Input::Rename { .. }
+        | Input::Titled { .. }
+        | Input::TitleDeclined { .. }) => other,
     }
 }
 
@@ -241,7 +243,9 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::VerifierFailed { .. }
         | Input::Step { .. }
         | Input::TimerFired(_)
-        | Input::Rename { .. } => None,
+        | Input::Rename { .. }
+        | Input::Titled { .. }
+        | Input::TitleDeclined { .. } => None,
     }
 }
 

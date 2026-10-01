@@ -29,7 +29,8 @@ const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const RANDOM: &str = "0190aaaa-0000-7000-8000-000000000123";
 
-type Stack = PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds>;
+type Stack =
+    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
 
 // ---- the contract -------------------------------------------------------------------------
 
@@ -234,6 +235,7 @@ impl Harness {
                     agents: agent,
                     clock: SystemClock,
                     ids: SeqIds::default(),
+                    model: orch_ports::NoModel,
                 },
                 AgentDirectory::new(vec![
                     entry("coder", "Coder"),

@@ -88,6 +88,11 @@ pub struct AppConfig {
     /// What a target or a thread may ask of the gate: which sources this build honours and the
     /// most attempts it may raise the limit to.
     pub gate_rules: GateRules,
+    /// The model that writes thread titles (ADR 0005). `None` (the default) turns titles off: a
+    /// thread keeps the first words of its first message, and no model is ever asked.
+    pub title_model: Option<String>,
+    /// How long one question to the title model may take, whatever the adapter does.
+    pub title_timeout: Duration,
 }
 
 impl Default for AppConfig {
@@ -101,6 +106,8 @@ impl Default for AppConfig {
             gate: GatePolicy::default(),
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
+            title_model: None,
+            title_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -286,6 +293,16 @@ impl<P: Ports> App<P> {
     /// The configured agents.
     pub fn directory(&self) -> &AgentDirectory {
         &self.agents
+    }
+
+    /// The model that writes thread titles, when titles are on.
+    pub fn title_model(&self) -> Option<&str> {
+        self.cfg.title_model.as_deref()
+    }
+
+    /// How long one question to the title model may take.
+    pub fn title_timeout(&self) -> Duration {
+        self.cfg.title_timeout
     }
 
     /// Marks the service (not) ready for `/readyz`.
@@ -785,6 +802,8 @@ impl<P: Ports> App<P> {
             | Input::VerifierReported { .. }
             | Input::VerifierFailed { .. }
             | Input::Step { .. }
+            | Input::Titled { .. }
+            | Input::TitleDeclined { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -956,6 +975,18 @@ impl<P: Ports> App<P> {
                 }),
                 // Stored with the `thread_titled` event that says so, in this commit.
                 Command::SetTitle(new) => title = Some(new),
+                // The request is an outbox row in this commit, so it cannot be lost or made
+                // twice; the dispatcher asks the model and feeds the answer back. With no title
+                // model configured nothing is asked: the ledger has counted the ask, and the
+                // thread keeps the first message's words.
+                Command::RequestTitle { ask } => {
+                    if self.cfg.title_model.is_some() {
+                        outbox.push(NewOutbox {
+                            id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                            payload: OutboxPayload::Title { ask },
+                        });
+                    }
+                }
                 // The request is an outbox row in this commit, so it cannot be lost or made
                 // twice; the dispatcher asks the verifier and feeds the verdict back.
                 Command::RequestVerification {

@@ -3,7 +3,7 @@
 # rot unnoticed (check-mocks.sh does the WireMock stand-in agents):
 #   * the mock web-search MCP server, `mock-mcp-search` (dev/mock-mcp-search, dev/README.md "Mock web search (MCP)");
 #   * the scripted models of the agents that are only a folder, on the WireMock `mock-model` (dev/wiremock/model,
-#     dev/README.md "Several agents"): `mock-persona` greets from the persona lines, `mock-researcher` calls
+#     dev/README.md "Several agents"; and `mock-title`, the title model of the orchestrator): `mock-persona` greets from the persona lines, `mock-researcher` calls
 #     `search__web_search` and then names the first link of the results, and for a question that carries
 #     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers.
 # CI runs it after `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
@@ -133,7 +133,7 @@ check "journal: DELETE empties it" \
   "$(curl -fsS -X DELETE "$SEARCH/__journal" -o /dev/null && curl -fsS "$SEARCH/__journal" | jq -c .calls)" "[]"
 
 # --- the scripted models of the agents that are only a folder (WireMock, dev/wiremock/model) ---------
-echo "== $MODEL (the model mock: mock-persona, mock-researcher)"
+echo "== $MODEL (the model mock: mock-persona, mock-researcher, mock-title)"
 check "model mock: health" "$(curl -sS -o /dev/null -w '%{http_code}' "$MODEL/__admin/health")" "200"
 curl -sS -X DELETE "$MODEL/__admin/requests" -o /dev/null
 
@@ -205,6 +205,20 @@ check "mock-researcher [mock:cards]: once show is answered it says the three lin
 check "mock-researcher [mock:cards]: a refused show (the screen has no Cards) is answered in words too" \
   "$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 x), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'unknown component Cards')]" | jq -r .finish_reason)" \
   "stop"
+
+# `mock-title`: the orchestrator's own model call (the title of a thread, ADR 0005): a title, "no topic yet" and a failing model,
+# chosen by the markers in the conversation it is shown. The agents' mocks above never answer it, and it never answers theirs.
+check "mock-title: any conversation is titled \"Mock thread title\"" \
+  "$(completion mock-title "$(jq -cn '[{role: "system", content: "Reply with a 3 to 6 word title"}, {role: "user", content: "Title this conversation.\n```conversation\nuser: hello\nagent: hi there\n```"}]')" | jq -r '[.finish_reason, .message.content] | join(" | ")')" \
+  "stop | Mock thread title"
+check "mock-title: [mock:untitled] in the conversation says NONE (no topic yet)" \
+  "$(completion mock-title "$(jq -cn '[{role: "system", content: "Reply with a 3 to 6 word title"}, {role: "user", content: "```conversation\nuser: [mock:untitled] hello\n```"}]')" | jq -r .message.content)" \
+  "NONE"
+check "mock-title: [mock:title-error] in the conversation is a 500" \
+  "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "```conversation\nuser: [mock:title-error] hello\n```"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "500"
+check "mock-title: the base path may be /chat/completions as well as /v1/chat/completions" \
+  "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "hello"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
+  "Mock thread title"
 
 check "an unknown model is a 404, not an invented answer" \
   "$(jq -cn '{model: "no-such-model", messages: [{role: "user", content: "hi"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"

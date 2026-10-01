@@ -129,6 +129,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `coder chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it; the coder still greets and waits (`blocked`); the model mock matched every request |
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
+| `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
@@ -141,7 +142,7 @@ Every script prints one `ok` or `FAIL` line per check and exits non-zero on a fa
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
 pushed it), so a second run of it is reported as `SKIP`, not as a failure (so is `folder` where there is no `docker compose`): `docker compose --profile app down -v` and
 `up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the agents' scripted models and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 
 ### Connect Claude Code over MCP
 
@@ -175,7 +176,7 @@ with the values of `.env`; stops `mock-openai`, `mock-github`, `git-server`, `mo
 (`CODER_A2A_TOKEN`, `WEBHOOK_GITHUB_SECRETS`, `MCP_TOKEN_DEV`, each 32 bytes or more); and gives the orchestrator
 [`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. The chat and the researcher
 go live with it: `compose.live.yaml` gives them the same model endpoint (`CHAT_MODEL` and `RESEARCHER_MODEL` name another alias for each, else
-`MODEL`) and a bearer token each (`CHAT_A2A_TOKEN`, `RESEARCHER_A2A_TOKEN`, from `.env`), and drops `mock-model`. **The live researcher still
+`MODEL`) and a bearer token each (`CHAT_A2A_TOKEN`, `RESEARCHER_A2A_TOKEN`, from `.env`), and drops `mock-model`. The orchestrator's own thread titles go live the same way (`TITLE_MODEL`, else `MODEL`). **The live researcher still
 searches the mock web search**, canned results whatever the question: this stack has no search provider credential. To search for real,
 write the `url` and the token of a search MCP server of your own into a copy of `dev/agents/researcher/agent/mcp.json` and point
 `RESEARCHER_AGENT_DIR` at it ([Add a fourth agent by writing a folder](#add-a-fourth-agent-by-writing-a-folder) says how a folder names its tools). In the chat, name a repository you can push to
@@ -249,7 +250,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
 | `agents-postgres` | `postgres:16.15-alpine` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
-| `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher: two scripts, `mock-persona` and `mock-researcher`, in [`wiremock/model/mappings/`](wiremock/model/mappings). Ours, not vendored. See [Several agents](#several-agents). |
+| `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
 | `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
@@ -832,6 +833,23 @@ newer), so the orchestrator tells the agent the thread's current catalog **by re
 that run, what the orchestrator owns: **no `ui_catalog` is added to the log and the thread's catalog stays at its version**. A screen that really is on a catalog without
 `Cards` (run 3, a new thread) is the case the agent can see, and the researcher answers it in words. The catalog the script uses for it is the shipped one without `Cards` and
 `Mermaid` and one version down, its digest recomputed with `jq` and `sha256sum`.
+
+## Thread titles: the orchestrator asks a model
+
+MVP slice 6 ([ADR 0005](../docs/decisions/0005-openai-compatible-model-endpoint.md) amended 2026-10-01; [`docs/orchestrator.md`](../docs/orchestrator.md) "Thread titles") is the first time the
+orchestrator itself asks a model something. After an agent's reply it writes a 3 to 6 word title of the conversation, so the sidebar lists "Fix the login page" and not the first
+message's first words. It asks the same OpenAI-compatible endpoint the agents use, and stays out of the way: a model that is off, down or has nothing to say costs the thread nothing, and
+a person's rename (the thread menu, `PATCH /api/threads/{id}`) is final.
+
+| What | Where |
+|---|---|
+| The settings | `ORCH_TITLE_MODEL` (unset: titles are off), `ORCH_MODEL_BASE_URL` (an OpenAI-compatible endpoint, with `/v1`), `ORCH_MODEL_API_KEY` (optional), `ORCH_MODEL_TIMEOUT_SECS` (20). [`compose.yaml`](../compose.yaml) sets the first two on the orchestrator (`mock-title` at `http://mock-model:8080/v1`); [`compose.live.yaml`](../compose.live.yaml) points them at your endpoint (`TITLE_MODEL`, else `MODEL`) |
+| The script | `mock-title` on `mock-model`, [`wiremock/model/mappings/title.json`](wiremock/model/mappings/title.json): any conversation is titled `Mock thread title`; one that holds `[mock:untitled]` gets `NONE` (no topic yet); one that holds `[mock:title-error]` gets a 500 |
+| The agent | the `chat` of [`agents/chat/`](agents/chat/agent/instructions.md) (it runs from the coder's image), which answers every first message |
+| The scenario | `dev/title-e2e.sh`, `title` in `dev/e2e-all.sh`; it empties `mock-model`'s request journal first |
+
+A title is only written for a thread whose first reply comes after the model was configured, and the web shows it as soon as the event reaches it (a replay of an old thread shows the title
+it had at each point, so a title can appear in the middle of a replay). The mock is not the model: whether a real one writes a good title is for `compose.live.yaml` and a person to judge.
 
 ## The split profile: a control plane and two workers
 

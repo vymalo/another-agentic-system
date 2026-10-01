@@ -50,7 +50,8 @@ pub use step::{
 pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
 pub use title::{
-    MAX_TITLE_CHARS, ThreadTitledData, TitleError, TitleLedger, TitleSource, TitledBy, check_title,
+    MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
+    TitleLedger, TitleSource, TitledBy, check_title, clean_title, title_prompt,
 };
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
 pub use ui::{

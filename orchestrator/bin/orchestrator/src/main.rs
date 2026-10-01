@@ -6,6 +6,7 @@ mod boot;
 mod config;
 mod local;
 mod logging;
+mod model;
 
 use std::process::ExitCode;
 

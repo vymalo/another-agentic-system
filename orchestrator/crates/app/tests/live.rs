@@ -224,6 +224,7 @@ async fn a_wakeup_without_live_text_changes_nothing_about_the_log() {
                 agents: w.agent.clone(),
                 clock: SystemClock,
                 ids: w.ids.clone(),
+                model: w.model.clone(),
             },
             directory(),
             AppConfig::default(),

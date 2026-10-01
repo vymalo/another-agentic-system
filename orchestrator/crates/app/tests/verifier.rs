@@ -57,6 +57,7 @@ fn app_with(w: &World, attempts: u32) -> Arc<TestApp> {
                 agents: w.agent.clone(),
                 clock: SystemClock,
                 ids: w.ids.clone(),
+                model: w.model.clone(),
             },
             directory_with_reviewer(),
             AppConfig {
@@ -523,6 +524,7 @@ async fn a_verifier_that_is_not_configured_any_more_holds_the_thread() {
                 agents: w.agent.clone(),
                 clock: SystemClock,
                 ids: w.ids.clone(),
+                model: w.model.clone(),
             },
             directory(),
             AppConfig {

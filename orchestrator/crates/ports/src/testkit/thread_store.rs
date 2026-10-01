@@ -1892,6 +1892,77 @@ pub async fn job_is_written_with_the_state<S: ThreadStore>(store: S) {
     assert_eq!(after.version, 3);
 }
 
+/// A `title` row (a request to the model for the thread's title) is the orchestrator's own and
+/// depends on nothing: it is claimable at once, whatever delegation of its thread is still in
+/// flight (it is requested by the very reply that delegation is delivering), it does not hold the
+/// next delegation back, and its payload reads back as written.
+pub async fn title_rows_are_unordered_and_roundtrip<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    // The delegate is claimed and still in flight when the agent's reply asks for a title.
+    assert_eq!(claim(&store, "a", t0()).await.len(), 1);
+    let title = NewOutbox {
+        id: outbox_id(101),
+        payload: OutboxPayload::Title { ask: 2 },
+    };
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Working, vec![], vec![title]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Title);
+    assert_eq!(stored.payload, OutboxPayload::Title { ask: 2 });
+    assert_eq!(stored.task_id, None);
+
+    let got = claim(&store, "t", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(101)],
+        "not held back by the inflight delegate"
+    );
+    assert_eq!(got[0].kind, OutboxKind::Title);
+
+    // A later delegate still waits for the first one, not for the title request.
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(ThreadState::Queued, vec![], vec![delegate(102)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(claim(&store, "a", t0()).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim(&store, "a", t0())
+            .await
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![outbox_id(102)],
+        "the title request is still inflight and does not hold the delegate back"
+    );
+    // and it ends like any row
+    assert!(
+        store
+            .complete_outbox(&lease(101, "t", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+}
+
 /// A rename is one transaction: the `thread_titled` event, the thread's title and the ledger that
 /// remembers whose it is. A commit that does not set a title leaves it; one that is refused (a
 /// stale version, a replayed key, a stale claim) writes none.

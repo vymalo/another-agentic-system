@@ -796,7 +796,7 @@ impl ThreadStore for PgStore {
                SELECT o.id FROM outbox o \
                WHERE ((o.status = 'pending' AND o.next_attempt_at <= $1) \
                    OR (o.status = 'inflight' AND o.lease_until <= $1)) \
-                 AND (o.kind IN ('cancel', 'verify') OR NOT EXISTS ( \
+                 AND (o.kind IN ('cancel', 'verify', 'title') OR NOT EXISTS ( \
                        SELECT 1 FROM outbox p \
                        WHERE p.thread_id = o.thread_id AND p.kind = 'delegate' \
                          AND p.ord < o.ord AND p.status IN ('pending', 'inflight'))) \

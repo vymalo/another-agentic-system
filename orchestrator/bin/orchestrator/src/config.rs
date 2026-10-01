@@ -45,6 +45,7 @@ const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_DISPATCHER_CONCURRENCY: usize = 32;
 const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
 const DEFAULT_VERIFIER_WATCH_SECS: u64 = 5;
+const DEFAULT_MODEL_TIMEOUT_SECS: u64 = 20;
 #[cfg(feature = "agent-local")]
 const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
@@ -729,6 +730,33 @@ pub struct Args {
     /// not hold a worker; this is how late that happens.
     #[arg(long, env = "ORCH_VERIFIER_WATCH_SECS", value_name = "SECS")]
     pub verifier_watch_secs: Option<String>,
+
+    /// The model that writes thread titles (the orchestrator's own first model call: after the
+    /// agent's first reply it is asked for a 3 to 6 word title, which replaces the first words of
+    /// the first message unless a person renamed the thread). Unset (the default) turns titles
+    /// off. Needs ORCH_MODEL_BASE_URL.
+    #[arg(long, env = "ORCH_TITLE_MODEL", value_name = "MODEL")]
+    pub title_model: Option<String>,
+
+    /// The base URL of the OpenAI-compatible endpoint the title model is asked at, up to and not
+    /// including `/chat/completions` (`https://api.openai.com/v1`); `http` or `https`. Required
+    /// (exit 78 otherwise) when ORCH_TITLE_MODEL is set, and ignored without it.
+    #[arg(long, env = "ORCH_MODEL_BASE_URL", value_name = "URL")]
+    pub model_base_url: Option<String>,
+
+    /// The bearer token the model endpoint wants, when it wants one. Never logged.
+    #[arg(
+        long,
+        env = "ORCH_MODEL_API_KEY",
+        value_name = "KEY",
+        hide_env_values = true
+    )]
+    pub model_api_key: Option<String>,
+
+    /// Seconds one question to the model may take, at least 1 (default 20). A model that does not
+    /// answer in time costs the thread nothing: it keeps the first message's words.
+    #[arg(long, env = "ORCH_MODEL_TIMEOUT_SECS", value_name = "SECS")]
+    pub model_timeout_secs: Option<String>,
     /// Seconds a job waits for the CI reports its gate needs before it is blocked
     /// (`ci_timeout`; it does not use an attempt), at least 1 (default 3600). An agent's
     /// `gate.ci.timeoutSecs` in AGENTS_FILE overrides it.
@@ -886,6 +914,10 @@ pub struct Config {
     pub outbox_lease: Duration,
     /// `ORCH_VERIFIER_WATCH_SECS`: how often a verification looks at its thread while it waits.
     pub verifier_watch: Duration,
+    /// `ORCH_TITLE_MODEL`, `ORCH_MODEL_BASE_URL`, `ORCH_MODEL_API_KEY` and
+    /// `ORCH_MODEL_TIMEOUT_SECS`: the model that writes thread titles; `None` turns titles off.
+    /// Its `Debug` never shows the key.
+    pub model: Option<ModelSettings>,
     /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the
     /// inbox worker (timers and reports).
     pub inbox: InboxConfig,
@@ -913,6 +945,7 @@ impl fmt::Debug for Config {
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
             .field("outbox_lease", &self.outbox_lease)
             .field("verifier_watch", &self.verifier_watch)
+            .field("model", &self.model)
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace);
@@ -1116,6 +1149,12 @@ impl Config {
             DEFAULT_VERIFIER_WATCH_SECS,
             1,
         )?;
+        let model = model_settings(
+            clean(args.title_model),
+            clean(args.model_base_url),
+            clean(args.model_api_key),
+            clean(args.model_timeout_secs),
+        )?;
         let inbox = InboxConfig {
             lease: Duration::from_secs(number(
                 clean(args.inbox_lease_secs),
@@ -1180,6 +1219,7 @@ impl Config {
             agent_local_concurrency,
             outbox_lease: Duration::from_secs(outbox_lease_secs),
             verifier_watch: Duration::from_secs(verifier_watch_secs),
+            model,
             inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
@@ -1209,13 +1249,82 @@ impl Config {
     /// The application settings the gate configuration contributes: what new threads start under
     /// and the rules requests are checked against.
     pub fn app_config(&self) -> AppConfig {
+        let defaults = AppConfig::default();
         AppConfig {
             gate: self.gate.clone(),
             target_gates: self.target_gates.clone(),
             gate_rules: self.gate_rules.clone(),
-            ..AppConfig::default()
+            title_model: self.model.as_ref().map(|m| m.title_model.clone()),
+            title_timeout: self
+                .model
+                .as_ref()
+                .map_or(defaults.title_timeout, |m| m.timeout),
+            ..defaults
         }
     }
+}
+
+/// The model that writes thread titles (`ORCH_TITLE_MODEL` and the variables that go with it).
+#[derive(Clone)]
+pub struct ModelSettings {
+    /// The name of the model at the endpoint (`ORCH_TITLE_MODEL`).
+    pub title_model: String,
+    /// The endpoint's base URL (`ORCH_MODEL_BASE_URL`), `http` or `https`.
+    pub base_url: String,
+    /// The bearer token (`ORCH_MODEL_API_KEY`), when the endpoint wants one.
+    pub api_key: Option<SecretString>,
+    /// How long one question may take (`ORCH_MODEL_TIMEOUT_SECS`).
+    pub timeout: Duration,
+}
+
+impl fmt::Debug for ModelSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelSettings")
+            .field("title_model", &self.title_model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+/// The title model's settings: none when `ORCH_TITLE_MODEL` is unset (titles are off, and the
+/// endpoint variables are not read, but a bad timeout is still refused), else the endpoint it is
+/// asked at, which is then required.
+fn model_settings(
+    title_model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    timeout_secs: Option<String>,
+) -> Result<Option<ModelSettings>, ConfigError> {
+    let timeout = number(
+        timeout_secs,
+        "ORCH_MODEL_TIMEOUT_SECS",
+        DEFAULT_MODEL_TIMEOUT_SECS,
+        1,
+    )?;
+    let Some(title_model) = title_model else {
+        return Ok(None);
+    };
+    let base_url = base_url.ok_or(ConfigError::Missing("ORCH_MODEL_BASE_URL"))?;
+    let base_url = base_url.trim_end_matches('/').to_owned();
+    let hosted = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))
+        .is_some_and(|rest| !rest.is_empty());
+    if !hosted {
+        return Err(ConfigError::Invalid {
+            var: "ORCH_MODEL_BASE_URL",
+            reason: "expected an http:// or https:// URL, like https://api.openai.com/v1"
+                .to_owned(),
+        });
+    }
+    Ok(Some(ModelSettings {
+        title_model,
+        base_url,
+        api_key: api_key.map(SecretString::from),
+        timeout: Duration::from_secs(timeout),
+    }))
 }
 
 /// The raw values of the gate's environment variables (blank already counted as unset).
@@ -1991,6 +2100,10 @@ mod tests {
                 "THREAD_TOOLS_ALLOWED_HOSTS" => &mut args.thread_tools_allowed_hosts,
                 "ORCH_VERIFIER_TIMEOUT_SECS" => &mut args.verifier_timeout_secs,
                 "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
+                "ORCH_TITLE_MODEL" => &mut args.title_model,
+                "ORCH_MODEL_BASE_URL" => &mut args.model_base_url,
+                "ORCH_MODEL_API_KEY" => &mut args.model_api_key,
+                "ORCH_MODEL_TIMEOUT_SECS" => &mut args.model_timeout_secs,
                 "ORCH_CI_TIMEOUT_SECS" => &mut args.ci_timeout_secs,
                 "ORCH_CI_REQUIRED" => &mut args.ci_required,
                 "WEBHOOK_GENERIC_SECRETS" => &mut args.webhook_generic_secrets,
@@ -2061,6 +2174,98 @@ mod tests {
         assert_eq!(cfg.shutdown_grace, Duration::from_secs(15));
         assert!(cfg.auth_dev_user.is_none());
         assert!(cfg.instance_id.starts_with("orchestrator-"));
+    }
+
+    #[test]
+    fn titles_are_off_unless_a_model_is_named() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(cfg.model.is_none());
+        let app = cfg.app_config();
+        assert_eq!(app.title_model, None);
+        // the endpoint variables alone turn nothing on
+        let mut env = base();
+        env.extend([
+            ("ORCH_MODEL_BASE_URL", "https://api.example.com/v1"),
+            ("ORCH_MODEL_API_KEY", "sk-secret"),
+        ]);
+        assert!(load(&env, AGENTS).unwrap().model.is_none());
+    }
+
+    #[test]
+    fn a_title_model_needs_its_endpoint_and_reaches_the_application() {
+        let mut env = base();
+        env.push(("ORCH_TITLE_MODEL", "gpt-4o-mini"));
+        assert!(matches!(
+            load(&env, AGENTS),
+            Err(ConfigError::Missing("ORCH_MODEL_BASE_URL"))
+        ));
+
+        env.push(("ORCH_MODEL_BASE_URL", "https://api.example.com/v1/"));
+        env.push(("ORCH_MODEL_API_KEY", "sk-secret"));
+        let cfg = load(&env, AGENTS).unwrap();
+        let model = cfg.model.as_ref().unwrap();
+        assert_eq!(model.title_model, "gpt-4o-mini");
+        assert_eq!(
+            model.base_url, "https://api.example.com/v1",
+            "no trailing slash"
+        );
+        assert_eq!(model.timeout, Duration::from_secs(20));
+        let app = cfg.app_config();
+        assert_eq!(app.title_model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(app.title_timeout, Duration::from_secs(20));
+
+        // the key is in no debug text
+        assert!(!format!("{cfg:?}").contains("sk-secret"));
+        assert!(format!("{cfg:?}").contains("<redacted>"));
+    }
+
+    #[test]
+    fn the_model_variables_are_validated() {
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut env = base();
+            env.extend_from_slice(extra);
+            load(&env, AGENTS)
+        };
+        for bad in [
+            "ftp://example.com",
+            "localhost:8080/v1",
+            "https://",
+            "example.com",
+        ] {
+            let err = with(&[("ORCH_TITLE_MODEL", "m"), ("ORCH_MODEL_BASE_URL", bad)]).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "ORCH_MODEL_BASE_URL",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+        }
+        for bad in ["0", "soon"] {
+            // refused whether or not titles are on
+            let err = with(&[("ORCH_MODEL_TIMEOUT_SECS", bad)]).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "ORCH_MODEL_TIMEOUT_SECS",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+        }
+        let cfg = with(&[
+            ("ORCH_TITLE_MODEL", "m"),
+            ("ORCH_MODEL_BASE_URL", "http://mock-model:8080/v1"),
+            ("ORCH_MODEL_TIMEOUT_SECS", "7"),
+        ])
+        .unwrap();
+        assert_eq!(cfg.app_config().title_timeout, Duration::from_secs(7));
+        assert!(cfg.model.unwrap().api_key.is_none());
     }
 
     #[test]
@@ -3560,6 +3765,7 @@ mod tests {
                 agents: ScriptedAgent::new(),
                 clock: SystemClock,
                 ids: SeqIds::default(),
+                model: orch_ports::NoModel,
             },
             AgentDirectory::new(cfg.agents.clone()),
             cfg.app_config(),

@@ -65,6 +65,8 @@ pub enum OutboxKind {
     /// Ask the verifier agent to review the pushed commit (ADR 0018). Its task is the row's own
     /// ([`OutboxItem::task_id`]), never the thread's binding: the verifier is not the worker.
     Verify,
+    /// Ask the model for a title of the thread (an orchestrator's own request, not an agent's).
+    Title,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -130,6 +132,13 @@ pub enum OutboxPayload {
         /// The prompt, written by the core.
         text: String,
     },
+    /// Ask the model for a title of the thread (`orch_core::Command::RequestTitle`). `ask` is the
+    /// number of the request in the thread's ledger. The conversation to title is read from the
+    /// log when the row is worked, so the row holds nothing of it.
+    Title {
+        /// Which request.
+        ask: u8,
+    },
 }
 
 impl OutboxPayload {
@@ -139,6 +148,7 @@ impl OutboxPayload {
             OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
             OutboxPayload::Cancel { .. } => OutboxKind::Cancel,
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
+            OutboxPayload::Title { .. } => OutboxKind::Title,
         }
     }
 }
