@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useMemo, useState } from "react";
 import { BrandMark } from "@/components/brand-mark";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
@@ -127,7 +127,15 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
 }
 
 /** The brand row of the sidebar, with the control that collapses it (a desktop). */
-function SidebarTop({ onCollapse, close }: { onCollapse?: () => void; close?: ReactNode }) {
+function SidebarTop({
+  onCollapse,
+  collapseRef,
+  close,
+}: {
+  onCollapse?: () => void;
+  collapseRef?: Ref<HTMLButtonElement>;
+  close?: ReactNode;
+}) {
   return (
     <div className="flex h-14 shrink-0 items-center justify-between ps-4 pe-2">
       <Link
@@ -144,6 +152,7 @@ function SidebarTop({ onCollapse, close }: { onCollapse?: () => void; close?: Re
           type="button"
           variant="ghost"
           size="icon"
+          ref={collapseRef}
           aria-label="Close sidebar"
           title="Close sidebar"
           onClick={onCollapse}
@@ -165,13 +174,17 @@ export function ThreadSidebar({
   threads,
   open,
   onCollapse,
+  collapseRef,
 }: {
   threads: ThreadsView;
   open: boolean;
   onCollapse: () => void;
+  /** The "Close sidebar" button, which takes the focus when the sidebar opens. */
+  collapseRef?: Ref<HTMLButtonElement>;
 }) {
   return (
     <aside
+      data-slot="sidebar"
       data-state={open ? "open" : "closed"}
       className={cn(
         "hidden min-h-0 shrink-0 overflow-hidden bg-sidebar transition-[width] duration-200 ease-out md:block dark:border-r",
@@ -182,7 +195,7 @@ export function ThreadSidebar({
         className={cn("flex h-full w-68 flex-col", !open && "invisible")}
         aria-hidden={open ? undefined : true}
       >
-        <SidebarTop onCollapse={onCollapse} />
+        <SidebarTop onCollapse={onCollapse} collapseRef={collapseRef} />
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <ThreadNav threads={threads} />
         </div>
@@ -192,13 +205,21 @@ export function ThreadSidebar({
 }
 
 /** A desktop with the sidebar collapsed: the controls to open it again and to start a chat. */
-export function SidebarOpeners({ onOpen }: { onOpen: () => void }) {
+export function SidebarOpeners({
+  onOpen,
+  openRef,
+}: {
+  onOpen: () => void;
+  /** The "Open sidebar" button, which takes the focus when the sidebar closes. */
+  openRef?: Ref<HTMLButtonElement>;
+}) {
   return (
     <div className="hidden items-center gap-0.5 md:flex">
       <Button
         type="button"
         variant="ghost"
         size="icon"
+        ref={openRef}
         aria-label="Open sidebar"
         title="Open sidebar"
         onClick={onOpen}

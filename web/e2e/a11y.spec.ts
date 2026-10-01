@@ -97,7 +97,8 @@ for (const scheme of ["light", "dark"] as const) {
       page,
     }) => {
       await startThread(page, "verify-ci-stale ship it", "Reviewer");
-      await expect(badge(page)).toHaveText("Done");
+      // eleven steps 400 ms apart: about the default wait, too close under a loaded runner
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
       await expect(
         page.getByRole("listitem", { name: "Check: CI, attempt 1, failed, stale" }),
       ).toBeVisible();

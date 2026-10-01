@@ -167,6 +167,17 @@
   }
 }
 
+/* A sidebar the person closed, before React knows (features/threads/lib/sidebar-state.ts). */
+@media (min-width: 48rem) {
+  html[data-sidebar="closed"] [data-slot="sidebar"] {
+    width: 0;
+    border-right-width: 0;
+  }
+  html[data-sidebar="closed"] [data-slot="sidebar"] > div {
+    visibility: hidden;
+  }
+}
+
 @layer utilities {
   /* A line of text that shimmers while something is on its way ("Coder is starting…"). */
   .text-shimmer {

@@ -145,16 +145,24 @@ export const Thread: FC<ThreadProps> = ({ loading, empty, children }) => {
   );
 };
 
-/** The time something happened, on hover and focus of its label (it is secondary). */
+/**
+ * The time something happened: a tooltip on hover for the eye, and the same time as visually
+ * hidden text after the label, so a screen reader and the keyboard get it too (it is secondary,
+ * so it is no tab stop of its own).
+ */
 function WithTime({ at, children }: { at: Date | undefined; children: ReactNode }) {
   if (!at || Number.isNaN(at.getTime())) return <>{children}</>;
+  const time = <time dateTime={at.toISOString()}>{at.toLocaleString()}</time>;
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side="bottom">
-        <time dateTime={at.toISOString()}>{at.toLocaleString()}</time>
-      </TooltipContent>
-    </Tooltip>
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side="bottom">{time}</TooltipContent>
+      </Tooltip>
+      <span data-slot="message-time" className="sr-only">
+        {time}
+      </span>
+    </>
   );
 }
 

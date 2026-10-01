@@ -126,11 +126,18 @@ test("desktop: the sidebar closes and opens, and remembers it", async ({ page, i
   await expect(threadList(page)).toBeVisible();
   await page.getByRole("button", { name: "Close sidebar" }).click();
   await expect(threadList(page)).toBeHidden();
+  // the focus moves to the control that now exists
+  await expect(page.getByRole("button", { name: "Open sidebar" })).toBeFocused();
   await page.reload();
+  // marked before the first paint (no flash of an open sidebar), and hidden all along
+  await expect(page.locator("html")).toHaveAttribute("data-sidebar", "closed");
+  await expect(threadList(page)).toBeHidden();
   await expect(badge(page)).toHaveText("Done");
   await expect(threadList(page)).toBeHidden();
   await page.getByRole("button", { name: "Open sidebar" }).click();
   await expect(threadList(page)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close sidebar" })).toBeFocused();
+  await expect(page.locator("html")).not.toHaveAttribute("data-sidebar", "closed");
   // the open thread is the current page of the list
   await expect(threadList(page).locator('a[aria-current="page"]')).toHaveText(
     "echo remember the sidebar",
