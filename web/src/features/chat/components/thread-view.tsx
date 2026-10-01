@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, type ReactNode, useContext } from "react";
-import type { ThreadState } from "@/lib/api/types";
+import type { ApiThread, ThreadState } from "@/lib/api/types";
 
 /** What the transcript needs to know about the thread beyond its messages. */
 export type ThreadView = {
@@ -17,6 +17,11 @@ export type ThreadView = {
    * version of the app" when this is above the build's own, an error of the agent's otherwise.
    */
   catalogVersion?: number | undefined;
+  /**
+   * Where the thread was forked from, as the resource says it (ADR 0029): the parent's `threadId`
+   * is gone once the parent is deleted, and then the divider is not a link.
+   */
+  forkedFrom?: ApiThread["forkedFrom"];
 };
 
 const Context = createContext<ThreadView>({ state: undefined, waiting: false, agentId: null });

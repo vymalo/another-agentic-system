@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  GitForkIcon,
   MenuIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
@@ -62,7 +63,14 @@ function ThreadRow({ thread, active }: { thread: ApiThread; active: boolean }) {
           active && "bg-sidebar-accent font-medium text-foreground",
         )}
       >
-        <span className="min-w-0 flex-1 truncate">{thread.title || "Untitled"}</span>
+        {thread.forkedFrom?.kind === "fork" ? (
+          // a conversation made from another (ADR 0029): "Fork from here", or another agent's
+          <GitForkIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : null}
+        <span className="min-w-0 flex-1 truncate">
+          {thread.title || "Untitled"}
+          {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
+        </span>
         <LiveMark state={thread.state} />
       </Link>
     </li>

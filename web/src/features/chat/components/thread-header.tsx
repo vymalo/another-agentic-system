@@ -8,6 +8,7 @@ import { useExportThread } from "@/features/chat/hooks/use-export-thread";
 import { type ThreadRenamer, useRenameThread } from "@/features/chat/hooks/use-rename-thread";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
+import { ForkError, useThreadFork } from "@/features/threads/components/fork-provider";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
 import { StateBadge } from "./state-badge";
 import { ThreadMenu } from "./thread-menu";
@@ -25,6 +26,10 @@ type Props = {
   /** The server renamed the thread: here it is, so the title is not stale until the next fetch. */
   onRenamed: (thread: ApiThread) => void;
 };
+
+/** Why the other agents cannot be chosen while the agent works (the menu says it under the lists). */
+const CONTINUE_BLOCKED =
+  "The agent is working. Another agent, or another release, can continue this conversation once the turn is over.";
 
 /** The title as a field while it is renamed: Enter or leaving it saves, Escape gives it up. */
 function TitleField({ renamer, current }: { renamer: ThreadRenamer; current: string }) {
@@ -72,6 +77,7 @@ export function ThreadHeader({
 }: Props) {
   const exporter = useExportThread(thread?.id ?? null);
   const renamer = useRenameThread(thread, onRenamed);
+  const fork = useThreadFork();
   return (
     <>
       <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
@@ -83,6 +89,12 @@ export function ThreadHeader({
             agentId: thread?.target.agentId ?? null,
             release: thread?.target.release ?? null,
           }}
+          onContinue={(to) =>
+            to.agentId === null
+              ? Promise.resolve(false)
+              : fork.continueWith({ agentId: to.agentId, release: to.release })
+          }
+          {...(fork.turnOpen ? { blocked: CONTINUE_BLOCKED } : {})}
         />
         <div className="flex min-w-0 flex-1 items-center ps-2">
           {thread && renamer.draft !== null ? (
@@ -124,6 +136,7 @@ export function ThreadHeader({
           </InlineStatus>
         </div>
       ) : null}
+      <ForkError />
       {exporter.error ? (
         <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
           <InlineStatus tone="error" role="alert">

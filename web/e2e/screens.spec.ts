@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 import {
   agentPicker,
   badge,
+  chooseAgent,
   conversation,
   MOCK_URL,
   openAgentMenu,
@@ -144,8 +145,31 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "Fix the redirect loop after signing in");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
       await openAgentMenu(page);
-      await expect(page.getByRole("group", { name: "Start a new chat with" })).toBeVisible();
+      await expect(page.getByRole("group", { name: "Agents" })).toBeVisible();
+      await expect(page.getByText(/A chat keeps its agent\./)).toBeVisible();
       await shot(page, "agent-menu-thread");
+    });
+
+    test("continue with another agent", async ({ page }) => {
+      // choosing another agent on a thread is a fork: the question, before anything is made
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await chooseAgent(page, "Reviewer");
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+      await shot(page, "fork-continue");
+      await page.getByRole("button", { name: "Cancel" }).click();
+    });
+
+    test("fork", async ({ page }) => {
+      // "Fork from here" under the coder's answer: the new chat opens with the conversation as it
+      // was, the divider that says where it was forked from, and its row in the list
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await conversation(page).getByRole("button", { name: "Fork from here" }).click();
+      await expect(conversation(page).locator('[data-slot="fork-divider"]')).toBeVisible();
+      await expect(badge(page)).toHaveText("Done");
+      await conversation(page).locator('[data-slot="fork-divider"]').scrollIntoViewIfNeeded();
+      await shot(page, "fork");
     });
 
     test("cards and a graph, with the panel", async ({ page }) => {

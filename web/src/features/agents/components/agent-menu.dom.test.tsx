@@ -190,6 +190,7 @@ describe("AgentMenu on a new chat", () => {
         mode="thread"
         agents={view({ registry: { unreachable: ["platform"] } })}
         value={{ agentId: "coder", release: "production" }}
+        onContinue={async () => true}
       />,
     );
     const menu = await open();
@@ -280,14 +281,22 @@ describe("AgentMenu from the keyboard", () => {
 });
 
 describe("AgentMenu on an existing thread", () => {
-  const thread = (over: { release?: string | null; agents?: AgentsView } = {}) =>
-    render(
+  const onContinue = vi.fn<(to: Selection) => Promise<boolean>>();
+  const thread = (
+    over: { release?: string | null; agents?: AgentsView; blocked?: string; made?: boolean } = {},
+  ) => {
+    onContinue.mockReset();
+    onContinue.mockResolvedValue(over.made ?? true);
+    return render(
       <AgentMenu
         mode="thread"
         agents={over.agents ?? view()}
         value={{ agentId: "coder", release: over.release ?? null }}
+        onContinue={onContinue}
+        {...(over.blocked ? { blocked: over.blocked } : {})}
       />,
     );
+  };
 
   it("shows the thread's own agent, checked, and its pinned release", async () => {
     thread({ release: "staging" });
@@ -295,20 +304,86 @@ describe("AgentMenu on an existing thread", () => {
     const menu = await open();
     const current = item(menu, /^Coder/);
     expect(current.getAttribute("aria-checked")).toBe("true");
-    expect(current.textContent).toContain("staging");
-    // no release group: a thread keeps its release too
-    expect(within(menu).queryByRole("group", { name: "Release" })).toBeNull();
+    expect(item(menu, /^staging/).getAttribute("aria-checked")).toBe("true");
+    expect(item(menu, /^Reviewer/).getAttribute("aria-checked")).toBe("false");
   });
 
-  it("offers the other agents as links that start a new chat with them", async () => {
+  it("choosing another agent asks first: a fork continues the conversation in a new chat", async () => {
     thread();
     const menu = await open();
-    // they are not radio items of this chat: nothing here changes the thread's agent
-    expect(within(menu).queryByRole("menuitemradio", { name: /^Reviewer/ })).toBeNull();
-    const group = within(menu).getByRole("group", { name: "Start a new chat with" });
-    const links = within(group).getAllByRole("menuitem");
-    expect(links.map((l) => l.getAttribute("href"))).toEqual(["/?agent=reviewer", "/?agent=plain"]);
-    expect(links[0]?.textContent).toContain("Reviews a pull request");
+    fireEvent.click(item(menu, /^Reviewer/));
+    // nothing is made until the person says yes
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Continue with Reviewer in a new chat?")).toBeTruthy();
+    expect(
+      within(dialog).getByText(/The conversation so far is copied; this chat stays as it is\./),
+    ).toBeTruthy();
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Continue in a new chat" }));
+    await waitFor(() =>
+      expect(onContinue).toHaveBeenCalledWith({ agentId: "reviewer", release: null }),
+    );
+  });
+
+  it("Cancel makes nothing, and the focus goes back to the picker", async () => {
+    thread();
+    const menu = await open();
+    fireEvent.click(item(menu, /^Plain/));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(onContinue).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(trigger()));
+  });
+
+  it("another release of the thread's agent is a fork too, with the release", async () => {
+    thread({ release: "production" });
+    const menu = await open();
+    fireEvent.click(item(menu, /^staging/));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Continue with Coder in a new chat?")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Continue in a new chat" }));
+    await waitFor(() =>
+      expect(onContinue).toHaveBeenCalledWith({ agentId: "coder", release: "staging" }),
+    );
+  });
+
+  it("the choice already made asks nothing", async () => {
+    thread({ release: "production" });
+    const menu = await open();
+    fireEvent.click(item(menu, /^Coder/));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    cleanup();
+    thread({ release: "production" });
+    fireEvent.click(item(await open(), /^production/));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
+  it("a fork that could not be made closes the question: the page says why", async () => {
+    thread({ made: false });
+    const menu = await open();
+    fireEvent.click(item(menu, /^Reviewer/));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Continue in a new chat" }));
+    await waitFor(() => expect(onContinue).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("while the agent works the others are disabled, and the menu says why", async () => {
+    thread({ blocked: "The agent is working. Wait for it." });
+    const menu = await open();
+    expect(item(menu, /^Reviewer/).getAttribute("aria-disabled")).toBe("true");
+    expect(item(menu, /^Coder/).getAttribute("aria-disabled")).toBeNull();
+    expect(within(menu).getByText("The agent is working. Wait for it.")).toBeTruthy();
+    fireEvent.click(item(menu, /^Reviewer/));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("says what a choice does when nothing is going on", async () => {
+    thread();
+    const menu = await open();
+    expect(within(menu).getByText(/A chat keeps its agent\./)).toBeTruthy();
   });
 
   it("names the agent by its id until the list is read, and still opens", async () => {
@@ -319,7 +394,14 @@ describe("AgentMenu on an existing thread", () => {
   });
 
   it("is a skeleton until the thread (and so its agent) is known", () => {
-    render(<AgentMenu mode="thread" agents={view()} value={{ agentId: null, release: null }} />);
+    render(
+      <AgentMenu
+        mode="thread"
+        agents={view()}
+        value={{ agentId: null, release: null }}
+        onContinue={async () => true}
+      />,
+    );
     expect(screen.getByRole("status").textContent).toBe("Loading agent…");
   });
 });

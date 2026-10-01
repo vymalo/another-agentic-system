@@ -137,11 +137,14 @@ like the new ChatGPT"). It is a menu button in the top bar, on the new chat and 
   is read again each time the menu opens: releases are the agent's card right now (ADR 0008).
 - **Keyboard**: Enter, Space or the down arrow on the button opens it; the arrows move over the items,
   letters jump to an agent, Enter or Space chooses, Escape closes it and the focus goes back to the button.
-- **On an existing thread** a thread has one agent, so the menu shows it (checked, with its pinned
-  release) and offers the others as **"Start a new chat with …"** links: they open a new chat with that
-  agent already chosen (`/?agent=reviewer`). They are not radio items, because nothing in this chat changes.
-  Changing the agent of a thread will be a fork (plan 08, F-series): the conversation so far copied into a
-  new thread that talks to the other agent; until it is built, this is what the menu offers.
+- **On an existing thread** a thread has one agent, so choosing another is not a switch but a **fork**
+  (ADR 0029, "Fork and branch"): the menu lists the same agents as radio items, the thread's own checked
+  (with its release group when it has releases), and says under them "A chat keeps its agent. Another agent,
+  or another release, continues this conversation in a new chat." Choosing another agent or release opens an
+  alert dialog, "Continue with Reviewer in a new chat?" ("The conversation so far is copied; this chat stays as
+  it is."; Cancel, "Continue in a new chat"); only the yes makes the fork and goes to it. While the agent's
+  turn is going on the other items are disabled and the line says why, because a turn that is not over
+  cannot be copied. The choice already made asks nothing.
 - **A notice slot** under the lists, inside the menu: a failed refresh of the list is said there ("Could not
   refresh the agents: …", with Retry, the list stays as it was), and so is the agent registry's "The agent
   registry is unreachable; showing the configured agents only." (ADR 0022: the platform's registry could not be
@@ -233,6 +236,11 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   not running, has no line. Its accessible name says it all: "Coder's steps: 14 steps · 2m 10s, 1 failed.
   Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
   shows this turn), so Enter and Space open it.
+- **Turn actions** under a turn (`components/assistant-ui/elements/turn-actions.tsx`): **Copy** (the agent's
+  words) and **Fork from here** (`SplitIcon`). They show on hover and while the focus is inside the turn, and
+  always on a touch screen (no hover there). Fork from here is `aria-disabled` while the turn is going on
+  (the newest turn of a working thread), with a tooltip that says why; it is not offered before the page knows
+  where the turn ends in the log. An earlier turn can be forked while a later one runs. See "Fork and branch".
 - **Before the first event** a shimmering "Coder is starting…" line under the avatar.
 - **A draft: the words as they are written** (2026-10-01, sys #65: "I want to see the agent's words as they
   are written"). While the model writes its reply the turn shows what it has so far, after the parts the turn
@@ -256,6 +264,36 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   composer says "Reply…".
 - **Choices** (a surface component, below): the agent's several questions with fixed answers, in the
   surface's card; **the person's answers** to them are a bubble, see below.
+
+## Fork and branch
+
+*Added 2026-10-01 (owner: "chat forking and branching"; ADR 0029, `docs/api/chat-api.yaml` `forkThread`).* A fork is
+a **new chat** that begins as a copy of this one, so the conversation can go two ways without losing either.
+The chat shows it in three places.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-fork.png">
+  <img src="e2e/__screens__/desktop-light-fork.png" alt="A forked chat: the coder's answer to the redirect loop with its pull request card, then a line “Forked from Fix the redirect loop after signing in” with a fork icon, a message box, and in the list on the left the fork's row marked with a fork icon beside the first chat." width="720">
+</picture>
+
+*A fork of a finished thread, from the web's mock server: the conversation as it was, the divider, and the fork's row in the list.*
+
+- **Fork from here** (turn action, above). It sends `POST /api/threads/{id}/fork {after: <an event of the turn>}`:
+  the server finds the end of the turn from any event of it, so the page names the last event it has read for
+  the turn's run (`ThreadAgent.endOfRun`; the actor marker part carries the `runId`). The page then goes to the
+  new chat, which is `done`. A turn that began after the page last heard is a `409 turn_open`, shown as a line
+  under the top bar ("Could not fork the chat: The agent is still working on this turn. Try again when it
+  has finished.", Dismiss) with the chat as it was.
+- **Continue with another agent** is the same fork with a `target` (the agent menu, "Agent picker").
+- **The divider** is the marker `vymalo.fork` (a run of its own in the stream), drawn after the copied
+  conversation as a hairline with one muted 13 px line, the fork icon and "Forked from <title>", the title a
+  link to the parent while the parent exists (the resource drops its id when it is deleted; the marker keeps
+  the title for good) and "· continued with Reviewer" when the fork talks to another agent than its parent.
+  An edit (a branch) draws no divider: it is a version of a message, not a conversation of its own.
+- **The list**: a fork is a row like any other, with a small fork icon and "(fork)" for a screen reader. The
+  threads made by editing a message are not listed (the list is `GET /api/threads`, which leaves them out).
+- **Id of the fork** is chosen by the page and kept for a repeat of the same request, so a connection that
+  dropped after the server made the fork never makes two.
 
 ## Steps panel
 

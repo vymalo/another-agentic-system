@@ -55,6 +55,81 @@ const kinds = (events: BaseEvent[]) => events.map((e) => e.type);
 /** The viewer's stream of the echo script cut into the pieces a connection may deliver. */
 const echo = () => loadGolden("connect-echo");
 
+describe("ThreadAgent: where messages and turns are in the log (ADR 0029)", () => {
+  it("knows the event each person's message came in and the last event of each run, across jobs", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    expect(agent.seqOfUser("evt-1")).toBeUndefined();
+    stream.frames(loadGolden("followup"));
+    await until(() => agent.getSnapshot().lastSeq === 11, "the second job");
+    // the messages are events 1 and 6; the first job's run ends at 5, the second's at 11
+    expect(agent.seqOfUser("evt-1")).toBe(1);
+    expect(agent.seqOfUser("evt-6")).toBe(6);
+    expect(agent.seqOfUser("nope")).toBeUndefined();
+    expect(agent.endOfRun("run-1")).toBe(5);
+    expect(agent.endOfRun("run-6")).toBe(11);
+    expect(agent.endOfRun("run-9")).toBeUndefined();
+    agent.stop();
+  });
+
+  it("a run that is still open ends where its last delivered group does, and a reconnect moves it on", async () => {
+    const full = loadGolden("followup");
+    const at3 = full.findIndex((f) => f.id === 3);
+    const first = new LiveStream();
+    const second = new LiveStream();
+    const streams = [first, second];
+    const { agent, calls } = agentWith(() => sse((streams.shift() as LiveStream).body));
+    agent.start();
+    first.frames(full.slice(0, at3 + 1));
+    await until(() => agent.getSnapshot().lastSeq === 3, "the first three events");
+    expect(agent.endOfRun("run-1")).toBe(3);
+    first.cut();
+    await until(() => calls.length === 2, "the reconnect");
+    // the server opens the run again and says the rest
+    second.frames([
+      full[0] as GoldenFrame,
+      full[5] as GoldenFrame,
+      full[7] as GoldenFrame,
+      ...full.slice(at3 + 1),
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 11, "the end");
+    expect(agent.endOfRun("run-1")).toBe(5);
+    expect(agent.endOfRun("run-6")).toBe(11);
+    expect(agent.seqOfUser("evt-1")).toBe(1);
+    expect(agent.seqOfUser("evt-6")).toBe(6);
+    agent.stop();
+  });
+
+  it("a fork's own run ends at the marker, and its next message is the next event", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(loadGolden("connect-fork"));
+    await until(() => agent.getSnapshot().lastSeq === 12, "the fork's first job");
+    expect(agent.endOfRun("run-1")).toBe(5);
+    expect(agent.endOfRun("run-6")).toBe(6);
+    expect(agent.seqOfUser("msg-1")).toBe(1);
+    expect(agent.seqOfUser("msg-3")).toBe(7);
+    expect(agent.endOfRun("run-7")).toBe(12);
+    agent.stop();
+  });
+
+  it("hands the runtime the event of each message of a replay: a run's user messages carry their seq", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(loadGolden("followup"));
+    const one = (await agent.nextExternalRun()) as ExternalRun;
+    const two = (await agent.nextExternalRun()) as ExternalRun;
+    await one.leadIn;
+    await two.leadIn;
+    expect(one.userMessages.map((m) => [m.id, m.seq])).toEqual([["evt-1", 1]]);
+    expect(two.userMessages.map((m) => [m.id, m.seq])).toEqual([["evt-6", 6]]);
+    agent.stop();
+  });
+});
+
 describe("ThreadAgent: the connect stream", () => {
   it("makes an external run of a run nobody here started, and splits off the user message", async () => {
     const stream = new LiveStream();
@@ -66,7 +141,12 @@ describe("ThreadAgent: the connect stream", () => {
     await run.leadIn;
     expect(run.runId).toBe("run-1");
     expect(run.userMessages).toEqual([
-      { id: "msg-1", text: "echo hi", actor: { type: "user", name: "alice@example.com" } },
+      {
+        id: "msg-1",
+        text: "echo hi",
+        seq: 1,
+        actor: { type: "user", name: "alice@example.com" },
+      },
     ]);
     const events = await collect(run);
     expect(kinds(events)).toEqual([
@@ -84,9 +164,10 @@ describe("ThreadAgent: the connect stream", () => {
       "RUN_FINISHED",
     ]);
     // the actor, which the runtime would drop with the event's metadata, travels in the content
+    // and the run of the log the turn is, which is how a turn finds where it ends (a fork from it)
     expect(events[3]).toMatchObject({
       name: "vymalo.actor",
-      value: { type: "agent", name: "plain" },
+      value: { type: "agent", name: "plain", runId: "run-1" },
     });
     expect(events[4]).toMatchObject({
       activityType: "vymalo.status",

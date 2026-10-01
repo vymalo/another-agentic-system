@@ -64,7 +64,49 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "Implement the thing");
       await expect(badge(page)).toHaveText("Done");
       await openAgentMenu(page);
-      await expect(page.getByRole("group", { name: "Start a new chat with" })).toBeVisible();
+      await expect(page.getByRole("group", { name: "Agents" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a thread's agent menu while the agent works (the other agents disabled, with the reason) has no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "Refactor the module");
+      await expect(badge(page)).toHaveText("Working…");
+      await openAgentMenu(page);
+      await expect(page.getByText(/The agent is working/)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: the turn's actions (shown, and the fork one disabled), the question about another agent and a fork with its divider have no serious violations", async ({
+      page,
+    }) => {
+      // a turn that is going on: Fork from here is disabled
+      await startThread(page, "Refactor the module");
+      await expect(badge(page)).toHaveText("Working…");
+      const fork = conversation(page).getByRole("button", { name: "Fork from here" });
+      await expect(fork).toBeDisabled();
+      await fork.focus();
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByRole("button", { name: "Stop" }).click();
+      await expect(badge(page)).toHaveText("Stopped");
+
+      // the question before a fork onto another agent
+      await expect(fork).toBeEnabled();
+      await openAgentMenu(page);
+      await page.getByRole("menuitemradio", { name: /^Reviewer/ }).click();
+      // the menu has faded out and the question has faded in: axe reads the colours as they are drawn
+      await expect(page.getByRole("menu")).toBeHidden();
+      await expect(page.getByRole("alertdialog")).toHaveCSS("opacity", "1");
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByRole("button", { name: "Cancel" }).click();
+      await expect(page.getByRole("alertdialog")).toBeHidden();
+
+      // the fork: the copied conversation, the divider, the turn's actions
+      await fork.click();
+      await expect(conversation(page).locator('[data-slot="fork-divider"]')).toBeVisible();
+      await expect(badge(page)).toHaveText("Done");
+      await conversation(page).getByRole("button", { name: "Fork from here" }).first().focus();
       expect(await axeViolations(page)).toEqual([]);
     });
 
