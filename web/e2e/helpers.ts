@@ -2,7 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 /** The app under test: the production build `pnpm test:e2e` starts. */
 // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
-export const BASE_URL = "http://127.0.0.1:3000";
+export const BASE_URL = "http://127.0.0.1:3000"; // opengrep-ignore
 
 /** The mock orchestrator's own origin: its test hooks (`/__mock/…`) are reached here. */
 // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
