@@ -84,6 +84,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             run_id: None,
         }),
         EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::UiCatalog(note_catalog()),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -98,6 +99,55 @@ fn every_kind_roundtrips_and_never_emits_null() {
         let back: Event = serde_json::from_str(&text).unwrap();
         assert_eq!(back, e);
     }
+}
+
+fn note_catalog() -> UiCatalogData {
+    let catalog = json!({
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "components": {"Note": {"type": "object"}},
+    });
+    UiCatalogData {
+        catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".into(),
+        version: 2,
+        digest: catalog_digest(&catalog).unwrap(),
+        catalog,
+    }
+}
+
+/// ADR 0023: the `ui_catalog` event is the person's, and its data is the object the web sends.
+#[test]
+fn a_ui_catalog_is_the_persons_event_and_its_data_is_what_the_web_sent() {
+    let data = note_catalog();
+    let e = event(
+        EventBody::UiCatalog(data.clone()),
+        Actor::user(&UserId::new("me@example.com")),
+    );
+    assert_eq!(e.kind(), EventKind::UiCatalog);
+    assert_eq!(e.kind().as_str(), "ui_catalog");
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        v,
+        json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00.123456Z",
+            "kind": "ui_catalog",
+            "actor": {"type": "user", "name": "me@example.com"},
+            "data": {
+                "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+                "version": 2,
+                "digest": data.digest,
+                "catalog": data.catalog,
+            }
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(v.clone()).unwrap(), e);
+    // the data is exactly what the web sends, so the envelope check reads it back
+    assert_eq!(UiCatalogData::from_json(&v["data"]).unwrap(), data);
+    // a ui_catalog without its digest does not read
+    let mut broken = v;
+    broken["data"].as_object_mut().unwrap().remove("digest");
+    assert!(serde_json::from_value::<Event>(broken).is_err());
 }
 
 #[test]

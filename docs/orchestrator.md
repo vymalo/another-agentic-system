@@ -645,6 +645,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 |---|---|---|---|
 | `UserMessage` | State kept; append `user_message`, `Delegate` | → `queued`; same commands | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
 | `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
+| `UserMessage` or `UiAction` that **carries a catalog** (`catalog: Some`, [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) | As the row of the input, and `ui_catalog` is appended **first**, before `user_message` / `ui_action`, when the thread has not recorded that digest; the delegation carries the catalog **inline** when this input made it current, else a reference | The same | The same for a message (the catalog goes before `job_started`); an action is `Err(Finished)` and records nothing |
 | `Cancel` | State kept; `RequestCancel { job }` (the current job's number) | State kept; `RequestCancel { job }` | No-op |
 | Agent status `submitted` | Nothing | Nothing | `Err(InvalidInState)`, dropped as late |
 | Agent status `working` | `queued` → `working`; append `agent_status`. Repeated in `working`: shown only with a detail | → `working` | `Err(InvalidInState)` |
@@ -679,11 +680,28 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `verification` | kept, never reset: a timer, verdict or `verify` row of an earlier job is stale by the comparison the core already makes |
 | `attempt` | 1 |
 | `task` | the new message |
+| `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | `pushed`, `results`, `summary`, `hold`, `branch_problem` | cleared |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
 card), and a CI report for an earlier job's commit cannot decide job *n+1* (`about_the_push` compares the new
 job's pushed commit).
+
+**The UI catalog on a thread** ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md), built in
+MVP slice 3). The web sends its component catalog with a thread's first run and again when its own version is newer
+than the thread's; the core records each digest once as a `ui_catalog` event (actor `user`) and keeps a ledger in
+the job (`Job.catalog`, `UiCatalogLedger`): the digests seen (at most 32, the oldest forgotten first) and the
+current catalog, the **highest version**. `UiCatalogLedger::accept` is the one rule, used by `transition` and,
+folding the same events, by the AG-UI projection: a digest the thread knows changes nothing; an unseen one is
+recorded; it becomes current when the thread has none, or its version is higher, or it is the same version with another
+digest (the later wins); an older version is recorded but never becomes current. What the agent is sent is
+`UiDelivery`, in `Command::Delegate` / `DelegateAction` and so in the outbox payload (`ui_catalog`): the catalog
+**inline** exactly when this input made it current (the first message, or the first after the UI's catalog changed),
+otherwise a **reference** `{catalogId, version, digest}` to the current one, and nothing when the thread has none. A
+delivery that was lost is healed by the agent asking for the catalog again, so no "sent" bookkeeping exists. A
+rework carries a reference too; the verifier's request carries none. The property tests
+(`tests/properties.rs`, `the_catalog_ledger_follows_the_events`) pin: a digest is recorded once, the current version
+never goes down, inline only in the commit that made it current, and the events alone rebuild the ledger.
 
 **Built in the core** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and
@@ -956,7 +974,8 @@ pub enum ThreadState { Queued, Working, Verifying, Blocked, Done, Failed, Cancel
 
 /// Everything that can happen to a thread, already protocol-neutral.
 pub enum Input {
-    UserMessage { user: UserId, text: String, message_id: Option<String>, run_id: Option<String> },
+    UserMessage { user: UserId, text: String, message_id: Option<String>, run_id: Option<String>,
+                  catalog: Option<UiCatalogData> },   // the screen's catalog, when it sent one (ADR 0023)
     Redeliver { text: String },   // a user message already in the log whose delegation never reached the agent
     Cancel { user: UserId },
     Agent { agent: AgentId, revision: Option<String>, update: AgentUpdate },
@@ -968,13 +987,13 @@ pub enum Input {
 /// What the application must do. The application turns these into ONE store commit.
 pub enum Command {
     Append(EventDraft),          // → an event in the thread's log
-    Delegate { text: String },   // → an outbox row, kind `delegate`
+    Delegate { text: String, catalog: Option<UiDelivery> },   // → an outbox row, kind `delegate`
     RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
@@ -1266,7 +1285,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1314,6 +1333,10 @@ so that parallel slices do not collide:
 - **`0005` (threads never lock, built):** `events.kind` gains `job_started` ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)).
   Nothing else changes in the schema: `Job.number` lives inside `threads.job` (a ledger without it is job 1), and
   the outbox's `cancel` payload gains a `job` inside its JSON.
+- **`0006` (UI catalog, built):** `events.kind` gains `ui_catalog` ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).
+  The thread's catalog ledger lives inside `threads.job` (`catalog`; a ledger without it has seen none) and the
+  delivery to the agent inside the outbox payloads (`ui_catalog`; a row without one tells the agent nothing of the
+  screen), so no column is added.
 
 ```mermaid
 erDiagram

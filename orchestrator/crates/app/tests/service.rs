@@ -795,6 +795,7 @@ async fn submit_applies_under_a_key_and_a_replay_is_a_duplicate() {
         message_id: Some("m-2".to_owned()),
         run_id: Some("r-2".to_owned()),
         origin: orch_core::Origin::Agui,
+        catalog: None,
     };
     // Not yet blocked, but a user message is valid while working, so it is applied.
     let first = app
@@ -831,6 +832,7 @@ async fn submit_validates_the_text_and_checks_the_owner() {
         message_id: None,
         run_id: None,
         origin: orch_core::Origin::Agui,
+        catalog: None,
     };
     assert!(
         invalid(

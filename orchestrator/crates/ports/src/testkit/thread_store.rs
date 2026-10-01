@@ -8,7 +8,7 @@ use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
     CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, EventBody,
     GatePolicy, Hold, Job, Origin, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState,
-    Timer, UserId, UserMessageData, WatchKey,
+    Timer, UiCatalogData, UiCatalogLedger, UiDelivery, UserId, UserMessageData, WatchKey,
 };
 use uuid::Uuid;
 
@@ -85,6 +85,7 @@ fn delegate(n: u128) -> NewOutbox {
             text: format!("do {n}"),
             release: None,
             new_job: false,
+            ui_catalog: None,
         },
     }
 }
@@ -305,6 +306,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             action,
             at: t0(),
             release: Some("staging".into()),
+            ui_catalog: Some(UiDelivery::Ref(catalog_data(2, "chat").reference())),
         },
     };
     let rows = vec![delegate(1), action_row.clone()];
@@ -1642,8 +1644,26 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
     );
 }
 
+/// A version of a UI catalog, with its real digest; the version is part of the content, so two
+/// versions differ, and `tag` makes two of one version differ.
+fn catalog_data(version: u32, tag: &str) -> UiCatalogData {
+    let catalog = serde_json::json!({
+        "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "components": {"Note": {"type": "object", "title": format!("{tag}-{version}")}},
+    });
+    UiCatalogData {
+        catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".to_owned(),
+        version,
+        digest: orch_core::catalog_digest(&catalog).unwrap(),
+        catalog,
+    }
+}
+
 /// A job that uses every field of the ledger.
 fn busy_job() -> Job {
+    let mut catalog = UiCatalogLedger::default();
+    catalog.accept(Some(&catalog_data(1, "chat")));
+    catalog.accept(Some(&catalog_data(2, "chat")));
     let mut gate = GatePolicy::requiring([CheckSource::Ci, CheckSource::Verifier]);
     gate.max_attempts = 4;
     gate.ci.required = ["build".to_owned()].into();
@@ -1672,6 +1692,7 @@ fn busy_job() -> Job {
             findings: vec!["build: failure".into()],
         }],
         hold: Some(Hold::CiTimeout),
+        catalog,
     }
 }
 
@@ -1833,6 +1854,120 @@ pub async fn job_is_written_with_the_state<S: ThreadStore>(store: S) {
     let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
     assert_eq!(after.job, winners[0]);
     assert_eq!(after.version, 3);
+}
+
+/// The `ui_catalog` event, the thread's catalog ledger and the delivery in an outbox row are
+/// stored and read back (ADR 0023): the event in every read of the log (and as the newest of its
+/// kind, which is how a thread's current catalog is found), the ledger with the thread, and the
+/// delivery, inline or by reference, in the row's payload.
+pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
+    let (v1, v2) = (catalog_data(1, "chat"), catalog_data(2, "chat"));
+    let catalog_event = |data: &UiCatalogData| NewEvent {
+        at: t0(),
+        actor: Actor::user(&alice()),
+        body: EventBody::UiCatalog(data.clone()),
+        idempotency_key: None,
+    };
+    let row = |n: u128, delivery: UiDelivery| NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Delegate {
+            text: format!("do {n}"),
+            release: None,
+            new_job: false,
+            ui_catalog: Some(delivery),
+        },
+    };
+
+    // A thread whose first message carries a catalog: the event first, the ledger with the
+    // thread, the catalog inline in the delegation.
+    let mut ledger = UiCatalogLedger::default();
+    ledger.accept(Some(&v1));
+    let mut first = commit(
+        ThreadState::Queued,
+        vec![catalog_event(&v1), user_event("hi", None)],
+        vec![row(1, UiDelivery::Inline(v1.clone()))],
+    );
+    first.job = Some(Job {
+        catalog: ledger.clone(),
+        ..Job::default()
+    });
+    let (created, events) = store
+        .create_thread(new_thread(&alice(), 1), first)
+        .await
+        .unwrap();
+    assert_eq!(created.job.catalog, ledger);
+    assert_eq!(events[0].body, EventBody::UiCatalog(v1.clone()));
+    assert_eq!(
+        store.list_events(thread_id(1), 0, 10).await.unwrap(),
+        events
+    );
+    let stored = store.get_outbox(outbox_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        stored.payload,
+        OutboxPayload::Delegate {
+            text: "do 1".into(),
+            release: None,
+            new_job: false,
+            ui_catalog: Some(UiDelivery::Inline(v1.clone())),
+        }
+    );
+
+    // A newer catalog on a later message: a second event, the ledger moves, a reference later.
+    ledger.accept(Some(&v2));
+    let mut second = commit(
+        ThreadState::Queued,
+        vec![catalog_event(&v2), user_event("again", None)],
+        vec![row(2, UiDelivery::Inline(v2.clone()))],
+    );
+    second.job = Some(Job {
+        catalog: ledger.clone(),
+        ..Job::default()
+    });
+    let (record, _) = applied(store.commit(thread_id(1), 1, second).await.unwrap());
+    assert_eq!(record.job.catalog, ledger);
+    assert_eq!(
+        record.job.catalog.current().map(|c| c.version),
+        Some(2),
+        "the newest version is current"
+    );
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(got.job.catalog, ledger);
+    let third = commit(
+        ThreadState::Queued,
+        vec![user_event("third", None)],
+        vec![row(3, UiDelivery::Ref(v2.reference()))],
+    );
+    applied(store.commit(thread_id(1), 2, third).await.unwrap());
+    let stored = store.get_outbox(outbox_id(3)).await.unwrap().unwrap();
+    assert!(matches!(
+        stored.payload,
+        OutboxPayload::Delegate { ui_catalog: Some(UiDelivery::Ref(ref r)), .. } if *r == v2.reference()
+    ));
+    // a commit with no job leaves the ledger
+    assert_eq!(
+        store
+            .get_thread(None, thread_id(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .job
+            .catalog,
+        ledger
+    );
+
+    // The newest catalog event of the thread is found without scanning the log.
+    let latest = store
+        .latest_events(thread_id(1), orch_core::EventKind::UiCatalog, 10)
+        .await
+        .unwrap();
+    let digests: Vec<_> = latest
+        .iter()
+        .map(|e| match &e.body {
+            EventBody::UiCatalog(d) => d.digest.clone(),
+            other => panic!("not a catalog: {other:?}"),
+        })
+        .collect();
+    assert_eq!(digests, [v2.digest.clone(), v1.digest.clone()]);
 }
 
 /// The events of the gate (and `job_started`) are stored and read back, and `verifying` is a

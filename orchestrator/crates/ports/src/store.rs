@@ -4,7 +4,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, BoxError, Classify, ErrorClass, Event, EventBody,
-    EventKind, Job, PushedRef, ThreadId, ThreadRecord, ThreadState, UserId, WatchKey,
+    EventKind, Job, PushedRef, ThreadId, ThreadRecord, ThreadState, UiDelivery, UserId, WatchKey,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -86,6 +86,11 @@ pub enum OutboxPayload {
         /// the field existed.
         #[serde(default, skip_serializing_if = "is_false")]
         new_job: bool,
+        /// What to tell the agent of the person's UI catalog (ADR 0023): the catalog itself, or a
+        /// reference to the current one. Absent when the thread has none, and in a row written
+        /// before the field existed. Public data, never a secret.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ui_catalog: Option<UiDelivery>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -96,6 +101,10 @@ pub enum OutboxPayload {
         at: Timestamp,
         /// Selected release channel or revision.
         release: Option<String>,
+        /// What to tell the agent of the person's UI catalog, as for
+        /// [`OutboxPayload::Delegate`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ui_catalog: Option<UiDelivery>,
     },
     /// Cancel. `job` is the job of the thread the person asked to stop (ADR 0020): a row claimed
     /// after that job ended and the next began is finished without calling the agent. A row

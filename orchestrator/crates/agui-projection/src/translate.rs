@@ -432,7 +432,11 @@ pub fn translate_with_warnings(
         action.version = *version;
         action.run_id = run_id;
         return finish(
-            vec![Input::UiAction { user, action }],
+            vec![Input::UiAction {
+                user,
+                action,
+                catalog: None,
+            }],
             input,
             known,
             warnings,
@@ -446,6 +450,7 @@ pub fn translate_with_warnings(
             message_id: None,
             run_id,
             origin: Origin::Agui,
+            catalog: None,
         }],
         (None, Some((id, text)), _) => vec![Input::UserMessage {
             user,
@@ -453,6 +458,7 @@ pub fn translate_with_warnings(
             message_id: Some(id),
             run_id,
             origin: Origin::Agui,
+            catalog: None,
         }],
         (None, None, true) => vec![Input::Cancel { user }],
         (None, None, false) => {

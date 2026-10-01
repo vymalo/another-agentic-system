@@ -13,6 +13,7 @@ mod ids;
 mod thread;
 mod transition;
 mod ui;
+mod ui_catalog;
 mod verify;
 
 pub use agent::{AgentTaskState, AgentUpdate};
@@ -38,6 +39,11 @@ pub use ui::{
     MAX_ID_BYTES, MAX_OPERATIONS, MAX_OPERATIONS_BYTES, MAX_SURFACE_BYTES, OperationError,
     OperationInfo, SurfaceOp, UiActionData, UiActionError, UiRejection, UiSurfaceData, UiVersion,
     check_operation_list, check_operations, inspect, serialized_len,
+};
+pub use ui_catalog::{
+    Accepted, CatalogError, MAX_CATALOG_BYTES, MAX_CATALOG_COMPONENTS, MAX_CATALOG_DEPTH,
+    MAX_CATALOG_ID_BYTES, MAX_CATALOG_VERSION, MAX_SEEN_CATALOGS, Observed, UiCatalogData,
+    UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json, catalog_digest,
 };
 
 /// Timestamps are `jiff` instants everywhere (no `f64` time).

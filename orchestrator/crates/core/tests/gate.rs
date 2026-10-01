@@ -63,6 +63,7 @@ fn message(text: &str) -> Input {
         message_id: None,
         run_id: None,
         origin: orch_core::Origin::Agui,
+        catalog: None,
     }
 }
 fn ci_report(name: &str, sha: &str, conclusion: CiConclusion) -> CiReport {
@@ -141,7 +142,7 @@ fn check_results(cmds: &[Command]) -> Vec<&CheckResult> {
 fn delegated(cmds: &[Command]) -> Vec<&str> {
     cmds.iter()
         .filter_map(|c| match c {
-            Command::Delegate { text } => Some(text.as_str()),
+            Command::Delegate { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -557,6 +558,39 @@ fn passing_agent_checks_without_a_pushed_commit_are_refused_and_rework() {
     last.job.gate.max_attempts = 1;
     let (snap, _) = feed(last, &[checks(true, S1, &[]), completed()]);
     assert_eq!(snap.state, Failed);
+}
+
+#[test]
+fn the_rework_is_sent_to_the_same_screen_the_person_has() {
+    // ADR 0023: the author still works for the person's screen, so its rework names the
+    // thread's current catalog (a reference: the agent has the catalog from the first message).
+    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
+    let catalog_json = json!({"catalogId": id, "components": {"Note": {"type": "object"}}});
+    let reference = UiCatalogRef {
+        catalog_id: id.into(),
+        version: 1,
+        digest: catalog_digest(&catalog_json).unwrap(),
+    };
+    let mut snap = gated(&[CheckSource::AgentChecks]);
+    snap.job.catalog.observe(&reference);
+    let (_, cmds) = feed(snap, &[completed()]);
+    let delivered: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::Delegate { catalog, .. } => Some(catalog.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(delivered, [Some(UiDelivery::Ref(reference))]);
+    // and a thread that was shown no catalog sends none, as before
+    let (_, cmds) = feed(gated(&[CheckSource::AgentChecks]), &[completed()]);
+    assert!(cmds.iter().all(|c| !matches!(
+        c,
+        Command::Delegate {
+            catalog: Some(_),
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -1606,6 +1640,7 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
         &Input::UiAction {
             user: user(),
             action,
+            catalog: None,
         },
     );
     assert_eq!(queued.state, Queued);

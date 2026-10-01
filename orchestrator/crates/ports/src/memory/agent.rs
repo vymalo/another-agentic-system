@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
-use orch_core::{AgentId, AgentTaskState, AgentUpdate, Releases, UiActionData, UiVersion};
+use orch_core::{
+    AgentId, AgentTaskState, AgentUpdate, Releases, ThreadId, UiActionData, UiDelivery, UiVersion,
+};
 use tokio::sync::Notify;
 
 use crate::{
@@ -34,6 +36,10 @@ pub enum Call {
         action: Option<Box<UiActionData>>,
         /// Selected release.
         release: Option<String>,
+        /// What the request told the agent of the person's UI catalog (ADR 0023).
+        ui_catalog: Option<Box<UiDelivery>>,
+        /// The thread the request named, when it named one (`None` for the verifier).
+        thread: Option<ThreadId>,
     },
     /// `resubscribe`.
     Resubscribe {
@@ -534,6 +540,8 @@ impl AgentClient for ScriptedAgent {
                 text: text.clone(),
                 action,
                 release: req.release.clone(),
+                ui_catalog: req.ui_catalog.clone().map(Box::new),
+                thread: req.thread,
             });
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));

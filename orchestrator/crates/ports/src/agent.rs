@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases, Timestamp,
-    UiActionData, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, Releases, ThreadId,
+    Timestamp, UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -155,6 +155,16 @@ pub struct SendRequest {
     pub content: SendContent,
     /// Selected release channel or revision (only sent when the card offers releases).
     pub release: Option<String>,
+    /// What to tell the agent of the person's UI catalog (ADR 0023): the catalog itself, or a
+    /// reference to the current one. `None` when the thread has no catalog, and for the verifier
+    /// (it is told nothing of the author's screen). An adapter sends it only to an agent whose
+    /// live card lists the `ui-catalog/v1` extension.
+    pub ui_catalog: Option<UiDelivery>,
+    /// The thread the message is about, for the adapters that give the agent a way back to it
+    /// (the `thread-tools/v1` extension). `None` for the verifier: it works in a context of its
+    /// own and gets no tools on the author's thread. Not a secret; what authorises the agent is
+    /// minted by the adapter at send time and never stored.
+    pub thread: Option<ThreadId>,
 }
 
 /// A task on an agent.

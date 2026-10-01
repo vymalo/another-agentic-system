@@ -5,7 +5,7 @@
 use orch_core::{
     AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiProvider,
     CiReport, Command, Event, GatePolicy, Input, ThreadId, ThreadState, Timestamp, UiActionData,
-    UiVersion, UserId,
+    UiCatalogData, UiVersion, UserId,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -83,6 +83,11 @@ pub enum Action {
         text: String,
         ids: bool,
     },
+    /// A user message that carries UI catalog `which` of [`catalog`] (the screen sends it with
+    /// the run).
+    Catalog {
+        which: u8,
+    },
     Cancel,
     Status(AgentTaskState, Option<String>),
     Artifact,
@@ -142,6 +147,25 @@ pub enum Action {
     },
 }
 
+/// UI catalog `which % 4`, with its real digest: versions 1, 2, 2 (another digest) and 3.
+pub fn catalog(which: u8) -> UiCatalogData {
+    let (version, tag) = match which % 4 {
+        0 => (1, "a"),
+        1 => (2, "b"),
+        2 => (2, "c"),
+        _ => (3, "d"),
+    };
+    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
+    let catalog =
+        json!({"catalogId": id, "components": {"Note": {"type": "object", "title": tag}}});
+    UiCatalogData {
+        catalog_id: id.to_owned(),
+        version,
+        digest: orch_core::catalog_digest(&catalog).unwrap(),
+        catalog,
+    }
+}
+
 /// A CI report about commit `commit` (see [`Action::Branch`]), as a surface normalises it.
 pub fn ci_report(name: &str, commit: u8, conclusion: CiConclusion) -> CiReport {
     CiReport {
@@ -182,6 +206,7 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
     let detail = proptest::option::of("[a-z ]{1,8}");
     prop_oneof![
         5 => ("[a-z]{1,8}", any::<bool>()).prop_map(|(text, ids)| Action::User { text, ids }),
+        2 => (0u8..4).prop_map(|which| Action::Catalog { which }),
         1 => Just(Action::Cancel),
         8 => (task_state, detail).prop_map(|(s, d)| Action::Status(s, d)),
         3 => Just(Action::Artifact),
@@ -270,6 +295,18 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     message_id: ids.then(|| format!("m-{users}")),
                     run_id: ids.then(|| format!("r-{users}")),
                     origin: orch_core::Origin::Agui,
+                    catalog: None,
+                }
+            }
+            Action::Catalog { which } => {
+                users += 1;
+                Input::UserMessage {
+                    user: user.clone(),
+                    text: "with a catalog".to_owned(),
+                    message_id: Some(format!("m-{users}")),
+                    run_id: Some(format!("r-{users}")),
+                    origin: orch_core::Origin::Agui,
+                    catalog: Some(catalog(*which)),
                 }
             }
             Action::Cancel => Input::Cancel { user: user.clone() },
@@ -387,6 +424,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                         version: UiVersion::V0_9_1,
                         run_id: ids.then(|| format!("r-{users}")),
                     },
+                    catalog: None,
                 }
             }
         };
