@@ -3,9 +3,9 @@
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`
 - **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
-  the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog and Choices (versions 1
-  and 2) are built; the adam-rs side (an agent that turns the catalog into model tools and refetches) is that
-  repository's slice; slice 4 adds Cards and Mermaid (version 3); see
+  the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, and Cards and
+  Mermaid (versions 1 to 3) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
+  catalog into model tools and refetches) is that repository's slice; see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
   the A2UI transport is [ADR 0013](../decisions/0013-a2ui-generative-ui.md); the optional-extension pattern is
@@ -197,6 +197,12 @@ Choices, and option values are unique within a question.
 
 ### Version 3 (slice 4): version 2 plus Cards and Mermaid
 
+Two output components: nothing is sent back from either. A **card's link** is drawn as a link to a new tab and a
+card never loads anything (no image, no favicon: ADR 0013 rule 5). A **Mermaid** graph is drawn by the web as an
+**image** (mermaid in the browser, strict security level, no HTML labels, the SVG shown through an `<img>`), with the
+source one click away as its text alternative; a graph that does not parse says so and shows its source, and does not
+refuse the surface. Both are in the [web's README](../../web/README.md#cards-and-mermaid).
+
 ```json
 {
   "Cards": {
@@ -244,8 +250,11 @@ Choices, and option values are unique within a question.
 }
 ```
 
-A card's `url` is also checked by the web as an http(s) URL before it is drawn as a link (ADR 0013's link rules). The
-later components (List, Stepper, Agent suggestion, Skill request, then Image and Web view, Notification opt-in) are
+A card's `url` is also checked by the web as an http(s) URL before it is drawn as a link (ADR 0013's link rules): the
+schema's pattern only says how a URL starts (`https://` or `http://`, in lower case), so a URL with user information, a
+control character or a backslash passes the schema and is refused by the web (rule `url`). A graph's own `%%{init}%%`
+directive or front matter cannot change how it is drawn: the web fixes mermaid's security level, its labels, its theme and
+its look, and a directive that names one is ignored. The later components (List, Stepper, Agent suggestion, Skill request, then Image and Web view, Notification opt-in) are
 added by raising the version; each is its own change to this page.
 
 When the web builds the catalog (`catalog.json`), the file and this page change together; until then this page is the
@@ -438,6 +447,12 @@ day, and from <https://a2ui.org/specification/v0.9.1-a2ui-extension-specificatio
 - MCP: a tool may return `structuredContent` and should also return the same JSON as text, a protocol error such as an
   unknown tool is a JSON-RPC error (`-32602`), and a tool's own failure is a result with `isError: true` (MCP
   specification 2025-11-25, <https://modelcontextprotocol.io/specification/2025-11-25/server/tools>).
+
+*Verified 2026-10-01*, for the web's Mermaid (`mermaid` 12.0.0 from the npm registry, MIT, read in the installed package and run;
+see the [web's README](../../web/README.md#dependencies-and-patches)): `securityLevel` and `maxTextSize` are in mermaid's default
+`secure` list, so a graph's directive or front matter cannot change them; `htmlLabels` and `theme` are not, so the web adds them
+(and the CSS, the font, the look, the layout) to the list; and ten kinds of graph (flowchart, sequence, class, state, entity
+relationship, Gantt, pie, mind map, timeline, git graph) are drawn in Chromium as an image.
 
 *Unverified:* that every adam-rs agent can read an inline catalog under both capability keys (built and tested with
 slice 3); the web's behaviour of the lowered custom components in the installed `@assistant-ui` packages (a test in

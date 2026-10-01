@@ -1007,3 +1007,65 @@ describe("choices (mock only): a Choices of three questions, and the answer", ()
     await waitForState(threadId, ["done"]);
   });
 });
+
+describe("cards-mermaid (mock only): text, three cards and a graph in one answer", () => {
+  const surfaceOf = (body: { event: Record<string, unknown> }[]) => {
+    const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");
+    const content = surfaces.at(-1)?.event.content as {
+      a2ui_operations: Record<string, unknown>[];
+    };
+    return content.a2ui_operations;
+  };
+  const componentsOf = (ops: Record<string, unknown>[]) =>
+    (
+      ops.find((o) => "updateComponents" in o) as {
+        updateComponents: { components: Record<string, unknown>[] };
+      }
+    ).updateComponents.components;
+
+  it("sends one agent message and one surface of the web's catalog, with Cards and Mermaid, and finishes", async () => {
+    const { threadId, body } = await startThread("cards-mermaid please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    await validated(body, "cards-mermaid run");
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    const words = body.filter((f) => f.event.type === "TEXT_MESSAGE_CONTENT");
+    expect(JSON.stringify(words)).toContain("I compared three ways to keep a login session");
+
+    const ops = surfaceOf(body);
+    expect(ops[0]).toMatchObject({
+      createSurface: { surfaceId: "s1", catalogId: OWN_CATALOG.catalogId },
+    });
+    const components = componentsOf(ops);
+    expect(components.map((c) => c.component)).toEqual(["Column", "Text", "Cards", "Mermaid"]);
+    const cards = components.find((c) => c.component === "Cards") as {
+      cards: Record<string, unknown>[];
+    };
+    expect(cards.cards).toHaveLength(3);
+    expect(cards.cards[2]?.url).toBeUndefined();
+    const graph = components.find((c) => c.component === "Mermaid") as { code: string };
+    expect(graph.code.startsWith("flowchart TD")).toBe(true);
+    await waitForState(threadId, ["done"]);
+  });
+
+  it("every component of every mock surface is a component of the catalog the web ships", async () => {
+    const names = new Set(Object.keys(OWN_CATALOG.catalog.components));
+    for (const word of [
+      "cards-mermaid",
+      "cards-bad",
+      "cards-bad-url",
+      "mermaid-bad",
+      "mermaid-hostile",
+    ]) {
+      const { body } = await startThread(`${word} please`, "reviewer", {
+        forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+      });
+      for (const c of componentsOf(surfaceOf(body))) {
+        expect(names.has(c.component as string), `${word}: ${String(c.component)}`).toBe(true);
+      }
+    }
+  });
+});

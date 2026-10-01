@@ -13,9 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { contextTooLarge, resolveFields } from "@/features/chat/lib/a2ui/context";
 import {
+  CARDS,
   CHECK_BOX,
   CHOICES,
   MAX_CONTEXT_BYTES,
+  MERMAID,
   OPEN_URL,
   TEXT_FIELD,
   UNSUPPORTED,
@@ -25,7 +27,9 @@ import type { Prepared } from "@/features/chat/lib/a2ui/prepare";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { CardsList } from "./cards";
 import { ChoicesInput } from "./choices";
+import { MermaidDiagram } from "./mermaid";
 import { useSurfaceHost } from "./surface-host";
 import { useView, ViewCtx, type ViewState } from "./view-context";
 
@@ -39,8 +43,10 @@ import { useView, ViewCtx, type ViewState } from "./view-context";
  *  - text is React text (no markdown, no HTML), and an image is never fetched (its alt text shows);
  *  - a control acts only in its own click handler: nothing sends on render, on an update or on a
  *    timer;
- *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx) are lowered by the validator
- *    and drawn here too; their strings are the agent's, drawn as text;
+ *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx; `vymalo.Cards`, cards.tsx;
+ *    `vymalo.Mermaid`, mermaid.tsx) are lowered by the validator and drawn here too; their strings
+ *    are the agent's, drawn as text, and a graph is an image that mermaid, loaded on demand,
+ *    draws;
  *  - `openUrl` is a plain link (`target="_blank" rel="noopener noreferrer"`) to a URL checked
  *    twice; a `userMessage` goes to the message box unsent; anything else the agent could ask for
  *    is a disabled button.
@@ -291,6 +297,8 @@ export const surfaceLibrary: GenerativeUILibrary = {
   [TEXT_FIELD]: entry(TextFieldInput as (props: never) => ReactNode),
   [CHECK_BOX]: entry(CheckBoxInput as (props: never) => ReactNode),
   [CHOICES]: entry(ChoicesInput as (props: never) => ReactNode),
+  [CARDS]: entry(CardsList as (props: never) => ReactNode),
+  [MERMAID]: entry(MermaidDiagram as (props: never) => ReactNode),
 };
 
 /**

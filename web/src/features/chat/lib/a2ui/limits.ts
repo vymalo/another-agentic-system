@@ -70,6 +70,8 @@ export const TEXT_FIELD = "vymalo.TextField";
 export const CHECK_BOX = "vymalo.CheckBox";
 /** The components of this app's own catalog that the converter keeps (it has no such component). */
 export const CHOICES = "vymalo.Choices";
+export const CARDS = "vymalo.Cards";
+export const MERMAID = "vymalo.Mermaid";
 
 /** The marker that stands for "the current value of this input" in an action's context. */
 export const FIELD = "$field";

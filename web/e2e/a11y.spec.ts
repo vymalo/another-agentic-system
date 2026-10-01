@@ -163,6 +163,33 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: an answer of words, cards and a graph has no serious violations (the graph drawn, its source open)", async ({
+      page,
+    }) => {
+      await startThread(page, "cards-mermaid please", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      const ui = page.getByRole("region", { name: "Interface from reviewer" });
+      await expect(ui.getByRole("img", { name: "How a request meets a session" })).toBeVisible();
+      await expect(ui.getByRole("list").getByRole("listitem")).toHaveCount(3);
+      expect(await axeViolations(page)).toEqual([]);
+      await ui.getByText("Diagram source").click();
+      await expect(ui.locator('[data-slot="mermaid-code"]')).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a graph that does not parse, and a refused Cards, have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "mermaid-bad now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.getByText("The graph could not be drawn.")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      await startThread(page, "cards-bad now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.getByText(/Interface not shown:/)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a thread with an A2UI surface has no serious violations (waiting, then finished)", async ({
       page,
     }) => {

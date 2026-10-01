@@ -3,11 +3,13 @@ import {
   applyA2uiOperations,
   convertSurfaceToUISpec,
 } from "@assistant-ui/react-generative-ui/a2ui";
+import { firstBadUrl, readCards } from "./cards";
 import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import { type CompiledCatalog, compiledOf } from "./catalog/validate";
 import { duplicateIn, readChoices } from "./choices";
 import {
   BASIC_CATALOG_IDS,
+  CARDS,
   CHECK_BOX,
   CHOICES,
   FIELD,
@@ -18,6 +20,7 @@ import {
   MAX_NODES,
   MAX_TEMPLATE_ITEMS,
   MAX_USER_MESSAGE,
+  MERMAID,
   OPEN_URL,
   RESERVED_PREFIX,
   TEXT_FIELD,
@@ -321,6 +324,24 @@ function checkChoices(id: string, c: Rec) {
   return undefined;
 }
 
+/**
+ * What JSON Schema cannot say about Cards: a card's link must be an absolute http(s) URL by the
+ * rule of ADR 0013 (the schema only checks how it starts). The links of the top level of a
+ * component are checked by the walk; these are one level down.
+ */
+function checkCards(id: string, c: Rec) {
+  if (!readCards(c))
+    return refuse("schema", `component ${clip(id)} (Cards) has no cards it can read`);
+  const bad = firstBadUrl(c);
+  if (bad !== undefined) {
+    return refuse(
+      "url",
+      `component ${clip(id)} (Cards) names, in card ${bad + 1}, a URL that is not an absolute http(s) URL`,
+    );
+  }
+  return undefined;
+}
+
 /** The first component whose name the catalog does not have (a non-text name counts as one). */
 function firstUnknown(components: ReadonlyMap<string, Rec>, catalog: CompiledCatalog) {
   for (const c of components.values()) {
@@ -436,6 +457,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
         return refuse("schema", `component ${clip(id)} (${type}) ${broken}`);
       }
       if (type === "Choices") checkChoices(id, c);
+      else if (type === "Cards") checkCards(id, c);
     } else if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {
       return refuse(
         catalog.has(String(type)) ? "catalog" : "vocabulary",
@@ -499,6 +521,11 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       // `sourceComponentId` of the answer's action
       eventActions++;
       next = { ...next, component: CHOICES, componentId: id };
+    } else if (mode === "own" && c.component === "Cards") {
+      // output only: no action, nothing to send; kept by the converter under its own name
+      next = { ...next, component: CARDS };
+    } else if (mode === "own" && c.component === "Mermaid") {
+      next = { ...next, component: MERMAID };
     }
     if (next !== c) lowered.set(id, next);
   }

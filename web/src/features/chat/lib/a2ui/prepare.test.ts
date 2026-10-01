@@ -1193,3 +1193,217 @@ describe("Choices (catalog version 2)", () => {
     expect(r.reason.length).toBeLessThan(400);
   });
 });
+
+describe("Cards and Mermaid (catalog version 3)", () => {
+  const card = (title: string, extra: Rec = {}) => ({ title, ...extra });
+  const cards = (over: Rec = {}): Rec => ({
+    id: "options",
+    component: "Cards",
+    cards: [card("One"), card("Two", { subtitle: "s", body: "b", tags: ["x"] })],
+    ...over,
+  });
+  const mermaid = (over: Rec = {}): Rec => ({
+    id: "flow",
+    component: "Mermaid",
+    code: "graph TD; A-->B",
+    ...over,
+  });
+  const surfaceOf = (...parts: Rec[]) =>
+    ours([
+      { id: "root", component: "Column", children: ["intro", ...parts.map((p) => p.id as string)] },
+      text("intro", "Hi"),
+      ...parts,
+    ]);
+
+  it("are drawn under our catalog, kept by the converter as vymalo.Cards and vymalo.Mermaid", () => {
+    const p = drawn(prepareSurface(surfaceOf(cards(), mermaid({ title: "Flow", caption: "c" }))));
+    expect(find(p.spec, "vymalo.Cards")).toMatchObject({
+      cards: [{ title: "One" }, { title: "Two", subtitle: "s", body: "b", tags: ["x"] }],
+    });
+    expect(find(p.spec, "vymalo.Mermaid")).toMatchObject({
+      code: "graph TD; A-->B",
+      title: "Flow",
+      caption: "c",
+    });
+    expect(find(p.spec, "Markdown")).toMatchObject({ value: "Hi" });
+    // output only: nothing to send, so the surface does not say its actions are off
+    expect(p.eventActions).toBe(0);
+  });
+
+  it("text, cards and a graph in one surface, with a Choices beside them", () => {
+    const choices = {
+      id: "pick",
+      component: "Choices",
+      questions: [
+        {
+          id: "q",
+          question: "Which?",
+          options: [
+            { value: "a", label: "A" },
+            { value: "b", label: "B" },
+          ],
+        },
+      ],
+    };
+    const p = drawn(prepareSurface(surfaceOf(cards(), mermaid(), choices)));
+    expect(p.eventActions).toBe(1);
+    for (const type of ["vymalo.Cards", "vymalo.Mermaid", "vymalo.Choices"]) {
+      expect(find(p.spec, type), type).toBeDefined();
+    }
+  });
+
+  it("under the basic catalog they are refused: the surface did not ask for ours", () => {
+    for (const c of [cards(), mermaid()]) {
+      const r = refused(prepareSurface(surface([column("root", [c.id as string]), c])));
+      expect(r.rule).toBe("catalog");
+      expect(r.reason).toContain(`"${c.component}"`);
+    }
+  });
+
+  it("an older build, with the thread at version 3, says it needs a newer app; at its own version, refuses", () => {
+    // version 2 of the catalog: no Cards, no Mermaid
+    const v2: OwnCatalog = {
+      ...OWN_CATALOG,
+      version: 2,
+      catalog: {
+        ...OWN_CATALOG.catalog,
+        components: Object.fromEntries(
+          Object.entries(OWN_CATALOG.catalog.components).filter(
+            ([name]) => name !== "Cards" && name !== "Mermaid",
+          ),
+        ),
+      },
+    };
+    const ops = surfaceOf(cards(), mermaid());
+    expect(prepareSurface(ops, { catalog: v2, threadVersion: 3 })).toEqual({
+      kind: "newer",
+      component: "Cards",
+    });
+    const r = refused(prepareSurface(ops, { catalog: v2, threadVersion: 2 }));
+    expect(r.rule).toBe("catalog");
+    expect(r.reason).toContain("version 2");
+  });
+
+  describe("Cards", () => {
+    const only = (over: Rec) => ours([{ ...cards(over), id: "root" }]);
+    const many = (n: number) => Array.from({ length: n }, (_, i) => card(`Card ${i}`));
+
+    it("a list or a grid of 1 to 24 cards: 24 are drawn, 25 and none are refused", () => {
+      drawn(prepareSurface(only({ cards: many(24) })));
+      drawn(prepareSurface(only({ cards: many(1), layout: "grid" })));
+      const over = refused(prepareSurface(only({ cards: many(25) })));
+      expect(over.rule).toBe("schema");
+      expect(over.reason).toContain("(Cards)");
+      expect(over.reason).toContain("cards");
+      expect(refused(prepareSurface(only({ cards: [] }))).rule).toBe("schema");
+      expect(refused(prepareSurface(only({ layout: "masonry" }))).rule).toBe("schema");
+    });
+
+    it("the lengths are exact: title 120, card title 200, subtitle 200, body 2000, 8 tags of 40", () => {
+      const at = (c: Rec) => only({ cards: [c] });
+      drawn(prepareSurface(only({ title: "t".repeat(120) })));
+      expect(refused(prepareSurface(only({ title: "t".repeat(121) }))).rule).toBe("schema");
+      drawn(prepareSurface(at(card("t".repeat(200)))));
+      expect(refused(prepareSurface(at(card("t".repeat(201))))).rule).toBe("schema");
+      expect(refused(prepareSurface(at(card("")))).rule).toBe("schema");
+      drawn(prepareSurface(at(card("a", { subtitle: "s".repeat(200) }))));
+      expect(refused(prepareSurface(at(card("a", { subtitle: "s".repeat(201) })))).rule).toBe(
+        "schema",
+      );
+      drawn(prepareSurface(at(card("a", { body: "b".repeat(2000) }))));
+      expect(refused(prepareSurface(at(card("a", { body: "b".repeat(2001) })))).rule).toBe(
+        "schema",
+      );
+      const tags = (n: number, len = 1) => Array.from({ length: n }, () => "x".repeat(len));
+      drawn(prepareSurface(at(card("a", { tags: tags(8, 40) }))));
+      expect(refused(prepareSurface(at(card("a", { tags: tags(9) })))).rule).toBe("schema");
+      expect(refused(prepareSurface(at(card("a", { tags: tags(1, 41) })))).rule).toBe("schema");
+      expect(refused(prepareSurface(at(card("a", { tags: [""] })))).rule).toBe("schema");
+    });
+
+    it("a card needs a title and has no other property: the reason names the component and the place", () => {
+      const noTitle = refused(prepareSurface(only({ cards: [card("ok"), { subtitle: "s" }] })));
+      expect(noTitle.rule).toBe("schema");
+      expect(noTitle.reason).toContain('component "root" (Cards)');
+      expect(noTitle.reason).toMatch(/title/);
+      const extra = refused(prepareSurface(only({ cards: [card("a", { image: "x.png" })] })));
+      expect(extra.rule).toBe("schema");
+      expect(extra.reason).toMatch(/image/);
+      // a property of the component that is not in the schema, and a binding where a literal is required
+      expect(refused(prepareSurface(only({ color: "red" }))).rule).toBe("schema");
+      expect(refused(prepareSurface(only({ cards: { path: "/cards" } }))).rule).toBe("schema");
+      expect(
+        refused(prepareSurface(only({ cards: [card("a", { body: { path: "/b" } })] }))).rule,
+      ).toBe("schema");
+    });
+
+    it("a link is an absolute http(s) URL: the good ones are drawn, normalised by the renderer", () => {
+      for (const [url] of GOOD_URLS) {
+        const p = prepareSurface(only({ cards: [card("a", { url })] }));
+        // the schema says the URL starts with `http://` or `https://`, in lower case; the rest of the
+        // rule (`safeHttpUrl`) is case-blind, and an agent that writes `HTTPS://` is told so by the schema
+        if (/^https?:\/\//.test(url)) drawn(p);
+        else expect(refused(p).rule, url).toBe("schema");
+      }
+    });
+
+    it("a link that is not one refuses the whole surface: by the schema, or by the URL rule", () => {
+      for (const url of BAD_URLS) {
+        if (url.length > 2048) continue;
+        const r = refused(prepareSurface(only({ cards: [card("a", { url })] })));
+        // what does not even start with http:// or https:// is the schema's; the rest is ADR 0013's rule
+        expect(r.rule, url).toBe(/^https?:\/\//.test(url) ? "url" : "schema");
+      }
+      const r = refused(
+        prepareSurface(
+          only({ cards: [card("a"), card("b", { url: "https://user@evil.example/" })] }),
+        ),
+      );
+      expect(r.rule).toBe("url");
+      expect(r.reason).toContain("card 2");
+      // over 2048 characters
+      expect(
+        refused(
+          prepareSurface(
+            only({ cards: [card("a", { url: `https://e.example/${"p".repeat(2040)}` })] }),
+          ),
+        ).rule,
+      ).toBe("schema");
+    });
+
+    it("the agent's text in a refusal is cut", () => {
+      const r = refused(prepareSurface(only({ cards: [card("a", { body: "b".repeat(9000) })] })));
+      expect(r.reason.length).toBeLessThan(400);
+    });
+  });
+
+  describe("Mermaid", () => {
+    const only = (over: Rec) => ours([{ ...mermaid(over), id: "root" }]);
+
+    it("the source is 1 to 20,000 characters: 20,000 are drawn, 20,001 and none are refused", () => {
+      drawn(prepareSurface(only({ code: "g".repeat(20_000) })));
+      const over = refused(prepareSurface(only({ code: "g".repeat(20_001) })));
+      expect(over.rule).toBe("schema");
+      expect(over.reason).toContain("(Mermaid)");
+      expect(over.reason).toContain("code");
+      expect(refused(prepareSurface(only({ code: "" }))).rule).toBe("schema");
+      expect(refused(prepareSurface(ours([{ id: "root", component: "Mermaid" }]))).reason).toMatch(
+        /required property "code"/,
+      );
+      expect(refused(prepareSurface(only({ code: 5 }))).rule).toBe("schema");
+      expect(refused(prepareSurface(only({ code: { path: "/code" } }))).rule).toBe("schema");
+    });
+
+    it("the title is 120 characters, the caption 500, and nothing else is a property", () => {
+      drawn(prepareSurface(only({ title: "t".repeat(120), caption: "c".repeat(500) })));
+      expect(refused(prepareSurface(only({ title: "t".repeat(121) }))).rule).toBe("schema");
+      expect(refused(prepareSurface(only({ caption: "c".repeat(501) }))).rule).toBe("schema");
+      expect(refused(prepareSurface(only({ theme: "dark" }))).rule).toBe("schema");
+      expect(refused(prepareSurface(only({ securityLevel: "loose" }))).rule).toBe("schema");
+    });
+
+    it("a graph is not a link: a url on the component is not in its schema", () => {
+      expect(refused(prepareSurface(only({ url: "https://example.com/" }))).rule).toBe("schema");
+    });
+  });
+});
