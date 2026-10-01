@@ -8,21 +8,18 @@ export const RECENCY = [
 ] as const;
 export type Recency = (typeof RECENCY)[number];
 
-const DAY = 24 * 60 * 60 * 1000;
+/** Midnight, local time, `back` calendar days before the day of `t` (a DST day is 23 or 25 hours). */
+const midnight = (t: Date, back = 0): number =>
+  new Date(t.getFullYear(), t.getMonth(), t.getDate() - back).getTime();
 
-/** Midnight of the local day `t` falls in. */
-const startOfDay = (t: Date): number =>
-  new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
-
-/** Which group a thread last touched at `at` goes in, seen at `now` (local days). */
+/** Which group a thread last touched at `at` goes in, seen at `now` (local calendar days). */
 export function recencyOf(at: string, now: Date): Recency {
   const t = Date.parse(at);
   if (Number.isNaN(t)) return "Older";
-  const today = startOfDay(now);
-  if (t >= today) return "Today";
-  if (t >= today - DAY) return "Yesterday";
-  if (t >= today - 7 * DAY) return "Previous 7 days";
-  if (t >= today - 30 * DAY) return "Previous 30 days";
+  if (t >= midnight(now)) return "Today";
+  if (t >= midnight(now, 1)) return "Yesterday";
+  if (t >= midnight(now, 7)) return "Previous 7 days";
+  if (t >= midnight(now, 30)) return "Previous 30 days";
   return "Older";
 }
 

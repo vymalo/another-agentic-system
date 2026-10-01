@@ -29,7 +29,7 @@ beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini
 
 - **Sidebar** 272 px, one step off the canvas (`--sidebar`), no border in light mode. Top: the mark
   and a collapse button; a "New chat" pill; the threads grouped by recency (Today, Yesterday,
-  Previous 7 days, Older) as single-line rows with a small live dot for a working or waiting
+  Previous 7 days, Previous 30 days, Older, by local calendar day) as single-line rows with a small live dot for a working or waiting
   thread. Collapsible on a desktop (remembered per browser); a sheet from the left on a phone.
 - **Top bar** 56 px, transparent: the title (one line), the agent as a pill, the thread's state as a
   pill, and an overflow menu (Export JSON). On a phone the menu button opens the sheet.

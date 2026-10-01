@@ -34,3 +34,21 @@ describe("the thread list's groups", () => {
     ]);
   });
 });
+
+describe("the groups across a change of clocks", () => {
+  it("yesterday is the calendar day, even when it had 25 hours", () => {
+    const tz = process.env.TZ;
+    // Europe/Berlin leaves summer time on 25 Oct 2026: that Sunday has 25 hours
+    process.env.TZ = "Europe/Berlin";
+    try {
+      const now = new Date(2026, 9, 26, 0, 30); // Monday 00:30
+      // Sunday 00:30: the first hour of Yesterday, 24 hours and one before now
+      const early = new Date(2026, 9, 25, 0, 30);
+      expect(now.getTime() - early.getTime()).toBe(25 * 60 * 60 * 1000);
+      expect(recencyOf(early.toISOString(), now)).toBe("Yesterday");
+      expect(recencyOf(new Date(2026, 9, 24, 23, 59).toISOString(), now)).toBe("Previous 7 days");
+    } finally {
+      process.env.TZ = tz;
+    }
+  });
+});
