@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { OWN_CATALOG, UI_CATALOG_PROP } from "../src/features/chat/lib/a2ui/catalog";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
+import { readSse, type SseFrame } from "../src/features/chat/lib/agui/sse";
 import type { components } from "../src/lib/api/schema";
 import {
   connect,
@@ -1237,5 +1238,164 @@ describe("cards-mermaid (mock only): text, three cards and a graph in one answer
         expect(names.has(c.component as string), `${word}: ${String(c.component)}`).toBe(true);
       }
     }
+  });
+});
+
+describe("holds (mock only): a run that waits for the test, and cuts that touch one thread", () => {
+  // a server of its own: the sender's refresh comes round every 40 ms here, not every second
+  const held = createMockServer({ stepMs: 5, keepaliveMs: 50, refreshMs: 40 });
+  let at = "";
+  beforeAll(async () => {
+    await new Promise<void>((r) => held.listen(0, "127.0.0.1", r));
+    // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
+    at = `http://127.0.0.1:${(held.address() as AddressInfo).port}`;
+  });
+  afterAll(async () => {
+    held.closeAllConnections();
+    await new Promise<void>((r) => held.close(() => r()));
+  });
+
+  const sleep = (ms: number) => new Promise<"quiet">((r) => setTimeout(() => r("quiet"), ms));
+
+  /** A response as one frame at a time: a frame, `quiet` when none came within `ms`, `end` when it is over. */
+  function reader(res: Response, ms = 5000) {
+    const stop = new AbortController();
+    const gen = readSse(res.body as ReadableStream<Uint8Array>, stop.signal);
+    let pending: Promise<IteratorResult<SseFrame>> | undefined;
+    return {
+      async next(within = ms): Promise<Frame | "quiet" | "end"> {
+        pending ??= gen.next();
+        const got = await Promise.race([
+          pending.catch(() => ({ done: true }) as const),
+          sleep(within),
+        ]);
+        if (got === "quiet") return got;
+        pending = undefined;
+        if (got.done || !("value" in got) || !got.value) return "end";
+        return { event: JSON.parse(got.value.data) as Record<string, unknown> };
+      },
+      close: () => stop.abort(),
+    };
+  }
+
+  const frameOf = async (r: ReturnType<typeof reader>, within?: number) => {
+    const f = await r.next(within);
+    if (f === "quiet" || f === "end") throw new Error(`no frame: the stream is ${f}`);
+    return f;
+  };
+
+  /** The words of the live pieces of a reply, up to the frame that says `until`. */
+  async function said(r: ReturnType<typeof reader>, until: string): Promise<string> {
+    let text = "";
+    while (!text.includes(until)) {
+      const f = await frameOf(r);
+      const live = (f.event.metadata as Record<string, unknown> | undefined)?.["vymalo.live"];
+      if (f.event.type === "TEXT_MESSAGE_CONTENT" && live) text += String(f.event.delta);
+    }
+    return text;
+  }
+
+  const run = (text: string, threadId = newId()) =>
+    postRun(at, "coder", {
+      threadId,
+      runId: "run-1",
+      // not `m-1`: the mock numbers the agent's messages that way, and a log that has a message of that id has said the reply
+      messages: [{ id: "user-1", role: "user", content: text }],
+    }).then((res) => ({ threadId, res }));
+  const release = (threadId: string) =>
+    fetch(`${at}/__mock/release?thread=${threadId}`, { method: "POST" });
+
+  it("stream-gate: five pieces and nothing more until released; a joiner is told the text so far; then the rest and the log's message", async () => {
+    const { threadId, res } = await run("stream-gate write the plan");
+    const writer = reader(res);
+    const first = await said(writer, "fix the off-by-one in the loop");
+    expect(first.startsWith("I'll start with the failing test")).toBe(true);
+    // held: the sender says the text again from the start every 40 ms, and the open reply has it all
+    expect(await writer.next(300)).toBe("quiet");
+
+    // a page that opens now heard none of the pieces: the sender's refresh tells it the text so far
+    const joiner = reader(await connect(at, threadId));
+    expect(await said(joiner, "fix the off-by-one in the loop")).toBe(first);
+    expect(await joiner.next(200)).toBe("quiet");
+
+    expect((await release(threadId)).status).toBe(204);
+    // goes on: the other three pieces, then the log's message (the rest of the words, final) and done
+    const rest: Frame[] = [];
+    for (;;) {
+      const f = await frameOf(writer);
+      rest.push(f);
+      if (isTerminal(f)) break;
+    }
+    expect(rest.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    expect(rest.map((f) => String(f.event.delta ?? "")).join("")).toContain("when it is green.");
+    // nothing waits any more
+    expect((await release(threadId)).status).toBe(409);
+    writer.close();
+    joiner.close();
+  });
+
+  it("stream-abandon: held after the two pieces, and a release that comes the moment they are seen finds it held", async () => {
+    const { threadId, res } = await run("stream-abandon what is the answer");
+    const writer = reader(res);
+    expect(await said(writer, "The answer is forty-")).toBe("The answer is forty-");
+    // no wait: the hold is part of the step before it, so a test that saw the last piece can release
+    expect((await release(threadId)).status).toBe(204);
+    const rest: Frame[] = [];
+    for (;;) {
+      const f = await frameOf(writer);
+      rest.push(f);
+      if (isTerminal(f)) break;
+    }
+    const ends = rest.filter((f) => f.event.type === "TEXT_MESSAGE_END");
+    expect(JSON.stringify(ends[0]?.event)).toContain('"abandoned":true');
+    expect(JSON.stringify(rest)).toContain("it is forty-two.");
+    expect(rest.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "success" },
+    });
+    writer.close();
+  });
+
+  it("a release for a thread that does not wait is a 409, and a thread that is not there is one too", async () => {
+    const { threadId, res } = await run("stream-hold write the plan");
+    const writer = reader(res);
+    await said(writer, "then make the smallest change");
+    // `stream-hold` waits for Stop, not for the test
+    expect((await release(threadId)).status).toBe(409);
+    expect((await release(newId())).status).toBe(409);
+    expect((await release("")).status).toBe(409);
+    expect((await fetch(`${at}/api/threads/${threadId}/cancel`, { method: "POST" })).status).toBe(
+      202,
+    );
+    writer.close();
+  });
+
+  it("drop-streams with a thread cuts that thread's streams and no other's; without one, every stream", async () => {
+    const a = await run("stream-hold write the plan");
+    const b = await run("stream-hold write the plan");
+    const ra = reader(a.res);
+    const rb = reader(b.res);
+    // the last piece before the hold: after it, nothing more comes on either stream until cancelled
+    await said(ra, "fix the off-by-one in the loop");
+    await said(rb, "fix the off-by-one in the loop");
+
+    expect(
+      (await fetch(`${at}/__mock/drop-streams?thread=${a.threadId}`, { method: "POST" })).status,
+    ).toBe(204);
+    // a's stream is cut; b's goes on (quiet: it is held)
+    for (let f = await ra.next(); f !== "end"; f = await ra.next()) {
+      expect(f, "a's stream ends").not.toBe("quiet");
+    }
+    expect(await rb.next(300)).toBe("quiet");
+
+    expect((await fetch(`${at}/__mock/drop-streams`, { method: "POST" })).status).toBe(204);
+    for (let f = await rb.next(); f !== "end"; f = await rb.next()) {
+      expect(f, "b's stream ends").not.toBe("quiet");
+    }
+    for (const t of [a.threadId, b.threadId])
+      await fetch(`${at}/api/threads/${t}/cancel`, { method: "POST" });
   });
 });

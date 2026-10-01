@@ -122,6 +122,8 @@ type Run = {
   timer: NodeJS.Timeout | undefined;
   pending: Step[];
   resume: ((answer: string) => Step[]) | undefined;
+  /** Set while the run waits at a `{ pause: "release" }` step: goes on with the steps after it. */
+  release?: () => void;
 };
 
 /** One open response that gets the frames of a thread as its log grows. */
@@ -437,11 +439,22 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const run = runs.get(t.id) ?? { timer: undefined, pending: [], resume: undefined };
     runs.set(t.id, run);
     clearTimeout(run.timer);
+    run.release = undefined;
     run.pending = [...steps];
+    // `{ pause: "release" }`: waits for the test's `POST /__mock/release`, then goes on a step later
+    const hold = () => {
+      run.release = () => {
+        run.release = undefined;
+        run.timer = setTimeout(tick, stepMs);
+      };
+    };
     const tick = () => {
       const step = run.pending.shift();
       if (!step) return;
-      if ("pause" in step) return; // waits for cancel
+      if ("pause" in step) {
+        if (step.pause === "release") hold();
+        return; // `cancel`: waits for the cancel
+      }
       if ("live" in step) {
         send(t.id, { ...step.live, agent: agentActor(t).name, end: step.live.end ?? "open" });
       } else {
@@ -454,6 +467,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         if (step.setState) setState(t, step.setState);
       }
       const next = run.pending[0];
+      if (next && "pause" in next && next.pause === "release") {
+        // held with the step before it, not a step later: a test that sees that step may release at once
+        run.pending.shift();
+        return hold();
+      }
       run.timer = setTimeout(tick, next && "quick" in next && next.quick ? 0 : stepMs);
     };
     run.timer = setTimeout(tick, stepMs);
@@ -478,10 +496,21 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       reset();
       return void res.writeHead(204).end();
     }
-    // Test hooks: cut every open stream (the network went away), or cut the next connect stream
-    // after `frames` frames, mid-group.
+    // Test hooks: cut every open stream (the network went away; `?thread=` cuts that thread's only,
+    // so that tests running in parallel against one mock do not cut each other's), cut the next
+    // connect stream after `frames` frames, mid-group, or let a run that waits at a `release` step
+    // go on (`?thread=`; 409 when that thread's run is not waiting, so a test cannot release nothing).
     if (path === "/__mock/drop-streams" && method === "POST") {
-      for (const set of viewers.values()) for (const v of [...set]) closeViewer(v, true);
+      const only = url.searchParams.get("thread");
+      for (const [id, set] of viewers) {
+        if (only === null || id === only) for (const v of [...set]) closeViewer(v, true);
+      }
+      return void res.writeHead(204).end();
+    }
+    if (path === "/__mock/release" && method === "POST") {
+      const run = runs.get(url.searchParams.get("thread") ?? "");
+      if (!run?.release) return problem(res, 409, "Not held", "no run of that thread is waiting");
+      run.release();
       return void res.writeHead(204).end();
     }
     if (path === "/__mock/cut-next-connect" && method === "POST") {
