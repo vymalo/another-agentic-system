@@ -3,14 +3,26 @@
  * and may not name. Not part of the app bundle.
  */
 
+import { OWN_CATALOG } from "./catalog";
+import { BASIC_CATALOG_IDS } from "./limits";
+
 type Rec = Record<string, unknown>;
 
 export const SURFACE = "s1";
+/** The id the basic catalog goes by in the surfaces the tests build (the `v0_9_1` spelling). */
+export const BASIC_CATALOG: string = BASIC_CATALOG_IDS[1];
+/** The id of this app's own catalog. */
+export const OWN_CATALOG_ID = OWN_CATALOG.catalogId;
 
 /** The operations of one surface: `createSurface`, its components, and optionally its data. */
-export function surface(components: Rec[], dataModel?: unknown, version = "v0.9"): Rec[] {
+export function surface(
+  components: Rec[],
+  dataModel?: unknown,
+  version = "v0.9",
+  catalogId: string = BASIC_CATALOG,
+): Rec[] {
   return [
-    { version, createSurface: { surfaceId: SURFACE, catalogId: "basic" } },
+    { version, createSurface: { surfaceId: SURFACE, catalogId } },
     { version, updateComponents: { surfaceId: SURFACE, components } },
     ...(dataModel !== undefined
       ? [{ version, updateDataModel: { surfaceId: SURFACE, path: "/", contents: dataModel } }]

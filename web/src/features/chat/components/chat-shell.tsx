@@ -183,8 +183,9 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
       state,
       waiting: snapshot.waiting,
       agentId: thread?.target.agentId ?? target.agentId,
+      catalogVersion: snapshot.uiCatalog?.version,
     }),
-    [state, snapshot.waiting, thread?.target.agentId, target.agentId],
+    [state, snapshot.waiting, snapshot.uiCatalog?.version, thread?.target.agentId, target.agentId],
   );
 
   return (

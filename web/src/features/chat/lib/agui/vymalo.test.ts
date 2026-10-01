@@ -9,6 +9,7 @@ import {
   parseJob,
   parseRework,
   parseStatus,
+  parseUiCatalog,
 } from "./vymalo";
 
 describe("reading an activity's content", () => {
@@ -361,5 +362,34 @@ describe("reading a CI report (ADR 0017)", () => {
     expect(parseCi({ ...ci, url: "HTTPS://ci.example.com/runs/1" })?.url).toBe(
       "https://ci.example.com/runs/1",
     );
+  });
+});
+
+describe("thread.uiCatalog of a snapshot", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+
+  it("is read when it is a catalog this build can compare", () => {
+    expect(
+      parseUiCatalog({ catalogId: "https://x.test/c", version: 2, digest, extra: true }),
+    ).toEqual({ catalogId: "https://x.test/c", version: 2, digest });
+  });
+
+  it("is nothing for anything else: it is not guessed", () => {
+    for (const v of [
+      undefined,
+      null,
+      "text",
+      [],
+      {},
+      { catalogId: "https://x.test/c", version: 2 },
+      { catalogId: "https://x.test/c", version: 0, digest },
+      { catalogId: "https://x.test/c", version: 1.5, digest },
+      { catalogId: "https://x.test/c", version: "2", digest },
+      { catalogId: "", version: 2, digest },
+      { catalogId: "https://x.test/c", version: 2, digest: "sha256:ABC" },
+      { catalogId: "https://x.test/c", version: 2, digest: `SHA256:${"a".repeat(64)}` },
+    ]) {
+      expect(parseUiCatalog(v), JSON.stringify(v)).toBeNull();
+    }
   });
 });

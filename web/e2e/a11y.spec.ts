@@ -134,6 +134,17 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: the placeholder of a surface that needs a newer version of the app has no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "catalog-newer now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(
+        page.getByRole("group", { name: "Interface needs a newer version of the app" }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a thread with an A2UI surface has no serious violations (waiting, then finished)", async ({
       page,
     }) => {

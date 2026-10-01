@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DataUIs } from "@/features/chat/components/data-uis";
+import { type ThreadView, ThreadViewProvider } from "@/features/chat/components/thread-view";
 import { type GoldenFrame, LiveStream, sse, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import { mountRuntime } from "@/features/chat/lib/agui/testing-runtime";
 import type { ThreadAgentOptions } from "@/features/chat/lib/agui/thread-agent";
@@ -147,18 +148,23 @@ export function mountSurfaces(
   host: Partial<SurfaceHost> = {},
   options: Partial<ThreadAgentOptions> = {},
   extra?: ReactNode,
+  /** What the transcript knows of the thread: its UI catalog version, say. */
+  view: Partial<ThreadView> = {},
 ) {
   const stream = new LiveStream();
   const value: SurfaceHost = { ...HOST, ...host };
+  const threadView: ThreadView = { state: "blocked", waiting: true, agentId: "plain", ...view };
   const mounted = mountRuntime(
     () => sse(stream.body),
     options,
     <SurfaceHostContext.Provider value={value}>
-      <TooltipProvider>
-        <DataUIs />
-        <Thread loading={false} empty={false} />
-        {extra}
-      </TooltipProvider>
+      <ThreadViewProvider value={threadView}>
+        <TooltipProvider>
+          <DataUIs />
+          <Thread loading={false} empty={false} />
+          {extra}
+        </TooltipProvider>
+      </ThreadViewProvider>
     </SurfaceHostContext.Provider>,
   );
   mounted.agent.start();

@@ -102,3 +102,12 @@ All of it is off under `prefers-reduced-motion`.
 The transcript is `role="log"` (name "Conversation"); the state pill is a polite `status`; steps are
 a list whose items carry their full meaning as text; focus rings on every control; everything works
 from the keyboard; axe finds nothing serious in either scheme.
+
+## A surface that needs a newer version of the app
+
+The thread was opened in a newer version of the app, and the agent used a component this one does not have (ADR 0023).
+It is said, not half drawn: a quiet bordered card (`--card`, the same width as a surface) with a refresh icon, "This
+part of the answer needs a newer version of the app." as its title, the component's name in muted text, and a small
+outline **Reload** button; the agent's label stays in the corner. It is a labelled group, never an `alert`: a replay of
+the thread must not announce it again. When the catalog is not newer, the same surface is the agent's mistake and is the
+refusal line ("Interface not shown: ..."), in the destructive colour.

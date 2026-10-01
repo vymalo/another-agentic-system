@@ -2,6 +2,13 @@ import { AbstractAgent, type BaseEvent, EventType, type RunAgentInput } from "@a
 import { MessageNotSentError } from "@assistant-ui/react";
 import createClient from "openapi-fetch";
 import { Observable, ReplaySubject, type Subscription } from "rxjs";
+import {
+  OWN_CATALOG,
+  type OwnCatalog,
+  shouldSendCatalog,
+  UI_CATALOG_PROP,
+  type UiCatalogRef,
+} from "@/features/chat/lib/a2ui/catalog";
 import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import type { ApiActor, ThreadState } from "@/lib/api/types";
@@ -13,6 +20,7 @@ import {
   ACTOR_PART,
   type JobView,
   parseJob,
+  parseUiCatalog,
   RELEASE_CHANNELS_URI,
 } from "./vymalo";
 
@@ -41,6 +49,10 @@ import {
  *   it arrives, before any validator can run, drops `v0.9.1` operations (the version our
  *   orchestrator relays) and has no `openUrl`, so the surface stays an activity part that
  *   `lib/a2ui/prepare.ts` validates and the renderer draws (web/README.md, "A2UI surfaces").
+ * - The UI catalog (ADR 0023): a run carries `forwardedProps["vymalo.uiCatalog"]` (this build's
+ *   `{catalogId, version, digest, catalog}`) when the thread's last `STATE_SNAPSHOT` says it has
+ *   none, or an older one, or another digest at the same version; the snapshot's
+ *   `thread.uiCatalog` is kept in `ThreadSnapshot` for the renderer's "newer version" rule.
  * - A user's action on a surface (`forwardedProps.a2uiAction`, from the runtime's
  *   `sendA2uiAction`, or staged by `stageA2uiAction` when an interrupt is open, which the runtime
  *   refuses to leave unanswered) goes out as a run with no message and no `resume`.
@@ -83,6 +95,12 @@ export type ThreadSnapshot = {
    * (attempt, attempts there are, sources, commit); null without a gate (ADR 0018).
    */
   job: JobView | null;
+  /**
+   * `STATE_SNAPSHOT.thread.uiCatalog`: the catalog the thread's agents were told about (ADR 0023),
+   * which decides whether a run carries this build's own and which surfaces it can draw;
+   * undefined for a thread that has none.
+   */
+  uiCatalog: UiCatalogRef | undefined;
   /**
    * The `RUN_ERROR` that ended the newest run (`code` such as `agent_failed`, `checks_failed`), so
    * the page can say why a thread failed; null while a run is open and after a run that did not fail.
@@ -130,6 +148,8 @@ export type ThreadAgentOptions = {
   baseUrl?: string;
   /** The agent and release a send goes to (read at send time). */
   target: () => Target;
+  /** The UI catalog this build sends (ADR 0023); the build's own unless a test says otherwise. */
+  catalog?: OwnCatalog;
   /** A send begins (the composer clears its last error). */
   onSending?: () => void;
   /** A run was accepted (the server answered `RUN_STARTED`). */
@@ -190,6 +210,7 @@ export class ThreadAgent extends AbstractAgent {
     state: undefined,
     title: undefined,
     job: null,
+    uiCatalog: undefined,
     failure: null,
     openRun: null,
     waiting: false,
@@ -363,6 +384,8 @@ export class ThreadAgent extends AbstractAgent {
             title: str(thread.title) ?? this.snapshot.title,
             // a snapshot without a job is a thread without a gate
             job: parseJob(isRecord(event.snapshot) ? event.snapshot.job : undefined),
+            // likewise: a snapshot without a catalog is a thread without one
+            uiCatalog: parseUiCatalog(thread.uiCatalog) ?? undefined,
           });
         }
         break;
@@ -585,6 +608,17 @@ export class ThreadAgent extends AbstractAgent {
     this.stagedAction = undefined;
   }
 
+  /**
+   * `{"vymalo.uiCatalog": …}` when this run should tell the thread about this build's catalog:
+   * the thread has none (a new thread, or one nobody told yet), or ours is newer (ADR 0023,
+   * docs/api/agui.md "Inbound"). An older build sends nothing, so it cannot move a thread back.
+   * The orchestrator records a digest once, so a run that sends it needlessly costs bytes only.
+   */
+  private catalogProps(): Record<string, unknown> {
+    const own = this.options.catalog ?? OWN_CATALOG;
+    return shouldSendCatalog(own, this.snapshot.uiCatalog) ? { [UI_CATALOG_PROP]: own } : {};
+  }
+
   private async post(
     input: RunAgentInput,
     action: Record<string, unknown> | undefined,
@@ -607,11 +641,14 @@ export class ThreadAgent extends AbstractAgent {
         state: {},
         tools: [],
         context: [],
-        forwardedProps: action
-          ? { a2uiAction: { userAction: action } }
-          : release
-            ? { [RELEASE_CHANNELS_URI]: { release } }
-            : {},
+        forwardedProps: {
+          ...(action
+            ? { a2uiAction: { userAction: action } }
+            : release
+              ? { [RELEASE_CHANNELS_URI]: { release } }
+              : {}),
+          ...this.catalogProps(),
+        },
         ...(resume && !action ? { resume } : {}),
       },
       parseAs: "stream",

@@ -158,6 +158,7 @@ Pinned exactly. *Verified 2026-09-29* on the npm registry (`npm view`):
 | `@assistant-ui/react-ag-ui` | 0.0.62 (2026-09-24, latest) | depends on `@ag-ui/client` `^0.0.59`, `@assistant-ui/core` `^0.3.21`, `@assistant-ui/react-generative-ui` `^0.0.21` |
 | `@assistant-ui/react-generative-ui` | 0.0.21 (2026-09-24, latest) | a direct dependency and a peer of the runtime: the app uses its reducer, its converter and `renderGenerativeUI` behind its own validator ([A2UI surfaces](#a2ui-surfaces)); the runtime's own A2UI path is bypassed |
 | `@ag-ui/client` | 1.0.0 (published 2026-09-17) | a direct dependency, and the `overrides` entry below; 1.0.1 was published 2026-09-29 and is not adopted (`tools/agui-conformance` reads the goldens with 1.0.0) |
+| `@cfworker/json-schema` | 4.1.1 (2025-01-31, latest; MIT) | validates each instance of the UI catalog against its component's JSON Schema, draft 2020-12 ([The UI catalog](#the-ui-catalog)). *Verified 2026-10-01* on the npm registry (`npm view`) and by running it: it interprets a schema (no `eval`, no `new Function`), reads `const`, `enum`, `pattern`, `additionalProperties` and `required`, and with `shortCircuit` its error list is the chain from the root to the broken rule |
 | `rxjs` | 7.8.1 | the version `@ag-ui/client` pins; `ThreadAgent.run` returns an `Observable` |
 
 #### Spike S5: the runtime on `@ag-ui/client` 1.0.0
@@ -350,8 +351,9 @@ templates) and appears to describe the repository head, not 0.0.21. Drafts for u
 ### The validator
 
 `src/features/chat/lib/a2ui/prepare.ts`, pure TypeScript (no React, no I/O), unit-tested next to it.
-`prepareSurface(operations)` returns `surface` (what to draw), `pending` (valid so far, nothing to
-draw yet: no `root`, or a child not sent yet), `deleted`, or `refused` with the rule and the reason,
+`prepareSurface(operations, {catalog?, threadVersion?})` returns `surface` (what to draw), `pending` (valid so far, nothing to
+draw yet: no `root`, or a child not sent yet), `deleted`, `newer` (a component of a newer catalog: see
+[The UI catalog](#the-ui-catalog)), or `refused` with the rule and the reason,
 never part of a surface. The checks run in this order, cheapest first, and the library's reducer and
 converter only ever see operations that passed the ones before them:
 
@@ -359,8 +361,9 @@ converter only ever see operations that passed the ones before them:
 |---|---|
 | `size` | at most **64 KiB** (65,536 bytes of UTF-8) of serialised operations; one byte more is refused |
 | `shape`, `version`, `surfaces` | an array of objects, each with a `version` (`v0.9`, `v0.9.1`, `v1.0`; `v0.9.1` is read as `v0.9`) and exactly one operation (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) with a surface id of 1 to 256 bytes; one surface per activity; anything the reducer had to skip (a component without an id, an update of a surface never created) refuses the surface |
+| `catalog`, `schema` | the surface's catalog and, under ours, each instance's schema: see [The UI catalog](#the-ui-catalog) |
 | `components` | at most **400** components once the operations are applied (unreferenced ones count) |
-| `vocabulary` | only the components below; an unknown one refuses the surface wherever it is (never skipped) |
+| `vocabulary` | under the basic catalog, only the components below; an unknown one refuses the surface wherever it is (never skipped) |
 | `function` | a function value (`{call, ...}`, such as `formatString`) refuses: the pinned converter cannot run it |
 | `action` | a Button needs an action; an event needs a name of 1 to 256 bytes that does not start with `vymalo:` (reserved for what the app lowers) and a context that is an object; a `userMessage` is text of 1 to 4000 characters; a function call other than `openUrl` is ignored (a button that does nothing) |
 | `url` | see the links rule below |
@@ -436,6 +439,82 @@ title and a `Go` button, in two payloads, `v0.9.1`), asks "Pick one" and blocks;
 frame, and its action route refuses what the orchestrator refuses (`422` malformed, unknown surface, an
 action with a message; `413` over the sizes; `409` a run open or the thread finished).
 
+### The UI catalog
+
+[ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), contract
+[`docs/api/ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md). The web **defines** the components an agent may name
+beyond the basic vocabulary, tells every thread about them once, and refuses visibly what it cannot draw.
+
+| Piece | Where | What it is |
+|---|---|---|
+| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column` |
+| The lock | `catalog.lock.json` | `{version, digest}`. **The version is bumped by hand** and orders the catalogs a thread has seen (the highest is the newest); the digest is `sha256:` of the canonical JSON (`digest.ts`: sorted keys, no whitespace, integers only, ASCII keys only; the contract pins a known-answer vector, and `catalog.test.ts` checks it). The app ships the lock's digest and never computes one |
+| The script | `pnpm catalog:lock [<version>]` | Rewrites the lock. It refuses to put a new digest under the version it already had: change `catalog.json`, then `pnpm catalog:lock <next version>`, then add the pair to `RELEASED` in `catalog.test.ts` |
+| The tests | `catalog/catalog.test.ts` | The lock is the digest of `catalog.json` (a change without a new lock fails); the lock's pair is in `RELEASED` (a digest cannot change under a version that shipped); the document obeys the orchestrator's rules (an inline catalog only, no `$ref`/`$id`/`$anchor`/`$schema`, at most 64 components and 64 KiB, names like `Choices`); the send rule |
+| The validator | `catalog/validate.ts` | `@cfworker/json-schema`, each component schema compiled once at module load |
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant T as ThreadAgent
+  participant O as Orchestrator
+  participant P as prepareSurface
+  participant V as Renderer
+  O-->>T: STATE_SNAPSHOT thread.uiCatalog {catalogId, version, digest} (absent: the thread has none)
+  Note over T: a run is sent
+  alt no catalog on the thread, or ours is newer, or same version and another digest
+    T->>O: forwardedProps["vymalo.uiCatalog"] = {catalogId, version, digest, catalog} (merged with the action, release or gate)
+  else the thread has this digest, or a newer version (an older build)
+    T->>O: nothing: an older build cannot move a thread back
+  end
+  O-->>P: a surface naming our catalog, with threadVersion from the snapshot
+  alt every component is in our catalog and fits its schema
+    P-->>V: drawn
+  else a component this build lacks, and the thread's version is above ours
+    P-->>V: newer: "This part of the answer needs a newer version of the app." and Reload
+  else it lacks one, or breaks a schema
+    P-->>V: refused (rule catalog or schema), the reason and the raw operations
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Named: the first createSurface names a catalog
+  Named --> Basic: no id, or a basic id: the vocabulary of ten
+  Named --> Ours: the id of our catalog
+  Named --> Refused: any other id, an id that is not text, or two catalogs in one surface (rule catalog)
+  Ours --> Newer: a component we lack, thread version above ours
+  Ours --> Refused: a component we lack otherwise (catalog), or a broken schema (schema)
+  Ours --> Drawn: every instance fits
+  Basic --> Drawn: today's rules
+  Basic --> Refused: a component of ours (catalog) or outside the vocabulary
+  Newer --> [*]
+  Drawn --> [*]
+  Refused --> [*]
+```
+
+- **What is sent.** `ThreadAgent` keeps `STATE_SNAPSHOT.thread.uiCatalog` (`ThreadSnapshot.uiCatalog`; a snapshot without
+  one clears it, like `job`) and merges `"vymalo.uiCatalog": OWN_CATALOG` into `forwardedProps` when
+  `shouldSendCatalog` says so (`catalog/index.ts`): the thread has none (a new thread has no snapshot yet, so the run that
+  creates it carries the catalog), or our version is higher, or the version is the same and the digest differs. An older
+  build sends nothing. The orchestrator records a digest once, so a run that sends it needlessly costs bytes only.
+- **Which catalog a surface names.** Every `createSurface.catalogId` of the surface; none is the basic catalog, as
+  before. The three spellings of the basic catalog's id (`BASIC_CATALOG_IDS`) and no id are the basic catalog and
+  follow the rules above; our `catalogId` is ours; **any other id refuses the surface** (rule `catalog`: "names the catalog
+  ... which this app does not have"), and so does a surface that names two (a later `createSurface` starts it over).
+- **Ours.** The allowed components are the keys of the catalog, not the vocabulary of ten. Each instance
+  is validated against its schema and a violation refuses the surface (rule `schema`; "component "t" (Text) text:
+  String is too long (4001 > 4000)": the id, the component and the first rule broken, cut and without control
+  characters). A component of ours named under a basic id is refused (rule `catalog`).
+- **A component this build lacks** comes before every other check. If the thread's catalog is newer than ours
+  (`threadVersion > catalog.version`, from the snapshot, through `ThreadView.catalogVersion`), the whole surface is not an
+  error of the agent's: `prepareSurface` returns `newer` and `SurfaceActivity` draws `SurfaceNewer`, a quiet bordered
+  note ("This part of the answer needs a newer version of the app.", the component's name, **Reload**), never a part of
+  the surface. Otherwise it is refused (rule `catalog`). A thread whose catalog is newer does not excuse a surface of the
+  basic catalog.
+- **Not handled:** a component we know whose schema a newer build widened is a schema violation here (refused with its
+  reason), because the web cannot tell it from the agent's mistake.
+
 ## Layout
 
 Every file name is kebab-case (`pnpm check` fails otherwise). Tests sit next to the code they test.
@@ -452,7 +531,8 @@ src/features/chat/             the conversation: components (shell, top bar, com
                                thread details), lib/agui (ThreadAgent, SSE reader, live runs, the
                                vymalo vocabulary), lib/steps.ts (what a turn draws as a step, a card
                                or prose), lib/findings.ts (shortening untrusted text),
-                               lib/a2ui (the validator: limits, URLs, pointers, preparing a surface)
+                               lib/a2ui (the validator: limits, URLs, pointers, preparing a surface;
+                               catalog/ the UI catalog, its lock and its schemas)
 src/features/threads/          thread list: collapsible sidebar (desktop) and sheet (phone), grouped by
                                recency (lib/recency.ts, local calendar days of `updatedAt`), paging
                                hook; lib/sidebar-state.ts: the remembered open or closed sidebar and
@@ -465,6 +545,7 @@ src/features/agents/           the new chat: greeting, suggestion chips, agent a
 src/lib/                       api client and types (schema.d.ts is generated, never committed), uuidv7
 patches/                       pnpm patches of dependencies, and the drafts of their upstream twins
 e2e/, e2e-system/, mock/       Playwright suites (mock / real orchestrator) and the mock orchestrator
+scripts/                       `pnpm catalog:lock` (the UI catalog's lock)
 ```
 
 The look is [DESIGN.md](DESIGN.md), the brief with the references it is drawn from; the theme is
@@ -493,6 +574,7 @@ pnpm test          # vitest: SSE reader, ThreadAgent, the goldens through the ru
 pnpm build         # production build (standalone)
 pnpm test:e2e      # Playwright + axe + Lighthouse (>= 95 accessibility) against the mock orchestrator
 pnpm test:e2e:system   # Playwright against the REAL orchestrator, see "System tests"
+pnpm catalog:lock [<version>]   # rewrite the UI catalog's lock after a change (see "The UI catalog")
 pnpm screens       # the screenshots of e2e/__screens__/ (mock server, production build)
 ```
 
@@ -522,6 +604,8 @@ The first word of the first message picks the script, the same words as the orch
 | `verify-ci` | CI (ADR 0017, the `ci` golden): a gate on CI alone; the pending check, a red `vymalo.ci` report (`ci/build`, commit 1) that fails it and sends the agent back, then a green report for commit 2 and done |
 | `verify-ci-stale` | mock only, **not produced by the current orchestrator**: a gate on CI and the agent's checks; the CI check is pending, then a late failed report of an older push (its own `vymalo.ci` card) with a stale answer, then a green report and the answer that passes (a check card replaced in place, a card that stands apart) |
 | `verify-wait` | mock only: the same gate, CI never answers; the thread stays `verifying` (a pending card, no report card) until it is cancelled |
+| `catalog-newer` | mock only: the thread was opened by a newer version of the app (its UI catalog is version 99, whatever the web sent) and the agent sends a surface of our catalog with a component this build lacks (`Gizmo`): the placeholder that asks for a newer version; the result and done |
+| `catalog-unknown` | mock only: the same surface in a thread whose catalog is this build's: refused with the rule `catalog`; the result and done |
 | `partial` | mock only, **not produced by the current orchestrator**: a partial agent message replaced by its final version |
 | `unreachable` | mock only: an error activity, `RUN_ERROR` `delivery_failed`, thread blocked |
 | `Fix`, `Refactor`, `Make`, `Upgrade`, `Deploy`, `Also`, `Migrate` | mock only, the coder scenarios of `pnpm screens` (plain words, so the titles read well): steps with commands, a push, the agent's checks, a pull request and a markdown answer (`Fix`); the same, still running a command (`Refactor`); a failed check, a rework and a pass (`Make`); nothing after the message (`Upgrade`); a question (`Deploy`); a short follow-up (`Also`); a failure with the agent's reason (`Migrate`). The wording of the steps is the mock's, not adam-coder's |
@@ -533,14 +617,23 @@ cannot drift from the orchestrator unnoticed. Test hooks for the e2e suite: `POS
 /__mock/drop-streams` (cut every open stream), `POST /__mock/cut-next-connect?frames=n` (cut the
 next connect stream after `n` frames, in the middle of a group) and `POST /__mock/reset`.
 
+The mock also keeps what the web says about the UI catalog (ADR 0023): a run's
+`forwardedProps["vymalo.uiCatalog"]` is checked as the orchestrator checks it, less the JSON Schema compilation (the
+shape, an https `catalogId`, a version of 1 to 1,000,000, 64 KiB (`413`), at most 64 components with names like
+`Choices`, and the digest **recomputed**: `400` otherwise, before anything is written), recorded once per digest when
+the run applies an input, and made the thread's current catalog when it has none or the version is higher (an older
+one is recorded and never current). Every snapshot of the thread then says `thread.uiCatalog`. The catalog is kept
+outside the log, because `ui_catalog` is not in `chat-api.yaml` yet: a replay shows the current catalog throughout, where
+the orchestrator's projection shows it as of each event.
+
 Agents: `coder` (has `releases`) and `reviewer` (none).
 
 ## Tests
 
-| Command | What | Count (2026-09-30) |
+| Command | What | Count (2026-10-01) |
 |---|---|---|
-| `pnpm test` | vitest: the SSE reader; `ThreadAgent` (groups, reconnect with `Last-Event-ID`, dedupe by seq, acceptance at `RUN_STARTED`, problems, abort is not cancel); the AG-UI goldens through the patched runtime (messages, activities, interrupts, the cancelled outcome); the app in jsdom against the mock (new thread, replay, answer, refused send, cancel, not found, a surface and its action); **the A2UI validator and its security tests** (every bad URL scheme and trick, each limit at and one over, an expansion bomb and a reference bomb, the vocabulary, reserved names, function values, inputs), **the renderer** (the golden through the runtime, replace in place, delete, a refusal, a later run, no auto-send under fake timers, a click sends once, disabled states, `openUrl` as a link, `userMessage` in the composer unsent, no image ever) and **the app's side of an action** (what a click puts on the wire, with and without an open interrupt); **the verification gate** (the parsing of `vymalo.check`, `vymalo.rework` and `job`: malformed payloads draw nothing and unknown fields are ignored; the check and rework steps, the counter and the badge; findings that are markup or markdown shown as text, long ones cut and expandable; `verify-green` and `verify-red` through the runtime and through the whole `ChatShell` against the mock: the badge goes verifying, queued, working, verifying, done or failed, the counter 1/3 to 2/3, the check and rework steps in order, "Checks failed after 3 attempts", a reconnect mid-verification and a fresh page showing the same); **CI results** (`parseCi`: every required member needed, unknown fields ignored, a url that is not http(s) dropped; the CI step for every conclusion with its words, icon and tone, an unknown conclusion, a missing url, a `javascript:` url handed straight to the step, markdown and HTML in the name, branch and summary shown as text, a long summary and name cut; the `ci` golden through the runtime and through the whole `ChatShell` against the mock, a step replaced by whatever id the wire gives it, malformed payloads drawing nothing); **the turn** (what is a step, a card or prose, `lib/steps.ts`; the pull request and file cards; the thread list's recency groups); **Export JSON** (the file name the server gives and never a path, the download through the API client, a refused export saying why and downloading nothing, the mock's export against the contract); the mock against the contract and the goldens (`a2ui`, all four `verify-*` and `ci` included, the verifier's subagent among them) | 524 (28 files) |
-| `pnpm test:e2e` | Playwright on the production build against the mock: axe (no serious or critical issue, light and dark; new, finished and blocked thread, and a thread with an A2UI surface waiting, finished and refused) and Lighthouse accessibility >= 95 in both schemes; create, follow-up, cancel, failure, releases, API errors; reconnect (a dropped stream, a cut in the middle of a message); two tabs; A2UI (a surface is drawn and only a click sends the action, read-only after the thread finishes and after a reload, a refusal, no remote content); verification (sent back and done on attempt 2 of 3, `Checks failed after 3 attempts`, a pending check while verifying that survives a reload and ends with Cancel, a verifier agent's findings and pass, a pending check of the verifier that ends with Cancel, no counter without a gate; axe on a thread being verified, on one waiting for its verifier, on a stale check and on failed checks, both schemes); CI results (a red report and a green one as steps with their links, a late report of an older push, no card while CI has not answered; axe on the CI cards, both schemes); Export JSON, from the thread's menu (the thread downloads as `thread-<id>.json` with its events, and a failed export is said and leaves the page usable); the turn (a coder's steps in words, a command, the push, the checks, the pull request card and its link, the markdown answer said once; the live step and Stop; "is starting…" before the first event; a rework step and the folded findings; the question waiting for a reply; a suggestion that fills the box and sends nothing; the sidebar closed, remembered and opened) | 91 pass and 1 is skipped |
+| `pnpm test` | vitest: the SSE reader; `ThreadAgent` (groups, reconnect with `Last-Event-ID`, dedupe by seq, acceptance at `RUN_STARTED`, problems, abort is not cancel); the AG-UI goldens through the patched runtime (messages, activities, interrupts, the cancelled outcome); the app in jsdom against the mock (new thread, replay, answer, refused send, cancel, not found, a surface and its action); **the A2UI validator and its security tests** (every bad URL scheme and trick, each limit at and one over, an expansion bomb and a reference bomb, the vocabulary, reserved names, function values, inputs), **the renderer** (the golden through the runtime, replace in place, delete, a refusal, a later run, no auto-send under fake timers, a click sends once, disabled states, `openUrl` as a link, `userMessage` in the composer unsent, no image ever) and **the app's side of an action** (what a click puts on the wire, with and without an open interrupt); **the verification gate** (the parsing of `vymalo.check`, `vymalo.rework` and `job`: malformed payloads draw nothing and unknown fields are ignored; the check and rework steps, the counter and the badge; findings that are markup or markdown shown as text, long ones cut and expandable; `verify-green` and `verify-red` through the runtime and through the whole `ChatShell` against the mock: the badge goes verifying, queued, working, verifying, done or failed, the counter 1/3 to 2/3, the check and rework steps in order, "Checks failed after 3 attempts", a reconnect mid-verification and a fresh page showing the same); **CI results** (`parseCi`: every required member needed, unknown fields ignored, a url that is not http(s) dropped; the CI step for every conclusion with its words, icon and tone, an unknown conclusion, a missing url, a `javascript:` url handed straight to the step, markdown and HTML in the name, branch and summary shown as text, a long summary and name cut; the `ci` golden through the runtime and through the whole `ChatShell` against the mock, a step replaced by whatever id the wire gives it, malformed payloads drawing nothing); **the turn** (what is a step, a card or prose, `lib/steps.ts`; the pull request and file cards; the thread list's recency groups); **Export JSON** (the file name the server gives and never a path, the download through the API client, a refused export saying why and downloading nothing, the mock's export against the contract); **the UI catalog** (the canonical JSON and the known-answer digest the orchestrator pins too, the lock against `catalog.json` and against the released versions, the catalog document's own rules, every send rule of `ThreadAgent`, the validator's catalog and schema rules, the placeholder for a newer catalog and the refusal when it is not newer); the mock against the contract and the goldens (`a2ui`, all four `verify-*` and `ci` included, the verifier's subagent among them) and its record of the UI catalog | 587 (29 files) |
+| `pnpm test:e2e` | Playwright on the production build against the mock: axe (no serious or critical issue, light and dark; new, finished and blocked thread, and a thread with an A2UI surface waiting, finished and refused) and Lighthouse accessibility >= 95 in both schemes; create, follow-up, cancel, failure, releases, API errors; reconnect (a dropped stream, a cut in the middle of a message); two tabs; A2UI (a surface is drawn and only a click sends the action, read-only after the thread finishes and after a reload, a refusal, no remote content); the UI catalog (the first run of a thread carries it whole and a later one does not, the placeholder of a thread opened by a newer app, kept after a reload and never answered with a catalog, the refusal when the thread is not newer; axe on the placeholder, both schemes); verification (sent back and done on attempt 2 of 3, `Checks failed after 3 attempts`, a pending check while verifying that survives a reload and ends with Cancel, a verifier agent's findings and pass, a pending check of the verifier that ends with Cancel, no counter without a gate; axe on a thread being verified, on one waiting for its verifier, on a stale check and on failed checks, both schemes); CI results (a red report and a green one as steps with their links, a late report of an older push, no card while CI has not answered; axe on the CI cards, both schemes); Export JSON, from the thread's menu (the thread downloads as `thread-<id>.json` with its events, and a failed export is said and leaves the page usable); the turn (a coder's steps in words, a command, the push, the checks, the pull request card and its link, the markdown answer said once; the live step and Stop; "is starting…" before the first event; a rework step and the folded findings; the question waiting for a reply; a suggestion that fills the box and sends nothing; the sidebar closed, remembered and opened) | 97 pass and 1 is skipped |
 | `pnpm test:e2e:system` | the same UI against the real orchestrator, see below (Export JSON included: the downloaded file is the log the connect stream replays) | 23 |
 
 ## System tests

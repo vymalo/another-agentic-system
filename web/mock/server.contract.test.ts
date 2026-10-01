@@ -5,6 +5,8 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { OWN_CATALOG, UI_CATALOG_PROP } from "../src/features/chat/lib/a2ui/catalog";
+import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
 import {
   connect,
@@ -755,5 +757,140 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const r3 = await fetch(`${base}/api/threads?limit=1&before=${all[0]?.id}`);
     const next = (await expectDocumented("/api/threads", "get", r3)) as Thread[];
     expect(next.map((t) => t.id)).toEqual([all[1]?.id]);
+  });
+});
+
+describe("the UI catalog (ADR 0023), as the mock records it", () => {
+  const ref = (version = OWN_CATALOG.version, digest = OWN_CATALOG.digest) => ({
+    catalogId: OWN_CATALOG.catalogId,
+    version,
+    digest,
+  });
+  /** A catalog that is not the build's: one more component, a version and a digest of its own. */
+  const catalogV = async (version: number) => {
+    const catalog = {
+      ...OWN_CATALOG.catalog,
+      components: {
+        ...OWN_CATALOG.catalog.components,
+        [`Extra${version}`]: {
+          type: "object",
+          properties: { component: { const: `Extra${version}` } },
+        },
+      },
+    };
+    return { ...OWN_CATALOG, version, catalog, digest: await catalogDigest(catalog) };
+  };
+  /** The `uiCatalog` of each snapshot of a run. */
+  const snapshots = (list: Frame[]) =>
+    list
+      .filter((f) => f.event.type === "STATE_SNAPSHOT")
+      .map((f) => (f.event.snapshot as { thread: { uiCatalog?: unknown } }).thread.uiCatalog);
+
+  it("records the catalog a run carries, and says it in every snapshot of the thread", async () => {
+    const { body } = await startThread("Implement the thing", "coder", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    const says = snapshots(body);
+    expect(says.length).toBeGreaterThan(0);
+    for (const s of says) expect(s).toEqual(ref());
+  });
+
+  it("a thread nobody told about the catalog has none in its snapshots", async () => {
+    const { body } = await startThread("Implement the thing");
+    expect(snapshots(body).every((s) => s === undefined)).toBe(true);
+  });
+
+  it("refuses a malformed catalog before anything is written", async () => {
+    const bad: [number, string, unknown][] = [
+      [400, "not an object", "text"],
+      [
+        400,
+        "a digest that is not the catalog's",
+        { ...OWN_CATALOG, digest: `sha256:${"0".repeat(64)}` },
+      ],
+      [400, "a malformed digest", { ...OWN_CATALOG, digest: "sha256:ABC" }],
+      [400, "a version of 0", { ...OWN_CATALOG, version: 0 }],
+      [400, "a version over a million", { ...OWN_CATALOG, version: 1_000_001 }],
+      [400, "a catalogId that is not https", { ...OWN_CATALOG, catalogId: "http://x.test/c" }],
+      [
+        400,
+        "a catalog of another catalogId",
+        { ...OWN_CATALOG, catalogId: "https://x.test/other" },
+      ],
+      [
+        400,
+        "a component name that is not a name",
+        {
+          ...OWN_CATALOG,
+          catalog: { ...OWN_CATALOG.catalog, components: { lower: {} } },
+        },
+      ],
+      [
+        413,
+        "a catalog over 64 KiB",
+        {
+          ...OWN_CATALOG,
+          catalog: {
+            ...OWN_CATALOG.catalog,
+            components: { Big: { description: "x".repeat(65 * 1024) } },
+          },
+        },
+      ],
+    ];
+    for (const [status, label, value] of bad) {
+      const threadId = newId();
+      const res = await postRun(base, "coder", {
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: "Implement the thing" }],
+        forwardedProps: { [UI_CATALOG_PROP]: value },
+      });
+      expect(res.status, label).toBe(status);
+      await expectDocumented("/agui/agents/{agentId}", "post", res);
+      // nothing was created
+      expect((await fetch(`${base}/api/threads/${threadId}`)).status, label).toBe(404);
+    }
+  });
+
+  it("a newer catalog in a later run becomes the thread's; an older one never does", async () => {
+    const v1 = await catalogV(1);
+    const v2 = await catalogV(2);
+    const { threadId } = await startThread("ask a question", "coder", {
+      forwardedProps: { [UI_CATALOG_PROP]: v1 },
+    });
+    await waitForState(threadId, ["blocked"]);
+    // the answer carries v2: the snapshots of that run say 2
+    const answer = await postRun(base, "coder", {
+      threadId,
+      runId: newId(),
+      messages: [],
+      resume: [{ interruptId: "int-3", status: "resolved", payload: { text: "main" } }],
+      forwardedProps: { [UI_CATALOG_PROP]: v2 },
+    });
+    expect(answer.status).toBe(200);
+    const run = await validated(await frames(answer), "answer");
+    for (const s of snapshots(run)) expect(s).toEqual(ref(2, v2.digest));
+    await waitForState(threadId, ["done"]);
+    // an older UI's catalog on the next job is recorded and not current
+    const next = await postRun(base, "coder", {
+      threadId,
+      runId: newId(),
+      messages: [{ id: "m-next", role: "user", content: "Also this" }],
+      forwardedProps: { [UI_CATALOG_PROP]: v1 },
+    });
+    expect(next.status).toBe(200);
+    const again = await validated(await frames(next), "next job");
+    for (const s of snapshots(again)) expect(s).toEqual(ref(2, v2.digest));
+  });
+
+  it("catalog-newer (mock only): the thread's catalog is version 99, whatever the web sent", async () => {
+    const { body } = await startThread("catalog-newer please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    for (const s of snapshots(body)) {
+      expect(s).toMatchObject({ catalogId: OWN_CATALOG.catalogId, version: 99 });
+    }
+    const surface = body.find((f) => f.event.activityType === "a2ui-surface");
+    expect(JSON.stringify(surface?.event.content)).toContain("Gizmo");
   });
 });
