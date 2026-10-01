@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "@fontsource-variable/inter";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { PANEL_SCRIPT } from "@/features/panel/lib/panel-state";
 import { SIDEBAR_SCRIPT } from "@/features/threads/lib/sidebar-state";
 import "./globals.css";
 
@@ -28,6 +29,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script
           // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
           dangerouslySetInnerHTML={{ __html: SIDEBAR_SCRIPT }}
+        />
+        <script
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
+          dangerouslySetInnerHTML={{ __html: PANEL_SCRIPT }}
         />
       </head>
       <body className="bg-background text-foreground antialiased">

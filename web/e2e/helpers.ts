@@ -116,3 +116,18 @@ export async function chooseRelease(page: Page, value: string) {
   await agentMenuItem(page, value).click();
   await expect(agentMenu(page)).toBeHidden();
 }
+
+/**
+ * The right-hand panel of a thread: the header's toggle ("Thread details", `aria-expanded`), the panel
+ * itself (a complementary landmark when docked, a dialog when it is a sheet; both are named "Thread
+ * details"), its tabs and the separator that resizes it.
+ */
+export const panelToggle = (page: Page) => page.getByRole("button", { name: "Thread details" });
+export const panel = (page: Page) =>
+  page
+    .getByRole("complementary", { name: "Thread details" })
+    .or(page.getByRole("dialog", { name: "Thread details" }));
+export const panelTab = (page: Page, name: "Activity" | "Sources") =>
+  panel(page).getByRole("tab", { name: new RegExp(`^${name}`) });
+export const panelResizer = (page: Page) =>
+  page.getByRole("separator", { name: "Resize the details panel" });

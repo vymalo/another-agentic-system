@@ -5,6 +5,7 @@ import { AgentMenu } from "@/features/agents/components/agent-menu";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
 import { useExportThread } from "@/features/chat/hooks/use-export-thread";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
+import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
 import { StateBadge } from "./state-badge";
 import { ThreadMenu } from "./thread-menu";
@@ -64,7 +65,10 @@ export function ThreadHeader({ thread, agents, state, connection, waiting, leadi
             </span>
           ) : null}
           <StateBadge state={state} needsAnswer={waiting} />
-          <ThreadMenu exporter={exporter} disabled={thread === null} />
+          <div className="flex items-center">
+            <PanelToggle />
+            <ThreadMenu exporter={exporter} disabled={thread === null} />
+          </div>
         </div>
       </header>
       {exporter.error ? (

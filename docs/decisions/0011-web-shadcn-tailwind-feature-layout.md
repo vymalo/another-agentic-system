@@ -4,7 +4,12 @@
   selects. The owner asked for agent selection "a little more like the new ChatGPT", so the agent is picked
   from a Radix dropdown menu in the top bar (`agent-menu.tsx`: radio items, the chosen agent's releases as a
   second group of the same menu), which works from a phone and from the keyboard like any menu. The
-  `<optgroup>` of the revisions is a labelled group of the menu. The rest of this decision stands.
+  `<optgroup>` of the revisions is a labelled group of the menu. Also amended (2026-10-01): a thread has a
+  right-hand panel, a new feature folder `src/features/panel/` (the Activity and Sources tabs; docked beside
+  the chat on a wide window, a sheet on a narrower one, as the thread list is on a phone), built on the
+  `Tabs` primitive in `src/components/ui`; the Sources tab reads the links in the agents' words with
+  `mdast-util-from-markdown`, `mdast-util-gfm` and `micromark-extension-gfm`, the parser `remark-gfm` already
+  uses for the chat, pinned as direct dependencies. The rest of this decision stands.
 
 ## Context
 

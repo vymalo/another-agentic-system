@@ -17,16 +17,8 @@ import { AnswerBubble } from "@/features/chat/components/answer-bubble";
 import { TurnCards } from "@/features/chat/components/cards/turn-cards";
 import { StepList } from "@/features/chat/components/steps/step-list";
 import { useThreadView } from "@/features/chat/components/thread-view";
-import {
-  ACTIVITY,
-  ACTOR_PART,
-  activityPartName,
-  parseActor,
-  parseAnswers,
-  parseArtifact,
-  parseStatus,
-} from "@/features/chat/lib/agui/vymalo";
-import { drawsStep, isAnswerPart, isCardArtifact, isStepPart } from "@/features/chat/lib/steps";
+import { ACTOR_PART, parseActor, parseAnswers } from "@/features/chat/lib/agui/vymalo";
+import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
 
@@ -51,25 +43,6 @@ const useRunActor = (): ApiActor | undefined => {
   });
   return parseActor(data);
 };
-
-/** Whether a part draws anything: words, a step, a callout, a surface or a card. */
-function drawsSomething(part: AnyPart): boolean {
-  if (part.type === "text") return Boolean(part.text?.trim());
-  if (part.type !== "data" || !part.name) return false;
-  if (isStepPart(part)) {
-    if (drawsStep(part)) return true;
-    const artifact =
-      part.name === activityPartName(ACTIVITY.artifact) ? parseArtifact(part.data) : null;
-    return artifact !== null && isCardArtifact(artifact);
-  }
-  if (part.name === activityPartName(ACTIVITY.status)) {
-    return parseStatus(part.data)?.status === "failed";
-  }
-  return (
-    part.name === activityPartName(ACTIVITY.error) ||
-    part.name === activityPartName(ACTIVITY.surface)
-  );
-}
 
 /** Every stretch of step parts is one group, drawn as one list. */
 const byStep = (part: PartState): readonly "group-steps"[] =>
@@ -190,7 +163,8 @@ function TurnHeader({ actor, at }: { actor: ApiActor | undefined; at?: Date | un
   const { agentId } = useThreadView();
   const name = actor?.name ?? agentId;
   return (
-    <div className="flex min-w-0 items-center gap-2.5">
+    // focusable by the program only: the panel's "Turn n" puts the focus here
+    <div data-slot="turn-header" tabIndex={-1} className="flex min-w-0 items-center gap-2.5">
       <AgentAvatar agentId={agentId ?? name ?? "agent"} name={name ?? "Agent"} />
       {name ? (
         <WithTime at={at}>
@@ -255,11 +229,12 @@ export const AssistantMessage: FC = () => {
   const content = useAuiState((s) => s.message.content) as readonly AnyPart[];
   const running = useAuiState((s) => s.message.status?.type === "running");
   const isLast = useAuiState((s) => s.message.isLast);
+  const messageId = useAuiState((s) => s.message.id);
 
   let lastDrawn = -1;
   let lastText = -1;
   content.forEach((p, i) => {
-    if (drawsSomething(p)) lastDrawn = i;
+    if (drawsPart(p)) lastDrawn = i;
     if (p.type === "text" && p.text?.trim()) lastText = i;
   });
   // what the person answered through a Choices: their words, so above the agent's mark, not a step
@@ -288,6 +263,7 @@ export const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="agent-turn"
+      data-turn-id={messageId}
       className="flex min-w-0 motion-safe:animate-turn-in flex-col gap-3"
     >
       {answers.length > 0 ? <div className="mb-3 flex flex-col gap-3">{answered}</div> : null}

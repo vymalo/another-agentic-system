@@ -160,7 +160,8 @@ export function AgentMenu(props: AgentMenuProps) {
           variant="ghost"
           data-slot="agent-menu-trigger"
           className={cn(
-            "h-9 max-w-[min(100%,16rem)] min-w-0 gap-1.5 rounded-full ps-3 pe-2.5 text-base font-medium text-foreground",
+            // a button does not shrink by default; this one must give way to the state and the toggle
+            "h-9 max-w-[min(100%,16rem)] min-w-0 shrink gap-1.5 rounded-full ps-3 pe-2.5 text-base font-medium text-foreground",
             className,
           )}
         >
@@ -169,7 +170,8 @@ export function AgentMenu(props: AgentMenuProps) {
           <span className="min-w-0 truncate">
             <span className={current ? undefined : "capitalize"}>{name}</span>
             {release ? (
-              <span className="font-normal text-muted-foreground"> · {release}</span>
+              // a phone's top bar has no room for it; it stays part of the name for a screen reader
+              <span className="font-normal text-muted-foreground max-sm:sr-only"> · {release}</span>
             ) : null}
           </span>
           <ChevronDownIcon aria-hidden="true" className="size-4 text-muted-foreground" />

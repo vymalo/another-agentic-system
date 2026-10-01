@@ -107,6 +107,22 @@ test("on a thread the menu shows its agent and offers the others as a new chat",
   await expect(page.getByRole("heading", { name: "What should we get done?" })).toBeVisible();
 });
 
+test("the top bar fits: every control of a thread's header is wholly on the screen, on a phone too", async ({
+  page,
+}) => {
+  await startThread(page, "Implement the thing");
+  await expect(badge(page)).toHaveText("Done");
+  // the page clips what does not fit (the shell hides its overflow), so scrolling cannot tell: look at each control
+  for (const control of [
+    agentPicker(page),
+    page.getByRole("status", { name: /^Thread state:/ }),
+    page.getByRole("button", { name: "Thread details" }),
+    page.getByRole("button", { name: "Thread options" }),
+  ]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+});
+
 test("a link to an agent that does not exist falls back to the first agent", async ({ page }) => {
   await page.goto("/?agent=nobody");
   await expect(agentPicker(page)).toHaveText("Agent: Coder · production");

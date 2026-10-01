@@ -195,6 +195,30 @@ describe("ChatShell over AG-UI", () => {
     expect(link.getAttribute("href")).toBe("/?agent=reviewer");
   });
 
+  it("a thread has the panel's toggle in its header, and the new chat has none", async () => {
+    shell(null);
+    await agentPicker();
+    expect(screen.queryByRole("button", { name: "Thread details" })).toBeNull();
+    cleanup();
+
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const toggle = screen.getByRole("button", { name: "Thread details" });
+    expect(toggle.getAttribute("aria-controls")).toBe("thread-panel");
+    // a jsdom window is 1024 px wide: the panel is a sheet there, closed until asked for
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    const dialog = await screen.findByRole("dialog", { name: "Thread details" });
+    // the Sources tab holds the pull request the thread's agent opened
+    fireEvent.mouseDown(within(dialog).getByRole("tab", { name: /^Sources/ }));
+    within(dialog)
+      .getByRole("tab", { name: /^Sources/ })
+      .focus();
+    const link = await within(dialog).findByRole("link", { name: /^acme\/demo#1/ });
+    expect(link.getAttribute("href")).toBe("https://github.com/acme/demo/pull/1");
+  });
+
   it("a new chat opened from a link starts with the agent it names", async () => {
     window.history.replaceState(null, "", "/?agent=reviewer");
     try {
