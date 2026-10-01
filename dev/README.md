@@ -55,7 +55,16 @@ hi
 The coder answers with a greeting, not a request for a task: it says its name, what it does in one sentence and asks
 which repository to work on, and the thread waits for you (**Blocked**, an A2A `input_required`). The words are the
 first lines of the coder's instructions, which the model mock repeats back
-([Change what the coder says](#change-what-the-coder-says); `greeting-e2e.sh` asserts it). Then send, in the same
+([Change what the coder says](#change-what-the-coder-says); `greeting-e2e.sh` asserts it).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-your-turn.png">
+  <img src="../web/e2e/__screens__/desktop-light-your-turn.png" alt="A thread that waits for the person. The agent asks “Should I deploy to staging or straight to production?”, with a “Waiting for your reply” chip under it. The pill in the top bar reads Your turn, the message box says Reply… and the panel shows two steps." width="640">
+</picture>
+
+*A thread that waits for the person, as the web's mock plays it (`pnpm screens`; the question is the mock's, not the coder's greeting): the agent's question, a **Your turn** chip, the pill **Your turn** (the web's word for the thread state `blocked` when the agent asked something) and the box reading "Reply…".*
+
+Then send, in the same
 thread or a new one:
 
 ```text
@@ -74,8 +83,40 @@ pull request on the mock GitHub); the text only has to name the seeded repositor
 3. A second card **Passed · CI** follows within a few seconds: `mock-ci` saw the pushed branch on `git-server` and reported
    `mock-ci/build` for that commit through the webhook. The badge ends **Done**.
 
+What those stages look like in the web. The screens are from the web’s own mock server (`pnpm screens`), not from this stack: the agent's name, its steps and its words are the mock's. In the current web the coder's steps and the gate's verdicts, the "cards" of the list above, are lines of the panel's **Activity** tab, and the chat keeps one line for the turn.
+
+**Working.** The pill reads **Working…**; the chat holds one line ("Running cargo test -p auth login:: · 4 steps") and the panel lists the steps so far, the last one still running.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-agent-working.png">
+  <img src="../web/e2e/__screens__/desktop-light-agent-working.png" alt="A job in progress. The pill reads Working… and the message box has a Stop button. The chat holds one line, “Running cargo test -p auth login:: · 4 steps”; the Activity panel lists the four steps, the last one still running." width="640">
+</picture>
+
+**The gate and a rework.** There is no screen of the **Checking the work…** pill itself (the mock's scenarios end at **Done**); this one shows the verdicts when the agent's checks fail: a failed check with its finding, "Checks failed — trying again (2/3)", then "Verified the agent's checks: Passed".
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-rework.png">
+  <img src="../web/e2e/__screens__/desktop-light-rework.png" alt="The Activity panel of a thread whose agent was sent back: a failed check with its findings, “Checks failed — trying again (2/3)”, then “Verified the agent’s checks: Passed”. The chat holds the line “15 steps · 6s” with a “2 failed” chip, the answer and the pull request card." width="640">
+</picture>
+
+**Done, with a pull request.** The answer, the pull request card and, in the panel, the steps down to "Checks passed" and "Opened pull request #12".
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-done-pull-request.png">
+  <img src="../web/e2e/__screens__/desktop-light-done-pull-request.png" alt="A finished job in the chat. Left: the thread list. Middle: the coder’s answer under the line “9 steps · 4s”, with a code block and a pull request card with a View pull request button. Right: the Activity panel listing the steps, from reading the code to the passing checks and the opened pull request." width="640">
+</picture>
+
 Two more agents answer without a pull request: pick **Chat** and say `hi`, or pick **Researcher** and ask
-`Who won the football world cup in 2014?` ([Several agents](#several-agents)). Which gate, badge and card each agent shows (pick the agent in the chat, send the keyword; the scripts assert all of it):
+`Who won the football world cup in 2014?` ([Several agents](#several-agents)). You pick the agent with the menu in the top bar:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-agent-menu.png">
+  <img src="../web/e2e/__screens__/desktop-light-agent-menu.png" alt="The agent menu open over a new chat: three agents (Coder, Reviewer, Verifier) with one line each and a check on the chosen one, then the release channels production and staging, and three revisions." width="640">
+</picture>
+
+*The agent menu, as the web's mock plays it (`pnpm screens`): the mock lists Coder, Reviewer and Verifier, and the coder has release channels; this stack lists Coder, Chat and Researcher, and only Mock coder (releases) has a release group.*
+
+Which gate, badge and card each agent shows (pick the agent in the chat, send the keyword; the scripts assert all of it):
 
 | Agent | Send | What the chat shows | Script |
 |---|---|---|---|
@@ -794,6 +835,18 @@ with one `Cards` block of the sources it used (title, site, a sentence, the link
 is about how things relate. The blocks come back as **one surface**, a Column of a Text, the Cards and the Mermaid, under the screen's own catalogId; the words still
 carry every link ([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md) version 3: the web draws
 the cards and the graph, and a surface whose card has no title or a link that is not a plain `http(s)` URL is refused, visibly).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-cards.png">
+  <img src="../web/e2e/__screens__/desktop-light-cards.png" alt="An answer of words and a list of cards under the heading “Three ways to keep a session”: a card that links to postgresql.org, one that links to owasp.org and a third without a link, each with a title, a line, a sentence and tags." width="640">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-cards-mermaid.png">
+  <img src="../web/e2e/__screens__/desktop-light-cards-mermaid.png" alt="The same answer scrolled to its graph: a flowchart titled “How a request meets a session”, drawn from Mermaid (a request arrives, is there a session cookie, look up or create a session, handle the request), with a collapsed “Diagram source” and a caption." width="640">
+</picture>
+
+*An answer of words, cards and a graph as the web draws it, from the mock (`pnpm screens`), where the Reviewer plays the answering agent: its sources, wording and graph are the mock's, not the researcher's.*
 
 | What | Where |
 |---|---|

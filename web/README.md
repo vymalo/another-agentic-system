@@ -17,6 +17,33 @@ The UI renders what the server says. It never invents state: "running" is the th
 server sent, a refused send is taken back out of the transcript, and everything after a reload is
 the log replayed.
 
+## What it looks like
+
+Screenshots of the real UI, taken by `pnpm screens` against the mock server ([Layout](#layout)), so the agents, titles and
+wording are the mock's, not a real agent's. Every state, on a desktop and on a phone, in light and in dark, is in
+[`e2e/__screens__/`](e2e/__screens__/); the pictures here follow your browser's colour scheme.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-done-pull-request.png">
+  <img src="e2e/__screens__/desktop-light-done-pull-request.png" alt="A finished job in the chat. Left: the thread list. Middle: the coder’s answer under the line “9 steps · 4s”, with a code block and a pull request card with a View pull request button. Right: the Activity panel listing the steps, from reading the code to the passing checks and the opened pull request." width="720">
+</picture>
+
+*A finished job: the threads on the left, the answer and its pull request in the reading column, the steps in the panel on the right.*
+
+| A new chat | The agent menu |
+|---|---|
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-empty-thread.png"><img src="e2e/__screens__/desktop-light-empty-thread.png" alt="A new chat: the panda mark over the greeting “What should we get done?”, a line on what the chosen agent, Coder, does, a message box and four suggestion chips. The thread list on the left is empty." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-agent-menu.png"><img src="e2e/__screens__/desktop-light-agent-menu.png" alt="The agent menu open over a new chat: three agents (Coder, Reviewer, Verifier) with one line each and a check on the chosen one, then the release channels production and staging, and three revisions." width="400"></picture> |
+
+| The panel's Sources tab | A thread waiting for the person |
+|---|---|
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-panel-sources.png"><img src="e2e/__screens__/desktop-light-panel-sources.png" alt="A finished thread with the panel on its Sources tab: a branch and a pull request, a passed CI check and a link, each with a Turn 1 button." width="400"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-your-turn.png"><img src="e2e/__screens__/desktop-light-your-turn.png" alt="A thread that waits for the person. The agent asks “Should I deploy to staging or straight to production?”, with a “Waiting for your reply” chip under it. The pill in the top bar reads Your turn, the message box says Reply… and the panel shows two steps." width="400"></picture> |
+
+On a phone the thread list and the panel are sheets:
+
+| The thread list | A finished turn | The panel |
+|---|---|---|
+| <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-sidebar.png"><img src="e2e/__screens__/mobile-light-sidebar.png" alt="A phone: the thread list as a sheet that slides in from the left, with the panda mark and wordmark, a New chat button and the titles of the threads." width="200"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-done-pull-request.png"><img src="e2e/__screens__/mobile-light-done-pull-request.png" alt="A phone: the end of a finished turn, with the answer’s code block, the pull request card and its View pull request button, and the message box. The pill in the top bar reads Done." width="200"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-panel-activity.png"><img src="e2e/__screens__/mobile-light-panel-activity.png" alt="A phone: the panel as a sheet from the bottom, on its Activity tab, over the dimmed chat. It lists the turn’s steps and ends in a passed CI check with a View run link." width="200"></picture> |
+
 ## Contract
 
 The interfaces are [`docs/api/chat-api.yaml`](../docs/api/chat-api.yaml) (the resource API and the
@@ -204,6 +231,13 @@ checks the work, sends the agent back with the findings while attempts are left,
 all of it, so the transcript is one assistant message that grows through the attempts. The web draws what the stream
 says and decides nothing.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-rework.png">
+  <img src="e2e/__screens__/desktop-light-rework.png" alt="The Activity panel of a thread whose agent was sent back: a failed check with its findings, “Checks failed — trying again (2/3)”, then “Verified the agent’s checks: Passed”. The chat holds the line “15 steps · 6s” with a “2 failed” chip, the answer and the pull request card." width="720">
+</picture>
+
+*A rework (the mock's `Make …`): the first check failed with a finding, the gate sent the agent back ("trying again (2/3)") and the second attempt passed. The gate's verdicts are steps of the panel's Activity tab.*
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -281,6 +315,13 @@ line per agent turn**, which opens the right-hand panel, and the panel's **Activ
 ([DESIGN.md](DESIGN.md), "Steps panel"). The step parts the runtime already holds are its only source (nothing is
 fetched), so the chat's line and the panel can never disagree, on the live stream, on a replay and after a reload.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-steps-opened.png">
+  <img src="e2e/__screens__/desktop-light-steps-opened.png" alt="A delegation to OpenCode. In the chat one line, “20 steps · 3s” with a “1 failed” chip, then the answer and the pull request card. In the Activity panel the tree: OpenCode opened to its failed command and its latest three, with a “Show 10 more” link, then the push, the checks and the pull request." width="720">
+</picture>
+
+*The mock's delegation to OpenCode: one line in the chat ("20 steps · 3s", with the failure it holds), and in the panel the tree, a level opened to its latest steps and its failed one.*
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -346,6 +387,13 @@ The agent's words are shown **while they are written** ([ADR 0027](../docs/decis
 sys #65, [the stream](../docs/api/agui.md#live-text), [`text-stream/v1`](../docs/api/text-stream-v1.md)). They are not in the
 log: the log holds the reply once, final, and the runtime's transcript is the log. So the words travel as frames of their
 own, and the web keeps them out of the runtime as **drafts**.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-reply-writing.png">
+  <img src="e2e/__screens__/desktop-light-reply-writing.png" alt="A reply being written. The agent’s words so far, an introduction and a list whose second item is still being typed, end in a thin bar. The top bar says Working… and the Activity panel shows one step." width="720">
+</picture>
+
+*A draft (the mock's `Write …`): the words so far, in the type of the finished reply, and a caret after the last character.*
 
 ```mermaid
 sequenceDiagram
@@ -728,6 +776,18 @@ for what an agent shows rather than asks: `Cards` (`components/surface/cards.tsx
 not actions, hold no state the agent could read, and stay drawn on a finished thread. They sit in a surface beside text
 (`Text`, `Column`) and beside each other: one answer can be words, cards and a graph (the mock's `cards-mermaid`).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-cards.png">
+  <img src="e2e/__screens__/desktop-light-cards.png" alt="An answer of words and a list of cards under the heading “Three ways to keep a session”: a card that links to postgresql.org, one that links to owasp.org and a third without a link, each with a title, a line, a sentence and tags." width="640">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-cards-mermaid.png">
+  <img src="e2e/__screens__/desktop-light-cards-mermaid.png" alt="The same answer scrolled to its graph: a flowchart titled “How a request meets a session”, drawn from Mermaid (a request arrives, is there a session cookie, look up or create a session, handle the request), with a collapsed “Diagram source” and a caption." width="640">
+</picture>
+
+*The mock's `cards-mermaid` answer, from the Reviewer: the cards, then the graph further down the same turn.*
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -848,7 +908,12 @@ icons are generated from one drawing, `public/brand/panda.svg`: after changing i
 `src/app/apple-icon.png` and `public/brand/icon-{192,512,maskable-512}.png` with the Chromium that
 Playwright already pins (no other tool needed), and commit the result.
 `pnpm screens` writes a screenshot of every state, desktop and phone, light and dark, to
-[`e2e/__screens__/`](e2e/__screens__/) (`e2e/screens.spec.ts`); look at them after a visual change. To add a primitive
+[`e2e/__screens__/`](e2e/__screens__/) (`e2e/screens.spec.ts`); look at them after a visual change.
+**The docs embed these files** (the repository README, this file, [DESIGN.md](DESIGN.md) and
+[`dev/README.md`](../dev/README.md), each as a `<picture>` of the `-light-` and `-dark-` file of a state). A screen that is
+renamed or dropped breaks a doc: `tools/docs-check` fails on an image path that does not resolve, in `![](…)` and in the
+`src` and `srcset` of an HTML tag, so rename a screen with a search of the repository for its name. A screen is a still of the mock,
+never of a real agent: say so in a caption. To add a primitive
 (the CLI is pinned, see `components.json`; run `pnpm format` afterwards):
 
 ```sh

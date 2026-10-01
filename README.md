@@ -19,6 +19,13 @@ reacts to webhooks, and can be driven the same way. Its processes are
 stateless; the only durable state is the job ledger and event log (the chat)
 in Postgres.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="web/e2e/__screens__/desktop-dark-done-pull-request.png">
+  <img src="web/e2e/__screens__/desktop-light-done-pull-request.png" alt="A finished job in the chat. Left: the thread list. Middle: the coder’s answer under the line “9 steps · 4s”, with a code block and a pull request card with a View pull request button. Right: the Activity panel listing the steps, from reading the code to the passing checks and the opened pull request." width="720">
+</picture>
+
+*A finished job in the chat surface: the answer and its pull request in the middle, the steps the agent took in the panel on the right, the threads on the left. The screenshot is from the web’s own mock server (`pnpm screens`), not from the compose stack. More screens, phone layouts included: [`web/README.md`](web/README.md#what-it-looks-like).*
+
 ## In one picture
 
 ```mermaid
