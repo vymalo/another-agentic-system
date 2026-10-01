@@ -7,6 +7,9 @@
 //! - [`Projector`] folds core [`orch_core::Event`]s into AG-UI [`Frame`]s, one call per log
 //!   event, for an [`Audience`]. It reads no clock and no store; the same events always give
 //!   the same frames, so every replica and every replay agrees.
+//! - [`LiveOverlay`] adds the words of a reply that is still being written (ADR 0027) to what a
+//!   projector says, without touching the projector's fold: frames that are not in the log and
+//!   are never resume points, merged by message id with the log's final message.
 //! - [`Projector::resume_preamble`] re-opens the current run for a client that reconnects with a
 //!   cursor in the middle of it.
 //! - [`Connect`] is the fold behind the connect stream: the frames a client gets when it attaches
@@ -23,6 +26,7 @@
 mod capabilities;
 mod connect;
 mod frame;
+mod live;
 mod projector;
 mod translate;
 mod vocab;
@@ -30,6 +34,7 @@ mod vocab;
 pub use capabilities::{CardFacts, agent_capabilities};
 pub use connect::{Connect, Follow};
 pub use frame::{Audience, Frame};
+pub use live::{LiveOverlay, MAX_LIVE_MESSAGE_BYTES};
 pub use projector::{Projector, ThreadMeta};
 pub use translate::{
     InputError, KnownThread, ThreadView, Translation, Warning, held_message_ids, release_selector,
@@ -39,5 +44,5 @@ pub use vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
     ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, ACTIVITY_STEP,
     ACTOR_KEY, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED,
-    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, PROBLEM_KEY, RELEASE_CHANNELS_URI,
+    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, LIVE_KEY, PROBLEM_KEY, RELEASE_CHANNELS_URI,
 };

@@ -7,6 +7,12 @@
 //! the SSE `id:` (present only on resume points). `tools/agui-conformance` writes the frames as
 //! SSE and feeds them through the reference consumer of `@ag-ui/client`.
 //!
+//! A `<name>.feed.json` is the same with live text in it (ADR 0027): an array of `{"event": <a log
+//! event, as in the events goldens>}` and `{"live": {agent, messageId, offset, text, end}}` in the
+//! order a connection hears them, which no real run can pin down (the pieces and the log travel on
+//! different channels), so it is written by hand. Its stream is the projection with the live
+//! overlay on top.
+//!
 //! `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test golden` rewrites the files;
 //! without it any difference fails the test.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
@@ -15,9 +21,12 @@ mod support;
 
 use std::path::PathBuf;
 
-use orch_agui_projection::{Audience, Frame, Projector, ThreadMeta};
+use orch_agui_projection::{Audience, Frame, LiveOverlay, Projector, ThreadMeta};
 use orch_agui_proto::testkit::assert_conforms;
-use orch_core::{AgentId, AgentTarget, CheckSource, Event, EventBody, GatePolicy, Timestamp};
+use orch_core::{
+    AgentId, AgentTarget, CheckSource, Event, EventBody, GatePolicy, LiveChunk, LiveEnd, LiveText,
+    Timestamp,
+};
 use serde_json::{Value, json};
 use support::{lines, verify};
 
@@ -41,6 +50,9 @@ const SCENARIOS: [&str; 17] = [
     "steps",
     "steps-ask",
 ];
+
+/// The golden streams made of a log and live text.
+const FEEDS: [&str; 1] = ["stream"];
 
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")
@@ -113,6 +125,76 @@ fn project(name: &str) -> Vec<Frame> {
         .collect()
 }
 
+/// What a connection hears, in order.
+enum Heard {
+    Log(Event),
+    Live(LiveText),
+}
+
+/// A feed golden with its placeholders made real: a thread id and the timestamps.
+fn load_feed(name: &str) -> Vec<Heard> {
+    let path = examples_dir().join(format!("{name}.feed.json"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let raw: Vec<Value> = serde_json::from_str(&text).unwrap();
+    raw.into_iter()
+        .map(|mut item| {
+            if let Some(live) = item.get("live") {
+                let end = match live["end"].as_str().unwrap() {
+                    "open" => LiveEnd::Open,
+                    "last" => LiveEnd::Last,
+                    "abandoned" => LiveEnd::Abandoned,
+                    other => panic!("{name}: unknown end {other}"),
+                };
+                Heard::Live(LiveText {
+                    thread: THREAD.parse().unwrap(),
+                    agent: AgentId::new(live["agent"].as_str().unwrap()),
+                    chunk: LiveChunk {
+                        message_id: live["messageId"].as_str().unwrap().to_owned(),
+                        offset: live["offset"].as_u64().unwrap(),
+                        text: live["text"].as_str().unwrap().to_owned(),
+                        end,
+                    },
+                })
+            } else {
+                let e = &mut item["event"];
+                let seq = e["seq"].as_i64().unwrap();
+                e["threadId"] = json!(THREAD);
+                e["at"] = json!(
+                    Timestamp::from_second(1_800_000_000 + seq)
+                        .unwrap()
+                        .to_string()
+                );
+                Heard::Log(serde_json::from_value(e.clone()).unwrap())
+            }
+        })
+        .collect()
+}
+
+/// What a viewer is shown for a feed: the projection of its log events, with the live overlay.
+fn project_feed(name: &str) -> Vec<Frame> {
+    let heard = load_feed(name);
+    let events: Vec<Event> = heard
+        .iter()
+        .filter_map(|h| match h {
+            Heard::Log(e) => Some(e.clone()),
+            Heard::Live(_) => None,
+        })
+        .collect();
+    let mut projector = Projector::new(meta_of(name, &events));
+    let mut overlay = LiveOverlay::new();
+    let mut frames = Vec::new();
+    for h in &heard {
+        match h {
+            Heard::Log(e) => {
+                let said = projector.apply(e, Audience::Viewer);
+                frames.extend(overlay.logged(&projector, said));
+            }
+            Heard::Live(piece) => frames.extend(overlay.live(&projector, piece)),
+        }
+    }
+    frames
+}
+
 /// `{"id"?, "event"}` per frame, with the thread id back to its placeholder.
 fn render(frames: &[Frame]) -> String {
     let mut value = Value::Array(
@@ -144,8 +226,11 @@ fn render(frames: &[Frame]) -> String {
 
 #[test]
 fn every_golden_stream_is_well_formed_and_conforms_to_the_schema() {
-    for name in SCENARIOS {
-        let frames = project(name);
+    let streams = SCENARIOS
+        .iter()
+        .map(|name| (*name, project(name)))
+        .chain(FEEDS.iter().map(|name| (*name, project_feed(name))));
+    for (name, frames) in streams {
         for frame in &frames {
             assert_conforms(&frame.event);
         }
@@ -162,8 +247,12 @@ fn agui_goldens_match_docs_api_examples() {
     let update = std::env::var("UPDATE_GOLDEN").is_ok_and(|v| v == "1");
     let dir = examples_dir().join("agui");
     let mut stale = Vec::new();
-    for name in SCENARIOS {
-        let text = render(&project(name));
+    let streams = SCENARIOS
+        .iter()
+        .map(|name| (*name, project(name)))
+        .chain(FEEDS.iter().map(|name| (*name, project_feed(name))));
+    for (name, frames) in streams {
+        let text = render(&frames);
         let path = dir.join(format!("{name}.agui.json"));
         if update {
             std::fs::create_dir_all(&dir).unwrap();

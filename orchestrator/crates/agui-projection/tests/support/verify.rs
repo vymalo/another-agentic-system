@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use orch_agui_projection::Frame;
 use orch_agui_proto::testkit::event_errors;
 use orch_agui_proto::{Event, RunFinishedOutcome, SubagentFinishedOutcome};
+use serde_json::Value;
 
 #[derive(Default)]
 pub struct Checker {
@@ -18,6 +19,15 @@ pub struct Checker {
     run: Option<String>,
     ended: bool,
     texts: BTreeSet<String>,
+    /// The open text messages that are live (`metadata["vymalo.live"]` on their `START`, ADR
+    /// 0027): not in the log, so they do not hold a resume point back.
+    live_texts: BTreeSet<String>,
+    /// The invocation each open text message is attributed to.
+    text_owners: BTreeMap<String, String>,
+    /// What each text message says so far, read the way the web reads it: a delta is appended,
+    /// except that a live one says (`vymalo.live.offset`, UTF-16 code units) where it continues
+    /// from, which must be what was said (or, on the log's final message, no more than that).
+    read: BTreeMap<String, String>,
     subagents: BTreeSet<String>,
     closed_subagents: BTreeSet<String>,
     /// The enclosing subagent of every open one that has one.
@@ -38,9 +48,25 @@ impl Checker {
         Self::default()
     }
 
-    /// Whether a text message is open now.
+    /// Whether a text message of the log is open now: a live one is not (it is not in the log, so
+    /// an `id:` written while it is open still names a position of the log).
     pub fn text_open(&self) -> bool {
-        !self.texts.is_empty()
+        self.texts.iter().any(|t| !self.live_texts.contains(t))
+    }
+
+    /// What the message `id` says so far (every message that was started, open or not).
+    pub fn reading(&self, id: &str) -> Option<&str> {
+        self.read.get(id).map(String::as_str)
+    }
+
+    /// Every message that was started, with what it says.
+    pub fn readings(&self) -> &BTreeMap<String, String> {
+        &self.read
+    }
+
+    /// Whether a live text message is open now.
+    pub fn live_open(&self) -> bool {
+        !self.live_texts.is_empty()
     }
 
     /// Whether a run is open now.
@@ -104,6 +130,18 @@ impl Checker {
                     return Err(format!("message id {} reused", e.message_id));
                 }
                 self.texts.insert(e.message_id.to_string());
+                if let Some(owner) = &e.subagent_run_id {
+                    self.text_owners
+                        .insert(e.message_id.to_string(), owner.to_string());
+                }
+                self.read.insert(e.message_id.to_string(), String::new());
+                if e.base
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key("vymalo.live"))
+                {
+                    self.live_texts.insert(e.message_id.to_string());
+                }
             }
             Event::TextMessageContent(e) => {
                 if !self.texts.contains(e.message_id.as_str()) {
@@ -112,11 +150,39 @@ impl Checker {
                         e.message_id
                     ));
                 }
+                let live = e
+                    .base
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("vymalo.live"))
+                    .and_then(Value::as_object);
+                let said = self.read.entry(e.message_id.to_string()).or_default();
+                match live.and_then(|l| l.get("offset")).and_then(Value::as_u64) {
+                    None => said.push_str(&e.delta),
+                    Some(offset) => {
+                        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+                        let units = said.encode_utf16().count();
+                        let is_final = live
+                            .and_then(|l| l.get("final"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        if (!is_final && offset != units) || offset > units {
+                            return Err(format!(
+                                "CONTENT for {} continues from {offset}, but {units} UTF-16 units were said (final: {is_final})",
+                                e.message_id
+                            ));
+                        }
+                        *said = truncate_utf16(said, offset)?;
+                        said.push_str(&e.delta);
+                    }
+                }
             }
             Event::TextMessageEnd(e) => {
                 if !self.texts.remove(e.message_id.as_str()) {
                     return Err(format!("END for message {} that is not open", e.message_id));
                 }
+                self.live_texts.remove(e.message_id.as_str());
+                self.text_owners.remove(e.message_id.as_str());
             }
             Event::ActivitySnapshot(e) => {
                 let id = e.message_id.to_string();
@@ -153,6 +219,7 @@ impl Checker {
             Event::SubagentFinished(e) => {
                 let id = e.subagent_run_id.to_string();
                 self.close_nested(&id, "SUBAGENT_FINISHED")?;
+                self.close_texts(&id, "SUBAGENT_FINISHED")?;
                 if !self.subagents.remove(&id) {
                     return Err(format!("SUBAGENT_FINISHED for {id}, which is not open"));
                 }
@@ -169,6 +236,7 @@ impl Checker {
             Event::SubagentError(e) => {
                 let id = e.subagent_run_id.to_string();
                 self.close_nested(&id, "SUBAGENT_ERROR")?;
+                self.close_texts(&id, "SUBAGENT_ERROR")?;
                 if !self.subagents.remove(&id) {
                     return Err(format!("SUBAGENT_ERROR for {id}, which is not open"));
                 }
@@ -224,6 +292,21 @@ impl Checker {
         Ok(())
     }
 
+    /// This projection's rule too: a text message attributed to a subagent is over before the
+    /// subagent is.
+    fn close_texts(&self, id: &str, what: &str) -> Result<(), String> {
+        if let Some((message, _)) = self
+            .text_owners
+            .iter()
+            .find(|(_, owner)| owner.as_str() == id)
+        {
+            return Err(format!(
+                "{what} for {id} while its message {message} is open"
+            ));
+        }
+        Ok(())
+    }
+
     fn nothing_open(&self, what: &str) -> Result<(), String> {
         if !self.texts.is_empty() {
             return Err(format!("{what} with text messages open: {:?}", self.texts));
@@ -266,4 +349,21 @@ pub fn check(frames: &[Frame]) -> Result<Checker, String> {
     let mut checker = Checker::new();
     checker.feed_frames(frames)?;
     Ok(checker)
+}
+
+/// The first `units` UTF-16 code units of `text`; an error when that would split a character.
+fn truncate_utf16(text: &str, units: usize) -> Result<String, String> {
+    let mut count = 0;
+    let mut out = String::new();
+    for c in text.chars() {
+        if count == units {
+            return Ok(out);
+        }
+        count += c.len_utf16();
+        if count > units {
+            return Err(format!("{units} UTF-16 units split the character {c:?}"));
+        }
+        out.push(c);
+    }
+    Ok(out)
 }
