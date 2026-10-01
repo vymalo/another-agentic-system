@@ -945,12 +945,13 @@ pub const MAX_URL_BYTES: usize = 2048;
 pub struct PullRequestRef {
     /// Its `https` URL (see [`pull_request_url`]).
     pub url: String,
-    /// Its number: the payload's `number` (a JSON number or a string of digits, since A2A carries
-    /// numbers as floats), else the last segment of a `/pull/<n>`, `/pulls/<n>` or
-    /// `/merge_requests/<n>` URL.
+    /// Its number, read from the URL: the segment after `/pull/`, `/pulls/` or
+    /// `/merge_requests/`. Never the payload's alone: a card shows it next to the link, so it must
+    /// say where the link goes (a payload `number` that disagrees with the URL is ignored).
     pub number: Option<u64>,
-    /// The repository as [`repo_key`] normalises it: the payload's `repository`, else the part of
-    /// the URL before `/pull/` (or `/pulls/`, `/-/merge_requests/`, `/merge_requests/`).
+    /// The repository as [`repo_key`] normalises it, read from the URL: the part before `/pull/`
+    /// (or `/pulls/`, `/-/merge_requests/`, `/merge_requests/`). Like `number`, only from the URL;
+    /// both are `None` when the URL is not of that shape.
     pub repository: Option<String>,
     /// The payload's `branch` (the head), when git accepts it as a branch name.
     pub branch: Option<String>,
@@ -989,9 +990,9 @@ pub enum KnownArtifact {
 
 /// The URL of a pull request artifact: the agents name it `pull_request` (a data part whose JSON
 /// has a `url`) or "Pull request" (a url part), and the URL is in `uri` or in the JSON text (`url`
-/// or `html_url`). Only an `https` URL of at most [`MAX_URL_BYTES`], without spaces or control
-/// characters, is passed on: the artifact is agent output, and a client may show it as a link.
-/// Pure.
+/// or `html_url`). Only an `https` URL of at most [`MAX_URL_BYTES`], without spaces, control
+/// characters or backslashes, whose authority is a non-empty host without user information (no
+/// `@`), is passed on: the artifact is agent output, and a client may show it as a link. Pure.
 pub fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Option<String> {
     if !is_pull_request_name(name) {
         return None;
@@ -1003,12 +1004,35 @@ pub fn pull_request_url(name: &str, uri: Option<&str>, text: Option<&str>) -> Op
             .find_map(|key| value.get(key)?.as_str().map(str::to_owned))
     };
     let url = uri.map(str::to_owned).or_else(from_json)?;
+    let authority = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split(['/', '?', '#']).next());
     let plausible = url.len() <= MAX_URL_BYTES
-        && url
-            .strip_prefix("https://")
-            .is_some_and(|rest| !rest.is_empty())
-        && !url.chars().any(|c| c.is_control() || c.is_whitespace());
+        && authority.is_some_and(|a| !a.is_empty() && !a.contains('@'))
+        && !url
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\');
     plausible.then_some(url)
+}
+
+/// The repository and number a pull request URL names: the part before `/-/merge_requests/`,
+/// `/merge_requests/`, `/pulls/` or `/pull/` as [`repo_key`] reads it, and the digits after it.
+/// `None` when the URL is not of that shape. Pure.
+fn pull_request_location(url: &str) -> Option<(String, u64)> {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let (base, tail) = [
+        "/-/merge_requests/",
+        "/merge_requests/",
+        "/pulls/",
+        "/pull/",
+    ]
+    .iter()
+    .find_map(|marker| path.rsplit_once(marker))?;
+    let digits = tail.split('/').next()?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((repo_key(base)?, digits.parse().ok()?))
 }
 
 /// `pull_request`, "Pull request", `pull-request`: case, `_` and `-` do not matter.
@@ -1041,29 +1065,12 @@ fn recognise_pull_request(
             _ => None,
         });
     let field = |key: &str| payload.as_ref().and_then(|p| p.get(key));
-    let path = url.split(['?', '#']).next().unwrap_or_default();
-    let (base, tail) = [
-        "/-/merge_requests/",
-        "/merge_requests/",
-        "/pulls/",
-        "/pull/",
-    ]
-    .iter()
-    .find_map(|marker| path.rsplit_once(marker))
-    .map_or((None, None), |(base, tail)| (Some(base), Some(tail)));
-    let number = match field("number") {
-        Some(Value::Number(n)) => n.as_u64(),
-        Some(Value::String(s)) => s.trim().parse().ok(),
-        _ => None,
-    }
-    .or_else(|| {
-        let digits = tail?.split('/').next()?;
-        digits.parse().ok()
-    });
-    let repository = field("repository")
-        .and_then(Value::as_str)
-        .and_then(repo_key)
-        .or_else(|| base.and_then(repo_key));
+    // Where the link goes is what the URL says: the payload's `repository` and `number` would let
+    // a card read "acme/demo#12" over a link to anywhere, so they are never used on their own.
+    let (repository, number) = pull_request_location(&url)
+        .map_or((None, None), |(repository, number)| {
+            (Some(repository), Some(number))
+        });
     let branch = field("branch")
         .and_then(Value::as_str)
         .map(str::trim)

@@ -175,21 +175,32 @@ export function pullRequestUrl(name: string, uri: unknown, text: unknown): strin
   const url =
     typeof uri === "string" ? uri : (str(payload?.url) ?? str(payload?.html_url) ?? undefined);
   if (url === undefined) return undefined;
+  const authority = url.startsWith("https://")
+    ? url.slice("https://".length).split(/[/?#]/)[0]
+    : undefined;
   const plausible =
     utf8Length(url) <= 2048 &&
-    url.startsWith("https://") &&
-    url.length > "https://".length &&
+    authority !== undefined &&
+    authority !== "" &&
+    !authority.includes("@") &&
     // biome-ignore lint/suspicious/noControlCharactersInRegex: a link has no control characters
-    !/[\s\u0000-\u001f\u007f-\u009f]/.test(url);
+    !/[\s\u0000-\u001f\u007f-\u009f\\]/.test(url);
   return plausible ? url : undefined;
 }
 
-/** A decimal number, as Rust's `u64` parse reads one. */
-const toCount = (v: unknown): number | undefined => {
-  if (typeof v === "number") return Number.isInteger(v) && v >= 0 ? v : undefined;
-  if (typeof v === "string" && /^\+?\d+$/.test(v.trim())) return Number(v.trim());
+/** The repository and number a pull request URL names (`pull_request_location`), else nothing. */
+function pullRequestLocation(url: string): { repository: string; number: number } | undefined {
+  const path = url.split(/[?#]/)[0] ?? "";
+  for (const marker of ["/-/merge_requests/", "/merge_requests/", "/pulls/", "/pull/"]) {
+    const at = path.lastIndexOf(marker);
+    if (at < 0) continue;
+    const digits = path.slice(at + marker.length).split("/")[0] ?? "";
+    const repository = repoKey(path.slice(0, at));
+    if (!/^\d+$/.test(digits) || repository === undefined) return undefined;
+    return { repository, number: Number(digits) };
+  }
   return undefined;
-};
+}
 
 /**
  * What a `vymalo.artifact` adds to the artifact as sent: its `kind` and the fields a card needs
@@ -201,21 +212,10 @@ export function typedArtifact(name: unknown, uri: unknown, text: unknown): Recor
   const url = pullRequestUrl(n, uri, text);
   if (url !== undefined) {
     const payload = parseObject(text);
-    const path = url.split(/[?#]/)[0] ?? "";
-    let base: string | undefined;
-    let tail: string | undefined;
-    for (const marker of ["/-/merge_requests/", "/merge_requests/", "/pulls/", "/pull/"]) {
-      const at = path.lastIndexOf(marker);
-      if (at >= 0) {
-        base = path.slice(0, at);
-        tail = path.slice(at + marker.length);
-        break;
-      }
-    }
-    const number = toCount(payload?.number) ?? toCount(tail?.split("/")[0]);
-    const repository =
-      (typeof payload?.repository === "string" ? repoKey(payload.repository) : undefined) ??
-      (base !== undefined ? repoKey(base) : undefined);
+    // where the link goes is what the URL says: never the payload's repository and number
+    const location = pullRequestLocation(url);
+    const number = location?.number;
+    const repository = location?.repository;
     const branch = str(payload?.branch)?.trim();
     return {
       kind: "pull_request",

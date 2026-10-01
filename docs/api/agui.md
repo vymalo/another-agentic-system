@@ -204,11 +204,14 @@ and says what it is, so a client renders a card without parsing agent output:
 |---|---|---|
 | `branch` | `branch {repository, branch, commit}` that the gate accepts | `repository` (`host/owner/name`, lower case), `branch`, `sha` (full), `shortSha` (7) |
 | `checks` | `checks {passed, commit, summary?, findings?}` that the gate accepts | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
-| `pull_request` | `pull_request` (a data part with `url`, `number?`, `repository?`, `branch?`) or "Pull request" (a url part), with an `https` URL of at most 2 KiB on one line | `url`, `number?` (from the payload, a number or a string of digits, else from a `/pull/<n>`, `/pulls/<n>` or `/merge_requests/<n>` URL), `repository?` (the payload's, else the URL's before `/pull/`), `branch?` |
+| `pull_request` | `pull_request` (a data part with `url`, `number?`, `repository?`, `branch?`) or "Pull request" (a url part), with an `https` URL of at most 2 KiB on one line, without a backslash, whose authority is a host without user information (no `@`) | `url`, `number?` and `repository?` **read from the URL** (the digits after `/pull/`, `/pulls/` or `/merge_requests/`, and the `host/owner/name` before it; both absent when the URL is not of that shape), never from the payload: a payload `repository` or `number` that disagrees with the URL is ignored, so a card cannot put a trusted label on a link that goes elsewhere. `branch?` is the payload's |
 | `file` | Anything else, including a `branch` or `checks` artifact the gate cannot use and a pull request without a usable URL | nothing |
 
 `name`, `mimeType`, `uri` and `text` are kept as sent. The fields are derived from agent output:
-a client shows `url` as a link only because the projection already checked it is `https`.
+a client shows `url` as a link only because the projection already checked it (`https`, no user
+information, no backslash), and a card that names the repository and number of a pull request
+shows the ones its own `url` says, with the host when it is not a well-known one (the web: off
+github.com and gitlab.com), or the bare host when the URL names neither.
 
 ## Inbound: AG-UI → core input
 

@@ -128,6 +128,42 @@ describe("a pull request", () => {
     });
   });
 
+  it("says where its link goes, whatever the payload claims", () => {
+    // the payload says acme/demo#12; the link goes to evil.example
+    expect(
+      pullRequestOf({
+        kind: "pull_request",
+        name: "pull_request",
+        url: "https://evil.example/acme/demo/pull/9",
+        number: 12,
+        repository: "github.com/acme/demo",
+      }),
+    ).toEqual({
+      href: "https://evil.example/acme/demo/pull/9",
+      label: "evil.example/acme/demo#9",
+      number: 9,
+      repository: "acme/demo",
+    });
+    // a URL that names no repository and number is labelled by its host
+    expect(
+      pullRequestOf({
+        kind: "pull_request",
+        name: "pull_request",
+        url: "https://evil.example/review",
+        number: 12,
+        repository: "github.com/acme/demo",
+      }),
+    ).toEqual({ href: "https://evil.example/review", label: "evil.example" });
+    // a link a browser would send elsewhere is none
+    expect(
+      pullRequestOf({
+        kind: "pull_request",
+        name: "pull_request",
+        url: "https://github.com@evil.example/acme/demo/pull/1",
+      }),
+    ).toBeUndefined();
+  });
+
   it("a typed one without a usable URL is none", () => {
     expect(pullRequestOf({ kind: "pull_request", name: "pull_request" })).toBeUndefined();
   });

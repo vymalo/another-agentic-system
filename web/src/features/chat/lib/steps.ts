@@ -8,7 +8,7 @@ import {
   parseStatus,
   type ReworkContent,
 } from "@/features/chat/lib/agui/vymalo";
-import { detectPullRequest } from "./artifact";
+import { detectPullRequest, locatePullRequest } from "./artifact";
 import { sourceLabel, truncate } from "./findings";
 
 /*
@@ -108,7 +108,10 @@ export function checksPayload(text: string | undefined): { summary?: string; fin
 /** A pull request as its card and its step show it. */
 export type PullRequestView = {
   href: string;
-  /** `acme/demo#12`, `group/project!3`, or `#12` when the repository is not known. */
+  /**
+   * Where the link goes, read from it: `acme/demo#12`, `group/project!3`, with the host in front
+   * off github.com and gitlab.com (`evil.example/acme/demo#9`), or the bare host.
+   */
   label: string;
   number?: number;
   repository?: string;
@@ -139,35 +142,33 @@ const titleOf = (text: string | undefined): string | undefined => {
 
 /**
  * The pull request of an artifact: one the projection typed (`kind: pull_request`, its `url`
- * checked to be https), or a file whose link is a GitHub pull or GitLab merge request URL.
+ * checked to be https), or a file whose link is a GitHub pull or GitLab merge request URL. What
+ * the card says about where it is (the label, the repository, the number) comes from the URL: an
+ * agent's `repository` or `number` that disagrees with it is ignored, and a URL that names
+ * neither is labelled by its host.
  */
 export function pullRequestOf(artifact: ArtifactContent): PullRequestView | undefined {
   if (artifact.kind === "pull_request" && artifact.url) {
-    const repository = artifact.repository ? shortRepository(artifact.repository) : undefined;
-    const fromUrl = detectPullRequest(artifact.url);
-    const label =
-      repository && artifact.number !== undefined
-        ? `${repository}#${artifact.number}`
-        : (fromUrl?.label ??
-          (artifact.number !== undefined ? `#${artifact.number}` : "pull request"));
+    const where = locatePullRequest(artifact.url);
+    if (!where) return undefined;
     const title = titleOf(artifact.text);
     return {
       href: artifact.url,
-      label,
-      ...(artifact.number !== undefined ? { number: artifact.number } : {}),
-      ...(repository ? { repository } : {}),
+      label: where.label ?? where.host,
+      ...(where.number !== undefined ? { number: where.number } : {}),
+      ...(where.repository ? { repository: shortRepository(where.repository) } : {}),
       ...(artifact.branch ? { branch: artifact.branch } : {}),
       ...(title ? { title } : {}),
     };
   }
   const detected = artifact.kind === "file" ? detectPullRequest(artifact.uri) : undefined;
   if (!detected) return undefined;
-  const number = Number(/[#!](\d+)$/.exec(detected.label)?.[1]);
+  const where = locatePullRequest(detected.href);
   return {
     href: detected.href,
     label: detected.label,
-    ...(Number.isSafeInteger(number) ? { number } : {}),
-    repository: detected.label.replace(/[#!]\d+$/, ""),
+    ...(where?.number !== undefined ? { number: where.number } : {}),
+    ...(where?.repository ? { repository: shortRepository(where.repository) } : {}),
     ...(artifact.text?.trim() ? { note: artifact.text } : {}),
   };
 }

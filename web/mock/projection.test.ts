@@ -87,9 +87,35 @@ describe("typedArtifact", () => {
       "javascript:alert(1)",
       "https://",
       "https://github.com/a b",
+      "https://github.com@evil.example/acme/demo/pull/1",
+      "https://github.com\\@evil.example/acme/demo/pull/1",
+      "https://@/x",
     ]) {
       expect(typedArtifact("Pull request", bad, undefined)).toEqual({ kind: "file" });
     }
+  });
+
+  it("takes the repository and the number from the URL, never from the payload alone", () => {
+    const pr = (url: string) =>
+      typedArtifact(
+        "pull_request",
+        undefined,
+        JSON.stringify({ url, repository: "github.com/acme/demo", number: 12 }),
+      );
+    expect(pr("https://evil.example/acme/demo/pull/9")).toEqual({
+      kind: "pull_request",
+      url: "https://evil.example/acme/demo/pull/9",
+      number: 9,
+      repository: "evil.example/acme/demo",
+    });
+    expect(pr("https://evil.example/x/pull/9")).toEqual({
+      kind: "pull_request",
+      url: "https://evil.example/x/pull/9",
+    });
+    expect(pr("https://evil.example/review")).toEqual({
+      kind: "pull_request",
+      url: "https://evil.example/review",
+    });
   });
 
   it("normalises a repository like the core", () => {

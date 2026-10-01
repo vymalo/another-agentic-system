@@ -2150,6 +2150,48 @@ fn artifacts_are_recognised_by_name_and_shape() {
 }
 
 #[test]
+fn a_pull_requests_repository_and_number_are_where_its_link_goes() {
+    // The payload says acme/demo#12, the link goes elsewhere: the URL wins, so a card never puts
+    // a trusted label on a hostile link.
+    let hostile = json!({"url": "https://evil.example/acme/demo/pull/9",
+        "repository": "github.com/acme/demo", "number": 12})
+    .to_string();
+    let Recognised::PullRequest(pr) = recognise_artifact("pull_request", None, Some(&hostile))
+    else {
+        panic!("still a pull request");
+    };
+    assert_eq!(
+        (pr.repository.as_deref(), pr.number),
+        (Some("evil.example/acme/demo"), Some(9))
+    );
+    // `/x/pull/9` names no owner and repository: nothing is taken from the payload either.
+    let short = json!({"url": "https://evil.example/x/pull/9",
+        "repository": "github.com/acme/demo", "number": 12})
+    .to_string();
+    let Recognised::PullRequest(pr) = recognise_artifact("pull_request", None, Some(&short)) else {
+        panic!("still a pull request");
+    };
+    assert_eq!((pr.repository, pr.number), (None, None));
+    // A URL that names no repository and number: neither is taken from the payload.
+    let odd = json!({"url": "https://evil.example/review",
+        "repository": "github.com/acme/demo", "number": 12})
+    .to_string();
+    let Recognised::PullRequest(pr) = recognise_artifact("pull_request", None, Some(&odd)) else {
+        panic!("still a pull request");
+    };
+    assert_eq!((pr.repository, pr.number), (None, None));
+    // A number segment that is not digits is no number.
+    let Recognised::PullRequest(pr) = recognise_artifact(
+        "Pull request",
+        Some("https://github.com/acme/demo/pull/12abc"),
+        None,
+    ) else {
+        panic!("still a pull request");
+    };
+    assert_eq!((pr.repository, pr.number), (None, None));
+}
+
+#[test]
 fn a_pull_request_is_recognised_from_either_agent_shape() {
     let url = "https://github.com/acme/demo/pull/12";
     // The mock agent: a url part named "Pull request"; the number and the repository come from
@@ -2206,6 +2248,21 @@ fn a_pull_request_is_recognised_from_either_agent_shape() {
     }
     let long = format!("https://github.com/{}", "a".repeat(MAX_URL_BYTES));
     assert_eq!(pull_request_url("Pull request", Some(&long), None), None);
+    // User information and backslashes are refused: a client trusts `url` as a link, and
+    // `https://github.com@evil.example/` goes to evil.example.
+    for bad in [
+        "https://github.com@evil.example/acme/demo/pull/1",
+        "https://user:pass@github.com/acme/demo/pull/1",
+        "https://github.com\\@evil.example/acme/demo/pull/1",
+        "https://github.com/acme\\demo/pull/1",
+        "https://@/x",
+    ] {
+        assert_eq!(
+            pull_request_url("Pull request", Some(bad), None),
+            None,
+            "{bad:?}"
+        );
+    }
     // The name decides: a `result` that links to a pull request is not one.
     assert_eq!(
         recognise_artifact("result", Some(url), None),
