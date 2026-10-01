@@ -492,6 +492,14 @@ impl Projector {
                 self.on_thread_titled(event, d, &mut out);
                 self.pending_error = pending_error;
             }
+            // A fork starts from a finished job with its parent's title (ADR 0029). The frames
+            // that tell a screen so come with the projection of forks; until then the event
+            // moves the state and says nothing.
+            EventBody::ThreadForked(d) => {
+                self.state = ThreadState::Done;
+                self.meta.title.clone_from(&d.title);
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);

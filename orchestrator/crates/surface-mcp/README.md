@@ -78,7 +78,7 @@ through `notifications/progress` when the request carries a `progressToken`.
 * **Cursor.** `after_seq` omitted: only what happens from now on (a job that is already finished or blocked answers at
   once). `0`: the whole log. A value past the end is the end. `resume_after_seq` in every answer is the last event the
   call read: call again with it as `after_seq` and nothing is lost or repeated, on any replica.
-* **Progress.** One notification per event (`#3 artifact: Pull request`; partial agent messages are skipped, and so is the `ui_catalog` event, which is bookkeeping about the person's screen, and the updates of an `agent_step`: a step's start and end are one line each, `step: <label> [<state>]`; and a `thread_titled`, a label of the conversation and not progress of the job) and a
+* **Progress.** One notification per event (`#3 artifact: Pull request`; `#9 forked from thread <id> at #4`; partial agent messages are skipped, and so is the `ui_catalog` event, which is bookkeeping about the person's screen, and the updates of an `agent_step`: a step's start and end are one line each, `step: <label> [<state>]`; and a `thread_titled`, a label of the conversation and not progress of the job) and a
   heartbeat every 60 s (`still waiting (job working, last event #7)`), with an integer `progress` counter that starts at
   1 and only increases. Agent text in a message is untrusted and cut to one line of 200 characters.
 * **End.** `finished` (`done`, `failed`, `cancelled`) or `blocked` (waiting for an `answer`) when the event that says so is

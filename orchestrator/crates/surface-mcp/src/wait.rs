@@ -155,6 +155,9 @@ pub fn describe(event: &Event) -> Option<String> {
         EventBody::UiCatalog(_) => return None,
         // a label of the conversation, not progress of the job
         EventBody::ThreadTitled(_) => return None,
+        EventBody::ThreadForked(f) => {
+            format!("forked from thread {} at #{}", f.from.thread_id, f.from.seq)
+        }
     };
     Some(format!("#{} {}", event.seq, one_line(&text)))
 }
@@ -400,6 +403,21 @@ mod tests {
                     retryable: true,
                 }),
                 "#1 error: boom second line",
+            ),
+            (
+                EventBody::ThreadForked(orch_core::ThreadForkedData {
+                    from: orch_core::ForkSource {
+                        thread_id: ThreadId(uuid::Uuid::nil()),
+                        seq: 4,
+                    },
+                    kind: orch_core::ForkKind::Fork,
+                    title: "Fix it".to_owned(),
+                    target: orch_core::AgentTarget {
+                        agent_id: orch_core::AgentId::new("coder"),
+                        release: None,
+                    },
+                }),
+                "#1 forked from thread 00000000-0000-0000-0000-000000000000 at #4",
             ),
         ];
         for (body, want) in cases {

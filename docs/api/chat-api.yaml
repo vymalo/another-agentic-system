@@ -502,6 +502,7 @@ components:
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
         - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. Additive.
         - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`, attributed to the person) or the orchestrator had a model write one after the agent's first reply (`source: model`, attributed to the orchestrator, [ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): the model is asked at most twice per thread, and never once a person has renamed it). `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
+        - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
     Actor:
       type: object
       required: [type, name]
@@ -580,7 +581,16 @@ components:
           type: string
           minLength: 1
           maxLength: 200
-          description: "thread_titled only: the thread's new title."
+          description: "thread_titled: the thread's new title. thread_forked: the parent's title when the fork was made, which is the fork's."
+        from:
+          type: object
+          required: [threadId, seq]
+          properties:
+            threadId: { type: string, format: uuid }
+            seq: { type: integer, minimum: 0 }
+          description: "thread_forked only: the thread that was forked and the last of its events that was copied (the cut). 0 when nothing was copied (an edit of the first message)."
+        target:
+          $ref: "#/components/schemas/AgentTarget"
         job:
           type: integer
           minimum: 2
@@ -607,8 +617,8 @@ components:
           description: "agent_step only: the ids of the steps this one runs under, outermost first; empty at the top. At most the 8 nearest."
         kind:
           type: string
-          enum: [subagent, tool, command, message]
-          description: "agent_step only: what the step is."
+          enum: [subagent, tool, command, message, fork, edit]
+          description: "agent_step: what the step is (subagent, tool, command or message). thread_forked: how the fork was made (fork or edit)."
         label:
           type: string
           maxLength: 200

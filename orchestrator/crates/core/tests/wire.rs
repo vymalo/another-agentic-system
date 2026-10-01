@@ -99,6 +99,18 @@ fn every_kind_roundtrips_and_never_emits_null() {
             title: "Fix the build".into(),
             source: TitledBy::User,
         }),
+        EventBody::ThreadForked(ThreadForkedData {
+            from: ForkSource {
+                thread_id: tid(),
+                seq: 41,
+            },
+            kind: ForkKind::Fork,
+            title: "Fix the build".into(),
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: None,
+            },
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -693,5 +705,52 @@ fn a_thread_titled_is_the_persons_event_with_the_title_and_its_writer() {
         let mut v = v.clone();
         v["data"]["source"] = json!(bad);
         assert!(serde_json::from_value::<Event>(v).is_err(), "{bad}");
+    }
+}
+
+/// ADR 0029: the `thread_forked` event is the person's; it names the thread and the last event
+/// copied, how the fork was made, the title it keeps and the agent it talks to. A fork onto the
+/// parent's agent and a release names both, and nothing else is spelled that is not set.
+#[test]
+fn a_thread_forked_is_the_persons_event_with_where_it_came_from() {
+    let e = event(
+        EventBody::ThreadForked(ThreadForkedData {
+            from: ForkSource {
+                thread_id: tid(),
+                seq: 41,
+            },
+            kind: ForkKind::Edit,
+            title: "Fix the redirect loop".into(),
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: Some("stable".into()),
+            },
+        }),
+        Actor::user(&UserId::new("me@example.com")),
+    );
+    assert_eq!(e.kind(), EventKind::ThreadForked);
+    assert_eq!(e.kind().as_str(), "thread_forked");
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        v,
+        json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00.123456Z",
+            "kind": "thread_forked",
+            "actor": {"type": "user", "name": "me@example.com"},
+            "data": {
+                "from": {"threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000", "seq": 41},
+                "kind": "edit",
+                "title": "Fix the redirect loop",
+                "target": {"agentId": "coder", "release": "stable"}
+            }
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(v.clone()).unwrap(), e);
+    for (member, bad) in [("kind", json!("branch")), ("from", json!({"seq": 1}))] {
+        let mut v = v.clone();
+        v["data"][member] = bad;
+        assert!(serde_json::from_value::<Event>(v).is_err(), "{member}");
     }
 }

@@ -1020,6 +1020,25 @@ stateDiagram-v2
   makes the ledger say `User`; nothing the model writes afterwards is logged, and the model is not asked again.
   `Job::next()` keeps the ledger: a title is the conversation's, not a job's.
 
+### Forking a thread (MVP-plan item F, ADR 0029)
+
+**Core built** (2026-10-01); the store and the API are the next step. A fork is a new thread that starts with a
+copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)).
+`orch_core::fork` holds the pure rules; nothing in it reads a store:
+
+| Function | What it decides |
+|---|---|
+| `fork_cut(events, parent_state, ForkPoint) -> Result<i64, ForkError>` | The last event to copy. `AfterTurn(s)`: the last event before the next `user_message` or `ui_action` after `s`, else the end of the log, but `TurnOpen` while the parent is `queued`, `working` or `verifying`. `Replace(s)`: `s - 1` when `s` is a `user_message` (`NotAMessage` otherwise), 0 for the first message, in any parent state. A seq outside the log is `OutOfRange` |
+| `forked_snapshot(copied, gate, title)` | `done`, job number = the newest `job_started` copied (1 if none), `verification` = the copied `completed` statuses under an active gate, the parent's title ledger with no ask in flight, an **empty** UI catalog ledger (a new A2A context has been sent no catalog) |
+| `fork_commit(user, data, copied, gate, title, replacement)` | `[Append(thread_forked)]`, and for an edit the replacing message through `transition` on that snapshot: `user_message`, `job_started`, `Delegate` |
+| `fork_history(copied)`, `history_preamble(&h)` | The conversation as text for the fork's first task: the person's messages, the agent's final messages and the words of `completed` / `input_required` / `auth_required` (once per turn), each at most 4 KiB, the newest within 24 KiB and the count left out; fenced as a record, not instructions, and unable to close its fence |
+| `branch_points(family, current)` | The messages of `current` that have other versions: the original and the edits of it, in the order made, and which one `current` shows |
+
+The new thread's events `1..=cut` are the parent's, with the same `seq`; its own `thread_forked` is `cut + 1`. A fork has its own
+A2A context (its thread id). The first task of a fork is to be sent with the transcript in front of the message (not built yet), derived from the
+log when the task is sent (so a retry sends the same text) and never stored in the outbox. The core adds the event kind
+`thread_forked` and nothing to `transition`: a fork is made by the application, not decided by an input.
+
 ### Exporting a thread
 
 **Built** (2026-09-30). `GET /api/threads/{id}/export` ([`api/chat-api.yaml`](api/chat-api.yaml), `exportThread`) returns one
@@ -1114,7 +1133,7 @@ pub enum Command {
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadForked(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread

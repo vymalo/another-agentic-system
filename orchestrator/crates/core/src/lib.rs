@@ -9,6 +9,7 @@ mod agent;
 mod error;
 mod event;
 mod extension;
+mod fork;
 mod gate;
 mod ids;
 mod live;
@@ -30,6 +31,12 @@ pub use event::{
 pub use extension::{
     KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
     THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
+};
+pub use fork::{
+    BranchPoint, EditLink, ForkError, ForkHistory, ForkKind, ForkNode, ForkPoint, ForkSource,
+    HistoryEntry, HistoryRole, MAX_FORK_FAMILY, MAX_HISTORY_BYTES, MAX_HISTORY_ENTRY_BYTES,
+    Replacement, Sibling, ThreadForkedData, branch_points, copied, fork_commit, fork_cut,
+    fork_history, forked_snapshot, history_preamble,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,
