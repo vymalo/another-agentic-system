@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::{lines, verify};
 
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
-const SCENARIOS: [&str; 15] = [
+const SCENARIOS: [&str; 17] = [
     "echo",
     "ask",
     "cancel",
@@ -38,6 +38,8 @@ const SCENARIOS: [&str; 15] = [
     "followup",
     "followup-after-cancel",
     "catalog",
+    "steps",
+    "steps-ask",
 ];
 
 fn examples_dir() -> PathBuf {

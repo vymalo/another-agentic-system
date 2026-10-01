@@ -13,6 +13,20 @@
 //! | status carrying message `M` | `Task("a2a:T:status-msg:M")` |
 //! | status without a message | `Turn("T:status:<state>")` (the dispatcher prefixes the outbox row) |
 //!
+//! Steps (ADR 0025, `steps/v1`). A status whose state is `working` and whose message carries a
+//! valid entry under the extension's URI (`docs/api/steps-v1.md`) is a step, not a status: it maps
+//! to one envelope, `AgentUpdate::Step`, with `task_state: Working`, and the status text (the label
+//! for a client that ignores the extension) is not logged. The ids are made unique within the
+//! thread by prefixing the task id (`<task>/<id>`, and the parent likewise). An entry that does not
+//! validate, or on a status that is not `working`, is ignored: the status is read as plain A2A (fail
+//! closed). The response is read as data whether or not the request activated the extension, as A2UI
+//! is, so a stream, a resubscribe and a poll map to the same keys.
+//!
+//! | Step in | key |
+//! |---|---|
+//! | status message `M` of task `T`, step `S` | `Task("a2a:T:step:S:M")` |
+//! | status message without an id | `Turn("T:step:S:<step state>")` |
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -53,7 +67,10 @@ use a2a::{
     Message, Part, PartContent, Role, StreamResponse, Task, TaskArtifactUpdateEvent, TaskState,
     TaskStatus,
 };
-use orch_core::{A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, check_operations};
+use orch_core::{
+    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, STEPS_EXTENSION, StepKind, StepReport, StepState,
+    check_operations,
+};
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
 
@@ -212,8 +229,107 @@ fn status_envelopes(
             ))
         }),
     };
-    out.push(status_envelope(task_id, context_id, status, revision));
+    // A step is a `working` status whose message says so; anything else is a plain status.
+    let step = message
+        .filter(|_| state == Some(AgentTaskState::Working))
+        .and_then(|m| step_of(task_id, m));
+    match step {
+        Some(report) => out.push(step_envelope(
+            task_id,
+            context_id,
+            message.map(|m| m.message_id.as_str()).unwrap_or_default(),
+            report,
+            revision,
+        )),
+        None => out.push(status_envelope(task_id, context_id, status, revision)),
+    }
     out
+}
+
+/// The longest step id an agent may send, in bytes (`docs/api/steps-v1.md`); the task id and a
+/// slash go in front of it, and the core cuts what is still too long for the log.
+const MAX_AGENT_STEP_ID_BYTES: usize = 128;
+
+/// An optional string member: absent or `null` is none, a string is itself, anything else is not
+/// usable (the entry is then not a step).
+fn optional_text<'a>(
+    entry: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, ()> {
+    match entry.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(()),
+    }
+}
+
+/// The step a status message reports under `steps/v1`, or `None` when it reports none: no entry
+/// under the URI, or one that does not validate (no usable `id`, no `label`, a `state` that is not
+/// one of the five, a member of the wrong type). The ids carry the task id, so they are unique
+/// within the thread. What is left to the core's door ([`StepReport::sanitize`]) is the cutting
+/// of long text, the icon vocabulary and the control characters.
+fn step_of(task_id: &str, message: &Message) -> Option<StepReport> {
+    let entry = message
+        .metadata
+        .as_ref()?
+        .get(STEPS_EXTENSION)?
+        .as_object()?;
+    let id = optional_text(entry, "id").ok()??;
+    if id.is_empty() || id.len() > MAX_AGENT_STEP_ID_BYTES || id.chars().any(char::is_control) {
+        return None;
+    }
+    let label = optional_text(entry, "label").ok()??;
+    if label.trim().is_empty() {
+        return None;
+    }
+    let state = StepState::parse(optional_text(entry, "state").ok()??)?;
+    let kind = match optional_text(entry, "kind").ok()? {
+        Some(kind) => StepKind::parse(kind).unwrap_or(StepKind::Tool),
+        None => StepKind::Tool,
+    };
+    let parent = optional_text(entry, "parentId")
+        .ok()?
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("{task_id}/{p}"));
+    Some(StepReport {
+        id: format!("{task_id}/{id}"),
+        parent,
+        kind,
+        label: label.to_owned(),
+        state,
+        icon: optional_text(entry, "icon").ok()?.map(str::to_owned),
+        detail: optional_text(entry, "detail").ok()?.map(str::to_owned),
+    })
+}
+
+/// The envelope of a step: a `working` task with the step as its update. Its key names the step
+/// and the status message it came in, so a replay, a resubscribe and a poll collapse into one.
+fn step_envelope(
+    task_id: &str,
+    context_id: &str,
+    message_id: &str,
+    report: StepReport,
+    revision: Option<String>,
+) -> AgentEnvelope {
+    // the key names the agent's own id: the task is in it already
+    let own = report
+        .id
+        .strip_prefix(task_id)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(&report.id);
+    let key = if message_id.is_empty() {
+        IdemKey::Turn(format!("{task_id}:step:{own}:{}", report.state.as_str()))
+    } else {
+        IdemKey::Task(format!("a2a:{task_id}:step:{own}:{message_id}"))
+    };
+    AgentEnvelope {
+        task_id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        task_state: Some(AgentTaskState::Working),
+        revision,
+        key,
+        update: Some(AgentUpdate::Step(report)),
+    }
 }
 
 fn status_envelope(
@@ -1214,5 +1330,252 @@ mod tests {
         let a = art("a-x", None, vec![wrong]);
         let envs = ok(StreamMapper::default().map(artifact_update(a, None, Some(true))));
         assert!(matches!(envs[0].update, Some(AgentUpdate::Artifact { .. })));
+    }
+    // ---- steps (ADR 0025) ---------------------------------------------------------------
+
+    fn step_message(id: &str, entry: Value) -> Message {
+        let mut m = msg(id, Role::Agent, "npm test");
+        m.metadata = Some(HashMap::from([(STEPS_EXTENSION.to_owned(), entry)]));
+        m
+    }
+
+    fn step_entry() -> Value {
+        json!({"id": "acp:call_2:toolu_01", "parentId": "tool:call_2", "kind": "command",
+               "label": "npm test", "state": "running", "icon": "execute",
+               "detail": "12 passed, 1 failed"})
+    }
+
+    fn step_of_envelope(env: &AgentEnvelope) -> &StepReport {
+        let Some(AgentUpdate::Step(step)) = &env.update else {
+            panic!("not a step: {env:?}");
+        };
+        step
+    }
+
+    #[test]
+    fn a_working_status_with_a_step_is_a_step_with_ids_made_unique_by_the_task() {
+        let m = step_message("sm-1", step_entry());
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(env.task_state, Some(AgentTaskState::Working));
+        assert_eq!(
+            step_of_envelope(&env),
+            &StepReport {
+                id: "task-1/acp:call_2:toolu_01".into(),
+                parent: Some("task-1/tool:call_2".into()),
+                kind: StepKind::Command,
+                label: "npm test".into(),
+                state: StepState::Running,
+                icon: Some("execute".into()),
+                detail: Some("12 passed, 1 failed".into()),
+            }
+        );
+        assert_eq!(
+            env.key,
+            IdemKey::Task("a2a:task-1:step:acp:call_2:toolu_01:sm-1".into()),
+            "the key names the agent's id and the status message"
+        );
+    }
+
+    #[test]
+    fn the_status_text_of_a_step_is_not_a_status_of_its_own() {
+        let m = step_message("sm-1", step_entry());
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(
+            envs.len(),
+            1,
+            "the label is the step's, not a second `working`"
+        );
+    }
+
+    #[test]
+    fn only_the_required_members_are_required_and_a_kind_that_is_unknown_is_a_tool() {
+        let m = step_message(
+            "sm-1",
+            json!({"id": "a", "label": "x", "state": "waiting", "kind": "robot"}),
+        );
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        let step = step_of_envelope(&env);
+        assert_eq!(
+            (
+                step.kind,
+                step.state,
+                &step.parent,
+                &step.icon,
+                &step.detail
+            ),
+            (StepKind::Tool, StepState::Waiting, &None, &None, &None)
+        );
+        // no kind at all is a tool too
+        let m = step_message(
+            "sm-2",
+            json!({"id": "a", "label": "x", "state": "completed"}),
+        );
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(step_of_envelope(&env).kind, StepKind::Tool);
+        // `null` for an optional member is absent
+        let m = step_message(
+            "sm-3",
+            json!({"id": "a", "label": "x", "state": "failed", "parentId": null, "icon": null, "detail": null}),
+        );
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(step_of_envelope(&env).parent, None);
+    }
+
+    #[test]
+    fn an_entry_that_does_not_validate_is_read_as_a_plain_status() {
+        let valid = step_entry();
+        let broken = |f: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+            let mut entry = valid.as_object().unwrap().clone();
+            f(&mut entry);
+            Value::Object(entry)
+        };
+        let cases = [
+            broken(&|e| {
+                e.remove("id");
+            }),
+            broken(&|e| {
+                e.remove("label");
+            }),
+            broken(&|e| {
+                e.remove("state");
+            }),
+            broken(&|e| {
+                e.insert("id".into(), json!(""));
+            }),
+            broken(&|e| {
+                e.insert("id".into(), json!("x".repeat(129)));
+            }),
+            broken(&|e| {
+                e.insert("id".into(), json!("a\nb"));
+            }),
+            broken(&|e| {
+                e.insert("id".into(), json!(7));
+            }),
+            broken(&|e| {
+                e.insert("label".into(), json!("   "));
+            }),
+            broken(&|e| {
+                e.insert("label".into(), json!(["npm", "test"]));
+            }),
+            broken(&|e| {
+                e.insert("state".into(), json!("paused"));
+            }),
+            broken(&|e| {
+                e.insert("state".into(), json!("Running"));
+            }),
+            broken(&|e| {
+                e.insert("kind".into(), json!(3));
+            }),
+            broken(&|e| {
+                e.insert("parentId".into(), json!({"id": "x"}));
+            }),
+            broken(&|e| {
+                e.insert("icon".into(), json!(true));
+            }),
+            broken(&|e| {
+                e.insert("detail".into(), json!(1.5));
+            }),
+            json!("a string, not an entry"),
+            json!(["id"]),
+        ];
+        for entry in cases {
+            let m = step_message("sm-1", entry.clone());
+            let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+            assert_eq!(
+                env.update,
+                Some(AgentUpdate::Status {
+                    state: AgentTaskState::Working,
+                    detail: Some("npm test".into())
+                }),
+                "{entry}"
+            );
+            assert_eq!(env.key, IdemKey::Task("a2a:task-1:status-msg:sm-1".into()));
+        }
+    }
+
+    #[test]
+    fn a_step_on_a_status_that_is_not_working_is_ignored() {
+        for state in [
+            TaskState::InputRequired,
+            TaskState::AuthRequired,
+            TaskState::Completed,
+            TaskState::Failed,
+            TaskState::Canceled,
+            TaskState::Rejected,
+            TaskState::Submitted,
+        ] {
+            let m = step_message("sm-1", step_entry());
+            let env = only(StreamMapper::default().map(status_update(state.clone(), Some(m))));
+            assert!(
+                !matches!(env.update, Some(AgentUpdate::Step(_))),
+                "{state:?}: the state ends or pauses the turn, a step cannot say that"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_exact_uri_counts() {
+        for near in [
+            "https://agents.vymalo.com/a2a/extensions/steps/v2",
+            "https://agents.vymalo.com/a2a/extensions/steps/v1/",
+            "http://agents.vymalo.com/a2a/extensions/steps/v1",
+            "https://agents.vymalo.com/a2a/extensions/Steps/v1",
+        ] {
+            let mut m = msg("sm-1", Role::Agent, "npm test");
+            m.metadata = Some(HashMap::from([(near.to_owned(), step_entry())]));
+            let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+            assert!(
+                matches!(env.update, Some(AgentUpdate::Status { .. })),
+                "{near}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_status_message_without_an_id_uses_a_turn_key_that_names_the_step_and_its_state() {
+        let mut m = step_message("", step_entry());
+        m.message_id.clear();
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(
+            env.key,
+            IdemKey::Turn("task-1:step:acp:call_2:toolu_01:running".into())
+        );
+    }
+
+    #[test]
+    fn a_surface_in_the_message_of_a_step_comes_first_and_the_step_after() {
+        let mut m = step_message("sm-1", step_entry());
+        m.parts.push(ui_part(surface_ops()));
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(envs.len(), 2);
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Ui { .. })));
+        assert!(matches!(envs[1].update, Some(AgentUpdate::Step(_))));
+    }
+
+    #[test]
+    fn a_poll_maps_a_step_to_the_keys_of_the_stream() {
+        let m = step_message("sm-1", step_entry());
+        let live =
+            only(StreamMapper::default().map(status_update(TaskState::Working, Some(m.clone()))));
+        let snap = snapshot(&task(TaskState::Working, vec![], Some(m))).unwrap();
+        let last = snap.envelopes.last().unwrap();
+        assert_eq!(last.key, live.key);
+        assert_eq!(last.update, live.update);
+        assert_eq!(snap.state, AgentTaskState::Working);
+    }
+
+    #[test]
+    fn the_revision_of_the_event_goes_with_the_step() {
+        let m = step_message("sm-1", step_entry());
+        let mut event = status_update(TaskState::Working, Some(m));
+        if let StreamResponse::StatusUpdate(u) = &mut event {
+            u.metadata = Some(HashMap::from([(
+                RELEASE_CHANNELS_URI.to_owned(),
+                json!({"requested": "stable", "revision": "rev-9"}),
+            )]));
+        }
+        let env = only(StreamMapper::default().map(event));
+        assert_eq!(env.revision.as_deref(), Some("rev-9"));
+        assert!(matches!(env.update, Some(AgentUpdate::Step(_))));
     }
 }

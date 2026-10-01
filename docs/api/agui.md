@@ -102,6 +102,8 @@ Every id is derived from the log, so every replica and every replay agrees.
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
 | agent `messageId` | `agent_message.data.messageId` (the A2A message id); `st-<seq>` for the words of an `agent_status` (`completed`, `input_required`, `auth_required`). |
 | activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity. |
+| step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
+| `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message is open. |
@@ -143,6 +145,7 @@ gets everything.
 | `thread_state{blocked}` after `error{retryable:true}` (a timeout, or a verifier that could not be used) | The verifier's subagent is still open, and the gate does not require CI, so the hold can only be the verifier's | `SUBAGENT_ERROR{subagentRunId:"sub-verify-<verification>", message:<the error's>, code:"verifier_failed"}`, before the interrupt that closes the run |
 | `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<provider>-<sha>-<name>-<seq>", activityType:"vymalo.ci", replace:false, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
+| `agent_step{id, path, kind, label, state, phase, icon?, detail?}` (ADR 0025) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
@@ -161,7 +164,8 @@ gets everything.
 - **Invocations.** A run closes its open invocation first: `SUBAGENT_FINISHED{}` on success,
   `{result:{status:"canceled"}}` on cancel, `suspended` on an interrupt, `SUBAGENT_ERROR` on an
   error. A suspended invocation reappears under its own `subagentRunId` when the thread
-  continues; after an error the next one is new.
+  continues; after an error the next one is new. What the invocation has open ends before it
+  does: see [Nested steps](#nested-steps).
 - **Partial agent messages** (question 14, closed 2026-09-29). A text that does not extend what was said
   closes the open message and starts a new one, `messageId` `<id>~<seq>`. The same final message
   twice is said once.
@@ -195,7 +199,7 @@ projection emits, **before** the status activity and inside the open invocation:
 
 ### When: `at`
 
-Every `vymalo.*` activity (`status`, `artifact`, `error`, `action`, `check`, `ci`, `rework`, `job`)
+Every `vymalo.*` activity (`status`, `artifact`, `error`, `action`, `check`, `ci`, `rework`, `job`, `step`)
 carries `at`, the time of its log event (RFC 3339, as `Event.at`), so a client can show when a step
 happened without the log. `a2ui-surface` is not ours and has none.
 
@@ -448,6 +452,75 @@ attempt 2 of 3) and [`verify-red.agui.json`](examples/agui/verify-red.agui.json)
 are this section as streams, with the `run-` and `connect-` variants of the other goldens; the reference client reads
 all of them in CI.
 
+## Nested steps
+
+*Built 2026-10-01 (MVP slice 5).* An agent's work has a shape (the agent, a sub-agent it delegated to, their
+commands), and the log keeps it as `agent_step` events that carry their **path**, the chain of step ids a step runs
+under ([ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md); how an agent reports them is
+[`steps-v1.md`](steps-v1.md)). The projection shows the tree with what AG-UI 1.0 already has: a **sub-agent step is a
+subagent** of the run, nested under the one it runs in (`SUBAGENT_STARTED.parentSubagentRunId`), and **every step is an
+activity**, `vymalo.step`, attributed to the subagent that encloses it. A client that knows nothing of steps still gets
+subagents the protocol defines; one that does draws the tree from the activities' `path`.
+
+```mermaid
+sequenceDiagram
+  participant L as Event log
+  participant P as Projection
+  participant C as AG-UI consumer
+  L->>P: agent_step start OpenCode (subagent), path []
+  P-->>C: SUBAGENT_STARTED sub-step-3 (in sub-2), ACTIVITY_SNAPSHOT step-3 (@sub-2)
+  L->>P: agent_step start npm test (command), path [OpenCode]
+  P-->>C: ACTIVITY_SNAPSHOT step-4 (@sub-step-3)
+  L->>P: agent_step end npm test, failed, "1 failed"
+  P-->>C: ACTIVITY_SNAPSHOT step-4 (failed): the run goes on
+  L->>P: agent_step end OpenCode, completed
+  P-->>C: ACTIVITY_SNAPSHOT step-3 (completed), SUBAGENT_FINISHED sub-step-3
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Open: start of a sub-agent step (SUBAGENT_STARTED, the activity)
+  Open --> Open: update (the activity again)
+  Open --> Ended: end completed (SUBAGENT_FINISHED), failed (SUBAGENT_ERROR step_failed), canceled (SUBAGENT_FINISHED canceled)
+  Open --> Canceled: the invocation closes first (the activity says canceled, SUBAGENT_FINISHED canceled)
+  Open --> Suspended: the invocation suspends (SUBAGENT_FINISHED suspended); its later events only say its activity again
+  Suspended --> Ended: the end arrives in a later run (the activity only)
+  Suspended --> Canceled: the invocation closes for good (the activity says canceled)
+  Ended --> [*]
+  Canceled --> [*]
+```
+
+| Log event | Frames |
+|---|---|
+| `agent_step{phase:start, kind:subagent}` | `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", name:label, parentSubagentRunId:<enclosing>, metadata:{"vymalo.actor"}}` → the step's `vymalo.step` snapshot (attributed to the **enclosing** subagent: it is the step of the one that runs it) |
+| `agent_step{start}` of another kind; any `update` | The `vymalo.step` snapshot, `replace:true`, the same `messageId` for every event of the step. Its children carry the step's own `subagentRunId` |
+| `agent_step{end, completed}` of a sub-agent step | The snapshot → every open step subagent that runs under it, **deepest first**, `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `SUBAGENT_FINISHED{subagentRunId}` |
+| `agent_step{end, failed}` of a sub-agent step | The snapshot → the descendants as above → `SUBAGENT_ERROR{message: detail ?? "<label> failed", code:"step_failed"}`. The run goes on |
+| `agent_step{end, canceled}` of a sub-agent step | The snapshot → the descendants → `SUBAGENT_FINISHED{result:{status:"canceled"}}` |
+| A failed `tool` or `command` step | The snapshot only (state `failed`): the run goes on |
+| The agent's invocation closes while steps have not ended (`completed`, `failed`, `canceled`, a delivery failure) | Deepest first, each step the snapshot with `state:"canceled"` (no spinner stays) and, for a sub-agent step, `SUBAGENT_FINISHED{result:{status:"canceled"}}`, then the invocation's own closing frames. The core forgot them when the task ended |
+| The invocation suspends (`input_required`, `auth_required`) | Each open step subagent, deepest first, `SUBAGENT_FINISHED{outcome:{type:"suspended"}}` (**no** `interruptIds`: the interrupt is the invocation's), then the invocation's. Steps that are not subagents have nothing to suspend. When the run resumes, the step subagents are **not** started again: what the steps say next only says their activities again, attributed to the invocation |
+| `job_started`, or a user message that starts the next job | The projection forgets every step |
+
+- **The enclosing subagent** of a step is the nearest ancestor in its `path` whose subagent is open, else the agent's
+  invocation. A sub-agent step's `parentSubagentRunId` is its enclosing subagent when it starts (and is said again to a
+  client that joins while it is open).
+- **Ids.** A step's activity is `step-<seq of its first event>` and its subagent `sub-step-<seq>`; a retry (a step that
+  starts again after its end) is a new run of the step with its own seq. Subagent ids are never reused within a run.
+- **A client that joins** (a connect stream with a cursor inside an open run) gets, after the invocation's
+  `SUBAGENT_STARTED`, a `SUBAGENT_STARTED` for every open step subagent, parents first, so what follows closes only things
+  it knows. Step subagents that were suspended are not in the preamble.
+- **Nesting stays whole**: a subagent never ends while one that runs in it is open, and nothing is open when a run ends
+  (the property tests check it over random logs, including suspension and resume).
+- **Attribution.** `metadata["vymalo.actor"]` on a step's frames is the actor that reported it: the agent, or, for a step
+  the orchestrator reports itself (a relayed tool call, an agent it asked), the actor it names.
+- **Untrusted text.** `label` and `detail` come from an agent. The core cuts them (200 and 1000 characters) and drops
+  control characters; a client draws them as text.
+- **The goldens** [`steps`](examples/agui/steps.agui.json) (a sub-agent step with a command that fails, and the sub-agent
+  completing) and [`steps-ask`](examples/agui/steps-ask.agui.json) (a step waiting when the agent asks: the step subagent
+  suspends with the invocation, and its end is said in the next run) are this section as streams; the reference client reads
+  them in CI.
+
 ## The UI catalog
 
 *Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
@@ -568,8 +641,8 @@ for new events.
 
 1. **Replay.** The viewer-audience projection of every event after the cursor, as a sequence of
    runs. With a cursor inside an open run, it starts with a **preamble**: that run's
-   `RUN_STARTED` (same `runId`), `SUBAGENT_STARTED` for the open invocation and a
-   `STATE_SNAPSHOT`, and, for a cursor that is not a resume point, the text message that was open,
+   `RUN_STARTED` (same `runId`), `SUBAGENT_STARTED` for the open invocation (and for the open
+   sub-agent steps, parents first: [Nested steps](#nested-steps)) and a `STATE_SNAPSHOT`, and, for a cursor that is not a resume point, the text message that was open,
    opened again with what it had said. None of the preamble frames has an `id:`. When the thread is
    idle at the cursor there is no preamble, and the stream begins with the `RUN_STARTED` of the
    next run. Every stream thus begins with `RUN_STARTED`, as the spec requires.
@@ -966,6 +1039,23 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
             }
           }
         },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "vymalo.step": {
+      "type": "object",
+      "description": "A step of the agent's work (ADR 0025, steps/v1), as it stands: every event of the step says it again under the same message id. label and detail are untrusted text.",
+      "required": ["id", "path", "kind", "label", "state", "startedAt", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "maxLength": 200, "description": "Unique within the thread" },
+        "path": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "The ids of the steps it runs under, outermost first; empty at the top" },
+        "kind": { "enum": ["subagent", "tool", "command", "message"] },
+        "label": { "type": "string", "description": "One line, at most 200 characters" },
+        "state": { "enum": ["running", "waiting", "completed", "failed", "canceled"] },
+        "icon": { "type": "string", "description": "agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file or tool; for a step the orchestrator reports itself also mcp-server:<id>" },
+        "detail": { "type": "string", "description": "At most 1000 characters" },
+        "startedAt": { "type": "string", "format": "date-time", "description": "When the step started (the time of its first event)" },
         "at": { "$ref": "#/$defs/at" }
       }
     },

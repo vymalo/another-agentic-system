@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::step::StepReport;
+
 /// Protocol-neutral task state reported by an agent (mirrors A2A `TaskState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,4 +100,8 @@ pub enum AgentUpdate {
         /// The rule it broke, worded for the people who see the thread.
         reason: String,
     },
+    /// A step of the agent's work (`steps/v1`, ADR 0025). The adapter has made its ids unique
+    /// within the thread; the core sanitizes it again and coalesces it
+    /// ([`record_step`](crate::record_step)).
+    Step(StepReport),
 }

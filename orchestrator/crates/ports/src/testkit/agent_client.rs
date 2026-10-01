@@ -118,7 +118,8 @@ fn state_of(env: &AgentEnvelope) -> Option<AgentTaskState> {
             AgentUpdate::Artifact { .. }
             | AgentUpdate::Message { .. }
             | AgentUpdate::Ui { .. }
-            | AgentUpdate::UiRejected { .. },
+            | AgentUpdate::UiRejected { .. }
+            | AgentUpdate::Step(_),
         )
         | None => None,
     })

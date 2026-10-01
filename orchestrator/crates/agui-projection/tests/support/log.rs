@@ -3,9 +3,9 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::{
-    AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion, CiProvider,
-    CiReport, Command, Event, GatePolicy, Input, ThreadId, ThreadState, Timestamp, UiActionData,
-    UiCatalogData, UiVersion, UserId,
+    Actor, AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion,
+    CiProvider, CiReport, Command, Event, GatePolicy, Input, StepKind, StepReport, StepState,
+    ThreadId, ThreadState, Timestamp, UiActionData, UiCatalogData, UiVersion, UserId,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -145,6 +145,35 @@ pub enum Action {
         commit: u8,
         conclusion: CiConclusion,
     },
+    /// The agent reports step `s<id>` (under `s<parent>` when it has one), of kind
+    /// [`step_kind`]`(kind)` in state [`step_state`]`(state)`; `by_orchestrator` makes the report
+    /// the orchestrator's own (`Input::Step`, attributed to the agent).
+    Step {
+        id: u8,
+        parent: Option<u8>,
+        kind: u8,
+        state: u8,
+        by_orchestrator: bool,
+    },
+}
+
+/// Step kind `n % 4`; sub-agent steps are the interesting ones.
+pub fn step_kind(n: u8) -> StepKind {
+    match n % 4 {
+        0 | 1 => StepKind::Subagent,
+        2 => StepKind::Command,
+        _ => StepKind::Tool,
+    }
+}
+
+/// Step state `n % 5`.
+pub fn step_state(n: u8) -> StepState {
+    match n % 5 {
+        0 | 1 => StepState::Running,
+        2 => StepState::Waiting,
+        3 => StepState::Completed,
+        _ => StepState::Failed,
+    }
 }
 
 /// UI catalog `which % 4`, with its real digest: versions 1, 2, 2 (another digest) and 3.
@@ -230,6 +259,15 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
                 name,
                 commit,
                 conclusion: if ok { CiConclusion::Success } else { CiConclusion::Failure },
+            }
+        ),
+        10 => (0u8..5, proptest::option::of(0u8..5), 0u8..4, 0u8..5, any::<bool>()).prop_map(
+            |(id, parent, kind, state, by_orchestrator)| Action::Step {
+                id,
+                parent,
+                kind,
+                state,
+                by_orchestrator,
             }
         ),
     ]
@@ -412,6 +450,31 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 commit,
                 conclusion,
             } => Input::CiReported(ci_report(name, *commit, *conclusion)),
+            Action::Step {
+                id,
+                parent,
+                kind,
+                state,
+                by_orchestrator,
+            } => {
+                let report = StepReport {
+                    id: format!("t/s{id}"),
+                    parent: parent.map(|p| format!("t/s{p}")),
+                    kind: step_kind(*kind),
+                    label: format!("step {id}"),
+                    state: step_state(*state),
+                    icon: None,
+                    detail: None,
+                };
+                if *by_orchestrator {
+                    Input::Step {
+                        actor: Actor::agent(&agent, revision.clone()),
+                        report,
+                    }
+                } else {
+                    agent_input(AgentUpdate::Step(report))
+                }
+            }
             Action::UiAct { ids } => {
                 users += 1;
                 Input::UiAction {

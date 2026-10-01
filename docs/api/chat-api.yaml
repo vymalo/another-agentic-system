@@ -401,6 +401,7 @@ components:
         - job_started         # data: { job: integer }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
+        - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. Additive.
     Actor:
       type: object
       required: [type, name]
@@ -423,11 +424,17 @@ components:
         status:
           type: string
           description: "agent_status: submitted, working, input_required, auth_required, completed, failed or canceled. check_result: pending, passed or failed."
-        detail: { type: string }
+        detail:
+          type: string
+          description: "agent_status: the agent's status message. agent_step: more words about the step (a failure, a result); untrusted text, at most 1000 characters."
         name: { type: string }
         mimeType: { type: string }
         uri: { type: string }
-        state: { $ref: "#/components/schemas/ThreadState" }
+        state:
+          description: "thread_state: the ThreadState the thread entered. agent_step: where the step stands (running, waiting, completed, failed or canceled)."
+          anyOf:
+            - { $ref: "#/components/schemas/ThreadState" }
+            - { type: string, enum: [running, waiting, completed, failed, canceled] }
         message: { type: string }
         retryable: { type: boolean }
         operations:
@@ -481,6 +488,30 @@ components:
         commit:
           type: string
           description: "check_result only: the commit the answer was about, when the source named one."
+        id:
+          type: string
+          maxLength: 200
+          description: "agent_step only: the step's id, unique within the thread (an agent's own id is prefixed with its task id)."
+        path:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 200 }
+          description: "agent_step only: the ids of the steps this one runs under, outermost first; empty at the top. At most the 8 nearest."
+        kind:
+          type: string
+          enum: [subagent, tool, command, message]
+          description: "agent_step only: what the step is."
+        label:
+          type: string
+          maxLength: 200
+          description: "agent_step only: one line that says what the step is doing. Untrusted text."
+        phase:
+          type: string
+          enum: [start, update, end]
+          description: "agent_step only: which moment of the step this event is. A step that was reported ended without a start is one event, an `end`."
+        icon:
+          type: string
+          description: "agent_step only: a name from the icon vocabulary of `steps/v1` (agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool), or, for a step the orchestrator reports itself, `mcp-server:<id>`."
         summary:
           type: string
           description: "check_result, ci_result: a one-line summary from the source. Untrusted text."

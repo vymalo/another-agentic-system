@@ -138,6 +138,67 @@ async fn the_default_script_completes_with_the_pull_request_artifact() {
 }
 
 #[tokio::test]
+async fn the_steps_keyword_reports_a_sub_agent_with_a_command_that_fails_under_it() {
+    // steps/v1 (ADR 0025): the card lists it, and the metadata of each `working` status message
+    // is a step, which the adapter reads and the core logs with its path
+    let Some(url) = mock(MOCK_URL) else { return };
+    let rig = rig(&[("mock-coder", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder", "steps run the tests", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "agent_step",
+            "agent_step",
+            "agent_step",
+            "agent_step",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    let task = events[2]["data"]["id"]
+        .as_str()
+        .and_then(|id| id.split_once('/'))
+        .map(|(task, _)| task.to_owned())
+        .expect("a step id is `<task>/<the agent's id>`");
+    let story: Vec<(String, Vec<String>, &str, &str)> = events[2..6]
+        .iter()
+        .map(|e| {
+            let d = &e["data"];
+            (
+                d["id"].as_str().unwrap().to_owned(),
+                d["path"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p.as_str().unwrap().to_owned())
+                    .collect(),
+                d["state"].as_str().unwrap(),
+                d["phase"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let (o, c) = (format!("{task}/tool:c2"), format!("{task}/acp:c2:1"));
+    assert_eq!(
+        story,
+        [
+            (o.clone(), vec![], "running", "start"),
+            (c.clone(), vec![o.clone()], "running", "start"),
+            (c, vec![o.clone()], "failed", "end"),
+            (o, vec![], "completed", "end"),
+        ]
+    );
+    assert_eq!(events[4]["data"]["detail"], "1 failed");
+    assert_eq!(events[5]["data"]["label"], "OpenCode");
+}
+
+#[tokio::test]
 async fn ask_blocks_the_thread_and_the_answer_completes_the_same_task() {
     let Some(url) = mock(MOCK_URL) else { return };
     let rig = rig(&[("mock-coder", &url)]).await;

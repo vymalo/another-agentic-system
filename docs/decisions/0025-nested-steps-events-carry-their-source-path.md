@@ -67,3 +67,31 @@ decided on that delegation as follows; the owner may revisit them.
   ([ADR 0024](0024-mcp-tools-attached-per-conversation.md)) is a tool step with the server's icon, and an agent asked
   through `ask_agent` ([ADR 0026](0026-agent-mentions-as-structured-references.md)) is a sub-agent step under the step
   of the agent that asked; neither needs the agent's help.
+
+## Status note, 2026-10-01: built (MVP slice 5)
+
+The orchestrator's side is built; the contract an agent reports under is
+[`docs/api/steps-v1.md`](../api/steps-v1.md). What was settled while building it, by the same delegation:
+
+- **The event.** `agent_step` `{id, path, kind, label, state, phase, icon?, detail?}`: `kind` is `subagent`, `tool`,
+  `command` or `message`; `state` is `running`, `waiting`, `completed`, `failed` or `canceled`; `phase` is `start`,
+  `update` or `end`; `path` is the chain of step ids the step runs under (at most the 8 nearest). An agent's ids are
+  prefixed with its task id so they are unique within the thread.
+- **The bound.** A step logs its start, its end and **at most 4 updates** (`MAX_STEP_UPDATES`), decided in the core by
+  a ledger in the job (`Job.steps`), so every replica agrees; a job logs at most 2000 steps and tracks 256 open. The
+  rest is dropped with no event. Steps still open when the agent's task ends are forgotten with no event; the
+  projection closes what it shows.
+- **One path for every producer.** `record_step` serves the agent's own reports (`AgentUpdate::Step`) and the steps
+  the orchestrator reports itself (`Input::Step`, `App::record_step`), which later slices use for a relayed tool call
+  (with an `mcp-server:<id>` icon, which an agent may not claim) and an asked agent (a `subagent` step).
+- **In AG-UI** (`docs/api/agui.md`, "Nested steps"): a sub-agent step is a subagent (`sub-step-<seq>`) started in the
+  subagent that encloses it (`parentSubagentRunId`), every step is a `vymalo.step` activity (`step-<seq>`, said again at
+  each event of the step) attributed to its enclosing subagent, a failed command is an activity and nothing more, and what
+  is open when the agent's invocation closes is closed with it, deepest first: canceled when the task ended, suspended when
+  the agent asked (a suspended step subagent is not started again in the run that resumes; the step's later events only say
+  its activity again). The reference client reads the goldens `steps` and `steps-ask` in CI.
+- **From agents** ([`steps-v1.md`](../api/steps-v1.md)): the A2A adapter activates `steps/v1` (the header and
+  `message.extensions`) on a send and on a resubscribe, only for an agent whose live card lists the exact URI, and reads
+  a step from the metadata of a `working` status message, whatever was activated; one that does not validate is read as a
+  plain status. The agent-side work (adam-rs reporting its tool calls and its OpenCode bridge's as steps) and the web's tree
+  are their own slices.

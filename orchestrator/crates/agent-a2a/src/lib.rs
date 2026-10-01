@@ -20,6 +20,12 @@
 //! `{url, token, expiresAt}` for the thread's MCP endpoint, minted when it is sent from the
 //! non-secret grant on the request and never stored or logged ([`thread_tools_metadata`]).
 //!
+//! Steps (`steps/v1`, ADR 0025) are another: when the live card lists the extension
+//! ([`steps_from_card`]) the URI is activated on `SendStreamingMessage` (header and
+//! `message.extensions`) **and on `SubscribeToTask`** (the card is read for it too), so an agent
+//! reports its work as nested steps; the response is read as data whether or not it was activated
+//! (`orch_a2a_mapping`).
+//!
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
@@ -35,6 +41,6 @@ pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
-pub use extensions::extensions_from_card;
+pub use extensions::{extensions_from_card, steps_from_card};
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;

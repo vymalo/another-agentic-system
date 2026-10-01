@@ -522,6 +522,34 @@ const doing = (detail: string): Step => ({
   data: { status: "working", detail },
 });
 
+/**
+ * One report of a step of the agent's work (an `agent_step` event, ADR 0025). The ids are the
+ * orchestrator's (`<task id>/<agent's id>`); the mock has no task ids, so the golden's `T` stands
+ * in for it.
+ */
+const agentStep = (
+  id: string,
+  path: string[],
+  kind: "subagent" | "tool" | "command" | "message",
+  label: string,
+  state: "running" | "waiting" | "completed" | "failed" | "canceled",
+  phase: "start" | "update" | "end",
+  icon?: string,
+  detail?: string,
+): Step => ({
+  kind: "agent_step",
+  data: {
+    id: `T/${id}`,
+    path: path.map((p) => `T/${p}`),
+    kind,
+    label,
+    state,
+    phase,
+    ...(icon ? { icon } : {}),
+    ...(detail ? { detail } : {}),
+  },
+});
+
 /** The coder's branch, checks and pull request artifacts for a commit. */
 function coderPushed(
   commit: string,
@@ -626,6 +654,10 @@ const coderWork: Step[] = [
  *   verifier is a subagent of its own, `sub-verify-<n>`.
  * - `verify-ci`: the gate on CI (ADR 0017, ADR 0018, `ci.required` = `ci/build`): a red `ci/build` for the
  *   first commit, the agent sent back, a green one for the second (the `ci` golden).
+ * - `steps`: nested steps (ADR 0025, the `steps` golden): a sub-agent step `OpenCode`, a command `npm test`
+ *   under it that fails (`1 failed`), the sub-agent's end, the agent's words and `completed`.
+ * - `steps-ask`: the same sub-agent with a command that is `waiting` when the agent asks "Allow rm -rf
+ *   build?" and blocks (the `steps-ask` golden); the answer ends the command and the sub-agent.
  * - `slow`: works until cancelled.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
@@ -944,6 +976,67 @@ export function scriptFor(text: string): {
         ],
       };
     }
+    case "steps":
+      return {
+        start: [
+          working,
+          agentStep("tool:c2", [], "subagent", "OpenCode", "running", "start", "agent"),
+          agentStep("acp:c2:1", ["tool:c2"], "command", "npm test", "running", "start", "execute"),
+          agentStep(
+            "acp:c2:1",
+            ["tool:c2"],
+            "command",
+            "npm test",
+            "failed",
+            "end",
+            "execute",
+            "1 failed",
+          ),
+          agentStep("tool:c2", [], "subagent", "OpenCode", "completed", "end", "agent"),
+          {
+            kind: "agent_message",
+            data: { messageId: nextMessageId(), final: true, text: "Done." },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: "Done." } },
+          done,
+        ],
+      };
+    case "steps-ask":
+      return {
+        start: [
+          working,
+          agentStep("tool:c2", [], "subagent", "OpenCode", "running", "start", "agent"),
+          agentStep(
+            "acp:c2:1",
+            ["tool:c2"],
+            "command",
+            "rm -rf build",
+            "waiting",
+            "start",
+            "execute",
+          ),
+          {
+            kind: "agent_status",
+            data: { status: "input_required", detail: "Allow rm -rf build?" },
+          },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: () => [
+          working,
+          agentStep(
+            "acp:c2:1",
+            ["tool:c2"],
+            "command",
+            "rm -rf build",
+            "completed",
+            "end",
+            "execute",
+          ),
+          agentStep("tool:c2", [], "subagent", "OpenCode", "completed", "end", "agent"),
+          { kind: "agent_status", data: { status: "completed", detail: "Done." } },
+          done,
+        ],
+      };
     case "ask":
       return {
         start: [

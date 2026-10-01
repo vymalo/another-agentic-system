@@ -784,6 +784,7 @@ impl<P: Ports> App<P> {
             | Input::CiReported(_)
             | Input::VerifierReported { .. }
             | Input::VerifierFailed { .. }
+            | Input::Step { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -797,6 +798,29 @@ impl<P: Ports> App<P> {
         }
         self.get_thread(user, id).await?;
         self.apply(id, input, key, None, None).await
+    }
+
+    /// Records a step of the thread's work that the orchestrator reports itself (ADR 0025): a
+    /// tool call it relays, an agent it asked. It goes through the rules of any step: coalesced,
+    /// bounded, nested under its parent ([`orch_core::record_step`]), and may name an MCP server
+    /// as its icon. `actor` is who the step is attributed to. `key` makes a replay idempotent
+    /// ([`ApplyOutcome::Duplicate`]); a report that coalesces away or cannot be kept (the thread
+    /// is waiting, the report fails the checks) is an [`ApplyOutcome::Applied`] with no events.
+    ///
+    /// For callers inside the orchestrator, not for a user's request: there is no ownership check.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a thread that does not exist, and the transition's refusal for
+    /// one that is finished ([`orch_core::TransitionError::InvalidInState`]).
+    pub async fn record_step(
+        &self,
+        thread: ThreadId,
+        actor: orch_core::Actor,
+        report: orch_core::StepReport,
+        key: Option<String>,
+    ) -> Result<ApplyOutcome, AppError> {
+        self.apply(thread, Input::Step { actor, report }, key, None, None)
+            .await
     }
 
     /// Requests cancellation of the thread's running work. A finished thread is a no-op.

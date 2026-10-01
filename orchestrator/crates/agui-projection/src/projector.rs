@@ -46,11 +46,11 @@ use orch_agui_proto::{
     TextMessageStartEvent,
 };
 use orch_core::{
-    Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentTarget, ArtifactData,
-    CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody, GatePolicy,
-    JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, SurfaceOp, ThreadId,
-    ThreadState, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData,
-    inspect, recognise_artifact, serialized_len,
+    Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
+    ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody,
+    GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, StepKind,
+    StepPhase, SurfaceOp, ThreadId, ThreadState, UiActionData, UiCatalogLedger, UiSurfaceData,
+    UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -58,9 +58,9 @@ use crate::frame::{Audience, Frame};
 use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
-    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, AT_KEY,
-    CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_VERIFIER_FAILED,
-    actor_metadata, problem_metadata, response_schema, status_content,
+    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS, ACTIVITY_STEP,
+    AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
+    CODE_VERIFIER_FAILED, actor_metadata, problem_metadata, response_schema, status_content,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -130,6 +130,30 @@ struct PendingInterrupt {
     reason: &'static str,
     message: Option<String>,
     subagent: Option<SubagentRunId>,
+}
+
+/// A step of the agent's work that has not ended (ADR 0025): what the projection says about it,
+/// so every later event of the step says it again as the same activity.
+#[derive(Debug, Clone)]
+struct StepView {
+    /// The `seq` of the first logged event of this run of the step: it names the step's activity
+    /// (`step-<seq>`) and its subagent (`sub-step-<seq>`). A step that starts again after its end
+    /// is another run of it, with another seq.
+    seq: i64,
+    /// The log's step: its id, path, kind, label, state, icon and detail as last said.
+    data: AgentStepData,
+    /// When the step started (RFC 3339).
+    started_at: String,
+    /// Who reported it.
+    actor: Actor,
+    /// Its subagent, for a sub-agent step.
+    sub: Option<SubagentRunId>,
+    /// The subagent it was started in, for a sub-agent step: said once, when it starts, and again
+    /// to a client that joins while it is open.
+    parent: Option<SubagentRunId>,
+    /// Its `SUBAGENT_STARTED` is open in the run that is open. A suspended one is not (the run
+    /// that closed it is over), and the step's later events only say its activity again.
+    sub_open: bool,
 }
 
 /// Why the thread (or the last delegation) failed.
@@ -215,6 +239,11 @@ pub struct Projector {
     /// The text of the open invocation's last final agent message: a status whose words are the
     /// same is not said twice.
     last_final: Option<String>,
+    /// The steps that have not ended, by id (ADR 0025).
+    steps: BTreeMap<String, StepView>,
+    /// The time of the event being applied (RFC 3339), for the frames that close what is open
+    /// without an event of their own to say when.
+    now: String,
 }
 
 /// The event's time, as the log writes it (RFC 3339): the `at` of every `vymalo.*` activity.
@@ -225,6 +254,14 @@ fn at_of(ev: &Event) -> Value {
 /// The first `n` characters of a commit hash.
 fn short_sha(commit: &str) -> String {
     commit.chars().take(SHORT_SHA_CHARS).collect()
+}
+
+/// `SUBAGENT_FINISHED` of a subagent that was cut short (the 1.0 outcome union has no cancelled
+/// member, open question 16).
+fn canceled_subagent(id: SubagentRunId) -> SubagentFinishedEvent {
+    let mut finished = SubagentFinishedEvent::new(id, None);
+    finished.result = Some(json!({"status": "canceled"}));
+    finished
 }
 
 /// What a `vymalo.artifact` adds to the artifact as sent: its `kind` and the fields a card needs,
@@ -302,6 +339,8 @@ impl Projector {
             checks_failed: false,
             last_agent: None,
             last_final: None,
+            steps: BTreeMap::new(),
+            now: String::new(),
         }
     }
 
@@ -313,6 +352,22 @@ impl Projector {
     /// The thread state the log implies so far.
     pub fn thread_state(&self) -> ThreadState {
         self.state
+    }
+
+    /// The subagent run id of the agent's invocation, while one is open (`sub-<seq>`): what an
+    /// agent the orchestrator asked on its behalf is started under.
+    pub fn invocation_run_id(&self) -> Option<&SubagentRunId> {
+        self.invocation.as_ref().map(|i| &i.id)
+    }
+
+    /// The subagent run id of the sub-agent step `id` (`sub-step-<seq>`), while it is open and its
+    /// subagent is: what the steps of an agent asked under that step are nested under. `None` for
+    /// a step that is not a sub-agent step, has ended, or was suspended with its invocation.
+    pub fn step_run_id(&self, id: &str) -> Option<&SubagentRunId> {
+        self.steps
+            .get(id)
+            .filter(|step| step.sub_open)
+            .and_then(|step| step.sub.as_ref())
     }
 
     /// What [`translate`](crate::translate) needs to know about the thread, for `user` (the
@@ -356,6 +411,13 @@ impl Projector {
         if let Some(inv) = &self.verifier {
             out.push(Self::subagent_started(inv).into());
         }
+        // The step subagents that are open, parents first: what a step says next is attributed
+        // to one of them.
+        for id in self.open_step_subagents(true) {
+            if let Some(step) = self.steps.get(&id) {
+                out.push(self.step_subagent_started(step).into());
+            }
+        }
         out.push(self.state_snapshot());
         if let (Some(open), Some(inv)) = (&self.open_text, &self.invocation)
             && let Some(record) = self.texts.get(&open.source_id)
@@ -386,6 +448,7 @@ impl Projector {
     /// event says) produces no resume point either.
     pub fn apply(&mut self, event: &Event, audience: Audience<'_>) -> Vec<Frame> {
         let pending_error = self.pending_error.take();
+        self.now = event.at.to_string();
         let mut out: Vec<agui::Event> = Vec::new();
         match &event.body {
             EventBody::UserMessage(d) => self.on_user_message(event, d, audience, &mut out),
@@ -408,6 +471,7 @@ impl Projector {
                 self.catalog.observe(&d.reference());
                 self.pending_error = pending_error;
             }
+            EventBody::AgentStep(d) => self.on_agent_step(event, d, &mut out),
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -808,6 +872,7 @@ impl Projector {
         self.suspended = None;
         self.pending_error = None;
         self.surfaces.clear();
+        self.steps.clear();
     }
 
     /// The user acted on a surface. Like a user message it answers a blocked thread and opens a
@@ -1195,6 +1260,233 @@ impl Projector {
         }
     }
 
+    // ---- steps -------------------------------------------------------------------------
+
+    /// A step of the agent's work (ADR 0025, `steps/v1`): its `vymalo.step` activity, said again
+    /// for every event of the step with the same id, and, for a sub-agent step, a subagent of its
+    /// own that its children are attributed to.
+    ///
+    /// The enclosing subagent of a step is the nearest ancestor of its path whose subagent is
+    /// open, else the agent's invocation. A sub-agent step's activity is attributed to its
+    /// *enclosing* subagent (it is the step of the one that runs it); its children carry the
+    /// step's own.
+    fn on_agent_step(&mut self, ev: &Event, d: &AgentStepData, out: &mut Vec<agui::Event>) {
+        // A step is the sign that the agent works.
+        let moved_to_working = self.state != ThreadState::Working;
+        self.state = ThreadState::Working;
+        let opened = self.ensure_run(ev, out);
+        self.ensure_invocation(ev, out);
+
+        let continues = d.phase != StepPhase::Start && self.steps.contains_key(&d.id);
+        if continues {
+            if let Some(step) = self.steps.get_mut(&d.id) {
+                // The icon is what the step first said when a later report leaves it out.
+                let icon = d.icon.clone().or_else(|| step.data.icon.clone());
+                step.data = AgentStepData { icon, ..d.clone() };
+                step.actor = ev.actor.clone();
+            }
+        } else {
+            // A step that starts again, or one the projection never saw start (it ended in one
+            // event, or its start was in a run this projection did not keep): a new run of it.
+            if let Some(stale) = self.steps.remove(&d.id) {
+                self.finish_step_subagent(&stale, out);
+            }
+            let sub = (d.kind == StepKind::Subagent && !d.state.is_end())
+                .then(|| SubagentRunId::new(format!("sub-step-{}", ev.seq)));
+            let mut step = StepView {
+                seq: ev.seq,
+                data: d.clone(),
+                started_at: ev.at.to_string(),
+                actor: ev.actor.clone(),
+                sub,
+                parent: None,
+                sub_open: false,
+            };
+            if step.sub.is_some() {
+                step.parent = self.enclosing_run(&d.path);
+                out.push(self.step_subagent_started(&step).into());
+                step.sub_open = true;
+            }
+            self.steps.insert(d.id.clone(), step);
+        }
+        out.extend(self.step_activity(&d.id));
+
+        if d.state.is_end()
+            && let Some(step) = self.steps.get(&d.id).cloned()
+        {
+            if step.sub_open {
+                // Whatever still runs under it ends first, deepest first: nesting stays whole.
+                for id in self.open_step_subagents_under(&d.id) {
+                    if let Some(child) = self.steps.get_mut(&id) {
+                        child.sub_open = false;
+                        if let Some(sub) = child.sub.clone() {
+                            out.push(canceled_subagent(sub).into());
+                        }
+                    }
+                }
+                if let Some(sub) = step.sub.clone() {
+                    out.push(match d.state {
+                        orch_core::StepState::Failed => SubagentErrorEvent::new(
+                            sub,
+                            d.detail
+                                .clone()
+                                .unwrap_or_else(|| format!("{} failed", d.label)),
+                            Some(CODE_STEP_FAILED.to_owned()),
+                        )
+                        .into(),
+                        orch_core::StepState::Canceled => canceled_subagent(sub).into(),
+                        orch_core::StepState::Running
+                        | orch_core::StepState::Waiting
+                        | orch_core::StepState::Completed => {
+                            SubagentFinishedEvent::new(sub, None).into()
+                        }
+                    });
+                }
+            }
+            self.steps.remove(&d.id);
+        }
+        if moved_to_working && !opened {
+            out.push(self.state_snapshot());
+        }
+    }
+
+    /// The subagent a step with `path` is attributed to: the nearest ancestor whose subagent is
+    /// open, else the agent's invocation.
+    fn enclosing_run(&self, path: &[String]) -> Option<SubagentRunId> {
+        path.iter()
+            .rev()
+            .filter_map(|id| self.steps.get(id))
+            .find(|step| step.sub_open)
+            .and_then(|step| step.sub.clone())
+            .or_else(|| self.invocation.as_ref().map(|i| i.id.clone()))
+    }
+
+    /// The `vymalo.step` snapshot of the step `id` as it stands, at the time of the event being
+    /// applied.
+    fn step_activity(&mut self, id: &str) -> Option<agui::Event> {
+        let enclosing = self.step_attribution(id);
+        let step = self.steps.get(id)?;
+        let d = &step.data;
+        let mut content = Metadata::new();
+        content.insert("id".to_owned(), Value::from(d.id.clone()));
+        content.insert("path".to_owned(), json!(d.path));
+        content.insert("kind".to_owned(), Value::from(d.kind.as_str()));
+        content.insert("label".to_owned(), Value::from(d.label.clone()));
+        content.insert("state".to_owned(), Value::from(d.state.as_str()));
+        if let Some(icon) = &d.icon {
+            content.insert("icon".to_owned(), Value::from(icon.clone()));
+        }
+        if let Some(detail) = &d.detail {
+            content.insert("detail".to_owned(), Value::from(detail.clone()));
+        }
+        content.insert("startedAt".to_owned(), Value::from(step.started_at.clone()));
+        content.insert(AT_KEY.to_owned(), Value::from(self.now.clone()));
+        let message_id = format!("step-{}", step.seq);
+        let mut snapshot = ActivitySnapshotEvent::new(message_id.clone(), ACTIVITY_STEP, content);
+        snapshot.replace = Some(true);
+        snapshot.subagent_run_id = enclosing;
+        snapshot.base.metadata = Some(actor_metadata(&step.actor));
+        self.message_ids.insert(message_id);
+        Some(snapshot.into())
+    }
+
+    /// The subagent the activity of the step `id` is attributed to.
+    fn step_attribution(&self, id: &str) -> Option<SubagentRunId> {
+        let path = self.steps.get(id).map(|s| s.data.path.clone())?;
+        self.enclosing_run(&path)
+    }
+
+    /// `SUBAGENT_STARTED` of a step's subagent, under the subagent that encloses it.
+    fn step_subagent_started(&self, step: &StepView) -> SubagentStartedEvent {
+        let sub = step
+            .sub
+            .clone()
+            .unwrap_or_else(|| SubagentRunId::new(format!("sub-step-{}", step.seq)));
+        let mut started = SubagentStartedEvent::new(sub, step.data.label.clone());
+        started.parent_subagent_run_id = step.parent.clone();
+        started.base.metadata = Some(actor_metadata(&step.actor));
+        started
+    }
+
+    /// The ids of the steps whose subagent is open, deepest first (`parents_first` false) or
+    /// outermost first, in the order they started.
+    fn open_step_subagents(&self, parents_first: bool) -> Vec<String> {
+        let mut open: Vec<&StepView> = self.steps.values().filter(|s| s.sub_open).collect();
+        open.sort_by_key(|s| (s.data.path.len(), s.seq));
+        if !parents_first {
+            open.reverse();
+        }
+        open.into_iter().map(|s| s.data.id.clone()).collect()
+    }
+
+    /// The open step subagents that run under the step `id`, deepest first.
+    fn open_step_subagents_under(&self, id: &str) -> Vec<String> {
+        self.open_step_subagents(false)
+            .into_iter()
+            .filter(|other| {
+                self.steps
+                    .get(other)
+                    .is_some_and(|s| s.data.path.iter().any(|p| p == id))
+            })
+            .collect()
+    }
+
+    /// Ends the subagent of a step that is replaced by a new run of itself.
+    fn finish_step_subagent(&self, step: &StepView, out: &mut Vec<agui::Event>) {
+        if step.sub_open
+            && let Some(sub) = step.sub.clone()
+        {
+            out.push(canceled_subagent(sub).into());
+        }
+    }
+
+    /// The invocation is closing: what it has open ends first, deepest first. When it suspends,
+    /// the step subagents suspend with it (and are not opened again: what the steps say after the
+    /// answer only says their activities again). Otherwise every step that has not ended is
+    /// canceled, as a snapshot (so no spinner stays) and, for a sub-agent step, as the end of its
+    /// subagent; the core forgot them when the task ended.
+    fn close_steps(&mut self, how: &InvocationClose, out: &mut Vec<agui::Event>) {
+        match how {
+            InvocationClose::Suspended(_) => {
+                for id in self.open_step_subagents(false) {
+                    if let Some(step) = self.steps.get_mut(&id) {
+                        step.sub_open = false;
+                        if let Some(sub) = step.sub.clone() {
+                            out.push(
+                                SubagentFinishedEvent::new(
+                                    sub,
+                                    Some(SubagentFinishedOutcome::Suspended {
+                                        interrupt_ids: None,
+                                    }),
+                                )
+                                .into(),
+                            );
+                        }
+                    }
+                }
+            }
+            InvocationClose::Finished | InvocationClose::Canceled | InvocationClose::Error(_) => {
+                let mut ids: Vec<&StepView> = self.steps.values().collect();
+                ids.sort_by_key(|s| (s.data.path.len(), s.seq));
+                let ids: Vec<String> = ids.into_iter().rev().map(|s| s.data.id.clone()).collect();
+                for id in ids {
+                    let Some(step) = self.steps.get_mut(&id) else {
+                        continue;
+                    };
+                    step.data.state = orch_core::StepState::Canceled;
+                    out.extend(self.step_activity(&id));
+                    if let Some(step) = self.steps.get_mut(&id) {
+                        let was_open = std::mem::replace(&mut step.sub_open, false);
+                        if let (true, Some(sub)) = (was_open, step.sub.clone()) {
+                            out.push(canceled_subagent(sub).into());
+                        }
+                    }
+                }
+                self.steps.clear();
+            }
+        }
+    }
+
     // ---- runs, invocations, text -------------------------------------------------------
 
     /// Opens a run: `RUN_STARTED`, then the `STATE_SNAPSHOT` (unless the caller sends its own).
@@ -1256,6 +1548,10 @@ impl Projector {
 
     fn close_invocation(&mut self, how: InvocationClose, out: &mut Vec<agui::Event>) {
         self.close_text(out);
+        // What the invocation still has open ends with it, before it does.
+        if self.invocation.is_some() {
+            self.close_steps(&how, out);
+        }
         let Some(inv) = self.invocation.take() else {
             return;
         };

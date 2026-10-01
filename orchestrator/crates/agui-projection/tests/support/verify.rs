@@ -6,7 +6,7 @@
 //! goldens; this checker is what lets the property tests apply the same rules to every random log.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_projection::Frame;
 use orch_agui_proto::testkit::event_errors;
@@ -20,6 +20,8 @@ pub struct Checker {
     texts: BTreeSet<String>,
     subagents: BTreeSet<String>,
     closed_subagents: BTreeSet<String>,
+    /// The enclosing subagent of every open one that has one.
+    parents: BTreeMap<String, String>,
     suspended_ids: Vec<String>,
     message_ids: BTreeSet<String>,
     /// Ids that name activity messages: an `ACTIVITY_SNAPSHOT` may say the same id again, and
@@ -94,6 +96,7 @@ impl Checker {
                 self.run = Some(e.run_id.to_string());
                 self.ended = false;
                 self.closed_subagents.clear();
+                self.parents.clear();
                 self.suspended_ids.clear();
             }
             Event::TextMessageStart(e) => {
@@ -134,13 +137,26 @@ impl Checker {
                 if self.subagents.contains(&id) || self.closed_subagents.contains(&id) {
                     return Err(format!("invocation {id} started twice in one run"));
                 }
+                // The reference client: the enclosing subagent must have started in this run.
+                if let Some(parent) = &e.parent_subagent_run_id {
+                    let parent = parent.to_string();
+                    if !self.subagents.contains(&parent) && !self.closed_subagents.contains(&parent)
+                    {
+                        return Err(format!(
+                            "invocation {id} names the parent {parent}, which has not started in this run"
+                        ));
+                    }
+                    self.parents.insert(id.clone(), parent);
+                }
                 self.subagents.insert(id);
             }
             Event::SubagentFinished(e) => {
                 let id = e.subagent_run_id.to_string();
+                self.close_nested(&id, "SUBAGENT_FINISHED")?;
                 if !self.subagents.remove(&id) {
                     return Err(format!("SUBAGENT_FINISHED for {id}, which is not open"));
                 }
+                self.parents.remove(&id);
                 self.closed_subagents.insert(id);
                 if let Some(SubagentFinishedOutcome::Suspended {
                     interrupt_ids: Some(ids),
@@ -152,9 +168,11 @@ impl Checker {
             }
             Event::SubagentError(e) => {
                 let id = e.subagent_run_id.to_string();
+                self.close_nested(&id, "SUBAGENT_ERROR")?;
                 if !self.subagents.remove(&id) {
                     return Err(format!("SUBAGENT_ERROR for {id}, which is not open"));
                 }
+                self.parents.remove(&id);
                 self.closed_subagents.insert(id);
             }
             Event::RunFinished(e) => {
@@ -187,6 +205,21 @@ impl Checker {
                 self.ended = true;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// This projection's rule, beyond the reference client's: a subagent does not end while one
+    /// that runs in it is still open.
+    fn close_nested(&self, id: &str, what: &str) -> Result<(), String> {
+        if let Some((child, _)) = self
+            .parents
+            .iter()
+            .find(|(_, parent)| parent.as_str() == id)
+        {
+            return Err(format!(
+                "{what} for {id} while {child}, which runs in it, is open"
+            ));
         }
         Ok(())
     }

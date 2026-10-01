@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
+use crate::step::AgentStepData;
 use crate::thread::ThreadState;
 use crate::ui::{UiActionData, UiSurfaceData};
 use crate::ui_catalog::UiCatalogData;
@@ -38,6 +39,8 @@ pub enum EventKind {
     JobStarted,
     /// The person's screen sent a version of its UI component catalog (ADR 0023).
     UiCatalog,
+    /// A step of the agent's work started, moved or ended (ADR 0025).
+    AgentStep,
 }
 
 impl EventKind {
@@ -57,6 +60,7 @@ impl EventKind {
             EventKind::Rework => "rework",
             EventKind::JobStarted => "job_started",
             EventKind::UiCatalog => "ui_catalog",
+            EventKind::AgentStep => "agent_step",
         }
     }
 }
@@ -294,6 +298,8 @@ pub enum EventBody {
     JobStarted(JobStartedData),
     /// See [`UiCatalogData`].
     UiCatalog(UiCatalogData),
+    /// See [`AgentStepData`].
+    AgentStep(AgentStepData),
 }
 
 impl EventBody {
@@ -313,6 +319,7 @@ impl EventBody {
             EventBody::Rework(_) => EventKind::Rework,
             EventBody::JobStarted(_) => EventKind::JobStarted,
             EventBody::UiCatalog(_) => EventKind::UiCatalog,
+            EventBody::AgentStep(_) => EventKind::AgentStep,
         }
     }
 
@@ -332,6 +339,7 @@ impl EventBody {
             EventBody::Rework(d) => serde_json::to_value(d),
             EventBody::JobStarted(d) => serde_json::to_value(d),
             EventBody::UiCatalog(d) => serde_json::to_value(d),
+            EventBody::AgentStep(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -353,6 +361,7 @@ impl EventBody {
             EventKind::Rework => EventBody::Rework(serde_json::from_value(data)?),
             EventKind::JobStarted => EventBody::JobStarted(serde_json::from_value(data)?),
             EventKind::UiCatalog => EventBody::UiCatalog(serde_json::from_value(data)?),
+            EventKind::AgentStep => EventBody::AgentStep(serde_json::from_value(data)?),
         })
     }
 }

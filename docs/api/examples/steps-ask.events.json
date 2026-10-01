@@ -1,0 +1,188 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "steps-ask clean the build"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "agent",
+      "id": "T/tool:c2",
+      "kind": "subagent",
+      "label": "OpenCode",
+      "path": [],
+      "phase": "start",
+      "state": "running"
+    },
+    "kind": "agent_step",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "execute",
+      "id": "T/acp:c2:1",
+      "kind": "command",
+      "label": "rm -rf build",
+      "path": [
+        "T/tool:c2"
+      ],
+      "phase": "start",
+      "state": "waiting"
+    },
+    "kind": "agent_step",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "detail": "Allow rm -rf build?",
+      "status": "input_required"
+    },
+    "kind": "agent_status",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "blocked"
+    },
+    "kind": "thread_state",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "yes"
+    },
+    "kind": "user_message",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "execute",
+      "id": "T/acp:c2:1",
+      "kind": "command",
+      "label": "rm -rf build",
+      "path": [
+        "T/tool:c2"
+      ],
+      "phase": "end",
+      "state": "completed"
+    },
+    "kind": "agent_step",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "agent",
+      "id": "T/tool:c2",
+      "kind": "subagent",
+      "label": "OpenCode",
+      "path": [],
+      "phase": "end",
+      "state": "completed"
+    },
+    "kind": "agent_step",
+    "seq": 10,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "detail": "Done.",
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 11,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 12,
+    "threadId": "<thread-id>"
+  }
+]

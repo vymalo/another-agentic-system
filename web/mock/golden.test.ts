@@ -255,6 +255,34 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       await run(3, "echo once more", v1);
       return { agent: "reviewer", last: "done" };
     },
+    // nested steps (ADR 0025, MVP slice 5): a sub-agent step with a command under it
+    steps: async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "steps run the tests" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
+    // a step that is waiting when the agent asks: its subagent suspends with the invocation
+    "steps-ask": async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "steps-ask clean the build" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "blocked");
+      const answer = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-7",
+        messages: [],
+        resume: [{ interruptId: "int-5", status: "resolved", payload: { text: "yes" } }],
+      });
+      expect(answer.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     release: async (id) => {
       const res = await postRun(base, "coder", {
         threadId: id,
@@ -267,7 +295,10 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
     },
   };
 
-/** Every activity's `at` becomes `<timestamp>`; one without it fails the comparison. */
+/**
+ * Every activity's `at` becomes `<timestamp>`; one without it fails the comparison. So does a
+ * step's `startedAt` (a `vymalo.step` has both).
+ */
 function untimed(list: Frame[]): Frame[] {
   return list.map((f) => {
     const content = f.event.content;
@@ -277,7 +308,12 @@ function untimed(list: Frame[]): Frame[] {
     const at = (content as Record<string, unknown>).at;
     if (at === undefined) return f;
     expect(typeof at).toBe("string");
-    return { ...f, event: { ...f.event, content: { ...content, at: "<timestamp>" } } };
+    const timed: Record<string, unknown> = { ...content, at: "<timestamp>" };
+    if (f.event.activityType === "vymalo.step") {
+      expect(typeof timed.startedAt).toBe("string");
+      timed.startedAt = "<timestamp>";
+    }
+    return { ...f, event: { ...f.event, content: timed } };
   });
 }
 

@@ -135,6 +135,25 @@ check "push-flawed: the rework prompt that quotes the verifier's findings gets t
 check "push-clean: the coder pushes a commit the mock verifier passes" \
   "$(artifact "$AGENT" 'push-clean fix the login' branch '.commit')" "$C40"
 
+# Nested steps (steps/v1, ADR 0025): the card lists the extension, and the keyword `steps` reports a
+# sub-agent step with a command that fails under it, each in the metadata of a `working` status message.
+STEPS_EXT=https://agents.vymalo.com/a2a/extensions/steps/v1
+check "steps: the card lists steps/v1" \
+  "$(curl -fsS "$AGENT/.well-known/agent-card.json" | jq -r --arg ext "$STEPS_EXT" '.capabilities.extensions[] | select(.uri == $ext) | .required')" "false"
+check "steps: submitted, working, four steps (all working), completed" \
+  "$(frames "$AGENT" 'steps run the tests')" "submitted,working,working,working,working,working,completed"
+check "steps: the steps, in order, with the parent of the command" \
+  "$(rpc "$AGENT" SendStreamingMessage 'steps run the tests' | sed -n 's/^data: //p' |
+    jq -r --arg ext "$STEPS_EXT" '.result.statusUpdate.status.message.metadata[$ext] | select(. != null) | [.id, (.parentId // "-"), .kind, .state] | join(" ")' | paste -sd, -)" \
+  "tool:c2 - subagent running,acp:c2:1 tool:c2 command running,acp:c2:1 tool:c2 command failed,tool:c2 - subagent completed"
+check "steps: the failed command carries its detail and the words of the step are its label" \
+  "$(rpc "$AGENT" SendStreamingMessage 'steps run the tests' | sed -n 's/^data: //p' |
+    jq -r --arg ext "$STEPS_EXT" '.result.statusUpdate.status.message | select(.metadata[$ext].state == "failed") | [.metadata[$ext].detail, .parts[0].text] | join(" | ")')" \
+  "1 failed | npm test"
+check "steps: the end is the agent's words" \
+  "$(rpc "$AGENT" SendStreamingMessage 'steps run the tests' | sed -n 's/^data: //p' |
+    jq -r '.result.statusUpdate.status | select(.state == "TASK_STATE_COMPLETED") | .message.parts[0].text')" "Done."
+
 echo "== $VERIFIER (the verifier)"
 card=$(curl -fsS "$VERIFIER/.well-known/agent-card.json")
 check "card: streaming, JSONRPC interface on the same host" \

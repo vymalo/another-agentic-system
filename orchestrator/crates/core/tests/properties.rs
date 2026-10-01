@@ -88,7 +88,43 @@ fn arb_input() -> impl Strategy<Value = Input> {
         (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected { reason, retryable }),
         "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text }),
+        arb_step().prop_map(|report| Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::Step(report)
+        }),
     ]
+}
+
+/// A step report out of a small pool of ids, so that steps start, update, end and restart.
+fn arb_step() -> impl Strategy<Value = StepReport> {
+    let id = || (0..6_u8).prop_map(|n| format!("t/s{n}"));
+    (
+        id(),
+        proptest::option::of(id()),
+        prop_oneof![
+            Just(StepKind::Subagent),
+            Just(StepKind::Tool),
+            Just(StepKind::Command),
+            Just(StepKind::Message)
+        ],
+        prop_oneof![
+            4 => Just(StepState::Running),
+            1 => Just(StepState::Waiting),
+            2 => Just(StepState::Completed),
+            1 => Just(StepState::Failed),
+            1 => Just(StepState::Canceled)
+        ],
+    )
+        .prop_map(|(id, parent, kind, state)| StepReport {
+            label: format!("do {id}"),
+            id,
+            parent,
+            kind,
+            state,
+            icon: None,
+            detail: None,
+        })
 }
 
 fn complete() -> Input {
@@ -303,5 +339,107 @@ proptest! {
             replay.observe(&data.reference());
         }
         prop_assert_eq!(replay, snap.job.catalog);
+    }
+}
+
+// ---- nested steps (ADR 0025) ------------------------------------------------------------------
+
+/// Inputs that carry steps, from the agent and from the orchestrator, among the ones that move the
+/// thread.
+fn arb_step_input() -> impl Strategy<Value = Input> {
+    prop_oneof![
+        8 => arb_step().prop_map(|report| Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::Step(report),
+        }),
+        3 => arb_step().prop_map(|report| Input::Step { actor: Actor::system(), report }),
+        2 => arb_task_state().prop_map(|state| Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::Status { state, detail: None },
+        }),
+        1 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+            user: UserId::new("u@x.io"),
+            text,
+            message_id: None,
+            run_id: None,
+            origin: orch_core::Origin::Agui,
+            catalog: None,
+        }),
+        1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
+    ]
+}
+
+proptest! {
+    /// Whatever steps arrive and in whatever order, the log of a step is a start, at most
+    /// `MAX_STEP_UPDATES` updates and an end (a one-shot step is an end alone); a step starts
+    /// only when it is not open and ends only with the path it started with; the ledger says
+    /// exactly what the events leave open; steps are only logged while the thread works and
+    /// leave it working; and a new job forgets them all.
+    #[test]
+    fn the_log_of_a_step_is_bounded_and_the_ledger_follows_the_events(
+        inputs in proptest::collection::vec(arb_step_input(), 0..80)
+    ) {
+        use std::collections::BTreeMap;
+        let mut snap = Snapshot::new(ThreadState::Queued);
+        // what the events say: open id -> (path of its start, updates logged)
+        let mut open: BTreeMap<String, (Vec<String>, u8)> = BTreeMap::new();
+        for input in inputs {
+            let before = snap.clone();
+            let Ok((next, cmds)) = orch_core::transition(&snap, &input) else { continue };
+            if next.job.number != before.job.number {
+                open.clear();
+            }
+            let logged: Vec<&AgentStepData> = cmds.iter().filter_map(|c| match c {
+                Command::Append(d) => match &d.body {
+                    EventBody::AgentStep(s) => Some(s),
+                    _ => None,
+                },
+                _ => None,
+            }).collect();
+            prop_assert!(logged.len() <= 1, "one event per report");
+            for step in logged {
+                prop_assert!(
+                    matches!(before.state, ThreadState::Queued | ThreadState::Working),
+                    "a step was logged in {:?}", before.state
+                );
+                prop_assert_eq!(next.state, ThreadState::Working);
+                prop_assert!(step.path.len() <= MAX_STEP_DEPTH);
+                prop_assert!(!step.path.contains(&step.id), "a step is not its own ancestor");
+                match step.phase {
+                    StepPhase::Start => {
+                        prop_assert!(!step.state.is_end());
+                        prop_assert!(open.insert(step.id.clone(), (step.path.clone(), 0)).is_none(),
+                            "started while open");
+                    }
+                    StepPhase::Update => {
+                        prop_assert!(!step.state.is_end());
+                        let entry = open.get_mut(&step.id);
+                        prop_assert!(entry.is_some(), "an update of a step that is not open");
+                        let (path, updates) = entry.unwrap();
+                        prop_assert_eq!(&*path, &step.path);
+                        *updates += 1;
+                        prop_assert!(*updates <= MAX_STEP_UPDATES, "too many updates");
+                    }
+                    StepPhase::End => {
+                        prop_assert!(step.state.is_end());
+                        if let Some((path, _)) = open.remove(&step.id) {
+                            prop_assert_eq!(&path, &step.path, "the end has the path of the start");
+                        }
+                    }
+                }
+            }
+            // a task that ended leaves nothing open; a new job starts empty
+            if matches!(&input, Input::Agent { update: AgentUpdate::Status { state, .. }, .. } if state.is_terminal()) {
+                open.clear();
+            }
+            let tracked: Vec<&str> = next.job.steps.open_ids().collect();
+            let said: Vec<&str> = open.keys().map(String::as_str).collect();
+            prop_assert_eq!(tracked, said, "the ledger and the log agree");
+            prop_assert!(next.job.steps.open_count() <= MAX_OPEN_STEPS);
+            prop_assert!(next.job.steps.started() <= MAX_STEPS_PER_JOB);
+            snap = next;
+        }
     }
 }

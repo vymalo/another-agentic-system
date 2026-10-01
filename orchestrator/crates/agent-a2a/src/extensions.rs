@@ -24,6 +24,13 @@ pub fn extensions_from_card(card: &AgentCard) -> BTreeSet<KnownExtension> {
         .collect()
 }
 
+/// Whether the card lists `steps/v1` (ADR 0025): the agent can report its work as nested steps,
+/// and the orchestrator activates the extension on a send and a resubscribe. Exact URI, read from
+/// the live card, never remembered.
+pub fn steps_from_card(card: &AgentCard) -> bool {
+    extensions_from_card(card).contains(&KnownExtension::Steps)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -79,6 +86,23 @@ mod tests {
             let got = extensions_from_card(&card_with(Some(vec![entry(ext.uri(), Some(false))])));
             assert_eq!(got, BTreeSet::from([ext]), "{ext}");
         }
+    }
+
+    #[test]
+    fn steps_are_detected_alone_by_their_exact_uri() {
+        assert!(steps_from_card(&card_with(Some(vec![entry(
+            KnownExtension::Steps.uri(),
+            None
+        )]))));
+        assert!(!steps_from_card(&card_with(None)));
+        assert!(!steps_from_card(&card_with(Some(vec![entry(
+            KnownExtension::UiCatalog.uri(),
+            None
+        )]))));
+        assert!(!steps_from_card(&card_with(Some(vec![entry(
+            "https://agents.vymalo.com/a2a/extensions/steps/v2",
+            None
+        )]))));
     }
 
     #[test]

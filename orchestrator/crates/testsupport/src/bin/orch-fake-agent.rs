@@ -63,6 +63,7 @@ fn call_json(c: &Call) -> Value {
         "text": c.text,
         "resuming": c.resuming,
         "extensionsHeader": c.extensions_header,
+        "messageExtensions": c.message_extensions,
         "activatesReleaseChannels": c.activates_release_channels(),
         "release": c.release,
         "uiCatalog": c.ui_catalog,
