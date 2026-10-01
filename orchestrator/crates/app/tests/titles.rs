@@ -406,6 +406,84 @@ async fn none_keeps_the_first_words_and_the_next_reply_asks_again() {
     assert_eq!(titled(&events(&app, &alice(), t.id).await).len(), 1);
 }
 
+/// The agent's reply reaches the thread as two inputs: the final message and, a moment later, the
+/// status that ends the turn with the same words (a streamed reply is stated in both). The
+/// dispatcher works the title row on its own task, so the model's answer can be applied between
+/// them. Played by hand, in the order that used to ask twice: the reply must ask once, or the
+/// thread's second ask is spent on the same words and the next reply (the one with a topic)
+/// is never asked for.
+#[tokio::test]
+async fn a_reply_the_model_answered_before_it_ended_does_not_ask_twice() {
+    let w = World::new();
+    let app = titling(&w);
+    let t = create(&app, &alice(), "plain", "stream hi").await;
+    let agent = |update| Input::Agent {
+        agent: AgentId::new("plain"),
+        revision: None,
+        update,
+    };
+    let words = "Streaming a reply";
+    app.apply(
+        t.id,
+        agent(AgentUpdate::Message {
+            message_id: "m".into(),
+            text: words.into(),
+            is_final: true,
+        }),
+        Some("m".to_owned()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(title_rows(&w, t.id).len(), 1, "the reply asked for a title");
+    // the model had no topic yet, and its answer is applied before the reply is over
+    app.apply(
+        t.id,
+        Input::TitleDeclined { ask: 1 },
+        Some("title:1".to_owned()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    app.apply(
+        t.id,
+        agent(AgentUpdate::Status {
+            state: AgentTaskState::Completed,
+            detail: Some(words.into()),
+        }),
+        Some("s".to_owned()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let got = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(got.state, ThreadState::Done);
+    assert_eq!(title_rows(&w, t.id).len(), 1, "the same reply asks once");
+    assert_eq!(got.job.title.asks(), 1);
+
+    // the next reply is another reply, and asks
+    app.post_message(&alice(), t.id, "write a fibonacci function".to_owned())
+        .await
+        .unwrap();
+    app.apply(
+        t.id,
+        agent(AgentUpdate::Message {
+            message_id: "m2".into(),
+            text: "Here it is".into(),
+            is_final: true,
+        }),
+        Some("m2".to_owned()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(title_rows(&w, t.id).len(), 2, "the next reply asked");
+}
+
 #[tokio::test]
 async fn a_model_that_cannot_be_reached_costs_the_thread_nothing() {
     let w = World::new();

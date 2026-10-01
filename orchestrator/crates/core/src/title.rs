@@ -8,7 +8,7 @@
 //!
 //! The first words of a first message are a poor title. When the agent has said something, the
 //! orchestrator asks a model for a short one ([`Command::RequestTitle`](crate::Command::RequestTitle),
-//! at most [`MAX_TITLE_ASKS`] times for a thread), the application answers with
+//! at most [`MAX_TITLE_ASKS`] times for a thread and once for a reply), the application answers with
 //! [`Input::Titled`](crate::Input::Titled) or [`Input::TitleDeclined`](crate::Input::TitleDeclined),
 //! and a title it wrote is replaced by nobody but the person. What the model is shown
 //! ([`title_prompt`]) is untrusted data, and what it says ([`clean_title`]) is data too: one line of
@@ -112,16 +112,28 @@ pub struct TitleLedger {
     /// a request is in flight, and the reply that follows asks nothing more.
     #[serde(skip_serializing_if = "is_zero")]
     answered: u8,
+    /// The reply that is going on has asked already. A reply is what the agent says while the
+    /// thread works; it is over when the thread stops working (blocked, verifying, finished), which
+    /// [`TitleLedger::reply_over`] records. Said twice in one reply (a final message, then the status
+    /// that ends the turn with the same words) the words ask once, whenever the model answers:
+    /// `answered` alone cannot say so, because an answer that lands between the two would let the
+    /// second ask again, with the conversation the first was shown.
+    #[serde(skip_serializing_if = "is_false")]
+    asked_in_reply: bool,
 }
 
 fn is_zero(n: &u8) -> bool {
     *n == 0
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl TitleLedger {
     /// A ledger of a thread that kept its first words, which is what the log leaves out.
     pub fn is_empty(&self) -> bool {
-        self.source.is_default() && self.asks == 0 && self.answered == 0
+        self.source.is_default() && self.asks == 0 && self.answered == 0 && !self.asked_in_reply
     }
 
     /// The ledger of a thread whose title is `source`'s.
@@ -130,6 +142,7 @@ impl TitleLedger {
             source,
             asks: 0,
             answered: 0,
+            asked_in_reply: false,
         }
     }
 
@@ -139,12 +152,14 @@ impl TitleLedger {
     }
 
     /// Whether the model may be asked now: the thread has the first message's words, has not used
-    /// up its asks, and no earlier ask is still waiting for its answer (an agent that says two
-    /// things in one reply asks once).
+    /// up its asks, no earlier ask is still waiting for its answer, and the reply that is going on
+    /// has not asked (an agent that says two things in one reply asks once, however soon the model
+    /// answers).
     pub fn may_ask(&self) -> bool {
         self.source == TitleSource::FirstMessage
             && self.asks < MAX_TITLE_ASKS
             && self.answered >= self.asks
+            && !self.asked_in_reply
     }
 
     /// The ask `ask` was answered, with a title or without.
@@ -155,7 +170,13 @@ impl TitleLedger {
     /// The model is asked: the number of this ask, from 1.
     pub(crate) fn asked(&mut self) -> u8 {
         self.asks = self.asks.saturating_add(1);
+        self.asked_in_reply = true;
         self.asks
+    }
+
+    /// The agent's reply is over (the thread stopped working): the next reply may ask.
+    pub(crate) fn reply_over(&mut self) {
+        self.asked_in_reply = false;
     }
 
     /// Whose title the thread has.
