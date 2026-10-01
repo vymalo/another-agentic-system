@@ -31,7 +31,7 @@ Its helpers panic on failure, by design.
 
 The fake agent's behaviour is chosen by the first word of the user's message
 (`echo` or anything else, `ask`, `gate`, `slow`, `chunks`, `fail`, `talk`,
-`messages`, `auth`, `thread-tools` (calls the thread's MCP endpoint back with the grant of its message, [`call_back`]), and for the verification gate `verify-pass`, `verify-red-once` and `verify-red`, which report a
+`messages`, `auth`, `recall` (answers `recalled: <the first line of the conversation the message was told>`, or `recalled: nothing`: what a fork's first task carries, [ADR 0029](../../../docs/decisions/0029-forking-a-thread-copies-its-log.md); every script reads the message **after** that conversation, and `Call::text` holds all of it), `thread-tools` (calls the thread's MCP endpoint back with the grant of its message, [`call_back`]), and for the verification gate `verify-pass`, `verify-red-once` and `verify-red`, which report a
 `branch` and a `checks` artifact and answer the gate's rework prompt as a new task of the same context, and `verify-ci`,
 which reports only the `branch` artifact, like an agent that pushed and leaves the checking to CI, and `verify-reviewed`, which also says what it did (`VERIFY_SUMMARY`) before it pushes, like an agent that leaves the checking to a verifier); the table is
 in `src/fake.rs`. `VERIFY_REPOSITORY` and `verify_commit(attempt)` name what the `branch` artifact holds.

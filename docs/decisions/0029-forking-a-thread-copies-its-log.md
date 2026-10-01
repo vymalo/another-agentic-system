@@ -5,10 +5,11 @@
   parent's title kept) are taken on the delegation and the owner may revisit them. Built so far: the
   core (the event, the cut, the snapshot, the transcript and the edit families), the store (migration
   `0010`, `fork_thread`, `fork_family`) and the API (`POST /api/threads/{id}/fork`,
-  `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include`) and the AG-UI projection (the
-  marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](../api/agui.md#forks)). Not built yet: the
-  transcript on the wire (until then the agent of a fork is **not** told the earlier conversation, so a
-  fork should not be offered to a person before it is), the web.
+  `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include`), the AG-UI projection (the
+  marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](../api/agui.md#forks)) and the transcript
+  on the wire (`SendRequest.history`, built by the dispatcher for the first task of a fork and put in
+  front of the message by the A2A and the local-agent clients): **the agent of a fork is now told the
+  conversation it continues**. Not built yet: the web.
 
 ## Context
 

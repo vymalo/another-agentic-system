@@ -81,6 +81,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
         release: None,
         ui_catalog: None,
         thread_tools,
+        history: None,
     }
 }
 

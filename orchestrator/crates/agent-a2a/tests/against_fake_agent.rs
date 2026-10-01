@@ -6,7 +6,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig, RELEASE_CHANNELS_URI};
 use orch_core::AgentUpdate;
-use orch_core::{AgentTaskState, Classify, ErrorClass};
+use orch_core::{
+    AgentTaskState, Classify, ErrorClass, ForkHistory, HistoryEntry, HistoryRole, history_preamble,
+};
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, SendContent,
     SendRequest, TaskHandle,
@@ -41,6 +43,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         release: None,
         ui_catalog: None,
         thread_tools: None,
+        history: None,
     }
 }
 
@@ -345,6 +348,125 @@ async fn a_new_task_names_the_tasks_it_is_about_in_its_message() {
     assert!(calls[0].reference_task_ids.is_empty());
     assert_eq!(calls[1].reference_task_ids, [task]);
     assert_ne!(calls[1].task_id, calls[0].task_id);
+}
+
+/// The conversation of a fork: what the person said and what the agent answered.
+fn conversation() -> ForkHistory {
+    let entry = |role, name: &str, text: &str| HistoryEntry {
+        role,
+        name: name.to_owned(),
+        text: text.to_owned(),
+    };
+    ForkHistory {
+        entries: vec![
+            entry(HistoryRole::Person, "person", "fix the redirect loop"),
+            entry(HistoryRole::Agent, "plain", "Fixed.\nSee the branch."),
+        ],
+        omitted: 0,
+    }
+}
+
+#[tokio::test]
+async fn the_first_task_of_a_fork_carries_the_conversation_in_front_of_its_message() {
+    // ADR 0029: a fork is a new context, so its agent is told what was said, as plain text in
+    // the same part as the message: any A2A agent reads it, and the scripts of the fake read the
+    // message after it.
+    let fake = agent().await;
+    let ep = fake.endpoint("plain", None);
+    let history = conversation();
+    let mut first = request(&ep, "recall and go on");
+    first.history = Some(history.clone());
+    let envelopes = drain(client().send_stream(first).await.unwrap()).await;
+    assert_eq!(
+        statuses(&envelopes).last(),
+        Some(&AgentTaskState::Completed)
+    );
+    let calls = fake.executions();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].text,
+        format!("{}recall and go on", history_preamble(&history)),
+        "one text part: the conversation, a blank line, the message"
+    );
+    assert!(
+        calls[0]
+            .text
+            .contains("<<<conversation\nperson: fix the redirect loop\nplain: Fixed.\n  See the branch.\n>>>conversation\n")
+    );
+    // and the agent read the conversation it was told: its answer quotes the first line of it
+    let artifact = envelopes
+        .iter()
+        .find_map(|e| match &e.update {
+            Some(AgentUpdate::Artifact { text, .. }) => text.clone(),
+            _ => None,
+        })
+        .expect("an artifact");
+    assert_eq!(artifact, "recalled: person: fix the redirect loop");
+}
+
+#[tokio::test]
+async fn a_message_without_a_conversation_is_sent_as_it_is() {
+    // The later tasks of a fork, a thread that is not one, and the verifier (ADR 0002; the
+    // dispatcher builds its request with no history) are sent with none: their text is the
+    // message and nothing before it, and an agent that is asked to `recall` has nothing to quote.
+    let fake = agent().await;
+    let ep = fake.endpoint("plain", None);
+    let mut first = request(&ep, "echo one");
+    first.history = Some(conversation());
+    let envelopes = drain(client().send_stream(first).await.unwrap()).await;
+    let task = envelopes[0].task_id.clone();
+    let mut second = request(&ep, "echo two");
+    second.message_id = "msg-two".to_owned();
+    second.reference_task_ids = vec![task];
+    drain(client().send_stream(second).await.unwrap()).await;
+    let mut other = request(&ep, "recall");
+    other.message_id = "msg-other".to_owned();
+    other.context_id = "ctx-other".to_owned();
+    let answer = drain(client().send_stream(other).await.unwrap()).await;
+    let calls = fake.executions();
+    assert_eq!(calls.len(), 3);
+    assert!(calls[0].text.starts_with("[This chat continues"));
+    assert_eq!(calls[1].text, "echo two");
+    assert_eq!(calls[2].text, "recall");
+    let said = answer.iter().find_map(|e| match &e.update {
+        Some(AgentUpdate::Artifact { text, .. }) => text.clone(),
+        _ => None,
+    });
+    assert_eq!(said.as_deref(), Some("recalled: nothing"));
+}
+
+#[tokio::test]
+async fn an_action_is_never_given_a_conversation_and_an_empty_one_changes_nothing() {
+    let fake = agent().await;
+    let ep = fake.endpoint("plain", None);
+    // a conversation with nothing in it is no preamble at all
+    let mut empty = request(&ep, "echo hi");
+    empty.history = Some(ForkHistory::default());
+    drain(client().send_stream(empty).await.unwrap()).await;
+    // an action is a data part: there is no text to put the conversation in front of
+    let mut action = request(&ep, "echo hi");
+    action.message_id = "msg-action".to_owned();
+    action.content = SendContent::UiAction {
+        action: orch_core::UiActionData {
+            surface_id: "s1".to_owned(),
+            name: "go".to_owned(),
+            source_component_id: "btn".to_owned(),
+            context: serde_json::Map::new(),
+            version: orch_core::UiVersion::V0_9_1,
+            run_id: None,
+        },
+        at: jiff::Timestamp::UNIX_EPOCH,
+    };
+    action.history = Some(conversation());
+    drain(client().send_stream(action).await.unwrap()).await;
+    let calls = fake.executions();
+    assert_eq!(calls[0].text, "echo hi");
+    assert!(
+        !calls[1].text.contains("<<<conversation"),
+        "{}",
+        calls[1].text
+    );
+    assert_eq!(calls[1].actions.len(), 1);
 }
 
 #[tokio::test]

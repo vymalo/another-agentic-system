@@ -20,7 +20,7 @@ use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
 use orch_core::{
     BoxError, KnownExtension, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
-    UI_CATALOG_EXTENSION, UiDelivery, UiVersion,
+    UI_CATALOG_EXTENSION, UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -409,7 +409,12 @@ fn user_message(
     reporting: &[String],
 ) -> Message {
     let part = match &req.content {
-        SendContent::Text(text) => Part::text(text.clone()),
+        // The first task of a fork is told the conversation it continues, in front of the
+        // message and in the same part: plain A2A, any agent reads it (ADR 0029).
+        SendContent::Text(text) => Part::text(match &req.history {
+            Some(history) => format!("{}{text}", history_preamble(history)),
+            None => text.clone(),
+        }),
         SendContent::UiAction { action, at } => action_part(action, *at),
     };
     let mut message = Message::new(Role::User, vec![part]);

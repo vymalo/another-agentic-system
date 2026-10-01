@@ -33,11 +33,16 @@
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
 //! | `ui-big` | `working`, an artifact whose A2UI part is larger than the cap, then `completed` |
 //! | `ui-delete` | `working`, an A2UI part that creates surface `s2`, then one that deletes it, `completed` |
+//! | `recall` | `working`, artifact `recalled: <the first line of the conversation the message was told>` (or `recalled: nothing`), `completed`: what the first task of a **fork** carries (ADR 0029) |
 //! | `verify-pass` | `working`, artifacts `branch` (a commit) and `checks` (`passed: true`), `completed` |
 //! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
 //! | `verify-red` | as `verify-pass`, but `checks` always fails |
 //! | `verify-ci` | `working`, only the `branch` artifact (a commit named by [`verify_commit`] in [`VERIFY_REPOSITORY`]), `completed`: an agent that pushed and leaves the checking to CI |
 //! | `verify-reviewed` | as `verify-ci`, and an agent `Message` ([`VERIFY_SUMMARY`]) before the artifact: an agent that pushed, says what it did and leaves the checking to a verifier |
+//!
+//! The first task of a fork carries the conversation it continues in front of the message, in the
+//! same text part (ADR 0029): [`Call::text`] holds all of it, and the scripts choose by the first
+//! word of the message **after** it, as if it were not there.
 //!
 //! An agent that plays the **verifier** ([`FakeAgentOptions::verifier`], a [`VerifierScript`]) does
 //! not read the first word: every message it gets is a request to review a commit (the prompt of
@@ -1307,6 +1312,33 @@ async fn verifier_script(
     emit(tx, ctx.status(TaskState::Completed, None)).await
 }
 
+/// What the first task of a fork is told in front of its message (the start of
+/// `orch_core::history_preamble`).
+const HISTORY_OPEN: &str = "[This chat continues an earlier conversation.";
+
+/// The first line of the conversation a message was told, and the message without it. A message
+/// that was told none is its own.
+fn split_history(text: String) -> (Option<String>, String) {
+    if !text.starts_with(HISTORY_OPEN) {
+        return (None, text);
+    }
+    let Some((head, rest)) = text.split_once("\n>>>conversation\n") else {
+        return (None, text);
+    };
+    let first = head
+        .split_once("<<<conversation\n")
+        .and_then(|(_, lines)| lines.lines().next())
+        .map(str::to_owned);
+    // `(n earlier messages left out)`, when there are, then the blank line that ends the preamble
+    let rest = if rest.starts_with('(') {
+        rest.split_once('\n').map_or("", |(_, after)| after)
+    } else {
+        rest
+    };
+    let message = rest.strip_prefix('\n').unwrap_or(rest).to_owned();
+    (first, message)
+}
+
 async fn script(
     shared: Arc<Shared>,
     tx: mpsc::Sender<Result<StreamResponse, A2AError>>,
@@ -1320,6 +1352,8 @@ async fn script(
     if let Some(verifier) = shared.verifier {
         return verifier_script(&shared, &tx, &ctx, verifier, &text, cancel).await;
     }
+    // The scripts read the message, not the conversation a fork's first task is told before it.
+    let (recalled, text) = split_history(text);
     // The answer to an `ask` continues the `ask` script whatever it says.
     let answering = resuming && lock(&shared.asking).remove(&ctx.task_id);
     let steps_answer = answering && lock(&shared.steps_asked).remove(&ctx.task_id);
@@ -1728,6 +1762,13 @@ async fn script(
         "gate" => {
             shared.gate.notified().await;
             let (a, done) = finish(shared.next_artifact_id(), format!("echo: {text}"));
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
+        // What a fork's first task was told: the first line of the conversation.
+        "recall" => {
+            let said = recalled.as_deref().unwrap_or("nothing");
+            let (a, done) = finish(shared.next_artifact_id(), format!("recalled: {said}"));
             emit(&tx, a).await?;
             emit(&tx, done).await?;
         }

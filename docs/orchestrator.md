@@ -1022,7 +1022,7 @@ stateDiagram-v2
 
 ### Forking a thread (MVP-plan item F, ADR 0029)
 
-**Built** (2026-10-01): the core, the store, the API and the AG-UI projection (the marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](api/agui.md#forks)); the transcript on the wire and the web are the next steps. A fork is a new thread that starts with a
+**Built** (2026-10-01): the core, the store, the API and the AG-UI projection (the marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](api/agui.md#forks)); the transcript on the wire (`SendRequest.history`, below); the web is the next step. A fork is a new thread that starts with a
 copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)).
 `orch_core::fork` holds the pure rules; nothing in it reads a store:
 
@@ -1035,8 +1035,11 @@ copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029
 | `branch_points(family, current)` | The messages of `current` that have other versions: the original and the edits of it, in the order made, and which one `current` shows |
 
 The new thread's events `1..=cut` are the parent's, with the same `seq`; its own `thread_forked` is `cut + 1`. A fork has its own
-A2A context (its thread id). The first task of a fork is to be sent with the transcript in front of the message (not built yet), derived from the
-log when the task is sent (so a retry sends the same text) and never stored in the outbox. The core adds the event kind
+A2A context (its thread id). The first task of a fork (a text message, the binding has no task yet) is sent with the transcript in front of the message:
+the dispatcher reads the fork's own events `1..=forked_at`, builds `fork_history` and sets `SendRequest.history`, and the A2A and
+the local-agent clients put `history_preamble` in front of the text, in the same part. It is derived from the
+log when the task is sent (so a retry sends the same text) and never stored in the outbox; a task that follows another, a UI
+action and the verifier are sent no history. The core adds the event kind
 `thread_forked` and nothing to `transition`: a fork is made by the application, not decided by an input.
 
 **The store and the application.** `ThreadStore::fork_thread(new, ForkOrigin { parent, cut, kind }, first)` is `create_thread` with
