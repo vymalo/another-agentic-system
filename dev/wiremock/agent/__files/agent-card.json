@@ -16,6 +16,11 @@
         "uri": "https://agents.vymalo.com/a2a/extensions/steps/v1",
         "description": "Reports its work as nested steps (the keyword steps shows them).",
         "required": false
+      },
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/text-stream/v1",
+        "description": "Streams its replies as they are written (the keyword stream shows it).",
+        "required": false
       }
     ]
   },

@@ -27,8 +27,8 @@ pub use event::{
     Event, EventBody, EventKind, JobStartedData, Origin, ThreadStateData, UserMessageData,
 };
 pub use extension::{
-    KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, THREAD_TOOLS_EXTENSION,
-    UI_CATALOG_EXTENSION,
+    KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
+    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,

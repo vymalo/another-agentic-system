@@ -154,6 +154,24 @@ check "steps: the end is the agent's words" \
   "$(rpc "$AGENT" SendStreamingMessage 'steps run the tests' | sed -n 's/^data: //p' |
     jq -r '.result.statusUpdate.status | select(.state == "TASK_STATE_COMPLETED") | .message.parts[0].text')" "Done."
 
+# Streamed text (text-stream/v1, ADR 0027): the card lists the extension, and the keyword `stream`
+# sends a reply as six chunks (artifact updates with their byte offsets, the last one `lastChunk`)
+# and states the whole text once on the status that ends the turn.
+STREAM_EXT=https://agents.vymalo.com/a2a/extensions/text-stream/v1
+check "stream: the card lists text-stream/v1" \
+  "$(curl -fsS "$AGENT/.well-known/agent-card.json" | jq -r --arg ext "$STREAM_EXT" '.capabilities.extensions[] | select(.uri == $ext) | .required')" "false"
+check "stream: submitted, working, six chunks, completed" \
+  "$(frames "$AGENT" 'stream tell me')" "submitted,working,artifact,artifact,artifact,artifact,artifact,artifact,completed"
+check "stream: the chunks follow one another by byte offset and the last one says so" \
+  "$(rpc "$AGENT" SendStreamingMessage 'stream tell me' | sed -n 's/^data: //p' |
+    jq -r --arg ext "$STREAM_EXT" '.result.artifactUpdate | select(. != null) | [.artifact.metadata[$ext].offset, (.artifact.parts[0].text | utf8bytelength), .lastChunk] | join(":")' | paste -sd, -)" \
+  "0:10:false,10:9:false,19:14:false,33:12:false,45:12:false,57:5:true"
+check "stream: the whole text is stated once, under the stream id, on the status that ends the turn" \
+  "$(rpc "$AGENT" SendStreamingMessage 'stream tell me' | sed -n 's/^data: //p' |
+    jq -r --arg ext "$STREAM_EXT" '.result.statusUpdate.status | select(.state == "TASK_STATE_COMPLETED") | .message | [.metadata[$ext].streamId, .parts[0].text] | join(" | ")' |
+    sed 's/^task-[^ ]*-reply/<task>-reply/')" \
+  "<task>-reply | Streaming a reply, word by word, so the chat can show it grow."
+
 echo "== $VERIFIER (the verifier)"
 card=$(curl -fsS "$VERIFIER/.well-known/agent-card.json")
 check "card: streaming, JSONRPC interface on the same host" \

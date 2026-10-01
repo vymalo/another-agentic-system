@@ -35,7 +35,8 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > snapshot; see [The UI catalog](#the-ui-catalog).
 > **Live text** (2026-10-01, [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md), MVP slice 6): the words of a reply
 > that is still being written are frames that are not in the log and are never resume points, merged by message id with
-> the final message; the pure overlay that makes them is built (`orch-agui-projection`), see [Live text](#live-text).
+> the final message; the run response and the connect stream carry them (the overlay is `orch-agui-projection`'s, the
+> pieces come from the dispatcher that holds the agent's stream, over the wakeup port), see [Live text](#live-text).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -233,8 +234,10 @@ ignores them still reads every reply, whole, when the log says it.
   says the rest.
 - **One stream at a time.** A second reply starting while one is open ends the first as given up: the agent's words
   before a tool call are persisted with their own id, so the first is normally in the log by then.
-- **What a surface must do.** Give the overlay live text only once the log has been folded up to what it held when the
-  connection opened, and never to a stream that is replaying (the pieces would be attributed to an old invocation).
+- **What a surface does.** It gives the overlay live text only once the log has been folded up to what it held when the
+  connection opened (`App::thread_feed` yields no piece before that; `Connect::caught_up`), and, on a run response,
+  only once the run is being written: a piece during the replay would be attributed to an old invocation. Both the run
+  response and the connect stream carry live text; the pieces of other threads are never yielded.
   The golden is [`examples/stream.feed.json`](examples/stream.feed.json) (a log and live pieces in the order a
   connection heard them, which no real run can pin down, so it is written by hand) and its stream
   [`agui/stream.agui.json`](examples/agui/stream.agui.json): `START(msg-3, vymalo.live)`, three `CONTENT`
@@ -763,7 +766,7 @@ configured.
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1` and `…/mentions/v1` (ADR 0008; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1` and `…/text-stream/v1` (ADR 0008; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.

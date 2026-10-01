@@ -138,6 +138,58 @@ async fn the_default_script_completes_with_the_pull_request_artifact() {
 }
 
 #[tokio::test]
+async fn the_stream_keyword_streams_a_reply_that_a_viewer_reads_grow_and_the_log_holds_once() {
+    // text-stream/v1 (ADR 0027): the card lists it, the six chunks of the reply are relayed and
+    // never logged, and the log holds the whole text once, from the status that ends the turn
+    let Some(url) = mock(MOCK_URL) else { return };
+    let rig = rig(&[("mock-coder", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-coder", "stream tell me", None)
+        .await;
+    let mut viewer = rig.chat.agui_connect(&id, None, false).await;
+    let frames = viewer
+        .frames_until(Duration::from_secs(60), |f| {
+            f.event["type"] == "RUN_FINISHED"
+        })
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let events = rig.chat.events(&id).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "agent_message",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    let whole = "Streaming a reply, word by word, so the chat can show it grow.";
+    assert_eq!(events[2]["data"]["text"], whole);
+    assert_eq!(events[2]["data"]["final"], true);
+    let reply = events[2]["data"]["messageId"].as_str().unwrap();
+    assert!(reply.ends_with("-reply"), "{reply}");
+
+    // the dribbled reply reached the viewer in pieces before the log's message completed it
+    let live = |f: &&orch_testsupport::Frame| {
+        f.event["messageId"] == reply
+            && f.event["type"] == "TEXT_MESSAGE_CONTENT"
+            && f.event["metadata"]["vymalo.live"].is_object()
+            && f.event["metadata"]["vymalo.live"]["final"].is_null()
+    };
+    let grown = frames.iter().filter(live).count();
+    assert!(grown >= 3, "{grown} live deltas: {frames:?}");
+    let delta_of = |f: &orch_testsupport::Frame| f.event["delta"].as_str().unwrap().to_owned();
+    let text: String = frames
+        .iter()
+        .filter(|f| f.event["messageId"] == reply && f.event["type"] == "TEXT_MESSAGE_CONTENT")
+        .map(delta_of)
+        .collect();
+    assert_eq!(text, whole);
+}
+
+#[tokio::test]
 async fn the_steps_keyword_reports_a_sub_agent_with_a_command_that_fails_under_it() {
     // steps/v1 (ADR 0025): the card lists it, and the metadata of each `working` status message
     // is a step, which the adapter reads and the core logs with its path

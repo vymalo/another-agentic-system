@@ -23,8 +23,9 @@ looks at "working" until the model has finished writing, which can be a minute.
 - The AG-UI connect stream is the projection of the log from the first event, and resumes by `id:`,
   which is the log's `seq`. A frame that is not in the log has no `seq` to resume from.
 
-The agent side is an optional A2A extension, `text-stream/v1` (ADR 0008 pattern): the chunks of a
-reply as artifact updates, and the whole text once, in a status message, as the durable copy.
+The agent side is an optional A2A extension, `text-stream/v1`
+([`docs/api/text-stream-v1.md`](../api/text-stream-v1.md), ADR 0008 pattern): the chunks of a reply as
+artifact updates, and the whole text once, in a status message, as the durable copy.
 
 ## Decision
 
@@ -103,8 +104,8 @@ stateDiagram-v2
   `RunAgentInput` it sends back would then name an unknown message): it keeps live text as drafts
   outside the runtime and hands over the message when the final one arrives.
 - The pure core gains data types only (`LiveText`); the projection gains the overlay; the A2A adapter
-  gains the mapping; the dispatcher gains a relay. Required elsewhere: the `text-stream/v1` contract
-  page, the AG-UI documentation of the live frames, goldens and conformance, the web's drafts, and the
+  gains the mapping; the dispatcher gains a relay. Required elsewhere: the [`text-stream/v1` contract](../api/text-stream-v1.md),
+  the AG-UI documentation of the live frames, goldens and conformance, the web's drafts, and the
   agents' side (adam-rs streaming the model's answer).
 
 ## Alternatives rejected
@@ -119,3 +120,28 @@ stateDiagram-v2
   control plane would have to hold the agent's credentials and a second stream per viewer.
 - **Making live frames resume points** (giving them a sequence). Live text is not in the log, so the
   numbers could not be the log's, and a client that resumed from one would skip log events.
+
+## Status note, 2026-10-01: built (MVP slice 6, the orchestrator's side)
+
+Built in three steps: the port, the overlay and the relay with the extension. What was settled while building it,
+by the same delegation:
+
+- **The port.** `Wakeup` gains `publish_live` and `subscribe_live` and `WakeupCapabilities.live`
+  (`MemoryWakeup`: a broadcast of its own; `PgWakeup`: the channel `orch_live`). A `NOTIFY` carries less than 8000
+  bytes (*verified 2026-10-01*), and a piece of 6 KiB of text can be several times that once its quotes and newlines
+  are escaped, so `PgWakeup` **splits** a piece whose JSON would not fit, in order, at character boundaries
+  (the end on the last part); only an envelope that cannot fit at all is refused (`WakeupError::PayloadTooLarge`).
+- **The overlay** (`orch-agui-projection`, pure) merges by message id as decided above, and adds three rules the
+  decision left open: a message id that was used on the wire and given up is not reused (the log's message is said
+  under `<id>~final`); a piece of another agent than the one working is not shown; a live message stops growing at
+  256 KiB and the final message says the rest. Live frames are not resume points and do not hold one back.
+- **The relay** (`orch-app`, in the dispatcher's `consume`, delegations only) publishes at most every 100 ms per reply
+  (the first piece at once, the last at once), repeats the text so far every second up to 64 KiB, follows at most eight
+  replies at once, and stops following a reply when its whole text reaches the log. `App::thread_feed` mixes the pieces
+  of a thread into its events for the run response and the connect stream, subscribed before the first log read and
+  yielded only once the log was read up to its head at connect time.
+- **From agents** ([`text-stream-v1.md`](../api/text-stream-v1.md)): the A2A adapter activates `text-stream/v1` on a send
+  and a resubscribe only for an agent whose live card lists the exact URI, and reads chunks and the stated text as data
+  whatever was activated. A2A's `metadata` is a protobuf `Struct`: a number in it comes out of the SDK as a float
+  (`10.0`), so the offset is read as a whole number either way (*verified 2026-10-01*, by the tests against the SDK).
+  The agent-side work (adam-rs streaming the model's answer) and the web's drafts are their own slices.

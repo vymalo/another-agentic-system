@@ -92,7 +92,7 @@ flowchart TB
     token["<b>orch-thread-token</b><br/>the thread-tools token: HS256 JWS,<br/>claims, keys, issuer, vectors"]
   end
   subgraph G_APP["Application: written against the ports"]
-    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, receive<br/>Dispatcher: durable outbox worker<br/>InboxWorker: timers and stored reports"]
+    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
   end
   subgraph G_EDGE["HTTP edge"]
     api["<b>orch-api</b><br/>identity, RFC 9457 problems, resource API,<br/>health, SurfaceRoutes"]
@@ -1449,14 +1449,50 @@ They are **best effort and never stored**: nothing is written to the log, a fail
 viewers a moment, a subscriber that lags loses pieces without a `Resync`, and the final message in
 the log is the truth. A `NOTIFY` carries less than 8000 bytes, so `PgWakeup` sends a piece of up to
 6 KiB as one payload when its JSON fits and as several in order when it does not
-(`WakeupCapabilities.live` says whether an implementation does it at all). The port and the Postgres
-implementation are built; what publishes (the dispatcher's relay) and what shows it (the AG-UI
-overlay) are the next steps of the same slice.
+(`WakeupCapabilities.live` says whether an implementation does it at all).
 
-**How an AG-UI stream is produced.** `App::event_stream` is the only source of live events, and it
-feeds the AG-UI run response and the AG-UI connect stream alike (and fed the legacy stream, removed on 2026-09-30). It is a read of
-the log with a wake-up under it, not a subscription to a message bus, so a stream lives in the log
-and not in the process. What differs per surface is the pure fold applied to the events: for the
+What publishes is the dispatcher, the process that holds the agent's A2A stream, which may not be the one that
+serves the viewer (`split`: a worker holds it, the control plane serves). For an agent whose card lists
+`text-stream/v1` ([`api/text-stream-v1.md`](api/text-stream-v1.md)) each chunk of a reply is an envelope with no
+update that `consume` **never applies**: the `LiveRelay` publishes it (the first piece at once, then at most every
+100 ms per reply, the last at once) and **every second the text so far from offset 0** (up to 64 KiB, in pieces of at
+most 6 KiB), so a viewer that connects mid-stream, or lost a piece, has it within a second; it stops following a reply when
+its whole text reaches the log, which the agent states once and the adapter maps to an ordinary final `agent_message`
+under the stream's id. A publish that fails is logged at `debug` and never fails a delegation.
+
+```mermaid
+sequenceDiagram
+  participant A as Agent (A2A)
+  participant W as Worker: dispatcher
+  participant PG as Postgres
+  participant C as Control plane: surface-agui
+  participant B as Browser
+  A->>W: artifact chunk (text-stream/v1, offset)
+  W->>PG: pg_notify('orch_live', {thread, agent, S, offset, text, end})
+  PG-->>C: NOTIFY orch_live (every listening process)
+  C->>B: TEXT_MESSAGE_START/CONTENT (metadata vymalo.live, no id:)
+  A->>W: status {streamId: S, whole text}
+  W->>PG: commit agent_message S (+ NOTIFY orch_thread)
+  PG-->>C: orch_thread, read the log
+  C->>B: CONTENT (the rest, vymalo.live final) + END, id: seq
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Streaming: first piece (offset 0)
+  Streaming --> Streaming: piece, or the refresh from offset 0
+  Streaming --> Persisted: agent_message S in the log
+  Streaming --> Abandoned: the last piece says so, or the invocation or run closes first
+  Persisted --> [*]
+  Abandoned --> [*]
+```
+
+**How an AG-UI stream is produced.** `App::event_stream` is the only source of live *events* (it feeds the MCP
+`wait_for_job` too), and `App::thread_feed` is the same read with the live text of the thread's replies mixed in
+(above), which is what the AG-UI run response and the AG-UI connect stream read (and fed the legacy stream, removed on
+2026-09-30): the log events go through the pure fold, and the live pieces through the connection's own `LiveOverlay`
+beside it. A stream is a read of the log with a wake-up under it, not a subscription to a message bus, so it lives in the
+log and not in the process. What differs per surface is the pure fold applied to the events: for the
 connect stream, `orch_agui_projection::Connect` over a `Projector` in the *viewer* audience; for the
 run response, the same `Projector` in the *requester* audience, from the first event the request's
 input caused to the terminal event of that run.
@@ -1471,7 +1507,7 @@ sequenceDiagram
   participant P as orch-agui-projection<br/>(pure: Connect, Projector)
   C->>S: GET /agui/threads/{id}/connect, Last-Event-ID: c
   S->>A: get_thread(user, id): missing, malformed and foreign ids are one 404, before any byte
-  S->>A: event_stream(user, id, 0)
+  S->>A: thread_feed(user, id, 0): event_stream and live text
   A->>W: subscribe, before the first read
   loop until the client closes, or Connect says the stream is over
     A->>DB: list_events(after the cursor, 500)

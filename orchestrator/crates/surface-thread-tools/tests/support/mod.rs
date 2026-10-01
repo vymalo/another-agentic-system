@@ -79,6 +79,9 @@ fn fast_dispatcher() -> DispatcherConfig {
         max_cancel_attempts: 10,
         cancel_retry_delay: Duration::from_millis(50),
         verify_watch: Duration::from_millis(50),
+        live_flush: Duration::from_millis(20),
+        live_refresh: Duration::from_millis(150),
+        live_max_bytes: 64 * 1024,
     }
 }
 

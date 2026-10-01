@@ -420,8 +420,8 @@ flowchart LR
   end
   subgraph OUTB["Outbound: log event to AG-UI frames"]
     log[("events<br/>Postgres")]
-    es["orch-app<br/>App::event_stream(user, thread, after)<br/>replay, then live"]
-    pj["orch-agui-projection<br/>Projector::apply(event, Audience)<br/>resume_preamble()"]
+    es["orch-app<br/>App::thread_feed(user, thread, after)<br/>the log (replay, then live) with live text mixed in"]
+    pj["orch-agui-projection<br/>Projector::apply(event, Audience)<br/>resume_preamble()<br/>LiveOverlay (live text, ADR 0027)"]
     fr["Frame: AG-UI event + resume_id"]
     sse["orch-surface-agui<br/>SSE: data: frame, id: seq<br/>run route and connect stream"]
     cli["AG-UI client"]
@@ -453,6 +453,7 @@ produced from the log, and why no replica remembers a connection, is
 | Wire types | `orch-agui-proto`: all 31 AG-UI 1.0 events and `RunAgentInput` as closed enums, checked against the vendored official schema |
 | Log → frames | `orch-agui-projection`: `Projector` (audiences, runs, subagents, interrupts, `resume_preamble`); a function of the log, with no async and no I/O |
 | `RunAgentInput` → input | `orch-agui-projection::translate` (new message, `resume`, cancel, attach, refusals with their HTTP status) |
+| Live text | The words of a reply that is still being written ([ADR 0027](decisions/0027-live-text-relayed-not-stored.md), [`api/text-stream-v1.md`](api/text-stream-v1.md)): the dispatcher that holds the agent's stream relays each piece on the wakeup port (Postgres `NOTIFY orch_live`, every process listens, never stored), `App::thread_feed` mixes the pieces of a thread into its events, and `LiveOverlay` turns them into frames beside the projection (never resume points, merged by message id with the log's final message); the `split` profile works because every role listens ([`api/agui.md`](api/agui.md#live-text)) |
 | Conformance | Schema validation of every frame; well-formedness properties; resume-from-any-point property; goldens read through `@ag-ui/client` 1.0.0 by `tools/agui-conformance` in CI |
 | HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, follows across runs and replicas); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature |
 | Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (the inbox is for machine input only: webhook reports and timers) |

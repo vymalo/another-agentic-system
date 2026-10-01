@@ -31,6 +31,13 @@ pub fn steps_from_card(card: &AgentCard) -> bool {
     extensions_from_card(card).contains(&KnownExtension::Steps)
 }
 
+/// Whether the card lists `text-stream/v1` (ADR 0027): the agent can stream its replies as it
+/// writes them, and the orchestrator activates the extension on a send and a resubscribe. Exact
+/// URI, read from the live card, never remembered.
+pub fn text_stream_from_card(card: &AgentCard) -> bool {
+    extensions_from_card(card).contains(&KnownExtension::TextStream)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -103,6 +110,28 @@ mod tests {
             "https://agents.vymalo.com/a2a/extensions/steps/v2",
             None
         )]))));
+    }
+
+    #[test]
+    fn text_streams_are_detected_alone_by_their_exact_uri() {
+        assert!(text_stream_from_card(&card_with(Some(vec![entry(
+            KnownExtension::TextStream.uri(),
+            None
+        )]))));
+        assert!(!text_stream_from_card(&card_with(None)));
+        assert!(!text_stream_from_card(&card_with(Some(vec![entry(
+            KnownExtension::Steps.uri(),
+            None
+        )]))));
+        for near in [
+            "https://agents.vymalo.com/a2a/extensions/text-stream/v2",
+            "https://agents.vymalo.com/a2a/extensions/text-stream/v1/",
+            "https://agents.vymalo.com/a2a/extensions/Text-Stream/v1",
+        ] {
+            assert!(!text_stream_from_card(&card_with(Some(vec![entry(
+                near, None
+            )]))));
+        }
     }
 
     #[test]

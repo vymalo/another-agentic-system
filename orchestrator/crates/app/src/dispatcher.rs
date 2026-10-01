@@ -28,7 +28,10 @@ use tracing::Instrument as _;
 
 use crate::{App, AppError, ApplyOutcome};
 
+mod live;
 mod verify;
+
+use live::{LiveRelay, LiveTiming};
 
 /// Tunables of the dispatcher.
 #[derive(Debug, Clone)]
@@ -61,6 +64,15 @@ pub struct DispatcherConfig {
     /// (a timeout, a cancel or a message from the user ends it); a verifier that hangs is
     /// dropped within this long of that.
     pub verify_watch: Duration,
+    /// The least time between two publishes of the live text of one reply (`text-stream/v1`, ADR
+    /// 0027): what arrives in between is merged. The last piece of a reply goes out at once.
+    pub live_flush: Duration,
+    /// How often the text of a reply so far is published again from its beginning, so that a
+    /// viewer that connects mid-stream, or lost a piece, has it within this long.
+    pub live_refresh: Duration,
+    /// The most text of one reply that is held for the refresh, in bytes; a longer reply is relayed
+    /// piece by piece without one.
+    pub live_max_bytes: usize,
 }
 
 impl Default for DispatcherConfig {
@@ -79,6 +91,9 @@ impl Default for DispatcherConfig {
             max_cancel_attempts: 10,
             cancel_retry_delay: Duration::from_secs(1),
             verify_watch: Duration::from_secs(5),
+            live_flush: Duration::from_millis(100),
+            live_refresh: Duration::from_secs(1),
+            live_max_bytes: 64 * 1024,
         }
     }
 }
@@ -652,6 +667,10 @@ impl<P: Ports> Dispatcher<P> {
     ///
     /// `guard_stale`: when continuing an `input-required` task, an `input-required` envelope
     /// seen before the task moved to `working` is a stale snapshot, not the answer.
+    ///
+    /// The pieces of a reply the agent is still writing (`text-stream/v1`) are **relayed, never
+    /// applied** (ADR 0027): they go out on the wakeup port, and the whole text reaches the log
+    /// once, as the agent message the agent states it as.
     async fn consume(
         &self,
         ctx: &Ctx,
@@ -661,8 +680,35 @@ impl<P: Ports> Dispatcher<P> {
     ) -> Result<Flow, DispatchError> {
         let mut marked = !mark_first;
         let mut seen_working = !guard_stale;
+        let wakeup = self.app.ports().wakeup();
+        let mut relay = LiveRelay::new(
+            wakeup,
+            wakeup.capabilities(),
+            ctx.thread,
+            ctx.agent.clone(),
+            LiveTiming {
+                flush: self.cfg.live_flush,
+                refresh: self.cfg.live_refresh,
+                max_bytes: self.cfg.live_max_bytes,
+            },
+        );
         loop {
-            match stream.next().await {
+            // Pieces that are due go out between envelopes; the wait for the next one is what a
+            // timer may cut short.
+            let due = relay.deadline();
+            let next = tokio::select! {
+                next = stream.next() => next,
+                () = async {
+                    match due {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    relay.tick().await;
+                    continue;
+                }
+            };
+            match next {
                 Some(Ok(env)) => {
                     if !marked {
                         let update = BindingUpdate {
@@ -679,6 +725,10 @@ impl<P: Ports> Dispatcher<P> {
                         }
                         marked = true;
                     }
+                    if let Some(chunk) = env.live {
+                        relay.chunk(chunk).await;
+                        continue;
+                    }
                     let state = env_state(&env);
                     if state.is_some_and(|s| !s.is_interrupted()) {
                         seen_working = true;
@@ -687,6 +737,10 @@ impl<P: Ports> Dispatcher<P> {
                         continue;
                     }
                     self.apply_envelope(ctx, &env).await?;
+                    // The whole text of a reply is in the log: no more of it is relayed.
+                    if let Some(AgentUpdate::Message { message_id, .. }) = &env.update {
+                        relay.persisted(message_id);
+                    }
                     if state.is_some_and(AgentTaskState::ends_turn) {
                         return Ok(Flow::Reached);
                     }
@@ -778,6 +832,7 @@ impl<P: Ports> Dispatcher<P> {
                     state: snap.state,
                     detail: None,
                 }),
+                live: None,
             };
             self.apply_envelope(ctx, &env).await?;
         }

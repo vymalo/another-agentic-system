@@ -1,0 +1,39 @@
+{
+  "name": "SendStreamingMessage: keyword stream -> a reply streamed in six chunks (text-stream/v1), dribbled over 6 s, completed with the whole text",
+  "priority": 2,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "(?is).*\\bstream\\b.*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-text.sse",
+    "chunkedDribbleDelay": {
+      "numberOfChunks": 12,
+      "totalDuration": 6000
+    }
+  }
+}

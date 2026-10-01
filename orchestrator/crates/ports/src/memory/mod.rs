@@ -6,7 +6,7 @@ mod fixtures;
 mod store;
 mod wakeup;
 
-pub use agent::{Call, ScriptedAgent, VerdictScript};
+pub use agent::{Call, STREAM_PIECES, ScriptedAgent, VerdictScript, stream_id, stream_text};
 pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use store::MemoryStore;
 pub use wakeup::MemoryWakeup;

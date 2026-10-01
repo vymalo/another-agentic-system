@@ -860,7 +860,7 @@ Log lines start `role=worker instance=orchestrator-worker-1`.
 `done`: the survivor claims the row once the 5 s lease has lapsed, resubscribes (the mock answers task not found) and
 polls `GetTask`, which is `completed`. It then asserts the row was claimed twice and ended `delivered`, that the
 thread has exactly one `thread_state: done` event and that the control plane's `/metrics` shows nothing due or
-leased. The killed worker is started again when the script ends. It prints one `ok` or `FAIL` line per check, like
+leased. It then checks **live text across the processes**: a thread with the keyword `stream` is held by the surviving worker while a viewer connected to the control plane reads the reply grow (at least three live deltas of one message before the log's message completes it, the deltas joined by offset are the final text, the message starts once), a viewer that reconnects about 2 s in with `Last-Event-ID: 2` reads it once too, and the export holds one `agent_message` with the reply's id and none that is not final ([ADR 0027](../docs/decisions/0027-live-text-relayed-not-stored.md)). The killed worker is started again when the script ends. It prints one `ok` or `FAIL` line per check, like
 `coder-e2e.sh`, and needs `curl`, `jq` and `docker compose`; CI runs it at the end of the Coder E2E workflow.
 
 ```mermaid
@@ -927,6 +927,7 @@ table wins.
 | `push-flawed` | `submitted`, `working`, artifact `branch` (commit `aaaa…`, which `mock-verifier` finds fault with), `completed`; **with "this is attempt 2" or later and the heading "### the verifier" in the text** (the gate's rework prompt after the verifier's findings) the same on commit `bbbb…`, which it passes. See [Verifier](#verifier-the-verifier-agent-of-the-gate) | `done` under the verifier's gate, at attempt 2 |
 | `push-clean` | as `push-flawed`, on commit `cccc…`, which `mock-verifier` passes | `done` under the verifier's gate, at attempt 1 |
 | `steps` | `submitted`, `working`, then the work as four nested steps (`steps/v1`, [ADR 0025](../docs/decisions/0025-nested-steps-events-carry-their-source-path.md); the card lists the extension): a sub-agent `OpenCode` (`tool:c2`), a command `npm test` under it (`acp:c2:1`, parent `tool:c2`) that fails with the detail `1 failed`, the sub-agent's end, each as a `working` status whose message metadata holds the step, then `completed` ("Done."). See [`steps-v1.md`](../docs/api/steps-v1.md) | `done`, four `agent_step` events |
+| `stream` | `submitted`, `working`, then a reply streamed as six chunks (`text-stream/v1`, [ADR 0027](../docs/decisions/0027-live-text-relayed-not-stored.md); the card lists the extension), dribbled over 6 s: artifact updates named `reply` whose metadata holds the byte `offset` of each piece, the last one `lastChunk`, then `completed` whose message states the whole text ("Streaming a reply, word by word, so the chat can show it grow.") under the stream id `<task>-reply`. See [`text-stream-v1.md`](../docs/api/text-stream-v1.md). The chat shows the words growing; the log holds one `agent_message`; `split-e2e.sh` reads it from the control plane while a worker holds the stream | `done`, one `agent_message` |
 | none | `submitted`, `working`, artifact "Pull request" with the URL `https://github.com/example/sandbox/pull/1`, `completed` | `done` |
 
 A **follow-up** message on an existing task (the message carries a `taskId`, which is what the
@@ -956,12 +957,14 @@ stateDiagram-v2
   Received --> Asking: keyword ask
   Received --> Slow: keyword slow
   Received --> Steps: keyword steps
+  Received --> Stream: keyword stream
   Received --> Completed: no keyword
   FollowUp --> Asking: keyword ask
   FollowUp --> Completed: any other text
   Asking --> [*]: stream ends, the task stays input-required
   Slow --> Completed: frames arrive over 8 s
   Steps --> Completed: four step statuses, then the words
+  Stream --> Completed: six chunks over 6 s, then the whole text
   Completed --> [*]
   Failed --> [*]
   Rejected --> [*]

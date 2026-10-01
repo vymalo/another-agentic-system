@@ -85,6 +85,7 @@ fn extensions() -> Vec<KnownExtension> {
             "thread-tools" => KnownExtension::ThreadTools,
             "steps" => KnownExtension::Steps,
             "mentions" => KnownExtension::Mentions,
+            "text-stream" => KnownExtension::TextStream,
             other => panic!("FAKE_AGENT_EXTENSIONS: unknown extension '{other}'"),
         })
         .collect()

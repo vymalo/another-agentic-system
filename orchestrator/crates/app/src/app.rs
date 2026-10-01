@@ -7,8 +7,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
-    Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UiCatalogData, UserId,
-    WatchKey, is_commit_hash, repo_key, report, transition,
+    LiveText, Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UiCatalogData,
+    UserId, WatchKey, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -1283,6 +1283,83 @@ impl<P: Ports> App<P> {
         after: i64,
     ) -> Result<BoxStream<'static, Event>, AppError> {
         let thread = self.get_thread(user, id).await?;
+        Ok(self.events_after(&thread, after))
+    }
+
+    /// [`event_stream`](Self::event_stream) with the live text of the thread's replies mixed in
+    /// (ADR 0027): what a viewer's AG-UI stream is made of.
+    ///
+    /// The log events are exactly those of `event_stream`. The live pieces are every piece of
+    /// this thread that the processes of the deployment publish (the dispatcher that holds the
+    /// agent's stream may be another process: the pieces travel on the wakeup port), subscribed
+    /// to **before** the first log read. They are best effort, and **only yielded once the log has
+    /// been read up to the thread's last event at the time of the call**: a piece that arrives
+    /// during the replay of old events would be shown under whatever that replay has open. One that
+    /// is taken off the subscription meanwhile is dropped (the sender repeats the text so far every
+    /// second), one still waiting in it follows the replay. The stream ends when the event stream
+    /// does (the process is shutting down).
+    pub async fn thread_feed(
+        self: &Arc<Self>,
+        user: &UserId,
+        id: ThreadId,
+        after: i64,
+    ) -> Result<BoxStream<'static, FeedItem>, AppError> {
+        let thread = self.get_thread(user, id).await?;
+        let head = thread.last_seq;
+        // Before the first read, so a piece published while the log is being read is not lost.
+        let live = self.ports.wakeup().subscribe_live();
+        let events = self.events_after(&thread, after);
+        struct St {
+            id: ThreadId,
+            events: BoxStream<'static, Event>,
+            live: BoxStream<'static, LiveText>,
+            live_open: bool,
+            head: i64,
+            caught_up: bool,
+        }
+        let st = St {
+            id,
+            events,
+            live,
+            live_open: true,
+            head,
+            caught_up: after.clamp(0, head) >= head,
+        };
+        Ok(futures::stream::unfold(st, |mut st| async move {
+            loop {
+                tokio::select! {
+                    // The log first: the replay is never starved by a talkative agent.
+                    biased;
+                    event = st.events.next() => {
+                        let event = event?;
+                        if event.seq >= st.head {
+                            st.caught_up = true;
+                        }
+                        return Some((FeedItem::Event(event), st));
+                    }
+                    piece = st.live.next(), if st.live_open => match piece {
+                        Some(piece) if piece.thread == st.id => {
+                            if st.caught_up {
+                                return Some((FeedItem::Live(piece), st));
+                            }
+                        }
+                        Some(_) => {}
+                        None => st.live_open = false,
+                    },
+                }
+            }
+        })
+        .boxed())
+    }
+
+    /// The log of `thread` after `after`, then what is appended: the body of
+    /// [`event_stream`](Self::event_stream).
+    fn events_after(
+        self: &Arc<Self>,
+        thread: &ThreadRecord,
+        after: i64,
+    ) -> BoxStream<'static, Event> {
+        let id = thread.id;
         // A cursor beyond the end of the log names events that do not exist (a stale or forged
         // `Last-Event-ID`). Left as it is, the stream would stay silent until the log caught
         // up with it; clamped, the client gets every event that happens from now on.
@@ -1305,7 +1382,7 @@ impl<P: Ports> App<P> {
             wake,
             wake_open: true,
         };
-        Ok(futures::stream::unfold(st, |mut st| async move {
+        futures::stream::unfold(st, |mut st| async move {
             loop {
                 if let Some(event) = st.buf.pop_front() {
                     st.cursor = event.seq;
@@ -1347,8 +1424,18 @@ impl<P: Ports> App<P> {
                 }
             }
         })
-        .boxed())
+        .boxed()
     }
+}
+
+/// One item of a viewer's stream ([`App::thread_feed`]): an event of the log, or a piece of the
+/// words of a reply that is still being written.
+#[derive(Debug, Clone)]
+pub enum FeedItem {
+    /// An event of the thread's log.
+    Event(Event),
+    /// A piece of live text (ADR 0027): not in the log, best effort.
+    Live(LiveText),
 }
 
 /// The repository key and the first seven characters of the commit in a CI watch key

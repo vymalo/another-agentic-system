@@ -24,10 +24,11 @@ use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use orch_agui_projection::{Connect, Follow, Frame};
+use orch_agui_projection::{Connect, Follow, Frame, LiveOverlay};
 use orch_api::sse::{keep_alive, stream_headers};
 use orch_api::{ApiError, ApiQuery, Problem, parse_thread_id};
-use orch_core::{Event, UserId};
+use orch_app::FeedItem;
+use orch_core::UserId;
 use orch_ports::Ports;
 use serde::Deserialize;
 
@@ -87,7 +88,8 @@ pub(crate) async fn connect<P: Ports>(
     // From the first event, always: the fold up to the cursor is silent, and is what makes the
     // preamble the same on every replica. `head` is `record.last_seq`; what arrives after it is
     // live.
-    let live = state.app.event_stream(&user, thread, 0).await?;
+    // The log, and the live text of the thread's replies mixed in (ADR 0027).
+    let live = state.app.thread_feed(&user, thread, 0).await?;
     tracing::debug!(
         %thread,
         cursor = connect.cursor(),
@@ -102,17 +104,24 @@ pub(crate) async fn connect<P: Ports>(
 /// The SSE messages of a connect stream. It ends when [`Connect::finished`] says so, or when
 /// `live` does (the process is shutting down): the client then holds a truncated stream and
 /// reconnects with the last `id:` it saw.
+///
+/// The words of a reply that is still being written (ADR 0027) are frames of the connection's own
+/// [`LiveOverlay`], beside the fold of the log: never a resume point, merged by message id with the
+/// log's final message. A new connection has an empty overlay, which is why it is told the text so
+/// far by the sender's refresh.
 fn frames(
     connect: Connect,
-    live: BoxStream<'static, Event>,
+    live: BoxStream<'static, FeedItem>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send {
     struct St {
         connect: Connect,
-        live: BoxStream<'static, Event>,
+        overlay: LiveOverlay,
+        live: BoxStream<'static, FeedItem>,
         pending: VecDeque<Frame>,
     }
     let st = St {
         connect,
+        overlay: LiveOverlay::new(),
         live,
         pending: VecDeque::new(),
     };
@@ -125,13 +134,25 @@ fn frames(
                 tracing::debug!("a ?mode=run connect stream is over");
                 return None;
             }
-            let Some(event) = st.live.next().await else {
+            let Some(item) = st.live.next().await else {
                 tracing::debug!(
                     "the event stream ended (shutdown): the viewer reconnects with its cursor"
                 );
                 return None;
             };
-            st.pending.extend(st.connect.feed(&event));
+            match item {
+                FeedItem::Event(event) => {
+                    let said = st.connect.feed(&event);
+                    let said = st.overlay.logged(st.connect.projector(), said);
+                    st.pending.extend(said);
+                }
+                // Before the replay is over the pieces would be attributed to an old invocation.
+                FeedItem::Live(piece) if st.connect.caught_up() => {
+                    let said = st.overlay.live(st.connect.projector(), &piece);
+                    st.pending.extend(said);
+                }
+                FeedItem::Live(_) => {}
+            }
         }
     })
 }
