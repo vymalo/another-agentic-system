@@ -11,6 +11,12 @@ export type ThreadView = {
   waiting: boolean;
   /** The id of the agent the thread talks to (`coder`), for "Coder is starting…". */
   agentId: string | null;
+  /**
+   * The version of the UI catalog the thread has recorded (`STATE_SNAPSHOT.thread.uiCatalog`, ADR
+   * 0023), when it has one: a surface that names a component this build lacks is "needs a newer
+   * version of the app" when this is above the build's own, an error of the agent's otherwise.
+   */
+  catalogVersion?: number | undefined;
 };
 
 const Context = createContext<ThreadView>({ state: undefined, waiting: false, agentId: null });

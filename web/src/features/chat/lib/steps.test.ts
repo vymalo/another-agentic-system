@@ -5,6 +5,7 @@ import {
   checksPayload,
   commandOf,
   drawsStep,
+  isAnswerPart,
   isStepPart,
   pullRequestOf,
   reworkLabel,
@@ -44,6 +45,37 @@ describe("which parts are steps", () => {
     expect(drawsStep(data(ACTIVITY.job, { job: 2 }))).toBe(false);
     expect(drawsStep({ type: "data", name: ACTOR_PART, data: {} })).toBe(false);
     expect(drawsStep(data(ACTIVITY.artifact, { nope: 1 }))).toBe(false);
+  });
+});
+
+describe("an action that answers a Choices", () => {
+  const action = (context: unknown) =>
+    data(ACTIVITY.action, { surfaceId: "s1", name: "answer", sourceComponentId: "pick", context });
+
+  it("is the person's answer: not a step, and no line", () => {
+    const part = action({ answers: [{ id: "db", values: ["pg"] }] });
+    expect(isAnswerPart(part)).toBe(true);
+    expect(isStepPart(part)).toBe(false);
+    expect(drawsStep(part)).toBe(false);
+  });
+
+  it("any other action stays a step: a button's context, a malformed answer, no context at all", () => {
+    for (const context of [{ choice: "a" }, { answers: "x" }, { answers: [] }, undefined]) {
+      const part = action(context);
+      expect(isAnswerPart(part), JSON.stringify(context)).toBe(false);
+      expect(isStepPart(part), JSON.stringify(context)).toBe(true);
+      expect(drawsStep(part), JSON.stringify(context)).toBe(true);
+    }
+  });
+
+  it("only the action activity can be one: the same shape in another activity is not read", () => {
+    const body = {
+      surfaceId: "s1",
+      name: "answer",
+      context: { answers: [{ id: "a", values: [] }] },
+    };
+    expect(isAnswerPart(data(ACTIVITY.status, body))).toBe(false);
+    expect(isAnswerPart({ type: "text", text: "x" })).toBe(false);
   });
 });
 

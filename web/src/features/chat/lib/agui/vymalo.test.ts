@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseAction,
   parseActor,
+  parseAnswers,
   parseArtifact,
   parseCheck,
   parseCi,
@@ -9,6 +10,7 @@ import {
   parseJob,
   parseRework,
   parseStatus,
+  parseUiCatalog,
 } from "./vymalo";
 
 describe("reading an activity's content", () => {
@@ -361,5 +363,81 @@ describe("reading a CI report (ADR 0017)", () => {
     expect(parseCi({ ...ci, url: "HTTPS://ci.example.com/runs/1" })?.url).toBe(
       "https://ci.example.com/runs/1",
     );
+  });
+});
+
+describe("thread.uiCatalog of a snapshot", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+
+  it("is read when it is a catalog this build can compare", () => {
+    expect(
+      parseUiCatalog({ catalogId: "https://x.test/c", version: 2, digest, extra: true }),
+    ).toEqual({ catalogId: "https://x.test/c", version: 2, digest });
+  });
+
+  it("is nothing for anything else: it is not guessed", () => {
+    for (const v of [
+      undefined,
+      null,
+      "text",
+      [],
+      {},
+      { catalogId: "https://x.test/c", version: 2 },
+      { catalogId: "https://x.test/c", version: 0, digest },
+      { catalogId: "https://x.test/c", version: 1.5, digest },
+      { catalogId: "https://x.test/c", version: "2", digest },
+      { catalogId: "", version: 2, digest },
+      { catalogId: "https://x.test/c", version: 2, digest: "sha256:ABC" },
+      { catalogId: "https://x.test/c", version: 2, digest: `SHA256:${"a".repeat(64)}` },
+    ]) {
+      expect(parseUiCatalog(v), JSON.stringify(v)).toBeNull();
+    }
+  });
+});
+
+describe("an action's context and the answer it may be", () => {
+  const base = { surfaceId: "s1", name: "answer", sourceComponentId: "pick" };
+
+  it("parseAction keeps the context when it is an object, and drops anything else", () => {
+    expect(parseAction({ ...base, context: { choice: "a" } })).toEqual({
+      ...base,
+      context: { choice: "a" },
+    });
+    expect(parseAction({ ...base, context: [1] })).toEqual(base);
+    expect(parseAction({ ...base, context: "x" })).toEqual(base);
+    expect(parseAction(base)).toEqual(base);
+  });
+
+  it("parseAnswers is an action whose context has the answers of a Choices", () => {
+    expect(
+      parseAnswers({
+        ...base,
+        at: "2027-01-15T08:00:07Z",
+        actor: { type: "user", name: "alice@example.com" },
+        context: {
+          answers: [
+            { id: "db", values: ["pg"] },
+            { id: "a", values: [], other: "x" },
+          ],
+        },
+      }),
+    ).toEqual({
+      surfaceId: "s1",
+      sourceComponentId: "pick",
+      answers: [
+        { id: "db", values: ["pg"] },
+        { id: "a", values: [], other: "x" },
+      ],
+      actor: { type: "user", name: "alice@example.com" },
+      at: "2027-01-15T08:00:07Z",
+    });
+  });
+
+  it("parseAnswers is null for a button's action and for anything that is not an answer", () => {
+    expect(parseAnswers({ ...base, context: { choice: "a" } })).toBeNull();
+    expect(parseAnswers({ ...base, context: { answers: [{ id: 1, values: [] }] } })).toBeNull();
+    expect(parseAnswers(base)).toBeNull();
+    expect(parseAnswers("x")).toBeNull();
+    expect(parseAnswers({ context: { answers: [{ id: "a", values: [] }] } })).toBeNull();
   });
 });

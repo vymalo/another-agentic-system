@@ -1,3 +1,5 @@
+import type { UiCatalogRef } from "@/features/chat/lib/a2ui/catalog";
+import { type Answer, readAnswers } from "@/features/chat/lib/a2ui/choices";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { AGENT_STATUSES, type AgentStatus, type ApiActor } from "@/lib/api/types";
 
@@ -251,8 +253,35 @@ export function parseAction(v: unknown): ActionContent | null {
     surfaceId,
     name,
     ...(sourceComponentId !== undefined ? { sourceComponentId } : {}),
+    ...(isRecord(v.context) ? { context: v.context } : {}),
     ...(actor ? { actor } : {}),
     ...readAt(v),
+  };
+}
+
+/**
+ * An action that answers a `Choices` (docs/api/ui-catalog-v1.md, "Choices answers"): a
+ * `vymalo.action` whose `context.answers` is a list of `{id, values, other?}`. It is the person's
+ * answer, shown as such, and not a step. Any other action is nothing here.
+ */
+export type AnswersContent = WithActor<{
+  surfaceId: string;
+  sourceComponentId?: string;
+  answers: Answer[];
+}>;
+
+export function parseAnswers(v: unknown): AnswersContent | null {
+  const action = parseAction(v);
+  const answers = action ? readAnswers(action.context) : null;
+  if (!action || !answers) return null;
+  return {
+    surfaceId: action.surfaceId,
+    ...(action.sourceComponentId !== undefined
+      ? { sourceComponentId: action.sourceComponentId }
+      : {}),
+    answers,
+    ...(action.actor ? { actor: action.actor } : {}),
+    ...(action.at ? { at: action.at } : {}),
   };
 }
 
@@ -360,6 +389,22 @@ export function parseJob(v: unknown): JobView | null {
     gate: Array.isArray(v.gate) ? v.gate.filter((x): x is string => typeof x === "string") : [],
     ...(sha ? { sha } : {}),
   };
+}
+
+/** The digest of a catalog: `sha256:` and 64 lowercase hex digits (what the orchestrator checks). */
+export const DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * `thread.uiCatalog` of a snapshot: the catalog the thread's agents are told about. Null when it
+ * is absent or not a `{catalogId, version, digest}` this build can compare.
+ */
+export function parseUiCatalog(v: unknown): UiCatalogRef | null {
+  if (!isRecord(v)) return null;
+  const catalogId = str(v.catalogId);
+  const version = positiveInt(v.version);
+  const digest = str(v.digest);
+  if (!catalogId || version === undefined || !digest || !DIGEST.test(digest)) return null;
+  return { catalogId, version, digest };
 }
 
 export function parseSurface(v: unknown): SurfaceContent | null {

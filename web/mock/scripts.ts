@@ -49,6 +49,88 @@ const uiComponents = {
   },
 };
 
+/** The id of the web's own UI catalog (`src/features/chat/lib/a2ui/catalog/catalog.json`). */
+const OWN_CATALOG_ID = "https://agents.vymalo.com/a2ui/catalogs/chat";
+
+/** A surface under the web's own catalog: a title, and a component that this build does not have. */
+const gizmoSurface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["title", "gizmo"] },
+            { id: "title", component: "Text", text: "Before the gizmo" },
+            { id: "gizmo", component: "Gizmo", spin: 3 },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+/**
+ * The surface of the `choices` script: one Choices of three questions under the web's own catalog
+ * (the fake agent of the orchestrator plays the same words): a database with an "Other", a login,
+ * and where it runs (several, optional, with an "Other").
+ */
+const choicesSurface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["intro", "pick"] },
+            { id: "intro", component: "Text", text: "A few quick choices", variant: "h3" },
+            {
+              id: "pick",
+              component: "Choices",
+              questions: [
+                {
+                  id: "db",
+                  question: "Which database?",
+                  allowOther: true,
+                  options: [
+                    { value: "pg", label: "Postgres", description: "Relational, the default" },
+                    { value: "sqlite", label: "SQLite" },
+                  ],
+                },
+                {
+                  id: "auth",
+                  question: "Which login?",
+                  options: [
+                    { value: "keycloak", label: "Keycloak" },
+                    { value: "none", label: "No login" },
+                  ],
+                },
+                {
+                  id: "deploy",
+                  question: "Where does it run?",
+                  multiple: true,
+                  required: false,
+                  allowOther: true,
+                  options: [
+                    { value: "k8s", label: "Kubernetes" },
+                    { value: "compose", label: "Docker Compose" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
 const working: Step = { kind: "agent_status", data: { status: "working" }, setState: "working" };
 
 /** The gate of a verification scenario (ADR 0018): the sources that must pass and the attempts. */
@@ -398,6 +480,10 @@ const coderWork: Step[] = [
  * - `ask`: asks "Which branch?" and blocks; the follow-up resumes to done.
  * - `ui`: sends an A2UI surface (a title and a button) with the question "Pick one" and blocks; the
  *   owner's action on the surface (`forwardedProps.a2uiAction`) resumes to done, as `ui-action <name>`.
+ * - `choices`: sends a surface of the web's own catalog with a Choices of three questions (a database
+ *   and where it runs, with an "Other", a login: the last one several and optional) and asks "Three questions"; the
+ *   answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to done, as
+ *   `ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order).
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
@@ -413,6 +499,11 @@ const coderWork: Step[] = [
  *
  * Mock-only, not produced by the current orchestrator:
  * - `ui-bad`: an A2UI surface the renderer refuses, then the result and done.
+ * - `catalog-newer`: the thread was opened by a newer version of the app (its UI catalog is version
+ *   99) and the agent sends a surface of that catalog with a component this build does not have:
+ *   the renderer says it needs a newer version of the app. Then the result and done.
+ * - `catalog-unknown`: the same surface in a thread whose catalog is this build's: the agent used a
+ *   component the catalog does not have, and the surface is refused (rule `catalog`).
  * - `verify-ci-stale`: a gate on CI and the agent's checks. CI answers pending, then a stale answer of an
  *   older push, then passes (`check_result` cards replaced in place, a stale one of its own), each
  *   report with its `vymalo.ci` card.
@@ -436,6 +527,8 @@ const coderWork: Step[] = [
 export function scriptFor(text: string): {
   start: Step[];
   resume?: (answer: string) => Step[];
+  /** A newer UI opened the thread: its catalog has this version (the mock records it as current). */
+  newerCatalog?: number;
   /** The gate the thread's job runs under; absent: none, and the run ends at `completed`. */
   gate?: Gate;
 } {
@@ -718,6 +811,16 @@ export function scriptFor(text: string): {
         ],
         resume: (answer) => [working, ...finish(`answered: ${answer}`)],
       };
+    case "choices":
+      return {
+        start: [
+          working,
+          choicesSurface(),
+          { kind: "agent_status", data: { status: "input_required", detail: "Three questions" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
     case "ui-bad":
       // mock only: a surface the renderer refuses (a component outside its vocabulary, and a link
       // that is not http(s)); the thread finishes, so the refusal is what the owner sees
@@ -759,6 +862,10 @@ export function scriptFor(text: string): {
           ...finish(`echo: ${text}`),
         ],
       };
+    case "catalog-newer":
+      return { newerCatalog: 99, start: [working, gizmoSurface(), ...finish(`echo: ${text}`)] };
+    case "catalog-unknown":
+      return { start: [working, gizmoSurface(), ...finish(`echo: ${text}`)] };
     case "slow":
       return { start: [working, { pause: "cancel" }] };
     case "fail":

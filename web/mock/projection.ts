@@ -22,12 +22,22 @@ export type GateInfo = {
   verifier?: string;
 };
 
+/** The UI catalog a thread has recorded, as `thread.uiCatalog` of a snapshot says it (ADR 0023). */
+export type CatalogRef = { catalogId: string; version: number; digest: string };
+
 export type ThreadInfo = {
   threadId: string;
   title: string;
   target: { agentId: string; release?: string };
   /** Absent: no gate, so no `job` and a run that ends at the agent's `completed`. */
   gate?: GateInfo;
+  /**
+   * The thread's catalog. A holder, not a value: the server moves `current` when a run brings a
+   * newer one, and every open stream's next snapshot says so. (The real projection folds the
+   * `ui_catalog` events of the log, so a replay shows the catalog as of each point; the mock shows
+   * the current one throughout.)
+   */
+  catalog?: { current: CatalogRef | undefined };
 };
 
 /** What `Thread.job` and the `job` of a `STATE_SNAPSHOT` say (docs/api/chat-api.yaml, `ThreadJob`). */
@@ -331,6 +341,7 @@ export class Projector {
             agentId: this.info.target.agentId,
             ...(this.info.target.release ? { release: this.info.target.release } : {}),
           },
+          ...(this.info.catalog?.current ? { uiCatalog: { ...this.info.catalog.current } } : {}),
         },
       },
     };

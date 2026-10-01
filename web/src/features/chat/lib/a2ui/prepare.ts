@@ -3,8 +3,13 @@ import {
   applyA2uiOperations,
   convertSurfaceToUISpec,
 } from "@assistant-ui/react-generative-ui/a2ui";
+import { OWN_CATALOG, type OwnCatalog } from "./catalog";
+import { type CompiledCatalog, compiledOf } from "./catalog/validate";
+import { duplicateIn, readChoices } from "./choices";
 import {
+  BASIC_CATALOG_IDS,
   CHECK_BOX,
+  CHOICES,
   FIELD,
   MAX_BYTES,
   MAX_COMPONENTS,
@@ -37,6 +42,12 @@ import { safeHttpUrl } from "./url";
  * so an expansion bomb costs `MAX_NODES` steps, not its size). Only then is the library's
  * converter run, so nothing unchecked reaches it.
  *
+ * Which components a surface may name depends on its catalog (ADR 0023): the basic catalog (or none
+ * named) is the vocabulary of ten; this app's own catalog (`catalog/`) is the components it lists,
+ * each checked against its JSON Schema; a surface that names any other catalog is refused. An
+ * instance of our catalog that names a component this build does not have, in a thread whose
+ * catalog is newer than this build's, is not an error of the agent's: it comes back as `newer`.
+ *
  * Pure: no React, no I/O, no clock.
  */
 
@@ -45,6 +56,8 @@ export type Rule =
   | "size"
   | "version"
   | "surfaces"
+  | "catalog"
+  | "schema"
   | "components"
   | "vocabulary"
   | "function"
@@ -71,6 +84,11 @@ export type Prepared =
   | { kind: "pending" }
   /** The agent deleted the surface. */
   | { kind: "deleted" }
+  /**
+   * The surface names this app's catalog and a component of a newer version of it, which this
+   * build cannot draw: shown as a placeholder asking for a newer app, never half drawn.
+   */
+  | { kind: "newer"; component: string }
   | { kind: "refused"; rule: Rule; reason: string };
 
 class Refused extends Error {
@@ -266,9 +284,16 @@ function walk(
   path.delete(id);
 }
 
-export function prepareSurface(operations: unknown): Prepared {
+export type PrepareOptions = {
+  /** This build's catalog; the real one unless a test brings its own. */
+  catalog?: OwnCatalog;
+  /** The version of the catalog the thread has recorded (`STATE_SNAPSHOT.thread.uiCatalog`), if any. */
+  threadVersion?: number | undefined;
+};
+
+export function prepareSurface(operations: unknown, options: PrepareOptions = {}): Prepared {
   try {
-    return prepare(operations);
+    return prepare(operations, options);
   } catch (e) {
     if (e instanceof Refused) return { kind: "refused", rule: e.rule, reason: e.reason };
     // The validator itself failed on input it did not foresee: refuse, never draw.
@@ -276,7 +301,65 @@ export function prepareSurface(operations: unknown): Prepared {
   }
 }
 
-function prepare(operations: unknown): Prepared {
+/** The two rules of a Choices that JSON Schema cannot say, and the name of its action. */
+function checkChoices(id: string, c: Rec) {
+  const spec = readChoices(c);
+  if (!spec)
+    return refuse("schema", `component ${clip(id)} (Choices) has no questions it can read`);
+  const duplicate = duplicateIn(spec);
+  if (duplicate) return refuse("schema", `component ${clip(id)} (Choices): ${duplicate}`);
+  const name = spec.actionName;
+  if (bytes(name) > MAX_ID_BYTES) {
+    return refuse("action", `component ${clip(id)} has an action name over ${MAX_ID_BYTES} bytes`);
+  }
+  if (name.startsWith(RESERVED_PREFIX)) {
+    return refuse(
+      "action",
+      `component ${clip(id)} names an action ${clip(name)}: the prefix ${RESERVED_PREFIX} is reserved`,
+    );
+  }
+  return undefined;
+}
+
+/** The first component whose name the catalog does not have (a non-text name counts as one). */
+function firstUnknown(components: ReadonlyMap<string, Rec>, catalog: CompiledCatalog) {
+  for (const c of components.values()) {
+    const type = c.component;
+    if (typeof type !== "string") return String(type);
+    if (!catalog.has(type)) return type;
+  }
+  return undefined;
+}
+
+/**
+ * The catalog the surface names, by its `createSurface` operations (all of them: a later one
+ * starts the surface over, so a catalog that changes half way would change what the earlier
+ * checks meant). None named is the basic catalog, as it always was; the basic ids are the basic
+ * catalog; the id of `own` is ours; any other is refused.
+ */
+function catalogOf(operations: readonly Rec[], own: OwnCatalog): "basic" | "own" {
+  const named = new Set<string | undefined>();
+  for (const op of operations) {
+    const body = op.createSurface;
+    if (!isRecord(body)) continue;
+    const id = body.catalogId;
+    if (id !== undefined && typeof id !== "string") {
+      return refuse("catalog", "the surface names a catalog that is not text");
+    }
+    named.add(id);
+  }
+  if (named.size > 1) return refuse("catalog", "the surface names more than one catalog");
+  const [id] = named;
+  if (id === undefined || (BASIC_CATALOG_IDS as readonly string[]).includes(id)) return "basic";
+  if (id === own.catalogId) return "own";
+  return refuse(
+    "catalog",
+    `the surface names the catalog ${clip(id, 80)}, which this app does not have`,
+  );
+}
+
+function prepare(operations: unknown, options: PrepareOptions): Prepared {
+  const own = options.catalog ?? OWN_CATALOG;
   if (operations === undefined) return { kind: "pending" };
   if (!Array.isArray(operations)) return refuse("shape", "the operations are not a list");
 
@@ -314,6 +397,8 @@ function prepare(operations: unknown): Prepared {
     normalised.push({ ...op, version: version === "v0.9.1" ? "v0.9" : version });
   }
   if (normalised.length === 0 || surfaceId === undefined) return { kind: "pending" };
+  const mode = catalogOf(normalised, own);
+  const catalog = compiledOf(own.catalog);
 
   // 3. the operations applied: anything the reducer had to skip is a defect, not a detail
   const { state, warnings } = applyA2uiOperations(new Map(), normalised);
@@ -330,10 +415,34 @@ function prepare(operations: unknown): Prepared {
   const inputs = new Map<string, string>(); // component id -> field key
   const inputKeys = new Set<string>(); // the JSON Pointers that inputs are bound to
   const fields: Record<string, unknown> = {};
+  if (mode === "own") {
+    // a component of a newer catalog comes before any other defect: it is not the agent's fault
+    const unknown = firstUnknown(components, catalog);
+    if (unknown !== undefined) {
+      if (options.threadVersion !== undefined && options.threadVersion > own.version) {
+        return { kind: "newer", component: unknown };
+      }
+      return refuse(
+        "catalog",
+        `component ${clip(unknown)} is not in this app's catalog (version ${own.version})`,
+      );
+    }
+  }
   for (const [id, c] of components) {
     const type = c.component;
-    if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {
-      return refuse("vocabulary", `component ${clip(String(type))} is not in the vocabulary`);
+    if (mode === "own") {
+      const broken = catalog.check(type as string, c);
+      if (broken !== undefined) {
+        return refuse("schema", `component ${clip(id)} (${type}) ${broken}`);
+      }
+      if (type === "Choices") checkChoices(id, c);
+    } else if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {
+      return refuse(
+        catalog.has(String(type)) ? "catalog" : "vocabulary",
+        catalog.has(String(type))
+          ? `component ${clip(String(type))} is of this app's catalog, which the surface does not name`
+          : `component ${clip(String(type))} is not in the vocabulary`,
+      );
     }
     if (bytes(id) > MAX_ID_BYTES)
       return refuse("shape", `a component id is over ${MAX_ID_BYTES} bytes`);
@@ -385,6 +494,11 @@ function prepare(operations: unknown): Prepared {
         component: c.component === "TextField" ? TEXT_FIELD : CHECK_BOX,
         fieldKey: inputs.get(id),
       };
+    } else if (mode === "own" && c.component === "Choices") {
+      // the converter keeps an unknown component's properties but not its id, which is the
+      // `sourceComponentId` of the answer's action
+      eventActions++;
+      next = { ...next, component: CHOICES, componentId: id };
     }
     if (next !== c) lowered.set(id, next);
   }

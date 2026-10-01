@@ -10,18 +10,21 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { OWN_CATALOG } from "@/features/chat/lib/a2ui/catalog";
 import { type Prepared, prepareSurface } from "@/features/chat/lib/a2ui/prepare";
 import {
   button,
   column,
   event,
   labelled,
+  OWN_CATALOG_ID,
   openUrl,
   SURFACE,
   surface,
   text,
 } from "@/features/chat/lib/a2ui/testing";
 import { loadGolden } from "@/features/chat/lib/agui/testing";
+import { SurfaceNewer } from "./surface-activity";
 import { SurfaceView, surfaceLibrary } from "./surface-view";
 import { mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
 
@@ -526,5 +529,79 @@ describe("actions: a control acts on a click of its own and on nothing else", ()
     expect(send).not.toHaveBeenCalled();
     m.agent.stop();
     void button;
+  });
+});
+
+describe("a surface of this app's catalog (ADR 0023)", () => {
+  const gizmo = () =>
+    surface(
+      [column("root", ["t", "g"]), text("t", "Before the gizmo"), { id: "g", component: "Gizmo" }],
+      undefined,
+      "v0.9.1",
+      OWN_CATALOG_ID,
+    );
+  const NEWER = "This part of the answer needs a newer version of the app.";
+
+  it("in a thread whose catalog is newer than this build's, a component it lacks is a visible placeholder, never half drawn", async () => {
+    const m = mountSurfaces({}, {}, undefined, { catalogVersion: OWN_CATALOG.version + 1 });
+    await feed(m, surfaceRun([gizmo()]));
+    const note = document.querySelector('[data-slot="surface-newer"]') as HTMLElement;
+    expect(note).not.toBeNull();
+    expect(within(note).getByText(NEWER)).toBeTruthy();
+    expect(within(note).getByText(/“Gizmo”/)).toBeTruthy();
+    expect(within(note).getByRole("button", { name: "Reload" })).toBeTruthy();
+    // labelled by the orchestrator's actor, like a surface
+    expect(note.textContent).toContain("plain");
+    // not the refusal, not the surface: nothing of it is drawn
+    expect(screen.queryByText(/Interface not shown/)).toBeNull();
+    expect(screen.queryByText("Before the gizmo")).toBeNull();
+    expect(regions()).toHaveLength(0);
+    m.agent.stop();
+  });
+
+  it("when the thread's catalog is not newer, the same surface is refused: the agent used a component the catalog does not have", async () => {
+    const m = mountSurfaces({}, {}, undefined, { catalogVersion: OWN_CATALOG.version });
+    await feed(m, surfaceRun([gizmo()]));
+    expect(document.querySelector('[data-slot="surface-newer"]')).toBeNull();
+    expect(screen.getByText(/Interface not shown:/)).toBeTruthy();
+    expect(screen.getByText(/component "Gizmo" is not in this app's catalog/)).toBeTruthy();
+    m.agent.stop();
+  });
+
+  it("Reload reloads the page", () => {
+    const onReload = vi.fn();
+    render(<SurfaceNewer component="Gizmo" actor={undefined} onReload={onReload} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(onReload).toHaveBeenCalledTimes(1);
+  });
+
+  it("the name of the component is the agent's: cut, and no control characters", () => {
+    render(<SurfaceNewer component={`G\u0007${"z".repeat(80)}`} actor={undefined} />);
+    const line = screen.getByText(/which this version does not have/);
+    expect(line.textContent).not.toContain("\u0007");
+    expect(line.textContent?.length).toBeLessThan(120);
+  });
+
+  it("a surface of our catalog that fits it is drawn, in the same card as any surface", async () => {
+    const m = mountSurfaces({}, {}, undefined, { catalogVersion: OWN_CATALOG.version });
+    await feed(
+      m,
+      surfaceRun([
+        surface(
+          [
+            column("root", ["h", "t"]),
+            { id: "h", component: "Text", text: "Heading", variant: "h2" },
+            text("t", "Words"),
+          ],
+          undefined,
+          "v0.9.1",
+          OWN_CATALOG_ID,
+        ),
+      ]),
+    );
+    const ui = region();
+    expect(within(ui).getByText("Heading")).toBeTruthy();
+    expect(within(ui).getByText("Words")).toBeTruthy();
+    m.agent.stop();
   });
 });

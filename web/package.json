@@ -25,7 +25,8 @@
     "test": "pnpm gen:api && vitest run",
     "test:e2e": "playwright test",
     "test:e2e:system": "playwright test -c playwright.system.config.ts",
-    "screens": "playwright test -c playwright.screens.config.ts"
+    "screens": "playwright test -c playwright.screens.config.ts",
+    "catalog:lock": "tsx scripts/catalog-lock.ts"
   },
   "dependencies": {
     "@ag-ui/client": "1.0.0",
@@ -33,6 +34,7 @@
     "@assistant-ui/react-ag-ui": "0.0.62",
     "@assistant-ui/react-generative-ui": "0.0.21",
     "@assistant-ui/react-markdown": "0.14.17",
+    "@cfworker/json-schema": "4.1.1",
     "@fontsource-variable/inter": "5.3.0",
     "@tailwindcss/postcss": "4.3.3",
     "class-variance-authority": "0.7.1",

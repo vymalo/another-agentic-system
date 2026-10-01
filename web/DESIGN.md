@@ -60,6 +60,8 @@ beyond the brand mark and the one soft glow behind a new chat's greeting (Gemini
   alerts on replay.
 - **Your turn**: the agent's question is its words, with a "Your turn" chip under them, and the
   composer says "Reply…".
+- **Choices** (a surface component, below): the agent's several questions with fixed answers, in the
+  surface's card; **the person's answers** to them are a bubble, see below.
 
 ## Type, spacing, radii
 
@@ -102,3 +104,36 @@ All of it is off under `prefers-reduced-motion`.
 The transcript is `role="log"` (name "Conversation"); the state pill is a polite `status`; steps are
 a list whose items carry their full meaning as text; focus rings on every control; everything works
 from the keyboard; axe finds nothing serious in either scheme.
+
+## A surface that needs a newer version of the app
+
+The thread was opened in a newer version of the app, and the agent used a component this one does not have (ADR 0023).
+It is said, not half drawn: a quiet bordered card (`--card`, the same width as a surface) with a refresh icon, "This
+part of the answer needs a newer version of the app." as its title, the component's name in muted text, and a small
+outline **Reload** button; the agent's label stays in the corner. It is a labelled group, never an `alert`: a replay of
+the thread must not announce it again. When the catalog is not newer, the same surface is the agent's mistake and is the
+refusal line ("Interface not shown: ..."), in the destructive colour.
+
+## Choices and the person's answers
+
+`Choices` is the component of the UI catalog for "ask several things at once" (ADR 0023). It sits in the surface's card, as
+quiet as the rest of the page, and is a form in the plainest sense:
+
+- Each question is a **group** named by its words (the legend: 14 px, weight 500; "(optional)" in muted text after it when it need
+  not be answered). Its options are **tiles**: a 12 px-radius, 1 px `--border` row at least 44 px tall (a thumb, not a pointer),
+  the native radio button (a check box for several) in `--primary` at 16 px, the label, and the option's description under it in
+  12 px muted text. The **whole tile** is the click target; a chosen one takes a `--primary` border and a 5 % `--primary` wash; the
+  focus ring is the page's ring (`ring-3`, `--ring` at 50 %), on the tile.
+- **Other** is a tile of its own: the choice, "Other", and a text box beside it; typing in the box turns the choice on.
+- Under the questions, **one** primary button ("Send answers", or the agent's words) that waits for every required question, and a
+  12 px muted line that says how many are left. Enter in a text box does nothing: only the click on the button sends.
+- When the thread does not wait for the person (it is working, it is finished, or this is not the newest copy of the surface), the
+  tiles stay as they were and stop taking input, and the surface says once why, as for any button.
+- It is keyboard complete with native controls: Tab to a group, the arrows to choose, Space to tick, Tab to the button.
+
+**The answers** are the person's, so they are drawn as the person's words are: a `--bubble` on the right (20 px radius, the 6 px top
+right corner, at most 85 % of the column), **above the agent's mark** of the turn they started (the agent has not yet said anything
+when the person answers). It is headed "Your answers" (12 px, weight 500, muted) and lists each question in 13 px muted text with
+the labels chosen under it in the body size, "Other: ..." for their own words and "No answer" for a skipped optional question. It
+is not a step of the agent's list: nothing the person did is the agent's activity. When the surface the answer names is no longer
+in the transcript, the question's id and the raw value stand in.

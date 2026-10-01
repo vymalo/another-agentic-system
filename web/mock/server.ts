@@ -11,9 +11,17 @@
  */
 import http from "node:http";
 import { pathToFileURL } from "node:url";
+import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
 import { AGENTS, DEV_USER } from "./fixtures";
-import { type Audience, type Frame, type GateInfo, Projector, surfacesOf } from "./projection";
+import {
+  type Audience,
+  type CatalogRef,
+  type Frame,
+  type GateInfo,
+  Projector,
+  surfacesOf,
+} from "./projection";
 import { cancelSteps, type Step, scriptFor } from "./scripts";
 
 type Thread = components["schemas"]["Thread"];
@@ -22,6 +30,83 @@ type Actor = components["schemas"]["Actor"];
 type ThreadState = components["schemas"]["ThreadState"];
 
 const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
+const UI_CATALOG_PROP = "vymalo.uiCatalog";
+const OWN_CATALOG_ID = "https://agents.vymalo.com/a2ui/catalogs/chat";
+const MAX_CATALOG_BYTES = 64 * 1024;
+const MAX_CATALOG_COMPONENTS = 64;
+class BadCatalog extends Error {
+  constructor(
+    readonly status: 400 | 413,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * What a Choices answer says, for the scripted agent's echo: ` db=pg auth=none deploy=k8s,compose`
+ * (the chosen values, and `other:<text>`, in question order); nothing for any other action.
+ */
+function chosen(context: Record<string, unknown>): string {
+  const answers = context.answers;
+  if (!Array.isArray(answers)) return "";
+  return answers
+    .filter(isRecord)
+    .map((a) => {
+      const values = Array.isArray(a.values) ? a.values.map(String) : [];
+      const other = typeof a.other === "string" ? [`other:${a.other}`] : [];
+      return ` ${String(a.id)}=${[...values, ...other].join(",")}`;
+    })
+    .join("");
+}
+
+/**
+ * `forwardedProps["vymalo.uiCatalog"]` (docs/api/agui.md "Inbound"), checked as the orchestrator
+ * checks it, less the JSON Schema compilation: the shape, the id, the version, the size and the
+ * keys, and the digest recomputed. Returns what the thread records, or undefined when the run
+ * carries none.
+ */
+async function readCatalog(props: unknown): Promise<CatalogRef | undefined> {
+  if (!isRecord(props) || !(UI_CATALOG_PROP in props)) return undefined;
+  const v = props[UI_CATALOG_PROP];
+  if (!isRecord(v)) throw new BadCatalog(400, "vymalo.uiCatalog must be an object");
+  const { catalogId, version, digest, catalog } = v;
+  if (
+    typeof catalogId !== "string" ||
+    !/^https:\/\/\S+$/.test(catalogId) ||
+    catalogId.length > 256
+  ) {
+    throw new BadCatalog(400, "vymalo.uiCatalog.catalogId must be an absolute https URL");
+  }
+  if (!Number.isInteger(version) || (version as number) < 1 || (version as number) > 1_000_000) {
+    throw new BadCatalog(400, "vymalo.uiCatalog.version must be 1 to 1000000");
+  }
+  if (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+    throw new BadCatalog(400, "vymalo.uiCatalog.digest must be sha256: and 64 hex digits");
+  }
+  if (!isRecord(catalog) || catalog.catalogId !== catalogId || !isRecord(catalog.components)) {
+    throw new BadCatalog(400, "vymalo.uiCatalog.catalog must be a catalog of the same catalogId");
+  }
+  if (Buffer.byteLength(JSON.stringify(catalog)) > MAX_CATALOG_BYTES) {
+    throw new BadCatalog(413, "vymalo.uiCatalog.catalog is over 64 KiB");
+  }
+  const names = Object.keys(catalog.components);
+  if (
+    names.length > MAX_CATALOG_COMPONENTS ||
+    !names.every((n) => /^[A-Z][A-Za-z0-9]{0,63}$/.test(n))
+  ) {
+    throw new BadCatalog(400, "vymalo.uiCatalog.catalog has too many components, or a bad name");
+  }
+  let actual: string;
+  try {
+    actual = await catalogDigest(catalog);
+  } catch {
+    throw new BadCatalog(400, "vymalo.uiCatalog.catalog cannot be canonicalised");
+  }
+  if (actual !== digest)
+    throw new BadCatalog(400, "vymalo.uiCatalog.digest does not match the catalog");
+  return { catalogId, version: version as number, digest };
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -57,6 +142,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const runs = new Map<string, Run>();
   /** The gate each verified thread's job runs under (from its script); absent: none. */
   const gates = new Map<string, GateInfo>();
+  /** What each thread has recorded of the UI catalog: the one that counts, and every digest seen. */
+  const catalogs = new Map<string, { current: CatalogRef | undefined; seen: Set<string> }>();
   let cutNextConnectAfter: number | undefined;
 
   const reset = () => {
@@ -67,6 +154,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     viewers.clear();
     runs.clear();
     gates.clear();
+    catalogs.clear();
     cutNextConnectAfter = undefined;
   };
 
@@ -115,7 +203,30 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       ...(t.target.release ? { release: t.target.release } : {}),
     },
     ...(gates.has(t.id) ? { gate: gates.get(t.id) } : {}),
+    catalog: catalogOf(t.id),
   });
+
+  const catalogOf = (threadId: string) => {
+    let held = catalogs.get(threadId);
+    if (!held) {
+      held = { current: undefined, seen: new Set() };
+      catalogs.set(threadId, held);
+    }
+    return held;
+  };
+
+  /**
+   * A run that applies an input records the catalog it carries, once per digest; it becomes the
+   * thread's current one when there is none, or its version is higher (the orchestrator's ledger:
+   * an older version is recorded and never current).
+   */
+  const observeCatalog = (threadId: string, ref: CatalogRef | undefined) => {
+    if (!ref) return;
+    const held = catalogOf(threadId);
+    if (held.seen.has(ref.digest)) return;
+    held.seen.add(ref.digest);
+    if (!held.current || ref.version > held.current.version) held.current = ref;
+  };
 
   /** The thread as the resource API shows it: under a gate, with where its job stands (`job`). */
   const viewOf = (t: Thread): Thread => {
@@ -425,6 +536,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 400, "Invalid request", "threadId must be a UUID");
     const agent = AGENTS.find((a) => a.id === agentId);
     if (!agent) return problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
+    let catalog: CatalogRef | undefined;
+    try {
+      catalog = await readCatalog(body.forwardedProps);
+    } catch (e) {
+      if (!(e instanceof BadCatalog)) throw e;
+      return problem(
+        res,
+        e.status,
+        e.status === 413 ? "Payload too large" : "Invalid request",
+        e.message,
+      );
+    }
 
     const messages = body.messages as Record<string, unknown>[];
     const resume = Array.isArray(body.resume)
@@ -475,13 +598,22 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       };
       threads.set(created.id, created);
       events.set(created.id, []);
+      observeCatalog(created.id, catalog);
+      const script = scriptFor(text);
+      if (script.newerCatalog !== undefined) {
+        // a newer version of the app opened this thread before: its catalog is the one that counts
+        observeCatalog(created.id, {
+          catalogId: catalog?.catalogId ?? OWN_CATALOG_ID,
+          version: script.newerCatalog,
+          digest: `sha256:${"9".repeat(64)}`,
+        });
+      }
       const event = append(
         created.id,
         "user_message",
         { type: "user", name: DEV_USER },
         { text, messageId: first.id as string, runId },
       );
-      const script = scriptFor(text);
       if (script.gate) gates.set(created.id, script.gate);
       runs.set(created.id, { timer: undefined, pending: [], resume: script.resume });
       play(created, script.start);
@@ -496,7 +628,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 409, "Conflict", `the thread targets ${thread.target.agentId}`);
     }
     if (isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
-      return runAction(res, thread, runId, body, fresh.length + resume.length > 0);
+      return runAction(res, thread, runId, body, fresh.length + resume.length > 0, catalog);
     }
     // A retry of a run the log holds attaches to it.
     const recorded = log.find((e) => e.kind === "user_message" && e.data.runId === runId);
@@ -518,6 +650,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (typeof next !== "string" || next === "") {
         return problem(res, 422, "Unprocessable", "a message without text");
       }
+      observeCatalog(thread.id, catalog);
       const event = append(
         thread.id,
         "user_message",
@@ -566,6 +699,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         return problem(res, 422, "Unprocessable", "a message without text");
       }
     }
+    observeCatalog(thread.id, catalog);
     const event = append(
       thread.id,
       "user_message",
@@ -593,6 +727,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     runId: string,
     body: Record<string, unknown>,
     withInput: boolean,
+    catalog: CatalogRef | undefined,
   ) {
     const envelope = (body.forwardedProps as Record<string, unknown>).a2uiAction;
     const action = isRecord(envelope) ? envelope.userAction : undefined;
@@ -642,6 +777,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         "a run is already open on this thread; wait for it to finish",
       );
     }
+    observeCatalog(thread.id, catalog);
     const event = append(
       thread.id,
       "ui_action",
@@ -650,7 +786,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;
-    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}`));
+    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`));
     return startViewer(res, thread, {
       fromSeq: event.seq - 1,
       end: "first-close",

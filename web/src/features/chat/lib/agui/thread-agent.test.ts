@@ -1,6 +1,7 @@
 import type { BaseEvent, RunAgentInput } from "@ag-ui/client";
 import { EventType } from "@ag-ui/client";
 import { describe, expect, it, vi } from "vitest";
+import { OWN_CATALOG, UI_CATALOG_PROP } from "@/features/chat/lib/a2ui/catalog";
 import {
   type Call,
   fakeFetch,
@@ -379,10 +380,12 @@ describe("ThreadAgent.run", () => {
     await go();
     release = null;
     await go();
+    // (a thread nobody told about the catalog yet gets it with every run: see "the UI catalog")
     expect(bodies[0]?.forwardedProps).toEqual({
       "https://agents.vymalo.com/a2a/extensions/release-channels/v1": { release: "staging" },
+      [UI_CATALOG_PROP]: OWN_CATALOG,
     });
-    expect(bodies[1]?.forwardedProps).toEqual({});
+    expect(bodies[1]?.forwardedProps).toEqual({ [UI_CATALOG_PROP]: OWN_CATALOG });
   });
 
   it("fails with the problem when the server refuses, once, and claims nothing", async () => {
@@ -465,6 +468,161 @@ describe("ThreadAgent.adopt", () => {
     expect(seen.at(0)?.type).toBe(EventType.RUN_STARTED);
     expect(seen.at(-1)?.type).toBe(EventType.RUN_FINISHED);
     expect(calls.map((c) => c.method)).toEqual(["GET"]);
+    agent.stop();
+  });
+});
+
+describe("ThreadAgent: the UI catalog (ADR 0023)", () => {
+  const ref = (version: number, digest = OWN_CATALOG.digest) => ({
+    catalogId: OWN_CATALOG.catalogId,
+    version,
+    digest,
+  });
+  const other = `sha256:${"b".repeat(64)}`;
+  const runInput = (over: Partial<RunAgentInput> = {}): RunAgentInput => ({
+    threadId: THREAD_ID,
+    runId: "run-9",
+    state: {},
+    tools: [],
+    context: [],
+    forwardedProps: {},
+    messages: [{ id: "u1", role: "user", content: "next" }],
+    ...over,
+  });
+
+  /** An agent that has read a snapshot saying `uiCatalog` (nothing: the thread has none). */
+  async function afterSnapshot(uiCatalog: unknown, extra: Record<string, unknown> = {}) {
+    const stream = new LiveStream();
+    const bodies: { forwardedProps: Record<string, unknown> }[] = [];
+    const { agent } = agentWith((call) => {
+      if (call.method === "POST") {
+        bodies.push(call.body as { forwardedProps: Record<string, unknown> });
+        return problem(400, "Invalid request");
+      }
+      return sse(stream.body);
+    }, extra);
+    agent.start();
+    stream.frames([
+      { event: { type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-1" } },
+      {
+        event: {
+          type: "STATE_SNAPSHOT",
+          snapshot: {
+            thread: {
+              state: "blocked",
+              title: "t",
+              target: { agentId: "plain" },
+              ...(uiCatalog === undefined ? {} : { uiCatalog }),
+            },
+          },
+        },
+        id: 1,
+      },
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 1, "the snapshot");
+    const send = (input: RunAgentInput = runInput()) =>
+      new Promise<void>((r) => agent.run(input).subscribe({ error: () => r() }));
+    return { agent, bodies, send };
+  }
+
+  it("reads thread.uiCatalog of a snapshot, and a snapshot without one clears it", async () => {
+    const { agent } = await afterSnapshot(ref(3));
+    expect(agent.getSnapshot().uiCatalog).toEqual(ref(3));
+    agent.stop();
+    const none = await afterSnapshot(undefined);
+    expect(none.agent.getSnapshot().uiCatalog).toBeUndefined();
+    none.agent.stop();
+  });
+
+  it("ignores a catalog it cannot compare: no digest, a bad digest, a version of 0 or 1.5", async () => {
+    for (const bad of [
+      { catalogId: "x", version: 1 },
+      { catalogId: "x", version: 1, digest: "sha256:ABC" },
+      { catalogId: "x", version: 0, digest: other },
+      { catalogId: "x", version: 1.5, digest: other },
+      "text",
+    ]) {
+      const { agent } = await afterSnapshot(bad);
+      expect(agent.getSnapshot().uiCatalog).toBeUndefined();
+      agent.stop();
+    }
+  });
+
+  it("sends the catalog with the run that creates a thread (no snapshot yet), whole", async () => {
+    const { agent, calls } = agentWith(() => problem(400, "Invalid request"));
+    await new Promise<void>((r) => agent.run(runInput()).subscribe({ error: () => r() }));
+    const body = calls.find((c) => c.method === "POST")?.body as {
+      forwardedProps: Record<string, unknown>;
+    };
+    expect(body.forwardedProps[UI_CATALOG_PROP]).toEqual({
+      catalogId: "https://agents.vymalo.com/a2ui/catalogs/chat",
+      version: OWN_CATALOG.version,
+      digest: OWN_CATALOG.digest,
+      catalog: OWN_CATALOG.catalog,
+    });
+  });
+
+  it("does not send it when the thread has this very digest", async () => {
+    const { agent, bodies, send } = await afterSnapshot(ref(OWN_CATALOG.version));
+    await send();
+    expect(bodies[0]?.forwardedProps).toEqual({});
+    agent.stop();
+  });
+
+  it("does not send it from an older build: the thread's version is higher", async () => {
+    const { agent, bodies, send } = await afterSnapshot(ref(OWN_CATALOG.version + 1, other));
+    await send();
+    expect(bodies[0]?.forwardedProps).toEqual({});
+    agent.stop();
+  });
+
+  it("sends it when the thread's version is lower", async () => {
+    const lower = { ...OWN_CATALOG, version: 5, digest: `sha256:${"5".repeat(64)}` };
+    const { agent, bodies, send } = await afterSnapshot(ref(4, other), { catalog: lower });
+    await send();
+    expect(bodies[0]?.forwardedProps).toEqual({ [UI_CATALOG_PROP]: lower });
+    agent.stop();
+  });
+
+  it("sends it when the version is the same and the digest is not", async () => {
+    const { agent, bodies, send } = await afterSnapshot(ref(OWN_CATALOG.version, other));
+    await send();
+    expect(bodies[0]?.forwardedProps).toEqual({ [UI_CATALOG_PROP]: OWN_CATALOG });
+    agent.stop();
+  });
+
+  it("is merged with the action the run carries, and with the release", async () => {
+    const { agent, bodies, send } = await afterSnapshot(undefined, {
+      target: () => ({ agentId: "coder", release: "staging" }),
+    });
+    await send();
+    await send(
+      runInput({
+        runId: "run-10",
+        messages: [],
+        forwardedProps: { a2uiAction: { userAction: { name: "go", surfaceId: "s1" } } },
+      }),
+    );
+    expect(bodies[0]?.forwardedProps).toEqual({
+      "https://agents.vymalo.com/a2a/extensions/release-channels/v1": { release: "staging" },
+      [UI_CATALOG_PROP]: OWN_CATALOG,
+    });
+    expect(bodies[1]?.forwardedProps).toEqual({
+      a2uiAction: { userAction: { name: "go", surfaceId: "s1" } },
+      [UI_CATALOG_PROP]: OWN_CATALOG,
+    });
+    agent.stop();
+  });
+
+  it("an action run of a thread that has the catalog carries the action alone", async () => {
+    const { agent, bodies, send } = await afterSnapshot(ref(OWN_CATALOG.version));
+    agent.stageA2uiAction({ name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} });
+    await send(runInput({ messages: [] }));
+    expect(bodies[0]?.forwardedProps).toEqual({
+      a2uiAction: {
+        userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+      },
+    });
     agent.stop();
   });
 });

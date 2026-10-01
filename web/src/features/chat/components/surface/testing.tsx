@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DataUIs } from "@/features/chat/components/data-uis";
+import { type ThreadView, ThreadViewProvider } from "@/features/chat/components/thread-view";
 import { type GoldenFrame, LiveStream, sse, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import { mountRuntime } from "@/features/chat/lib/agui/testing-runtime";
 import type { ThreadAgentOptions } from "@/features/chat/lib/agui/thread-agent";
@@ -135,6 +136,57 @@ export function surfaceRun(
   return out;
 }
 
+/**
+ * The next run of the story, started by the person's action (`vymalo.action`, then the agent's
+ * words): what a thread shows after a Choices was answered. `content` is the action's content,
+ * as the orchestrator projects it (`surfaceId`, `name`, `sourceComponentId`, `context`).
+ */
+export function actionRun(
+  content: Record<string, unknown>,
+  { runId = "run-2", words = "Going on." }: { runId?: string; words?: string } = {},
+): GoldenFrame[] {
+  const id = ++seq;
+  const user = { "vymalo.actor": { type: "user", name: "alice@example.com" } };
+  const text = `st-${id}`;
+  return [
+    frame({ type: "RUN_STARTED", threadId: THREAD_ID, runId, protocolVersion: "1.0" }),
+    frame({
+      type: "STATE_SNAPSHOT",
+      snapshot: { thread: { state: "queued", target: { agentId: "plain" }, title: "ui" } },
+    }),
+    frame(
+      {
+        type: "ACTIVITY_SNAPSHOT",
+        messageId: `evt-${id}`,
+        activityType: "vymalo.action",
+        replace: false,
+        content: { at: "2027-01-15T08:00:07Z", ...content },
+        metadata: user,
+      },
+      id,
+    ),
+    frame({ type: "SUBAGENT_STARTED", name: "plain", subagentRunId: "sub-2", metadata: agent }),
+    frame({
+      type: "TEXT_MESSAGE_START",
+      messageId: text,
+      role: "assistant",
+      subagentRunId: "sub-2",
+      metadata: agent,
+    }),
+    frame({ type: "TEXT_MESSAGE_CONTENT", messageId: text, delta: words, subagentRunId: "sub-2" }),
+    frame({ type: "TEXT_MESSAGE_END", messageId: text, subagentRunId: "sub-2" }),
+    frame({ type: "SUBAGENT_FINISHED", subagentRunId: "sub-2" }, ++seq),
+    frame({
+      type: "STATE_SNAPSHOT",
+      snapshot: { thread: { state: "done", target: { agentId: "plain" }, title: "ui" } },
+    }),
+    frame(
+      { type: "RUN_FINISHED", threadId: THREAD_ID, runId, outcome: { type: "success" } },
+      ++seq,
+    ),
+  ];
+}
+
 export const resetSeq = () => {
   seq = 0;
 };
@@ -147,18 +199,23 @@ export function mountSurfaces(
   host: Partial<SurfaceHost> = {},
   options: Partial<ThreadAgentOptions> = {},
   extra?: ReactNode,
+  /** What the transcript knows of the thread: its UI catalog version, say. */
+  view: Partial<ThreadView> = {},
 ) {
   const stream = new LiveStream();
   const value: SurfaceHost = { ...HOST, ...host };
+  const threadView: ThreadView = { state: "blocked", waiting: true, agentId: "plain", ...view };
   const mounted = mountRuntime(
     () => sse(stream.body),
     options,
     <SurfaceHostContext.Provider value={value}>
-      <TooltipProvider>
-        <DataUIs />
-        <Thread loading={false} empty={false} />
-        {extra}
-      </TooltipProvider>
+      <ThreadViewProvider value={threadView}>
+        <TooltipProvider>
+          <DataUIs />
+          <Thread loading={false} empty={false} />
+          {extra}
+        </TooltipProvider>
+      </ThreadViewProvider>
     </SurfaceHostContext.Provider>,
   );
   mounted.agent.start();

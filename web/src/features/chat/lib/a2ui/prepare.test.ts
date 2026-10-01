@@ -1,13 +1,16 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import {
+  BASIC_CATALOG_IDS,
   MAX_BYTES,
   MAX_COMPONENTS,
   MAX_DEPTH,
   MAX_NODES,
   MAX_TEMPLATE_ITEMS,
   OPEN_URL,
+  RESERVED_PREFIX,
   UNSUPPORTED,
   USER_MESSAGE,
   VOCABULARY,
@@ -15,12 +18,14 @@ import {
 import { type Prepared, prepareSurface } from "./prepare";
 import {
   BAD_URLS,
+  BASIC_CATALOG,
   button,
   column,
   event,
   GOOD_URLS,
   labelled,
   NOT_TEXT,
+  OWN_CATALOG_ID,
   openUrl,
   SURFACE,
   sizeOf,
@@ -757,5 +762,434 @@ describe("what the validator does not trust", () => {
       );
       expect(["surface", "refused"]).toContain(p.kind);
     }
+  });
+});
+
+/** The operations of a surface that names this app's catalog. */
+const ours = (components: Rec[], catalogId = OWN_CATALOG_ID) =>
+  surface(components, undefined, "v0.9", catalogId);
+
+/** The surface of a build that has one more component than the real one, `Note`, and a version. */
+const withNote = (version: number): OwnCatalog => ({
+  ...OWN_CATALOG,
+  version,
+  catalog: {
+    ...OWN_CATALOG.catalog,
+    components: {
+      ...OWN_CATALOG.catalog.components,
+      Note: {
+        type: "object",
+        properties: {
+          id: { type: "string", minLength: 1, maxLength: 256 },
+          component: { const: "Note" },
+          text: { type: "string", maxLength: 10 },
+        },
+        required: ["id", "component", "text"],
+        additionalProperties: false,
+      },
+    },
+  },
+});
+
+describe("catalogs (ADR 0023): the basic one, ours, and no other", () => {
+  const hello = [column("root", ["t"]), text("t", "hello")];
+
+  it("the three spellings of the basic catalog's id, and no id at all, are the basic catalog", () => {
+    for (const id of BASIC_CATALOG_IDS) {
+      expect(drawn(prepareSurface(surface(hello, undefined, "v0.9", id))).surfaceId).toBe(SURFACE);
+    }
+    const none = surface(hello).map((op) =>
+      "createSurface" in op ? { version: op.version, createSurface: { surfaceId: SURFACE } } : op,
+    );
+    drawn(prepareSurface(none));
+  });
+
+  it("any other catalog is refused, and the reason names it (cut, without control characters)", () => {
+    for (const id of [
+      "basic",
+      "https://example.com/catalog.json",
+      "https://agents.vymalo.com/a2ui/catalogs/chat/v2",
+    ]) {
+      const r = refused(prepareSurface(ours(hello, id)));
+      expect(r.rule).toBe("catalog");
+      expect(r.reason).toContain("does not have");
+    }
+    const long = refused(
+      prepareSurface(ours(hello, `https://example.com/\u0007${"x".repeat(200)}`)),
+    );
+    expect(long.reason).not.toContain("\u0007");
+    expect(long.reason.length).toBeLessThan(160);
+  });
+
+  it("a catalog id that is not text is refused", () => {
+    for (const id of [1, null, {}, ["a"]]) {
+      const ops = ours(hello).map((op) =>
+        "createSurface" in op
+          ? { version: op.version, createSurface: { surfaceId: SURFACE, catalogId: id } }
+          : op,
+      );
+      expect(refused(prepareSurface(ops)).rule).toBe("catalog");
+    }
+  });
+
+  it("a surface that names two catalogs is refused: a later createSurface starts it over", () => {
+    const ops = [
+      ...ours(hello),
+      { version: "v0.9", createSurface: { surfaceId: SURFACE, catalogId: "https://x.test/c" } },
+    ];
+    expect(refused(prepareSurface(ops)).rule).toBe("catalog");
+  });
+
+  it("ours: Text and Column are drawn like their basic namesakes", () => {
+    const p = drawn(
+      prepareSurface(
+        ours([
+          column("root", ["h", "t"], { align: "center" }),
+          { id: "h", component: "Text", text: "Title", variant: "h2" },
+          text("t", "<b>words</b>"),
+        ]),
+      ),
+    );
+    expect(find(p.spec, "Header")).toMatchObject({ text: "Title" });
+    expect(find(p.spec, "Markdown")).toMatchObject({ value: "<b>words</b>" });
+    expect(find(p.spec, "Col")).toMatchObject({ align: "center" });
+  });
+
+  it("ours: a basic component the catalog does not list is refused with the rule catalog", () => {
+    const r = refused(
+      prepareSurface(ours([column("root", ["b"]), ...labelled("b", "Go", event("go"))])),
+    );
+    expect(r.rule).toBe("catalog");
+    expect(r.reason).toContain('"Button"');
+    expect(r.reason).toContain(`version ${OWN_CATALOG.version}`);
+  });
+
+  it("ours: an instance that breaks its schema is refused with the rule schema, naming the component and the property", () => {
+    const r = refused(
+      prepareSurface(
+        ours([column("root", ["t"]), { id: "t", component: "Text", text: "x".repeat(4001) }]),
+      ),
+    );
+    expect(r.rule).toBe("schema");
+    expect(r.reason).toMatch(/^component "t" \(Text\) text: String is too long/);
+    // a property the schema does not list, a binding where a literal is required
+    expect(
+      refused(
+        prepareSurface(
+          ours([column("root", ["t"]), { id: "t", component: "Text", text: "x", color: "red" }]),
+        ),
+      ).rule,
+    ).toBe("schema");
+    expect(
+      refused(
+        prepareSurface(
+          ours([column("root", ["t"]), { id: "t", component: "Text", text: { path: "/x" } }]),
+        ),
+      ).rule,
+    ).toBe("schema");
+    // a Column's children are a list of ids, never a template
+    expect(
+      refused(
+        prepareSurface(
+          ours([
+            { id: "root", component: "Column", children: { componentId: "t", path: "/xs" } },
+            text("t", "x"),
+          ]),
+        ),
+      ).rule,
+    ).toBe("schema");
+  });
+
+  it("ours: the limits of the schema are exact", () => {
+    const col = (n: number) => [
+      column(
+        "root",
+        Array.from({ length: n }, (_, i) => `t${i}`),
+      ),
+      ...Array.from({ length: Math.min(n, 51) }, (_, i) => text(`t${i}`, "x")),
+    ];
+    drawn(prepareSurface(ours(col(50))));
+    expect(refused(prepareSurface(ours(col(51)))).rule).toBe("schema");
+    drawn(prepareSurface(ours([column("root", ["t"]), text("t", "x".repeat(4000))])));
+  });
+
+  it("ours, a component of a newer catalog in a thread whose catalog is newer: 'newer', never drawn", () => {
+    const ops = ours([
+      column("root", ["t", "g"]),
+      text("t", "before"),
+      { id: "g", component: "Gizmo", n: 1 },
+    ]);
+    const p = prepareSurface(ops, { threadVersion: OWN_CATALOG.version + 1 });
+    expect(p).toEqual({ kind: "newer", component: "Gizmo" });
+  });
+
+  it("ours, a component this build lacks in a thread that is not newer: the agent's fault, refused", () => {
+    const ops = ours([column("root", ["g"]), { id: "g", component: "Gizmo" }]);
+    for (const threadVersion of [undefined, OWN_CATALOG.version, OWN_CATALOG.version - 1]) {
+      const r = refused(prepareSurface(ops, { threadVersion }));
+      expect(r.rule).toBe("catalog");
+      expect(r.reason).toContain('"Gizmo"');
+    }
+  });
+
+  it("'newer' comes before the other defects of the surface: it is not the agent's fault", () => {
+    const ops = ours([
+      column("root", ["t", "g"]),
+      { id: "t", component: "Text", text: "" },
+      { id: "g", component: "Gizmo" },
+    ]);
+    expect(prepareSurface(ops, { threadVersion: OWN_CATALOG.version + 1 }).kind).toBe("newer");
+    expect(refused(prepareSurface(ops, { threadVersion: OWN_CATALOG.version })).rule).toBe(
+      "catalog",
+    );
+  });
+
+  it("a newer thread does not excuse a surface of the basic catalog: its unknown component is refused", () => {
+    const ops = surface([column("root", ["g"]), { id: "g", component: "Gizmo" }]);
+    const r = refused(prepareSurface(ops, { threadVersion: 99 }));
+    expect(r.rule).toBe("vocabulary");
+  });
+
+  it("a component of our catalog named under the basic catalog is refused: the surface did not ask for ours", () => {
+    const build = withNote(3);
+    const ops = surface([column("root", ["n"]), { id: "n", component: "Note", text: "hi" }]);
+    const r = refused(prepareSurface(ops, { catalog: build }));
+    expect(r.rule).toBe("catalog");
+    expect(r.reason).toContain("does not name");
+  });
+
+  it("a build with another catalog validates against that one (the catalog is a parameter)", () => {
+    const build = withNote(3);
+    expect(
+      prepareSurface(ours([column("root", ["n"]), { id: "n", component: "Note", text: "hi" }]), {
+        catalog: build,
+      }).kind,
+    ).not.toBe("refused");
+  });
+
+  it("a thread with the same or an older version is not 'newer' than this build", () => {
+    const ops = ours([column("root", ["g"]), { id: "g", component: "Gizmo" }]);
+    expect(refused(prepareSurface(ops, { catalog: withNote(3), threadVersion: 3 })).rule).toBe(
+      "catalog",
+    );
+    expect(prepareSurface(ops, { catalog: withNote(3), threadVersion: 4 }).kind).toBe("newer");
+  });
+
+  it("BASIC_CATALOG is one of the basic ids", () => {
+    expect(BASIC_CATALOG_IDS as readonly string[]).toContain(BASIC_CATALOG);
+  });
+});
+
+describe("Choices (catalog version 2)", () => {
+  const opt = (value: string, label = value, extra: Rec = {}) => ({ value, label, ...extra });
+  const question = (id: string, over: Rec = {}) => ({
+    id,
+    question: `Question ${id}?`,
+    options: [opt("a", "Alpha"), opt("b", "Beta")],
+    ...over,
+  });
+  const choices = (over: Rec = {}): Rec => ({
+    id: "pick",
+    component: "Choices",
+    questions: [question("db"), question("auth", { multiple: true, allowOther: true })],
+    ...over,
+  });
+  const surfaceOf = (c: Rec = choices()) =>
+    ours([
+      { id: "root", component: "Column", children: ["intro", "pick"] },
+      text("intro", "Hi"),
+      c,
+    ]);
+  const only = (c: Rec) => ours([c.id === "root" ? c : { ...c, id: "root" }]);
+
+  it("is drawn under our catalog, kept by the converter as vymalo.Choices with its own id", () => {
+    const p = drawn(prepareSurface(surfaceOf()));
+    const node = find(p.spec, "vymalo.Choices");
+    expect(node).toBeDefined();
+    expect(node).toMatchObject({
+      componentId: "pick",
+      questions: [
+        { id: "db", question: "Question db?" },
+        { id: "auth", multiple: true, allowOther: true },
+      ],
+    });
+    // the id the answer's action names is the component's, and it is not lost on the way
+    expect(node?.componentId).toBe("pick");
+    // the Choices sends: the surface says its actions need a thread that waits
+    expect(p.eventActions).toBe(1);
+    expect(find(p.spec, "Markdown")).toMatchObject({ value: "Hi" });
+  });
+
+  it("two Choices in one surface are two actions", () => {
+    const p = drawn(
+      prepareSurface(
+        ours([
+          { id: "root", component: "Column", children: ["one", "two"] },
+          choices({ id: "one" }),
+          choices({ id: "two" }),
+        ]),
+      ),
+    );
+    expect(p.eventActions).toBe(2);
+  });
+
+  it("under the basic catalog it is refused: the surface did not ask for ours", () => {
+    const r = refused(
+      prepareSurface(surface([{ id: "root", component: "Column", children: ["pick"] }, choices()])),
+    );
+    expect(r.rule).toBe("catalog");
+    expect(r.reason).toContain('"Choices"');
+  });
+
+  it("an older build refuses it when the thread is not newer, and shows 'newer' when it is", () => {
+    // version 1 of the catalog: Text and Column only
+    const old: OwnCatalog = {
+      ...OWN_CATALOG,
+      version: 1,
+      catalog: {
+        ...OWN_CATALOG.catalog,
+        components: Object.fromEntries(
+          Object.entries(OWN_CATALOG.catalog.components).filter(([name]) =>
+            ["Text", "Column"].includes(name),
+          ),
+        ),
+      },
+    };
+    const ops = surfaceOf();
+    expect(refused(prepareSurface(ops, { catalog: old, threadVersion: 1 })).rule).toBe("catalog");
+    expect(prepareSurface(ops, { catalog: old, threadVersion: 2 })).toEqual({
+      kind: "newer",
+      component: "Choices",
+    });
+  });
+
+  it("its limits are exact: 8 questions, 2 to 8 options, the lengths of the text", () => {
+    const qs = (n: number) => Array.from({ length: n }, (_, i) => question(`q${i}`));
+    drawn(prepareSurface(only(choices({ questions: qs(8) }))));
+    expect(refused(prepareSurface(only(choices({ questions: qs(9) })))).rule).toBe("schema");
+    expect(refused(prepareSurface(only(choices({ questions: [] })))).rule).toBe("schema");
+
+    const opts = (n: number) => Array.from({ length: n }, (_, i) => opt(`v${i}`));
+    drawn(prepareSurface(only(choices({ questions: [question("a", { options: opts(8) })] }))));
+    drawn(prepareSurface(only(choices({ questions: [question("a", { options: opts(2) })] }))));
+    expect(
+      refused(prepareSurface(only(choices({ questions: [question("a", { options: opts(9) })] }))))
+        .rule,
+    ).toBe("schema");
+    expect(
+      refused(prepareSurface(only(choices({ questions: [question("a", { options: opts(1) })] }))))
+        .rule,
+    ).toBe("schema");
+
+    const at = (over: Rec) => only(choices({ questions: [question("a", over)] }));
+    drawn(prepareSurface(at({ question: "q".repeat(300) })));
+    expect(refused(prepareSurface(at({ question: "q".repeat(301) }))).rule).toBe("schema");
+    expect(refused(prepareSurface(at({ question: "" }))).rule).toBe("schema");
+    drawn(prepareSurface(at({ options: [opt("a", "l".repeat(120)), opt("b")] })));
+    expect(
+      refused(prepareSurface(at({ options: [opt("a", "l".repeat(121)), opt("b")] }))).rule,
+    ).toBe("schema");
+    drawn(
+      prepareSurface(at({ options: [opt("a", "A", { description: "d".repeat(300) }), opt("b")] })),
+    );
+    expect(
+      refused(
+        prepareSurface(
+          at({ options: [opt("a", "A", { description: "d".repeat(301) }), opt("b")] }),
+        ),
+      ).rule,
+    ).toBe("schema");
+    drawn(prepareSurface(only(choices({ title: "t".repeat(120), submitLabel: "s".repeat(40) }))));
+    expect(refused(prepareSurface(only(choices({ title: "t".repeat(121) })))).rule).toBe("schema");
+    expect(refused(prepareSurface(only(choices({ submitLabel: "s".repeat(41) })))).rule).toBe(
+      "schema",
+    );
+    expect(refused(prepareSurface(only(choices({ submitLabel: "" })))).rule).toBe("schema");
+  });
+
+  it("ids and values are of [A-Za-z0-9_.:-], 1 to 64 characters", () => {
+    const withId = (id: string) => only(choices({ questions: [question(id)] }));
+    drawn(prepareSurface(withId("a".repeat(64))));
+    drawn(prepareSurface(withId("A_b.c:d-9")));
+    for (const bad of ["", "a".repeat(65), "has space", "slash/", "é"]) {
+      expect(refused(prepareSurface(withId(bad))).rule, bad).toBe("schema");
+    }
+    const withValue = (value: string) =>
+      only(choices({ questions: [question("a", { options: [opt(value), opt("b")] })] }));
+    drawn(prepareSurface(withValue("v".repeat(64))));
+    expect(refused(prepareSurface(withValue("v".repeat(65)))).rule).toBe("schema");
+    expect(refused(prepareSurface(withValue("a b"))).rule).toBe("schema");
+  });
+
+  it("a question id used twice, or an option value used twice in a question, is refused", () => {
+    const twice = refused(
+      prepareSurface(only(choices({ questions: [question("a"), question("a")] }))),
+    );
+    expect(twice.rule).toBe("schema");
+    expect(twice.reason).toContain('the question id "a" is used twice');
+    const values = refused(
+      prepareSurface(
+        only(choices({ questions: [question("a", { options: [opt("x"), opt("x", "Other")] })] })),
+      ),
+    );
+    expect(values.reason).toContain('the option value "x" is used twice in the question "a"');
+    // the same value in two questions is fine
+    drawn(
+      prepareSurface(
+        only(
+          choices({
+            questions: [
+              question("a", { options: [opt("x"), opt("y")] }),
+              question("b", { options: [opt("x"), opt("y")] }),
+            ],
+          }),
+        ),
+      ),
+    );
+  });
+
+  it("an unknown property, a binding where a literal is required, or a function call is refused", () => {
+    expect(refused(prepareSurface(only(choices({ color: "red" })))).rule).toBe("schema");
+    expect(refused(prepareSurface(only(choices({ questions: { path: "/qs" } })))).rule).toBe(
+      "schema",
+    );
+    expect(
+      refused(
+        prepareSurface(only(choices({ questions: [question("a", { question: { path: "/q" } })] }))),
+      ).rule,
+    ).toBe("schema");
+    expect(
+      refused(prepareSurface(only(choices({ title: { call: "formatString", args: {} } })))).rule,
+    ).toBe("schema");
+    expect(
+      refused(prepareSurface(only(choices({ questions: [question("a", { extra: 1 })] })))).rule,
+    ).toBe("schema");
+  });
+
+  it("the action's name defaults to 'answer', and may not be a reserved or a long one", () => {
+    drawn(prepareSurface(only(choices({ action: { event: { name: "chosen" } } }))));
+    for (const name of [`${RESERVED_PREFIX}openUrl`, `${RESERVED_PREFIX}x`]) {
+      const r = refused(prepareSurface(only(choices({ action: { event: { name } } }))));
+      expect(r.rule).toBe("action");
+      expect(r.reason).toContain("reserved");
+    }
+    // 256 characters of two bytes each: inside the schema's 256 characters, over the 256 bytes the orchestrator takes
+    const long = refused(
+      prepareSurface(only(choices({ action: { event: { name: "é".repeat(200) } } }))),
+    );
+    expect(long.rule).toBe("action");
+    // the event needs a name, and nothing else
+    expect(refused(prepareSurface(only(choices({ action: { event: {} } })))).rule).toBe("schema");
+    expect(
+      refused(prepareSurface(only(choices({ action: { event: { name: "x", context: {} } } }))))
+        .rule,
+    ).toBe("schema");
+  });
+
+  it("the agent's text in a refusal is cut", () => {
+    const r = refused(
+      prepareSurface(only(choices({ questions: [question("a", { question: "q".repeat(5000) })] }))),
+    );
+    expect(r.reason.length).toBeLessThan(400);
   });
 });

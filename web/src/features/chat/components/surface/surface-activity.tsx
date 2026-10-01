@@ -1,13 +1,15 @@
 "use client";
 
 import { useAuiState } from "@assistant-ui/react";
-import { CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, RefreshCwIcon } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { prepareSurface } from "@/features/chat/lib/a2ui/prepare";
 import { latestSurface } from "@/features/chat/lib/a2ui/surfaces";
 import { parseSurface, type SurfaceContent } from "@/features/chat/lib/agui/vymalo";
 import { ActorLabel } from "../actor-label";
+import { useThreadView } from "../thread-view";
 import { SurfaceView } from "./surface-view";
 
 /** How much of the raw operations a refusal shows: they are the agent's, and can be large. */
@@ -63,6 +65,49 @@ export function SurfaceRefused({
   );
 }
 
+/** A name from an agent, as one short line of text. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+const shown = (name: string) => name.replace(CONTROL, "?").slice(0, 40);
+
+/**
+ * A surface of this app's catalog that names a component of a newer version of it (ADR 0023, D3):
+ * the thread was opened in a newer version of the app, and this one cannot draw what the agent
+ * sent. Said out loud, never half drawn (ADR 0013 rule 4); a reload picks up a newer build.
+ */
+export function SurfaceNewer({
+  component,
+  actor,
+  onReload = () => window.location.reload(),
+}: {
+  component: string;
+  actor: SurfaceContent["actor"];
+  onReload?: () => void;
+}) {
+  return (
+    <Alert
+      role="group"
+      data-slot="surface-newer"
+      className="max-w-xl"
+      aria-label="Interface needs a newer version of the app"
+    >
+      <RefreshCwIcon aria-hidden="true" />
+      <AlertTitle>This part of the answer needs a newer version of the app.</AlertTitle>
+      <AlertDescription className="flex flex-col gap-2">
+        <span className="[overflow-wrap:anywhere]">
+          The agent used “{shown(component)}”, which this version does not have.
+        </span>
+        <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <Button type="button" size="sm" variant="outline" onClick={onReload}>
+            Reload
+          </Button>
+          <ActorLabel actor={actor} />
+        </span>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 /**
  * An A2UI surface (ADR 0013): the operations pass `prepareSurface`, and only a surface that
  * passes is drawn, whole. It is labelled by the orchestrator's `vymalo.actor` and by nothing the
@@ -71,15 +116,18 @@ export function SurfaceRefused({
 export function SurfaceActivity({ data }: { data: unknown }) {
   const content = parseSurface(data);
   const operations = content?.a2ui_operations;
-  const prepared = useMemo(() => prepareSurface(operations), [operations]);
+  // the newest catalog the thread has seen: a component this build lacks may be one of a newer one
+  const { catalogVersion } = useThreadView();
+  const options = useMemo(() => ({ threadVersion: catalogVersion }), [catalogVersion]);
+  const prepared = useMemo(() => prepareSurface(operations, options), [operations, options]);
   const key = content?.surface ?? "";
   const messageId = useAuiState((s) => s.message.id);
   const latest = useAuiState((s) => latestSurface(s.thread.messages, key)?.data);
   const latestId = useAuiState((s) => latestSurface(s.thread.messages, key)?.messageId);
   const newer = useMemo(() => {
     const ops = parseSurface(latest)?.a2ui_operations;
-    return latest === undefined ? undefined : prepareSurface(ops);
-  }, [latest]);
+    return latest === undefined ? undefined : prepareSurface(ops, options);
+  }, [latest, options]);
   if (!content) return null;
 
   const live = latestId === undefined || latestId === messageId;
@@ -102,6 +150,8 @@ export function SurfaceActivity({ data }: { data: unknown }) {
         actor={content.actor}
       />
     );
+  } else if (prepared.kind === "newer") {
+    return <SurfaceNewer component={prepared.component} actor={content.actor} />;
   } else if (prepared.kind === "pending") {
     body = <p className="text-xs text-muted-foreground">The interface is not complete yet.</p>;
   } else {

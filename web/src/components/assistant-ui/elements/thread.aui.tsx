@@ -13,6 +13,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { BrandMark } from "@/components/brand-mark";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AnswerBubble } from "@/features/chat/components/answer-bubble";
 import { TurnCards } from "@/features/chat/components/cards/turn-cards";
 import { StepList } from "@/features/chat/components/steps/step-list";
 import { useThreadView } from "@/features/chat/components/thread-view";
@@ -21,10 +22,11 @@ import {
   ACTOR_PART,
   activityPartName,
   parseActor,
+  parseAnswers,
   parseArtifact,
   parseStatus,
 } from "@/features/chat/lib/agui/vymalo";
-import { drawsStep, isCardArtifact, isStepPart } from "@/features/chat/lib/steps";
+import { drawsStep, isAnswerPart, isCardArtifact, isStepPart } from "@/features/chat/lib/steps";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
 
@@ -260,15 +262,35 @@ export const AssistantMessage: FC = () => {
     if (drawsSomething(p)) lastDrawn = i;
     if (p.type === "text" && p.text?.trim()) lastText = i;
   });
-  if (lastDrawn < 0 && !running) return null;
+  // what the person answered through a Choices: their words, so above the agent's mark, not a step
+  const answers = content.flatMap((p, i) => {
+    const data = isAnswerPart(p) ? parseAnswers(p.data) : null;
+    return data ? [{ i, data }] : [];
+  });
+  if (lastDrawn < 0 && !running && answers.length === 0) return null;
   const lastTextValue = lastText >= 0 ? content[lastText]?.text : undefined;
   const lastIsSteps = lastDrawn >= 0 && isStepPart(content[lastDrawn] as AnyPart);
+  const answered = (
+    <>
+      {answers.map(({ i, data }) => (
+        <AnswerBubble key={i} data={data} />
+      ))}
+    </>
+  );
+  if (lastDrawn < 0 && !running) {
+    return (
+      <MessagePrimitive.Root data-slot="answer-turn" className="flex min-w-0 flex-col gap-3">
+        {answered}
+      </MessagePrimitive.Root>
+    );
+  }
 
   return (
     <MessagePrimitive.Root
       data-slot="agent-turn"
       className="flex min-w-0 motion-safe:animate-turn-in flex-col gap-3"
     >
+      {answers.length > 0 ? <div className="mb-3 flex flex-col gap-3">{answered}</div> : null}
       <TurnHeader actor={actor} at={createdAt} />
       <div className="flex min-w-0 flex-col gap-4 sm:pl-10">
         <MessagePrimitive.GroupedParts groupBy={byStep} indicator="always">
@@ -288,6 +310,8 @@ export const AssistantMessage: FC = () => {
                   />
                 );
               case "data":
+                // the person's answers are drawn above the turn
+                if (isAnswerPart(part as AnyPart)) return null;
                 return <div className="w-full empty:hidden">{part.dataRendererUI}</div>;
               case "indicator":
                 if (lastDrawn < 0) return <Starting name={actor?.name ?? agentId} />;
