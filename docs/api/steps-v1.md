@@ -203,9 +203,13 @@ steps nest under. They go through the same rules (`Input::Step`, `App::record_st
 - Extension data goes in the `metadata` map of the core structures; a `TaskStatus` has an optional `message` with
   `parts`.
 
-*Verified 2026-10-01, by this repository's tests:* the adapter reads steps from the status messages of a stream, of a
-resubscribe and of a polled task alike, and a card without the exact URI is read as plain A2A
-(`crates/a2a-mapping` unit tests, `crates/agent-a2a/tests/steps.rs`).
+*Verified 2026-10-01, by this repository's tests:* the adapter reads a step from the status message of a stream and of a
+polled task under the same keys (`crates/a2a-mapping`, unit tests); it activates the extension on a send (the header and
+`message.extensions`) and on a resubscribe, only for an agent whose live card lists the exact URI, and reads the card for
+every call (`crates/agent-a2a/tests/steps.rs`); and the real stack (the dispatcher, both stores, the in-process fake agent
+and the WireMock agent of `dev/`) logs the steps nested with their paths, keeps a chatty step to a start, four updates and
+an end, and ends a step through another replica with the path it started with (`crates/e2e/tests/steps.rs`,
+`wiremock_agent.rs`).
 
 *Unverified:* how an A2A server holds the numbers of the metadata (none are used here), and whether every agent that
 activates by header also needs `message.extensions` (both are sent, as for the other extensions).

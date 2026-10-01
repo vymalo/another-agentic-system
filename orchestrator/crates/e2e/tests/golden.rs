@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use common::*;
 use orch_app::GateLayer;
-use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId};
+use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION};
 use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript, with_ui_catalog};
 use serde_json::{Value, json};
 
@@ -40,6 +40,22 @@ fn normalise(events: Vec<Value>) -> Value {
                 e["at"] = json!("<timestamp>");
                 if e["kind"] == "agent_message" {
                     e["data"]["messageId"] = json!("<message-id>");
+                }
+                // a step's id is `<task id>/<the agent's id>`; the task id is random
+                if e["kind"] == "agent_step" {
+                    let bare = |id: &Value| {
+                        let id = id.as_str().unwrap_or_default();
+                        json!(format!(
+                            "T/{}",
+                            id.split_once('/').map_or(id, |(_, rest)| rest)
+                        ))
+                    };
+                    e["data"]["id"] = bare(&e["data"]["id"]);
+                    if let Some(path) = e["data"]["path"].as_array_mut() {
+                        for id in path {
+                            *id = bare(id);
+                        }
+                    }
                 }
                 e
             })
@@ -164,6 +180,22 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(event["kind"], "user_message");
             (id, "done")
         }
+        // Nested steps (ADR 0025): `plain` lists `steps/v1` (`world_for`). A sub-agent step with
+        // a command under it that fails, then the agent's words (`steps`); and a step that is
+        // waiting when the agent asks, ended by the answer in the next run (`steps-ask`).
+        "steps" => (
+            chat.seed_thread("plain", "steps run the tests", None).await,
+            "done",
+        ),
+        "steps-ask" => {
+            let id = chat
+                .seed_thread("plain", "steps-ask clean the build", None)
+                .await;
+            chat.wait_state(&id, "blocked").await;
+            let event = chat.seed_message(&id, "yes").await;
+            assert_eq!(event["kind"], "user_message");
+            (id, "done")
+        }
         // The UI's catalog (ADR 0023), through the AG-UI run route, which is the only door a
         // catalog has: the first run of the thread carries version 1; the next job, a message
         // on the finished thread, version 2; the third job version 1 again, from an older
@@ -201,7 +233,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 15] = [
+const SCENARIOS: [&str; 17] = [
     "echo",
     "ask",
     "cancel",
@@ -217,6 +249,8 @@ const SCENARIOS: [&str; 15] = [
     "followup",
     "followup-after-cancel",
     "catalog",
+    "steps",
+    "steps-ask",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -228,6 +262,20 @@ async fn world_for(name: &str) -> World {
                 Setup {
                     plain: FakeAgentOptions {
                         ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` lists `steps/v1`, so the orchestrator asks it for steps
+        "steps" | "steps-ask" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    plain: FakeAgentOptions {
+                        extensions: vec![STEPS_EXTENSION.to_owned()],
                         ..FakeAgentOptions::default()
                     },
                     ..Setup::default()

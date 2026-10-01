@@ -137,6 +137,22 @@ pub struct Setup {
     pub gate_rules: GateRules,
 }
 
+/// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
+/// for nested steps.
+pub async fn world_with_steps() -> World {
+    World::with(
+        Backend::Memory,
+        Setup {
+            plain: FakeAgentOptions {
+                extensions: vec![orch_core::STEPS_EXTENSION.to_owned()],
+                ..FakeAgentOptions::default()
+            },
+            ..Setup::default()
+        },
+    )
+    .await
+}
+
 impl Default for Setup {
     fn default() -> Self {
         Setup {
@@ -543,7 +559,7 @@ pub fn examples_dir() -> std::path::PathBuf {
 
 /// `{"id"?, "event"}` per frame, the thread id as a placeholder, like the projection's goldens.
 /// An activity's `at` (the time of its event, a real clock here) is `<timestamp>`, as in the
-/// events goldens.
+/// events goldens, and so is a step's `startedAt`; a step's task id (random) is `T`.
 pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
     fn placeholder(v: &mut Value, thread: &str) {
         match v {
@@ -567,6 +583,27 @@ pub fn render(responses: &[Vec<Frame>], thread: &str) -> String {
                     && let Some(at) = event["content"].get_mut("at")
                 {
                     *at = json!("<timestamp>");
+                    // a step says when it started too
+                    if let Some(started) = event["content"].get_mut("startedAt") {
+                        *started = json!("<timestamp>");
+                    }
+                    // and its id is `<task id>/<the agent's id>`, the task id being random
+                    if event["activityType"] == "vymalo.step" {
+                        let content = &mut event["content"];
+                        let bare = |id: &Value| {
+                            let id = id.as_str().unwrap_or_default();
+                            json!(format!(
+                                "T/{}",
+                                id.split_once('/').map_or(id, |(_, rest)| rest)
+                            ))
+                        };
+                        content["id"] = bare(&content["id"]);
+                        if let Some(path) = content["path"].as_array_mut() {
+                            for id in path {
+                                *id = bare(id);
+                            }
+                        }
+                    }
                 }
                 frame.insert("event".to_owned(), event);
                 Value::Object(frame)

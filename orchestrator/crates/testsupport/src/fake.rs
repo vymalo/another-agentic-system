@@ -17,6 +17,9 @@
 //! | `fail` | `working`, `failed("scripted failure")` |
 //! | `talk` | `working`, `working("Reading the repository")`, an agent `Message` "Plan: add a test", artifact `echo: <text>`, `completed` |
 //! | `messages` | `working`, two agent `Message` frames (`message one`, `message two`, ids `<task>-msg-<n>`), artifact `echo: <text>`, `completed`; when the text also contains the word `gate`, it waits for [`FakeAgent::release_gate`] after the messages |
+//! | `steps` | `working`, then the work as nested steps (`steps/v1`, ADR 0025, reported the way a card that lists the extension asks for): a sub-agent step `OpenCode` (`tool:c2`), a command `npm test` under it (`acp:c2:1`) that fails with the detail `1 failed`, the sub-agent's end, the agent `Message` "Done.", `completed("Done.")`. The fake reports them whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_steps`] says whether it was asked) |
+//! | `steps-ask` | `working`, the sub-agent step and a command `rm -rf build` under it that is `waiting`, then `input-required("Allow rm -rf build?")`; the follow-up on the same task: `working`, the command and the sub-agent end, `completed("Done.")` |
+//! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
 //! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
 //! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
 //! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
@@ -264,6 +267,8 @@ pub struct Call {
     pub resuming: bool,
     /// Values of the `A2A-Extensions` request header.
     pub extensions_header: Vec<String>,
+    /// The URIs the message lists in its own `extensions` (`Execute` only).
+    pub message_extensions: Vec<String>,
     /// `metadata[<extension URI>].release` of the message.
     pub release: Option<String>,
     /// The `Authorization` request header.
@@ -291,6 +296,16 @@ impl Call {
             .any(|h| h.split(',').any(|e| e.trim() == uri))
     }
 
+    /// The request activated `steps/v1`: its URI is in the `A2A-Extensions` header **and** in the
+    /// message's own `extensions`.
+    pub fn activates_steps(&self) -> bool {
+        self.activates(orch_core::STEPS_EXTENSION)
+            && self
+                .message_extensions
+                .iter()
+                .any(|e| e == orch_core::STEPS_EXTENSION)
+    }
+
     /// The request activated the release-channels extension.
     pub fn activates_release_channels(&self) -> bool {
         self.extensions_header
@@ -306,9 +321,13 @@ struct Shared {
     revisions: Mutex<HashMap<String, String>>,
     /// Tasks waiting for the answer to an `ask`.
     asking: Mutex<HashSet<String>>,
+    /// The tasks of `asking` that are waiting on a `steps-ask` (their answer ends its steps).
+    steps_asked: Mutex<HashSet<String>>,
     artifact_seq: AtomicU64,
     unauthorized: AtomicUsize,
     rpcs: Mutex<HashMap<String, usize>>,
+    /// The `A2A-Extensions` header values of each `SubscribeToTask` received, in order.
+    subscriptions: Mutex<Vec<Vec<String>>>,
     releases: Option<FakeReleases>,
     /// The A2UI extension URIs the card lists right now.
     ui_extensions: Mutex<Vec<String>>,
@@ -354,9 +373,11 @@ impl FakeAgent {
             cancels: Mutex::new(HashMap::new()),
             revisions: Mutex::new(HashMap::new()),
             asking: Mutex::new(HashSet::new()),
+            steps_asked: Mutex::new(HashSet::new()),
             artifact_seq: AtomicU64::new(0),
             unauthorized: AtomicUsize::new(0),
             rpcs: Mutex::new(HashMap::new()),
+            subscriptions: Mutex::new(Vec::new()),
             releases: opts.releases.clone(),
             ui_extensions: Mutex::new(opts.ui_extensions.clone()),
             extensions: Mutex::new(opts.extensions.clone()),
@@ -470,6 +491,12 @@ impl FakeAgent {
     /// `list_tasks`, `cancel_task`) was received (also when it was refused).
     pub fn rpc_count(&self, method: &str) -> usize {
         lock(&self.shared.rpcs).get(method).copied().unwrap_or(0)
+    }
+
+    /// The `A2A-Extensions` header values of every `SubscribeToTask` received (a resubscribe), in
+    /// order, one entry per call: what the orchestrator activated when it picked a task up again.
+    pub fn subscription_extensions(&self) -> Vec<Vec<String>> {
+        lock(&self.shared.subscriptions).clone()
     }
 
     /// RPC requests refused by the bearer check.
@@ -659,6 +686,8 @@ impl RequestHandler for Front {
         req: SubscribeToTaskRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
         self.seen("subscribe_to_task");
+        lock(&self.shared.subscriptions)
+            .push(params.get("a2a-extensions").cloned().unwrap_or_default());
         if !self.resubscribe {
             return Err(A2AError::unsupported_operation(
                 "this agent does not support resubscription",
@@ -741,6 +770,44 @@ impl TaskCtx {
         })
     }
 
+    /// A `working` status that reports one step (`steps/v1`): the message's text is the label (what
+    /// a client that ignores the extension shows) and its metadata, under the extension's URI, is
+    /// the step. The ids are the agent's own; the orchestrator prefixes the task id.
+    fn step(&self, step: &StepSay<'_>) -> StreamResponse {
+        let mut entry = json!({
+            "id": step.id,
+            "kind": step.kind,
+            "label": step.label,
+            "state": step.state,
+        });
+        if let Some(parent) = step.parent {
+            entry["parentId"] = json!(parent);
+        }
+        if let Some(icon) = step.icon {
+            entry["icon"] = json!(icon);
+        }
+        if let Some(detail) = step.detail {
+            entry["detail"] = json!(detail);
+        }
+        let mut m = Message::new(Role::Agent, vec![Part::text(step.label)]);
+        m.task_id = Some(self.task_id.clone());
+        m.context_id = Some(self.context_id.clone());
+        m.metadata = Some(HashMap::from([(
+            orch_core::STEPS_EXTENSION.to_owned(),
+            entry,
+        )]));
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: self.task_id.clone(),
+            context_id: self.context_id.clone(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: Some(m),
+                timestamp: None,
+            },
+            metadata: self.metadata.clone(),
+        })
+    }
+
     /// A status whose message holds `text` and an A2UI part.
     fn status_with_ui(&self, state: TaskState, text: &str, ops: Value) -> StreamResponse {
         StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
@@ -809,6 +876,17 @@ impl TaskCtx {
             metadata: self.metadata.clone(),
         })
     }
+}
+
+/// One report of a step of the `steps` scripts (see [`TaskCtx::step`]).
+struct StepSay<'a> {
+    id: &'a str,
+    parent: Option<&'a str>,
+    kind: &'a str,
+    label: &'a str,
+    state: &'a str,
+    icon: Option<&'a str>,
+    detail: Option<&'a str>,
 }
 
 fn is_a2ui(part: &Part) -> bool {
@@ -958,6 +1036,11 @@ impl Shared {
                 .unwrap_or_default(),
             resuming,
             extensions_header: header("a2a-extensions"),
+            message_extensions: ctx
+                .message
+                .as_ref()
+                .and_then(|m| m.extensions.clone())
+                .unwrap_or_default(),
             release: requested_release(ctx.message.as_ref()),
             authorization: header("authorization").first().cloned(),
             a2ui_capabilities: capabilities_of(ctx.message.as_ref()),
@@ -1152,8 +1235,11 @@ async fn script(
     }
     // The answer to an `ask` continues the `ask` script whatever it says.
     let answering = resuming && lock(&shared.asking).remove(&ctx.task_id);
+    let steps_answer = answering && lock(&shared.steps_asked).remove(&ctx.task_id);
     let reworking = !answering && text.starts_with(REWORK_PREFIX);
-    let word = if answering {
+    let word = if steps_answer {
+        "steps-answer".to_owned()
+    } else if answering {
         "ask".to_owned()
     } else if reworking {
         // The gate sent the agent back: run the script this context started with.
@@ -1331,6 +1417,123 @@ async fn script(
                 .await?;
             }
             emit(&tx, ctx.status(TaskState::Completed, None)).await?;
+        }
+        "steps" => {
+            for report in [
+                StepSay {
+                    id: "tool:c2",
+                    parent: None,
+                    kind: "subagent",
+                    label: "OpenCode",
+                    state: "running",
+                    icon: Some("agent"),
+                    detail: None,
+                },
+                StepSay {
+                    id: "acp:c2:1",
+                    parent: Some("tool:c2"),
+                    kind: "command",
+                    label: "npm test",
+                    state: "running",
+                    icon: Some("execute"),
+                    detail: None,
+                },
+                StepSay {
+                    id: "acp:c2:1",
+                    parent: Some("tool:c2"),
+                    kind: "command",
+                    label: "npm test",
+                    state: "failed",
+                    icon: Some("execute"),
+                    detail: Some("1 failed"),
+                },
+                StepSay {
+                    id: "tool:c2",
+                    parent: None,
+                    kind: "subagent",
+                    label: "OpenCode",
+                    state: "completed",
+                    icon: Some("agent"),
+                    detail: None,
+                },
+            ] {
+                emit(&tx, ctx.step(&report)).await?;
+            }
+            // named by the task's script, not by the task: the golden holds the text, not the id
+            emit(&tx, ctx.message_named("steps-said", "Done.")).await?;
+            emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
+        }
+        "steps-ask" => {
+            lock(&shared.asking).insert(ctx.task_id.clone());
+            lock(&shared.steps_asked).insert(ctx.task_id.clone());
+            for report in [
+                StepSay {
+                    id: "tool:c2",
+                    parent: None,
+                    kind: "subagent",
+                    label: "OpenCode",
+                    state: "running",
+                    icon: Some("agent"),
+                    detail: None,
+                },
+                StepSay {
+                    id: "acp:c2:1",
+                    parent: Some("tool:c2"),
+                    kind: "command",
+                    label: "rm -rf build",
+                    state: "waiting",
+                    icon: Some("execute"),
+                    detail: None,
+                },
+            ] {
+                emit(&tx, ctx.step(&report)).await?;
+            }
+            emit(
+                &tx,
+                ctx.status(TaskState::InputRequired, Some("Allow rm -rf build?")),
+            )
+            .await?;
+        }
+        "steps-answer" => {
+            for report in [
+                StepSay {
+                    id: "acp:c2:1",
+                    parent: Some("tool:c2"),
+                    kind: "command",
+                    label: "rm -rf build",
+                    state: "completed",
+                    icon: Some("execute"),
+                    detail: None,
+                },
+                StepSay {
+                    id: "tool:c2",
+                    parent: None,
+                    kind: "subagent",
+                    label: "OpenCode",
+                    state: "completed",
+                    icon: Some("agent"),
+                    detail: None,
+                },
+            ] {
+                emit(&tx, ctx.step(&report)).await?;
+            }
+            emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
+        }
+        "steps-chatty" => {
+            let step = |state: &'static str| StepSay {
+                id: "tool:c3",
+                parent: None,
+                kind: "command",
+                label: "cargo build",
+                state,
+                icon: Some("execute"),
+                detail: None,
+            };
+            for _ in 0..21 {
+                emit(&tx, ctx.step(&step("running"))).await?;
+            }
+            emit(&tx, ctx.step(&step("completed"))).await?;
+            emit(&tx, ctx.status(TaskState::Completed, Some("Built."))).await?;
         }
         "ask" if !answering => {
             lock(&shared.asking).insert(ctx.task_id.clone());

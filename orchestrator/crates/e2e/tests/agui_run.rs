@@ -444,6 +444,50 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
             )
             .await,
         ],
+        // Nested steps (ADR 0025): `plain` lists `steps/v1` (`world_for`).
+        "steps" => vec![
+            run(
+                &chat,
+                "plain",
+                &input(
+                    thread,
+                    "run-1",
+                    &[("msg-1", "steps run the tests")],
+                    json!({}),
+                ),
+            )
+            .await,
+        ],
+        "steps-ask" => {
+            let first = run(
+                &chat,
+                "plain",
+                &input(
+                    thread,
+                    "run-1",
+                    &[("msg-1", "steps-ask clean the build")],
+                    json!({}),
+                ),
+            )
+            .await;
+            let interrupt = last(&first)["outcome"]["interrupts"][0]["id"].clone();
+            let second = run(
+                &chat,
+                "plain",
+                &input(
+                    thread,
+                    "run-2",
+                    &[("msg-1", "steps-ask clean the build")],
+                    json!({"resume": [{
+                        "interruptId": interrupt,
+                        "status": "resolved",
+                        "payload": {"text": "yes"},
+                    }]}),
+                ),
+            )
+            .await;
+            vec![first, second]
+        }
         "cancel" => {
             let sse = chat
                 .agui_run(
@@ -578,6 +622,7 @@ async fn world_for(name: &str) -> World {
             )
             .await
         }
+        "steps" | "steps-ask" => world_with_steps().await,
         _ => World::start(Backend::Memory).await,
     }
 }
@@ -598,6 +643,8 @@ async fn run_responses_match_docs_api_examples() {
         "verify-verifier-red",
         "ci",
         "catalog",
+        "steps",
+        "steps-ask",
     ]
     .into_iter()
     .enumerate()

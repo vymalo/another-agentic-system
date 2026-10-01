@@ -799,6 +799,7 @@ table wins.
 | `slow` | the default script, dribbled over 8 s in 16 chunks (frames split mid-line) | `done`, after 8 s |
 | `push-flawed` | `submitted`, `working`, artifact `branch` (commit `aaaa…`, which `mock-verifier` finds fault with), `completed`; **with "this is attempt 2" or later and the heading "### the verifier" in the text** (the gate's rework prompt after the verifier's findings) the same on commit `bbbb…`, which it passes. See [Verifier](#verifier-the-verifier-agent-of-the-gate) | `done` under the verifier's gate, at attempt 2 |
 | `push-clean` | as `push-flawed`, on commit `cccc…`, which `mock-verifier` passes | `done` under the verifier's gate, at attempt 1 |
+| `steps` | `submitted`, `working`, then the work as four nested steps (`steps/v1`, [ADR 0025](../docs/decisions/0025-nested-steps-events-carry-their-source-path.md); the card lists the extension): a sub-agent `OpenCode` (`tool:c2`), a command `npm test` under it (`acp:c2:1`, parent `tool:c2`) that fails with the detail `1 failed`, the sub-agent's end, each as a `working` status whose message metadata holds the step, then `completed` ("Done."). See [`steps-v1.md`](../docs/api/steps-v1.md) | `done`, four `agent_step` events |
 | none | `submitted`, `working`, artifact "Pull request" with the URL `https://github.com/example/sandbox/pull/1`, `completed` | `done` |
 
 A **follow-up** message on an existing task (the message carries a `taskId`, which is what the
@@ -827,11 +828,13 @@ stateDiagram-v2
   Received --> Failed: keyword fail
   Received --> Asking: keyword ask
   Received --> Slow: keyword slow
+  Received --> Steps: keyword steps
   Received --> Completed: no keyword
   FollowUp --> Asking: keyword ask
   FollowUp --> Completed: any other text
   Asking --> [*]: stream ends, the task stays input-required
   Slow --> Completed: frames arrive over 8 s
+  Steps --> Completed: four step statuses, then the words
   Completed --> [*]
   Failed --> [*]
   Rejected --> [*]

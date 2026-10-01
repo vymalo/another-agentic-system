@@ -19,7 +19,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
 use orch_core::{
-    BoxError, KnownExtension, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UiDelivery, UiVersion,
+    BoxError, KnownExtension, STEPS_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
+    UiDelivery, UiVersion,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -354,14 +355,27 @@ fn catalog_for<'r>(
         .filter(|_| card_extensions.contains(&KnownExtension::UiCatalog))
 }
 
+/// The extensions of a call that makes the agent report (a send or a resubscribe) that do not
+/// depend on the message: `steps/v1` when the card read for this very call lists it, so that the
+/// agent reports its work as nested steps (ADR 0025). An agent without it is plain A2A.
+fn steps_extensions(card_extensions: &BTreeSet<KnownExtension>) -> Vec<String> {
+    card_extensions
+        .contains(&KnownExtension::Steps)
+        .then(|| STEPS_EXTENSION.to_owned())
+        .into_iter()
+        .collect()
+}
+
 /// The extensions this message uses, by URI: release channels when a release is selected, A2UI
-/// when the live card lists it, the UI catalog when the message carries one and the thread tools
-/// when it carries a grant (ADR 0008: read for this very call, never remembered).
+/// when the live card lists it, the UI catalog when the message carries one, the thread tools
+/// when it carries a grant and `steps/v1` when the card lists it (ADR 0008: read for this very
+/// call, never remembered).
 fn extensions_of(
     req: &SendRequest,
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
     thread_tools: Option<&ThreadToolsGrant>,
+    steps: &[String],
 ) -> Vec<String> {
     let mut uris = Vec::new();
     if req.release.is_some() {
@@ -379,6 +393,7 @@ fn extensions_of(
     if thread_tools.is_some() {
         uris.push(THREAD_TOOLS_EXTENSION.to_owned());
     }
+    uris.extend(steps.iter().cloned());
     uris
 }
 
@@ -387,6 +402,7 @@ fn user_message(
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
     thread_tools: Option<&ThreadToolsGrant>,
+    steps: &[String],
 ) -> Message {
     let part = match &req.content {
         SendContent::Text(text) => Part::text(text.clone()),
@@ -435,7 +451,7 @@ fn user_message(
             thread_tools_metadata(grant),
         );
     }
-    let extensions = extensions_of(req, ui, catalog, thread_tools);
+    let extensions = extensions_of(req, ui, catalog, thread_tools, steps);
     if !metadata.is_empty() {
         message.metadata = Some(metadata);
     }
@@ -478,15 +494,16 @@ impl AgentClient for A2aAgentClient {
             &known,
             jiff::Timestamp::now(),
         );
+        let steps = steps_extensions(&known);
         let client = self
             .client_for(
                 &req.endpoint,
                 &card,
-                extensions_of(&req, ui.as_ref(), catalog, thread_tools.as_ref()),
+                extensions_of(&req, ui.as_ref(), catalog, thread_tools.as_ref(), &steps),
             )
             .await?;
         let request = SendMessageRequest {
-            message: user_message(&req, ui.as_ref(), catalog, thread_tools.as_ref()),
+            message: user_message(&req, ui.as_ref(), catalog, thread_tools.as_ref(), &steps),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -501,7 +518,11 @@ impl AgentClient for A2aAgentClient {
     }
 
     async fn resubscribe(&self, task: &TaskHandle) -> Result<AgentStream, AgentError> {
-        let client = self.connect(&task.endpoint).await?;
+        // The card is read for this call, and an agent that lists `steps/v1` is asked for steps
+        // again: a stream that was cut and picked up must carry the same events the first did.
+        let card = self.fetch_card(&task.endpoint).await?;
+        let steps = steps_extensions(&extensions_from_card(&card));
+        let client = self.client_for(&task.endpoint, &card, steps).await?;
         let request = SubscribeToTaskRequest {
             id: task.task_id.clone(),
             tenant: None,

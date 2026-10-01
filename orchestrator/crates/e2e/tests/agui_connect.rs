@@ -367,6 +367,38 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             .await;
             chat.wait_state(thread, "done").await;
         }
+        // Nested steps (ADR 0025): a sub-agent with a command that fails; and a step that is
+        // waiting when the agent asks, ended in the next run.
+        "steps" => {
+            run(input(
+                thread,
+                "run-1",
+                &[("msg-1", "steps run the tests")],
+                json!({}),
+            ))
+            .await;
+            chat.wait_state(thread, "done").await;
+        }
+        "steps-ask" => {
+            let first = run(input(
+                thread,
+                "run-1",
+                &[("msg-1", "steps-ask clean the build")],
+                json!({}),
+            ))
+            .await;
+            let interrupt = first.last().unwrap().event["outcome"]["interrupts"][0]["id"].clone();
+            run(input(
+                thread,
+                "run-2",
+                &[("msg-1", "steps-ask clean the build")],
+                json!({"resume": [{
+                    "interruptId": interrupt, "status": "resolved", "payload": {"text": "yes"}
+                }]}),
+            ))
+            .await;
+            chat.wait_state(thread, "done").await;
+        }
         "cancel" => {
             let sse = chat
                 .agui_run(
@@ -492,6 +524,7 @@ async fn world_for(name: &str) -> World {
             )
             .await
         }
+        "steps" | "steps-ask" => world_with_steps().await,
         _ => World::start(Backend::Memory).await,
     }
 }
@@ -511,6 +544,8 @@ async fn connect_streams_match_docs_api_examples() {
         "verify-verifier-red",
         "ci",
         "catalog",
+        "steps",
+        "steps-ask",
     ]
     .into_iter()
     .enumerate()

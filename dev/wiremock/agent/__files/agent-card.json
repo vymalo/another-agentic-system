@@ -10,7 +10,14 @@
     }
   ],
   "capabilities": {
-    "streaming": true
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/steps/v1",
+        "description": "Reports its work as nested steps (the keyword steps shows them).",
+        "required": false
+      }
+    ]
   },
   "defaultInputModes": [
     "text/plain"

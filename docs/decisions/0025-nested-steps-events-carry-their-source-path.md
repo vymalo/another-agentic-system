@@ -90,3 +90,8 @@ The orchestrator's side is built; the contract an agent reports under is
   is open when the agent's invocation closes is closed with it, deepest first: canceled when the task ended, suspended when
   the agent asked (a suspended step subagent is not started again in the run that resumes; the step's later events only say
   its activity again). The reference client reads the goldens `steps` and `steps-ask` in CI.
+- **From agents** ([`steps-v1.md`](../api/steps-v1.md)): the A2A adapter activates `steps/v1` (the header and
+  `message.extensions`) on a send and on a resubscribe, only for an agent whose live card lists the exact URI, and reads
+  a step from the metadata of a `working` status message, whatever was activated; one that does not validate is read as a
+  plain status. The agent-side work (adam-rs reporting its tool calls and its OpenCode bridge's as steps) and the web's tree
+  are their own slices.
