@@ -754,6 +754,16 @@ orchestrator:
    continues the **same A2A task**, as a message does. `userMessage` (text the agent wrote for the
    click) is dropped; `a2uiClientDataModel` is not sent (ADR 0013).
 
+**A Choices answer.** The `Choices` component of the web's UI catalog ([`ui-catalog-v1.md`](ui-catalog-v1.md#choices-answers))
+asks several questions at once and sends **one** action for all of them: `name` is the component's `action.event.name` (default
+`answer`), `sourceComponentId` is its id, and `context` is `{"answers": [{"id": "db", "values": ["pg"]}, {"id": "auth",
+"values": [], "other": "Keycloak"}]}`, one entry per question in question order (`other` only for a question that allows it, at
+most 500 characters; the whole stays inside the 16 KiB of `context`). The orchestrator does nothing special: it is an action like
+the others, and the `vymalo.action` activity carries the same `context`. A client may show an action whose `context.answers` has
+this shape as **the person's answer** and not as a step: the web draws a right-aligned "Your answers" bubble above the agent's turn,
+with the question and the labels of the options chosen, resolved from the surface the action names (the question ids and the
+option values themselves when that surface is not in the transcript).
+
 ### Threat model
 
 The surface is **untrusted input from an agent**, and the click is untrusted input from a browser.

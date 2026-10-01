@@ -894,3 +894,60 @@ describe("the UI catalog (ADR 0023), as the mock records it", () => {
     expect(JSON.stringify(surface?.event.content)).toContain("Gizmo");
   });
 });
+
+describe("choices (mock only): a Choices of three questions, and the answer", () => {
+  it("sends the surface under the web's catalog, asks, and echoes what the answers chose", async () => {
+    const { threadId, body } = await startThread("choices please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    expect(body.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      outcome: { type: "interrupt" },
+    });
+    const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");
+    const content = surfaces.at(-1)?.event.content as {
+      a2ui_operations: Record<string, unknown>[];
+    };
+    const ops = content.a2ui_operations;
+    expect(ops[0]).toMatchObject({
+      createSurface: { surfaceId: "s1", catalogId: OWN_CATALOG.catalogId },
+    });
+    expect(JSON.stringify(ops)).toContain('"component":"Choices"');
+    await waitForState(threadId, ["blocked"]);
+
+    const answer = await postRun(base, "reviewer", {
+      threadId,
+      runId: newId(),
+      messages: [],
+      forwardedProps: {
+        a2uiAction: {
+          userAction: {
+            name: "answer",
+            surfaceId: "s1",
+            sourceComponentId: "pick",
+            context: {
+              answers: [
+                { id: "db", values: [], other: "Cockroach" },
+                { id: "auth", values: ["none"] },
+                { id: "deploy", values: ["k8s", "compose"] },
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(answer.status).toBe(200);
+    const run = await validated(await frames(answer), "answer run");
+    expect(JSON.stringify(run)).toContain(
+      "answered: ui-action answer db=other:Cockroach auth=none deploy=k8s,compose",
+    );
+    // the answer is in the log as the person's action, with its context
+    const action = run.find((f) => f.event.activityType === "vymalo.action");
+    expect(action?.event.content).toMatchObject({
+      name: "answer",
+      sourceComponentId: "pick",
+      context: { answers: [{ id: "db" }, { id: "auth" }, { id: "deploy" }] },
+    });
+    await waitForState(threadId, ["done"]);
+  });
+});

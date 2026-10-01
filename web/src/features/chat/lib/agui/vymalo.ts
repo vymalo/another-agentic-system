@@ -1,4 +1,5 @@
 import type { UiCatalogRef } from "@/features/chat/lib/a2ui/catalog";
+import { type Answer, readAnswers } from "@/features/chat/lib/a2ui/choices";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { AGENT_STATUSES, type AgentStatus, type ApiActor } from "@/lib/api/types";
 
@@ -252,8 +253,35 @@ export function parseAction(v: unknown): ActionContent | null {
     surfaceId,
     name,
     ...(sourceComponentId !== undefined ? { sourceComponentId } : {}),
+    ...(isRecord(v.context) ? { context: v.context } : {}),
     ...(actor ? { actor } : {}),
     ...readAt(v),
+  };
+}
+
+/**
+ * An action that answers a `Choices` (docs/api/ui-catalog-v1.md, "Choices answers"): a
+ * `vymalo.action` whose `context.answers` is a list of `{id, values, other?}`. It is the person's
+ * answer, shown as such, and not a step. Any other action is nothing here.
+ */
+export type AnswersContent = WithActor<{
+  surfaceId: string;
+  sourceComponentId?: string;
+  answers: Answer[];
+}>;
+
+export function parseAnswers(v: unknown): AnswersContent | null {
+  const action = parseAction(v);
+  const answers = action ? readAnswers(action.context) : null;
+  if (!action || !answers) return null;
+  return {
+    surfaceId: action.surfaceId,
+    ...(action.sourceComponentId !== undefined
+      ? { sourceComponentId: action.sourceComponentId }
+      : {}),
+    answers,
+    ...(action.actor ? { actor: action.actor } : {}),
+    ...(action.at ? { at: action.at } : {}),
   };
 }
 

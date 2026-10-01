@@ -145,6 +145,24 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: a Choices (unanswered, answered but not sent, and the person's answers) has no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "choices now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("radiogroup", { name: "Which database?" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByText("Postgres", { exact: true }).click();
+      await page.getByText("Keycloak", { exact: true }).click();
+      await page.getByLabel("Your own answer to: Where does it run?").fill("bare metal");
+      await expect(page.getByRole("button", { name: "Send answers" })).toBeEnabled();
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByRole("button", { name: "Send answers" }).click();
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator('[data-slot="answer-bubble"]')).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a thread with an A2UI surface has no serious violations (waiting, then finished)", async ({
       page,
     }) => {

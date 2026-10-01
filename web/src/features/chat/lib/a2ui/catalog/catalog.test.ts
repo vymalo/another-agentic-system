@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import catalogJson from "./catalog.json";
 import lock from "./catalog.lock.json";
@@ -19,6 +21,7 @@ import { compileCatalog, OWN_COMPILED } from "./validate";
  */
 const RELEASED: Record<number, string> = {
   1: "sha256:38baa8cc271178fd944f7ade5ae1578ba4186f444077d2bd10ed6ef9aa98fdbd",
+  2: "sha256:4ed91bcc9db52d5e2262aef2091d2b3eeccbf5bfe51519d7326fdc6641fb7856",
 };
 
 describe("the digest", () => {
@@ -163,6 +166,29 @@ describe("the catalog document", () => {
     expect(() => compileCatalog(OWN_CATALOG.catalog)).not.toThrow();
     for (const name of componentNames(OWN_CATALOG.catalog))
       expect(OWN_COMPILED.has(name)).toBe(true);
+  });
+});
+
+/** The contract page holds each component's schema as a JSON block; the build's must be those. */
+describe("the contract (docs/api/ui-catalog-v1.md)", () => {
+  const doc = readFileSync(
+    path.resolve(import.meta.dirname, "../../../../../../../docs/api/ui-catalog-v1.md"),
+    "utf8",
+  );
+  const blocks = [...doc.matchAll(/```json\n([\s\S]*?)```/g)].flatMap(([, body]) => {
+    try {
+      return [JSON.parse(body ?? "") as Record<string, unknown>];
+    } catch {
+      return []; // an example that is not a bare object of components
+    }
+  });
+
+  it("every component of this build is written in the contract, the same", () => {
+    for (const [name, schema] of Object.entries(OWN_CATALOG.catalog.components)) {
+      const written = blocks.filter((b) => name in b);
+      expect(written.length, `${name} is in one JSON block of the contract`).toBe(1);
+      expect(written[0]?.[name], name).toEqual(schema);
+    }
   });
 });
 

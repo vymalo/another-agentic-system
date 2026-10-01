@@ -4,6 +4,7 @@ import {
   type ArtifactContent,
   activityPartName,
   type CheckContent,
+  parseAnswers,
   parseArtifact,
   parseStatus,
   type ReworkContent,
@@ -34,6 +35,18 @@ const STEP_PARTS = new Set(
 type PartLike = { type: string; name?: string; data?: unknown; text?: string };
 
 /**
+ * An action that answers a Choices: the person's answer (an "Your answers" bubble above the
+ * agent's turn), not a step.
+ */
+export function isAnswerPart(part: PartLike): boolean {
+  return (
+    part.type === "data" &&
+    part.name === activityPartName(ACTIVITY.action) &&
+    parseAnswers(part.data) !== null
+  );
+}
+
+/**
  * Whether a part belongs in the step list. A failed status is not a step: it is an error in the
  * flow of the turn. The actor marker goes with the steps so that it never splits a list.
  */
@@ -41,6 +54,7 @@ export function isStepPart(part: PartLike): boolean {
   if (part.type !== "data" || !part.name) return false;
   if (part.name === ACTOR_PART) return true;
   if (!STEP_PARTS.has(part.name)) return false;
+  if (isAnswerPart(part)) return false;
   if (part.name === activityPartName(ACTIVITY.status)) {
     return parseStatus(part.data)?.status !== "failed";
   }

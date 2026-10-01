@@ -44,6 +44,23 @@ class BadCatalog extends Error {
 }
 
 /**
+ * What a Choices answer says, for the scripted agent's echo: ` db=pg auth=none deploy=k8s,compose`
+ * (the chosen values, and `other:<text>`, in question order); nothing for any other action.
+ */
+function chosen(context: Record<string, unknown>): string {
+  const answers = context.answers;
+  if (!Array.isArray(answers)) return "";
+  return answers
+    .filter(isRecord)
+    .map((a) => {
+      const values = Array.isArray(a.values) ? a.values.map(String) : [];
+      const other = typeof a.other === "string" ? [`other:${a.other}`] : [];
+      return ` ${String(a.id)}=${[...values, ...other].join(",")}`;
+    })
+    .join("");
+}
+
+/**
  * `forwardedProps["vymalo.uiCatalog"]` (docs/api/agui.md "Inbound"), checked as the orchestrator
  * checks it, less the JSON Schema compilation: the shape, the id, the version, the size and the
  * keys, and the digest recomputed. Returns what the thread records, or undefined when the run
@@ -769,7 +786,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;
-    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}`));
+    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`));
     return startViewer(res, thread, {
       fromSeq: event.seq - 1,
       end: "first-close",

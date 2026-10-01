@@ -73,6 +73,64 @@ const gizmoSurface = (): Step => ({
   },
 });
 
+/**
+ * The surface of the `choices` script: one Choices of three questions under the web's own catalog
+ * (the fake agent of the orchestrator plays the same words): a database with an "Other", a login,
+ * and where it runs (several, optional, with an "Other").
+ */
+const choicesSurface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["intro", "pick"] },
+            { id: "intro", component: "Text", text: "A few quick choices", variant: "h3" },
+            {
+              id: "pick",
+              component: "Choices",
+              questions: [
+                {
+                  id: "db",
+                  question: "Which database?",
+                  allowOther: true,
+                  options: [
+                    { value: "pg", label: "Postgres", description: "Relational, the default" },
+                    { value: "sqlite", label: "SQLite" },
+                  ],
+                },
+                {
+                  id: "auth",
+                  question: "Which login?",
+                  options: [
+                    { value: "keycloak", label: "Keycloak" },
+                    { value: "none", label: "No login" },
+                  ],
+                },
+                {
+                  id: "deploy",
+                  question: "Where does it run?",
+                  multiple: true,
+                  required: false,
+                  allowOther: true,
+                  options: [
+                    { value: "k8s", label: "Kubernetes" },
+                    { value: "compose", label: "Docker Compose" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
 const working: Step = { kind: "agent_status", data: { status: "working" }, setState: "working" };
 
 /** The gate of a verification scenario (ADR 0018): the sources that must pass and the attempts. */
@@ -422,6 +480,10 @@ const coderWork: Step[] = [
  * - `ask`: asks "Which branch?" and blocks; the follow-up resumes to done.
  * - `ui`: sends an A2UI surface (a title and a button) with the question "Pick one" and blocks; the
  *   owner's action on the surface (`forwardedProps.a2uiAction`) resumes to done, as `ui-action <name>`.
+ * - `choices`: sends a surface of the web's own catalog with a Choices of three questions (a database
+ *   and where it runs, with an "Other", a login: the last one several and optional) and asks "Three questions"; the
+ *   answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to done, as
+ *   `ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order).
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
@@ -745,6 +807,16 @@ export function scriptFor(text: string): {
           { kind: "ui_surface", data: { operations: [uiCreate] } },
           { kind: "ui_surface", data: { operations: [uiComponents] } },
           { kind: "agent_status", data: { status: "input_required", detail: "Pick one" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
+    case "choices":
+      return {
+        start: [
+          working,
+          choicesSurface(),
+          { kind: "agent_status", data: { status: "input_required", detail: "Three questions" } },
           { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
         ],
         resume: (answer) => [working, ...finish(`answered: ${answer}`)],

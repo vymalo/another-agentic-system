@@ -6,16 +6,7 @@ import {
   renderGenerativeUI,
 } from "@assistant-ui/react-generative-ui";
 import { ImageOffIcon } from "lucide-react";
-import {
-  Component,
-  createContext,
-  type ErrorInfo,
-  type ReactNode,
-  useContext,
-  useId,
-  useMemo,
-  useState,
-} from "react";
+import { Component, type ErrorInfo, type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -23,6 +14,7 @@ import { Separator } from "@/components/ui/separator";
 import { contextTooLarge, resolveFields } from "@/features/chat/lib/a2ui/context";
 import {
   CHECK_BOX,
+  CHOICES,
   MAX_CONTEXT_BYTES,
   OPEN_URL,
   TEXT_FIELD,
@@ -33,7 +25,9 @@ import type { Prepared } from "@/features/chat/lib/a2ui/prepare";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { ChoicesInput } from "./choices";
 import { useSurfaceHost } from "./surface-host";
+import { useView, ViewCtx, type ViewState } from "./view-context";
 
 /*
  * The shadcn vocabulary of A2UI surfaces, in the format `JSONGenerativeUI({ library })` takes
@@ -45,24 +39,12 @@ import { useSurfaceHost } from "./surface-host";
  *  - text is React text (no markdown, no HTML), and an image is never fetched (its alt text shows);
  *  - a control acts only in its own click handler: nothing sends on render, on an update or on a
  *    timer;
+ *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx) are lowered by the validator
+ *    and drawn here too; their strings are the agent's, drawn as text;
  *  - `openUrl` is a plain link (`target="_blank" rel="noopener noreferrer"`) to a URL checked
  *    twice; a `userMessage` goes to the message box unsent; anything else the agent could ask for
  *    is a disabled button.
  */
-
-type ViewState = {
-  surfaceId: string;
-  /** The newest copy of the surface: an older copy is read-only. */
-  live: boolean;
-  values: Readonly<Record<string, unknown>>;
-  setValue: (key: string, value: unknown) => void;
-};
-const ViewCtx = createContext<ViewState | null>(null);
-const useView = (): ViewState => {
-  const view = useContext(ViewCtx);
-  if (!view) throw new Error("a surface component outside a surface");
-  return view;
-};
 
 type Rec = Record<string, unknown>;
 const isRecord = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -308,6 +290,7 @@ export const surfaceLibrary: GenerativeUILibrary = {
   Button: entry(SurfaceButton as (props: never) => ReactNode),
   [TEXT_FIELD]: entry(TextFieldInput as (props: never) => ReactNode),
   [CHECK_BOX]: entry(CheckBoxInput as (props: never) => ReactNode),
+  [CHOICES]: entry(ChoicesInput as (props: never) => ReactNode),
 };
 
 /**

@@ -5,9 +5,11 @@ import {
 } from "@assistant-ui/react-generative-ui/a2ui";
 import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import { type CompiledCatalog, compiledOf } from "./catalog/validate";
+import { duplicateIn, readChoices } from "./choices";
 import {
   BASIC_CATALOG_IDS,
   CHECK_BOX,
+  CHOICES,
   FIELD,
   MAX_BYTES,
   MAX_COMPONENTS,
@@ -299,6 +301,26 @@ export function prepareSurface(operations: unknown, options: PrepareOptions = {}
   }
 }
 
+/** The two rules of a Choices that JSON Schema cannot say, and the name of its action. */
+function checkChoices(id: string, c: Rec) {
+  const spec = readChoices(c);
+  if (!spec)
+    return refuse("schema", `component ${clip(id)} (Choices) has no questions it can read`);
+  const duplicate = duplicateIn(spec);
+  if (duplicate) return refuse("schema", `component ${clip(id)} (Choices): ${duplicate}`);
+  const name = spec.actionName;
+  if (bytes(name) > MAX_ID_BYTES) {
+    return refuse("action", `component ${clip(id)} has an action name over ${MAX_ID_BYTES} bytes`);
+  }
+  if (name.startsWith(RESERVED_PREFIX)) {
+    return refuse(
+      "action",
+      `component ${clip(id)} names an action ${clip(name)}: the prefix ${RESERVED_PREFIX} is reserved`,
+    );
+  }
+  return undefined;
+}
+
 /** The first component whose name the catalog does not have (a non-text name counts as one). */
 function firstUnknown(components: ReadonlyMap<string, Rec>, catalog: CompiledCatalog) {
   for (const c of components.values()) {
@@ -413,6 +435,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       if (broken !== undefined) {
         return refuse("schema", `component ${clip(id)} (${type}) ${broken}`);
       }
+      if (type === "Choices") checkChoices(id, c);
     } else if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {
       return refuse(
         catalog.has(String(type)) ? "catalog" : "vocabulary",
@@ -471,6 +494,11 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
         component: c.component === "TextField" ? TEXT_FIELD : CHECK_BOX,
         fieldKey: inputs.get(id),
       };
+    } else if (mode === "own" && c.component === "Choices") {
+      // the converter keeps an unknown component's properties but not its id, which is the
+      // `sourceComponentId` of the answer's action
+      eventActions++;
+      next = { ...next, component: CHOICES, componentId: id };
     }
     if (next !== c) lowered.set(id, next);
   }
