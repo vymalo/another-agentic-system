@@ -93,3 +93,14 @@ decided on that delegation as follows; the owner may revisit them.
   answers without that agent.
 - Still open: authentication to the registry and its agents beyond a bearer token (question 11) and the default
   marker (question 23).
+- **Built (2026-10-01): MVP slice 9, sys.** The port and its testkit (`orch-ports`: `AgentRegistry`,
+  `FixedRegistry`, `CompositeRegistry`, `MemoryRegistry`, `agent_registry_conformance!`), the platform
+  reader (`orch-registry-platform`, feature `registry-platform`, set by `AGENT_REGISTRY_URL`, with
+  `AGENT_REGISTRY_TOKEN`, `AGENT_REGISTRY_AGENT_TOKEN`, `AGENT_REGISTRY_TIMEOUT_SECS` and
+  `AGENT_REGISTRY_MAX_AGE_SECS`) and `GET /api/registry`, which says which source could not be read. Two points the decision left to the build. **The default agent** (open question 23 stays
+  open) is the first agent listed, the file's agents first, so a registry never changes it. **The agents of
+  the registry run under the deployment's gate**: gate layers and the verifier belong to the agents of
+  `AGENTS_FILE`, which the startup checks know. **A delegation** to a registry agent is retried with the
+  usual backoff while the registry cannot be read, never dead-lettered for that, and dead-lettered ("agent
+  '<id>' is no longer listed") only when the registry answers without the agent; a person's request that
+  names an agent only the registry could list is a 503 while it is down, not a 404.

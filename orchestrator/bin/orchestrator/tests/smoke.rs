@@ -240,6 +240,11 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
     for (flag, var) in [
         ("--database-url", "DATABASE_URL"),
         ("--agents-file", "AGENTS_FILE"),
+        ("--registry-url", "AGENT_REGISTRY_URL"),
+        ("--registry-token", "AGENT_REGISTRY_TOKEN"),
+        ("--registry-agent-token", "AGENT_REGISTRY_AGENT_TOKEN"),
+        ("--registry-timeout-secs", "AGENT_REGISTRY_TIMEOUT_SECS"),
+        ("--registry-max-age-secs", "AGENT_REGISTRY_MAX_AGE_SECS"),
         ("--listen-addr", "LISTEN_ADDR"),
         ("--role", "ORCH_ROLE"),
         ("--surfaces", "ORCH_SURFACES"),
@@ -293,6 +298,9 @@ fn every_setting_is_read_from_its_variable() {
     let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
     for (var, bad) in [
         ("LISTEN_ADDR", "nowhere"),
+        // The registry's settings are read whether or not the build can use them.
+        ("AGENT_REGISTRY_TIMEOUT_SECS", "0"),
+        ("AGENT_REGISTRY_MAX_AGE_SECS", "3601"),
         ("ORCH_ROLE", "controlplane"),
         ("ORCH_SURFACES", "a2a"),
         ("ORCH_SURFACES", ","),
@@ -2712,4 +2720,196 @@ async fn the_github_webhook_takes_a_signed_check_run_and_acknowledges_the_rest()
         "the surface is logged: {log}"
     );
     assert!(!log.contains(SECRET), "the secret leaked into the log");
+}
+
+/// The platform's registry as a server for the smoke test: the document of `agent-registry/v1`,
+/// answered with `Content-Type: application/linkset+json`, and a 503 while `down` is set.
+mod platform {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use axum::extract::State;
+    use axum::http::{StatusCode, header};
+    use axum::response::{IntoResponse, Response};
+    use axum::routing::get;
+
+    #[derive(Clone)]
+    struct Served {
+        down: Arc<AtomicBool>,
+        items: serde_json::Value,
+    }
+
+    async fn linkset(State(served): State<Served>) -> Response {
+        if served.down.load(Ordering::SeqCst) {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        let body = serde_json::json!({"linkset": [{
+            "profile": [{"href": "https://agents.vymalo.com/registry/v1"}],
+            "item": served.items,
+        }]});
+        (
+            [
+                (header::CONTENT_TYPE, "application/linkset+json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body.to_string(),
+        )
+            .into_response()
+    }
+
+    pub struct Platform {
+        pub url: String,
+        pub down: Arc<AtomicBool>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for Platform {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    pub async fn start(items: serde_json::Value) -> Platform {
+        let down = Arc::new(AtomicBool::new(false));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/registry/v1/agents",
+            listener.local_addr().unwrap()
+        );
+        let router = axum::Router::new()
+            .route("/registry/v1/agents", get(linkset))
+            .with_state(Served {
+                down: Arc::clone(&down),
+                items,
+            });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        Platform { url, down, server }
+    }
+}
+
+/// The binary reads the platform's agent registry (ADR 0022): with no `AGENTS_FILE` at all, the
+/// agents come from the registry, live; a thread runs on one of them, with the deployment's
+/// agent token; and when the registry goes down its agents leave the list, the UI's endpoint
+/// says so, and a run on one of them is a 503 with `Retry-After`, never a 404.
+#[cfg(feature = "registry-platform")]
+#[tokio::test]
+async fn the_platforms_agents_are_served_with_no_agent_file_and_leave_when_the_registry_goes_down()
+{
+    use std::sync::atomic::Ordering;
+
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let agent = FakeAgent::spawn(FakeAgentOptions {
+        bearer: Some(TOKEN.to_owned()),
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    let platform = platform::start(serde_json::json!([{
+        "href": agent.card_url(), "type": "application/json",
+        "title": "Platform fake", "service": ["platform-fake"], "tags": ["testing"]
+    }]))
+    .await;
+
+    let scratch = Scratch::new();
+    let addr = format!("127.0.0.1:{}", free_port());
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", &database_url),
+            ("LISTEN_ADDR", &addr),
+            ("AGENT_REGISTRY_URL", &platform.url),
+            ("AGENT_REGISTRY_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ],
+    ));
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    eventually("the binary answers /readyz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    let chat = Chat::new(&base, "alice@example.com");
+    let (status, agents) = chat.get("/api/agents").await;
+    assert_eq!(status, 200);
+    assert_eq!(agents.as_array().unwrap().len(), 1, "{agents}");
+    assert_eq!(agents[0]["id"], "platform-fake");
+    assert_eq!(agents[0]["name"], "Platform fake");
+    assert_eq!(agents[0]["source"], "registry");
+    assert_eq!(agents[0]["tags"], serde_json::json!(["testing"]));
+    let (_, sources) = chat.get("/api/registry").await;
+    assert_eq!(
+        sources,
+        serde_json::json!({"sources": [
+            {"name": "static", "status": "ok"},
+            {"name": "platform", "status": "ok"}
+        ]})
+    );
+
+    // A thread runs on the registry's agent, which gets the deployment's agent token.
+    let thread = chat
+        .create_thread("platform-fake", "echo smoke", None)
+        .await;
+    chat.wait_state(&thread, "done").await;
+    let calls = agent.executions();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].authorization.as_deref(),
+        Some(format!("Bearer {TOKEN}").as_str()),
+        "AGENT_REGISTRY_AGENT_TOKEN reaches the registry's agent"
+    );
+
+    // The registry goes down: its agents leave the list, and the endpoint for the UI says so.
+    platform.down.store(true, Ordering::SeqCst);
+    let (status, agents) = chat.get("/api/agents").await;
+    assert_eq!(status, 200);
+    assert_eq!(agents, serde_json::json!([]));
+    let (_, sources) = chat.get("/api/registry").await;
+    assert_eq!(sources["sources"][1]["status"], "unavailable");
+    assert_eq!(
+        sources["sources"][1]["detail"],
+        "the registry could not be reached"
+    );
+    let (status, problem) = chat
+        .try_create_thread("platform-fake", "echo again", None)
+        .await;
+    assert_eq!(status, 503, "{problem}");
+    // ... and back.
+    platform.down.store(false, Ordering::SeqCst);
+    assert_eq!(chat.get("/api/agents").await.1[0]["id"], "platform-fake");
+
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(!log.contains(TOKEN), "a secret leaked into the log: {log}");
+}
+
+/// A registry URL in a build that cannot read one is refused at startup, never ignored.
+#[cfg(not(feature = "registry-platform"))]
+#[test]
+fn a_registry_url_in_a_build_without_the_registry_exits_78_naming_the_feature() {
+    let scratch = Scratch::new();
+    let mut run = spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            (
+                "AGENT_REGISTRY_URL",
+                "https://platform.example.com/registry/v1/agents",
+            ),
+        ],
+    );
+    let status = run.wait(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(78), "EX_CONFIG; {}", run.log());
+    assert!(run.log().contains("registry-platform"), "{}", run.log());
 }

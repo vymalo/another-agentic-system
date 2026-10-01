@@ -5,7 +5,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use orch_core::{AgentInfo, ThreadId, ThreadRecord, UserId};
 use orch_ports::Ports;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ApiState;
 use crate::extract::{ApiJson, ApiQuery};
@@ -58,6 +58,48 @@ pub(crate) async fn list_agents<P: Ports>(
     State(state): State<ApiState<P>>,
 ) -> Json<Vec<AgentInfo>> {
     Json(state.app.list_agents().await.agents)
+}
+
+/// Contract `Registry`: how each source of agents answered on the last read.
+#[derive(Serialize)]
+pub(crate) struct RegistryStatus {
+    sources: Vec<SourceView>,
+}
+
+/// Contract `RegistrySource`.
+#[derive(Serialize)]
+pub(crate) struct SourceView {
+    name: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+/// `GET /api/registry`: whether each source of agents (the deployment's own list, the platform's
+/// registry) could be read, so a client can say when the list is incomplete. The registry is read
+/// now and the answer is never cached; no agent card is read, and no URL or credential is in it.
+pub(crate) async fn registry_status<P: Ports>(State(state): State<ApiState<P>>) -> Response {
+    let sources = state
+        .app
+        .registry_sources()
+        .await
+        .into_iter()
+        .map(|source| SourceView {
+            name: source.name,
+            status: if source.available {
+                "ok"
+            } else {
+                "unavailable"
+            },
+            // A source that answered has nothing to explain.
+            detail: source.detail.filter(|_| !source.available),
+        })
+        .collect();
+    let mut response = Json(RegistryStatus { sources }).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 #[derive(Deserialize)]

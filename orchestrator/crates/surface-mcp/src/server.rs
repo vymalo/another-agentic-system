@@ -193,7 +193,19 @@ impl<P: Ports> McpServer<P> {
                 })
             })
             .collect();
-        success(&json!({ "agents": agents }))
+        // Said only when something is missing, so a client that does not know the key sees what it
+        // always saw (ADR 0022: a registry that cannot be read lists none of its agents).
+        let unavailable: Vec<&str> = list
+            .sources
+            .iter()
+            .filter(|s| !s.available)
+            .map(|s| s.name.as_str())
+            .collect();
+        if unavailable.is_empty() {
+            success(&json!({ "agents": agents }))
+        } else {
+            success(&json!({ "agents": agents, "unavailable_sources": unavailable }))
+        }
     }
 
     async fn start_job(

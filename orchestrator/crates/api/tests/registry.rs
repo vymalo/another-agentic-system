@@ -81,6 +81,23 @@ async fn start() -> Api {
 }
 
 impl Api {
+    async fn registry_status(&self) -> (Value, String) {
+        let r = self
+            .client
+            .get(format!("{}/api/registry", self.base))
+            .header("X-Auth-Request-Email", ALICE)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let cache_control = r
+            .headers()
+            .get("cache-control")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        (r.json().await.unwrap(), cache_control)
+    }
+
     async fn agents(&self) -> Value {
         let r = self
             .client
@@ -159,4 +176,46 @@ async fn the_list_is_read_live_and_a_registry_that_is_down_lists_none_of_its_age
     api.registry.set_down(false);
     api.registry.remove(&AgentId::new("helper"));
     assert_eq!(api.agents().await.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_registry_status_says_which_source_could_not_be_read_and_why() {
+    let api = start().await;
+    let (status, cache_control) = api.registry_status().await;
+    assert_eq!(cache_control, "no-store");
+    assert_eq!(
+        status,
+        json!({"sources": [
+            {"name": "static", "status": "ok"},
+            {"name": "memory", "status": "ok"}
+        ]}),
+        "an `ok` source has no detail"
+    );
+
+    api.registry.set_down(true);
+    let (status, _) = api.registry_status().await;
+    assert_eq!(
+        status,
+        json!({"sources": [
+            {"name": "static", "status": "ok"},
+            {"name": "memory", "status": "unavailable", "detail": "the registry could not be reached"}
+        ]})
+    );
+    // And the agent list still answers, with the static agent alone.
+    assert_eq!(api.agents().await.as_array().unwrap().len(), 1);
+
+    api.registry.set_down(false);
+    assert_eq!(api.registry_status().await.0["sources"][1]["status"], "ok");
+}
+
+#[tokio::test]
+async fn the_registry_status_needs_an_identity() {
+    let api = start().await;
+    let r = api
+        .client
+        .get(format!("{}/api/registry", api.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
 }

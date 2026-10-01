@@ -86,7 +86,7 @@ flowchart LR
     surfaces["surfaces mounted by ORCH_SURFACES<br/>agui (run, connect, capabilities): built, the default<br/>chat-api: removed 2026-09-30<br/>a2a: planned"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event streams"]
     disp["<b>Dispatcher</b><br/>claims outbox rows, delegates, applies replies"]
-    adapters["adapters chosen in bin/orchestrator<br/>PgStore, PgWakeup, A2aAgentClient"]
+    adapters["adapters chosen in bin/orchestrator<br/>PgStore, PgWakeup, A2aAgentClient,<br/>PlatformRegistry (AGENT_REGISTRY_URL)"]
     api --> surfaces --> app
     disp --> app
     app --> adapters
@@ -100,6 +100,9 @@ flowchart LR
     card["agent card, read live<br/>release-channels extension, optional"]
     a2a["A2A 1.0 JSON-RPC + SSE<br/>bearer token from AGENTS_FILE tokenEnv"]
   end
+  subgraph PLATFORM["The platform: optional"]
+    registry["agent registry, read live<br/>agent-registry/v1: a linkset of agent cards<br/>held in the process, never in Postgres"]
+  end
   browser -- "GET / : the UI" --> edge
   browser -- "/api/* and /agui/*, incl. SSE" --> edge
   edge -- "everything else" --> web
@@ -109,6 +112,7 @@ flowchart LR
   notify -. "wake every replica" .-> adapters
   adapters -- "SendStreamingMessage · SubscribeToTask<br/>GetTask · CancelTask" --> a2a
   adapters -- "read card: agent list, release check" --> card
+  adapters -- "GET the linkset: the agents the platform provisions<br/>Cache-Control, ETag; a failure lists none of them" --> registry
   more["replicas 2…N: the same process"] --- tables
   mcp["MCP tools · model endpoint<br/>webhooks · timers · A2A / MCP callers"]:::planned
   mcp -.-> api
@@ -129,9 +133,18 @@ flowchart LR
   both (`all`, the default). A worker serves only `/healthz` and `/readyz`. The two halves meet only in
   Postgres, so control planes and workers scale apart. A process that dies loses nothing: its
   outbox leases lapse and another replica resumes the agent's task. Any replica can serve any thread's stream, because streams read the log.
-- **Agents are A2A agent-card URLs from a static `AGENTS_FILE`**, read once at boot; the cards
-  themselves are read live and never cached. A release selection is offered only when the live card
-  advertises the release-channels extension (ADR 0008).
+- **Agents are A2A agent-card URLs**, from a static `AGENTS_FILE` read once at boot and, when
+  `AGENT_REGISTRY_URL` is set, from the platform's agent registry
+  ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md), the contract
+  `agent-registry/v1` of another-agentic-platform) through the port `AgentRegistry`. The registry is
+  read live: an agent the platform adds is in the picker without a restart, held in the process for as
+  long as the registry's `Cache-Control` allows and never in Postgres. It fails closed: a registry
+  that cannot be read lists none of its agents, the file's agents stay, and
+  `GET /api/registry` says which source is down, so the UI can. A delegation to one of its agents is
+  retried while the registry cannot answer and dead-lettered only when it answers without the agent.
+  The cards themselves are read live and never cached, and a release selection is offered only when
+  the live card advertises the release-channels extension (ADR 0008): the registry lists no
+  releases. Gate layers and the verifier are for the file's agents.
 
 ### A chat turn
 

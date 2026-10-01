@@ -36,6 +36,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `sse::keep_alive`, `sse::stream_headers` | the `: keepalive` comment and the no-buffering headers every stream shares |
 
 Routes served here: `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /api/agents`,
+`GET /api/registry` (how each source of agents answered on a read made now: `{sources: [{name, status: ok | unavailable, detail?}]}`, `Cache-Control: no-store`, no agent card read; `detail` only when `unavailable`, in words fit for a person, never a URL or a credential; the web reads it beside `GET /api/agents` to say that the list is incomplete),
 `GET /api/threads`, `GET /api/threads/{id}`, `PATCH /api/threads/{id}` (rename: a body of
 `{"title"}` and nothing else, in any state of the thread, see `App::rename_thread`; 400 for a title that cannot be
 used or another member), `GET /api/threads/{id}/export`,
@@ -115,7 +116,7 @@ HTTP. No environment variables.
   the whole job, the binding, the log), more than one page of events in order with no repeat, the agent's configured bearer token
   nowhere in the file, the owner only (another identity, an unknown id and a non-UUID are the same 404; no or a malformed identity
   is 401; `POST` is 405).
-* `tests/registry.rs`: `GET /api/agents` over a `CompositeRegistry` of the static agents and a `MemoryRegistry`: `source` (`static` / `registry`) on every agent, `tags` only when the registry kept some, the registry's agents after the static ones in the registry's order, read live (an agent added shows on the next request, one removed is gone), and none of the registry's agents while it is down. `tests/contract.rs` checks the response against the schema, `source` and `tags` included.
+* `tests/registry.rs`: `GET /api/agents` over a `CompositeRegistry` of the static agents and a `MemoryRegistry`: `source` (`static` / `registry`) on every agent, `tags` only when the registry kept some, the registry's agents after the static ones in the registry's order, read live (an agent added shows on the next request, one removed is gone), and none of the registry's agents while it is down; `GET /api/registry` says each source `ok` or `unavailable` with its detail, never cached, and needs an identity. `tests/contract.rs` checks the response against the schema, `source` and `tags` included.
 * `tests/contract.rs`: the resource API against [`docs/api/chat-api.yaml`](../../../docs/api/chat-api.yaml).
   Every operation this crate serves (health, the agent list, the thread list with its paging and
   refusals, one thread, its export, cancel) is driven over real HTTP against the in-memory stack with a

@@ -68,6 +68,27 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
+  /api/registry:
+    get:
+      operationId: getRegistry
+      summary: Whether each source of agents could be read
+      description: |
+        How each source of the agent list answered on a read made now
+        ([ADR 0022](../decisions/0022-platform-provisions-agents-system-discovers-them.md)): the
+        deployment's own list (`static`, always `ok`) and, when the deployment reads one, the
+        platform's registry (`platform`). A client reads it beside `listAgents` to say that the
+        list is incomplete: a registry that cannot be read lists none of its agents (fail closed),
+        and `listAgents` alone cannot tell "the platform has none" from "the platform cannot be
+        reached". No agent card is read, and neither a URL nor a credential is in the answer.
+        Never cached.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: One status per source, in the order the sources are read
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Registry" }
   /api/threads:
     get:
       operationId: listThreads
@@ -308,6 +329,29 @@ components:
             defaultChannel: { type: string }
             channels: { type: object, additionalProperties: { type: string } }
             revisions: { type: array, items: { type: string } }
+    Registry:
+      type: object
+      required: [sources]
+      properties:
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/RegistrySource" }
+    RegistrySource:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: "`static` (the deployment's own list) or `platform` (the platform's registry)"
+        status:
+          type: string
+          enum: [ok, unavailable]
+        detail:
+          type: string
+          description: |
+            Present only when `unavailable`: why, in words fit for a person ("the registry could not
+            be reached", "the registry refused the orchestrator's credentials", "a registry document
+            this build cannot read"). Never a URL or a credential.
     AgentTarget:
       type: object
       required: [agentId]

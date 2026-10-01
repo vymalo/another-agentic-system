@@ -187,6 +187,7 @@ pub fn router_with_surfaces<P: Ports>(
     let health = health_routes(state.clone());
     let resource = Router::new()
         .route("/api/agents", get(routes::list_agents::<P>))
+        .route("/api/registry", get(routes::registry_status::<P>))
         .route("/api/threads", get(routes::list_threads::<P>))
         .route(
             "/api/threads/{thread_id}",

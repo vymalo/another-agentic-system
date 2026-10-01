@@ -167,6 +167,7 @@ impl Contract {
 struct Resp {
     status: u16,
     content_type: String,
+    cache_control: String,
     body: Vec<u8>,
 }
 
@@ -290,9 +291,16 @@ impl Harness {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        let cache_control = resp
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         Resp {
             status,
             content_type,
+            cache_control,
             body: resp.bytes().await.unwrap().to_vec(),
         }
     }
@@ -322,9 +330,16 @@ impl Harness {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        let cache_control = resp
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         Resp {
             status,
             content_type,
+            cache_control,
             body: resp.bytes().await.unwrap().to_vec(),
         }
     }
@@ -466,8 +481,9 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 5] = [
+    let auth_ops: [(&str, reqwest::Method, String); 6] = [
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
+        ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
             "getThread",
@@ -522,6 +538,17 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         plain["cardUrl"],
         "https://plain.example.com/.well-known/agent-card.json"
     );
+
+    // getRegistry: the deployment's own list is a source that is always there, and the answer is
+    // never cached.
+    let r = h.get("/api/registry", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    c.check("getRegistry", &r);
+    assert_eq!(
+        r.json(),
+        json!({"sources": [{"name": "static", "status": "ok"}]})
+    );
+    assert_eq!(r.cache_control, "no-store");
 
     // getThread
     let id = h
