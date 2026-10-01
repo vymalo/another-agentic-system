@@ -1,0 +1,61 @@
+# ADR 0024 — MCP tools attached per conversation, from the UI
+
+- **Status:** proposed (2026-10-01)
+
+## Context
+
+The owner (2026-10-01): "I can imagine how A2A does coding, another does web research, ... And if I
+wanna do casual chat, I might use each one of them, pass in MCP tools for e.g. web search, e.g. from
+the UI directly, and let the agent somehow use it." Tools with an icon should show it as the step's
+trailing icon ([vision](../vision.md#3-tools-mcp-per-conversation-from-the-ui)).
+
+Today an agent's MCP servers are part of the agent (adam-rs `mcp.json`, compiled in), and the
+orchestrator is an MCP server for other systems ([ADR 0019](0019-mcp-server-over-streamable-http.md)),
+but nothing passes tools from the person to an agent.
+
+- MCP tool definitions carry optional `icons` (`src`, `mimeType`, `sizes`), "for display in user
+  interfaces" (*verified 2026-10-01*, MCP specification 2025-11-25,
+  <https://modelcontextprotocol.io/specification/2025-11-25/server/tools>). The same page says clients
+  must treat tool annotations as untrusted unless they come from trusted servers.
+- The platform plans "caller-supplied tools" that must pass policy before an agent uses them
+  (another-agentic-platform, architecture §35).
+
+## Decision
+
+1. **The person attaches MCP servers to a conversation** in the UI and can detach them. By default
+   they choose from servers the deployment lists (name, URL, description, icon); entering any URL is
+   off unless the deployment allows it.
+2. **The thread records it**: new event kinds `tools_attached` and `tools_detached` (ADR 0004, ADR
+   0001). Every later task of the thread sees the current set.
+3. **Agents get the set through an optional A2A extension**, detected from the card (the
+   [ADR 0008](0008-platform-integration-via-a2a-extension.md) pattern): message metadata under the
+   extension's URI lists each server (name, URL, transport, icon, an optional tool filter). An agent
+   whose card does not list the extension gets nothing, and **the UI says that this agent cannot use
+   attached tools**; nothing is dropped silently (fail closed).
+4. **An agent may refuse** a server (for instance by platform policy, §35); the refusal reaches the
+   chat as an error on the step, not a silent skip.
+5. **Icons.** A tool step shows the tool's MCP icon, or the configured server icon, as its trailing
+   icon. Only http(s) icons are used, and how they are fetched follows the image decision (open
+   question 38); until then the web shows a generic icon.
+6. **Credentials are not decided** (open question 35). The two candidates:
+   - **direct:** the agent connects to the server itself, with credentials passed by reference;
+   - **relay:** the orchestrator exposes a per-thread MCP endpoint that forwards to the attached
+     servers and holds their credentials; the agent gets that endpoint and a short-lived token for
+     the thread. The relay also lets the orchestrator see each tool call for the steps (ADR 0025).
+
+## Consequences
+
+- One agent serves several uses: a chat agent with web search attached, the same agent later with a
+  database tool.
+- The relay, if chosen, makes the orchestrator an MCP client and a proxy: more code on the critical
+  path, but credentials never travel in A2A messages.
+- Required elsewhere: the deployment's server list, a picker in the composer, the events and their
+  migration, the extension contract, the A2A adapter, and agent support (adam-rs reads the set and
+  adds the servers to its tool universe for the task).
+
+## Alternatives rejected
+
+- **Tools configured only in the agent.** That is today; it cannot follow the person from chat to
+  chat.
+- **Browser-side tools (AG-UI frontend tools).** They need a model in the browser's loop
+  ([ADR 0013](0013-a2ui-generative-ui.md) context); our agents are remote.
