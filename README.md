@@ -112,6 +112,7 @@ docker compose up -d --wait                          # postgres + mocks: nothing
 docker compose --profile app up --build              # the whole system (first build takes minutes, the coder image is 2.9 GB); add -d --wait to return when healthy
 open http://127.0.0.1:8080                           # the chat UI; the coder is preselected, "Mock coder" is one click away
 dev/e2e-all.sh                                       # every scenario against the running stack, then a summary (curl, jq, git, openssl)
+dev/greeting-e2e.sh                                  # or one of them: "hi" gets a greeting that says the coder's name, not a request for a task
 dev/coder-e2e.sh                                     # or one of them: a chat message becomes a pull request, gated on the coder's checks and CI
 dev/ci-e2e.sh                                        # a gated mock agent: a signed CI report sends it back, then ends the job
 dev/try-thread.sh "add a health endpoint"            # or drive a mock thread from the terminal (curl, jq)
@@ -132,7 +133,7 @@ dev/split-e2e.sh                                     # kills the worker that hol
 | default | `postgres`, `mock-agent`, `mock-agent-releases`, `mock-verifier` | 5432, 8081, 8082, 8083 |
 | `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
 | `split` | + `orchestrator-worker-1`, `orchestrator-worker-2` (dispatcher only; beside `app`, with `ORCHESTRATOR_ROLE=control-plane`) | none published |
-| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
+| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)). The coder reads its agent folder (name, card, instructions) from [`dev/coder/agent/`](dev/coder/agent/instructions.md), mounted at `/etc/adam/agent`: edit it and `docker compose --profile app up -d coder`, no rebuild ([Change what the coder says](dev/README.md#change-what-the-coder-says)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
 | `smee` | + `smee`, `smee-proxy` (opt-in: forwards GitHub webhooks from smee.io, a third party that sees them; needs `SMEE_URL`) | none published |
 | `local-agent` | `orchestrator-local`, `local-postgres` (opt-in: the orchestrator built with `agent-local`, hosting an `echo` agent) | 8095 |
 
@@ -170,7 +171,7 @@ dropdown: channels `production`, `staging`, `latest` and three revisions. Ports 
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
 [`dev/check-mocks.sh`](dev/check-mocks.sh) and the real orchestrator client against them, and
 [`coder-e2e.yml`](.github/workflows/coder-e2e.yml) runs the whole `app` profile, coder included, and
-checks that the mocks vendored under `dev/coder` still equal upstream.
+checks that the mocks and the agent folder vendored under `dev/coder` still equal upstream.
 
 The coder is not reachable from an orchestrator running on the host (its card advertises
 `http://coder:8080/`), so `dev/agents.local.yaml` leaves it out.

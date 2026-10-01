@@ -2,7 +2,10 @@
 #
 # Every file under dev/coder/wiremock/ and dev/coder/git-server/ is a byte-for-byte copy of the file
 # at the same path below dev/ in the repository and at the commit named here, for example
-# dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream. Never edit them here: change
-# them upstream, then update this commit, the copies and the coder image pin in compose.yaml together.
+# dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream. Every file under dev/coder/agent/
+# (the folder the coder reads at run time, mounted by compose.yaml at /etc/adam/agent) is a copy of the
+# file below bin/adam-coder/agent/ upstream. Never edit them here: change them upstream, then update this
+# commit, the copies and the coder image pin in compose.yaml together. (To try a change to the agent folder
+# before it is upstream, point CODER_AGENT_DIR at a copy: dev/README.md, "Change what the coder says".)
 repo=vymalo/another-adam-rs
-commit=31df660f571463caf7ff2e9f80c5018e4e405e52
+commit=7b2d8f95ffd9abe8af990bd79d7d690e8183c392
