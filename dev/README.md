@@ -15,7 +15,7 @@ bound to `127.0.0.1`.
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
 | Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack). |
-| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
+| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8096 the mock web search. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
 
@@ -41,6 +41,7 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 | Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
 | The mocks' journals | http://127.0.0.1:8091/__admin/requests (model), :8092 (GitHub), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
 | The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded; the branches the coder pushes are here |
+| The mock web search | http://127.0.0.1:8096/mcp (MCP, bearer `dev-search-token`), `/__journal` | An MCP server with one canned `web_search` tool; [Mock web search (MCP)](#mock-web-search-mcp) |
 
 ### Try it in the chat
 
@@ -133,7 +134,7 @@ Every script prints one `ok` or `FAIL` line per check and exits non-zero on a fa
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
 pushed it), so a second run of it is reported as `SKIP`, not as a failure (so is `folder` where there is no `docker compose`): `docker compose --profile app down -v` and
 `up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the mocks alone and needs only `docker compose up -d --wait`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and needs `docker compose --profile app up -d --wait mock-mcp-search`.
 
 ### Connect Claude Code over MCP
 
@@ -238,12 +239,13 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`. No authentication. Vendored. |
 | `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
+| `mock-mcp-search` | built from [`mock-mcp-search/`](mock-mcp-search/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies, nothing is installed) | `8096` (`MOCK_MCP_SEARCH_PORT`) | `app` | A mock web-search MCP server: streamable HTTP at `http://mock-mcp-search:8080/mcp` (bearer `dev-search-token`), one tool `web_search` with an icon, canned results from [`mock-mcp-search/results.json`](mock-mcp-search/results.json). See [Mock web search (MCP)](#mock-web-search-mcp). |
 | `smee-proxy` | `caddy:2.11.4-alpine` | not published | `smee` | A Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and nothing else (404); never the identity-injecting `edge`. See [Going live](#going-live). |
 | `smee` | built from [`smee/`](smee/Dockerfile) (`node:24-alpine3.23` by tag and digest, `smee-client` 5.0.0) | not published | `smee` | Forwards the deliveries smee.io holds for `SMEE_URL` to `smee-proxy`. Opt-in; exits with a message when `SMEE_URL` is unset. smee.io is a third party that sees the payloads. |
 | `orchestrator-local`, `local-postgres` | the orchestrator built with `--build-arg ORCH_FEATURES=agent-local` (long: it links the adam-rs runtime); `postgres:16.15-alpine` | `8095` (`ORCH_LOCAL_PORT`) | `local-agent` | A second orchestrator that hosts an `echo` agent in its own process ([`agents.local-echo.yaml`](agents.local-echo.yaml)), with a database of its own and `AUTH_DEV_USER` for the identity; no web UI. See [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
-(the Rust build takes a few minutes the first time), the git server and `mock-ci`, and pulls the coder image. `--profile smee` and
+(the Rust build takes a few minutes the first time), the git server, `mock-ci` and `mock-mcp-search`, and pulls the coder image. `--profile smee` and
 `--profile local-agent` are opt-in and belong to no other profile. [`compose.live.yaml`](../compose.live.yaml) is an override, not a profile.
 
 ```mermaid
@@ -933,6 +935,63 @@ with a 400 before it reaches the agent, so the failure is only reachable by call
   invalid JSON, so the answers are fixed sentences.
 - Only the JSON-RPC binding is offered (`supportedInterfaces` lists `JSONRPC`, version `1.0`).
 
+## Mock web search (MCP)
+
+`mock-mcp-search` is an MCP server that answers canned web-search results, so that an agent that searches the
+web, and a web search attached to a chat, run offline and give the same answer every time. It is
+[`mock-mcp-search/server.mjs`](mock-mcp-search/server.mjs), about 250 lines of Node with no dependencies, in a
+`node:24-alpine3.23` image (profile `app`, host port 8096, `MOCK_MCP_SEARCH_PORT`).
+
+| | |
+|---|---|
+| Endpoint | `POST http://mock-mcp-search:8080/mcp` from the other containers, `http://127.0.0.1:8096/mcp` from the host |
+| Protocol | MCP 2025-11-25 over streamable HTTP, without sessions: one JSON answer per POST (never an SSE stream), no `Mcp-Session-Id`; `GET` and `DELETE` answer 405, as the transport spec has a server do that offers no SSE stream. Clients of 2025-06-18 and 2025-03-26 are answered too |
+| Authentication | `Authorization: Bearer dev-search-token` (`MOCK_MCP_TOKEN` in [`compose.yaml`](../compose.yaml)); 401 without it. `/healthz` and `/__journal` take none |
+| Tool | `web_search { query: string }`, with a title, an `annotations` hint (read-only) and `icons`: one `data:image/svg+xml;base64,…` entry (a magnifying glass, under 400 bytes), which is what the UI shows on the step of a call |
+| Answer | One `text` content: `1. <title> — <url>` and the snippet on the next line, one entry per result |
+| Keywords | The first keyword of [`results.json`](mock-mcp-search/results.json) (in file order, case-insensitive) that the query contains picks the list (`world cup`: the 2014 final; `rust`); any other query gets `default`: `https://example.org/mock-search/1` and `/2` |
+| Scenarios | `[mock:empty]` in the query answers `No results.`; `[mock:error]` answers a tool execution error (`isError: true`); a missing or empty `query` is one too, not a protocol error (the spec's way to let a model correct itself); an unknown tool is `-32602` |
+| Journal | `GET /__journal` lists the calls of the tool, `{"calls": [{"tool", "arguments", "at"}]}` (a call refused with 401 is not in it; the last 1000 are kept); `DELETE /__journal` empties it |
+
+```mermaid
+sequenceDiagram
+  participant C as MCP client (an agent, or the orchestrator's relay)
+  participant S as mock-mcp-search
+  C->>S: POST /mcp initialize (Bearer token, Accept: application/json, text/event-stream)
+  S-->>C: 200 JSON: the version it speaks, the tools capability, serverInfo with an icon (no session id)
+  C->>S: POST /mcp notifications/initialized
+  S-->>C: 202, no body
+  C->>S: POST /mcp tools/list (MCP-Protocol-Version: 2025-11-25)
+  S-->>C: web_search, with its input schema and its icon
+  C->>S: POST /mcp tools/call web_search {query}
+  S-->>C: 200 JSON: the canned results (or No results., or isError)
+  Note over S: the call is appended to the journal
+```
+
+The server keeps no state apart from the journal, so there is no lifecycle to draw.
+
+**Changing the canned results.** Edit [`mock-mcp-search/results.json`](mock-mcp-search/results.json): `default` is the
+list for a query that matches no keyword, `keywords` maps a keyword (lower case, matched as a substring of the
+lower-cased query, first in file order wins) to a list; an entry is `{"title", "url", "snippet"}`, all three non-empty.
+A malformed file stops the server at startup, with the reason in `docker compose logs mock-mcp-search`. The file is
+copied into the image, so apply an edit with `docker compose --profile app up -d --build mock-mcp-search` (seconds).
+Do not put a URL under `https://example.org/mock-search/` there if a scenario counts on that prefix to tell the mock's
+sources from others.
+
+**Checking it.** `dev/check-agent-mocks.sh` plays the handshake and every behaviour above over HTTP with `curl` and `jq`
+and **empties the journal** (before and after); `node --test dev/mock-mcp-search/server.test.mjs` runs the same
+behaviours against the server in process (CI: workflow Compose, jobs `mocks` and `scripts`).
+
+**An agent uses it** through an `mcp.json` of its folder, the way adam-rs reads it:
+
+```json
+{"mcpServers": {"search": {"type": "http", "url": "http://mock-mcp-search:8080/mcp",
+  "headers": {"Authorization": "Bearer ${SEARCH_MCP_TOKEN}"}, "tools": ["web_search"]}}}
+```
+
+The agent sees the tool as `search__web_search`. The deployment of the agent needs `MCP_ALLOW_INSECURE=true` (the URL is
+`http`, and the token goes over it: development only).
+
 ## Driving it
 
 ```sh
@@ -1038,7 +1097,7 @@ ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
 
 ## Changing a mock
 
-Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
+(The mock web search is not WireMock: [Mock web search (MCP)](#mock-web-search-mcp).) Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
 lower `priority` wins) and `wiremock/<mock>/__files/*` (bodies; JSON-RPC frames use Handlebars
 templates, see WireMock's response templating). The three mocks are separate directories so each can
 diverge; a change to a shared behaviour goes into all of them. The directories are mounted read-only, so
@@ -1196,3 +1255,20 @@ The coder reads its agent folder (MVP slice 1: the pin to adam-rs `7b2d8f9`, `de
 - `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh` is clean, and `docker compose --profile '*' config -q` and the live override against `.env.example` pass; the merged live model keeps the folder mount and sets `ADAM_AGENT_DIR`.
 
 *Unverified*: the coder container on that mount (the image was not pulled where this was written), the real `dev/greeting-e2e.sh` and `dev/agent-folder-e2e.sh` against the stack (the `Coder E2E` workflow runs them; `folder` needs the Docker daemon of the machine that runs the stack), that the orchestrator's connection to the old coder container does not trip the first greeting after a restart (the script retries up to three times), the text of the answer when the first message is not a bare greeting, and how a live model follows the instructions.
+
+The mock web search (`mock-mcp-search`, `dev/check-agent-mocks.sh`):
+
+*Verified 2026-10-01*: the image built from `dev/mock-mcp-search/Dockerfile` (241 MB, user 1000, no dependencies) as the
+`mock-mcp-search` service of `compose.yaml`, healthy through its own healthcheck, with `dev/check-agent-mocks.sh` (26
+checks, all `ok`; it exits 1 with a wrong token) and `node --test dev/mock-mcp-search/server.test.mjs` (22 tests). Two
+clients independent of it, against the process and against the container: **rmcp 3.5.0**, which adam-rs's `adam-mcp`
+and the orchestrator use, through `adam-mcp`'s own `McpServers::connect` with the `mcp.json` shown above (`allow_insecure`),
+then `serve` (legacy `initialize`: it asks for `2026-07-28`, is answered `2025-11-25`, sends no session id, and never
+opens a GET stream) and the `Auto` lifecycle (it probes `server/discover` with a `2026-07-28` header, is refused with 400
+and falls back to `initialize`): tools listed with their title and icon, `tools/call` answers, `isError` kept, a wrong
+token fails the connection at `initialize`; and the **official TypeScript SDK 1.31.0** client (`StreamableHTTPClientTransport`:
+listing, calling, an `isError` result). The spec points are from the 2025-11-25 transports and tools pages
+(modelcontextprotocol.io, read 2026-10-01): the Accept rule, 202 for a notification, 405 when no SSE stream is offered,
+403 for a foreign `Origin`, 400 for an unsupported `MCP-Protocol-Version`, `icons` as `src`, `mimeType`, `sizes`, `theme`, and
+input validation errors as tool execution errors. *Unverified*: other clients (Claude Code, opencode), and the 2026-07-28
+revision of the protocol, which the mock does not speak.

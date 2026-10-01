@@ -1,0 +1,35 @@
+{
+  "default": [
+    {
+      "title": "Mock search result one",
+      "url": "https://example.org/mock-search/1",
+      "snippet": "A canned snippet. The mock returns this list for every query that matches no keyword below."
+    },
+    {
+      "title": "Mock search result two",
+      "url": "https://example.org/mock-search/2",
+      "snippet": "Another canned snippet. Edit dev/mock-mcp-search/results.json to change what the mock answers."
+    }
+  ],
+  "keywords": {
+    "world cup": [
+      {
+        "title": "2014 FIFA World Cup final (mock)",
+        "url": "https://example.org/mock-search/world-cup-2014",
+        "snippet": "Germany won the 2014 FIFA World Cup, beating Argentina 1-0 after extra time in the final in Rio de Janeiro."
+      },
+      {
+        "title": "FIFA World Cup winners (mock)",
+        "url": "https://example.org/mock-search/world-cup-winners",
+        "snippet": "A canned list of the winners of the men's tournament, from 1930 on."
+      }
+    ],
+    "rust": [
+      {
+        "title": "The Rust Programming Language (mock)",
+        "url": "https://example.org/mock-search/rust",
+        "snippet": "A canned snippet about Rust: a language for reliable and efficient software."
+      }
+    ]
+  }
+}
