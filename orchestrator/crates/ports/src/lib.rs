@@ -3,7 +3,8 @@
 //! - [`ThreadStore`]: threads, per-thread events with a strictly increasing `seq`, an outbox;
 //! - the inbox (unsolicited webhook reports and timers) is part of [`ThreadStore`]: a thread commit
 //!   must be atomic with the inbox row it applies;
-//! - [`Wakeup`]: notify/listen hints;
+//! - [`Wakeup`]: notify/listen hints, and the live text of a reply being written (never stored,
+//!   ADR 0027);
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
 //!   and [`ByTransport`], which serves one endpoint set from two clients (remote A2A, in-process);
 //! - [`Clock`], [`IdGen`]: time and identifiers.

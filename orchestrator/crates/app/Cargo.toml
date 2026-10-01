@@ -24,6 +24,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
+# Paused time, for the timing of the live relay.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

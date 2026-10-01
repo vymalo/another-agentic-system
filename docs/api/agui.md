@@ -33,6 +33,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **The UI's component catalog is accepted** (2026-10-01, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md), MVP
 > slice 3): `forwardedProps["vymalo.uiCatalog"]` on a run, the `ui_catalog` event, and `thread.uiCatalog` in the state
 > snapshot; see [The UI catalog](#the-ui-catalog).
+> **Live text** (2026-10-01, [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md), MVP slice 6): the words of a reply
+> that is still being written are frames that are not in the log and are never resume points, merged by message id with
+> the final message; the run response and the connect stream carry them (the overlay is `orch-agui-projection`'s, the
+> pieces come from the dispatcher that holds the agent's stream, over the wakeup port), see [Live text](#live-text).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -100,13 +104,13 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `threadId` | The thread UUID. Minted by the consumer on its first run (a UUID; 400 otherwise). The resource API lists threads by id, newest first, so a consumer should mint a time-ordered **UUIDv7**, as the web does: a random v4 would shuffle the list. A new thread with a **version 8** UUID is refused (400): that version is reserved for the job ids `start_job` derives from a `client_request_id` ([ADR 0019](../decisions/0019-mcp-server-over-streamable-http.md)), so a chat client cannot take the id a later MCP job would get. A thread that already exists is not affected. |
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
-| agent `messageId` | `agent_message.data.messageId` (the A2A message id); `st-<seq>` for the words of an `agent_status` (`completed`, `input_required`, `auth_required`). |
+| agent `messageId` | `agent_message.data.messageId` (the A2A message id, or the id of the stream that wrote it, which is also the `messageId` of its [live text](#live-text)); `st-<seq>` for the words of an `agent_status` (`completed`, `input_required`, `auth_required`). |
 | activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity. |
 | step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
 | `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
-| SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message is open. |
+| SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message **of the log** is open. A live message is not in the log and does not hold it back; a live frame never has one. |
 
 ## Outbound: log event → AG-UI
 
@@ -121,7 +125,8 @@ gets everything.
 | `user_message{text}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor"}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
 | `user_message` | Run open (a follow-up mid-run) | The user triad inside the current run |
 | `agent_message{messageId, text, final:true}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId}` → `CONTENT` → `END` |
-| `agent_message{final:false}` (cumulative partial) | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). |
+| `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
+| `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
 | `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
 | `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The [status words](#the-agents-words), then the status activity **without** `detail`, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
 | `thread_state{blocked}` | After input or auth required | `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[{id:"int-n", reason:"input_required" \| "auth_required", message:detail, subagentRunId, responseSchema}]}}` |
@@ -166,7 +171,8 @@ gets everything.
   error. A suspended invocation reappears under its own `subagentRunId` when the thread
   continues; after an error the next one is new. What the invocation has open ends before it
   does: see [Nested steps](#nested-steps).
-- **Partial agent messages** (question 14, closed 2026-09-29). A text that does not extend what was said
+- **Partial agent messages** (question 14, closed 2026-09-29; **legacy**: the orchestrator no longer logs
+  partials, see [Live text](#live-text), but it still reads a log that has them). A text that does not extend what was said
   closes the open message and starts a new one, `messageId` `<id>~<seq>`. The same final message
   twice is said once.
 - **Why activities, not `CUSTOM`.** Activity messages are part of the message sequence and of
@@ -196,6 +202,48 @@ projection emits, **before** the status activity and inside the open invocation:
 - `failed` is not an answer: its status activity keeps `detail`, and the run ends in `RUN_ERROR`
   as before. `working` keeps its `detail` too: it is a step, not an answer.
 - The interrupt of an `input_required`/`auth_required` still carries the words as its `message`.
+
+### Live text
+
+The words of a reply that is still being written ([ADR 0027](../decisions/0027-live-text-relayed-not-stored.md),
+fed by the A2A extension `text-stream/v1`) are shown **while they are written**, and are in the log only once, final.
+They travel as frames that are **not a fold of the log**: they are made per connection, beside the projection, by a
+pure overlay (`LiveOverlay` of `orch-agui-projection`), and they never change what the projection says. A client that
+ignores them still reads every reply, whole, when the log says it.
+
+| What happened | Frames |
+|---|---|
+| A piece of reply `S` that starts at offset 0, with the invocation open | `TEXT_MESSAGE_START{messageId:S, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.live":{}}}` → `TEXT_MESSAGE_CONTENT{delta, subagentRunId, metadata:{"vymalo.live":{offset}}}` |
+| A later piece of `S` | `TEXT_MESSAGE_CONTENT{delta: the part beyond what was said, metadata:{"vymalo.live":{offset}}}`. An overlap is trimmed, a piece that repeats what was said says nothing, and a gap is ignored until the text is sent again from offset 0 |
+| The log's final `agent_message` with the id `S` (`S` open) | `TEXT_MESSAGE_CONTENT{delta: the rest, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}` with the event's `id:`. A final that does not start with what was said replaces it: `offset: 0`, the whole text |
+| The stream gives up, another stream opens, or the invocation or the run closes first | `TEXT_MESSAGE_END{metadata:{"vymalo.live":{abandoned:true}}}`, before the frame that closes the invocation or the run. A reply the log says later under that id is said under `<id>~final` (an id is never reused on a stream) |
+
+- **`offset`** is the number of UTF-16 code units already said before the delta (the unit of a browser's strings), so
+  a client keeps `text.slice(0, offset) + delta` and an offset that is not the length of what it holds (a final that
+  replaces it) is the only way text goes backwards. The pieces themselves are placed by **UTF-8 byte** offset on the
+  way in, the unit the agent counts in.
+- **Never a resume point.** A live frame has no `id:`, and one that is open does not hold back the `id:` of a log
+  event: it is not in the log. A client that reconnects with its last `id:` is told the text so far again by the
+  sender's refresh (within a second), or the final message, and the new connection starts from nothing: **a cut
+  connection forgets its live messages**.
+- **A message opens at its beginning.** Only a piece that starts at offset 0 and says something opens one, so a
+  client that joins mid-stream sees nothing until the text comes round again (at most a second), and the final
+  message is its fallback. A piece that arrives before the agent's invocation is open is held (at most 32, dropped
+  when the run closes) and said after the event that opens it; one for a reply the log already said, or one that
+  closed a moment ago, is late and is dropped. A reply stops growing on the screen at 256 KiB and the final message
+  says the rest.
+- **One stream at a time.** A second reply starting while one is open ends the first as given up: the agent's words
+  before a tool call are persisted with their own id, so the first is normally in the log by then.
+- **What a surface does.** It gives the overlay live text only once the log has been folded up to what it held when the
+  connection opened (`App::thread_feed` yields no piece before that; `Connect::caught_up`), and, on a run response,
+  only once the run is being written: a piece during the replay would be attributed to an old invocation. Both the run
+  response and the connect stream carry live text; the pieces of other threads are never yielded.
+  The golden is [`examples/stream.feed.json`](examples/stream.feed.json) (a log and live pieces in the order a
+  connection heard them, which no real run can pin down, so it is written by hand) and its stream
+  [`agui/stream.agui.json`](examples/agui/stream.agui.json): `START(msg-3, vymalo.live)`, three `CONTENT`
+  (`offset` 0, 3, 10), then for the log's message `CONTENT ""` `{offset:18, final:true}` and `END{final:true}` with
+  `id: 3`; the status that repeats the words says no more. The reference client reads it as one message, `msg-3`,
+  with the whole text.
 
 ### When: `at`
 
@@ -657,7 +705,8 @@ client connected, has been replayed and no run is open: right after the replay o
 open run otherwise.
 
 **Resume points.** `id: <seq>` is written only on the last frame of a log event and only when no
-text message is open, so resuming never splits a message. Reconnecting with that id yields exactly
+text message of the log is open, so resuming never splits a message ([live text](#live-text) is not in the log
+and never has an `id:`, nor holds one back). Reconnecting with that id yields exactly
 the remaining frames (property tests in `orch-agui-projection`; the replica-kill test in `orch-e2e`).
 A client that lost frames after its last `id:` gets them again in the replay: it dedupes by seq, or
 discards what it read after its last `id:`.
@@ -717,7 +766,7 @@ configured.
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1` and `…/mentions/v1` (ADR 0008; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1` and `…/text-stream/v1` (ADR 0008; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
@@ -1084,6 +1133,7 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
+| Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |
 | `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
 | `STATE_SNAPSHOT.snapshot` | `thread.uiCatalog` | Only when the thread has recorded a UI catalog (ADR 0023): `{catalogId, version, digest}` of the current one, the highest version recorded. A screen compares it with its own to decide whether to send its catalog with the next run; a thread without one has no member, as before |
 | `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{number?, attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `number` is the job of the thread (present from job 2); `attempt` is the one the agent is on in **this job**, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |

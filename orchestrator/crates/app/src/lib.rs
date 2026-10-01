@@ -12,7 +12,7 @@ mod inbox;
 
 pub use app::{
     AgentDescription, App, AppConfig, ApplyOutcome, Creation, DEFAULT_MAX_EXPORT_BYTES,
-    DEFAULT_MAX_EXPORT_EVENTS, Inbound, NewThread, Received, ThreadExport,
+    DEFAULT_MAX_EXPORT_EVENTS, FeedItem, Inbound, NewThread, Received, ThreadExport,
 };
 pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schemas};
 pub use directory::{AgentDirectory, AgentEntry};

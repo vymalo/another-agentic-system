@@ -26,6 +26,7 @@ Cargo feature of the binary ([`orchestrator`](../../bin/orchestrator/README.md),
 |---|---|
 | `routes::<P>(Arc<App<P>>, sse_keepalive: Duration) -> orch_api::SurfaceRoutes` | the run route and the connect stream (streaming routes, no request timeout) and the capabilities document (an ordinary route), ready for `orch_api::router_with_surfaces` |
 | `MAX_BODY_BYTES` | 8 MiB: what a request may weigh |
+| Live text | both streams read `App::thread_feed` (the log with the live text of the thread's replies mixed in, [ADR 0027](../../../docs/decisions/0027-live-text-relayed-not-stored.md)) and pass what they hear through the connection's own `LiveOverlay` ([`orch-agui-projection`](../agui-projection/README.md)): the log's frames go through `overlay.logged` (the final message of a live message continues it), a piece through `overlay.live`, **only when the stream is caught up** (the connect stream: `Connect::caught_up`, the log folded up to the head at connect time; the run response: the run is being written). Live frames carry no `id:`; a new connection starts with an empty overlay and is told the text so far by the sender's refresh |
 
 Mounted by `orch-api`, the route sits behind the identity layer like every route.
 
@@ -94,6 +95,7 @@ event the route emits is validated against the vendored AG-UI schema
 (`orch_agui_proto::testkit::assert_json_conforms`). The dev-dependencies `jsonschema` and `serde_norway`
 serve `tests/contract.rs`.
 
+- `tests/live.rs`: live text on both streams, over the scripted agent's `stream*` scripts: the requester's response shows the reply growing and then completes it (one live message, the log's message with its resume point), a viewer sees live frames with no `id:` and the final with one and reads the reply once, a second viewer that joins while the agent is quiet reads it once by the refresh and the final, a connection opened after the reply is in the log sees the plain message with no live frame, and a reply given up ends marked on the screen and is not in the log.
 - `src/stream.rs` (unit): where a response starts (a run that opened meanwhile is opened again for the
   reader; frames before the start are folded and not written; an attach) and where it ends.
 - `tests/runs.rs`: a new thread streamed and ended, ask and `resume`, an answer without `resume`, a

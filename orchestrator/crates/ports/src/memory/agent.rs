@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, KnownExtension, Releases, StepKind, StepReport,
-    StepState, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, KnownExtension, LiveChunk, LiveEnd, Releases, StepKind,
+    StepReport, StepState, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -15,6 +15,29 @@ use crate::{
 
 /// The URL the scripted agent reports as a produced artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
+
+/// The pieces the `stream` scripts send of their reply, in order; [`stream_text`] joins them.
+pub const STREAM_PIECES: [&str; 6] = [
+    "Streaming ",
+    "a reply, ",
+    "word by word, ",
+    "so the chat ",
+    "can show it ",
+    "grow.",
+];
+
+/// The whole text of the reply the `stream` scripts send.
+pub fn stream_text() -> String {
+    STREAM_PIECES.concat()
+}
+
+/// The id of the stream the `stream` scripts send the reply as, for the task `task`.
+pub fn stream_id(task: &str) -> String {
+    format!("{task}-reply")
+}
+
+/// How long the `stream` scripts wait between two pieces.
+const STREAM_PAUSE: std::time::Duration = std::time::Duration::from_millis(40);
 
 /// A recorded call on the scripted agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +169,11 @@ struct Shared {
 /// - `steps`: `working`, a sub-agent step `OpenCode` with two commands under it (the second fails),
 ///   the sub-agent's end, an artifact `echo`, `completed` (the steps are reported the way an agent
 ///   that speaks `steps/v1` does; ids are prefixed with the task id);
+/// - `stream`: `working`, then a reply as pieces of live text ([`STREAM_PIECES`], a short pause
+///   between them, the last one `Last`; `text-stream/v1`, ADR 0027), then the whole text stated
+///   under the stream's id ([`stream_id`]) as an agent message, then `completed` with it as its
+///   words; `stream-gate` stops after three pieces until [`ScriptedAgent::release_gate`];
+///   `stream-abandon` gives up after two pieces and `failed("the model failed")`s;
 /// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
@@ -327,10 +355,74 @@ impl Shared {
                 revision: rec.revision.clone(),
                 key,
                 update,
+                live: None,
             };
             rec.log.push(env);
         }
         self.changed.notify_waiters();
+    }
+
+    /// A piece of a reply being written: an envelope with no update, never applied. Like a real
+    /// agent's chunk it is on the stream and not in a poll.
+    fn push_live(&self, task: &str, chunk: LiveChunk) {
+        let key = IdemKey::Turn(format!("{task}:live:{}:{}", chunk.message_id, chunk.offset));
+        {
+            let mut st = self.state();
+            let Some(rec) = st.tasks.get_mut(task) else {
+                return;
+            };
+            rec.log.push(AgentEnvelope {
+                task_id: task.to_owned(),
+                context_id: rec.context_id.clone(),
+                task_state: None,
+                revision: rec.revision.clone(),
+                key,
+                update: None,
+                live: Some(chunk),
+            });
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// The pieces `range` of [`STREAM_PIECES`] of the stream `id`, a pause after each.
+    async fn stream_pieces(&self, task: &str, id: &str, range: std::ops::Range<usize>) {
+        let before: usize = STREAM_PIECES[..range.start].iter().map(|p| p.len()).sum();
+        let mut offset = before as u64;
+        for n in range {
+            let piece = STREAM_PIECES[n];
+            self.push_live(
+                task,
+                LiveChunk {
+                    message_id: id.to_owned(),
+                    offset,
+                    text: piece.to_owned(),
+                    end: if n + 1 == STREAM_PIECES.len() {
+                        LiveEnd::Last
+                    } else {
+                        LiveEnd::Open
+                    },
+                },
+            );
+            offset += piece.len() as u64;
+            tokio::time::sleep(STREAM_PAUSE).await;
+        }
+    }
+
+    /// The whole text of the reply, as the agent states it: a message under the stream's id, then
+    /// the turn ends with it.
+    fn state_reply(&self, task: &str, id: &str) {
+        self.push(
+            task,
+            None,
+            None,
+            IdemKey::Task(format!("a2a:msg:{id}")),
+            Some(AgentUpdate::Message {
+                message_id: id.to_owned(),
+                text: stream_text(),
+                is_final: true,
+            }),
+        );
+        self.push_status(task, AgentTaskState::Completed, Some(&stream_text()));
     }
 
     fn push_status(&self, task: &str, state: AgentTaskState, detail: Option<&str>) {
@@ -609,6 +701,37 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_artifact(&task, "echo", format!("echo: {text}"));
             shared.push_status(&task, Completed, None);
         }
+        "stream" => {
+            let id = stream_id(&task);
+            shared
+                .stream_pieces(&task, &id, 0..STREAM_PIECES.len())
+                .await;
+            shared.state_reply(&task, &id);
+        }
+        "stream-gate" => {
+            let id = stream_id(&task);
+            shared.stream_pieces(&task, &id, 0..3).await;
+            shared.gate.notified().await;
+            shared
+                .stream_pieces(&task, &id, 3..STREAM_PIECES.len())
+                .await;
+            shared.state_reply(&task, &id);
+        }
+        "stream-abandon" => {
+            let id = stream_id(&task);
+            shared.stream_pieces(&task, &id, 0..2).await;
+            let end: usize = STREAM_PIECES[..2].iter().map(|p| p.len()).sum();
+            shared.push_live(
+                &task,
+                LiveChunk {
+                    message_id: id,
+                    offset: end as u64,
+                    text: String::new(),
+                    end: LiveEnd::Abandoned,
+                },
+            );
+            shared.push_status(&task, Failed, Some("the model failed"));
+        }
         "failed" => shared.push_status(&task, Failed, Some("scripted failure")),
         "gate" | "drop" => {
             shared.gate.notified().await;
@@ -763,6 +886,7 @@ impl AgentClient for ScriptedAgent {
                     state: rec.state,
                     detail: rec.detail.clone(),
                 }),
+                live: None,
             }
         };
         let live = self.shared.follow(task.task_id.clone(), from, None);
@@ -863,6 +987,7 @@ fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {
             state: rec.state,
             detail: rec.detail.clone(),
         }),
+        live: None,
     });
     Ok(TaskSnapshot {
         task_id: task.to_owned(),

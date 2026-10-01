@@ -26,6 +26,11 @@
 //! reports its work as nested steps; the response is read as data whether or not it was activated
 //! (`orch_a2a_mapping`).
 //!
+//! Streamed text (`text-stream/v1`, ADR 0027) is activated the same way, on the same two calls,
+//! when the live card lists it ([`text_stream_from_card`]): the agent then sends its reply as chunks
+//! as it writes it, which the adapter maps to live pieces that are relayed and never applied
+//! (`orch_a2a_mapping`), and states the whole text once.
+//!
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
@@ -41,6 +46,6 @@ pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
-pub use extensions::{extensions_from_card, steps_from_card};
+pub use extensions::{extensions_from_card, steps_from_card, text_stream_from_card};
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;

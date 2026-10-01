@@ -27,6 +27,26 @@
 //! | status message `M` of task `T`, step `S` | `Task("a2a:T:step:S:M")` |
 //! | status message without an id | `Turn("T:step:S:<step state>")` |
 //!
+//! Streamed text (ADR 0027, `text-stream/v1`, `docs/api/text-stream-v1.md`). An artifact update
+//! whose artifact carries a valid entry under the extension's URI in its metadata (`{offset}`, a
+//! UTF-8 byte offset, with a stream id of 1 to 128 printable bytes as `artifactId` and exactly one
+//! text part) is a **chunk of a reply being written**: one envelope with `live: Some(LiveChunk)`
+//! and no update, never assembled, never an artifact, never in the log. An entry that does not
+//! validate leaves the update what it was, a plain A2A artifact chunk (fail closed). A `Task`
+//! never holds one (chunks are transient), so a snapshot skips an artifact that carries the entry.
+//! The agent states the whole text once, in a status message whose metadata names the stream
+//! (`{streamId}`) and whose text is the whole reply: that maps to one
+//! `AgentUpdate::Message { message_id: <stream id>, text, is_final: true }` first, then the status
+//! (a `working` one without a `detail`: its words are the message; a turn-ending one keeps its
+//! `detail`, which the interrupt and the verifier read, and the projection says words equal to the
+//! last final message only once). A status that is a step is a step and its text is its label: the
+//! marker is ignored.
+//!
+//! | Streamed text in | key |
+//! |---|---|
+//! | chunk of stream `S`, byte offset `o`, of task `T` | `Turn("T:live:S:o")` (never applied) |
+//! | the whole text of stream `S` | `Task("a2a:msg:S")` |
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -68,8 +88,8 @@ use a2a::{
     TaskStatus,
 };
 use orch_core::{
-    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, STEPS_EXTENSION, StepKind, StepReport, StepState,
-    check_operations,
+    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, STEPS_EXTENSION, StepKind,
+    StepReport, StepState, TEXT_STREAM_EXTENSION, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -190,6 +210,7 @@ fn ui_envelopes(
                 Ok(operations) => AgentUpdate::Ui { operations },
                 Err(reason) => AgentUpdate::UiRejected { reason },
             }),
+            live: None,
         })
         .collect()
 }
@@ -241,9 +262,131 @@ fn status_envelopes(
             report,
             revision,
         )),
-        None => out.push(status_envelope(task_id, context_id, status, revision)),
+        None => {
+            // The whole text of a stream, stated once (`text-stream/v1`): it is a message of
+            // the reply's own id, and the status that carries it says no more than that.
+            let streamed = message.and_then(stream_of);
+            if let Some((stream_id, text)) = &streamed {
+                out.push(AgentEnvelope {
+                    task_id: task_id.to_owned(),
+                    context_id: context_id.to_owned(),
+                    task_state: None,
+                    revision: revision.clone(),
+                    key: IdemKey::Task(format!("a2a:msg:{stream_id}")),
+                    update: Some(AgentUpdate::Message {
+                        message_id: stream_id.clone(),
+                        text: text.clone(),
+                        is_final: true,
+                    }),
+                    live: None,
+                });
+            }
+            let mut envelope = status_envelope(task_id, context_id, status, revision);
+            if streamed.is_some()
+                && state == Some(AgentTaskState::Working)
+                && let Some(AgentUpdate::Status { detail, .. }) = &mut envelope.update
+            {
+                *detail = None;
+            }
+            out.push(envelope);
+        }
     }
     out
+}
+
+/// The longest stream id an agent may send, in bytes (`docs/api/text-stream-v1.md`).
+const MAX_STREAM_ID_BYTES: usize = 128;
+
+/// A stream id: 1 to 128 bytes with no control character.
+fn valid_stream_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_STREAM_ID_BYTES && !id.chars().any(char::is_control)
+}
+
+/// The stream a status message states the whole text of, and that text: a valid `streamId` under
+/// the URI and a text that is not blank. `None` for any other message.
+fn stream_of(message: &Message) -> Option<(String, String)> {
+    let entry = message
+        .metadata
+        .as_ref()?
+        .get(TEXT_STREAM_EXTENSION)?
+        .as_object()?;
+    let id = entry
+        .get("streamId")?
+        .as_str()
+        .filter(|s| valid_stream_id(s))?;
+    Some((id.to_owned(), text_of(&message.parts)?))
+}
+
+/// A JSON number that is a non-negative whole number. A2A's `metadata` is a protobuf `Struct`
+/// (*verified 2026-10-01*: `10` arrives as `10.0` through the A2A SDK), so a whole number may be
+/// written either way; one above 2^53 (not exactly representable) or with a fraction is not.
+fn whole_number(value: &Value) -> Option<u64> {
+    const MAX_EXACT: f64 = 9_007_199_254_740_991.0;
+    if let Some(n) = value.as_u64() {
+        return Some(n);
+    }
+    let f = value.as_f64()?;
+    (f >= 0.0 && f.fract() == 0.0 && f <= MAX_EXACT).then_some(f as u64)
+}
+
+/// The entry an artifact carries under `text-stream/v1`, if it carries one.
+fn text_stream_entry(artifact: &a2a::Artifact) -> Option<&serde_json::Map<String, Value>> {
+    artifact
+        .metadata
+        .as_ref()?
+        .get(TEXT_STREAM_EXTENSION)?
+        .as_object()
+}
+
+/// The chunk an artifact update is, under `text-stream/v1`; `None` for an update that is not
+/// one, or whose entry does not validate (it is then a plain artifact chunk).
+fn live_chunk_of(update: &TaskArtifactUpdateEvent) -> Option<LiveChunk> {
+    let artifact = &update.artifact;
+    let entry = text_stream_entry(artifact)?;
+    let offset = whole_number(entry.get("offset")?)?;
+    if !valid_stream_id(&artifact.artifact_id) {
+        return None;
+    }
+    let [part] = artifact.parts.as_slice() else {
+        return None;
+    };
+    let PartContent::Text(text) = &part.content else {
+        return None;
+    };
+    if claims_a2ui(part) {
+        return None;
+    }
+    // Giving up is said on the last chunk; said without `lastChunk` it ends the stream too.
+    let abandoned = entry.get("abandoned").and_then(Value::as_bool) == Some(true);
+    let end = if abandoned {
+        LiveEnd::Abandoned
+    } else if update.last_chunk == Some(true) {
+        LiveEnd::Last
+    } else {
+        LiveEnd::Open
+    };
+    Some(LiveChunk {
+        message_id: artifact.artifact_id.clone(),
+        offset,
+        text: text.clone(),
+        end,
+    })
+}
+
+/// The envelope of a chunk: no update, only the piece, which is relayed and never applied.
+fn live_envelope(update: &TaskArtifactUpdateEvent, chunk: LiveChunk) -> AgentEnvelope {
+    AgentEnvelope {
+        task_id: update.task_id.clone(),
+        context_id: update.context_id.clone(),
+        task_state: None,
+        revision: revision_of(&update.metadata),
+        key: IdemKey::Turn(format!(
+            "{}:live:{}:{}",
+            update.task_id, chunk.message_id, chunk.offset
+        )),
+        update: None,
+        live: Some(chunk),
+    }
 }
 
 /// The longest step id an agent may send, in bytes (`docs/api/steps-v1.md`); the task id and a
@@ -329,6 +472,7 @@ fn step_envelope(
         revision,
         key,
         update: Some(AgentUpdate::Step(report)),
+        live: None,
     }
 }
 
@@ -359,6 +503,7 @@ fn status_envelope(
         revision,
         key,
         update,
+        live: None,
     }
 }
 
@@ -416,6 +561,7 @@ fn artifact_envelopes(
             revision: revision.clone(),
             key: IdemKey::Task(format!("a2a:{task_id}:artifact:{artifact_id}")),
             update: Some(artifact_update(artifact_id, name, &split.rest)),
+            live: None,
         });
     }
     out.extend(ui_envelopes(
@@ -434,7 +580,14 @@ fn task_envelopes(task: &Task) -> Vec<AgentEnvelope> {
     let revision = revision_of(&task.metadata);
     let mut order: Vec<&str> = Vec::new();
     let mut merged: HashMap<&str, (Option<&str>, Vec<Part>)> = HashMap::new();
-    for a in task.artifacts.iter().flatten() {
+    // A chunk of streamed text is transient: a task that holds one (an agent that kept it) is not
+    // showing an artifact.
+    for a in task
+        .artifacts
+        .iter()
+        .flatten()
+        .filter(|a| text_stream_entry(a).is_none())
+    {
         let entry = merged.entry(a.artifact_id.as_str()).or_insert_with(|| {
             order.push(a.artifact_id.as_str());
             (a.name.as_deref(), Vec::new())
@@ -524,6 +677,19 @@ impl StreamMapper {
     pub fn map(&mut self, item: StreamResponse) -> Vec<Result<AgentEnvelope, AgentError>> {
         if let StreamResponse::ArtifactUpdate(u) = item {
             self.learn(&u.task_id, &u.context_id);
+            if let Some(chunk) = live_chunk_of(&u) {
+                // Not an artifact, and an event like any other for one that was held back.
+                let mut out: Vec<Result<AgentEnvelope, AgentError>> = self
+                    .pending
+                    .take()
+                    .map(Pending::into_envelopes)
+                    .into_iter()
+                    .flatten()
+                    .map(Ok)
+                    .collect();
+                out.push(Ok(live_envelope(&u, chunk)));
+                return out;
+            }
             return self.artifact_update(u).into_iter().map(Ok).collect();
         }
         // Any other event ends a held-back artifact: nothing more is appended to it.
@@ -642,6 +808,7 @@ impl StreamMapper {
                     text,
                     is_final: true,
                 }),
+                live: None,
             }));
         }
         out.extend(
@@ -1577,5 +1744,359 @@ mod tests {
         let env = only(StreamMapper::default().map(event));
         assert_eq!(env.revision.as_deref(), Some("rev-9"));
         assert!(matches!(env.update, Some(AgentUpdate::Step(_))));
+    }
+    // ---- streamed text (ADR 0027) --------------------------------------------------------
+
+    /// A chunk of stream `id`: one text part, the entry under the URI.
+    fn chunk(id: &str, offset: u64, text: &str, append: bool, last: bool) -> StreamResponse {
+        let mut a = art(id, Some("reply"), vec![Part::text(text)]);
+        a.extensions = Some(vec![TEXT_STREAM_EXTENSION.to_owned()]);
+        a.metadata = Some(HashMap::from([(
+            TEXT_STREAM_EXTENSION.to_owned(),
+            json!({"offset": offset}),
+        )]));
+        artifact_update(a, Some(append), Some(last))
+    }
+
+    /// A status message that states the whole text of stream `id`.
+    fn marked(message_id: &str, stream: Value, text: &str) -> Message {
+        let mut m = msg(message_id, Role::Agent, text);
+        m.metadata = Some(HashMap::from([(
+            TEXT_STREAM_EXTENSION.to_owned(),
+            json!({"streamId": stream}),
+        )]));
+        m
+    }
+
+    fn live_of(env: &AgentEnvelope) -> &LiveChunk {
+        env.live
+            .as_ref()
+            .unwrap_or_else(|| panic!("not a live chunk: {env:?}"))
+    }
+
+    #[test]
+    fn a_chunk_is_a_live_piece_that_is_never_applied_and_never_an_artifact() {
+        let mut mapper = StreamMapper::default();
+        let first = only(mapper.map(chunk("S", 0, "Fib", false, false)));
+        assert_eq!(
+            live_of(&first),
+            &LiveChunk {
+                message_id: "S".into(),
+                offset: 0,
+                text: "Fib".into(),
+                end: LiveEnd::Open
+            }
+        );
+        assert_eq!(first.update, None, "nothing of it is applied");
+        assert_eq!(first.task_state, None);
+        assert_eq!((first.task_id.as_str(), first.context_id.as_str()), (T, C));
+        assert_eq!(first.key, IdemKey::Turn("task-1:live:S:0".into()));
+        // The next chunk is its own piece at once, not held back to be assembled.
+        let second = only(mapper.map(chunk("S", 3, "onacci ", true, false)));
+        assert_eq!(live_of(&second).offset, 3);
+        assert_eq!(second.key, IdemKey::Turn("task-1:live:S:3".into()));
+        let last = only(mapper.map(chunk("S", 10, "in Rust.", true, true)));
+        assert_eq!(live_of(&last).end, LiveEnd::Last);
+        // Nothing is left to assemble: the next event brings no artifact.
+        let status = only(mapper.map(status_update(TaskState::Completed, None)));
+        assert!(matches!(status.update, Some(AgentUpdate::Status { .. })));
+    }
+
+    #[test]
+    fn a_whole_offset_may_be_written_as_a_float_as_the_a2a_sdk_does() {
+        // metadata is a protobuf Struct: `10` comes back as `10.0`
+        for (written, want) in [(json!(10), 10), (json!(10.0), 10), (json!(0.0), 0)] {
+            let mut event = chunk("S", 0, "x", true, false);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.metadata = Some(HashMap::from([(
+                    TEXT_STREAM_EXTENSION.to_owned(),
+                    json!({"offset": written}),
+                )]));
+            }
+            let env = only(StreamMapper::default().map(event));
+            assert_eq!(live_of(&env).offset, want);
+        }
+    }
+
+    #[test]
+    fn the_end_of_a_chunk_is_the_last_one_or_the_agent_giving_up() {
+        let end_of = |event: StreamResponse| live_of(&only(StreamMapper::default().map(event))).end;
+        assert_eq!(end_of(chunk("S", 0, "a", false, false)), LiveEnd::Open);
+        assert_eq!(end_of(chunk("S", 0, "a", false, true)), LiveEnd::Last);
+        let abandoned = |last: bool| {
+            let mut event = chunk("S", 5, "", true, last);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.metadata = Some(HashMap::from([(
+                    TEXT_STREAM_EXTENSION.to_owned(),
+                    json!({"offset": 5, "abandoned": true}),
+                )]));
+            }
+            event
+        };
+        assert_eq!(end_of(abandoned(true)), LiveEnd::Abandoned);
+        // Said without `lastChunk`, giving up ends the stream too.
+        assert_eq!(end_of(abandoned(false)), LiveEnd::Abandoned);
+    }
+
+    #[test]
+    fn offsets_are_utf8_bytes_as_sent_and_the_text_is_kept_whole() {
+        let env =
+            only(StreamMapper::default().map(chunk("S", 6, "\u{4e2d}x\u{1f980}", true, false)));
+        let live = live_of(&env);
+        assert_eq!(live.offset, 6);
+        assert_eq!(live.text, "\u{4e2d}x\u{1f980}");
+        // The last chunk may say nothing.
+        let empty = only(StreamMapper::default().map(chunk("S", 8, "", true, true)));
+        assert_eq!(live_of(&empty).text, "");
+    }
+
+    #[test]
+    fn a_live_chunk_ends_an_artifact_that_was_held_back() {
+        let mut mapper = StreamMapper::default();
+        // A plain chunked artifact is held until the next event shows nothing more follows.
+        assert!(
+            mapper
+                .map(artifact_update(
+                    art("a-1", Some("log"), vec![Part::text("x")]),
+                    None,
+                    Some(false)
+                ))
+                .is_empty()
+        );
+        let out = ok(mapper.map(chunk("S", 0, "Fib", false, false)));
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0].key, IdemKey::Task("a2a:task-1:artifact:a-1".into()));
+        assert!(matches!(out[0].update, Some(AgentUpdate::Artifact { .. })));
+        assert!(out[1].live.is_some());
+    }
+
+    #[test]
+    fn an_entry_that_does_not_validate_is_the_plain_artifact_chunk_it_was() {
+        let entry_of = |entry: Value| {
+            let mut event = chunk("S", 0, "Fib", false, false);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.metadata =
+                    Some(HashMap::from([(TEXT_STREAM_EXTENSION.to_owned(), entry)]));
+            }
+            event
+        };
+        let with_id = |id: &str| {
+            let mut event = chunk("S", 0, "Fib", false, false);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.artifact_id = id.to_owned();
+            }
+            event
+        };
+        let with_parts = |parts: Vec<Part>| {
+            let mut event = chunk("S", 0, "Fib", false, false);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.parts = parts;
+            }
+            event
+        };
+        let broken = [
+            ("no offset", entry_of(json!({}))),
+            ("a negative offset", entry_of(json!({"offset": -1}))),
+            ("a fractional offset", entry_of(json!({"offset": 1.5}))),
+            ("a negative whole offset", entry_of(json!({"offset": -2.0}))),
+            (
+                "an offset too large to be exact",
+                entry_of(json!({"offset": 1.0e19})),
+            ),
+            ("a text offset", entry_of(json!({"offset": "0"}))),
+            ("an entry that is not an object", entry_of(json!(7))),
+            ("an empty stream id", with_id("")),
+            ("a stream id over 128 bytes", with_id(&"s".repeat(129))),
+            ("a control character in the id", with_id("a\nb")),
+            ("no part", with_parts(vec![])),
+            (
+                "two parts",
+                with_parts(vec![Part::text("a"), Part::text("b")]),
+            ),
+            ("a data part", with_parts(vec![Part::data(json!({"a": 1}))])),
+            (
+                "a url part",
+                with_parts(vec![Part::url("https://example.com/x")]),
+            ),
+        ];
+        for (what, event) in broken {
+            let mut mapper = StreamMapper::default();
+            // Held back like any artifact chunk, then emitted once by the event that follows.
+            assert!(
+                mapper.map(event).is_empty(),
+                "{what}: a chunk was made of it"
+            );
+            let out = ok(mapper.map(status_update(TaskState::Working, None)));
+            assert!(
+                matches!(out[0].update, Some(AgentUpdate::Artifact { .. }))
+                    && out[0].live.is_none(),
+                "{what}: {out:?}"
+            );
+        }
+        // The stream id of exactly 128 bytes passes.
+        let env = only(StreamMapper::default().map(with_id(&"s".repeat(128))));
+        assert_eq!(live_of(&env).message_id.len(), 128);
+    }
+
+    #[test]
+    fn only_the_exact_uri_is_a_chunk() {
+        for near in [
+            "https://agents.vymalo.com/a2a/extensions/text-stream/v2",
+            "https://agents.vymalo.com/a2a/extensions/text-stream/v1/",
+            "https://agents.vymalo.com/a2a/extensions/steps/v1",
+        ] {
+            let mut event = chunk("S", 0, "Fib", false, false);
+            if let StreamResponse::ArtifactUpdate(u) = &mut event {
+                u.artifact.metadata =
+                    Some(HashMap::from([(near.to_owned(), json!({"offset": 0}))]));
+            }
+            assert!(StreamMapper::default().map(event).is_empty(), "{near}");
+        }
+    }
+
+    #[test]
+    fn a_task_never_shows_a_chunk_as_an_artifact() {
+        let kept = match chunk("S", 0, "Fib", false, true) {
+            StreamResponse::ArtifactUpdate(u) => u.artifact,
+            other => panic!("{other:?}"),
+        };
+        let plain = art("a-1", Some("log"), vec![Part::text("x")]);
+        let snap = snapshot(&task(TaskState::Working, vec![kept, plain], None)).unwrap();
+        let artifacts: Vec<&IdemKey> = snap
+            .envelopes
+            .iter()
+            .filter(|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
+            .map(|e| &e.key)
+            .collect();
+        assert_eq!(
+            artifacts,
+            [&IdemKey::Task("a2a:task-1:artifact:a-1".into())]
+        );
+    }
+
+    #[test]
+    fn a_marked_working_status_is_the_message_then_a_status_without_words() {
+        let m = marked("sm-1", json!("S"), "Let me look at the repository.");
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(envs.len(), 2, "{envs:?}");
+        assert_eq!(envs[0].key, IdemKey::Task("a2a:msg:S".into()));
+        assert_eq!(envs[0].task_state, None);
+        assert_eq!(
+            envs[0].update,
+            Some(AgentUpdate::Message {
+                message_id: "S".into(),
+                text: "Let me look at the repository.".into(),
+                is_final: true
+            })
+        );
+        assert_eq!(
+            envs[1].key,
+            IdemKey::Task("a2a:task-1:status-msg:sm-1".into())
+        );
+        assert_eq!(
+            envs[1].update,
+            Some(AgentUpdate::Status {
+                state: AgentTaskState::Working,
+                detail: None
+            }),
+            "its words are the message"
+        );
+        assert!(envs.iter().all(|e| e.live.is_none()));
+    }
+
+    #[test]
+    fn a_marked_status_that_ends_the_turn_keeps_its_words() {
+        for (state, want) in [
+            (TaskState::Completed, AgentTaskState::Completed),
+            (TaskState::InputRequired, AgentTaskState::InputRequired),
+            (TaskState::AuthRequired, AgentTaskState::AuthRequired),
+        ] {
+            let m = marked("sm-2", json!("S"), "Fibonacci in Rust.");
+            let envs = ok(StreamMapper::default().map(status_update(state, Some(m))));
+            assert_eq!(envs.len(), 2);
+            assert!(matches!(
+                &envs[0].update,
+                Some(AgentUpdate::Message { message_id, .. }) if message_id == "S"
+            ));
+            assert_eq!(
+                envs[1].update,
+                Some(AgentUpdate::Status {
+                    state: want,
+                    detail: Some("Fibonacci in Rust.".into())
+                }),
+                "the interrupt and the verifier's summary read it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_marker_that_does_not_validate_is_a_plain_status() {
+        let long = "s".repeat(129);
+        let cases = [
+            ("no id", json!(null)),
+            ("an empty id", json!("")),
+            ("an id that is a number", json!(7)),
+            ("an id over 128 bytes", json!(long)),
+            ("a control character", json!("a\tb")),
+        ];
+        for (what, stream) in cases {
+            let m = marked("sm-3", stream, "Fibonacci");
+            let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+            assert_eq!(envs.len(), 1, "{what}: {envs:?}");
+            assert_eq!(
+                envs[0].update,
+                Some(AgentUpdate::Status {
+                    state: AgentTaskState::Working,
+                    detail: Some("Fibonacci".into())
+                }),
+                "{what}"
+            );
+        }
+        // No text to state, and a marker on another URI.
+        let blank = marked("sm-3", json!("S"), "   ");
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(blank))));
+        assert_eq!(envs.len(), 1);
+        let mut near = marked("sm-3", json!("S"), "Fib");
+        near.metadata = Some(HashMap::from([(
+            "https://agents.vymalo.com/a2a/extensions/text-stream/v2".to_owned(),
+            json!({"streamId": "S"}),
+        )]));
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(near))));
+        assert_eq!(envs.len(), 1);
+    }
+
+    #[test]
+    fn a_step_is_a_step_and_its_text_is_a_label_not_a_stream() {
+        let mut m = step_message("sm-1", step_entry());
+        m.metadata
+            .as_mut()
+            .unwrap()
+            .insert(TEXT_STREAM_EXTENSION.to_owned(), json!({"streamId": "S"}));
+        let envs = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(envs.len(), 1, "{envs:?}");
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Step(_))));
+    }
+
+    #[test]
+    fn a_poll_and_the_stream_say_the_whole_text_under_the_same_keys() {
+        let m = marked("sm-2", json!("S"), "Fibonacci in Rust.");
+        let live: Vec<AgentEnvelope> =
+            ok(StreamMapper::default().map(status_update(TaskState::Completed, Some(m.clone()))));
+        let snap = snapshot(&task(TaskState::Completed, vec![], Some(m))).unwrap();
+        let tail = &snap.envelopes[snap.envelopes.len() - 2..];
+        for (a, b) in live.iter().zip(tail) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.update, b.update);
+        }
+        assert_eq!(live[0].key, IdemKey::Task("a2a:msg:S".into()));
+    }
+
+    #[test]
+    fn the_same_stream_stated_twice_is_one_key() {
+        let a = marked("sm-1", json!("S"), "Fibonacci in Rust.");
+        let b = marked("sm-2", json!("S"), "Fibonacci in Rust.");
+        let first = ok(StreamMapper::default().map(status_update(TaskState::Working, Some(a))));
+        let second = ok(StreamMapper::default().map(status_update(TaskState::Completed, Some(b))));
+        assert_eq!(first[0].key, second[0].key, "the dispatcher stores it once");
     }
 }

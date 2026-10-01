@@ -21,7 +21,13 @@
 #   * the delegate row was claimed twice (attempts = 2) and ended `delivered`;
 #   * the thread's frames (GET /agui/threads/{id}/connect?mode=run) hold exactly one RUN_FINISHED
 #     (success) and no RUN_ERROR: the task finished once, not once per worker;
-#   * the control plane's /metrics then reports no due and no leased row.
+#   * the control plane's /metrics then reports no due and no leased row;
+#   * live text across the processes (ADR 0027): a thread with the keyword `stream` (a reply in six
+#     chunks over about 6 s, dev/README.md) is held by the surviving worker, and a viewer connected
+#     to the control plane reads the reply grow: at least three live deltas of one message before the
+#     log's message completes it, the deltas joined by offset are the final text, the message starts
+#     once, a viewer that reconnects mid-stream with `Last-Event-ID` reads it once too, and the
+#     export holds one `agent_message` with that id and none that is not final.
 # The killed worker is started again when the script ends, whatever the result.
 #
 # Environment (defaults match compose.yaml on one machine):
@@ -230,5 +236,101 @@ if [ "$due" = 0 ] && [ "$leased" = 0 ]; then
 else
   bad "the control plane's /metrics reports due='${due:-?}' leased='${leased:-?}', want 0 and 0"
 fi
+
+# --- live text across the processes -------------------------------------------------------------------------------------
+# The keyword `stream` makes the mock agent send a reply as six chunks over about 6 s. The worker that
+# holds the agent's stream publishes each piece on Postgres (`NOTIFY orch_live`, ADR 0027); the control
+# plane, another process, shows the words growing on a viewer's connect stream. The mock's text is ASCII,
+# so the offsets (UTF-16 code units on the wire) are also jq's string positions.
+stream_thread=$(uuid)
+echo "thread $stream_thread (live text)"
+input=$(jq -n --arg thread "$stream_thread" --arg run "$(uuid)" --arg msg "$(uuid)" '{
+  threadId: $thread, runId: $run, state: {}, tools: [], context: [],
+  messages: [{id: $msg, role: "user", content: "stream a reply across the processes"}], forwardedProps: {}}')
+curl -sS -N --max-time $(( timeout * 2 )) -o "$tmp/stream-run.sse" -X POST \
+  "$base/agui/agents/$agent_id" -H "X-Auth-Request-Email: $email" \
+  -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" \
+  >/dev/null 2>"$tmp/err" &
+run_pid=$!
+# The viewer connects as soon as the thread exists, which is before the reply starts (the mock dribbles it).
+deadline=$(( $(date +%s) + 30 ))
+until api GET "/api/threads/$stream_thread" >/dev/null 2>&1; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
+  sleep 0.2
+done
+# A second viewer reconnects mid-stream with the id of a log event it holds (2: the agent's `working`),
+# about 2 s into the reply: it is told the text so far by the sender's refresh, then the log's message.
+(
+  sleep 2
+  curl -sS --max-time "$timeout" -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+    -H 'Last-Event-ID: 2' "$base/agui/threads/$stream_thread/connect?mode=run" 2>/dev/null |
+    sed -n 's/^data: *//p' | jq -s '.' > "$tmp/late.json" 2>/dev/null || echo '[]' > "$tmp/late.json"
+) &
+late_pid=$!
+live=$tmp/live.json
+curl -sS --max-time "$timeout" -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  "$base/agui/threads/$stream_thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$live" 2>/dev/null ||
+  echo '[]' > "$live"
+reply=$(jq -r '[.[] | select(.type == "TEXT_MESSAGE_START" and .metadata["vymalo.live"] != null) | .messageId] | first // empty' "$live")
+if [ -n "$reply" ]; then
+  ok "the control plane's connect stream opened a live message ($reply)"
+else
+  bad "no live message on the control plane's connect stream ($(jq -c '[.[] | .type]' "$live" 2>/dev/null | head -c 300))"
+fi
+grown=$(jq -r --arg id "$reply" '[.[] | select(.type == "TEXT_MESSAGE_CONTENT" and .messageId == $id and .metadata["vymalo.live"] != null and (.metadata["vymalo.live"].final | not))] | length' "$live" 2>/dev/null || echo 0)
+if [ "${grown:-0}" -ge 3 ]; then
+  ok "the reply grew: $grown live deltas before the log's message completed it"
+else
+  bad "$grown live deltas for the reply, want at least 3"
+fi
+read_text=$(jq -r --arg id "$reply" 'reduce (.[] | select(.type == "TEXT_MESSAGE_CONTENT" and .messageId == $id)) as $c ("";
+  (if $c.metadata["vymalo.live"].offset != null then .[0:$c.metadata["vymalo.live"].offset] else . end) + $c.delta)' "$live" 2>/dev/null || true)
+want_text='Streaming a reply, word by word, so the chat can show it grow.'
+if [ "$read_text" = "$want_text" ]; then
+  ok "the deltas joined by offset are the final text"
+else
+  bad "the viewer reads '$read_text', want '$want_text'"
+fi
+starts=$(jq -r --arg id "$reply" '[.[] | select(.type == "TEXT_MESSAGE_START" and .messageId == $id)] | length' "$live" 2>/dev/null || echo '?')
+ends=$(jq -r --arg id "$reply" '[.[] | select(.type == "TEXT_MESSAGE_END" and .messageId == $id)] | length' "$live" 2>/dev/null || echo '?')
+if [ "$starts" = 1 ] && [ "$ends" = 1 ]; then
+  ok "the reply starts once and ends once on the connect stream"
+else
+  bad "the reply starts $starts time(s) and ends $ends time(s), want once each"
+fi
+wait "$late_pid" 2>/dev/null || true
+late_starts=$(jq -r --arg id "$reply" '[.[] | select(.type == "TEXT_MESSAGE_START" and .messageId == $id)] | length' "$tmp/late.json" 2>/dev/null || echo '?')
+late_text=$(jq -r --arg id "$reply" 'reduce (.[] | select(.type == "TEXT_MESSAGE_CONTENT" and .messageId == $id)) as $c ("";
+  (if $c.metadata["vymalo.live"].offset != null then .[0:$c.metadata["vymalo.live"].offset] else . end) + $c.delta)' "$tmp/late.json" 2>/dev/null || true)
+if [ "$late_starts" = 1 ] && [ "$late_text" = "$want_text" ]; then
+  ok "a viewer that reconnected mid-stream (Last-Event-ID: 2) reads the reply once, whole"
+else
+  bad "the reconnected viewer starts the reply $late_starts time(s) and reads '$late_text', want once and '$want_text'"
+fi
+# The export is the log: one final message, no partial.
+export_json=$tmp/stream-export.json
+if api GET "/api/threads/$stream_thread/export" > "$export_json" 2>"$tmp/err"; then
+  finals=$(jq -r --arg id "$reply" '[.events[] | select(.kind == "agent_message" and .data.messageId == $id and .data.final == true)] | length' "$export_json")
+  partials=$(jq -r '[.events[] | select(.kind == "agent_message" and .data.final == false)] | length' "$export_json")
+  if [ "$finals" = 1 ] && [ "$partials" = 0 ]; then
+    ok "the export holds one agent_message with the reply's id and none that is not final"
+  else
+    bad "the export holds $finals final agent_message(s) with that id and $partials partial one(s), want 1 and 0"
+  fi
+else
+  bad "cannot export the thread: $(head -c 300 "$tmp/err")"
+fi
+replay=$tmp/replay.json
+curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  "$base/agui/threads/$stream_thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$replay" 2>/dev/null ||
+  echo '[]' > "$replay"
+replay_live=$(jq -r '[.[] | select(.metadata["vymalo.live"] != null)] | length' "$replay" 2>/dev/null || echo '?')
+replay_starts=$(jq -r --arg id "$reply" '[.[] | select(.type == "TEXT_MESSAGE_START" and .messageId == $id)] | length' "$replay" 2>/dev/null || echo '?')
+if [ "$replay_live" = 0 ] && [ "$replay_starts" = 1 ]; then
+  ok "a connection opened after the reply is in the log reads the plain message, with no live frame"
+else
+  bad "the replay holds $replay_live live frame(s) and starts the reply $replay_starts time(s), want 0 and 1"
+fi
+if [ -n "$run_pid" ]; then kill "$run_pid" 2>/dev/null || true; run_pid=; fi
 
 finish

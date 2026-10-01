@@ -322,7 +322,7 @@ async fn attempt<P: Ports>(
         return Ok(Some(Feed {
             projector: Projector::new(meta_of(&record)),
             backlog: events.into(),
-            live: app.event_stream(user, thread, last_seq).await?,
+            live: app.thread_feed(user, thread, last_seq).await?,
             start: Start::Run(input.run_id.to_string()),
             held,
         }));
@@ -370,7 +370,7 @@ async fn attempt<P: Ports>(
                     Ok(Some(Feed {
                         projector: Projector::new(meta_of(&record)),
                         backlog: std::collections::VecDeque::new(),
-                        live: app.event_stream(user, thread, 0).await?,
+                        live: app.thread_feed(user, thread, 0).await?,
                         start: Start::Seq(events.first().map_or(1, |e| e.seq)),
                         held,
                     }))
@@ -402,7 +402,7 @@ async fn attempt<P: Ports>(
             Ok(Some(Feed {
                 projector,
                 backlog: std::collections::VecDeque::new(),
-                live: app.event_stream(user, thread, last_seq).await?,
+                live: app.thread_feed(user, thread, last_seq).await?,
                 start: Start::Seq(start),
                 held,
             }))

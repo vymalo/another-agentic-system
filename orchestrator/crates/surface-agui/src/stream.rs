@@ -13,8 +13,9 @@ use std::convert::Infallible;
 use axum::response::sse::Event as SseEvent;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use orch_agui_projection::{Audience, Frame, Projector};
+use orch_agui_projection::{Audience, Frame, LiveOverlay, Projector};
 use orch_agui_proto as agui;
+use orch_app::FeedItem;
 use orch_core::Event;
 
 /// Where the stream of a run begins.
@@ -34,8 +35,9 @@ pub(crate) struct Feed {
     pub(crate) projector: Projector,
     /// Events to fold before the live ones, oldest first (an attach folds the whole log).
     pub(crate) backlog: VecDeque<Event>,
-    /// Events after the backlog: the rest of the log, then new ones.
-    pub(crate) live: BoxStream<'static, Event>,
+    /// Events after the backlog: the rest of the log, then new ones, with the live text of the
+    /// thread's replies mixed in (ADR 0027).
+    pub(crate) live: BoxStream<'static, FeedItem>,
     /// Where to begin writing.
     pub(crate) start: Start,
     /// The message ids of the request: the requester holds them already.
@@ -44,6 +46,8 @@ pub(crate) struct Feed {
 
 struct St {
     feed: Feed,
+    /// The words of a reply still being written, beside the projection (never a resume point).
+    overlay: LiveOverlay,
     writing: bool,
     done: bool,
     pending: VecDeque<Frame>,
@@ -78,6 +82,13 @@ impl St {
             }
             (_, true) => frames.extend(self.feed.projector.apply(event, audience)),
         }
+        // What the response says is the log's frames with the live text merged in; before the
+        // run starts nothing is said, so the overlay has nothing to keep.
+        let frames = if self.writing {
+            self.overlay.logged(&self.feed.projector, frames)
+        } else {
+            frames
+        };
         for frame in frames {
             let last = is_terminal(&frame.event);
             self.pending.push_back(frame);
@@ -124,6 +135,7 @@ pub(crate) fn sse(frame: &Frame) -> SseEvent {
 pub(crate) fn frames(feed: Feed) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send {
     let st = St {
         feed,
+        overlay: LiveOverlay::new(),
         writing: false,
         done: false,
         pending: VecDeque::new(),
@@ -136,11 +148,19 @@ pub(crate) fn frames(feed: Feed) -> impl Stream<Item = Result<SseEvent, Infallib
             if st.done {
                 return None;
             }
-            let event = match st.feed.backlog.pop_front() {
-                Some(event) => event,
-                None => st.feed.live.next().await?,
-            };
-            st.absorb(&event);
+            if let Some(event) = st.feed.backlog.pop_front() {
+                st.absorb(&event);
+                continue;
+            }
+            match st.feed.live.next().await? {
+                FeedItem::Event(event) => st.absorb(&event),
+                // Only once the run is being written, and the backlog is folded (it is, here).
+                FeedItem::Live(piece) if st.writing => {
+                    let said = st.overlay.live(&st.feed.projector, &piece);
+                    st.pending.extend(said);
+                }
+                FeedItem::Live(_) => {}
+            }
         }
     })
 }

@@ -20,6 +20,10 @@
 //! | `steps` | `working`, then the work as nested steps (`steps/v1`, ADR 0025, reported the way a card that lists the extension asks for): a sub-agent step `OpenCode` (`tool:c2`), a command `npm test` under it (`acp:c2:1`) that fails with the detail `1 failed`, the sub-agent's end, the agent `Message` "Done.", `completed("Done.")`. The fake reports them whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_steps`] says whether it was asked) |
 //! | `steps-ask` | `working`, the sub-agent step and a command `rm -rf build` under it that is `waiting`, then `input-required("Allow rm -rf build?")`; the follow-up on the same task: `working`, the command and the sub-agent end, `completed("Done.")` |
 //! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
+//! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
+//! | `stream-abandon` | `working`, two chunks of a reply, then the last chunk marked `abandoned` (the generation failed), then `failed("the model failed")`: nothing states the text |
+//! | `stream-words` | `working`, words before a tool call streamed and stated on a `working` status (stream `<task>-words`), a tool step, then the answer streamed (`<task>-reply`) and stated on `completed`: two messages for the log |
+//! | `stream-marker` | `working`, then `completed` whose message states the whole text under `<task>-reply` and no chunk was ever sent: an agent that cannot stream, or a client that missed the chunks |
 //! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
 //! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
 //! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
@@ -98,6 +102,30 @@ pub const EXTENSION_URI: &str = "https://agents.vymalo.com/a2a/extensions/releas
 
 /// The media type of an A2UI part (kept literal: test support must not depend on the adapter).
 pub const A2UI_MEDIA_TYPE: &str = "application/a2ui+json";
+
+/// The pieces the `stream` script sends, in order; their concatenation is [`stream_text`].
+pub const STREAM_PIECES: [&str; 7] = [
+    "Streaming ",
+    "a ",
+    "reply, ",
+    "word ",
+    "by ",
+    "word, ",
+    "as it is written.",
+];
+
+/// The whole text of the reply the `stream` scripts send.
+pub fn stream_text() -> String {
+    STREAM_PIECES.concat()
+}
+
+/// The id of the stream `stream` and its variants send the reply as, for the task `task_id`.
+pub fn stream_id(task_id: &str) -> String {
+    format!("{task_id}-reply")
+}
+
+/// How long the `stream` scripts wait between two chunks.
+const STREAM_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// The URL every finished script reports as its artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
@@ -304,6 +332,16 @@ impl Call {
                 .message_extensions
                 .iter()
                 .any(|e| e == orch_core::STEPS_EXTENSION)
+    }
+
+    /// The request activated `text-stream/v1`: its URI is in the `A2A-Extensions` header **and** in
+    /// the message's own `extensions`.
+    pub fn activates_text_stream(&self) -> bool {
+        self.activates(orch_core::TEXT_STREAM_EXTENSION)
+            && self
+                .message_extensions
+                .iter()
+                .any(|e| e == orch_core::TEXT_STREAM_EXTENSION)
     }
 
     /// The request activated the release-channels extension.
@@ -801,6 +839,55 @@ impl TaskCtx {
             context_id: self.context_id.clone(),
             status: TaskStatus {
                 state: TaskState::Working,
+                message: Some(m),
+                timestamp: None,
+            },
+            metadata: self.metadata.clone(),
+        })
+    }
+
+    /// A chunk of the stream `stream` (`text-stream/v1`): one text part, the byte `offset` of the piece
+    /// under the extension's URI, and `append` after the first. `end` is `None` for a chunk with more to
+    /// come, `Some(false)` for the last, `Some(true)` for one that gives up.
+    fn chunk(&self, stream: &str, offset: usize, text: &str, end: Option<bool>) -> StreamResponse {
+        let mut entry = json!({"offset": offset});
+        if end == Some(true) {
+            entry["abandoned"] = json!(true);
+        }
+        StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+            task_id: self.task_id.clone(),
+            context_id: self.context_id.clone(),
+            artifact: Artifact {
+                artifact_id: stream.to_owned(),
+                name: Some("reply".to_owned()),
+                description: None,
+                parts: vec![Part::text(text)],
+                metadata: Some(HashMap::from([(
+                    orch_core::TEXT_STREAM_EXTENSION.to_owned(),
+                    entry,
+                )])),
+                extensions: Some(vec![orch_core::TEXT_STREAM_EXTENSION.to_owned()]),
+            },
+            append: (offset > 0).then_some(true),
+            last_chunk: Some(end.is_some()),
+            metadata: self.metadata.clone(),
+        })
+    }
+
+    /// A status in `state` whose message states the whole text `text` of the stream `stream`.
+    fn stating(&self, state: TaskState, stream: &str, text: &str) -> StreamResponse {
+        let mut m = Message::new(Role::Agent, vec![Part::text(text)]);
+        m.task_id = Some(self.task_id.clone());
+        m.context_id = Some(self.context_id.clone());
+        m.metadata = Some(HashMap::from([(
+            orch_core::TEXT_STREAM_EXTENSION.to_owned(),
+            json!({"streamId": stream}),
+        )]));
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: self.task_id.clone(),
+            context_id: self.context_id.clone(),
+            status: TaskStatus {
+                state,
                 message: Some(m),
                 timestamp: None,
             },
@@ -1518,6 +1605,85 @@ async fn script(
                 emit(&tx, ctx.step(&report)).await?;
             }
             emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
+        }
+        "stream" => {
+            let id = stream_id(&ctx.task_id);
+            let mut offset = 0;
+            for (n, piece) in STREAM_PIECES.iter().enumerate() {
+                if n > 0 {
+                    tokio::time::sleep(STREAM_PAUSE).await;
+                }
+                let last = (n + 1 == STREAM_PIECES.len()).then_some(false);
+                emit(&tx, ctx.chunk(&id, offset, piece, last)).await?;
+                offset += piece.len();
+            }
+            emit(&tx, ctx.stating(TaskState::Completed, &id, &stream_text())).await?;
+        }
+        "stream-abandon" => {
+            let id = stream_id(&ctx.task_id);
+            emit(&tx, ctx.chunk(&id, 0, STREAM_PIECES[0], None)).await?;
+            tokio::time::sleep(STREAM_PAUSE).await;
+            emit(
+                &tx,
+                ctx.chunk(&id, STREAM_PIECES[0].len(), STREAM_PIECES[1], None),
+            )
+            .await?;
+            tokio::time::sleep(STREAM_PAUSE).await;
+            emit(
+                &tx,
+                ctx.chunk(
+                    &id,
+                    STREAM_PIECES[0].len() + STREAM_PIECES[1].len(),
+                    "",
+                    Some(true),
+                ),
+            )
+            .await?;
+            emit(&tx, ctx.status(TaskState::Failed, Some("the model failed"))).await?;
+        }
+        "stream-words" => {
+            let words = format!("{}-words", ctx.task_id);
+            let before = "Let me run the tests first.";
+            let half = before.len() / 2;
+            emit(&tx, ctx.chunk(&words, 0, &before[..half], None)).await?;
+            tokio::time::sleep(STREAM_PAUSE).await;
+            emit(&tx, ctx.chunk(&words, half, &before[half..], Some(false))).await?;
+            emit(&tx, ctx.stating(TaskState::Working, &words, before)).await?;
+            emit(
+                &tx,
+                ctx.step(&StepSay {
+                    id: "tool:c1",
+                    parent: None,
+                    kind: "command",
+                    label: "npm test",
+                    state: "completed",
+                    icon: Some("execute"),
+                    detail: None,
+                }),
+            )
+            .await?;
+            let id = stream_id(&ctx.task_id);
+            let mut offset = 0;
+            for (n, piece) in STREAM_PIECES.iter().enumerate() {
+                if n > 0 {
+                    tokio::time::sleep(STREAM_PAUSE).await;
+                }
+                let last = (n + 1 == STREAM_PIECES.len()).then_some(false);
+                emit(&tx, ctx.chunk(&id, offset, piece, last)).await?;
+                offset += piece.len();
+            }
+            emit(&tx, ctx.stating(TaskState::Completed, &id, &stream_text())).await?;
+        }
+        "stream-marker" => {
+            emit(
+                &tx,
+                ctx.stating(
+                    TaskState::Completed,
+                    &stream_id(&ctx.task_id),
+                    &stream_text(),
+                ),
+            )
+            .await?;
         }
         "steps-chatty" => {
             let step = |state: &'static str| StepSay {

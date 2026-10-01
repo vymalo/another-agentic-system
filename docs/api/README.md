@@ -11,6 +11,7 @@ every page below is a view of it or of a decision about it ([`../architecture.md
 | [`ui-catalog-v1.md`](ui-catalog-v1.md) | The web's component catalog, sent to agents (A2A extension `ui-catalog/v1`) | Contract accepted; the orchestrator's handshake and the refetch (`get_ui_catalog` on the thread tools) are built |
 | [`thread-tools-v1.md`](thread-tools-v1.md) | A per-thread MCP endpoint for agents, with the HMAC token that opens it (A2A extension `thread-tools/v1`) | Contract accepted; built (the token, the endpoint, `get_ui_catalog` and the grant in the A2A message), apart from the tools of slices 8 and 10 |
 | [`steps-v1.md`](steps-v1.md) | Nested steps: an agent's tool calls and its sub-agents' work reported as a tree (A2A extension `steps/v1`) | Contract accepted; built (the `agent_step` event and its coalescing, the AG-UI subagents and `vymalo.step` activities, the adapter), apart from the web's tree |
+| [`text-stream-v1.md`](text-stream-v1.md) | An agent's reply streamed as it is written, relayed live and logged once (A2A extension `text-stream/v1`) | Contract accepted; built on the orchestrator's side (the adapter, the relay between processes, the AG-UI live frames), apart from the web's drafts |
 | [`examples/`](examples/README.md) | Golden event transcripts and AG-UI streams that tests pin | Built |
 
 ## Optional A2A extensions the orchestrator speaks
@@ -28,6 +29,7 @@ change is a `v2` URI and a new page, not an edit.
 | Thread tools | `thread-tools/v1` | [`thread-tools-v1.md`](thread-tools-v1.md) (accepted; built, apart from the tools of slices 8 and 10) | ADR 0023, [0024](../decisions/0024-mcp-tools-attached-per-conversation.md), [0026](../decisions/0026-agent-mentions-as-structured-references.md) |
 | Steps | `steps/v1` | [`steps-v1.md`](steps-v1.md) (accepted; built, apart from the web's tree) | [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md) |
 | Mentions | `mentions/v1` | A page here, written with MVP slice 10 | ADR 0026 |
+| Text stream | `text-stream/v1` | [`text-stream-v1.md`](text-stream-v1.md) (accepted; built, apart from the web's drafts) | [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md) |
 
 The orchestrator reads the extensions of a live card into one closed set, and the AG-UI capabilities document lists
 each listed one under `custom` (see [`agui.md`](agui.md#capabilities-document)), so the web can flag an agent that

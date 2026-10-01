@@ -51,6 +51,11 @@ pub const ACTIVITY_STEP: &str = "vymalo.step";
 pub const ACTOR_KEY: &str = "vymalo.actor";
 /// Metadata key of a `RUN_ERROR` carrying the problem (`{type, title, detail?}`).
 pub const PROBLEM_KEY: &str = "vymalo.problem";
+/// Metadata key of live text (ADR 0027): on the `TEXT_MESSAGE_START` that opens a live message
+/// (`{}`), on its `CONTENT` (`{offset}`: the UTF-16 code units already sent before the delta), on
+/// the `CONTENT` and `END` of the log's final message that completes it (`{offset, final: true}`
+/// and `{final: true}`), and on the `END` of a live message that was given up (`{abandoned: true}`).
+pub const LIVE_KEY: &str = "vymalo.live";
 
 /// `SUBAGENT_ERROR.code` of a sub-agent step that ended `failed`.
 pub const CODE_STEP_FAILED: &str = "step_failed";

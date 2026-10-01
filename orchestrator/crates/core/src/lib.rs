@@ -11,6 +11,7 @@ mod event;
 mod extension;
 mod gate;
 mod ids;
+mod live;
 mod step;
 mod thread;
 mod thread_tools;
@@ -26,8 +27,8 @@ pub use event::{
     Event, EventBody, EventKind, JobStartedData, Origin, ThreadStateData, UserMessageData,
 };
 pub use extension::{
-    KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, THREAD_TOOLS_EXTENSION,
-    UI_CATALOG_EXTENSION,
+    KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
+    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
 };
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,
@@ -39,6 +40,7 @@ pub use gate::{
     verifier_context,
 };
 pub use ids::{AgentId, ThreadId, UserId};
+pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use step::{
     AgentStepData, MAX_OPEN_STEPS, MAX_STEP_DEPTH, MAX_STEP_DETAIL_CHARS, MAX_STEP_ID_BYTES,
     MAX_STEP_LABEL_CHARS, MAX_STEP_UPDATES, MAX_STEPS_PER_JOB, MCP_SERVER_ICON_PREFIX, STEP_ICONS,

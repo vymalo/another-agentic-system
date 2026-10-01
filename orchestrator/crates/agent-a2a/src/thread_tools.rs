@@ -111,6 +111,7 @@ mod tests {
                 KnownExtension::UiCatalog,
                 KnownExtension::Steps,
                 KnownExtension::Mentions,
+                KnownExtension::TextStream,
             ]),
         ] {
             assert!(mint(Some(&issuer), Some(&grant), "m-1", &others, now()).is_none());

@@ -92,6 +92,14 @@ impl Connect {
         out
     }
 
+    /// Whether the log has been folded up to what it held when the client connected (`head`) and
+    /// the frames are being written: from here on the stream is live, which is when live text
+    /// ([`LiveOverlay`](crate::LiveOverlay)) may be handed to the overlay (earlier, it would be
+    /// attributed to whatever the replay of old events has open).
+    pub fn caught_up(&self) -> bool {
+        self.started && self.folded >= self.head
+    }
+
     /// Whether the stream has said all it will say: [`Follow::ThroughRun`], the log as it stood
     /// at connect time replayed, and no run open.
     pub fn finished(&self) -> bool {

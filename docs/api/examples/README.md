@@ -26,6 +26,12 @@ the log itself, which the AG-UI streams below project.)
 | `steps.events.json` | `steps run the tests` on the fake agent with `steps/v1` in its card (ADR 0025, MVP slice 5): a sub-agent step `OpenCode`, a command `npm test` under it that fails with the detail `1 failed`, the sub-agent's end, then the agent's words and `completed`. Step ids are `<task>/<agent's id>`; the task id is normalised to `T` | `done` |
 | `steps-ask.events.json` | `steps-ask clean the build`: the same sub-agent with a command that is `waiting` when the agent asks (`input_required`); after the answer (`yes`) the command and the sub-agent end in the next run | `done` |
 
+[`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
+heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
+pieces and the log travel on different channels and no run can pin their interleaving (ADR 0027, MVP slice 6): the user asks,
+the agent works, three pieces of the reply arrive (`Fib`, `onacci `, `in Rust.`), the log says the whole message and the
+status that repeats it, and the thread is `done`.
+
 Ids and clocks are normalised: `threadId` is `<thread-id>`, `at` is `<timestamp>`, an agent
 message's `messageId` is `<message-id>` and the task id in front of a step's id and path is `T`.
 
@@ -51,7 +57,7 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
 `run-<seq>`, the invocations `sub-<seq>`, and the interrupt `int-<seq>`.
 
 - **Producer:** `orchestrator/crates/agui-projection/tests/golden.rs` projects the `*.events.json`
-  files above (with placeholders made real) and fails when a file differs.
+  files above (with placeholders made real, and `stream.feed.json` through the live overlay) and fails when a file differs.
   `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test golden` regenerates them; review the
   diff.
 - **Consumers:** the same test checks every event against the vendored AG-UI schema and every
@@ -89,6 +95,12 @@ runs it, and a failed command is an activity and no more (the run goes on). In `
 its subagent suspends with the invocation (`suspended`, no interrupt ids of its own), and in the run that resumes the end of
 the command and of the sub-agent only say their activities again, attributed to the invocation. The reference client's
 `expected/steps.json` shows the tree it holds: both steps `completed` (or `failed`), with their paths and their `startedAt`.
+
+The `stream.agui.json` golden is the live text a viewer reads ([`../agui.md`](../agui.md#live-text), ADR 0027): the reply `msg-3` is
+opened by its first piece (`TEXT_MESSAGE_START` with `metadata["vymalo.live"]`), grows by two more (`CONTENT` with the `offset`, in UTF-16
+code units, of what was said before), and is completed by the log's message: `CONTENT ""` with `{offset: 18, final: true}` and `END`
+with `{final: true}` and the `id: 3`, while the status that repeats the words says no more. None of the live frames has an `id:`.
+The reference client's `expected/stream.json` shows one message, `msg-3`, with the whole text.
 
 The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymalo-ci)): **one
 run** across two attempts, the `vymalo.check` card of the source `ci` (`check-1-1-ci`, pending, then failed), between them

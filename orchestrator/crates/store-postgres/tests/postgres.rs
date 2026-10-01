@@ -11,7 +11,8 @@ use futures::StreamExt;
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, CiConclusion, CiProvider, CiReport, Classify, ErrorClass,
-    EventBody, ThreadId, ThreadState, UserId, UserMessageData, WatchKey,
+    EventBody, LiveChunk, LiveEnd, LiveText, ThreadId, ThreadState, UserId, UserMessageData,
+    WatchKey,
 };
 use orch_ports::{
     BindingUpdate, Commit, CommitOutcome, InboxId, InboxPayload, InboxStatus, NewEvent, NewInbox,
@@ -360,6 +361,137 @@ async fn slow_subscriber_gets_resync() {
     // The subscriber never read while 3000 hints arrived (capacity 1024): it must be told.
     tokio::time::sleep(Duration::from_millis(500)).await;
     expect(&mut sub, Topic::Resync).await;
+}
+
+fn live_piece(thread: ThreadId, offset: u64, text: &str, end: LiveEnd) -> LiveText {
+    LiveText {
+        thread,
+        agent: AgentId::new("coder"),
+        chunk: LiveChunk {
+            message_id: "S".into(),
+            offset,
+            text: text.into(),
+            end,
+        },
+    }
+}
+
+/// The next piece of `thread` (the channel is the database's, so another test's pieces may pass).
+async fn next_live_of(
+    sub: &mut (impl futures::Stream<Item = LiveText> + Unpin),
+    thread: ThreadId,
+) -> LiveText {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let got = sub.next().await.expect("live subscription ended");
+            if got.thread == thread {
+                return got;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for live text")
+}
+
+#[tokio::test]
+async fn live_text_published_in_one_process_reaches_a_subscriber_in_another() {
+    let db = db_or_skip!();
+    let listener = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    assert!(listener.wait_listening(Duration::from_secs(10)).await);
+    let mut sub = listener.subscribe_live();
+    let mut topics = listener.subscribe();
+
+    // Another replica: its own pool and connections.
+    let other_pool = db.pool("orch-test-other", 3).await;
+    let other = PgWakeup::start(other_pool.clone());
+    let thread = ThreadId(Uuid::now_v7());
+
+    // A stray payload on the channel (another version, a hand-typed NOTIFY) is not live text and
+    // does not disturb what follows.
+    sqlx::query("SELECT pg_notify('orch_live', 'not json')")
+        .execute(&other_pool)
+        .await
+        .unwrap();
+    other
+        .publish_live(live_piece(thread, 0, "Fib", LiveEnd::Open))
+        .await
+        .unwrap();
+    other
+        .publish_live(live_piece(thread, 3, "onacci", LiveEnd::Last))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_live_of(&mut sub, thread).await,
+        live_piece(thread, 0, "Fib", LiveEnd::Open)
+    );
+    assert_eq!(
+        next_live_of(&mut sub, thread).await,
+        live_piece(thread, 3, "onacci", LiveEnd::Last)
+    );
+    // Live text is not a hint: nobody was told to re-read anything.
+    expect_silence(&mut topics, Topic::Resync).await;
+}
+
+#[tokio::test]
+async fn live_text_works_again_after_a_listener_reconnect() {
+    let db = db_or_skip!();
+    let app = format!("orch-test-listener-{}", Uuid::now_v7().simple());
+    let admin = db.pool("orch-test-admin", 2).await;
+    let wakeup = PgWakeup::start(db.pool(&app, 3).await);
+    assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
+    let mut sub = wakeup.subscribe_live();
+    let mut topics = wakeup.subscribe();
+
+    sqlx::query(
+        "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
+         WHERE application_name = $1 AND pid <> pg_backend_pid()",
+    )
+    .bind(&app)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    // The hints are told (they may have been missed); live text is best effort and is not.
+    expect(&mut topics, Topic::Resync).await;
+    assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
+
+    let thread = ThreadId(Uuid::now_v7());
+    wakeup
+        .publish_live(live_piece(thread, 0, "again", LiveEnd::Open))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_live_of(&mut sub, thread).await,
+        live_piece(thread, 0, "again", LiveEnd::Open)
+    );
+}
+
+#[tokio::test]
+async fn a_slow_live_subscriber_loses_pieces_without_a_word_and_keeps_listening() {
+    let db = db_or_skip!();
+    let wakeup = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
+    let mut sub = wakeup.subscribe_live();
+    let thread = ThreadId(Uuid::now_v7());
+    for i in 0..2000u64 {
+        wakeup
+            .publish_live(live_piece(thread, i, "x", LiveEnd::Open))
+            .await
+            .unwrap();
+    }
+    // Nobody read while 2000 pieces arrived (capacity 1024): the oldest are gone, the stream is
+    // not, and the newest is there.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let first = next_live_of(&mut sub, thread).await;
+    assert!(first.chunk.offset > 0, "the oldest pieces were dropped");
+    let mut last = first;
+    while last.chunk.offset < 1999 {
+        last = next_live_of(&mut sub, thread).await;
+    }
+    wakeup
+        .publish_live(live_piece(thread, 2000, "!", LiveEnd::Last))
+        .await
+        .unwrap();
+    assert_eq!(next_live_of(&mut sub, thread).await.chunk.offset, 2000);
 }
 
 #[tokio::test]

@@ -1,0 +1,107 @@
+[
+  {
+    "event": {
+      "actor": {
+        "name": "alice@example.com",
+        "type": "user"
+      },
+      "at": "<timestamp>",
+      "data": {
+        "text": "write fibonacci in rust"
+      },
+      "kind": "user_message",
+      "seq": 1,
+      "threadId": "<thread-id>"
+    }
+  },
+  {
+    "event": {
+      "actor": {
+        "name": "plain",
+        "type": "agent"
+      },
+      "at": "<timestamp>",
+      "data": {
+        "status": "working"
+      },
+      "kind": "agent_status",
+      "seq": 2,
+      "threadId": "<thread-id>"
+    }
+  },
+  {
+    "live": {
+      "agent": "plain",
+      "end": "open",
+      "messageId": "msg-3",
+      "offset": 0,
+      "text": "Fib"
+    }
+  },
+  {
+    "live": {
+      "agent": "plain",
+      "end": "open",
+      "messageId": "msg-3",
+      "offset": 3,
+      "text": "onacci "
+    }
+  },
+  {
+    "live": {
+      "agent": "plain",
+      "end": "last",
+      "messageId": "msg-3",
+      "offset": 10,
+      "text": "in Rust."
+    }
+  },
+  {
+    "event": {
+      "actor": {
+        "name": "plain",
+        "type": "agent"
+      },
+      "at": "<timestamp>",
+      "data": {
+        "final": true,
+        "messageId": "msg-3",
+        "text": "Fibonacci in Rust."
+      },
+      "kind": "agent_message",
+      "seq": 3,
+      "threadId": "<thread-id>"
+    }
+  },
+  {
+    "event": {
+      "actor": {
+        "name": "plain",
+        "type": "agent"
+      },
+      "at": "<timestamp>",
+      "data": {
+        "detail": "Fibonacci in Rust.",
+        "status": "completed"
+      },
+      "kind": "agent_status",
+      "seq": 4,
+      "threadId": "<thread-id>"
+    }
+  },
+  {
+    "event": {
+      "actor": {
+        "name": "orchestrator",
+        "type": "system"
+      },
+      "at": "<timestamp>",
+      "data": {
+        "state": "done"
+      },
+      "kind": "thread_state",
+      "seq": 5,
+      "threadId": "<thread-id>"
+    }
+  }
+]

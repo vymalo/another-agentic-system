@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, KnownExtension, Releases,
-    Timestamp, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, KnownExtension,
+    LiveChunk, Releases, Timestamp, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -219,6 +219,11 @@ pub struct AgentEnvelope {
     pub key: IdemKey,
     /// The update; `None` when the envelope only carries bookkeeping.
     pub update: Option<AgentUpdate>,
+    /// A piece of a reply the agent is still writing (`text-stream/v1`, ADR 0027): **never
+    /// applied**. The dispatcher relays it on the wakeup port and drops it; the log gets the whole
+    /// text once, as an ordinary [`AgentUpdate::Message`] under the stream's id. Always with
+    /// `update: None`, whatever the key says.
+    pub live: Option<LiveChunk>,
 }
 
 /// A polled view of a task.

@@ -1,0 +1,229 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "write fibonacci in rust"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "write fibonacci in rust",
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "write fibonacci in rust"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.live": {}
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Fib",
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 0
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "onacci ",
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 3
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "in Rust.",
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.live": {
+          "offset": 10
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "delta": "",
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.live": {
+          "final": true,
+          "offset": 18
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.live": {
+          "final": true
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "status": "completed"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "write fibonacci in rust"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 5
+  }
+]

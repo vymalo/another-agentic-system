@@ -360,6 +360,20 @@ impl Projector {
         self.invocation.as_ref().map(|i| &i.id)
     }
 
+    /// The agent's invocation, while one is open: its subagent run id, its name (the agent id) and
+    /// the actor of the event that opened it. What the live words of a reply are attributed to.
+    pub fn open_invocation(&self) -> Option<(&SubagentRunId, &str, &Actor)> {
+        self.invocation
+            .as_ref()
+            .map(|i| (&i.id, i.name.as_str(), &i.actor))
+    }
+
+    /// Whether the log has already said an agent message with this id (the id the agent gave it):
+    /// its words are in the transcript, so live text for it is late and is not shown.
+    pub fn has_message(&self, id: &str) -> bool {
+        self.texts.contains_key(id) || self.message_ids.contains(id)
+    }
+
     /// The subagent run id of the sub-agent step `id` (`sub-step-<seq>`), while it is open and its
     /// subagent is: what the steps of an agent asked under that step are nested under. `None` for
     /// a step that is not a sub-agent step, has ended, or was suspended with its invocation.
