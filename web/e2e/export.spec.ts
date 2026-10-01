@@ -28,8 +28,10 @@ test("Export JSON downloads the thread as thread-<id>.json", async ({ page }) =>
   expect(doc.thread.id).toBe(id);
   expect(doc.thread.state).toBe("done");
   expect(doc.events.length).toBeGreaterThan(0);
-  expect(doc.events[0].kind).toBe("user_message");
-  expect(doc.events[0].data.text).toBe("echo hello");
+  // the web's catalog is the first event of the thread it creates (ADR 0023), then the message
+  expect(doc.events[0].kind).toBe("ui_catalog");
+  expect(doc.events[1].kind).toBe("user_message");
+  expect(doc.events[1].data.text).toBe("echo hello");
   await expect(await exportMenuItem(page)).toBeEnabled();
 });
 
