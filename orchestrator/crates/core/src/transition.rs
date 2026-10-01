@@ -28,6 +28,7 @@ use crate::gate::{
     recognise_artifact, repo_key, truncate_to,
 };
 use crate::ids::{AgentId, UserId};
+use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
 use crate::ui_catalog::{UiCatalogData, UiDelivery};
@@ -90,6 +91,17 @@ pub enum Input {
         /// What it reported.
         update: AgentUpdate,
     },
+    /// A step of the work that does not come from the delegated agent's own report: a tool call
+    /// the orchestrator relays for it (ADR 0024), an agent it asked for (ADR 0026). It goes
+    /// through the same rules as an agent's step ([`record_step`]: coalesced, bounded, nested
+    /// under its parent), by `actor`, and may name an MCP server as its icon. A thread that is
+    /// finished takes none ([`TransitionError::InvalidInState`]).
+    Step {
+        /// Who the step is attributed to (the agent whose call it is, or the orchestrator).
+        actor: Actor,
+        /// What happened.
+        report: StepReport,
+    },
     /// A delegation could not be delivered (dead-lettered outbox row).
     DeliveryFailed {
         /// Why.
@@ -148,6 +160,7 @@ impl Input {
             Input::Redeliver { .. } => "redelivery",
             Input::Cancel { .. } => "cancel",
             Input::Agent { .. } => "agent update",
+            Input::Step { .. } => "step",
             Input::DeliveryFailed { .. } => "delivery failure",
             Input::CancelledBeforeStart => "cancelled before start",
             Input::CancelRejected { .. } => "cancel rejection",
@@ -528,6 +541,24 @@ fn decide(
             update,
             input,
         ),
+        Input::Step { actor, report } => match state {
+            ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
+                Err(TransitionError::InvalidInState {
+                    state,
+                    input: input.name(),
+                })
+            }
+            ThreadState::Queued
+            | ThreadState::Working
+            | ThreadState::Blocked
+            | ThreadState::Verifying => Ok(record_step(
+                state,
+                job,
+                actor.clone(),
+                report,
+                StepSource::Orchestrator,
+            )),
+        },
         Input::DeliveryFailed { reason, retryable } => match state {
             ThreadState::Queued
             | ThreadState::Working
@@ -662,6 +693,7 @@ fn agent_input(
             )],
         )),
         AgentUpdate::UiRejected { reason } => Ok((state, vec![append(actor, refused_ui(reason))])),
+        AgentUpdate::Step(report) => Ok(record_step(state, job, actor, report, StepSource::Agent)),
         AgentUpdate::Message {
             message_id,
             text,
@@ -730,6 +762,11 @@ fn status_input(
     task: AgentTaskState,
     detail: &Option<String>,
 ) -> Result<(ThreadState, Vec<Command>), TransitionError> {
+    // The task is over: whatever step it left open is not going on (the projection closes what it
+    // shows; the log gets no event for it).
+    if task.is_terminal() {
+        job.steps.close_all();
+    }
     match task {
         AgentTaskState::Submitted => Ok((state, vec![])),
         AgentTaskState::Working => {

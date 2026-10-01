@@ -167,6 +167,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::CiReported(_)
         | Input::VerifierReported { .. }
         | Input::VerifierFailed { .. }
+        | Input::Step { .. }
         | Input::TimerFired(_)) => other,
     }
 }
@@ -237,6 +238,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::CiReported(_)
         | Input::VerifierReported { .. }
         | Input::VerifierFailed { .. }
+        | Input::Step { .. }
         | Input::TimerFired(_) => None,
     }
 }

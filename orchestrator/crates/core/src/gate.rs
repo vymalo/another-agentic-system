@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{AgentId, ThreadId};
+use crate::step::StepLedger;
 use crate::thread::ThreadState;
 use crate::ui_catalog::UiCatalogLedger;
 
@@ -303,6 +304,11 @@ pub struct Job {
     /// field existed has none.
     #[serde(skip_serializing_if = "UiCatalogLedger::is_empty")]
     pub catalog: UiCatalogLedger,
+    /// The steps the agent reported in this job (ADR 0025): which are open and how many were
+    /// logged, so that the log stays bounded. Belongs to the job: [`Job::next`] forgets it. A
+    /// ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "StepLedger::is_empty")]
+    pub steps: StepLedger,
 }
 
 fn is_first_job(number: &u32) -> bool {
@@ -323,6 +329,7 @@ impl Default for Job {
             results: Vec::new(),
             hold: None,
             catalog: UiCatalogLedger::default(),
+            steps: StepLedger::default(),
         }
     }
 }
@@ -338,7 +345,7 @@ impl Job {
 
     /// The job that follows this one on the same thread (ADR 0020): the next number, the same
     /// gate and the same UI catalogs (`catalog`), attempt 1 and an empty ledger (`task`,
-    /// `pushed`, `results`, `summary`, `hold`, `branch_problem`).
+    /// `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps`).
     ///
     /// `verification` is **kept**: it counts the verifications of the thread, so a timer, a
     /// verdict or a `verify` row of an earlier job names a verification the new job has not

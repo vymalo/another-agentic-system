@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, KnownExtension, Releases, ToolsGrant, UiActionData,
-    UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, KnownExtension, Releases, StepKind, StepReport,
+    StepState, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -143,6 +143,9 @@ struct Shared {
 /// - `ui`: `working`, an A2UI surface `s1` (a `createSurface` and an `updateComponents` with a
 ///   button), then `input-required("Pick one")`; the follow-up (an action, or a message)
 ///   continues the task with `working`, an artifact `answer`, `completed`;
+/// - `steps`: `working`, a sub-agent step `OpenCode` with two commands under it (the second fails),
+///   the sub-agent's end, an artifact `echo`, `completed` (the steps are reported the way an agent
+///   that speaks `steps/v1` does; ids are prefixed with the task id);
 /// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
@@ -358,6 +361,27 @@ impl Shared {
         );
     }
 
+    /// A step of the task's work, with ids made unique to the thread by the task id.
+    fn push_step(&self, task: &str, step: ScriptedStep) {
+        let n = self.state().tasks.get(task).map_or(0, |t| t.log.len());
+        let id = format!("{task}/{}", step.id);
+        self.push(
+            task,
+            None,
+            None,
+            IdemKey::Task(format!("a2a:{task}:step:{id}:{n}")),
+            Some(AgentUpdate::Step(StepReport {
+                id,
+                parent: step.parent.map(|p| format!("{task}/{p}")),
+                kind: step.kind,
+                label: step.label.to_owned(),
+                state: step.state,
+                icon: step.icon.map(str::to_owned),
+                detail: step.detail.map(str::to_owned),
+            })),
+        );
+    }
+
     fn push_ui(&self, task: &str, surface: &str, operations: Vec<serde_json::Value>) {
         let n = self.state().tasks.get(task).map_or(0, |t| t.log.len());
         self.push(
@@ -415,6 +439,17 @@ impl Shared {
         })
         .boxed()
     }
+}
+
+/// One step of the `steps` script.
+struct ScriptedStep {
+    id: &'static str,
+    parent: Option<&'static str>,
+    kind: StepKind,
+    label: &'static str,
+    state: StepState,
+    icon: Option<&'static str>,
+    detail: Option<&'static str>,
 }
 
 fn ui_create(surface: &str) -> serde_json::Value {
@@ -506,6 +541,72 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
         }
         "ui" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
+            shared.push_status(&task, Completed, None);
+        }
+        "steps" => {
+            let step = |id, parent, kind, label, state, icon, detail| ScriptedStep {
+                id,
+                parent,
+                kind,
+                label,
+                state,
+                icon,
+                detail,
+            };
+            use StepKind::{Command, Subagent};
+            use StepState::{Completed as Done, Failed as Bad, Running};
+            let open = "tool:call_1";
+            for s in [
+                step(
+                    open,
+                    None,
+                    Subagent,
+                    "OpenCode",
+                    Running,
+                    Some("agent"),
+                    None,
+                ),
+                step(
+                    "acp:1",
+                    Some(open),
+                    Command,
+                    "npm install",
+                    Running,
+                    Some("execute"),
+                    None,
+                ),
+                step(
+                    "acp:1",
+                    Some(open),
+                    Command,
+                    "npm install",
+                    Done,
+                    Some("execute"),
+                    None,
+                ),
+                step(
+                    "acp:2",
+                    Some(open),
+                    Command,
+                    "npm test",
+                    Running,
+                    Some("test"),
+                    None,
+                ),
+                step(
+                    "acp:2",
+                    Some(open),
+                    Command,
+                    "npm test",
+                    Bad,
+                    Some("test"),
+                    Some("1 failed"),
+                ),
+                step(open, None, Subagent, "OpenCode", Done, Some("agent"), None),
+            ] {
+                shared.push_step(&task, s);
+            }
+            shared.push_artifact(&task, "echo", format!("echo: {text}"));
             shared.push_status(&task, Completed, None);
         }
         "failed" => shared.push_status(&task, Failed, Some("scripted failure")),

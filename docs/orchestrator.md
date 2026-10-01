@@ -667,6 +667,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | Agent status `failed`, `rejected` | → `failed` (`rejected` prefixes the detail); `agent_status`, `thread_state` | → `failed` | `Err(InvalidInState)` |
 | Agent status `canceled` | → `cancelled`; `agent_status`, `thread_state` | → `cancelled` | `Err(InvalidInState)` |
 | Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message`, `ui_surface` or `error` | Same | `Err(InvalidInState)` |
+| Agent step (`AgentUpdate::Step`) and the orchestrator's own (`Input::Step`), [ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md) | `queued` → `working`; append `agent_step`, **coalesced** (below): a start, an end and at most 4 updates per step, the rest dropped with no event | Dropped (the work is not going on; the same in `verifying`) | `Err(InvalidInState)` |
 | User's A2UI action (`UiAction`) | State kept; append `ui_action`, delegate the action | → `queued`; the same | `Err(Finished)` (HTTP 409; the card belongs to a finished request) |
 | `DeliveryFailed`, retryable | → `blocked`; append `error`, and `thread_state` on entering | State kept; append `error` | State kept; append `error` |
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
@@ -694,7 +695,7 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `attempt` | 1 |
 | `task` | the new message |
 | `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
-| `pushed`, `results`, `summary`, `hold`, `branch_problem` | cleared |
+| `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps` | cleared |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
 card), and a CI report for an earlier job's commit cannot decide job *n+1* (`about_the_push` compares the new
@@ -716,6 +717,32 @@ delivery that was lost is healed by the agent asking for the catalog again, so n
 rework carries a reference too; the verifier's request carries none. The property tests
 (`tests/properties.rs`, `the_catalog_ledger_follows_the_events`) pin: a digest is recorded once, the current version
 never goes down, inline only in the commit that made it current, and the events alone rebuild the ledger.
+
+**Steps on a thread** ([ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md), built in MVP slice 5;
+the contract an agent reports them under is [`api/steps-v1.md`](api/steps-v1.md)). An agent's work has a shape (the
+agent, the sub-agent it delegated to, their commands), and the log keeps it as `agent_step` events: `{id, path, kind,
+label, state, phase: start|update|end, icon?, detail?}`, where `path` is the chain of step ids the step runs under. The
+core keeps the log **bounded** with a ledger in the job (`Job.steps`, `StepLedger`: which steps are open, each with the
+path it started with and the count of updates logged, and how many steps the job logged), through one free function,
+`record_step`, so that an agent's report (`AgentUpdate::Step`) and one the orchestrator makes itself (`Input::Step`,
+`App::record_step`: a tool call it relays, an agent it asked) take the same rules:
+
+| The step is | The report is | The log gets |
+|---|---|---|
+| not open | running or waiting | `start`; the step is open (a report is dropped when 256 steps are open, or the job logged 2000) |
+| not open | an end (`completed`, `failed`, `canceled`) | one `end` event |
+| open | running or waiting | `update`, while fewer than `MAX_STEP_UPDATES` (4) were logged for the step; else nothing, and the ledger does not change |
+| open | an end | `end`, with the path the step started with; the step is closed |
+
+`StepReport::sanitize` is the door (as `check_operation_list` is for A2UI): an id that is empty, over 200 bytes or has a
+control character drops the report, as does a label that is empty; a label is cut to one line of 200 characters and a
+detail to 1000, an icon outside the vocabulary is dropped (only the orchestrator's own steps may name an
+`mcp-server:<id>`), a parent that is the step itself is none, and a path that would hold the step itself is none. The path is
+the parent's own path and the parent, at most the 8 nearest. When the agent's task ends (`completed`, `failed`,
+`canceled`, `rejected`) the open steps are forgotten with no event, and the next job starts with none. The property test
+(`tests/properties.rs`, `the_log_of_a_step_is_bounded_and_the_ledger_follows_the_events`) pins: at most a start, 4
+updates and an end per step, a start only for a step that is not open, an end with the path of its start, the ledger
+and the events agree, and steps are logged only while the thread works.
 
 **Built in the core** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and
@@ -993,6 +1020,7 @@ pub enum Input {
     Redeliver { text: String },   // a user message already in the log whose delegation never reached the agent
     Cancel { user: UserId },
     Agent { agent: AgentId, revision: Option<String>, update: AgentUpdate },
+    Step { actor: Actor, report: StepReport },   // a step the orchestrator reports itself (ADR 0025)
     DeliveryFailed { reason: String, retryable: bool },
     CancelledBeforeStart,
     CancelRejected { reason: String, retryable: bool },
@@ -1007,7 +1035,7 @@ pub enum Command {
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
@@ -1299,7 +1327,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1351,6 +1379,9 @@ so that parallel slices do not collide:
   The thread's catalog ledger lives inside `threads.job` (`catalog`; a ledger without it has seen none) and the
   delivery to the agent inside the outbox payloads (`ui_catalog`; a row without one tells the agent nothing of the
   screen), so no column is added.
+- **`0007` (steps, built):** `events.kind` gains `agent_step` ([ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md)).
+  The ledger of open steps lives inside `threads.job` (`steps`; a ledger without it has none open), so no column is
+  added.
 
 ```mermaid
 erDiagram

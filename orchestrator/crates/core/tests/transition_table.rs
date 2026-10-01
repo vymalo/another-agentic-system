@@ -12,7 +12,7 @@ fn transition(
     orch_core::transition(&Snapshot::new(*state), input).map(|(next, cmds)| (next.state, cmds))
 }
 
-use ThreadState::{Blocked, Cancelled, Done, Failed, Queued, Working};
+use ThreadState::{Blocked, Cancelled, Done, Failed, Queued, Verifying, Working};
 
 const ALL: [ThreadState; 6] = [Queued, Working, Blocked, Done, Failed, Cancelled];
 const OPEN: [ThreadState; 3] = [Queued, Working, Blocked];
@@ -217,6 +217,24 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         version: 2,
         digest: format!("sha256:{}", "b".repeat(64)),
     });
+    // a step the old job left open is the old job's
+    let mut steps_job = Job::default();
+    orch_core::record_step(
+        Working,
+        &mut steps_job,
+        Actor::system(),
+        &StepReport {
+            id: "t/s1".into(),
+            parent: None,
+            kind: StepKind::Tool,
+            label: "tool".into(),
+            state: StepState::Running,
+            icon: None,
+            detail: None,
+        },
+        StepSource::Agent,
+    );
+    assert_eq!(steps_job.steps.open_count(), 1);
     for s in TERMINAL {
         let before = Snapshot {
             state: s,
@@ -245,6 +263,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 }],
                 hold: None,
                 catalog: catalog.clone(),
+                steps: steps_job.steps.clone(),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -600,6 +619,86 @@ fn row15_agent_input_in_terminal_is_invalid() {
             );
         }
     }
+}
+
+fn step_report(state: StepState) -> StepReport {
+    StepReport {
+        id: "t/s1".into(),
+        parent: None,
+        kind: StepKind::Command,
+        label: "npm test".into(),
+        state,
+        icon: Some("execute".into()),
+        detail: None,
+    }
+}
+
+fn step_body(phase: StepPhase, state: StepState) -> EventBody {
+    EventBody::AgentStep(AgentStepData {
+        id: "t/s1".into(),
+        path: vec![],
+        kind: StepKind::Command,
+        label: "npm test".into(),
+        state,
+        phase,
+        icon: Some("execute".into()),
+        detail: None,
+    })
+}
+
+#[test]
+fn row14b_a_step_is_the_sign_of_work_and_keeps_the_thread_working() {
+    let input = Input::Agent {
+        agent: agent(),
+        revision: Some("rev-1".into()),
+        update: AgentUpdate::Step(step_report(StepState::Running)),
+    };
+    for s in [Queued, Working] {
+        let (next, cmds) = run(s, &input);
+        assert_eq!(next, Working);
+        assert_eq!(
+            bodies(&cmds),
+            [&step_body(StepPhase::Start, StepState::Running)]
+        );
+        let Command::Append(d) = &cmds[0] else {
+            panic!("{cmds:?}")
+        };
+        assert_eq!(d.actor, Actor::agent(&agent(), Some("rev-1".into())));
+    }
+    // the work is not going on while the thread waits for the user or is verified: dropped
+    for s in [Blocked, Verifying] {
+        let (next, cmds) = orch_core::transition(&Snapshot::new(s), &input).unwrap();
+        assert_eq!(next.state, s);
+        assert!(cmds.is_empty(), "{s:?}");
+    }
+}
+
+#[test]
+fn row15b_a_step_for_a_finished_thread_is_invalid() {
+    let inputs = [
+        Input::Agent {
+            agent: agent(),
+            revision: None,
+            update: AgentUpdate::Step(step_report(StepState::Running)),
+        },
+        Input::Step {
+            actor: Actor::system(),
+            report: step_report(StepState::Running),
+        },
+    ];
+    for s in TERMINAL {
+        for input in &inputs {
+            assert_eq!(
+                transition(&s, input),
+                Err(TransitionError::InvalidInState {
+                    state: s,
+                    input: input.name()
+                })
+            );
+        }
+    }
+    assert_eq!(inputs[0].name(), "agent update");
+    assert_eq!(inputs[1].name(), "step");
 }
 
 #[test]

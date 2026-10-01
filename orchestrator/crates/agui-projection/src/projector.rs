@@ -408,6 +408,14 @@ impl Projector {
                 self.catalog.observe(&d.reference());
                 self.pending_error = pending_error;
             }
+            // Steps are drawn from the next change (the projection of `agent_step`); until then the
+            // one thing the event says without a frame is that the agent works.
+            EventBody::AgentStep(_) => {
+                if self.state == ThreadState::Queued {
+                    self.state = ThreadState::Working;
+                }
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);

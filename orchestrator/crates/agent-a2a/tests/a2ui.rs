@@ -81,6 +81,7 @@ fn kinds(envs: &[AgentEnvelope]) -> Vec<String> {
             Some(AgentUpdate::Message { .. }) => "message".to_owned(),
             Some(AgentUpdate::Ui { operations }) => format!("ui:{}", operations.len()),
             Some(AgentUpdate::UiRejected { .. }) => "ui-rejected".to_owned(),
+            Some(AgentUpdate::Step(step)) => format!("step:{}", step.id),
             None => "-".to_owned(),
         })
         .collect()

@@ -1668,7 +1668,7 @@ fn busy_job() -> Job {
     gate.max_attempts = 4;
     gate.ci.required = ["build".to_owned()].into();
     gate.verifier = Some(AgentId::new("reviewer"));
-    Job {
+    let mut job = Job {
         number: 3,
         gate,
         attempt: 2,
@@ -1693,7 +1693,41 @@ fn busy_job() -> Job {
         }],
         hold: Some(Hold::CiTimeout),
         catalog,
+        steps: orch_core::StepLedger::default(),
+    };
+    // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
+    // count of updates.
+    for (id, parent, state) in [
+        ("task-1/tool:c1", None, orch_core::StepState::Running),
+        (
+            "task-1/acp:c1:1",
+            Some("task-1/tool:c1"),
+            orch_core::StepState::Running,
+        ),
+        (
+            "task-1/acp:c1:1",
+            Some("task-1/tool:c1"),
+            orch_core::StepState::Waiting,
+        ),
+    ] {
+        let report = orch_core::StepReport {
+            id: id.to_owned(),
+            parent: parent.map(str::to_owned),
+            kind: orch_core::StepKind::Command,
+            label: "npm test".to_owned(),
+            state,
+            icon: None,
+            detail: None,
+        };
+        orch_core::record_step(
+            ThreadState::Working,
+            &mut job,
+            Actor::system(),
+            &report,
+            orch_core::StepSource::Agent,
+        );
     }
+    job
 }
 
 /// The job is stored with the thread, comes back exactly, and a commit without one leaves it.
@@ -2164,6 +2198,105 @@ pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(read, stored);
     let read_bodies: Vec<EventBody> = read.into_iter().map(|e| e.body).collect();
     assert_eq!(read_bodies, bodies);
+}
+
+/// The `agent_step` event is stored and read back (ADR 0025): the start, an update and the end of
+/// a nested step, with the path, an icon and a detail, in the order they were written, in the
+/// reads of the log and as the newest of their kind.
+pub async fn agent_step_roundtrip<S: ThreadStore>(store: S) {
+    use orch_core::{AgentStepData, StepKind, StepPhase, StepState};
+    let step =
+        |id: &str, path: &[&str], kind, state, phase, icon: Option<&str>, detail: Option<&str>| {
+            EventBody::AgentStep(AgentStepData {
+                id: id.to_owned(),
+                path: path.iter().map(|p| (*p).to_owned()).collect(),
+                kind,
+                label: format!("label of {id}"),
+                state,
+                phase,
+                icon: icon.map(str::to_owned),
+                detail: detail.map(str::to_owned),
+            })
+        };
+    let bodies = vec![
+        step(
+            "t/tool:c1",
+            &[],
+            StepKind::Subagent,
+            StepState::Running,
+            StepPhase::Start,
+            Some("agent"),
+            None,
+        ),
+        step(
+            "t/acp:1",
+            &["t/tool:c1"],
+            StepKind::Command,
+            StepState::Running,
+            StepPhase::Start,
+            Some("execute"),
+            None,
+        ),
+        step(
+            "t/acp:1",
+            &["t/tool:c1"],
+            StepKind::Command,
+            StepState::Waiting,
+            StepPhase::Update,
+            None,
+            Some("waiting for a permission"),
+        ),
+        step(
+            "t/acp:1",
+            &["t/tool:c1"],
+            StepKind::Command,
+            StepState::Failed,
+            StepPhase::End,
+            Some("execute"),
+            Some("1 failed"),
+        ),
+        step(
+            "t/tool:c1",
+            &[],
+            StepKind::Subagent,
+            StepState::Completed,
+            StepPhase::End,
+            Some("agent"),
+            None,
+        ),
+    ];
+    let events: Vec<NewEvent> = bodies
+        .iter()
+        .map(|body| NewEvent {
+            at: t0(),
+            actor: Actor::agent(&AgentId::new("coder"), Some("rev-1".into())),
+            body: body.clone(),
+            idempotency_key: None,
+        })
+        .collect();
+    let (record, stored) = store
+        .create_thread(
+            new_thread(&alice(), 1),
+            commit(ThreadState::Working, events, vec![]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record.state, ThreadState::Working);
+    let read = store.list_events(thread_id(1), 0, 10).await.unwrap();
+    assert_eq!(read, stored);
+    assert_eq!(
+        read.iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
+        bodies
+    );
+    let latest = store
+        .latest_events(thread_id(1), orch_core::EventKind::AgentStep, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        latest.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [5, 4],
+        "newest first"
+    );
 }
 
 // ---------------------------------------------------------------------------------- inbox

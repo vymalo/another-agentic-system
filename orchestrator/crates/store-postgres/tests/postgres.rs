@@ -1051,6 +1051,98 @@ async fn migration_0004_upgrades_a_database_that_holds_threads() {
     assert_eq!(left, 0, "a thread takes its watches with it");
 }
 
+/// Migration 0007 on a database that has run 0001 to 0006 and holds a thread with a log: the old
+/// events stay, the old constraint refuses an `agent_step`, the new one takes it and still refuses
+/// a kind nobody knows, and a step the core wrote reads back.
+#[tokio::test]
+async fn migration_0007_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let insert = |seq: i64, kind: &'static str, data: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"agent\",\"name\":\"coder\"}', $4::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    insert(1, "agent_status", r#"{"status":"working"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        insert(2, "agent_step", "{}").execute(&pool).await.is_err(),
+        "0006 has no `agent_step`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    let step = r#"{"id":"t/tool:c1","path":[],"kind":"subagent","label":"OpenCode","state":"running","phase":"start","icon":"agent"}"#;
+    insert(2, "agent_step", step)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        insert(3, "nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let events = store.list_events(ThreadId(thread), 0, 10).await.unwrap();
+    assert_eq!(events.len(), 2, "the old event is untouched");
+    assert!(matches!(
+        &events[1].body,
+        EventBody::AgentStep(s) if s.id == "t/tool:c1" && s.label == "OpenCode"
+    ));
+}
+
 /// A row this build cannot read (written by a newer build, or damaged) is handed out like any
 /// other and fails on its own when decoded: it does not fail the claim of the rows beside it.
 #[tokio::test]

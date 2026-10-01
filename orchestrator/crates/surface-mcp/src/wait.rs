@@ -144,6 +144,13 @@ pub fn describe(event: &Event) -> Option<String> {
         }
         EventBody::Rework(r) => format!("rework: attempt {} of {}", r.attempt, r.max_attempts),
         EventBody::JobStarted(j) => format!("job {} started", j.job),
+        // the start and the end of a step are progress; its updates are not worth a line each
+        EventBody::AgentStep(s) => match s.phase {
+            orch_core::StepPhase::Start | orch_core::StepPhase::End => {
+                format!("step: {} [{}]", s.label, s.state.as_str())
+            }
+            orch_core::StepPhase::Update => return None,
+        },
         // bookkeeping about the person's screen, not progress of the job
         EventBody::UiCatalog(_) => return None,
     };

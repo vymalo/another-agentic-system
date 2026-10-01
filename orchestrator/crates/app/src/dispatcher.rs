@@ -135,7 +135,8 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             AgentUpdate::Artifact { .. }
             | AgentUpdate::Message { .. }
             | AgentUpdate::Ui { .. }
-            | AgentUpdate::UiRejected { .. },
+            | AgentUpdate::UiRejected { .. }
+            | AgentUpdate::Step(_),
         )
         | None => None,
     })

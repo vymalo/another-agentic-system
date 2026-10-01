@@ -11,6 +11,7 @@ mod event;
 mod extension;
 mod gate;
 mod ids;
+mod step;
 mod thread;
 mod thread_tools;
 mod transition;
@@ -38,6 +39,11 @@ pub use gate::{
     verifier_context,
 };
 pub use ids::{AgentId, ThreadId, UserId};
+pub use step::{
+    AgentStepData, MAX_OPEN_STEPS, MAX_STEP_DEPTH, MAX_STEP_DETAIL_CHARS, MAX_STEP_ID_BYTES,
+    MAX_STEP_LABEL_CHARS, MAX_STEP_UPDATES, MAX_STEPS_PER_JOB, MCP_SERVER_ICON_PREFIX, STEP_ICONS,
+    StepKind, StepLedger, StepPhase, StepReport, StepSource, StepState, record_step,
+};
 pub use thread::{AgentInfo, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};

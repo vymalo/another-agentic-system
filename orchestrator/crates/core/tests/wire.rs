@@ -85,6 +85,16 @@ fn every_kind_roundtrips_and_never_emits_null() {
         }),
         EventBody::JobStarted(JobStartedData { job: 2 }),
         EventBody::UiCatalog(note_catalog()),
+        EventBody::AgentStep(AgentStepData {
+            id: "t/acp:c2:1".into(),
+            path: vec![],
+            kind: StepKind::Command,
+            label: "npm test".into(),
+            state: StepState::Running,
+            phase: StepPhase::Start,
+            icon: Some("execute".into()),
+            detail: Some("12 passed".into()),
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -148,6 +158,61 @@ fn a_ui_catalog_is_the_persons_event_and_its_data_is_what_the_web_sent() {
     let mut broken = v;
     broken["data"].as_object_mut().unwrap().remove("digest");
     assert!(serde_json::from_value::<Event>(broken).is_err());
+}
+
+/// ADR 0025: an `agent_step` is the agent's event, its data has the camelCase shape the contract
+/// says, and the optional members are left out, never `null`.
+#[test]
+fn an_agent_step_is_the_agents_event_and_leaves_out_what_it_does_not_say() {
+    let data = AgentStepData {
+        id: "task-1/acp:c2:1".into(),
+        path: vec!["task-1/tool:c2".into()],
+        kind: StepKind::Command,
+        label: "npm test".into(),
+        state: StepState::Failed,
+        phase: StepPhase::End,
+        icon: None,
+        detail: Some("1 failed".into()),
+    };
+    let e = event(
+        EventBody::AgentStep(data.clone()),
+        Actor::agent(&AgentId::new("coder"), Some("rev-2".into())),
+    );
+    assert_eq!(e.kind(), EventKind::AgentStep);
+    assert_eq!(e.kind().as_str(), "agent_step");
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        v,
+        json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00.123456Z",
+            "kind": "agent_step",
+            "actor": {"type": "agent", "name": "coder", "revision": "rev-2"},
+            "data": {
+                "id": "task-1/acp:c2:1",
+                "path": ["task-1/tool:c2"],
+                "kind": "command",
+                "label": "npm test",
+                "state": "failed",
+                "phase": "end",
+                "detail": "1 failed"
+            }
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(v.clone()).unwrap(), e);
+    // a log written without a path (or with unknown members) still reads
+    let mut loose = v;
+    loose["data"].as_object_mut().unwrap().remove("path");
+    loose["data"]["future"] = json!(1);
+    let read: Event = serde_json::from_value(loose).unwrap();
+    assert!(matches!(&read.body, EventBody::AgentStep(s) if s.path.is_empty()));
+    // a state or a phase this build does not know does not read
+    for (key, bad) in [("state", "paused"), ("phase", "middle"), ("kind", "robot")] {
+        let mut v = serde_json::to_value(&e).unwrap();
+        v["data"][key] = json!(bad);
+        assert!(serde_json::from_value::<Event>(v).is_err(), "{key}");
+    }
 }
 
 #[test]
