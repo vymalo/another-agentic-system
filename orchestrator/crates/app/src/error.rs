@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use orch_core::{AgentId, Classify, ErrorClass, TransitionError};
+use orch_core::{AgentId, Classify, ErrorClass, ForkError, TransitionError};
 use orch_ports::{AgentError, RegistryError, StoreError};
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
@@ -19,6 +19,13 @@ pub enum AppError {
     /// thread's next job.
     #[error("this card belongs to a finished request")]
     Finished,
+    /// A thread cannot be cut where it was asked to (ADR 0029).
+    #[error(transparent)]
+    Fork(ForkError),
+    /// The request is valid, but what it names is in the way: an id that is taken by another
+    /// thread, a family of edits that has no room for another.
+    #[error("{0}")]
+    Refused(String),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -71,6 +78,12 @@ impl AppError {
     }
 }
 
+impl From<ForkError> for AppError {
+    fn from(e: ForkError) -> Self {
+        AppError::Fork(e)
+    }
+}
+
 impl From<TransitionError> for AppError {
     fn from(e: TransitionError) -> Self {
         match e {
@@ -85,7 +98,8 @@ impl Classify for AppError {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
             AppError::Invalid(_) => ErrorClass::Invalid,
-            AppError::Finished => ErrorClass::Rejected,
+            AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
+            AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Transition(e) => e.class(),
             AppError::Upstream { source, .. } => source.class(),
@@ -103,6 +117,8 @@ impl Classify for AppError {
             AppError::NotFound
             | AppError::Invalid(_)
             | AppError::Finished
+            | AppError::Refused(_)
+            | AppError::Fork(_)
             | AppError::Transition(_)
             | AppError::Contended
             | AppError::Internal { .. } => None,
@@ -127,6 +143,9 @@ mod tests {
             AppError::NotFound,
             AppError::Invalid("bad".into()),
             AppError::Finished,
+            AppError::Refused("taken".into()),
+            AppError::Fork(ForkError::OutOfRange),
+            AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
             AppError::Transition(TransitionError::InvalidInState {
                 state: ThreadState::Queued,
@@ -144,7 +163,8 @@ mod tests {
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
                 AppError::Invalid(_) => ErrorClass::Invalid,
-                AppError::Finished => ErrorClass::Rejected,
+                AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
+                AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
                 AppError::Transition(inner) => inner.class(),
                 AppError::Upstream { source, .. } => source.class(),

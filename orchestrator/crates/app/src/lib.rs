@@ -11,8 +11,9 @@ mod gate_config;
 mod inbox;
 
 pub use app::{
-    AgentDescription, AgentList, App, AppConfig, ApplyOutcome, Creation, DEFAULT_MAX_EXPORT_BYTES,
-    DEFAULT_MAX_EXPORT_EVENTS, FeedItem, Inbound, NewThread, Received, ThreadExport,
+    AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView, Branches, Creation,
+    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, ForkAt, ForkRequest, Forked,
+    Inbound, NewThread, Received, SiblingView, ThreadExport,
 };
 pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schemas};
 pub use directory::{AgentDirectory, AgentEntry};

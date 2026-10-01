@@ -48,7 +48,7 @@ pub use registry::{
 };
 pub use route::ByTransport;
 pub use store::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, Lease, NewEvent, NewOutbox,
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
     OutboxStatus, StoreError, ThreadStore,
 };

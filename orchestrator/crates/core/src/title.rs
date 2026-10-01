@@ -136,6 +136,17 @@ impl TitleLedger {
         self.source.is_default() && self.asks == 0 && self.answered == 0 && !self.asked_in_reply
     }
 
+    /// The ledger a fork starts with (ADR 0029): the parent's, with nothing in flight. Whatever
+    /// the parent had asked of the model it had been answered or is the parent's business, not the
+    /// fork's, and the fork's first reply is a reply of its own.
+    pub(crate) fn inherited(self) -> Self {
+        TitleLedger {
+            answered: self.asks,
+            asked_in_reply: false,
+            ..self
+        }
+    }
+
     /// The ledger of a thread whose title is `source`'s.
     pub fn of(source: TitleSource) -> Self {
         TitleLedger {
@@ -244,7 +255,7 @@ fn cut_bytes(text: &str, max: usize) -> &str {
 
 /// What the agent said in an event body, when it is words for the conversation: a final message,
 /// or what a status that ends or interrupts the turn says.
-fn agent_words(body: &EventBody) -> Option<&str> {
+pub(crate) fn agent_words(body: &EventBody) -> Option<&str> {
     let words = match body {
         EventBody::AgentMessage(m) if m.is_final => m.text.as_str(),
         EventBody::AgentStatus(s) => match s.status {
@@ -269,7 +280,8 @@ fn agent_words(body: &EventBody) -> Option<&str> {
         | EventBody::JobStarted(_)
         | EventBody::UiCatalog(_)
         | EventBody::AgentStep(_)
-        | EventBody::ThreadTitled(_) => return None,
+        | EventBody::ThreadTitled(_)
+        | EventBody::ThreadForked(_) => return None,
     };
     (!words.trim().is_empty()).then_some(words)
 }

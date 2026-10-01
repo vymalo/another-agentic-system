@@ -3,18 +3,20 @@
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, EventKind, Job, ThreadId, ThreadRecord, UserId, WatchKey};
+use orch_core::{
+    EditLink, Event, EventKind, ForkKind, ForkNode, Job, ThreadId, ThreadRecord, UserId, WatchKey,
+};
 use orch_ports::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxItem, InboxLease,
-    Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId,
-    OutboxItem, OutboxStats, Parking, Received, StoreError, TIMER_SOURCE, ThreadStore,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
+    InboxLease, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
+    OutboxId, OutboxItem, OutboxStats, Parking, Received, StoreError, TIMER_SOURCE, ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::codec::{
     binding_from_row, enum_str, event_from_row, get_ts_opt, inbox_cols, inbox_from_row,
-    outbox_cols, outbox_from_row, thread_cols, thread_from_row, to_db, ts,
+    outbox_cols, outbox_from_row, parse_enum, thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
 use crate::wakeup::{CHANNEL_INBOX, CHANNEL_OUTBOX, CHANNEL_THREAD};
@@ -81,6 +83,175 @@ impl PgStore {
     pub async fn migrate(&self) -> Result<(), StoreError> {
         MIGRATOR.run(&self.pool).await.map_err(migrate_err)
     }
+}
+
+impl PgStore {
+    /// Inserts a thread, for [`ThreadStore::create_thread`] and [`ThreadStore::fork_thread`]: for a
+    /// fork, the parent's events up to the cut are copied in before the first commit's.
+    async fn create(
+        &self,
+        new: NewThreadRecord,
+        fork: Option<ForkOrigin>,
+        first: Commit,
+    ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(store_err)?;
+        let cut = fork.map_or(0, |o| o.cut);
+        if let Some(origin) = fork {
+            // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
+            let parent: Option<i64> = sqlx::query_scalar(
+                "SELECT last_seq FROM threads WHERE id = $1 AND owner = $2 FOR KEY SHARE",
+            )
+            .bind(origin.parent.0)
+            .bind(new.owner.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            let Some(last_seq) = parent else {
+                rollback(tx).await;
+                return Err(StoreError::NotFound);
+            };
+            if origin.cut < 0 || last_seq < origin.cut {
+                rollback(tx).await;
+                return Err(StoreError::corrupt("the cut is beyond the parent's log"));
+            }
+        }
+        // Creation is version 1 whatever the first commit does.
+        let inserted = sqlx::query(
+            "INSERT INTO threads (id, owner, title, agent_id, release, state, job, version, \
+             last_seq, created_at, updated_at, forked_from, forked_at, fork_kind) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12)",
+        )
+        .bind(new.id.0)
+        .bind(new.owner.as_str())
+        .bind(&new.title)
+        .bind(new.target.agent_id.as_str())
+        .bind(new.target.release.as_deref())
+        .bind(enum_str(&first.new_state)?)
+        .bind(job_json(first.job.as_ref().unwrap_or(&Job::default()))?)
+        .bind(to_db(new.now))
+        .bind(cut)
+        .bind(fork.map(|o| o.parent.0))
+        .bind(fork.map(|o| o.cut))
+        .bind(fork.map(|o| o.kind.as_str()))
+        .execute(&mut *tx)
+        .await;
+        if let Err(e) = inserted {
+            return Err(if is_unique_violation(&e, None) {
+                StoreError::corrupt("thread id already exists")
+            } else {
+                store_err(e)
+            });
+        }
+        sqlx::query(
+            "INSERT INTO a2a_bindings (thread_id, agent_id, context_id, updated_at) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(new.id.0)
+        .bind(new.target.agent_id.as_str())
+        .bind(&new.context_id)
+        .bind(to_db(new.now))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        if let Some(update) = &first.binding {
+            update_binding(&mut tx, new.id, update, first.now).await?;
+        }
+        let has_outbox = !first.outbox.is_empty();
+        if let Some(origin) = fork {
+            // The parent's events as they are: the same seq, time, actor and data. Events up to
+            // the cut never change, so no lock on them is needed.
+            let copied = sqlx::query(
+                "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+                 SELECT $1, seq, at, kind, actor, data FROM events \
+                 WHERE thread_id = $2 AND seq <= $3",
+            )
+            .bind(new.id.0)
+            .bind(origin.parent.0)
+            .bind(origin.cut)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?
+            .rows_affected();
+            if i64::try_from(copied).ok() != Some(origin.cut) {
+                rollback(tx).await;
+                return Err(StoreError::corrupt(
+                    "the parent's log has a gap before the cut",
+                ));
+            }
+        }
+        let events = insert_events(&mut tx, new.id, cut + 1, first.events).await?;
+        insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
+        let rearmed =
+            insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
+                .await?;
+        let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
+        let row = sqlx::query(concat!(
+            "UPDATE threads SET last_seq = $2, updated_at = $3 WHERE id = $1 RETURNING ",
+            thread_cols!()
+        ))
+        .bind(new.id.0)
+        .bind(last_seq)
+        .bind(to_db(first.now))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let record = thread_from_row(&row)?;
+        notify_thread(&mut tx, new.id).await?;
+        if has_outbox {
+            notify_outbox(&mut *tx).await?;
+        }
+        if rearmed {
+            notify_inbox(&mut *tx).await?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok((record, events))
+    }
+}
+
+/// The family of edits of `$1` (a thread), the owner's `$2`: up the edit links to the thread the
+/// family started from, then down them. `message` is the first message of a person after the
+/// `thread_forked` event of a thread made by an edit.
+const FORK_FAMILY: &str = "\
+    WITH RECURSIVE up AS ( \
+        SELECT id, forked_from, fork_kind, 0 AS depth FROM threads WHERE id = $1 AND owner = $2 \
+        UNION ALL \
+        SELECT p.id, p.forked_from, p.fork_kind, up.depth + 1 \
+        FROM threads p JOIN up ON p.id = up.forked_from AND up.fork_kind = 'edit' \
+        WHERE p.owner = $2 AND up.depth < 1000), \
+    root AS (SELECT id FROM up ORDER BY depth DESC LIMIT 1), \
+    down AS ( \
+        SELECT id, 0 AS depth FROM root \
+        UNION ALL \
+        SELECT c.id, down.depth + 1 \
+        FROM threads c JOIN down ON c.forked_from = down.id \
+        WHERE c.fork_kind = 'edit' AND c.owner = $2 AND down.depth < 1000) \
+    SELECT t.id, t.forked_from, t.forked_at, t.fork_kind, t.created_at, \
+        (SELECT min(e.seq) FROM events e \
+         WHERE e.thread_id = t.id AND e.kind = 'user_message' AND e.seq > t.forked_at) AS message \
+    FROM threads t JOIN down ON down.id = t.id \
+    ORDER BY t.created_at, t.id LIMIT 1000";
+
+fn fork_node_from_row(row: &PgRow) -> Result<ForkNode, StoreError> {
+    let id = ThreadId(row.try_get("id").map_err(store_err)?);
+    let parent: Option<uuid::Uuid> = row.try_get("forked_from").map_err(store_err)?;
+    let at: Option<i64> = row.try_get("forked_at").map_err(store_err)?;
+    let kind: Option<String> = row.try_get("fork_kind").map_err(store_err)?;
+    let message: Option<i64> = row.try_get("message").map_err(store_err)?;
+    let created = row
+        .try_get::<jiff_sqlx::Timestamp, _>("created_at")
+        .map_err(store_err)?
+        .to_jiff();
+    let kind: Option<ForkKind> = kind.map(|k| parse_enum("fork kind", &k)).transpose()?;
+    // A link is an edit whose parent still exists; any other thread starts a family of its own.
+    let link = match (kind, parent, at) {
+        (Some(ForkKind::Edit), Some(parent), Some(cut)) => Some(EditLink {
+            parent: ThreadId(parent),
+            cut,
+            message: message.unwrap_or(cut + 2),
+        }),
+        _ => None,
+    };
+    Ok(ForkNode { id, link, created })
 }
 
 fn plus(t: Timestamp, d: Duration) -> Timestamp {
@@ -421,70 +592,35 @@ impl ThreadStore for PgStore {
         new: NewThreadRecord,
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_err)?;
-        // Creation is version 1 whatever the first commit does.
-        let inserted = sqlx::query(
-            "INSERT INTO threads (id, owner, title, agent_id, release, state, job, version, \
-             last_seq, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, $8, $8)",
-        )
-        .bind(new.id.0)
-        .bind(new.owner.as_str())
-        .bind(&new.title)
-        .bind(new.target.agent_id.as_str())
-        .bind(new.target.release.as_deref())
-        .bind(enum_str(&first.new_state)?)
-        .bind(job_json(first.job.as_ref().unwrap_or(&Job::default()))?)
-        .bind(to_db(new.now))
-        .execute(&mut *tx)
-        .await;
-        if let Err(e) = inserted {
-            return Err(if is_unique_violation(&e, None) {
-                StoreError::corrupt("thread id already exists")
-            } else {
-                store_err(e)
-            });
-        }
-        sqlx::query(
-            "INSERT INTO a2a_bindings (thread_id, agent_id, context_id, updated_at) \
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(new.id.0)
-        .bind(new.target.agent_id.as_str())
-        .bind(&new.context_id)
-        .bind(to_db(new.now))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_err)?;
-        if let Some(update) = &first.binding {
-            update_binding(&mut tx, new.id, update, first.now).await?;
-        }
-        let has_outbox = !first.outbox.is_empty();
-        let events = insert_events(&mut tx, new.id, 1, first.events).await?;
-        insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
-        let rearmed =
-            insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
-                .await?;
-        let last_seq = i64::try_from(events.len()).unwrap_or(i64::MAX);
-        let row = sqlx::query(concat!(
-            "UPDATE threads SET last_seq = $2, updated_at = $3 WHERE id = $1 RETURNING ",
-            thread_cols!()
-        ))
-        .bind(new.id.0)
-        .bind(last_seq)
-        .bind(to_db(first.now))
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(store_err)?;
-        let record = thread_from_row(&row)?;
-        notify_thread(&mut tx, new.id).await?;
-        if has_outbox {
-            notify_outbox(&mut *tx).await?;
-        }
-        if rearmed {
-            notify_inbox(&mut *tx).await?;
-        }
-        tx.commit().await.map_err(store_err)?;
-        Ok((record, events))
+        self.create(new, None, first).await
+    }
+
+    async fn fork_thread(
+        &self,
+        new: NewThreadRecord,
+        origin: ForkOrigin,
+        first: Commit,
+    ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+        self.create(new, Some(origin), first).await
+    }
+
+    async fn fork_family(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+    ) -> Result<Vec<ForkNode>, StoreError> {
+        // Up from `thread` along edit links to the thread the family started from, then down from
+        // it along edit links. The depth bounds are belts: a thread's parent is older than it, so
+        // the links cannot loop.
+        sqlx::query(FORK_FAMILY)
+            .bind(thread.0)
+            .bind(owner.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_err)?
+            .iter()
+            .map(fork_node_from_row)
+            .collect()
     }
 
     async fn get_thread(
@@ -512,6 +648,7 @@ impl ThreadStore for PgStore {
         owner: &UserId,
         before: Option<ThreadId>,
         limit: u32,
+        include_edits: bool,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
         if let Some(cursor) = before {
             let known = sqlx::query("SELECT 1 FROM threads WHERE id = $1 AND owner = $2")
@@ -528,11 +665,13 @@ impl ThreadStore for PgStore {
             "SELECT ",
             thread_cols!(),
             " FROM threads WHERE owner = $1 AND ($2::uuid IS NULL OR id < $2) \
+             AND ($4 OR fork_kind IS DISTINCT FROM 'edit') \
              ORDER BY id DESC LIMIT $3"
         ))
         .bind(owner.as_str())
         .bind(before.map(|b| b.0))
         .bind(i64::from(limit))
+        .bind(include_edits)
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?

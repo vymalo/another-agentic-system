@@ -99,6 +99,18 @@ fn every_kind_roundtrips_and_never_emits_null() {
             title: "Fix the build".into(),
             source: TitledBy::User,
         }),
+        EventBody::ThreadForked(ThreadForkedData {
+            from: ForkSource {
+                thread_id: tid(),
+                seq: 41,
+            },
+            kind: ForkKind::Fork,
+            title: "Fix the build".into(),
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: None,
+            },
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -331,6 +343,7 @@ fn thread_wire_hides_owner_and_version() {
         state: ThreadState::Working,
         job: Job::default(),
         version: 7,
+        forked_from: None,
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
@@ -346,6 +359,48 @@ fn thread_wire_hides_owner_and_version() {
             "createdAt": "2026-09-29T10:00:00Z",
             "updatedAt": "2026-09-29T10:00:01Z"
         })
+    );
+}
+
+/// ADR 0029: a fork says where it came from, and the thread of a deleted parent still says how it
+/// was made; a thread that was not forked says nothing.
+#[test]
+fn a_forked_thread_says_where_it_came_from() {
+    let t = ThreadRecord {
+        id: tid(),
+        owner: UserId::new("a@b.c"),
+        title: "T".into(),
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: ThreadState::Done,
+        job: Job::default(),
+        version: 1,
+        forked_from: Some(ForkedFrom {
+            thread_id: Some(tid()),
+            seq: 41,
+            kind: ForkKind::Edit,
+        }),
+        last_seq: 42,
+        created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
+        updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
+    };
+    assert_eq!(
+        serde_json::to_value(&t).unwrap()["forkedFrom"],
+        json!({"threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000", "seq": 41, "kind": "edit"})
+    );
+    let orphan = ThreadRecord {
+        forked_from: Some(ForkedFrom {
+            thread_id: None,
+            seq: 0,
+            kind: ForkKind::Fork,
+        }),
+        ..t
+    };
+    assert_eq!(
+        serde_json::to_value(&orphan).unwrap()["forkedFrom"],
+        json!({"seq": 0, "kind": "fork"})
     );
 }
 
@@ -369,6 +424,7 @@ fn a_thread_under_a_gate_carries_its_job_and_one_without_carries_none() {
         state: ThreadState::Verifying,
         job,
         version: 7,
+        forked_from: None,
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
         updated_at: "2026-09-29T10:00:01Z".parse().unwrap(),
@@ -693,5 +749,52 @@ fn a_thread_titled_is_the_persons_event_with_the_title_and_its_writer() {
         let mut v = v.clone();
         v["data"]["source"] = json!(bad);
         assert!(serde_json::from_value::<Event>(v).is_err(), "{bad}");
+    }
+}
+
+/// ADR 0029: the `thread_forked` event is the person's; it names the thread and the last event
+/// copied, how the fork was made, the title it keeps and the agent it talks to. A fork onto the
+/// parent's agent and a release names both, and nothing else is spelled that is not set.
+#[test]
+fn a_thread_forked_is_the_persons_event_with_where_it_came_from() {
+    let e = event(
+        EventBody::ThreadForked(ThreadForkedData {
+            from: ForkSource {
+                thread_id: tid(),
+                seq: 41,
+            },
+            kind: ForkKind::Edit,
+            title: "Fix the redirect loop".into(),
+            target: AgentTarget {
+                agent_id: AgentId::new("coder"),
+                release: Some("stable".into()),
+            },
+        }),
+        Actor::user(&UserId::new("me@example.com")),
+    );
+    assert_eq!(e.kind(), EventKind::ThreadForked);
+    assert_eq!(e.kind().as_str(), "thread_forked");
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        v,
+        json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00.123456Z",
+            "kind": "thread_forked",
+            "actor": {"type": "user", "name": "me@example.com"},
+            "data": {
+                "from": {"threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000", "seq": 41},
+                "kind": "edit",
+                "title": "Fix the redirect loop",
+                "target": {"agentId": "coder", "release": "stable"}
+            }
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(v.clone()).unwrap(), e);
+    for (member, bad) in [("kind", json!("branch")), ("from", json!({"seq": 1}))] {
+        let mut v = v.clone();
+        v["data"][member] = bad;
+        assert!(serde_json::from_value::<Event>(v).is_err(), "{member}");
     }
 }

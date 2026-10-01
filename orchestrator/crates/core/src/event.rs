@@ -2,6 +2,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::fork::ThreadForkedData;
 use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::step::AgentStepData;
@@ -44,6 +45,8 @@ pub enum EventKind {
     AgentStep,
     /// The thread has a new title: a person renamed it.
     ThreadTitled,
+    /// The thread began as a copy of another (ADR 0029): a fork or an edited message.
+    ThreadForked,
 }
 
 impl EventKind {
@@ -65,6 +68,7 @@ impl EventKind {
             EventKind::UiCatalog => "ui_catalog",
             EventKind::AgentStep => "agent_step",
             EventKind::ThreadTitled => "thread_titled",
+            EventKind::ThreadForked => "thread_forked",
         }
     }
 }
@@ -306,6 +310,8 @@ pub enum EventBody {
     AgentStep(AgentStepData),
     /// See [`ThreadTitledData`].
     ThreadTitled(ThreadTitledData),
+    /// See [`ThreadForkedData`].
+    ThreadForked(ThreadForkedData),
 }
 
 impl EventBody {
@@ -327,6 +333,7 @@ impl EventBody {
             EventBody::UiCatalog(_) => EventKind::UiCatalog,
             EventBody::AgentStep(_) => EventKind::AgentStep,
             EventBody::ThreadTitled(_) => EventKind::ThreadTitled,
+            EventBody::ThreadForked(_) => EventKind::ThreadForked,
         }
     }
 
@@ -348,6 +355,7 @@ impl EventBody {
             EventBody::UiCatalog(d) => serde_json::to_value(d),
             EventBody::AgentStep(d) => serde_json::to_value(d),
             EventBody::ThreadTitled(d) => serde_json::to_value(d),
+            EventBody::ThreadForked(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -371,6 +379,7 @@ impl EventBody {
             EventKind::UiCatalog => EventBody::UiCatalog(serde_json::from_value(data)?),
             EventKind::AgentStep => EventBody::AgentStep(serde_json::from_value(data)?),
             EventKind::ThreadTitled => EventBody::ThreadTitled(serde_json::from_value(data)?),
+            EventKind::ThreadForked => EventBody::ThreadForked(serde_json::from_value(data)?),
         })
     }
 }

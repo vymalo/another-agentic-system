@@ -1579,3 +1579,361 @@ async fn a_legacy_cancel_row_reads_as_the_current_jobs_and_a_new_one_keeps_its_j
             .unwrap();
     assert_eq!(stored, serde_json::json!({"cancel": {"job": 3}}));
 }
+
+/// Migration 0010 adds the fork columns and the `thread_forked` kind to a database that holds a
+/// log: the old rows stay and read as threads that were not forked, the old constraint refuses the
+/// new kind, the new one takes it and still refuses an unknown kind and a half-set fork origin.
+#[tokio::test]
+async fn migration_0010_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let insert = |thread: Uuid, seq: i64, kind: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{}'::jsonb, '{}'::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+    };
+    insert(thread, 1, "user_message")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        insert(thread, 2, "thread_forked")
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0009 has no event kind `thread_forked`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    insert(thread, 2, "thread_forked")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        insert(thread, 3, "nonsense")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    // the old thread reads as one that was not forked, and its log is as it was
+    let old = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.forked_from, None);
+    let origin = |from: Option<Uuid>, at: Option<i64>, kind: Option<&'static str>| {
+        sqlx::query(
+            "UPDATE threads SET forked_from = $2, forked_at = $3, fork_kind = $4 WHERE id = $1",
+        )
+        .bind(thread)
+        .bind(from)
+        .bind(at)
+        .bind(kind)
+    };
+    for (what, from, at, kind) in [
+        ("a cut with no kind", None, Some(1_i64), None),
+        ("a kind with no cut", None, None, Some("fork")),
+        ("a parent with no cut", Some(Uuid::now_v7()), None, None),
+        ("an unknown kind", None, Some(1), Some("branch")),
+        ("a negative cut", None, Some(-1), Some("fork")),
+    ] {
+        assert!(
+            origin(from, at, kind).execute(store.pool()).await.is_err(),
+            "{what} is refused"
+        );
+    }
+    origin(None, Some(1), Some("fork"))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let forked = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        forked.forked_from,
+        Some(orch_core::ForkedFrom {
+            thread_id: None,
+            seq: 1,
+            kind: orch_core::ForkKind::Fork
+        })
+    );
+}
+
+/// A fork outlives its parent: deleting the parent leaves the fork whole, with its own copy of the
+/// log and an origin that no longer names a thread, and a family of edits starts again at the
+/// edit whose parent is gone.
+#[tokio::test]
+async fn a_fork_survives_the_deletion_of_its_parent() {
+    use orch_core::{ForkKind, ForkSource, ForkedFrom, ThreadForkedData};
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let parent = create(&store, vec![delegate()]).await;
+    store
+        .commit(
+            parent,
+            1,
+            commit(
+                ThreadState::Working,
+                vec![event("one", None), event("two", None)],
+                vec![],
+            ),
+        )
+        .await
+        .unwrap();
+    let make = |n: u8, parent: ThreadId, kind: ForkKind| {
+        let store = store.clone();
+        async move {
+            let id = ThreadId(Uuid::now_v7());
+            let new = NewThreadRecord {
+                id,
+                owner: user(),
+                title: format!("fork {n}"),
+                target: AgentTarget {
+                    agent_id: AgentId::new("coder"),
+                    release: None,
+                },
+                context_id: id.to_string(),
+                now: t0(),
+            };
+            let data = ThreadForkedData {
+                from: ForkSource {
+                    thread_id: parent,
+                    seq: 2,
+                },
+                kind,
+                title: "t".to_owned(),
+                target: new.target.clone(),
+            };
+            let forked = NewEvent {
+                at: t0(),
+                actor: Actor::user(&user()),
+                body: EventBody::ThreadForked(data),
+                idempotency_key: None,
+            };
+            store
+                .fork_thread(
+                    new,
+                    orch_ports::ForkOrigin {
+                        parent,
+                        cut: 2,
+                        kind,
+                    },
+                    commit(ThreadState::Done, vec![forked, event("mine", None)], vec![]),
+                )
+                .await
+                .unwrap();
+            id
+        }
+    };
+    let child = make(1, parent, ForkKind::Edit).await;
+    let grandchild = make(2, child, ForkKind::Edit).await;
+    assert_eq!(
+        store.fork_family(&user(), grandchild).await.unwrap().len(),
+        3
+    );
+
+    sqlx::query("DELETE FROM threads WHERE id = $1")
+        .bind(parent.0)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let child_after = store.get_thread(None, child).await.unwrap().unwrap();
+    assert_eq!(
+        child_after.forked_from,
+        Some(ForkedFrom {
+            thread_id: None,
+            seq: 2,
+            kind: ForkKind::Edit
+        })
+    );
+    // its copy of the log is its own
+    let events = store.list_events(child, 0, 100).await.unwrap();
+    assert_eq!(events.len(), 4, "two copied, the fork's event and its own");
+    // the family starts at the edit whose parent is gone, and its edit is still linked to it
+    let family = store.fork_family(&user(), grandchild).await.unwrap();
+    assert_eq!(
+        family
+            .iter()
+            .map(|n| (n.id, n.link.is_some()))
+            .collect::<Vec<_>>(),
+        vec![(child, false), (grandchild, true)]
+    );
+}
+
+/// The copy is one transaction with the thread, and sixteen forks of one thread made while the
+/// parent goes on being written to each hold exactly the events up to their cut.
+#[tokio::test]
+async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
+    use orch_core::{ForkKind, ForkSource, ThreadForkedData};
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let parent = create(&store, vec![delegate()]).await;
+    let mut version = 1;
+    for round in 0..8 {
+        let (outcome, _) = match store
+            .commit(
+                parent,
+                version,
+                commit(
+                    ThreadState::Working,
+                    vec![event(&format!("e{round}"), None)],
+                    vec![],
+                ),
+            )
+            .await
+            .unwrap()
+        {
+            CommitOutcome::Applied { thread, events } => (thread, events),
+            other => panic!("{other:?}"),
+        };
+        version = outcome.version;
+    }
+    let writer = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            let mut version = version;
+            for round in 0..20 {
+                match store
+                    .commit(
+                        parent,
+                        version,
+                        commit(
+                            ThreadState::Working,
+                            vec![event(&format!("w{round}"), None)],
+                            vec![],
+                        ),
+                    )
+                    .await
+                {
+                    Ok(CommitOutcome::Applied { thread, .. }) => version = thread.version,
+                    other => panic!("{other:?}"),
+                }
+            }
+        })
+    };
+    let mut forks = Vec::new();
+    for cut in 1..=9_i64 {
+        let store = store.clone();
+        forks.push(tokio::spawn(async move {
+            let id = ThreadId(Uuid::now_v7());
+            let new = NewThreadRecord {
+                id,
+                owner: user(),
+                title: "f".to_owned(),
+                target: AgentTarget {
+                    agent_id: AgentId::new("coder"),
+                    release: None,
+                },
+                context_id: id.to_string(),
+                now: t0(),
+            };
+            let forked = NewEvent {
+                at: t0(),
+                actor: Actor::user(&user()),
+                body: EventBody::ThreadForked(ThreadForkedData {
+                    from: ForkSource {
+                        thread_id: parent,
+                        seq: cut,
+                    },
+                    kind: ForkKind::Fork,
+                    title: "f".to_owned(),
+                    target: new.target.clone(),
+                }),
+                idempotency_key: None,
+            };
+            store
+                .fork_thread(
+                    new,
+                    orch_ports::ForkOrigin {
+                        parent,
+                        cut,
+                        kind: ForkKind::Fork,
+                    },
+                    commit(ThreadState::Done, vec![forked], vec![]),
+                )
+                .await
+                .unwrap();
+            (id, cut)
+        }));
+    }
+    writer.await.unwrap();
+    let parent_events = store.list_events(parent, 0, 1000).await.unwrap();
+    for fork in forks {
+        let (id, cut) = fork.await.unwrap();
+        let events = store.list_events(id, 0, 1000).await.unwrap();
+        let cut_len = usize::try_from(cut).unwrap();
+        assert_eq!(events.len(), cut_len + 1, "cut {cut}");
+        for (copy, original) in events.iter().zip(&parent_events).take(cut_len) {
+            assert_eq!(
+                (copy.seq, copy.at, &copy.body),
+                (original.seq, original.at, &original.body)
+            );
+        }
+        assert_eq!(events[cut_len].seq, cut + 1);
+    }
+}

@@ -692,7 +692,7 @@ async fn a_request_that_weakens_or_overreaches_is_a_400_and_writes_nothing() {
         assert!(err.to_string().contains(why), "{request}: {err}");
     }
     assert!(
-        app.list_threads(&alice(), None, 10)
+        app.list_threads(&alice(), None, 10, false)
             .await
             .unwrap()
             .is_empty(),
@@ -739,7 +739,7 @@ async fn a_thread_may_require_the_verifier_only_where_there_is_one_to_ask() {
         "{err}"
     );
     assert!(
-        app.list_threads(&alice(), None, 10)
+        app.list_threads(&alice(), None, 10, false)
             .await
             .unwrap()
             .iter()

@@ -40,7 +40,7 @@ Routes served here: `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /api/age
 `GET /api/threads`, `GET /api/threads/{id}`, `PATCH /api/threads/{id}` (rename: a body of
 `{"title"}` and nothing else, in any state of the thread, see `App::rename_thread`; 400 for a title that cannot be
 used or another member), `GET /api/threads/{id}/export`,
-`POST /api/threads/{id}/cancel`. The interaction routes come from a
+`POST /api/threads/{id}/cancel`, `POST /api/threads/{id}/fork` (fork a thread from a point: a body of `{"after": seq}` or `{"replace": seq, "text", "messageId"?}`, optional `target` and `id`, see `App::fork_thread` and [ADR 0029](../../../docs/decisions/0029-forking-a-thread-copies-its-log.md); 201 with the new thread and its `Location`, 200 when `id` names a fork of this thread made already, 400 for a body or text or target that cannot be used, 404, 409 with `code: turn_open` while the turn goes on or for an id another thread has or a conversation with 256 branches, 422 for a point that is not in the log or not a person's message), `GET /api/threads/{id}/branches` (`{root, points: [{seq, index, siblings: [{threadId, seq, title}]}]}`: the messages of the thread that have other versions) and `GET /api/threads?branches=include` (without it the threads made by an edit are left out of the list). The interaction routes come from a
 surface (`/agui/*`, from `orch-surface-agui`). Bodies are limited to 1 MiB; request ids are set and
 propagated. The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
 `streamEvents`) were removed on 2026-09-30 (ADR 0012): `POST /api/threads` answers 405 (its path
@@ -101,7 +101,8 @@ read by the binary and passed in as `AuthConfig`.
 Offline: the in-memory stack from `orch-ports` (feature `testkit`), over real
 HTTP. No environment variables.
 
-* `src/problem.rs` unit tests: the status and `Retry-After` for every error class.
+* `src/problem.rs` unit tests: the status and `Retry-After` for every error class (a cut a thread does not allow is 422, or 409 with `code: turn_open`).
+* `tests/contract.rs` also drives `forkThread` and `listBranches`: a fork from here (201, `Location`, `forkedFrom`, the events validated against `Event`), a repeat with the same `id` (200), another agent as `target`, an edit (queued, answered by the dispatcher, hidden from the list and found by the branches), every refused body (400), a point that is not there (422), an id that is taken and a turn that is going on (409, `turn_open`), and someone else's thread (404).
 * `src/metrics.rs` unit tests: the exposition text against a golden, an empty outbox, whole
   seconds and the clamp to zero.
 * `tests/edge.rs`: health and `/metrics` without identity; `health_router` serving health

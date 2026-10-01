@@ -1020,6 +1020,49 @@ stateDiagram-v2
   makes the ledger say `User`; nothing the model writes afterwards is logged, and the model is not asked again.
   `Job::next()` keeps the ledger: a title is the conversation's, not a job's.
 
+### Forking a thread (MVP-plan item F, ADR 0029)
+
+**Built** (2026-10-01): the core, the store and the API; the AG-UI marker, the transcript on the wire and the web are the next steps. A fork is a new thread that starts with a
+copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)).
+`orch_core::fork` holds the pure rules; nothing in it reads a store:
+
+| Function | What it decides |
+|---|---|
+| `fork_cut(events, parent_state, ForkPoint) -> Result<i64, ForkError>` | The last event to copy. `AfterTurn(s)`: the last event before the next `user_message` or `ui_action` after `s`, else the end of the log, but `TurnOpen` while the parent is `queued`, `working` or `verifying`. `Replace(s)`: `s - 1` when `s` is a `user_message` (`NotAMessage` otherwise), 0 for the first message, in any parent state. A seq outside the log is `OutOfRange` |
+| `forked_snapshot(copied, gate, title)` | `done`, job number = the newest `job_started` copied (1 if none), `verification` = the copied `completed` statuses under an active gate, the parent's title ledger with no ask in flight, an **empty** UI catalog ledger (a new A2A context has been sent no catalog) |
+| `fork_commit(user, data, copied, gate, title, replacement)` | `[Append(thread_forked)]`, and for an edit the replacing message through `transition` on that snapshot: `user_message`, `job_started`, `Delegate` |
+| `fork_history(copied)`, `history_preamble(&h)` | The conversation as text for the fork's first task: the person's messages, the agent's final messages and the words of `completed` / `input_required` / `auth_required` (once per turn), each at most 4 KiB, the newest within 24 KiB and the count left out; fenced as a record, not instructions, and unable to close its fence |
+| `branch_points(family, current)` | The messages of `current` that have other versions: the original and the edits of it, in the order made, and which one `current` shows |
+
+The new thread's events `1..=cut` are the parent's, with the same `seq`; its own `thread_forked` is `cut + 1`. A fork has its own
+A2A context (its thread id). The first task of a fork is to be sent with the transcript in front of the message (not built yet), derived from the
+log when the task is sent (so a retry sends the same text) and never stored in the outbox. The core adds the event kind
+`thread_forked` and nothing to `transition`: a fork is made by the application, not decided by an input.
+
+**The store and the application.** `ThreadStore::fork_thread(new, ForkOrigin { parent, cut, kind }, first)` is `create_thread` with
+the copy in the same transaction: the parent must be `new.owner`'s (else `NotFound`, like a missing one) and its log must reach
+the cut; the thread row is inserted with `last_seq = cut` and its origin (`forked_from`, `forked_at`, `fork_kind`); the parent's
+events `1..=cut` are copied by one `INSERT ... SELECT` (same `seq`, time, actor and data, no idempotency key); then the first
+commit's events are appended from `cut + 1`, with its outbox rows, as for any new thread. `ThreadStore::fork_family(owner, thread)`
+returns the family of edits a thread belongs to (a recursive query up the edit links to the thread the family started from, then
+down them: at most 1000 threads, oldest first), each `ForkNode` with its `EditLink { parent, cut, message }` (the `message` is the
+first message of a person after the `thread_forked`). `list_threads` takes `include_edits`: a thread made by an edit is hidden
+from the list unless asked for. `ThreadRecord.forked_from` (`{threadId?, seq, kind}`) is what the row keeps.
+
+`App::fork_thread(user, parent, ForkRequest { at, target?, id? })` reads the parent (state, `job.title` and `last_seq` of one row),
+reads its log up to that `last_seq` (a log longer than an export reads is too long to fork), asks `fork_cut`, resolves the
+target as a new thread's (the parent's when none: the registry and the card are read live), builds the commit with `fork_commit`
+and `build_commit` (so an edit's delegation is an ordinary outbox row, `new_job`), and calls `fork_thread`. A request that names an
+`id` is idempotent: the fork of this parent that has it is answered again (`created: false`); another thread's id is `Refused`
+(409), a foreign thread's `NotFound`. An edit is refused when its family has 256 threads already. `App::branches(user, thread)`
+is `branch_points` over `fork_family`, with the title of each version.
+
+The API (`docs/api/chat-api.yaml`): `POST /api/threads/{id}/fork` (`{after}` or `{replace, text, messageId?}`, optional `target`
+and `id`; 201 with the new thread and a `Location`, 200 for a repeat, 400, 404, 409 `turn_open` or an id that is taken or a full
+family, 422 for a point that is not in the log or not a person's message), `GET /api/threads/{id}/branches`
+(`{root, points: [{seq, index, siblings: [{threadId, seq, title}]}]}`) and `GET /api/threads?branches=include`. Problems carry an
+optional `code`.
+
 ### Exporting a thread
 
 **Built** (2026-09-30). `GET /api/threads/{id}/export` ([`api/chat-api.yaml`](api/chat-api.yaml), `exportThread`) returns one
@@ -1114,7 +1157,7 @@ pub enum Command {
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadForked(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
@@ -1406,7 +1449,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1466,6 +1509,7 @@ so that parallel slices do not collide:
   one leaves it), and whose title the thread has lives inside `threads.job` (`title`; a ledger without it has the
   first message's words), so no column is added.
 - **`0009` (title requests, built):** `outbox.kind` gains `title` ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); the payload is `{"title": {"ask": n}}` inside the existing JSON column. Roll out the build that understands it before one writes a row (an older build dead-letters a row it cannot read).
+- **`0010` (forks, built):** `threads` gains `forked_from uuid REFERENCES threads (id) ON DELETE SET NULL`, `forked_at bigint` and `fork_kind text` (`fork` or `edit`), all `NULL` for a thread that was not forked and checked together (`threads_fork_shape`, added `NOT VALID` and validated, so the table lock is brief), with an index on `forked_from`; `events.kind` gains `thread_forked` ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)). A fork's log is its own copy of the parent's events, so deleting the parent leaves it whole (`forked_from` becomes `NULL`, `forked_at` and `fork_kind` stay).
 
 ```mermaid
 erDiagram
@@ -1474,6 +1518,9 @@ erDiagram
   threads {
     jsonb job "0003: gate, number, attempt, verification, pushed, results, hold"
     text state "0003: + verifying"
+    uuid forked_from "0010: the parent, NULL once deleted"
+    bigint forked_at "0010: the last event copied"
+    text fork_kind "0010: fork or edit"
   }
   outbox {
     text kind "0003: + verify"

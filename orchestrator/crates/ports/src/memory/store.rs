@@ -3,12 +3,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use orch_core::{Event, EventBody, EventKind, Job, ThreadId, ThreadRecord, UserId};
+use orch_core::{
+    EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, ThreadId,
+    ThreadRecord, UserId,
+};
 
 use crate::{
-    AgentBinding, BindingUpdate, Commit, CommitOutcome, InboxFinal, InboxId, InboxItem, InboxLease,
-    InboxStatus, Lease, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind,
-    OutboxStats, OutboxStatus, Parking, Received, StoreError, TIMER_SOURCE, ThreadStore,
+    AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem,
+    InboxLease, InboxStatus, Lease, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,
+    OutboxKind, OutboxStats, OutboxStatus, Parking, Received, StoreError, TIMER_SOURCE,
+    ThreadStore,
 };
 
 struct StoredEvent {
@@ -284,6 +288,92 @@ fn leased<'a>(inner: &'a mut Inner, lease: &Lease) -> Option<&'a mut OutboxItem>
     inner.outbox.iter_mut().find(|r| holds(r, lease))
 }
 
+/// Inserts the thread `new` and writes its first commit; for a fork, after the parent's events up
+/// to the cut have been copied in.
+fn insert_thread(
+    inner: &mut Inner,
+    new: NewThreadRecord,
+    fork: Option<ForkOrigin>,
+    first: Commit,
+) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+    // A thread that does not exist yet has no inbox row to be applied.
+    let first = Commit {
+        inbox: None,
+        finishes_outbox: None,
+        title: None,
+        ..first
+    };
+    if inner.threads.contains_key(&new.id) {
+        return Err(StoreError::corrupt("thread id already exists"));
+    }
+    let copied: Vec<StoredEvent> = match fork {
+        None => Vec::new(),
+        Some(origin) => {
+            let parent = inner
+                .threads
+                .get(&origin.parent)
+                .filter(|e| e.record.owner == new.owner)
+                .ok_or(StoreError::NotFound)?;
+            if parent.record.last_seq < origin.cut || origin.cut < 0 {
+                return Err(StoreError::corrupt("the cut is beyond the parent's log"));
+            }
+            parent
+                .events
+                .iter()
+                .filter(|s| s.event.seq <= origin.cut)
+                .map(|s| StoredEvent {
+                    event: Event {
+                        thread_id: new.id,
+                        ..s.event.clone()
+                    },
+                    key: None,
+                })
+                .collect()
+        }
+    };
+    let record = ThreadRecord {
+        id: new.id,
+        owner: new.owner,
+        title: new.title,
+        target: new.target.clone(),
+        state: first.new_state,
+        job: Job::default(),
+        version: 1,
+        forked_from: fork.map(|o| ForkedFrom {
+            thread_id: Some(o.parent),
+            seq: o.cut,
+            kind: o.kind,
+        }),
+        last_seq: fork.map_or(0, |o| o.cut),
+        created_at: new.now,
+        updated_at: new.now,
+    };
+    let binding = AgentBinding {
+        thread_id: new.id,
+        agent_id: new.target.agent_id,
+        context_id: new.context_id,
+        task_id: None,
+        task_state: None,
+        revision: None,
+    };
+    inner.threads.insert(
+        new.id,
+        ThreadEntry {
+            record,
+            events: copied,
+            binding,
+        },
+    );
+    let (mut record, events) =
+        write_commit(inner, new.id, first).ok_or_else(|| StoreError::corrupt("thread vanished"))?;
+    // Creation is version 1 whatever the first commit wrote.
+    if let Some(entry) = inner.threads.get_mut(&new.id) {
+        entry.record.version = 1;
+    }
+    record.version = 1;
+    Ok((record, events))
+}
+
 impl ThreadStore for MemoryStore {
     async fn ping(&self) -> Result<(), StoreError> {
         Ok(())
@@ -294,56 +384,89 @@ impl ThreadStore for MemoryStore {
         new: NewThreadRecord,
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
-        // A thread that does not exist yet has no inbox row to be applied.
-        let first = Commit {
-            inbox: None,
-            finishes_outbox: None,
-            title: None,
-            ..first
-        };
         let mut inner = self.lock();
         if let Some(fault) = inner.create_faults.pop_front() {
             return Err(fault);
         }
-        if inner.threads.contains_key(&new.id) {
-            return Err(StoreError::corrupt("thread id already exists"));
+        insert_thread(&mut inner, new, None, first)
+    }
+
+    async fn fork_thread(
+        &self,
+        new: NewThreadRecord,
+        origin: ForkOrigin,
+        first: Commit,
+    ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+        let mut inner = self.lock();
+        if let Some(fault) = inner.create_faults.pop_front() {
+            return Err(fault);
         }
-        let record = ThreadRecord {
-            id: new.id,
-            owner: new.owner,
-            title: new.title,
-            target: new.target.clone(),
-            state: first.new_state,
-            job: Job::default(),
-            version: 1,
-            last_seq: 0,
-            created_at: new.now,
-            updated_at: new.now,
+        insert_thread(&mut inner, new, Some(origin), first)
+    }
+
+    async fn fork_family(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+    ) -> Result<Vec<ForkNode>, StoreError> {
+        let inner = self.lock();
+        let mine = |id: &ThreadId| inner.threads.get(id).filter(|e| &e.record.owner == owner);
+        // A link to follow: an edit whose parent still exists.
+        let edit_parent = |e: &ThreadEntry| {
+            e.record
+                .forked_from
+                .filter(|f| f.kind == ForkKind::Edit)
+                .and_then(|f| f.thread_id.filter(|p| mine(p).is_some()))
         };
-        let binding = AgentBinding {
-            thread_id: new.id,
-            agent_id: new.target.agent_id,
-            context_id: new.context_id,
-            task_id: None,
-            task_state: None,
-            revision: None,
+        let Some(mut root) = mine(&thread) else {
+            return Ok(Vec::new());
         };
-        inner.threads.insert(
-            new.id,
-            ThreadEntry {
-                record,
-                events: Vec::new(),
-                binding,
-            },
-        );
-        let (mut record, events) = write_commit(&mut inner, new.id, first)
-            .ok_or_else(|| StoreError::corrupt("thread vanished"))?;
-        // Creation is version 1 whatever the first commit wrote.
-        if let Some(entry) = inner.threads.get_mut(&new.id) {
-            entry.record.version = 1;
+        for _ in 0..inner.threads.len() {
+            match edit_parent(root).and_then(|p| mine(&p)) {
+                Some(parent) => root = parent,
+                None => break,
+            }
         }
-        record.version = 1;
-        Ok((record, events))
+        let mut family = vec![root.record.id];
+        let mut next = 0;
+        while next < family.len() {
+            let parent = family[next];
+            next += 1;
+            for e in inner.threads.values() {
+                if &e.record.owner == owner
+                    && edit_parent(e) == Some(parent)
+                    && !family.contains(&e.record.id)
+                {
+                    family.push(e.record.id);
+                }
+            }
+        }
+        let mut nodes: Vec<ForkNode> = family
+            .iter()
+            .filter_map(mine)
+            .map(|e| ForkNode {
+                id: e.record.id,
+                link: edit_parent(e)
+                    .zip(e.record.forked_from)
+                    .map(|(parent, from)| {
+                        let message = e
+                            .events
+                            .iter()
+                            .map(|s| &s.event)
+                            .find(|ev| ev.seq > from.seq && ev.kind() == EventKind::UserMessage)
+                            .map_or(from.seq + 2, |ev| ev.seq);
+                        EditLink {
+                            parent,
+                            cut: from.seq,
+                            message,
+                        }
+                    }),
+                created: e.record.created_at,
+            })
+            .collect();
+        nodes.sort_by_key(|n| (n.created, n.id));
+        nodes.truncate(1000);
+        Ok(nodes)
     }
 
     async fn get_thread(
@@ -364,6 +487,7 @@ impl ThreadStore for MemoryStore {
         owner: &UserId,
         before: Option<ThreadId>,
         limit: u32,
+        include_edits: bool,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
         let inner = self.lock();
         if let Some(cursor) = before
@@ -379,6 +503,7 @@ impl ThreadStore for MemoryStore {
             .values()
             .map(|e| &e.record)
             .filter(|r| &r.owner == owner)
+            .filter(|r| include_edits || r.forked_from.is_none_or(|f| f.kind != ForkKind::Edit))
             .filter(|r| before.is_none_or(|b| r.id < b))
             .collect();
         all.sort_by(|a, b| b.id.cmp(&a.id));
