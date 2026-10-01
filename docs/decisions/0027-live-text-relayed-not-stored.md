@@ -145,3 +145,23 @@ by the same delegation:
   whatever was activated. A2A's `metadata` is a protobuf `Struct`: a number in it comes out of the SDK as a float
   (`10.0`), so the offset is read as a whole number either way (*verified 2026-10-01*, by the tests against the SDK).
   The agent-side work (adam-rs streaming the model's answer) and the web's drafts are their own slices.
+
+## Status note, 2026-10-01: the web's drafts built (MVP slice 6, the web)
+
+The web shows the words as they are written ([`web/README.md`](../../web/README.md#live-text), `web/DESIGN.md` "A turn").
+What was settled while building it, within the contract above:
+
+- **Drafts stay out of the runtime**, as the consequence above asked: a live frame (`metadata["vymalo.live"]`, not the
+  log's own) is read the moment it arrives, never held for an `id:`, and kept as a draft by `ThreadAgent`; the turn draws
+  the drafts of the newest agent turn after its parts, in the type of the finished reply, with a caret (it blinks, and
+  stays on, still, under `prefers-reduced-motion`), `aria-busy` and `aria-live="off"`.
+- **The log's message becomes one plain message for the runtime**: `CONTENT{offset, final}` and `END{final}` of the
+  group of its event are turned into `START`, `CONTENT` (the draft's text up to `offset` plus the rest) and `END`, so the
+  transcript is exactly what it would have been without live text. A final with `offset: 0` is the whole text and needs
+  no draft. A final that continues a draft the connection never held is not delivered: the connection is reopened at the
+  last resume point, whose replay says the message plainly (the new connection's overlay starts empty).
+- **The swap is one render.** The completed draft says the log's words until the transcript has them, then draws
+  nothing, and is dropped with the next group of the log or the end of the run; a cut connection forgets its drafts.
+- **Read as built, not as planned:** offsets are UTF-16 code units on the frames (`slice(0, offset) + delta`), a draft
+  stops at 262,144 units (the contract's 256 KiB of UTF-8 is never more), and the abandoned `END` can sit inside the
+  group of the log event that closes the invocation, so it is read when it arrives, not with its group.

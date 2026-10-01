@@ -28,6 +28,7 @@ import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
 import { problemMessage } from "@/lib/api/client";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
+import { LiveDraftsProvider } from "./live-drafts";
 import { LiveRuns } from "./live-runs";
 import { SurfaceHostProvider } from "./surface/surface-host";
 import { ThreadHeader } from "./thread-header";
@@ -256,9 +257,11 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                         </InlineStatus>
                       </div>
                     ) : null}
-                    <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
-                      {composer}
-                    </Thread>
+                    <LiveDraftsProvider agent={agent}>
+                      <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                        {composer}
+                      </Thread>
+                    </LiveDraftsProvider>
                   </>
                 )}
               </main>

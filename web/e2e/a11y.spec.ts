@@ -230,6 +230,73 @@ for (const scheme of ["light", "dark"] as const) {
   });
 }
 
+/**
+ * Lighthouse's accessibility audit of `url` in a browser of the given colour scheme and form factor.
+ * `watch` is a selector that must have been on the audited page at some point of the audit.
+ */
+async function lighthouseScore(opts: {
+  url: string;
+  scheme: "light" | "dark";
+  port: number;
+  mobile?: boolean;
+  watch?: string;
+}): Promise<{ score: number; failing: string[]; saw: boolean }> {
+  const { url, scheme, port, mobile = false, watch } = opts;
+  // A persistent context is the browser's default context, which is where Lighthouse opens
+  // its tab, so the colour scheme emulated here applies to the audited page.
+  const userDataDir = mkdtempSync(path.join(tmpdir(), "lh-"));
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    args: [`--remote-debugging-port=${port}`],
+    colorScheme: scheme,
+  });
+  try {
+    const audited: boolean[] = [];
+    let saw = false;
+    const watchers: ReturnType<typeof setInterval>[] = [];
+    context.on("page", (p) => {
+      p.on("load", () => {
+        if (p.url() !== url) return;
+        void p
+          .evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches)
+          .then((dark) => audited.push(dark))
+          .catch(() => {});
+        if (!watch) return;
+        watchers.push(
+          setInterval(() => {
+            void p
+              .evaluate((selector) => document.querySelector(selector) !== null, watch)
+              .then((found) => {
+                if (found) saw = true;
+              })
+              .catch(() => {});
+          }, 250),
+        );
+      });
+    });
+    const result = await lighthouse(
+      url,
+      { port, onlyCategories: ["accessibility"], output: "json", logLevel: "error" },
+      {
+        extends: "lighthouse:default",
+        settings: mobile
+          ? { formFactor: "mobile" }
+          : { formFactor: "desktop", screenEmulation: { disabled: true } },
+      },
+    );
+    for (const w of watchers) clearInterval(w);
+    expect(audited.length, "Lighthouse loaded the page in the emulated context").toBeGreaterThan(0);
+    expect(audited.every((dark) => dark === (scheme === "dark"))).toBe(true);
+    const lhr = result?.lhr;
+    const failing = Object.values(lhr?.audits ?? {})
+      .filter((a) => a.score !== null && a.score < 1 && a.scoreDisplayMode === "binary")
+      .map((a) => `${a.id}: ${a.title}`);
+    return { score: lhr?.categories.accessibility?.score ?? 0, failing, saw };
+  } finally {
+    await context.close();
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+}
+
 test.describe("Lighthouse accessibility on the thread page", () => {
   test.describe.configure({ mode: "serial" });
 
@@ -242,48 +309,62 @@ test.describe("Lighthouse accessibility on the thread page", () => {
     test(`score is at least 95 (${scheme})`, async () => {
       test.setTimeout(120_000);
       const url = await finishedThreadUrl();
-      // A persistent context is the browser's default context, which is where Lighthouse opens
-      // its tab, so the colour scheme emulated here applies to the audited page.
-      const userDataDir = mkdtempSync(path.join(tmpdir(), "lh-"));
-      const context = await chromium.launchPersistentContext(userDataDir, {
-        args: [`--remote-debugging-port=${port}`],
-        colorScheme: scheme,
-      });
+      const { score, failing } = await lighthouseScore({ url, scheme, port });
+      test.info().annotations.push({ type: "score", description: `${scheme}: ${score}` });
+      expect(score, `failing audits: ${failing.join("; ")}`).toBeGreaterThanOrEqual(0.95);
+    });
+  }
+});
+
+/** A thread whose agent is writing its reply and never finishes (until Stop): the draft is on the page. */
+async function writingThreadUrl(): Promise<{ url: string; id: string }> {
+  const id = uuidv7();
+  const res = await fetch(`${BASE_URL}/agui/agents/coder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({
+      threadId: id,
+      runId: "run-1",
+      messages: [{ id: "m-1", role: "user", content: "stream-hold write the plan" }],
+    }),
+  });
+  if (!res.ok) throw new Error(`run refused: ${res.status}`);
+  await res.body?.cancel();
+  return { url: `${BASE_URL}/threads/${id}`, id };
+}
+
+// The words of a reply that is still being written (live text, ADR 0027) are on the page: a draft
+// the page was told by the sender's refresh a moment after it connected, with its caret.
+test.describe("Lighthouse accessibility with a reply being written", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const runs = [
+    { scheme: "light", mobile: false, port: 9224 },
+    { scheme: "dark", mobile: false, port: 9225 },
+    { scheme: "light", mobile: true, port: 9226 },
+    { scheme: "dark", mobile: true, port: 9227 },
+  ] as const;
+
+  for (const { scheme, mobile, port } of runs) {
+    const device = mobile ? "phone" : "desktop";
+    test(`score is at least 95 (${scheme}, ${device})`, async () => {
+      test.setTimeout(120_000);
+      const { url, id } = await writingThreadUrl();
       try {
-        const audited: boolean[] = [];
-        context.on("page", (p) => {
-          p.on("load", () => {
-            if (p.url() === url) {
-              void p
-                .evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches)
-                .then((dark) => audited.push(dark))
-                .catch(() => {});
-            }
-          });
-        });
-        const result = await lighthouse(
+        const { score, failing, saw } = await lighthouseScore({
           url,
-          { port, onlyCategories: ["accessibility"], output: "json", logLevel: "error" },
-          {
-            extends: "lighthouse:default",
-            settings: { formFactor: "desktop", screenEmulation: { disabled: true } },
-          },
-        );
-        expect(
-          audited.length,
-          "Lighthouse loaded the page in the emulated context",
-        ).toBeGreaterThan(0);
-        expect(audited.every((dark) => dark === (scheme === "dark"))).toBe(true);
-        const lhr = result?.lhr;
-        const score = lhr?.categories.accessibility?.score ?? 0;
-        const failing = Object.values(lhr?.audits ?? {})
-          .filter((a) => a.score !== null && a.score < 1 && a.scoreDisplayMode === "binary")
-          .map((a) => `${a.id}: ${a.title}`);
-        test.info().annotations.push({ type: "score", description: `${scheme}: ${score}` });
+          scheme,
+          port,
+          mobile,
+          watch: '[data-slot="agent-draft"]',
+        });
+        expect(saw, "the audited page showed the draft").toBe(true);
+        test
+          .info()
+          .annotations.push({ type: "score", description: `${scheme} ${device}: ${score}` });
         expect(score, `failing audits: ${failing.join("; ")}`).toBeGreaterThanOrEqual(0.95);
       } finally {
-        await context.close();
-        rmSync(userDataDir, { recursive: true, force: true });
+        await fetch(`${BASE_URL}/api/threads/${id}/cancel`, { method: "POST" });
       }
     });
   }

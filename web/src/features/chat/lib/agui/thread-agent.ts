@@ -12,6 +12,14 @@ import {
 import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
 import type { ApiActor, ThreadState } from "@/lib/api/types";
+import {
+  applyLive,
+  type Draft,
+  isLiveNow,
+  type LiveEvent,
+  pending,
+  resolveGroup,
+} from "./live-drafts";
 import { readSse } from "./sse";
 import {
   A2UI_SURFACE,
@@ -53,6 +61,15 @@ import {
  *   `{catalogId, version, digest, catalog}`) when the thread's last `STATE_SNAPSHOT` says it has
  *   none, or an older one, or another digest at the same version; the snapshot's
  *   `thread.uiCatalog` is kept in `ThreadSnapshot` for the renderer's "newer version" rule.
+ * - Live text (ADR 0027, docs/api/agui.md "Live text"): a frame marked `metadata["vymalo.live"]`
+ *   that is not the log's own is a piece of a reply still being written. It has no `id:` (never a
+ *   resume point), so it is read when it arrives, not held in a group, and it never reaches the
+ *   runtime, whose transcript is the log: it is a **draft** (`getDrafts()`, see
+ *   `live-drafts.ts`), drawn after the turn's parts. The log's message for the same id comes in its
+ *   own group as `CONTENT{final}` + `END{final}`, which become the one message the runtime reads,
+ *   made of the draft and the rest. A group that cannot be made whole (it continues a draft this
+ *   connection never held) is not delivered and the connection is reopened at the last resume
+ *   point, which says the message plainly. A cut connection forgets its drafts.
  * - A user's action on a surface (`forwardedProps.a2uiAction`, from the runtime's
  *   `sendA2uiAction`, or staged by `stageA2uiAction` when an interrupt is open, which the runtime
  *   refuses to leave unanswered) goes out as a run with no message and no `resume`.
@@ -177,6 +194,9 @@ const defaultSleep = (ms: number, signal: AbortSignal) =>
     );
   });
 
+/** A group of the connect stream could not be told whole: reconnect at the last resume point. */
+class Resync extends Error {}
+
 type Ev = BaseEvent & Record<string, unknown>;
 type Group = { events: Ev[]; id: number | undefined };
 type Route =
@@ -221,6 +241,11 @@ export class ThreadAgent extends AbstractAgent {
     sendFailures: 0,
   };
   private readonly listeners = new Set<() => void>();
+  // The replies that are still being written (live text). Apart from the snapshot, which moves
+  // with every log event: a draft grows several times a second, and only the turn that draws it
+  // should render for that.
+  private drafts: readonly Draft[] = [];
+  private readonly draftListeners = new Set<() => void>();
   private connectAbort: AbortController | undefined;
   private started = false;
   private pending: { events: Ev[] } = { events: [] };
@@ -254,6 +279,23 @@ export class ThreadAgent extends AbstractAgent {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
   };
+
+  /**
+   * The replies that are still being written, oldest first, never in the runtime's transcript:
+   * the turn draws them after its parts and the log's own message takes over (`live-drafts.ts`).
+   */
+  getDrafts = (): readonly Draft[] => this.drafts;
+
+  onDraftsChange = (listener: () => void): (() => void) => {
+    this.draftListeners.add(listener);
+    return () => void this.draftListeners.delete(listener);
+  };
+
+  private setDrafts(next: readonly Draft[]) {
+    if (next === this.drafts) return;
+    this.drafts = next;
+    for (const l of [...this.draftListeners]) l();
+  }
 
   private patch(p: Partial<ThreadSnapshot>) {
     this.snapshot = { ...this.snapshot, ...p };
@@ -313,12 +355,16 @@ export class ThreadAgent extends AbstractAgent {
         this.patch({ connection: "open", error: null });
         for await (const frame of readSse(data, signal)) this.onFrame(frame.data, frame.id);
       } catch (e) {
-        if (signal.aborted) return;
-        this.patch({ error: e instanceof Error ? e.message : String(e) });
+        // a group that could not be made whole is a reconnect, not a failure to report
+        if (!signal.aborted && !(e instanceof Resync)) {
+          this.patch({ error: e instanceof Error ? e.message : String(e) });
+        }
       }
       // A cut connection: what was read after the last `id:` is discarded (the server sends it
-      // again from the cursor), then reconnect.
+      // again from the cursor), and so are the replies that were being written (the new
+      // connection says them again from the start, or says the final message), then reconnect.
       this.pending = { events: [] };
+      this.dropDrafts();
       if (signal.aborted) return;
       this.patch({ connection: "reconnecting" });
       await sleep(backoff(attempt++), signal);
@@ -335,6 +381,11 @@ export class ThreadAgent extends AbstractAgent {
       console.warn("Dropping an unparseable AG-UI frame");
       return;
     }
+    if (isLiveNow(event)) {
+      // a piece of a reply still being written: no `id:`, so no group to wait for
+      this.live(event);
+      return;
+    }
     this.pending.events.push(event);
     if (id === undefined) return;
     const events = this.pending.events;
@@ -345,14 +396,30 @@ export class ThreadAgent extends AbstractAgent {
       return;
     }
     if (seq <= this.snapshot.lastSeq) return; // delivered before
-    this.deliver({ events, id: seq });
+    if (!this.deliver({ events, id: seq })) throw new Resync();
+  }
+
+  // ---- live text ------------------------------------------------------------------------------
+
+  private live(event: Ev) {
+    this.setDrafts(applyLive(this.drafts, event as LiveEvent));
+  }
+
+  private dropDrafts() {
+    if (this.drafts.length > 0) this.setDrafts([]);
   }
 
   // ---- routing --------------------------------------------------------------------------------
 
-  private deliver(group: Group) {
-    for (const event of group.events) this.route1(event);
+  /** False when the group cannot be told whole (see `resolveGroup`): nothing of it was delivered. */
+  private deliver(group: Group): boolean {
+    // the replies the last group completed have reached the transcript by now
+    const resolved = resolveGroup(pending(this.drafts), group.events as LiveEvent[]);
+    if (!resolved) return false;
+    this.setDrafts(resolved.drafts);
+    for (const event of resolved.events) this.route1(event as Ev);
     if (group.id !== undefined) this.patch({ lastSeq: group.id });
+    return true;
   }
 
   private route1(event: Ev) {
@@ -363,6 +430,7 @@ export class ThreadAgent extends AbstractAgent {
         if (this.route?.runId === runId) return; // the preamble of a resumed run: already open
         if (this.route) this.finish(this.route, false);
         this.startedInvocations.clear();
+        this.dropDrafts();
         const sink = this.claims.get(runId);
         if (sink) {
           // The POST answered RUN_STARTED to `run()`, which emitted it: not again.
@@ -482,7 +550,11 @@ export class ThreadAgent extends AbstractAgent {
       route.run.frames.complete();
     }
     if (this.route === route) this.route = null;
-    if (terminal) this.patch({ openRun: null });
+    // the run is over: a reply that was still being written is not (the overlay ended it first)
+    if (terminal) {
+      this.dropDrafts();
+      this.patch({ openRun: null });
+    }
   }
 
   /**

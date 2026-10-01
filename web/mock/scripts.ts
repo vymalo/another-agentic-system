@@ -17,7 +17,20 @@ export type Step =
       /** Played at once after the step before it, not `stepMs` later (a burst of steps). */
       quick?: boolean;
     }
-  | { pause: "cancel" };
+  | { pause: "cancel" }
+  | {
+      /**
+       * A piece of the reply the agent is still writing (live text, ADR 0027): relayed to the
+       * viewers, never in the log. `offset` counts UTF-16 code units; the log's message for the
+       * same `messageId` says the whole reply when the agent is done.
+       */
+      live: {
+        messageId: string;
+        offset: number;
+        text: string;
+        end?: "open" | "last" | "abandoned";
+      };
+    };
 
 const PR_URL = "https://github.com/acme/demo/pull/1";
 
@@ -510,6 +523,46 @@ const nextMessageId = (() => {
 })();
 
 /**
+ * The pieces of a reply as a sender relays them while the model writes it: `parts` joined is the
+ * reply. `last` ends it (the log's message closes the live one), `open` leaves it unfinished, and
+ * `abandoned` gives the stream up after its words (the model failed).
+ */
+function livePieces(
+  messageId: string,
+  parts: readonly string[],
+  end: "last" | "open" | "abandoned" = "last",
+): Step[] {
+  let offset = 0;
+  const steps: Step[] = parts.map((text, i) => {
+    const piece: Step = {
+      live: {
+        messageId,
+        offset,
+        text,
+        end: end === "last" && i === parts.length - 1 ? "last" : "open",
+      },
+    };
+    offset += text.length;
+    return piece;
+  });
+  if (end === "abandoned") steps.push({ live: { messageId, offset, text: "", end: "abandoned" } });
+  return steps;
+}
+
+/** A reply in Markdown, in the pieces a model writes it in (a paragraph, then a list). */
+const LONG_PARTS = [
+  "I'll start with the failing test, ",
+  "then make the smallest change ",
+  "that fixes it.\n\n",
+  "- add a regression test for `parse()`\n",
+  "- fix the off-by-one in the loop\n",
+  "- run the suite and open a pull request\n\n",
+  "I will tell you ",
+  "when it is green.",
+];
+const LONG_REPLY = LONG_PARTS.join("");
+
+/**
  * The coder scenarios of the screenshots (`pnpm screens`): a coding agent's run the way a chat shows
  * it, from its steps to a pull request. Mock only; the wording of the steps is the mock's, not
  * adam-coder's (unverified).
@@ -757,6 +810,10 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   then the push, the checks, the pull request and the answer; done. `Investigate …`: the same, still
  *   running a command when it stops, until cancelled. `steps-many …`: a sub-agent step with 120 steps
  *   under it, played at once (a level long enough to be a scroll box), a read among them failing; done.
+ * - Live text (ADR 0027): `stream …` is the golden (the words `Fib`, `onacci `, `in Rust.` as live pieces, then the
+ *   log's message and done); `stream-long …` a longer Markdown reply in eight pieces, then done; `stream-hold …`
+ *   (and `Write …`, for the screenshots) the same, still being written until cancelled; `stream-abandon …` a
+ *   stream the model gives up halfway, then the words the agent says next under another id; done.
  */
 export function scriptFor(text: string): {
   start: Step[];
@@ -1078,6 +1135,69 @@ export function scriptFor(text: string): {
             system: true,
             data: { ...ci, commit, status: "passed", summary: "build passed" },
           },
+          done,
+        ],
+      };
+    }
+    // live text (ADR 0027, the `stream` golden): the words arrive piece by piece and the log says
+    // them once, final, under the same id; the status that repeats them says no more
+    case "stream": {
+      const id = nextMessageId();
+      return {
+        start: [
+          working,
+          ...livePieces(id, ["Fib", "onacci ", "in Rust."]),
+          {
+            kind: "agent_message",
+            data: { messageId: id, final: true, text: "Fibonacci in Rust." },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: "Fibonacci in Rust." } },
+          done,
+        ],
+      };
+    }
+    // mock only: a longer reply in Markdown, written piece by piece
+    case "stream-long": {
+      const id = nextMessageId();
+      return {
+        start: [
+          working,
+          ...livePieces(id, LONG_PARTS),
+          { kind: "agent_message", data: { messageId: id, final: true, text: LONG_REPLY } },
+          { kind: "agent_status", data: { status: "completed", detail: LONG_REPLY } },
+          done,
+        ],
+      };
+    }
+    // mock only: the reply is being written and never finished (until Stop): a draft on screen
+    case "stream-hold":
+    case "Write": // plain words, for the screenshots: the title reads well
+      return {
+        start: [
+          working,
+          ...livePieces(nextMessageId(), LONG_PARTS.slice(0, 5), "open"),
+          { pause: "cancel" },
+        ],
+      };
+    // mock only: the model fails halfway: the stream is given up, and the log has the words the
+    // agent says next, under another id
+    case "stream-abandon": {
+      const retry = "Sorry, let me say that again: it is forty-two.";
+      const id = nextMessageId();
+      const said = "The answer is forty-";
+      // the model stalls for a while before it fails: the half-written reply stays on the screen a moment
+      const stalled = Array.from(
+        { length: 4 },
+        (): Step => ({ live: { messageId: id, offset: said.length, text: "", end: "open" } }),
+      );
+      return {
+        start: [
+          working,
+          ...livePieces(id, ["The answer is ", "forty-"], "open"),
+          ...stalled,
+          { live: { messageId: id, offset: said.length, text: "", end: "abandoned" } },
+          { kind: "agent_message", data: { messageId: nextMessageId(), final: true, text: retry } },
+          { kind: "agent_status", data: { status: "completed", detail: retry } },
           done,
         ],
       };

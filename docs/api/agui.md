@@ -245,6 +245,10 @@ ignores them still reads every reply, whole, when the log says it.
   (`offset` 0, 3, 10), then for the log's message `CONTENT ""` `{offset:18, final:true}` and `END{final:true}` with
   `id: 3`; the status that repeats the words says no more. The reference client reads it as one message, `msg-3`,
   with the whole text.
+- **The web.** It reads a live frame the moment it arrives and keeps these words as drafts, out of its runtime (an
+  unknown assistant message in `RunAgentInput.messages` is a 422); the log's message, in its group, becomes the one
+  plain message the runtime reads, and a group it cannot tell whole (a final for a message this connection never saw
+  start) is dropped and read again from the last `id:`. See [`web/README.md`](../../web/README.md#live-text).
 
 ### When: `at`
 

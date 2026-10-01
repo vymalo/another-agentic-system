@@ -77,6 +77,16 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(badge(page)).toHaveText("Stopped");
     });
 
+    test("reply writing", async ({ page }) => {
+      // the words of the reply as the agent writes them: a draft after the turn's parts, with its caret
+      await startThread(page, "Write the plan for the login redirect");
+      const draft = conversation(page).locator('[data-slot="agent-draft"]');
+      await expect(draft).toContainText("then make the smallest change");
+      await shot(page, "reply-writing");
+      await page.getByRole("button", { name: "Stop" }).click();
+      await expect(badge(page)).toHaveText("Stopped");
+    });
+
     test("your turn", async ({ page }) => {
       await startThread(page, "Deploy the new login page");
       await expect(badge(page)).toHaveText("Your turn");

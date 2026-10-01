@@ -72,7 +72,7 @@ export function catalogRefOf(data: unknown): CatalogRef | undefined {
 /** The requester of a run already holds the user messages its own request carried. */
 export type Audience = { skipUserMessageIds?: ReadonlySet<string> };
 
-const actorMetaOf = (actor: Event["actor"]) => ({
+export const actorMetaOf = (actor: Event["actor"]) => ({
   "vymalo.actor": {
     type: actor.type,
     name: actor.name,
@@ -348,6 +348,27 @@ export class Projector {
 
   get runOpen(): boolean {
     return this.run !== null;
+  }
+
+  /**
+   * The agent's invocation, while one is open: its subagent run id, its name and its actor. What
+   * the live words of a reply are attributed to (the real projection's `open_invocation`).
+   */
+  openInvocation(): { id: string; name: string; actor: Event["actor"] } | undefined {
+    return this.invocation
+      ? {
+          id: this.invocation.id,
+          name: this.invocation.event.actor.name,
+          actor: this.invocation.event.actor,
+        }
+      : undefined;
+  }
+
+  /** Whether the log has said an agent message with this id: live text for it is late. */
+  hasMessage(id: string): boolean {
+    if (this.openText?.id === id) return true;
+    for (const key of this.said) if (key.startsWith(`${id}\0`)) return true;
+    return false;
   }
 
   /** Where the job stands, when the thread has a gate. */

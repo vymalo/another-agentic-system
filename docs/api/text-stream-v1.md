@@ -2,9 +2,9 @@
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/text-stream/v1`
 - **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
-  slice 6: the A2A adapter that reads it, the relay between processes, and the AG-UI live frames).** The web's drafts
-  (the words growing on screen) are the web's slice; the adam-rs side (an agent that streams the model's answer) is
-  that repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
+  slice 6: the A2A adapter that reads it, the relay between processes, and the AG-UI live frames), and so is the
+  web's (the words growing on screen, [`web/README.md`](../../web/README.md#live-text)).** The adam-rs side (an agent
+  that streams the model's answer) is that repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the fifth extension of the orchestrator's
   own, beside `ui-catalog`, `thread-tools`, `steps` and `mentions` (the owner's default of 2026-10-01).

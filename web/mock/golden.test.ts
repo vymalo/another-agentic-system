@@ -3,7 +3,14 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { components } from "../src/lib/api/schema";
-import { connect, type Frame, frames, postRun, RELEASE_CHANNELS_URI } from "./agui-client";
+import {
+  connect,
+  type Frame,
+  frames,
+  isTerminal,
+  postRun,
+  RELEASE_CHANNELS_URI,
+} from "./agui-client";
 import { createMockServer } from "./server";
 
 /**
@@ -377,7 +384,9 @@ function normalise(list: Frame[], threadId: string): Frame[] {
     .replaceAll('"reviewer"', '"plain"')
     // the verifier agent of the mock is `verifier`, the golden's is named `reviewer`
     .replaceAll('"name":"verifier"', '"name":"reviewer"')
-    .replaceAll("verify-reviewed-red fix", "verify-reviewed fix");
+    .replaceAll("verify-reviewed-red fix", "verify-reviewed fix")
+    // the mock picks the script of `stream` by its first word, which the golden's message lacks
+    .replaceAll("stream write fibonacci", "write fibonacci");
   const out = JSON.parse(text) as Frame[];
   // the mock names agent messages m-<n>; the golden msg-<seq of the END frame>
   const seqOf = new Map<string, number>();
@@ -412,6 +421,40 @@ describe("the mock server against the AG-UI goldens", () => {
       expect(untimed(atCreation(normalise(viewer, id), name))).toEqual(untimed(golden));
     });
   }
+
+  // Live text (ADR 0027): the pieces of a reply are heard only by a viewer that is connected
+  // while it is written (they are not in the log), so this one connects at once and reads on.
+  // The golden is docs/api/examples/agui/stream.agui.json, written from `stream.feed.json`.
+  it("a viewer connected while the reply is written reads the golden stream: stream", async () => {
+    const slow = createMockServer({ stepMs: 80, keepaliveMs: 1000 });
+    await new Promise<void>((r) => slow.listen(0, "127.0.0.1", r));
+    // nosemgrep: opt.opengrep-rules.typescript.react.security.react-insecure-request -- loopback test server, never leaves the runner
+    const url = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+    try {
+      const id = newThreadId();
+      const res = await postRun(url, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "stream write fibonacci in rust" }],
+      });
+      expect(res.status).toBe(200);
+      const viewer = await frames(await connect(url, id), isTerminal);
+      const golden = JSON.parse(
+        readFileSync(path.join(DIR, "stream.agui.json"), "utf8"),
+      ) as Frame[];
+      expect(untimed(normalise(viewer, id))).toEqual(untimed(golden));
+      // and a viewer that connects after the reply reads it plainly: the log has it once, whole
+      const later = await frames(await connect(url, id, { mode: "run" }));
+      const said = later.filter(
+        (f) => f.event.type === "TEXT_MESSAGE_CONTENT" && f.event.messageId !== "evt-1",
+      );
+      expect(said.map((f) => f.event.delta)).toEqual(["Fibonacci in Rust."]);
+      expect(JSON.stringify(later)).not.toContain("vymalo.live");
+    } finally {
+      slow.closeAllConnections();
+      await new Promise<void>((r) => slow.close(() => r()));
+    }
+  });
 
   it("a viewer that reconnects with Last-Event-ID is sent the preamble and the rest", async () => {
     const id = newThreadId();
