@@ -45,7 +45,10 @@ test("a fork's agent is told the conversation, in a context of its own", async (
   await expect(badge(page)).toHaveText("Done");
 
   // the agent got one message that starts with the conversation and ends with what was said now
-  const told = await callsFor(page.request, "plain", PREAMBLE);
+  // (the fake agents' journals outlive resetDb: only this fork's context counts)
+  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter(
+    (c) => c.contextId === fork,
+  );
   expect(told).toHaveLength(1);
   expect(told[0]?.text).toContain("person: echo first");
   expect(told[0]?.text.endsWith("recall and go on")).toBe(true);
@@ -82,7 +85,11 @@ test("another agent continues the conversation: its first message carries it", a
   await page.getByLabel("Message").fill("recall please");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(conversation(page).getByText("recalled: person: echo first")).toBeVisible();
-  const told = await callsFor(page.request, "plain", PREAMBLE);
+  // the fake agents' journals outlive resetDb: the earlier test's fork also told `plain` its
+  // conversation, so only this fork's context counts
+  const told = (await callsFor(page.request, "plain", PREAMBLE)).filter(
+    (c) => c.contextId === fork,
+  );
   expect(told).toHaveLength(1);
-  expect(told[0]?.contextId).toBe(fork);
+  expect(told[0]?.text).toContain("person: echo first");
 });
