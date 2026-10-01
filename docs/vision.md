@@ -238,6 +238,16 @@ and the agents agree.
   what outlives a workspace is what was pushed.
 - Where a workspace lives across workers is open question 24.
 
+> **Note, 2026-10-01: the work environment.** The owner asked "Can't we use devcontainers to build work
+> environments?" and decided ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md))
+> that a repository's `.devcontainer/devcontainer.json` is its work environment. The coder builds it with the
+> official devcontainer CLI against a rootless Podman service (never the host's Docker socket), and runs its
+> commands and OpenCode inside it. A repository without one gets the `workspace` image, published as a
+> devcontainer. With several repositories in one workspace, the first repository's devcontainer is used and the
+> others are mounted into it. The person sees the build as a step, and a broken file as a failed step, not as a
+> silent fallback. On Kubernetes the coder stays as it is until the platform has a sandbox provider (open
+> question 41). This is MVP slice 7b, after slice 7; it is not built yet.
+
 ### 7. Agents configured at run time, not compiled
 
 adam-rs's authoring layer is an `agent/` folder: `instructions.md`, `SKILL.md` skills, subagents,

@@ -97,6 +97,7 @@ orchestrator through the edge. Component, request and state diagrams:
 | [0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md) | Nested steps: events carry their source path; a collapsible tree in the web. *Accepted 2026-10-01 (owner's delegation)* |
 | [0026](docs/decisions/0026-agent-mentions-as-structured-references.md) | Agent mentions as structured references; the addressed agent coordinates the mentioned agents with `ask_agent`. *Accepted 2026-10-01 (owner's delegation)* |
 | [0027](docs/decisions/0027-live-text-relayed-not-stored.md) | Live text is relayed, not stored: an agent's words while it writes them go over the `Wakeup` port (`orch_live`) to every process and are shown by an overlay; the log keeps only the final message; amends 0012. *Accepted 2026-10-01 (owner's delegation); the port is built, the relay follows* |
+| [0028](docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md) | A repository's `devcontainer.json` is its work environment: the coder builds it with the official CLI against a rootless Podman service; the first repository of a workspace decides and the `workspace` image is the default; Kubernetes waits for the platform's sandbox provider. *Accepted 2026-10-01 (owner's decision); not built (MVP slice 7b)* |
 
 ## Local development
 
