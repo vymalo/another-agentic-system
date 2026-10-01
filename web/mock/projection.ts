@@ -93,18 +93,164 @@ type Surface = { messageId: string; operations: unknown[] };
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-const COMMIT = /^[0-9a-f]{40}$/;
+// ---- the core's `recognise_artifact`, ported (orch-core `gate.rs`) ---------------------------
 
-/** The commit of a `branch` artifact (the core's `recognise_artifact`, reduced to what `job.sha` needs). */
-function pushedCommit(name: unknown, text: unknown): string | undefined {
-  if (name !== "branch" || typeof text !== "string") return undefined;
+/** A full commit hash: 40 or 64 lower-case hex digits (`is_commit_hash`). */
+const isCommitHash = (s: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s);
+
+const utf8Length = (s: string) => new TextEncoder().encode(s).length;
+
+/** Whether git accepts `name` as a branch name (`is_branch_name`). */
+export function isBranchName(name: string): boolean {
+  if (
+    name === "" ||
+    utf8Length(name) > 255 ||
+    name === "@" ||
+    name.startsWith("-") ||
+    name.endsWith(".") ||
+    name.includes("..") ||
+    name.includes("@{") ||
+    name.includes("//")
+  ) {
+    return false;
+  }
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: git refuses control characters
+  if (/[\s\u0000-\u001f\u007f`~^:?*[\\]/.test(name)) return false;
+  return name
+    .split("/")
+    .every((part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+function scpToPath(rest: string): string {
+  const slash = rest.indexOf("/");
+  const [authority, path] = slash < 0 ? [rest, ""] : [rest.slice(0, slash), rest.slice(slash + 1)];
+  const colon = authority.indexOf(":");
+  if (colon < 0) return rest;
+  const host = authority.slice(0, colon);
+  const after = authority.slice(colon + 1);
+  if (after === "" || /^\d+$/.test(after)) return rest;
+  return `${host}/${path === "" ? after : `${after}/${path}`}`;
+}
+
+/** The `host/owner/name` key of a repository address (`repo_key`): lower case, no `.git`. */
+export function repoKey(raw: string): string | undefined {
+  const lowered = raw.trim().toLowerCase();
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: an address has no control characters
+  if (/[\s\u0000-\u001f\u007f]/.test(lowered)) return undefined;
+  const sep = lowered.indexOf("://");
+  const scheme = sep < 0 ? undefined : lowered.slice(0, sep);
+  let rest = sep < 0 ? lowered : lowered.slice(sep + 3);
+  rest = rest.split(/[?#]/)[0] ?? "";
+  if (scheme === undefined) rest = scpToPath(rest);
+  const parts = rest.split("/");
+  let host = (parts[0] ?? "").split("@").pop() ?? "";
+  const port =
+    scheme === "https" ? ":443" : scheme === "http" ? ":80" : scheme === "ssh" ? ":22" : "";
+  if (port && host.endsWith(port)) host = host.slice(0, -port.length);
+  if (host === "") return undefined;
+  const segments = parts.slice(1).filter((s) => s !== "");
+  if (segments.some((s) => s === "." || s === "..")) return undefined;
+  const last = segments.length - 1;
+  if (last < 0) return undefined;
+  const lastSegment = segments[last] ?? "";
+  if (lastSegment.endsWith(".git")) segments[last] = lastSegment.slice(0, -4);
+  if (segments.length < 2 || segments.some((s) => s === "")) return undefined;
+  return `${host}/${segments.join("/")}`;
+}
+
+const parseObject = (text: unknown): Record<string, unknown> | undefined => {
+  if (typeof text !== "string") return undefined;
   try {
     const value: unknown = JSON.parse(text);
-    const commit = isRecord(value) ? str(value.commit)?.toLowerCase() : undefined;
-    return commit !== undefined && COMMIT.test(commit) ? commit : undefined;
+    return isRecord(value) ? value : undefined;
   } catch {
     return undefined;
   }
+};
+
+/** The URL of a pull request artifact, when it is one and its URL is usable (`pull_request_url`). */
+export function pullRequestUrl(name: string, uri: unknown, text: unknown): string | undefined {
+  if (name.replace(/[_-]/g, " ").toLowerCase().trim() !== "pull request") return undefined;
+  const payload = parseObject(text);
+  const url =
+    typeof uri === "string" ? uri : (str(payload?.url) ?? str(payload?.html_url) ?? undefined);
+  if (url === undefined) return undefined;
+  const authority = url.startsWith("https://")
+    ? url.slice("https://".length).split(/[/?#]/)[0]
+    : undefined;
+  const plausible =
+    utf8Length(url) <= 2048 &&
+    authority !== undefined &&
+    authority !== "" &&
+    !authority.includes("@") &&
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: a link has no control characters
+    !/[\s\u0000-\u001f\u007f-\u009f\\]/.test(url);
+  return plausible ? url : undefined;
+}
+
+/** The repository and number a pull request URL names (`pull_request_location`), else nothing. */
+function pullRequestLocation(url: string): { repository: string; number: number } | undefined {
+  const path = url.split(/[?#]/)[0] ?? "";
+  for (const marker of ["/-/merge_requests/", "/merge_requests/", "/pulls/", "/pull/"]) {
+    const at = path.lastIndexOf(marker);
+    if (at < 0) continue;
+    const digits = path.slice(at + marker.length).split("/")[0] ?? "";
+    const repository = repoKey(path.slice(0, at));
+    if (!/^\d+$/.test(digits) || repository === undefined) return undefined;
+    return { repository, number: Number(digits) };
+  }
+  return undefined;
+}
+
+/**
+ * What a `vymalo.artifact` adds to the artifact as sent: its `kind` and the fields a card needs
+ * (the real projection's `typed_artifact`). A `branch` or `checks` artifact that cannot be used is
+ * a `file`.
+ */
+export function typedArtifact(name: unknown, uri: unknown, text: unknown): Record<string, unknown> {
+  const n = typeof name === "string" ? name : "";
+  const url = pullRequestUrl(n, uri, text);
+  if (url !== undefined) {
+    const payload = parseObject(text);
+    // where the link goes is what the URL says: never the payload's repository and number
+    const location = pullRequestLocation(url);
+    const number = location?.number;
+    const repository = location?.repository;
+    const branch = str(payload?.branch)?.trim();
+    return {
+      kind: "pull_request",
+      url,
+      ...(number !== undefined ? { number } : {}),
+      ...(repository !== undefined ? { repository } : {}),
+      ...(branch !== undefined && isBranchName(branch) ? { branch } : {}),
+    };
+  }
+  const payload = n === "branch" || n === "checks" ? parseObject(text) : undefined;
+  const commit = str(payload?.commit)?.toLowerCase();
+  if (payload && commit !== undefined && isCommitHash(commit)) {
+    if (n === "branch") {
+      const repository =
+        typeof payload.repository === "string" ? repoKey(payload.repository) : undefined;
+      const branch = str(payload.branch)?.trim();
+      if (repository !== undefined && branch && isBranchName(branch)) {
+        return { kind: "branch", repository, branch, shortSha: commit.slice(0, 7), sha: commit };
+      }
+    } else if (
+      typeof payload.passed === "boolean" &&
+      (payload.findings === undefined ||
+        payload.findings === null ||
+        Array.isArray(payload.findings))
+    ) {
+      return { kind: "checks", passed: payload.passed, shortSha: commit.slice(0, 7), sha: commit };
+    }
+  }
+  return { kind: "file" };
+}
+
+/** The commit of a `branch` artifact (what `job.sha` needs of `recognise_artifact`). */
+function pushedCommit(name: unknown, uri: unknown, text: unknown): string | undefined {
+  const typed = typedArtifact(name, uri, text);
+  return typed.kind === "branch" ? (typed.sha as string) : undefined;
 }
 
 export class Projector {
@@ -133,6 +279,8 @@ export class Projector {
   private checksFailed = false;
   /** The actor of the agent's last event: a rework starts the next attempt's invocation as it. */
   private lastAgent: Event["actor"] | undefined;
+  /** The open invocation's last final agent message: a status with the same words says nothing more. */
+  private lastFinal: string | undefined;
 
   constructor(private readonly info: ThreadInfo) {}
 
@@ -264,6 +412,7 @@ export class Projector {
     };
     this.suspended = null;
     this.invocation = inv;
+    this.lastFinal = undefined;
     if (e.actor.type === "agent") this.lastAgent = e.actor;
     out.push(this.startedEvent(inv));
     return inv;
@@ -279,7 +428,8 @@ export class Projector {
       type: "ACTIVITY_SNAPSHOT",
       messageId: `evt-${e.seq}`,
       activityType,
-      content,
+      // every `vymalo.*` activity says when its event happened
+      content: { ...content, at: e.at },
       ...(sub ? { subagentRunId: sub } : {}),
       metadata: actorMeta(e),
     };
@@ -325,7 +475,7 @@ export class Projector {
           type: "ACTIVITY_SNAPSHOT",
           messageId: `job-${jobStart}`,
           activityType: "vymalo.job",
-          content: { job: jobStart },
+          content: { job: jobStart, at: e.at },
           metadata: actorMeta(e),
         });
         if (!begunByMessage && wasOpen) out.push(this.snapshot());
@@ -349,6 +499,7 @@ export class Projector {
         const id = str(e.data.messageId) ?? `evt-${e.seq}`;
         const text = str(e.data.text) ?? "";
         const final = e.data.final === true;
+        if (final) this.lastFinal = text;
         const attr = { subagentRunId: inv.id };
         if (this.openText && text.startsWith(this.openText.said) && this.openText.id === id) {
           const suffix = text.slice(this.openText.said.length);
@@ -379,11 +530,31 @@ export class Projector {
         const inv = this.ensureInvocation(e, out);
         const status = str(e.data.status) ?? "working";
         const detail = str(e.data.detail);
+        // what the agent says when it finishes or asks is its answer: an assistant message
+        // (`st-<seq>`), not a detail of the status, unless it said exactly that already
+        const speaks =
+          status === "completed" || status === "input_required" || status === "auth_required";
+        if (
+          speaks &&
+          detail !== undefined &&
+          detail.trim() !== "" &&
+          this.lastFinal?.trim() !== detail.trim()
+        ) {
+          if (this.openText) {
+            out.push({
+              type: "TEXT_MESSAGE_END",
+              messageId: this.openText.id,
+              subagentRunId: inv.id,
+            });
+            this.openText = null;
+          }
+          out.push(...this.textTriad(e, `st-${e.seq}`, detail, "assistant", inv.id));
+        }
         out.push(
           this.activity(
             e,
             "vymalo.status",
-            { status, ...(detail !== undefined ? { detail } : {}) },
+            { status, ...(detail !== undefined && !speaks ? { detail } : {}) },
             inv.id,
           ),
         );
@@ -438,13 +609,14 @@ export class Projector {
         const inv = this.ensureInvocation(e, out);
         const { name, mimeType, uri, text } = e.data;
         // what is verified is what the agent had pushed when it finished
-        const pushed = pushedCommit(name, text);
+        const pushed = pushedCommit(name, uri, text);
         if (this.job() && this.state !== "verifying" && pushed !== undefined) this.sha = pushed;
         out.push(
           this.activity(
             e,
             "vymalo.artifact",
             {
+              ...typedArtifact(name, uri, text),
               name,
               ...(mimeType !== undefined ? { mimeType } : {}),
               ...(uri !== undefined ? { uri } : {}),
@@ -526,7 +698,7 @@ export class Projector {
           type: "ACTIVITY_SNAPSHOT",
           messageId,
           activityType: "vymalo.check",
-          content: { ...e.data },
+          content: { ...e.data, at: e.at },
           replace: true,
           metadata: actorMeta(e),
         });
@@ -553,6 +725,7 @@ export class Projector {
         if (typeof d.branch === "string") content.branch = d.branch;
         if (link) content.url = link;
         if (typeof d.summary === "string") content.summary = d.summary;
+        content.at = e.at;
         out.push({
           type: "ACTIVITY_SNAPSHOT",
           messageId: `ci-${String(d.provider)}-${sha}-${String(d.name)}-${e.seq}`,
@@ -578,7 +751,7 @@ export class Projector {
               ? `rework-j${this.jobNumber}-${this.attempt}`
               : `rework-${this.attempt}`,
           activityType: "vymalo.rework",
-          content: { ...e.data },
+          content: { ...e.data, at: e.at },
           replace: true,
           metadata: actorMeta(e),
         });
@@ -588,6 +761,7 @@ export class Projector {
             name: this.info.target.agentId,
           };
           this.invocation = { id: `sub-${e.seq}`, event: { ...e, actor } };
+          this.lastFinal = undefined;
           out.push(this.startedEvent(this.invocation));
         }
         out.push(this.snapshot());

@@ -63,7 +63,7 @@ test("a failed thread takes the next message", async ({ page }) => {
   await expect(badge(page)).toHaveText("Done");
   await expect(conversation(page).getByText("echo: echo try again")).toHaveCount(1);
   // the failure of the first job is still in the transcript
-  await expect(conversation(page).getByText("Failed: scripted failure")).toBeVisible();
+  await expect(conversation(page).getByText("scripted failure", { exact: true })).toBeVisible();
 });
 
 test("while the agent works the box is for drafting, and the button is Stop", async ({ page }) => {

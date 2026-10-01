@@ -6,67 +6,85 @@
 @custom-variant dark (@media (prefers-color-scheme: dark));
 
 /*
- * Calm and restrained: flat surfaces, one accent, no gradients or decorative effects.
- * The values are the palette the app already shipped with (contrast checked by axe and
- * Lighthouse), mapped onto shadcn's token names.
+ * web/DESIGN.md is the brief: a neutral canvas, one blue accent, semantic colours only for state
+ * (always next to a word and an icon), the sidebar and the person's bubble one step off the canvas.
+ * Every text colour is checked by axe in both schemes (e2e/a11y.spec.ts).
  */
 :root {
   --background: #ffffff;
-  --foreground: #1a1a1a;
+  --foreground: #1b1c1e;
+  --sidebar: #f3f5f8;
+  --sidebar-accent: #e4e9f0;
+  --bubble: #eef2f7;
   --card: #ffffff;
-  --card-foreground: #1a1a1a;
+  --card-foreground: #1b1c1e;
   --popover: #ffffff;
-  --popover-foreground: #1a1a1a;
-  --primary: #1f5fbf;
+  --popover-foreground: #1b1c1e;
+  --primary: #0b57d0;
   --primary-foreground: #ffffff;
-  --secondary: #f6f6f3;
-  --secondary-foreground: #1a1a1a;
-  --muted: #f6f6f3;
-  --muted-foreground: #5f6368;
-  --accent: #f6f6f3;
-  --accent-foreground: #1a1a1a;
+  --secondary: #f1f3f6;
+  --secondary-foreground: #1b1c1e;
+  --muted: #f1f3f6;
+  --muted-foreground: #5b5f66;
+  --accent: #eef2f7;
+  --accent-foreground: #1b1c1e;
   --destructive: #b3261e;
-  --success: #1e7a3c;
+  --destructive-soft: #fcefee;
+  --success: #137333;
   --warning: #8a5300;
+  --warning-soft: #fdf4e3;
   --verifying: #6b3fa0;
-  --border: #dcdcd8;
-  --input: #dcdcd8;
-  --ring: #1f5fbf;
-  --radius: 0.5rem;
+  --border: #e4e7ec;
+  --input: #d9dde3;
+  --ring: #0b57d0;
+  --radius: 0.75rem;
+  --composer-shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 6px 24px -4px rgb(16 24 40 / 0.1);
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #111214;
-    --foreground: #e8e8e6;
-    --card: #1a1b1e;
-    --card-foreground: #e8e8e6;
-    --popover: #1a1b1e;
-    --popover-foreground: #e8e8e6;
-    --primary: #8ab4ff;
-    --primary-foreground: #0b1220;
-    --secondary: #1a1b1e;
-    --secondary-foreground: #e8e8e6;
-    --muted: #1a1b1e;
-    --muted-foreground: #a0a3a8;
-    --accent: #1a1b1e;
-    --accent-foreground: #e8e8e6;
-    --destructive: #ff8a80;
-    --success: #6fcf8e;
-    --warning: #e0a84a;
-    --verifying: #c4a7f2;
-    --border: #2f3136;
-    --input: #2f3136;
-    --ring: #8ab4ff;
+    --background: #131314;
+    --foreground: #e6e7e9;
+    --sidebar: #1b1c1e;
+    --sidebar-accent: #2a2c30;
+    --bubble: #2a2c2f;
+    --card: #1c1d1f;
+    --card-foreground: #e6e7e9;
+    --popover: #232427;
+    --popover-foreground: #e6e7e9;
+    --primary: #a8c7fa;
+    --primary-foreground: #062e6f;
+    --secondary: #26282b;
+    --secondary-foreground: #e6e7e9;
+    --muted: #222326;
+    --muted-foreground: #a3a7ad;
+    --accent: #2a2c2f;
+    --accent-foreground: #e6e7e9;
+    --destructive: #f2b8b5;
+    --destructive-soft: #3a2322;
+    --success: #81c995;
+    --warning: #f5c46a;
+    --warning-soft: #352a15;
+    --verifying: #cfb6f7;
+    --border: #2f3237;
+    --input: #3a3d42;
+    --ring: #a8c7fa;
+    --composer-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 28px -6px rgb(0 0 0 / 0.55);
   }
 }
 
 @theme inline {
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans:
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:
+    ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   --font-heading: var(--font-sans);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-bubble: var(--bubble);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
@@ -80,19 +98,44 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
   --color-verifying: var(--verifying);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: calc(var(--radius) * 0.75);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --radius-xl: calc(var(--radius) * 1.33);
+  --radius-2xl: calc(var(--radius) * 1.67);
+  --radius-3xl: calc(var(--radius) * 2);
+  --radius-4xl: calc(var(--radius) * 2.67);
+  --shadow-composer: var(--composer-shadow);
+  --animate-turn-in: turn-in 160ms ease-out both;
+  --animate-shimmer: shimmer 1.8s linear infinite;
+
+  @keyframes turn-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
 }
 
 @layer base {
@@ -108,6 +151,7 @@
     @apply bg-background font-sans text-foreground antialiased;
     font-size: 0.9375rem;
     line-height: 1.5;
+    font-feature-settings: "cv11", "ss01";
   }
 
   /* Preflight resets links; keep them underlined so they never rely on colour alone. */
@@ -120,5 +164,42 @@
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
+  }
+}
+
+/* A sidebar the person closed, before React knows (features/threads/lib/sidebar-state.ts). */
+@media (min-width: 48rem) {
+  html[data-sidebar="closed"] [data-slot="sidebar"] {
+    width: 0;
+    border-right-width: 0;
+  }
+  html[data-sidebar="closed"] [data-slot="sidebar"] > div {
+    visibility: hidden;
+  }
+}
+
+@layer utilities {
+  /* A line of text that shimmers while something is on its way ("Coder is starting…"). */
+  .text-shimmer {
+    color: transparent;
+    background-image: linear-gradient(
+      90deg,
+      var(--muted-foreground) 0%,
+      var(--muted-foreground) 40%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 60%,
+      var(--muted-foreground) 100%
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    animation: var(--animate-shimmer);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .text-shimmer {
+      color: var(--muted-foreground);
+      background: none;
+      animation: none;
+    }
   }
 }

@@ -15,7 +15,9 @@ test("a dropped connection resumes with Last-Event-ID: nothing is missing, nothi
     }
   });
   await startThread(page, "talk to me");
-  await expect(conversation(page).getByText("Working: Reading the repository")).toBeVisible();
+  await expect(
+    conversation(page).getByText("Reading the repository", { exact: true }),
+  ).toBeVisible();
 
   // the network goes away in the middle of the run
   expect((await request.post(`${MOCK}/__mock/drop-streams`)).ok()).toBe(true);
@@ -23,10 +25,10 @@ test("a dropped connection resumes with Last-Event-ID: nothing is missing, nothi
   await expect(badge(page)).toHaveText("Done");
   const log = conversation(page);
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
-  await expect(log.getByText("Working", { exact: true })).toHaveCount(1);
-  await expect(log.getByText("Working: Reading the repository")).toHaveCount(1);
-  await expect(log.getByText("Completed")).toHaveCount(1);
-  await expect(log.getByRole("link", { name: /^Pull request / })).toHaveCount(1);
+  await expect(log.getByText("Started working", { exact: true })).toHaveCount(1);
+  await expect(log.getByText("Reading the repository", { exact: true })).toHaveCount(1);
+  await expect(log.getByText("Opened pull request #1")).toHaveCount(1);
+  await expect(log.getByRole("link", { name: /^View pull request / })).toHaveCount(1);
   // the first connect had no cursor; the reconnect carried one
   expect(connects[0]).toBeUndefined();
   expect(connects.length).toBeGreaterThanOrEqual(2);
@@ -45,7 +47,7 @@ test("a connection cut in the middle of a message is repeated from the last resu
   await page.reload();
   const log = conversation(page);
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
-  await expect(log.getByText("Completed")).toHaveCount(1);
-  await expect(log.getByText("Working: Reading the repository")).toHaveCount(1);
+  await expect(log.getByText("Opened pull request #1")).toHaveCount(1);
+  await expect(log.getByText("Reading the repository", { exact: true })).toHaveCount(1);
   await expect(badge(page)).toHaveText("Done");
 });

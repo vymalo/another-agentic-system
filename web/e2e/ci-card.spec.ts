@@ -7,7 +7,7 @@ import { badge, conversation, expectNoHorizontalScroll, startThread } from "./he
  */
 
 const reports = (page: import("@playwright/test").Page) =>
-  conversation(page).getByRole("region", { name: /^CI: / });
+  conversation(page).getByRole("listitem", { name: /^CI: / });
 
 test("a red report sends the agent back, a green one finishes the job; each report is a card", async ({
   page,
@@ -15,7 +15,7 @@ test("a red report sends the agent back, a green one finishes the job; each repo
   test.setTimeout(60_000);
   await startThread(page, "verify-ci fix the login", "Reviewer");
 
-  const red = conversation(page).getByRole("region", { name: "CI: ci/build, failure" });
+  const red = conversation(page).getByRole("listitem", { name: "CI: ci/build, failure" });
   await expect(red).toBeVisible();
   await expect(red.getByText("Failure", { exact: true })).toBeVisible();
   await expect(red.getByText("1 test failed: tests::login")).toBeVisible();
@@ -28,11 +28,9 @@ test("a red report sends the agent back, a green one finishes the job; each repo
 
   await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
   await expect(reports(page)).toHaveCount(2);
-  const green = conversation(page).getByRole("region", { name: "CI: ci/build, success" });
+  const green = conversation(page).getByRole("listitem", { name: "CI: ci/build, success" });
   await expect(green.getByText("3 tests passed")).toBeVisible();
-  await expect(
-    conversation(page).getByText("Attempt 2 of 3: sent back with 1 finding"),
-  ).toBeVisible();
+  await expect(conversation(page).getByText("CI failed — trying again (2/3)")).toBeVisible();
   await expectNoHorizontalScroll(page);
 
   // a reload is a replay: the same two cards

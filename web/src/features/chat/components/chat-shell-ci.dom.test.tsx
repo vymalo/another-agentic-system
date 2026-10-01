@@ -86,9 +86,12 @@ async function makeThread(text: string, agent = "reviewer"): Promise<string> {
 
 const log = () => screen.getByRole("log", { name: "Conversation" });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
-const reports = () => screen.queryAllByRole("region", { name: /^CI: / });
-const checks = () => screen.queryAllByRole("region", { name: /^Check: / });
-const dividers = () => [...document.querySelectorAll("[data-slot='rework-divider']")];
+const reports = () => screen.queryAllByRole("listitem", { name: /^CI: / });
+const checks = () => screen.queryAllByRole("listitem", { name: /^Check: / });
+const dividers = () => [...document.querySelectorAll("[data-slot='rework-step']")];
+/** The words of a rework step ("Checks failed — trying again (2/3)"), without its count. */
+const lineOf = (step: Element) =>
+  step.querySelector(":scope > div > div:first-child > span:first-child")?.textContent;
 
 describe("CI results, in the app", () => {
   it("ci: a red report sends the agent back, a green one finishes the job; every report is a card", async () => {
@@ -124,15 +127,13 @@ describe("CI results, in the app", () => {
       "Check: CI, attempt 1, failed",
       "Check: CI, attempt 2, passed",
     ]);
-    expect(dividers().map((d) => d.textContent)).toEqual([
-      "Attempt 2 of 3: sent back with 1 finding",
-    ]);
+    expect(dividers().map(lineOf)).toEqual(["CI failed — trying again (2/3)"]);
     const order = [
       ...log().querySelectorAll(
-        "[data-slot='check-card'], [data-slot='ci-card'], [data-slot='rework-divider']",
+        "[data-slot='check-card'], [data-slot='ci-card'], [data-slot='rework-step']",
       ),
     ].map((n) => n.getAttribute("data-slot"));
-    expect(order).toEqual(["check-card", "ci-card", "rework-divider", "check-card", "ci-card"]);
+    expect(order).toEqual(["check-card", "ci-card", "rework-step", "check-card", "ci-card"]);
     expect(screen.queryByText("Pending")).toBeNull();
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(false);
   });

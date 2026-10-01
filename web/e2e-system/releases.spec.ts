@@ -18,7 +18,8 @@ test("coder offers releases, plain does not; staging is echoed as coder-r51", as
   await page.getByLabel("Message").fill("echo use staging");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page).toHaveURL(/\/threads\//);
-  await expect(page.getByText("coder · staging")).toBeVisible();
+  // the agent's pill (top bar and composer) names the release
+  await expect(page.getByText("coder · staging").first()).toBeVisible();
   await expect(badge(page)).toHaveText("Done");
   await expect(page.getByText("coder · coder-r51").first()).toBeVisible();
 

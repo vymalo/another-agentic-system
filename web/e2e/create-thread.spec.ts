@@ -14,7 +14,7 @@ test("create a thread and watch it finish", async ({ page }) => {
 
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(log.getByText("Implement the thing", { exact: true })).toBeVisible();
-  await expect(log.getByText("Working")).toBeVisible();
+  await expect(log.getByText("Started working")).toBeVisible();
 
   const pr = page.getByRole("link", { name: "Pull request acme/demo#1" });
   await expect(pr).toBeVisible();
@@ -30,7 +30,7 @@ test("create a thread and watch it finish", async ({ page }) => {
   // the thread shows up in the list (on a phone the list is a collapsed disclosure)
   await openThreadList(page);
   await expect(
-    threadList(page).getByRole("button", { name: "Implement the thing" }).first(),
+    threadList(page).getByRole("link", { name: "Implement the thing" }).first(),
   ).toBeVisible();
 });
 
@@ -39,7 +39,8 @@ test("agent text renders once, with a status line and the actor", async ({ page 
 
   const log = page.getByRole("log", { name: "Conversation" });
   await expect(badge(page)).toHaveText("Done");
-  await expect(log.getByText("Working: Reading the repository")).toBeVisible();
+  // a working status's words are a step
+  await expect(log.getByText("Reading the repository", { exact: true })).toBeVisible();
   await expect(log.getByText("Plan: add a test")).toHaveCount(1);
   await expect(actorLabel(agentMessage(page, "Plan: add a test"))).toHaveText("coder · coder-r47");
 });
@@ -85,7 +86,7 @@ test("phone: the thread list is a sheet that returns focus and has no serious vi
 
   // picking a thread closes the sheet
   await trigger.click();
-  await threadList(page).getByRole("button", { name: "New thread" }).click();
+  await threadList(page).getByRole("link", { name: "New chat" }).click();
   await expect(page).toHaveURL("/");
   await expect(dialog).toHaveCount(0);
 });

@@ -65,6 +65,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -95,9 +96,39 @@
   },
   {
     "event": {
+      "messageId": "st-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Which branch?",
+      "messageId": "st-3",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "st-3",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    }
+  },
+  {
+    "event": {
       "activityType": "vymalo.status",
       "content": {
-        "detail": "Which branch?",
+        "at": "<timestamp>",
         "status": "input_required"
       },
       "messageId": "evt-3",
@@ -234,6 +265,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       },
       "messageId": "evt-6",
@@ -266,6 +298,8 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "kind": "file",
         "name": "result",
         "text": "answered: main",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -286,6 +320,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       },
       "messageId": "evt-8",

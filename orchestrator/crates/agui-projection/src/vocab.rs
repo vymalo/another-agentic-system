@@ -4,11 +4,19 @@ use orch_agui_proto::Metadata;
 use orch_core::{Actor, AgentStatus};
 use serde_json::{Value, json};
 
-/// Activity type of a status line (`{status, detail?}`).
+/// The member of every `vymalo.*` activity's content that says when its event happened (the
+/// event's `at`, RFC 3339).
+pub const AT_KEY: &str = "at";
+
+/// Activity type of a status line (`{status, detail?, at}`). The words of a `completed`,
+/// `input_required` or `auth_required` status are an assistant message (`st-<seq>`) instead of
+/// its `detail`.
 pub const ACTIVITY_STATUS: &str = "vymalo.status";
-/// Activity type of an artifact (`{name, mimeType?, uri?, text?}`).
+/// Activity type of an artifact (`{kind, name, mimeType?, uri?, text?, at}` plus the fields of its
+/// kind: `branch` `{repository, branch, sha, shortSha}`, `checks` `{passed, sha, shortSha}`,
+/// `pull_request` `{url, number?, repository?, branch?}`, `file` nothing more).
 pub const ACTIVITY_ARTIFACT: &str = "vymalo.artifact";
-/// Activity type of an error (`{message, retryable}`).
+/// Activity type of an error (`{message, retryable, at}`).
 pub const ACTIVITY_ERROR: &str = "vymalo.error";
 
 /// Activity type of an A2UI surface: the ecosystem's, not ours (`@ag-ui/a2ui-middleware`,
@@ -18,19 +26,19 @@ pub const ACTIVITY_A2UI_SURFACE: &str = "a2ui-surface";
 pub const A2UI_OPERATIONS_KEY: &str = "a2ui_operations";
 /// Activity type of a verification source's answer (`vymalo.check`, ADR 0018): the content is the
 /// `check_result` event's data, `{source, attempt, status, name?, commit?, summary?, stale?,
-/// findings?}`.
+/// findings?}`, plus `at`.
 pub const ACTIVITY_CHECK: &str = "vymalo.check";
 /// Activity type of a CI report (`vymalo.ci`, ADR 0017): the content is
-/// `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}`; `summary`
+/// `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?, at}`; `summary`
 /// (and `name`, `branch`) come from outside and are untrusted text.
 pub const ACTIVITY_CI: &str = "vymalo.ci";
 /// Activity type of a rework (`vymalo.rework`, ADR 0018): the content is the `rework` event's
-/// data, `{attempt, maxAttempts, findings: [{source, findings}]}`.
+/// data, `{attempt, maxAttempts, findings: [{source, findings}]}`, plus `at`.
 pub const ACTIVITY_REWORK: &str = "vymalo.rework";
 /// Activity type of the start of a thread's next job (`vymalo.job`, ADR 0020): the content is
-/// `{job}`, the number of the job that started (from 2), and its id is `job-<job>`.
+/// `{job, at}`, the number of the job that started (from 2), and its id is `job-<job>`.
 pub const ACTIVITY_JOB: &str = "vymalo.job";
-/// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context}`).
+/// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context, at}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 
 /// Metadata key naming who produced an event (`{type, name, revision?}`).

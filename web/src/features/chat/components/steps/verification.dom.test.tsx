@@ -14,9 +14,9 @@ import { StateBadge } from "@/features/chat/components/state-badge";
 import { mountSurfaces, stubLayout } from "@/features/chat/components/surface/testing";
 import { type GoldenFrame, loadGolden, THREAD_ID } from "@/features/chat/lib/agui/testing";
 import type { CheckContent } from "@/features/chat/lib/agui/vymalo";
-import { CheckCard } from "./check-card";
-import { FINDING_PREVIEW, FINDINGS_SHOWN } from "./findings-list";
-import { ReworkDivider } from "./rework-divider";
+import { FINDING_PREVIEW, FINDINGS_SHOWN } from "../parts/findings-list";
+import { CheckStep } from "./check-step";
+import { ReworkStep } from "./step-items";
 
 configure({ asyncUtilTimeout: 10_000 });
 beforeAll(stubLayout);
@@ -31,12 +31,13 @@ const check = (over: Partial<CheckContent> = {}): CheckContent => ({
   ...over,
 });
 
-const card = () => screen.getByRole("region", { name: /^Check: / });
+// a check is a step of the turn: a list item named by its source, attempt and status
+const card = () => screen.getByRole("listitem", { name: /^Check: / });
 
 describe("the check card", () => {
   it("says passed, failed or pending in words, with the source, the attempt and the short commit", () => {
     const { rerender } = render(
-      <CheckCard
+      <CheckStep
         data={check({
           status: "failed",
           commit: "0000000000000000000000000000000000000001",
@@ -49,7 +50,7 @@ describe("the check card", () => {
     expect(card().getAttribute("aria-label")).toBe("Check: Agent checks, attempt 1, failed");
     const view = within(card());
     expect(view.getByText("Failed")).toBeTruthy();
-    expect(view.getByText("Agent checks")).toBeTruthy();
+    expect(view.getByText("The agent's checks failed")).toBeTruthy();
     expect(view.getByText("Attempt 1")).toBeTruthy();
     expect(view.getByText("0000000").getAttribute("title")).toBe(
       "0000000000000000000000000000000000000001",
@@ -57,30 +58,49 @@ describe("the check card", () => {
     expect(view.getByText("1 test failed")).toBeTruthy();
     expect(view.getByText("Findings (1)")).toBeTruthy();
     expect(view.getByText("tests::login fails: expected 200, got 500")).toBeTruthy();
-    expect(view.getByText("orchestrator")).toBeTruthy();
+    // the findings are folded behind their disclosure
+    expect(view.getByText("Findings (1)").closest("details")?.open).toBe(false);
+    // the orchestrator is not an author worth a label; an agent (the verifier) is
+    expect(view.queryByText("orchestrator")).toBeNull();
 
-    rerender(<CheckCard data={check({ status: "passed", source: "ci", name: "build" })} />);
+    rerender(<CheckStep data={check({ status: "passed", source: "ci", name: "build" })} />);
     expect(card().getAttribute("aria-label")).toBe("Check: CI, attempt 1, passed");
     expect(within(card()).getByText("Passed")).toBeTruthy();
-    expect(within(card()).getByText("CI")).toBeTruthy();
+    expect(within(card()).getByText("CI passed")).toBeTruthy();
     expect(within(card()).getByText(/build/)).toBeTruthy();
     expect(within(card()).queryByText(/Findings/)).toBeNull();
 
-    rerender(<CheckCard data={check({ status: "pending", source: "verifier" })} />);
+    rerender(
+      <CheckStep
+        data={check({
+          status: "pending",
+          source: "verifier",
+          actor: { type: "agent", name: "verifier", revision: "v-r3" },
+        })}
+      />,
+    );
     expect(card().getAttribute("aria-label")).toBe("Check: Verifier, attempt 1, pending");
     expect(within(card()).getByText("Pending")).toBeTruthy();
+    expect(within(card()).getByText("The verifier is reviewing the work")).toBeTruthy();
+    expect(within(card()).getByText("verifier · v-r3")).toBeTruthy();
     expect(card().getAttribute("data-status")).toBe("pending");
+    expect(card().getAttribute("data-state")).toBe("pending");
+
+    // a run that ended with the check unanswered says so, and stops spinning
+    rerender(<CheckStep data={check({ status: "pending", source: "ci" })} waiting={false} />);
+    expect(card().getAttribute("data-state")).toBe("muted");
+    expect(within(card()).getByText("No answer came before the run ended.")).toBeTruthy();
   });
 
   it("a stale answer is muted and marked, and says it decided nothing", () => {
-    render(<CheckCard data={check({ source: "ci", status: "failed", stale: true })} />);
+    render(<CheckStep data={check({ source: "ci", status: "failed", stale: true })} />);
     expect(card().getAttribute("data-stale")).toBe("true");
     expect(card().getAttribute("aria-label")).toBe("Check: CI, attempt 1, failed, stale");
     expect(within(card()).getByText("Stale")).toBeTruthy();
     expect(within(card()).getByText(/It decided nothing/)).toBeTruthy();
-    expect(card().className).toContain("border-dashed");
+    expect(card().getAttribute("data-state")).toBe("muted");
     cleanup();
-    render(<CheckCard data={check()} />);
+    render(<CheckStep data={check()} />);
     expect(card().getAttribute("data-stale")).toBeNull();
     expect(within(card()).queryByText("Stale")).toBeNull();
   });
@@ -95,7 +115,7 @@ describe("the check card", () => {
       "<a href='https://evil.example'>go</a>",
     ];
     const { container } = render(
-      <CheckCard
+      <CheckStep
         data={check({
           summary: "<b>summary</b> **not bold**",
           commit: "<script>x</script>",
@@ -121,7 +141,7 @@ describe("the check card", () => {
 
   it("a long finding is cut, with a control that shows all of it and takes it back", () => {
     const long = `${"x".repeat(FINDING_PREVIEW)}TAIL-OF-THE-FINDING`;
-    render(<CheckCard data={check({ findings: [long, "short one"] })} />);
+    render(<CheckStep data={check({ findings: [long, "short one"] })} />);
     const item = within(card()).getAllByRole("listitem")[0] as HTMLElement;
     expect(item.textContent).not.toContain("TAIL-OF-THE-FINDING");
     expect(item.textContent).toContain("…");
@@ -141,7 +161,7 @@ describe("the check card", () => {
 
   it("a long list is folded after five findings, with a control for the rest", () => {
     const many = Array.from({ length: FINDINGS_SHOWN + 3 }, (_, i) => `finding number ${i}`);
-    render(<CheckCard data={check({ findings: many })} />);
+    render(<CheckStep data={check({ findings: many })} />);
     expect(within(card()).getAllByRole("listitem")).toHaveLength(FINDINGS_SHOWN);
     expect(within(card()).queryByText("finding number 7")).toBeNull();
     fireEvent.click(within(card()).getByRole("button", { name: "Show all 8 findings" }));
@@ -152,12 +172,12 @@ describe("the check card", () => {
   });
 
   it("two identical findings are both listed", () => {
-    render(<CheckCard data={check({ findings: ["same", "same"] })} />);
+    render(<CheckStep data={check({ findings: ["same", "same"] })} />);
     expect(within(card()).getAllByText("same")).toHaveLength(2);
   });
 });
 
-describe("the rework divider", () => {
+describe("the rework step", () => {
   const rework = (findings: number[]) => ({
     attempt: 2,
     maxAttempts: 3,
@@ -167,18 +187,23 @@ describe("the rework divider", () => {
     })),
   });
 
-  it("names the attempt that starts and how many findings the agent was sent back with", () => {
-    const { container } = render(<ReworkDivider data={rework([1])} />);
-    expect(screen.getByText("Attempt 2 of 3: sent back with 1 finding")).toBeTruthy();
-    expect(
-      container.querySelector("[data-slot='rework-divider']")?.getAttribute("data-attempt"),
-    ).toBe("2");
+  it("names what sent the agent back, the attempt that starts and how many findings it took back", () => {
+    const { container } = render(<ReworkStep data={rework([1])} />);
+    expect(screen.getByText("Checks failed — trying again (2/3)")).toBeTruthy();
+    expect(screen.getByText("· 1 finding")).toBeTruthy();
+    const step = container.querySelector("[data-slot='rework-step']");
+    expect(step?.getAttribute("data-attempt")).toBe("2");
+    expect(step?.getAttribute("data-state")).toBe("warning");
+    // the findings themselves are on the check steps above
+    expect(screen.queryByText("f0")).toBeNull();
     cleanup();
-    render(<ReworkDivider data={rework([2, 3])} />);
-    expect(screen.getByText("Attempt 2 of 3: sent back with 5 findings")).toBeTruthy();
+    render(<ReworkStep data={rework([2, 3])} />);
+    expect(screen.getByText("Checks failed — trying again (2/3)")).toBeTruthy();
+    expect(screen.getByText("· 5 findings")).toBeTruthy();
     cleanup();
-    render(<ReworkDivider data={{ attempt: 3, maxAttempts: 3, findings: [] }} />);
-    expect(screen.getByText("Attempt 3 of 3: sent back with 0 findings")).toBeTruthy();
+    render(<ReworkStep data={{ attempt: 3, maxAttempts: 3, findings: [] }} />);
+    expect(screen.getByText("Checks failed — trying again (3/3)")).toBeTruthy();
+    expect(screen.queryByText(/finding/)).toBeNull();
   });
 });
 
@@ -261,11 +286,14 @@ function activities(list: [string, string, unknown][], first = 1): GoldenFrame[]
   ];
 }
 
-const regions = () => screen.queryAllByRole("region", { name: /^Check: / });
-const dividers = () => document.querySelectorAll("[data-slot='rework-divider']");
+const regions = () => screen.queryAllByRole("listitem", { name: /^Check: / });
+const dividers = () => document.querySelectorAll("[data-slot='rework-step']");
+/** The words of a rework step ("Checks failed — trying again (2/3)"), without its count. */
+const lineOf = (step: Element | undefined) =>
+  step?.querySelector(":scope > div > div:first-child > span:first-child")?.textContent;
 
 describe("the renderers in the transcript", () => {
-  it("verify-green: the failed check, the divider and the passed check, in that order", async () => {
+  it("verify-green: the failed check, the rework and the passed check, in that order", async () => {
     const m = mountSurfaces();
     await feed(m, loadGolden("verify-green"));
     await waitFor(() => expect(regions()).toHaveLength(2));
@@ -276,20 +304,20 @@ describe("the renderers in the transcript", () => {
     expect(within(second).queryByText(/Findings/)).toBeNull();
     const divider = dividers();
     expect(divider).toHaveLength(1);
-    expect(divider[0]?.textContent).toBe("Attempt 2 of 3: sent back with 1 finding");
-    // document order: the failed card, the divider, the passed card
+    expect(lineOf(divider[0])).toBe("Checks failed — trying again (2/3)");
+    // document order: the failed check, the rework, the passed check
     expect(
       first.compareDocumentPosition(divider[0] as Element) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
       (divider[0] as Element).compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    // and the agent's second attempt is in the same transcript after the divider
-    expect(screen.getAllByText("Working").length).toBe(2);
+    // and the agent's second attempt is in the same transcript after the rework
+    expect(screen.getAllByText("Started working").length).toBe(2);
     m.agent.stop();
   });
 
-  it("verify-red: three failed cards and two dividers, the last attempt without one", async () => {
+  it("verify-red: three failed checks and two reworks, the last attempt without one", async () => {
     const m = mountSurfaces();
     await feed(m, loadGolden("verify-red"));
     await waitFor(() => expect(regions()).toHaveLength(3));
@@ -298,9 +326,9 @@ describe("the renderers in the transcript", () => {
       "Check: Agent checks, attempt 2, failed",
       "Check: Agent checks, attempt 3, failed",
     ]);
-    expect([...dividers()].map((d) => d.textContent)).toEqual([
-      "Attempt 2 of 3: sent back with 1 finding",
-      "Attempt 3 of 3: sent back with 1 finding",
+    expect([...dividers()].map(lineOf)).toEqual([
+      "Checks failed — trying again (2/3)",
+      "Checks failed — trying again (3/3)",
     ]);
     m.agent.stop();
   });

@@ -2120,7 +2120,7 @@ fn artifacts_are_recognised_by_name_and_shape() {
         "base_branch": "main", "commit": S1.to_uppercase()})
     .to_string();
     assert_eq!(
-        recognise_artifact("branch", Some(&branch_json)),
+        recognise_artifact("branch", None, Some(&branch_json)),
         Recognised::Branch(PushedRef {
             repository: REPO.into(),
             branch: "agent/x".into(),
@@ -2131,7 +2131,7 @@ fn artifacts_are_recognised_by_name_and_shape() {
         json!({"passed": false, "commit": S1, "summary": "  s  ", "findings": ["a", 3, {"b": 1}]})
             .to_string();
     assert_eq!(
-        recognise_artifact("checks", Some(&checks_json)),
+        recognise_artifact("checks", None, Some(&checks_json)),
         Recognised::Checks(ChecksReport {
             passed: false,
             commit: S1.into(),
@@ -2140,10 +2140,144 @@ fn artifacts_are_recognised_by_name_and_shape() {
         })
     );
     assert_eq!(
-        recognise_artifact("pull_request", Some("{}")),
+        recognise_artifact("pull_request", None, Some("{}")),
         Recognised::Other
     );
-    assert_eq!(recognise_artifact("Branch", Some("{}")), Recognised::Other);
+    assert_eq!(
+        recognise_artifact("Branch", None, Some("{}")),
+        Recognised::Other
+    );
+}
+
+#[test]
+fn a_pull_requests_repository_and_number_are_where_its_link_goes() {
+    // The payload says acme/demo#12, the link goes elsewhere: the URL wins, so a card never puts
+    // a trusted label on a hostile link.
+    let hostile = json!({"url": "https://evil.example/acme/demo/pull/9",
+        "repository": "github.com/acme/demo", "number": 12})
+    .to_string();
+    let Recognised::PullRequest(pr) = recognise_artifact("pull_request", None, Some(&hostile))
+    else {
+        panic!("still a pull request");
+    };
+    assert_eq!(
+        (pr.repository.as_deref(), pr.number),
+        (Some("evil.example/acme/demo"), Some(9))
+    );
+    // `/x/pull/9` names no owner and repository: nothing is taken from the payload either.
+    let short = json!({"url": "https://evil.example/x/pull/9",
+        "repository": "github.com/acme/demo", "number": 12})
+    .to_string();
+    let Recognised::PullRequest(pr) = recognise_artifact("pull_request", None, Some(&short)) else {
+        panic!("still a pull request");
+    };
+    assert_eq!((pr.repository, pr.number), (None, None));
+    // A URL that names no repository and number: neither is taken from the payload.
+    let odd = json!({"url": "https://evil.example/review",
+        "repository": "github.com/acme/demo", "number": 12})
+    .to_string();
+    let Recognised::PullRequest(pr) = recognise_artifact("pull_request", None, Some(&odd)) else {
+        panic!("still a pull request");
+    };
+    assert_eq!((pr.repository, pr.number), (None, None));
+    // A number segment that is not digits is no number.
+    let Recognised::PullRequest(pr) = recognise_artifact(
+        "Pull request",
+        Some("https://github.com/acme/demo/pull/12abc"),
+        None,
+    ) else {
+        panic!("still a pull request");
+    };
+    assert_eq!((pr.repository, pr.number), (None, None));
+}
+
+#[test]
+fn a_pull_request_is_recognised_from_either_agent_shape() {
+    let url = "https://github.com/acme/demo/pull/12";
+    // The mock agent: a url part named "Pull request"; the number and the repository come from
+    // the URL.
+    assert_eq!(
+        recognise_artifact("Pull request", Some(url), Some("Pull request opened")),
+        Recognised::PullRequest(PullRequestRef {
+            url: url.into(),
+            number: Some(12),
+            repository: Some("github.com/acme/demo".into()),
+            branch: None,
+        })
+    );
+    // adam-coder: a data part whose number is a string (A2A carries numbers as floats).
+    let data = json!({"url": url, "number": "12", "branch": "agent/x",
+        "repository": "https://github.com/Acme/Demo.git"})
+    .to_string();
+    assert_eq!(
+        recognise_artifact("pull_request", None, Some(&data)),
+        Recognised::PullRequest(PullRequestRef {
+            url: url.into(),
+            number: Some(12),
+            repository: Some("github.com/acme/demo".into()),
+            branch: Some("agent/x".into()),
+        })
+    );
+    // A GitLab merge request URL.
+    let mr = "https://gitlab.com/acme/demo/-/merge_requests/7";
+    let Recognised::PullRequest(pr) = recognise_artifact("pull-request", Some(mr), None) else {
+        panic!("a merge request URL is a pull request");
+    };
+    assert_eq!(
+        (pr.number, pr.repository.as_deref()),
+        (Some(7), Some("gitlab.com/acme/demo"))
+    );
+    // Only https, of a reasonable length, on one line; anything else is not a pull request.
+    for bad in [
+        "http://github.com/acme/demo/pull/1",
+        "javascript:alert(1)",
+        "https://",
+        "https://github.com/a b",
+        "https://github.com/a\nb",
+    ] {
+        assert_eq!(
+            pull_request_url("Pull request", Some(bad), None),
+            None,
+            "{bad:?}"
+        );
+        assert_eq!(
+            recognise_artifact("Pull request", Some(bad), None),
+            Recognised::Other,
+            "{bad:?}"
+        );
+    }
+    let long = format!("https://github.com/{}", "a".repeat(MAX_URL_BYTES));
+    assert_eq!(pull_request_url("Pull request", Some(&long), None), None);
+    // User information and backslashes are refused: a client trusts `url` as a link, and
+    // `https://github.com@evil.example/` goes to evil.example.
+    for bad in [
+        "https://github.com@evil.example/acme/demo/pull/1",
+        "https://user:pass@github.com/acme/demo/pull/1",
+        "https://github.com\\@evil.example/acme/demo/pull/1",
+        "https://github.com/acme\\demo/pull/1",
+        "https://@/x",
+    ] {
+        assert_eq!(
+            pull_request_url("Pull request", Some(bad), None),
+            None,
+            "{bad:?}"
+        );
+    }
+    // The name decides: a `result` that links to a pull request is not one.
+    assert_eq!(
+        recognise_artifact("result", Some(url), None),
+        Recognised::Other
+    );
+    // `html_url` is read too.
+    assert_eq!(
+        pull_request_url(
+            "pull_request",
+            None,
+            Some(&json!({"html_url": url}).to_string())
+        )
+        .as_deref(),
+        Some(url)
+    );
     for (name, text) in [
         ("branch", None),
         ("branch", Some("not json")),
@@ -2171,7 +2305,10 @@ fn artifacts_are_recognised_by_name_and_shape() {
         ),
     ] {
         assert!(
-            matches!(recognise_artifact(name, text), Recognised::Malformed { .. }),
+            matches!(
+                recognise_artifact(name, None, text),
+                Recognised::Malformed { .. }
+            ),
             "{name} {text:?}"
         );
     }
@@ -2183,7 +2320,7 @@ fn a_branch_git_would_refuse_is_not_a_pushed_branch() {
         let text =
             json!({"repository": "github.com/a/b", "branch": branch, "commit": S1}).to_string();
         matches!(
-            recognise_artifact("branch", Some(&text)),
+            recognise_artifact("branch", None, Some(&text)),
             Recognised::Branch(_)
         )
     };
@@ -2234,7 +2371,8 @@ fn a_branch_git_would_refuse_is_not_a_pushed_branch() {
     }
     // The reason is worded for the log, and the thread carries on without a pushed branch.
     let text = json!({"repository": "github.com/a/b", "branch": "x y", "commit": S1}).to_string();
-    let Recognised::Malformed { reason, .. } = recognise_artifact("branch", Some(&text)) else {
+    let Recognised::Malformed { reason, .. } = recognise_artifact("branch", None, Some(&text))
+    else {
         panic!("malformed");
     };
     assert!(

@@ -5,19 +5,59 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { InlineStatus } from "@/components/inline-status";
-import { NewThreadPanel } from "@/features/agents/components/new-thread-panel";
+import {
+  AgentPicker,
+  AgentsProblem,
+  NewChatGreeting,
+  Suggestions,
+} from "@/features/agents/components/new-thread-panel";
 import { useAgents } from "@/features/agents/hooks/use-agents";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
-import { ThreadSidebar, ThreadsSheet } from "@/features/threads/components/thread-sidebar";
+import {
+  SidebarOpeners,
+  ThreadSidebar,
+  ThreadsSheet,
+} from "@/features/threads/components/thread-sidebar";
 import { useThreads } from "@/features/threads/hooks/use-threads";
+import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
 import { problemMessage } from "@/lib/api/client";
+import { AgentPill } from "./agent-pill";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
 import { LiveRuns } from "./live-runs";
 import { SurfaceHostProvider } from "./surface/surface-host";
 import { ThreadHeader } from "./thread-header";
+import { ThreadViewProvider } from "./thread-view";
+
+/**
+ * Whether the desktop sidebar is open: remembered per browser, open when nothing is stored. A
+ * script in the layout (`SIDEBAR_SCRIPT`, lib/sidebar-state.ts) puts `data-sidebar="closed"` on `<html>` before the first
+ * paint and the stylesheet hides the sidebar by it, so a closed sidebar never flashes open while
+ * this state, which starts open for the server's render, catches up.
+ */
+function useSidebarOpen(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(true);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(SIDEBAR_KEY) === "closed") setOpen(false);
+    } catch {
+      // storage may be blocked: the sidebar stays open
+    }
+  }, []);
+  const set = useCallback((next: boolean) => {
+    setOpen(next);
+    if (next) delete document.documentElement.dataset.sidebar;
+    else document.documentElement.dataset.sidebar = "closed";
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, next ? "open" : "closed");
+    } catch {
+      // not remembered, still toggled
+    }
+  }, []);
+  return [open, set];
+}
 
 /** `null` is the new-thread page. Every navigation remounts, so no state leaks between threads. */
 export function ChatShell({ threadId }: { threadId: string | null }) {
@@ -87,7 +127,33 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
     agent.cancel().catch((e: unknown) => setSendError(problemMessage(e)));
   }, [agent]);
 
+  const [sidebarOpen, setSidebarOpen] = useSidebarOpen();
+  // A toggle moves the focus to the control that now exists (the other one is gone or hidden).
+  const collapseRef = useRef<HTMLButtonElement | null>(null);
+  const openRef = useRef<HTMLButtonElement | null>(null);
+  const focusAfterToggle = useRef<"open" | "collapse" | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs after each toggle, on purpose
+  useEffect(() => {
+    const target = focusAfterToggle.current === "open" ? openRef : collapseRef;
+    if (!focusAfterToggle.current) return;
+    focusAfterToggle.current = null;
+    // a frame later: the button that was clicked is gone, and the browser's focus fix-up for a
+    // removed element runs with the next rendering, which would undo a focus moved any earlier
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => target.current?.focus());
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [sidebarOpen]);
+  const collapseSidebar = useCallback(() => {
+    focusAfterToggle.current = "open";
+    setSidebarOpen(false);
+  }, [setSidebarOpen]);
+  const openSidebar = useCallback(() => {
+    focusAfterToggle.current = "collapse";
+    setSidebarOpen(true);
+  }, [setSidebarOpen]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const thread = meta.thread;
   const composer = (
     <Composer
       state={state}
@@ -97,7 +163,28 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
       sendError={sendError}
       onCancel={cancel}
       inputRef={composerRef}
+      toolbar={
+        threadId === null ? (
+          <AgentPicker agents={agents} selection={effective} onSelect={setSelection} />
+        ) : thread ? (
+          <AgentPill agentId={thread.target.agentId} release={thread.target.release} />
+        ) : null
+      }
     />
+  );
+  const leading = (
+    <>
+      <ThreadsSheet threads={threads} />
+      {sidebarOpen ? null : <SidebarOpeners onOpen={openSidebar} openRef={openRef} />}
+    </>
+  );
+  const view = useMemo(
+    () => ({
+      state,
+      waiting: snapshot.waiting,
+      agentId: thread?.target.agentId ?? target.agentId,
+    }),
+    [state, snapshot.waiting, thread?.target.agentId, target.agentId],
   );
 
   return (
@@ -110,51 +197,69 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
       >
         <DataUIs />
         <LiveRuns agent={agent} runtime={runtime} />
-        <div className="grid h-dvh grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
-          <ThreadSidebar threads={threads} />
-          <main className="flex min-h-0 min-w-0 flex-col px-3 md:px-4">
-            <div className="pt-2 md:hidden">
-              <ThreadsSheet threads={threads} />
-            </div>
-            {threadId === null ? (
-              <>
-                <div className="mx-auto w-full max-w-3xl">
-                  <NewThreadPanel agents={agents} selection={effective} onSelect={setSelection} />
-                </div>
-                <div className="mx-auto mt-auto w-full max-w-3xl">{composer}</div>
-              </>
-            ) : meta.notFound || snapshot.notFound ? (
-              <div className="mx-auto w-full max-w-3xl pt-8">
-                <InlineStatus role="status">
-                  Thread not found. <Link href="/">Start a new thread</Link>.
-                </InlineStatus>
-              </div>
-            ) : (
-              <>
-                <div className="mx-auto w-full max-w-3xl">
+        <ThreadViewProvider value={view}>
+          <div className="flex h-dvh overflow-hidden">
+            <ThreadSidebar
+              threads={threads}
+              open={sidebarOpen}
+              onCollapse={collapseSidebar}
+              collapseRef={collapseRef}
+            />
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {threadId === null ? (
+                <>
+                  <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
+                    {leading}
+                  </header>
+                  {/* the one soft glow of the design, behind the greeting and the box (DESIGN.md) */}
+                  <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[radial-gradient(ellipse_60%_45%_at_50%_48%,color-mix(in_oklab,var(--primary)_9%,transparent),transparent)]">
+                    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
+                      <NewChatGreeting agents={agents} selection={effective} />
+                      <AgentsProblem agents={agents} />
+                      {composer}
+                      <Suggestions inputRef={composerRef} />
+                    </div>
+                  </div>
+                </>
+              ) : meta.notFound || snapshot.notFound ? (
+                <>
+                  <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
+                    {leading}
+                  </header>
+                  <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
+                    <InlineStatus role="status">
+                      Thread not found. <Link href="/">Start a new thread</Link>.
+                    </InlineStatus>
+                  </div>
+                </>
+              ) : (
+                <>
                   <ThreadHeader
-                    thread={meta.thread}
+                    thread={thread}
                     state={state}
                     waiting={snapshot.waiting}
                     connection={snapshot.connection}
+                    leading={leading}
                   />
                   {meta.error ? (
-                    <InlineStatus
-                      tone="error"
-                      role="alert"
-                      action={{ label: "Retry", onClick: meta.reload }}
-                    >
-                      Could not load the thread: {meta.error}
-                    </InlineStatus>
+                    <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+                      <InlineStatus
+                        tone="error"
+                        role="alert"
+                        action={{ label: "Retry", onClick: meta.reload }}
+                      >
+                        Could not load the thread: {meta.error}
+                      </InlineStatus>
+                    </div>
                   ) : null}
-                </div>
-                <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
-                  {composer}
-                </Thread>
-              </>
-            )}
-          </main>
-        </div>
+                  <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                    {composer}
+                  </Thread>
+                </>
+              )}
+            </main>
+          </div>
+        </ThreadViewProvider>
       </SurfaceHostProvider>
     </AssistantRuntimeProvider>
   );

@@ -62,7 +62,7 @@ test("bob does not see alice's threads", async ({ page, browser }) => {
   try {
     const bobPage = await bob.newPage();
     await bobPage.goto("/");
-    await expect(bobPage.getByText("No threads yet.")).toBeVisible();
+    await expect(bobPage.getByText("Your chats will show up here.")).toBeVisible();
     await expect(bobPage.getByText("echo alice only")).toHaveCount(0);
 
     await bobPage.goto(`/threads/${id}`);

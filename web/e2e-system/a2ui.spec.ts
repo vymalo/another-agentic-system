@@ -64,6 +64,6 @@ test("a payload the orchestrator refuses shows as an error line, and no surface"
 }) => {
   await startThread(page, "ui-bad now", "Plain");
   await expect(badge(page)).toHaveText("Done");
-  await expect(conversation(page).getByText(/Error:/)).toBeVisible();
+  await expect(conversation(page).getByText(/Something went wrong/)).toBeVisible();
   await expect(conversation(page).getByRole("region", { name: /^Interface from/ })).toHaveCount(0);
 });

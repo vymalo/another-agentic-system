@@ -65,6 +65,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -189,9 +190,39 @@
   },
   {
     "event": {
+      "messageId": "st-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Pick one",
+      "messageId": "st-5",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "st-5",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    }
+  },
+  {
+    "event": {
       "activityType": "vymalo.status",
       "content": {
-        "detail": "Pick one",
+        "at": "2027-01-15T08:00:05Z",
         "status": "input_required"
       },
       "messageId": "evt-5",
@@ -288,6 +319,7 @@
     "event": {
       "activityType": "vymalo.action",
       "content": {
+        "at": "2027-01-15T08:00:07Z",
         "context": {
           "choice": "a"
         },
@@ -323,6 +355,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:08Z",
         "status": "working"
       },
       "messageId": "evt-8",
@@ -355,6 +388,8 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "kind": "file",
         "name": "result",
         "text": "answered: ui-action go",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -375,6 +410,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:10Z",
         "status": "completed"
       },
       "messageId": "evt-10",

@@ -141,7 +141,11 @@ fn a_thread_that_asks_ends_its_run_with_an_interrupt_and_suspends_the_invocation
             "SUBAGENT_STARTED sub-2 plain",
             "ACTIVITY_SNAPSHOT evt-2 vymalo.status {\"status\":\"working\"} @sub-2",
             "STATE_SNAPSHOT working  id:2",
-            "ACTIVITY_SNAPSHOT evt-3 vymalo.status {\"detail\":\"Which branch?\",\"status\":\"input_required\"} @sub-2",
+            // The question is the agent's words: an assistant message, named after the agent.
+            "TEXT_MESSAGE_START st-3 assistant @sub-2",
+            "TEXT_MESSAGE_CONTENT st-3 \"Which branch?\"",
+            "TEXT_MESSAGE_END st-3",
+            "ACTIVITY_SNAPSHOT evt-3 vymalo.status {\"status\":\"input_required\"} @sub-2",
             "SUBAGENT_FINISHED sub-2 suspended[int-3]  id:3",
             "STATE_SNAPSHOT blocked",
             "RUN_FINISHED run-1 interrupt[int-3:input_required @sub-2]  id:4",
@@ -209,9 +213,9 @@ fn auth_required_is_an_interrupt_of_its_own_reason() {
         thread(3, ThreadState::Blocked),
     ];
     let got = all_lines(&events);
+    assert!(got.contains(&"TEXT_MESSAGE_CONTENT st-2 \"sign in to GitHub\"".to_owned()));
     assert!(got.contains(
-        &"ACTIVITY_SNAPSHOT evt-2 vymalo.status {\"detail\":\"sign in to GitHub\",\"status\":\"auth_required\"} @sub-2"
-            .to_owned()
+        &"ACTIVITY_SNAPSHOT evt-2 vymalo.status {\"status\":\"auth_required\"} @sub-2".to_owned()
     ));
     assert_eq!(
         got.last().unwrap(),
@@ -423,7 +427,10 @@ fn a_wait_repeated_while_blocked_is_a_run_of_its_own_with_a_new_interrupt() {
             "STATE_SNAPSHOT blocked",
             // The invocation that suspended reappears under its own id.
             "SUBAGENT_STARTED sub-2 plain",
-            "ACTIVITY_SNAPSHOT evt-5 vymalo.status {\"detail\":\"Which remote?\",\"status\":\"input_required\"} @sub-2",
+            "TEXT_MESSAGE_START st-5 assistant @sub-2",
+            "TEXT_MESSAGE_CONTENT st-5 \"Which remote?\"",
+            "TEXT_MESSAGE_END st-5",
+            "ACTIVITY_SNAPSHOT evt-5 vymalo.status {\"status\":\"input_required\"} @sub-2",
             "SUBAGENT_FINISHED sub-2 suspended[int-5]",
             "STATE_SNAPSHOT blocked",
             "RUN_FINISHED run-5 interrupt[int-5:input_required @sub-2]  id:5",
@@ -1023,4 +1030,252 @@ fn the_next_job_forgets_the_surfaces_the_attempt_and_the_commit_of_the_last() {
         "{:?}",
         lines(&rework)
     );
+}
+
+// ---- the agent's words, the time of an activity, typed artifacts --------------------------
+
+fn named_artifact(seq: i64, name: &str, uri: Option<&str>, text: Option<&str>) -> Event {
+    ev(
+        seq,
+        plain(),
+        EventBody::Artifact(ArtifactData {
+            name: name.to_owned(),
+            mime_type: None,
+            uri: uri.map(str::to_owned),
+            text: text.map(str::to_owned),
+        }),
+    )
+}
+
+/// The content of the activity `id` in `frames`.
+fn content_of(frames: &[Frame], id: &str) -> serde_json::Value {
+    frames
+        .iter()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::ActivitySnapshot(e) if e.message_id.as_str() == id => {
+                Some(serde_json::to_value(&e.content).unwrap())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no activity {id}"))
+}
+
+#[test]
+fn the_words_of_a_completed_status_are_an_assistant_message_before_the_status() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, Some("Reading the repository")),
+        status(
+            3,
+            AgentStatus::Completed,
+            Some("Done: the login is **fixed**."),
+        ),
+        thread(4, ThreadState::Done),
+    ];
+    let got = all_lines(&events);
+    assert_eq!(
+        got[5..],
+        [
+            "SUBAGENT_STARTED sub-2 plain",
+            // A working status keeps its detail: it is a step, not an answer.
+            "ACTIVITY_SNAPSHOT evt-2 vymalo.status {\"detail\":\"Reading the repository\",\"status\":\"working\"} @sub-2",
+            "STATE_SNAPSHOT working  id:2",
+            "TEXT_MESSAGE_START st-3 assistant @sub-2",
+            "TEXT_MESSAGE_CONTENT st-3 \"Done: the login is **fixed**.\"",
+            "TEXT_MESSAGE_END st-3",
+            "ACTIVITY_SNAPSHOT evt-3 vymalo.status {\"status\":\"completed\"} @sub-2",
+            "SUBAGENT_FINISHED sub-2 success  id:3",
+            "STATE_SNAPSHOT done",
+            "RUN_FINISHED run-1 success  id:4",
+        ]
+    );
+    // The message is the agent's, by name.
+    let frames = support::flatten(&project(&events));
+    let start = frames
+        .iter()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::TextMessageStart(e) if e.message_id.as_str() == "st-3" => {
+                Some(e.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(start.name.as_deref(), Some("plain"));
+    assert_eq!(
+        serde_json::to_value(start.base.metadata.unwrap()).unwrap()["vymalo.actor"]["name"],
+        "plain"
+    );
+}
+
+#[test]
+fn a_status_that_repeats_the_last_final_message_says_nothing_more() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        say(3, "m1", "All done.", true),
+        status(4, AgentStatus::Completed, Some("  All done.\n")),
+        thread(5, ThreadState::Done),
+    ];
+    let got = all_lines(&events);
+    assert!(!got.iter().any(|l| l.contains("st-4")), "{got:#?}");
+    assert!(got.contains(
+        &"ACTIVITY_SNAPSHOT evt-4 vymalo.status {\"status\":\"completed\"} @sub-2".to_owned()
+    ));
+    // Other words are said; so is a question after an answer in another invocation.
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        say(3, "m1", "Working on it.", true),
+        status(4, AgentStatus::Completed, Some("All done.")),
+        thread(5, ThreadState::Done),
+    ];
+    assert!(all_lines(&events).contains(&"TEXT_MESSAGE_CONTENT st-4 \"All done.\"".to_owned()));
+    // A blank detail is no message, and a failure stays an error.
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Completed, Some("  ")),
+        thread(3, ThreadState::Done),
+    ];
+    assert!(
+        !all_lines(&events)
+            .iter()
+            .any(|l| l.starts_with("TEXT_MESSAGE_START st-"))
+    );
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Failed, Some("boom")),
+        thread(3, ThreadState::Failed),
+    ];
+    let got = all_lines(&events);
+    assert!(!got.iter().any(|l| l.starts_with("TEXT_MESSAGE_START st-")));
+    assert!(got.contains(&"ACTIVITY_SNAPSHOT evt-2 vymalo.status {\"detail\":\"boom\",\"status\":\"failed\"} @sub-2".to_owned()));
+}
+
+#[test]
+fn a_status_closes_a_message_left_open_before_it_speaks() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        say(3, "m1", "Half a", false),
+        status(4, AgentStatus::Completed, Some("The answer.")),
+        thread(5, ThreadState::Done),
+    ];
+    let got = all_lines(&events);
+    let end = got.iter().position(|l| l == "TEXT_MESSAGE_END m1").unwrap();
+    let start = got
+        .iter()
+        .position(|l| l == "TEXT_MESSAGE_START st-4 assistant @sub-2")
+        .unwrap();
+    assert!(end < start, "{got:#?}");
+}
+
+#[test]
+fn every_vymalo_activity_says_when_its_event_happened() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        artifact(3),
+        error(4, "slow", true),
+        thread(5, ThreadState::Blocked),
+    ];
+    let frames = support::flatten(&project(&events));
+    let mut seen = 0;
+    for frame in &frames {
+        if let orch_agui_proto::Event::ActivitySnapshot(e) = &frame.event {
+            let seq: i64 = e
+                .message_id
+                .as_str()
+                .trim_start_matches("evt-")
+                .parse()
+                .unwrap();
+            let want = Timestamp::from_second(1_800_000_000 + seq)
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                e.content["at"],
+                serde_json::Value::from(want),
+                "{}",
+                e.message_id
+            );
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 3);
+}
+
+#[test]
+fn an_artifact_says_its_kind_and_the_fields_a_card_needs() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        named_artifact(
+            3,
+            "branch",
+            None,
+            Some(&format!(
+                r#"{{"repository":"https://github.com/Acme/Demo.git","branch":"agent/fix","commit":"{sha}"}}"#
+            )),
+        ),
+        named_artifact(
+            4,
+            "checks",
+            None,
+            Some(&format!(
+                r#"{{"passed":false,"commit":"{sha}","findings":["x"]}}"#
+            )),
+        ),
+        named_artifact(
+            5,
+            "pull_request",
+            None,
+            Some(
+                r#"{"url":"https://github.com/acme/demo/pull/12","number":"12","branch":"agent/fix"}"#,
+            ),
+        ),
+        named_artifact(
+            6,
+            "Pull request",
+            Some("https://github.com/acme/demo/pull/13"),
+            None,
+        ),
+        named_artifact(7, "branch", None, Some("not json")),
+        artifact(8),
+    ];
+    let frames = support::flatten(&project(&events));
+    let strip = |mut v: serde_json::Value| {
+        v.as_object_mut().unwrap().remove("at");
+        v.as_object_mut().unwrap().remove("text");
+        v
+    };
+    assert_eq!(
+        strip(content_of(&frames, "evt-3")),
+        serde_json::json!({"kind": "branch", "name": "branch", "repository": "github.com/acme/demo",
+            "branch": "agent/fix", "sha": sha, "shortSha": "0123456"})
+    );
+    assert_eq!(
+        strip(content_of(&frames, "evt-4")),
+        serde_json::json!({"kind": "checks", "name": "checks", "passed": false, "sha": sha,
+            "shortSha": "0123456"})
+    );
+    assert_eq!(
+        strip(content_of(&frames, "evt-5")),
+        serde_json::json!({"kind": "pull_request", "name": "pull_request",
+            "url": "https://github.com/acme/demo/pull/12", "number": 12,
+            "repository": "github.com/acme/demo", "branch": "agent/fix"})
+    );
+    assert_eq!(
+        strip(content_of(&frames, "evt-6")),
+        serde_json::json!({"kind": "pull_request", "name": "Pull request",
+            "uri": "https://github.com/acme/demo/pull/13",
+            "url": "https://github.com/acme/demo/pull/13", "number": 13,
+            "repository": "github.com/acme/demo"})
+    );
+    // An artifact that cannot be used, and any other, is a file; its text is kept as sent.
+    let broken = content_of(&frames, "evt-7");
+    assert_eq!(
+        (broken["kind"].as_str(), broken["text"].as_str()),
+        (Some("file"), Some("not json"))
+    );
+    assert_eq!(content_of(&frames, "evt-8")["kind"], "file");
 }

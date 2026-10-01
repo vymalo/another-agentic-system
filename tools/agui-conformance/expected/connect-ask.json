@@ -33,8 +33,16 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
+    },
+    {
+      "id": "st-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Which branch?"
     },
     {
       "id": "evt-3",
@@ -42,7 +50,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
-        "detail": "Which branch?",
+        "at": "<timestamp>",
         "status": "input_required"
       }
     },
@@ -57,6 +65,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -66,6 +75,8 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "kind": "file",
         "name": "result",
         "text": "answered: main",
         "uri": "https://github.com/acme/demo/pull/1"
@@ -77,6 +88,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     }

@@ -72,6 +72,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -142,8 +143,14 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000001",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
       },
       "messageId": "evt-4",
@@ -162,6 +169,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       },
       "messageId": "evt-5",
@@ -221,6 +229,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 1,
         "commit": "0000000000000000000000000000000000000001",
         "source": "verifier",
@@ -242,6 +251,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 1,
         "commit": "0000000000000000000000000000000000000001",
         "findings": [
@@ -275,6 +285,7 @@
     "event": {
       "activityType": "vymalo.rework",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "findings": [
           {
@@ -336,6 +347,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       },
       "messageId": "evt-9",
@@ -406,8 +418,14 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000002",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
       },
       "messageId": "evt-11",
@@ -426,6 +444,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       },
       "messageId": "evt-12",
@@ -485,6 +504,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "commit": "0000000000000000000000000000000000000002",
         "source": "verifier",
@@ -506,6 +526,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "commit": "0000000000000000000000000000000000000002",
         "findings": [
@@ -539,6 +560,7 @@
     "event": {
       "activityType": "vymalo.rework",
       "content": {
+        "at": "<timestamp>",
         "attempt": 3,
         "findings": [
           {
@@ -600,6 +622,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       },
       "messageId": "evt-16",
@@ -670,8 +693,14 @@
     "event": {
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000003",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000003\",\"repository\":\"https://github.com/acme/demo.git\"}"
       },
       "messageId": "evt-18",
@@ -690,6 +719,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       },
       "messageId": "evt-19",
@@ -749,6 +779,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 3,
         "commit": "0000000000000000000000000000000000000003",
         "source": "verifier",
@@ -770,6 +801,7 @@
     "event": {
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 3,
         "commit": "0000000000000000000000000000000000000003",
         "findings": [
@@ -803,6 +835,7 @@
     "event": {
       "activityType": "vymalo.error",
       "content": {
+        "at": "<timestamp>",
         "message": "the work did not pass verification after 3 attempts; the verifier: src/login.rs: the empty password is accepted",
         "retryable": false
       },

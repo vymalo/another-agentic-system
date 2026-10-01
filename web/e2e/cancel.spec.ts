@@ -15,8 +15,6 @@ test("cancel calls the endpoint and the thread ends cancelled", async ({ page })
   await request;
 
   await expect(badge(page)).toHaveText("Stopped");
-  await expect(
-    page.getByRole("log").getByText("Cancelled", { exact: false }).first(),
-  ).toBeVisible();
+  await expect(page.getByRole("log").getByText("Stopped", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
 });

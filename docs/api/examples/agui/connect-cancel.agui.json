@@ -65,6 +65,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       },
       "messageId": "evt-2",
@@ -97,6 +98,7 @@
     "event": {
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "detail": "canceled",
         "status": "canceled"
       },

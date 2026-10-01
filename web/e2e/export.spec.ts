@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
-import { badge, expectNoHorizontalScroll, startThread, THREAD_URL } from "./helpers";
+import {
+  badge,
+  expectNoHorizontalScroll,
+  exportMenuItem,
+  startThread,
+  THREAD_URL,
+} from "./helpers";
 
 test("Export JSON downloads the thread as thread-<id>.json", async ({ page }) => {
   await startThread(page, "echo hello");
@@ -8,7 +14,8 @@ test("Export JSON downloads the thread as thread-<id>.json", async ({ page }) =>
   const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1];
   expect(page.url()).toMatch(THREAD_URL);
 
-  const button = page.getByRole("button", { name: "Export JSON" });
+  // Export JSON is an item of the thread's overflow menu
+  const button = await exportMenuItem(page);
   await expect(button).toBeEnabled();
   await expectNoHorizontalScroll(page);
   const [download] = await Promise.all([page.waitForEvent("download"), button.click()]);
@@ -23,7 +30,7 @@ test("Export JSON downloads the thread as thread-<id>.json", async ({ page }) =>
   expect(doc.events.length).toBeGreaterThan(0);
   expect(doc.events[0].kind).toBe("user_message");
   expect(doc.events[0].data.text).toBe("echo hello");
-  await expect(button).toBeEnabled();
+  await expect(await exportMenuItem(page)).toBeEnabled();
 });
 
 test("a failed export says so and keeps the page usable", async ({ page }) => {
@@ -40,9 +47,9 @@ test("a failed export says so and keeps the page usable", async ({ page }) => {
       }),
     }),
   );
-  await page.getByRole("button", { name: "Export JSON" }).click();
+  await (await exportMenuItem(page)).click();
   await expect(
     page.getByRole("alert").filter({ hasText: "Could not export the thread" }),
   ).toContainText("storage is unavailable");
-  await expect(page.getByRole("button", { name: "Export JSON" })).toBeEnabled();
+  await expect(await exportMenuItem(page)).toBeEnabled();
 });

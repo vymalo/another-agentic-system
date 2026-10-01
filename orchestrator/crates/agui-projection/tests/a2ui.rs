@@ -393,7 +393,7 @@ fn an_action_opens_a_run_under_its_run_id_and_says_what_was_done() {
     assert_eq!(
         tail[2]["content"],
         json!({"surfaceId": "s0", "name": "go", "sourceComponentId": "btn",
-               "context": {"choice": "a"}})
+               "context": {"choice": "a"}, "at": "2027-01-15T08:00:06Z"})
     );
     assert_eq!(tail[2]["metadata"]["vymalo.actor"]["type"], "user");
     assert_eq!(tail.len(), 3, "an action says nothing in the transcript");

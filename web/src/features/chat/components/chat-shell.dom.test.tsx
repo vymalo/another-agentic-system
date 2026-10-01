@@ -115,6 +115,18 @@ async function makeThread(text: string, agent = "coder", untilStarted = false): 
 
 const log = () => screen.getByRole("log", { name: "Conversation" });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
+/** `coder · coder-r47` at the top of each agent turn, in order. */
+const actorLabels = () =>
+  [...log().querySelectorAll('[data-slot="actor-label"]')].map((e) => e.textContent);
+/** "Export JSON" is an item of the thread's overflow menu: open the menu, find the item. */
+async function exportItem(): Promise<HTMLElement> {
+  const trigger = await screen.findByRole("button", { name: "Thread options" });
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+  return screen.findByRole("menuitem", { name: /Export JSON|Exporting…/ });
+}
 
 describe("ChatShell over AG-UI", () => {
   it("the new-thread page offers the agents and, for the coder, its releases", async () => {
@@ -170,11 +182,14 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     const transcript = within(log());
     await waitFor(() => transcript.getByText("Implement the thing"));
-    await waitFor(() => transcript.getByText("Completed"));
-    expect(transcript.getByText("Working")).toBeTruthy();
-    const pr = transcript.getByRole("link", { name: "Pull request acme/demo#1" });
+    // the steps, then the pull request as a card
+    await waitFor(() => transcript.getByText("Opened pull request #1"));
+    expect(transcript.getByText("Started working")).toBeTruthy();
+    const pr = transcript.getByRole("link", { name: /pull request acme\/demo#1/i });
     expect(pr.getAttribute("href")).toBe("https://github.com/acme/demo/pull/1");
-    expect(transcript.getAllByText("coder · coder-r47").length).toBeGreaterThan(0);
+    expect(transcript.getByText("echo: Implement the thing")).toBeTruthy();
+    // the agent's name and revision, once, at the top of its turn
+    expect(actorLabels()).toEqual(["coder · coder-r47"]);
     // a thread never locks (ADR 0020): the box is there, ready for the next request
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
     expect(box.disabled).toBe(false);
@@ -198,11 +213,17 @@ describe("ChatShell over AG-UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     const transcript = within(log());
     await waitFor(() => transcript.getByText("echo and now the tests"));
-    await waitFor(() => expect(transcript.getAllByText("Completed")).toHaveLength(2));
+    await waitFor(() =>
+      expect(transcript.getAllByRole("link", { name: /pull request acme\/demo#1/i })).toHaveLength(
+        2,
+      ),
+    );
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    // each job is a turn of its own
+    expect(actorLabels()).toEqual(["coder · coder-r47", "coder · coder-r47"]);
     // the first job is still there, the second job's answer is under the second message
     expect(transcript.getAllByText("echo hi")).toHaveLength(1);
-    expect(transcript.getAllByRole("link", { name: "Pull request acme/demo#1" })).toHaveLength(2);
+    expect(transcript.getAllByRole("link", { name: /pull request acme\/demo#1/i })).toHaveLength(2);
     // one POST, the follow-up: the first job was not sent again
     expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([
       "POST /agui/agents/coder 200",
@@ -276,7 +297,7 @@ describe("ChatShell over AG-UI", () => {
     try {
       shell(id);
       await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
-      fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+      fireEvent.click(await exportItem());
       await waitFor(() => expect(downloads).toEqual([`thread-${id}.json blob:export`]));
       expect(calls).toContain(`GET /api/threads/${id}/export 200`);
       const [file] = blobs;
@@ -292,10 +313,8 @@ describe("ChatShell over AG-UI", () => {
       expect(revoked).toEqual([]);
       revokers[0]?.();
       expect(revoked).toEqual(["blob:export"]);
-      // the button is ready for another one, and nothing went wrong
-      expect(
-        (screen.getByRole("button", { name: "Export JSON" }) as HTMLButtonElement).disabled,
-      ).toBe(false);
+      // the menu item is ready for another one, and nothing went wrong
+      expect((await exportItem()).getAttribute("aria-disabled")).toBeNull();
       expect(screen.queryByText(/Could not export/)).toBeNull();
     } finally {
       click.mockRestore();
@@ -314,7 +333,7 @@ describe("ChatShell over AG-UI", () => {
       status: 503,
       detail: "storage is unavailable",
     };
-    fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+    fireEvent.click(await exportItem());
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not export the thread: storage is unavailable");
     expect(createObjectURL).not.toHaveBeenCalled();
@@ -322,7 +341,7 @@ describe("ChatShell over AG-UI", () => {
     failing = undefined;
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     try {
-      fireEvent.click(screen.getByRole("button", { name: "Export JSON" }));
+      fireEvent.click(await exportItem());
       await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(screen.queryByText(/Could not export/)).toBeNull());
     } finally {
@@ -340,7 +359,7 @@ describe("ChatShell over AG-UI", () => {
       status: 503,
       detail: "storage is unavailable",
     };
-    fireEvent.click(await screen.findByRole("button", { name: "Export JSON" }));
+    fireEvent.click(await exportItem());
     await screen.findByRole("alert");
     // The same component instance now shows another thread: the failure is about the first.
     rerender(
@@ -512,7 +531,7 @@ describe("ChatShell over AG-UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
     expect(calls).toContain(`POST /api/threads/${id}/cancel 202`);
-    await waitFor(() => expect(within(log()).getAllByText(/Cancelled/).length).toBeGreaterThan(0));
+    await waitFor(() => expect(within(log()).getAllByText("Stopped").length).toBeGreaterThan(0));
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     // stopped is not closed: the next message goes on
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe(

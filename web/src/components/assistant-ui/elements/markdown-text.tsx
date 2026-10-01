@@ -7,11 +7,12 @@ import {
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
-import { CheckIcon, CopyIcon } from "lucide-react";
-import { type FC, memo, useMemo, useRef } from "react";
+import { CheckIcon, CopyIcon, ImageIcon } from "lucide-react";
+import { createContext, type FC, memo, useContext, useMemo, useRef } from "react";
 import remarkGfm from "remark-gfm";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 
@@ -64,7 +65,7 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   };
 
   return (
-    <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs">
+    <div className="aui-code-header-root border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
@@ -75,6 +76,9 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
     </div>
   );
 };
+
+/** Whether a markdown element sits inside a link (an image there must not be a link too). */
+const InLink = createContext(false);
 
 const defaultComponents = memoizeMarkdownComponents({
   h1: ({ className, ...props }) => (
@@ -126,11 +130,11 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   p: ({ className, ...props }) => (
-    <p className={cn("aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0", className)} {...props} />
+    <p className={cn("aui-md-p my-3 leading-7 first:mt-0 last:mb-0", className)} {...props} />
   ),
   // Agent text is untrusted: every link opens in a new tab without an opener. Raw HTML stays off
   // (react-markdown's default), and react-markdown drops javascript: and data: URLs.
-  a: ({ className, ...props }) => (
+  a: ({ className, children, ...props }) => (
     <a
       className={cn(
         "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
@@ -139,8 +143,40 @@ const defaultComponents = memoizeMarkdownComponents({
       target="_blank"
       rel="noopener noreferrer"
       {...props}
-    />
+    >
+      <InLink.Provider value={true}>{children}</InLink.Provider>
+    </a>
   ),
+  // Agent text is untrusted, and an image is a request the browser makes on its own (a URL can
+  // carry what the agent read): an image is never drawn. It is its alt text and, when its URL is
+  // http(s), a link a person may follow.
+  img: function Img({ src, alt }) {
+    // inside a link (`[![x](img)](page)`) it is text: a link in a link is no link
+    const inLink = useContext(InLink);
+    const href = inLink ? undefined : safeHttpUrl(typeof src === "string" ? src : undefined);
+    const label = alt?.trim() || "image";
+    const content = (
+      <>
+        <ImageIcon aria-hidden="true" className="me-1 inline size-3.5 align-[-0.15em]" />
+        {label}
+      </>
+    );
+    return href ? (
+      <a
+        data-slot="md-image-link"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="aui-md-a text-primary hover:text-primary/80 underline underline-offset-2"
+      >
+        {content} <span className="sr-only">(image, opens in a new tab)</span>
+      </a>
+    ) : (
+      <span data-slot="md-image-text" className="text-muted-foreground">
+        {content}
+      </span>
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(
@@ -153,7 +189,7 @@ const defaultComponents = memoizeMarkdownComponents({
   ul: ({ className, ...props }) => (
     <ul
       className={cn(
-        "aui-md-ul marker:text-muted-foreground my-3 ms-5 list-disc [&>li]:mt-1",
+        "aui-md-ul marker:text-muted-foreground my-3 ms-5 list-disc [&>li]:mt-1.5",
         className,
       )}
       {...props}
@@ -182,7 +218,7 @@ const defaultComponents = memoizeMarkdownComponents({
   th: ({ className, ...props }) => (
     <th
       className={cn(
-        "aui-md-th bg-background text-foreground px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
+        "aui-md-th bg-muted text-foreground px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
         className,
       )}
       {...props}
@@ -207,7 +243,7 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   li: ({ className, ...props }) => (
-    <li className={cn("aui-md-li leading-relaxed", className)} {...props} />
+    <li className={cn("aui-md-li leading-7", className)} {...props} />
   ),
   strong: ({ className, ...props }) => (
     <strong className={cn("aui-md-strong font-semibold", className)} {...props} />
@@ -218,7 +254,7 @@ const defaultComponents = memoizeMarkdownComponents({
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
-        "aui-md-pre border-border/50 bg-background text-foreground overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed",
+        "aui-md-pre border-border bg-muted/40 text-foreground mb-4 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 font-mono text-[13px] leading-relaxed last:mb-0",
         className,
       )}
       {...props}
@@ -230,7 +266,7 @@ const defaultComponents = memoizeMarkdownComponents({
       <code
         className={cn(
           !isCodeBlock &&
-            "aui-md-inline-code border-border/50 bg-background text-foreground rounded-md border px-1.5 py-0.5 font-mono text-[0.85em]",
+            "aui-md-inline-code bg-muted text-foreground rounded-md px-1.5 py-0.5 font-mono text-[0.85em]",
           className,
         )}
         {...props}

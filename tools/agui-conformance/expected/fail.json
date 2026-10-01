@@ -24,6 +24,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:02Z",
         "status": "working"
       }
     },
@@ -33,6 +34,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "2027-01-15T08:00:03Z",
         "detail": "scripted failure",
         "status": "failed"
       }

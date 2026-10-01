@@ -53,6 +53,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -69,8 +70,14 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000001",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
       }
     },
@@ -80,6 +87,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     },
@@ -88,6 +96,7 @@
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 1,
         "commit": "0000000000000000000000000000000000000001",
         "findings": [
@@ -102,6 +111,7 @@
       "role": "activity",
       "activityType": "vymalo.rework",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "findings": [
           {
@@ -120,6 +130,7 @@
       "subagentRunId": "sub-8",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -136,8 +147,14 @@
       "subagentRunId": "sub-8",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000002",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
       }
     },
@@ -147,6 +164,7 @@
       "subagentRunId": "sub-8",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     },
@@ -155,6 +173,7 @@
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "commit": "0000000000000000000000000000000000000002",
         "findings": [
@@ -169,6 +188,7 @@
       "role": "activity",
       "activityType": "vymalo.rework",
       "content": {
+        "at": "<timestamp>",
         "attempt": 3,
         "findings": [
           {
@@ -187,6 +207,7 @@
       "subagentRunId": "sub-15",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -203,8 +224,14 @@
       "subagentRunId": "sub-15",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000003",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000003\",\"repository\":\"https://github.com/acme/demo.git\"}"
       }
     },
@@ -214,6 +241,7 @@
       "subagentRunId": "sub-15",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     },
@@ -222,6 +250,7 @@
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 3,
         "commit": "0000000000000000000000000000000000000003",
         "findings": [
@@ -236,6 +265,7 @@
       "role": "activity",
       "activityType": "vymalo.error",
       "content": {
+        "at": "<timestamp>",
         "message": "the work did not pass verification after 3 attempts; the verifier: src/login.rs: the empty password is accepted",
         "retryable": false
       }

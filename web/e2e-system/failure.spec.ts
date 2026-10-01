@@ -3,15 +3,16 @@ import { badge, framesOf, resetDb, shape, startThread, threadId } from "./helper
 
 test.beforeEach(resetDb);
 
-test("fail: Failed status with the agent's detail and a Failed badge", async ({ page }) => {
+test("fail: a callout with the agent's reason and a Failed badge", async ({ page }) => {
   await startThread(page, "fail please", "Plain");
 
   const log = page.getByRole("log", { name: "Conversation" });
-  await expect(log.getByText("Failed: scripted failure")).toBeVisible();
+  await expect(log.getByText("scripted failure", { exact: true })).toBeVisible();
+  await expect(log.locator('[data-slot="error-callout"]')).toContainText("couldn’t finish");
   await expect(badge(page)).toHaveText("Failed");
   // Pins the failure shape (docs/api/examples/agui/fail.agui.json): an agent failure is a failed
   // status with its detail and a RUN_ERROR agent_failed, and no error activity.
-  await expect(log.getByText("Error:")).toHaveCount(0);
+  await expect(log.getByText("Something went wrong")).toHaveCount(0);
   const frames = shape(await framesOf(page.request, threadId(page)));
   expect(frames).toContain("ACTIVITY_SNAPSHOT:vymalo.status:failed");
   expect(frames.at(-1)).toBe("RUN_ERROR:agent_failed");

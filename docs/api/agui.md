@@ -97,7 +97,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | `threadId` | The thread UUID. Minted by the consumer on its first run (a UUID; 400 otherwise). The resource API lists threads by id, newest first, so a consumer should mint a time-ordered **UUIDv7**, as the web does: a random v4 would shuffle the list. A new thread with a **version 8** UUID is refused (400): that version is reserved for the job ids `start_job` derives from a `client_request_id` ([ADR 0019](../decisions/0019-mcp-server-over-streamable-http.md)), so a chat client cannot take the id a later MCP job would get. A thread that already exists is not affected. |
 | `runId` | `user_message.data.runId` when the run came from AG-UI; otherwise `run-<seq>` of the event that opened the run. |
 | user `messageId` | `user_message.data.messageId` (the AG-UI message id), else `evt-<seq>`. |
-| agent `messageId` | `agent_message.data.messageId` (the A2A message id). |
+| agent `messageId` | `agent_message.data.messageId` (the A2A message id); `st-<seq>` for the words of an `agent_status` (`completed`, `input_required`, `auth_required`). |
 | activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity. |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
@@ -118,20 +118,20 @@ gets everything.
 | `agent_message{messageId, text, final:true}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId}` → `CONTENT` → `END` |
 | `agent_message{final:false}` (cumulative partial) | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). |
 | `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
-| `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The status activity, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
+| `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The [status words](#the-agents-words), then the status activity **without** `detail`, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
 | `thread_state{blocked}` | After input or auth required | `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[{id:"int-n", reason:"input_required" \| "auth_required", message:detail, subagentRunId, responseSchema}]}}` |
-| `agent_status{completed}` + `thread_state{done}` | — | Status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}` |
-| `agent_status{failed, detail}` + `thread_state{failed}` | — | Status activity → `SUBAGENT_ERROR{message:detail, code:"agent_failed"}` → `STATE_SNAPSHOT` → `RUN_ERROR{message, code:"agent_failed"}` |
+| `agent_status{completed, detail?}` + `thread_state{done}` | — | The [status words](#the-agents-words), if any → status activity without `detail` → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}` |
+| `agent_status{failed, detail}` + `thread_state{failed}` | — | Status activity (with `detail`: a failure stays an error, not a message) → `SUBAGENT_ERROR{message:detail, code:"agent_failed"}` → `STATE_SNAPSHOT` → `RUN_ERROR{message, code:"agent_failed"}` |
 | `agent_status{canceled}` + `thread_state{cancelled}` | — | Status activity → `SUBAGENT_FINISHED{result:{status:"canceled"}}` (1.0 has no cancelled subagent outcome; open question 16) → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}` |
 | `thread_state{cancelled}` alone | Cancelled before the agent started | `RUN_FINISHED{outcome:{type:"cancelled"}}` |
 | `error{retryable:true}` + `thread_state{blocked}` | Retryable delivery failure | `ACTIVITY_SNAPSHOT{activityType:"vymalo.error"}` → `SUBAGENT_ERROR{code:"delivery_failed"}` if open → `STATE_SNAPSHOT` → `RUN_ERROR{code:"delivery_failed"}`. The thread stays open; the next input is a new run, not a resume. |
 | `error{retryable:false}` + `thread_state{failed}` | Permanent delivery failure | Error activity → `SUBAGENT_ERROR` if open → `RUN_ERROR{code:"delivery_failed"}` |
 | `error{…}` | Mid-run, no state change | Error activity only; the run continues. An A2UI part the orchestrator refused ([envelope rules](#the-envelope-check)) is such an error, `retryable:false`, attributed to the agent |
-| `artifact{name, mimeType?, uri?, text?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.artifact", content:{name, mimeType?, uri?, text?}, subagentRunId}` |
+| `artifact{name, mimeType?, uri?, text?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.artifact", content:{kind, name, mimeType?, uri?, text?, …the fields of its kind}, subagentRunId}`. See [Typed artifacts](#typed-artifacts) |
 | `ui_surface{operations}` (ADR 0013) | — | Per surface the payload touches, in order of first appearance: `ACTIVITY_SNAPSHOT{messageId:"a2ui-<seq of the event that created the surface>", activityType:"a2ui-surface", replace:true, content:{a2ui_operations:[every operation of that surface so far, as sent]}, subagentRunId}`: the **whole surface** each time, so the last snapshot renders it on the live stream, on replay and in history. A `deleteSurface` ends its surface (its snapshot ends in the delete); a later operation for that id is a new surface under a new message id. See [A2UI](#a2ui-generative-ui) |
 | `ui_action{surfaceId, name, sourceComponentId, context, version, runId?}` (ADR 0013) | — | Open a run if none is open (its id is the `runId` of the event, else `run-<seq>`, and its `STATE_SNAPSHOT` says `queued`); `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.action", content:{surfaceId, name, sourceComponentId, context}, metadata:{"vymalo.actor"}}`. It says nothing in the transcript: no text triad |
-| `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | Status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
-| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
+| `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
+| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
 | `check_result{source:"verifier", status:"passed"\|"failed"}` | The verdict | The `vymalo.check` snapshot (same id, `replace:true`) → `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{passed}}` |
@@ -169,6 +169,49 @@ gets everything.
 - **Errors in stream.** `RUN_ERROR.code` is one of `agent_failed`, `agent_rejected`,
   `delivery_failed`, `checks_failed`, `unavailable`, `internal`; `metadata["vymalo.problem"]` carries
   `{type, title, detail?}`.
+
+### The agent's words
+
+What the agent says when it finishes or asks is its **answer**, so a chat shows it as an assistant
+message and not as a detail of a status line (ADR 0012, status note of 2026-09-30). For an
+`agent_status` `completed`, `input_required` or `auth_required` whose `detail` is not blank, the
+projection emits, **before** the status activity and inside the open invocation:
+
+`TEXT_MESSAGE_START{messageId:"st-<seq>", role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor"}}` →
+`TEXT_MESSAGE_CONTENT{delta:detail}` → `TEXT_MESSAGE_END`
+
+- The `vymalo.status` activity of those three statuses never carries `detail`.
+- A `detail` equal (whitespace around it aside) to the **last final `agent_message` of the same
+  invocation** is not said again: the agent already said it. The invocation is the one open when
+  the status arrives; a new or reappearing invocation starts with nothing said.
+- A text message still open (a partial) is closed first.
+- `failed` is not an answer: its status activity keeps `detail`, and the run ends in `RUN_ERROR`
+  as before. `working` keeps its `detail` too: it is a step, not an answer.
+- The interrupt of an `input_required`/`auth_required` still carries the words as its `message`.
+
+### When: `at`
+
+Every `vymalo.*` activity (`status`, `artifact`, `error`, `action`, `check`, `ci`, `rework`, `job`)
+carries `at`, the time of its log event (RFC 3339, as `Event.at`), so a client can show when a step
+happened without the log. `a2ui-surface` is not ours and has none.
+
+### Typed artifacts
+
+The projection reads each artifact the way the core's gate does (`orch_core::recognise_artifact`)
+and says what it is, so a client renders a card without parsing agent output:
+
+| `kind` | When | Fields added |
+|---|---|---|
+| `branch` | `branch {repository, branch, commit}` that the gate accepts | `repository` (`host/owner/name`, lower case), `branch`, `sha` (full), `shortSha` (7) |
+| `checks` | `checks {passed, commit, summary?, findings?}` that the gate accepts | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
+| `pull_request` | `pull_request` (a data part with `url`, `number?`, `repository?`, `branch?`) or "Pull request" (a url part), with an `https` URL of at most 2 KiB on one line, without a backslash, whose authority is a host without user information (no `@`) | `url`, `number?` and `repository?` **read from the URL** (the digits after `/pull/`, `/pulls/` or `/merge_requests/`, and the `host/owner/name` before it; both absent when the URL is not of that shape), never from the payload: a payload `repository` or `number` that disagrees with the URL is ignored, so a card cannot put a trusted label on a link that goes elsewhere. `branch?` is the payload's |
+| `file` | Anything else, including a `branch` or `checks` artifact the gate cannot use and a pull request without a usable URL | nothing |
+
+`name`, `mimeType`, `uri` and `text` are kept as sent. The fields are derived from agent output:
+a client shows `url` as a link only because the projection already checked it (`https`, no user
+information, no backslash), and a card that names the repository and number of a pull request
+shows the ones its own `url` says, with the host when it is not a well-known one (the web: off
+github.com and gitlab.com), or the bare host when the URL names neither.
 
 ## Inbound: AG-UI → core input
 
@@ -286,7 +329,7 @@ name) and one it does not (another commit, a check nobody asked for, a repeat) a
   earlier version keyed the id by commit and name and replaced; a second report could hide a red one.) The verdict of the
   gate is not this card but the `vymalo.check` card of source `ci`, which is replaced in place as the gate decides. The
   card is the orchestrator's (no `subagentRunId`) and carries the actor `system`.
-- **The content** is `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}`.
+- **The content** is `{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?, at}`.
   `conclusion` is one of the closed set of [`webhooks.md`](webhooks.md#conclusions) (plus `startup_failure`, which only
   GitHub reports), `passed` says whether it counts as a pass (`success`, `neutral` and `skipped`), so a renderer never
   needs its own table and an unknown future conclusion still has a `passed`. `sha` is the full hash and `shortSha` its
@@ -745,48 +788,60 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
   "$defs": {
     "vymalo.status": {
       "type": "object",
-      "required": ["status"],
+      "required": ["status", "at"],
       "additionalProperties": false,
       "properties": {
         "status": { "enum": ["submitted", "working", "input_required", "auth_required", "completed", "failed", "canceled"] },
-        "detail": { "type": "string" }
+        "detail": { "type": "string", "description": "Never for completed, input_required and auth_required: their words are an assistant message st-<seq>" },
+        "at": { "$ref": "#/$defs/at" }
       }
     },
     "vymalo.artifact": {
       "type": "object",
-      "required": ["name"],
+      "required": ["kind", "name", "at"],
       "additionalProperties": false,
       "properties": {
+        "kind": { "enum": ["branch", "checks", "pull_request", "file"] },
         "name": { "type": "string" },
         "mimeType": { "type": "string" },
         "uri": { "type": "string", "description": "Rendered as a link only when absolute http(s)" },
-        "text": { "type": "string" }
+        "text": { "type": "string" },
+        "repository": { "type": "string", "description": "branch, pull_request: host/owner/name, lower case" },
+        "branch": { "type": "string", "description": "branch, pull_request" },
+        "sha": { "type": "string", "description": "branch, checks: the full commit hash" },
+        "shortSha": { "type": "string", "description": "branch, checks: the first 7 characters of sha" },
+        "passed": { "type": "boolean", "description": "checks" },
+        "url": { "type": "string", "description": "pull_request: https only, at most 2 KiB" },
+        "number": { "type": "integer", "minimum": 0, "description": "pull_request" },
+        "at": { "$ref": "#/$defs/at" }
       }
     },
     "vymalo.error": {
       "type": "object",
-      "required": ["message", "retryable"],
+      "required": ["message", "retryable", "at"],
       "additionalProperties": false,
       "properties": {
         "message": { "type": "string" },
-        "retryable": { "type": "boolean" }
+        "retryable": { "type": "boolean" },
+        "at": { "$ref": "#/$defs/at" }
       }
     },
     "vymalo.action": {
       "type": "object",
-      "required": ["surfaceId", "name", "sourceComponentId", "context"],
+      "required": ["surfaceId", "name", "sourceComponentId", "context", "at"],
       "additionalProperties": false,
       "properties": {
         "surfaceId": { "type": "string" },
         "name": { "type": "string" },
         "sourceComponentId": { "type": "string" },
-        "context": { "type": "object" }
+        "context": { "type": "object" },
+        "at": { "$ref": "#/$defs/at" }
       }
     },
     "vymalo.check": {
       "type": "object",
       "description": "One source of the verification gate answered for one attempt (ADR 0018). Findings are untrusted text.",
-      "required": ["source", "attempt", "status"],
+      "required": ["source", "attempt", "status", "at"],
       "additionalProperties": false,
       "properties": {
         "source": { "enum": ["ci", "agent_checks", "verifier"] },
@@ -796,13 +851,14 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "commit": { "type": "string", "description": "The commit the answer is about" },
         "summary": { "type": "string" },
         "stale": { "const": true, "description": "The answer belongs to a verification that is no longer the current one; it decided nothing" },
-        "findings": { "type": "array", "maxItems": 20, "items": { "type": "string" }, "description": "What is wrong; at most 20 items and 16 KiB in all" }
+        "findings": { "type": "array", "maxItems": 20, "items": { "type": "string" }, "description": "What is wrong; at most 20 items and 16 KiB in all" },
+        "at": { "$ref": "#/$defs/at" }
       }
     },
     "vymalo.ci": {
       "type": "object",
       "description": "A CI system reported a check on a commit (ADR 0017). name, branch and summary are untrusted text; url is http(s) only.",
-      "required": ["name", "conclusion", "passed", "sha", "shortSha", "provider", "repository"],
+      "required": ["name", "conclusion", "passed", "sha", "shortSha", "provider", "repository", "at"],
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "description": "The check's name (ci/build)" },
@@ -814,13 +870,14 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "repository": { "type": "string", "description": "host/owner/name, lower case" },
         "branch": { "type": "string" },
         "url": { "type": "string", "description": "A link to the run; absolute http(s) only" },
-        "summary": { "type": "string", "description": "A short text from the provider, at most 16 KiB" }
+        "summary": { "type": "string", "description": "A short text from the provider, at most 16 KiB" },
+        "at": { "$ref": "#/$defs/at" }
       }
     },
     "vymalo.rework": {
       "type": "object",
       "description": "The gate failed and the agent is sent back to work (ADR 0018).",
-      "required": ["attempt", "maxAttempts", "findings"],
+      "required": ["attempt", "maxAttempts", "findings", "at"],
       "additionalProperties": false,
       "properties": {
         "attempt": { "type": "integer", "minimum": 2, "description": "The attempt that starts now" },
@@ -836,9 +893,21 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
               "findings": { "type": "array", "items": { "type": "string" } }
             }
           }
-        }
+        },
+        "at": { "$ref": "#/$defs/at" }
       }
-    }
+    },
+    "vymalo.job": {
+      "type": "object",
+      "description": "The thread's next job started (ADR 0020).",
+      "required": ["job", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "job": { "type": "integer", "minimum": 2 },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "at": { "type": "string", "format": "date-time", "description": "When the activity's log event happened (Event.at)" }
   }
 }
 ```
@@ -862,7 +931,8 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 `ask.events.json` for a viewer. The golden
 [`examples/agui/ask.agui.json`](examples/agui/ask.agui.json) is generated from it by
 `orch-agui-projection`, and a test pins this listing to that projection (frame types, ids, resume
-points and the members shown; the rest, such as the `vymalo.actor` metadata, is in the file):
+points and the members shown; the rest, such as the `vymalo.actor` metadata and each activity's
+`at`, is in the file):
 
 ```text
 RUN_STARTED          {threadId, runId:"run-1", protocolVersion:"1.0"}
@@ -873,7 +943,8 @@ TEXT_MESSAGE_END     {messageId:"evt-1"}                                        
 SUBAGENT_STARTED     {subagentRunId:"sub-2", name:"plain"}
 ACTIVITY_SNAPSHOT    {messageId:"evt-2", activityType:"vymalo.status", content:{status:"working"}, subagentRunId:"sub-2"}
 STATE_SNAPSHOT       {snapshot:{thread:{state:"working", …}}}                                 id: 2
-ACTIVITY_SNAPSHOT    {messageId:"evt-3", activityType:"vymalo.status", content:{status:"input_required", detail:"Which branch?"}, subagentRunId:"sub-2"}
+TEXT_MESSAGE_START/CONTENT/END {messageId:"st-3", role:"assistant", name:"plain", delta:"Which branch?", subagentRunId:"sub-2"}
+ACTIVITY_SNAPSHOT    {messageId:"evt-3", activityType:"vymalo.status", content:{status:"input_required"}, subagentRunId:"sub-2"}
 SUBAGENT_FINISHED    {subagentRunId:"sub-2", outcome:{type:"suspended", interruptIds:["int-3"]}}  id: 3
 STATE_SNAPSHOT       {snapshot:{thread:{state:"blocked", …}}}
 RUN_FINISHED         {runId:"run-1", outcome:{type:"interrupt", interrupts:[{id:"int-3", reason:"input_required", message:"Which branch?", subagentRunId:"sub-2", responseSchema:{…}}]}}   id: 4
@@ -883,7 +954,7 @@ TEXT_MESSAGE_START/CONTENT/END {messageId:"evt-5", role:"user", delta:"main"}   
 SUBAGENT_STARTED     {subagentRunId:"sub-2", name:"plain"}          (the same A2A task continues)
 ACTIVITY_SNAPSHOT    {messageId:"evt-6", activityType:"vymalo.status", content:{status:"working"}, subagentRunId:"sub-2"}
 STATE_SNAPSHOT       {snapshot:{thread:{state:"working", …}}}                                 id: 6
-ACTIVITY_SNAPSHOT    {messageId:"evt-7", activityType:"vymalo.artifact", content:{name:"result", text:"answered: main", uri:"https://github.com/acme/demo/pull/1"}, subagentRunId:"sub-2"}   id: 7
+ACTIVITY_SNAPSHOT    {messageId:"evt-7", activityType:"vymalo.artifact", content:{kind:"file", name:"result", text:"answered: main", uri:"https://github.com/acme/demo/pull/1"}, subagentRunId:"sub-2"}   id: 7
 ACTIVITY_SNAPSHOT    {messageId:"evt-8", activityType:"vymalo.status", content:{status:"completed"}, subagentRunId:"sub-2"}
 SUBAGENT_FINISHED    {subagentRunId:"sub-2"}                                                   id: 8
 STATE_SNAPSHOT       {snapshot:{thread:{state:"done", …}}}

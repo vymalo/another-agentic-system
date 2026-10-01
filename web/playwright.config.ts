@@ -4,6 +4,8 @@ const CI = Boolean(process.env.CI);
 
 export default defineConfig({
   testDir: "e2e",
+  // the screenshots are `pnpm screens` (playwright.screens.config.ts), not a test
+  testIgnore: /screens\.spec\.ts/,
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 1 : 0,

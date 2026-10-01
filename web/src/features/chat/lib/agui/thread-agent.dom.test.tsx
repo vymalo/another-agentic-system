@@ -2,7 +2,15 @@
 import { act, cleanup, configure, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { dropFailedSend } from "./failed-send";
-import { type GoldenFrame, LiveStream, loadGolden, problem, sse, THREAD_ID } from "./testing";
+import {
+  framesThrough,
+  type GoldenFrame,
+  LiveStream,
+  loadGolden,
+  problem,
+  sse,
+  THREAD_ID,
+} from "./testing";
 import { mountRuntime, summarize } from "./testing-runtime";
 
 configure({ asyncUtilTimeout: 10_000 });
@@ -33,13 +41,12 @@ describe("the runtime with a ThreadAgent: runs the user starts", () => {
     expect(body.messages[0]).toMatchObject({ role: "user", content: "ask about branches" });
 
     // the connect stream carries the run: its user message is the runtime's own, shown once
-    const golden = loadGolden("ask")
-      .slice(0, 12)
-      .map((f) =>
-        f.event.type === "RUN_STARTED" || f.event.type === "RUN_FINISHED"
-          ? { ...f, event: { ...f.event, runId: body.runId } }
-          : f,
-      );
+    // the first run of `ask`: up to its interrupt (resume point 4)
+    const golden = framesThrough(loadGolden("ask"), 4).map((f) =>
+      f.event.type === "RUN_STARTED" || f.event.type === "RUN_FINISHED"
+        ? { ...f, event: { ...f.event, runId: body.runId } }
+        : f,
+    );
     await act(async () => {
       connect.frames(golden);
     });
@@ -49,7 +56,7 @@ describe("the runtime with a ThreadAgent: runs the user starts", () => {
       {
         role: "assistant",
         status: "requires-action:interrupt",
-        parts: ["actor", "status:working", "status:input_required"],
+        parts: ["actor", "status:working", "text:Which branch?", "status:input_required"],
       },
     ]);
     agent.stop();
@@ -65,7 +72,7 @@ describe("the runtime with a ThreadAgent: runs the user starts", () => {
     });
     agent.start();
     await act(async () => {
-      connect.frames(loadGolden("ask").slice(0, 12));
+      connect.frames(framesThrough(loadGolden("ask"), 4));
     });
     await waitFor(() => expect(runtime().unstable_getPendingInterrupts()).toHaveLength(1));
 
@@ -76,8 +83,9 @@ describe("the runtime with a ThreadAgent: runs the user starts", () => {
       ]);
       await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
       runId = (calls.find((c) => c.method === "POST") as { body: { runId: string } }).body.runId;
-      const rest = loadGolden("ask")
-        .slice(12)
+      const ask = loadGolden("ask");
+      const rest = ask
+        .slice(framesThrough(ask, 4).length)
         .map((f) =>
           f.event.type === "RUN_STARTED" || f.event.type === "RUN_FINISHED"
             ? { ...f, event: { ...f.event, runId } }

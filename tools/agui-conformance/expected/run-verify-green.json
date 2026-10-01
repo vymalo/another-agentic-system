@@ -24,6 +24,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -33,8 +34,14 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000001",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000001\",\"repository\":\"https://github.com/acme/demo.git\"}"
       }
     },
@@ -44,8 +51,13 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "kind": "checks",
         "mimeType": "application/json",
         "name": "checks",
+        "passed": false,
+        "sha": "0000000000000000000000000000000000000001",
+        "shortSha": "0000000",
         "text": "{\"commit\":\"0000000000000000000000000000000000000001\",\"findings\":[\"tests::login fails: expected 200, got 500\"],\"passed\":false,\"summary\":\"1 test failed\"}"
       }
     },
@@ -55,6 +67,7 @@
       "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     },
@@ -63,6 +76,7 @@
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 1,
         "commit": "0000000000000000000000000000000000000001",
         "findings": [
@@ -78,6 +92,7 @@
       "role": "activity",
       "activityType": "vymalo.rework",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "findings": [
           {
@@ -96,6 +111,7 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "working"
       }
     },
@@ -105,8 +121,14 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "branch": "agent/fix",
+        "kind": "branch",
         "mimeType": "application/json",
         "name": "branch",
+        "repository": "github.com/acme/demo",
+        "sha": "0000000000000000000000000000000000000002",
+        "shortSha": "0000000",
         "text": "{\"branch\":\"agent/fix\",\"commit\":\"0000000000000000000000000000000000000002\",\"repository\":\"https://github.com/acme/demo.git\"}"
       }
     },
@@ -116,8 +138,13 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.artifact",
       "content": {
+        "at": "<timestamp>",
+        "kind": "checks",
         "mimeType": "application/json",
         "name": "checks",
+        "passed": true,
+        "sha": "0000000000000000000000000000000000000002",
+        "shortSha": "0000000",
         "text": "{\"commit\":\"0000000000000000000000000000000000000002\",\"passed\":true,\"summary\":\"3 tests passed\"}"
       }
     },
@@ -127,6 +154,7 @@
       "subagentRunId": "sub-7",
       "activityType": "vymalo.status",
       "content": {
+        "at": "<timestamp>",
         "status": "completed"
       }
     },
@@ -135,6 +163,7 @@
       "role": "activity",
       "activityType": "vymalo.check",
       "content": {
+        "at": "<timestamp>",
         "attempt": 2,
         "commit": "0000000000000000000000000000000000000002",
         "source": "agent_checks",
