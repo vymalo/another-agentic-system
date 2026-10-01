@@ -133,7 +133,7 @@ dev/split-e2e.sh                                     # kills the worker that hol
 | default | `postgres`, `mock-agent`, `mock-agent-releases`, `mock-verifier` | 5432, 8081, 8082, 8083 |
 | `app` | + `orchestrator`, `web`, `edge` | 8080 (`/api/*` to the orchestrator, the rest to the UI) |
 | `split` | + `orchestrator-worker-1`, `orchestrator-worker-2` (dispatcher only; beside `app`, with `ORCHESTRATOR_ROLE=control-plane`) | none published |
-| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)). The coder reads its agent folder (name, card, instructions) from [`dev/coder/agent/`](dev/coder/agent/instructions.md), mounted at `/etc/adam/agent`: edit it and `docker compose --profile app up -d coder`, no rebuild ([Change what the coder says](dev/README.md#change-what-the-coder-says)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`); `coder-postgres` is not published |
+| `app` | + `coder`, `coder-postgres`, `mock-openai`, `mock-github`, `git-server` (the default agent and its mocks), `mock-ci` (a CI stand-in: the coder is gated on its own checks and on CI and ends `done` when `mock-ci` has reported the pushed commit, [`dev/README.md`](dev/README.md#ci-the-gate-by-webhook)), `mock-mcp-search` (a mock web-search MCP server with canned results, [`dev/README.md`](dev/README.md#mock-web-search-mcp)). The coder reads its agent folder (name, card, instructions) from [`dev/coder/agent/`](dev/coder/agent/instructions.md), mounted at `/etc/adam/agent`: edit it and `docker compose --profile app up -d coder`, no rebuild ([Change what the coder says](dev/README.md#change-what-the-coder-says)) | 8090 (`coder`), 8091 (`mock-openai`), 8092 (`mock-github`), 8093 (`git-server`), 8096 (`mock-mcp-search`); `coder-postgres` is not published |
 | `smee` | + `smee`, `smee-proxy` (opt-in: forwards GitHub webhooks from smee.io, a third party that sees them; needs `SMEE_URL`) | none published |
 | `local-agent` | `orchestrator-local`, `local-postgres` (opt-in: the orchestrator built with `agent-local`, hosting an `echo` agent) | 8095 |
 
@@ -167,9 +167,9 @@ The mock agent picks its script from a word in your message:
 `mock-agent-releases` declares the release-channels extension, so only it shows the release
 dropdown: channels `production`, `staging`, `latest` and three revisions. Ports can be moved with
 `POSTGRES_PORT`, `MOCK_AGENT_PORT`, `MOCK_AGENT_RELEASES_PORT`, `MOCK_VERIFIER_PORT`, `EDGE_PORT`, `CODER_PORT`,
-`MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT` and `GIT_SERVER_PORT`. CI keeps the mocks
+`MOCK_OPENAI_PORT`, `MOCK_GITHUB_PORT`, `GIT_SERVER_PORT` and `MOCK_MCP_SEARCH_PORT`. CI keeps the mocks
 honest: [`compose.yml`](.github/workflows/compose.yml) starts them, runs
-[`dev/check-mocks.sh`](dev/check-mocks.sh) and the real orchestrator client against them, and
+[`dev/check-mocks.sh`](dev/check-mocks.sh) (and [`dev/check-agent-mocks.sh`](dev/check-agent-mocks.sh) for the mock web search) and the real orchestrator client against them, and
 [`coder-e2e.yml`](.github/workflows/coder-e2e.yml) runs the whole `app` profile, coder included, and
 checks that the mocks and the agent folder vendored under `dev/coder` still equal upstream.
 

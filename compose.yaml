@@ -9,7 +9,7 @@
 #
 # Needs Docker Compose v2. compose.live.yaml needs v2.24.4 or newer (it uses the `!override` tag). The `app` profile
 # pulls the coder image (about 2.9 GB, linux/amd64 only, run under emulation on an ARM machine) and builds
-# the orchestrator, the web UI, the git server and `mock-ci`; the first build takes several minutes.
+# the orchestrator, the web UI, the git server, `mock-ci` and `mock-mcp-search`; the first build takes several minutes.
 #
 # The `app` profile is offline and deterministic: the model, GitHub and CI are scripts. `dev/coder-e2e.sh`
 # turns one chat message into a pull request, and the job ends `done` when the coder's own checks passed on
@@ -290,6 +290,27 @@ services:
         condition: service_healthy
       edge:
         condition: service_healthy
+
+  # A mock web-search MCP server (dev/mock-mcp-search, dev/README.md "Mock web search (MCP)"): streamable HTTP at
+  # http://mock-mcp-search:8080/mcp, one tool `web_search` with an icon, answering the canned results of
+  # dev/mock-mcp-search/results.json, so that an agent that searches the web, and a web search attached to a chat,
+  # run offline. It requires `Authorization: Bearer dev-search-token`. From the host: http://127.0.0.1:8096/mcp
+  # (dev/check-agent-mocks.sh probes it; GET /__journal lists the calls it has had).
+  mock-mcp-search:
+    profiles: [app]
+    build:
+      context: ./dev/mock-mcp-search
+    image: another-agentic-system/mock-mcp-search:dev
+    environment:
+      MOCK_MCP_TOKEN: dev-search-token # local development only
+    ports:
+      - "127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 2s
 
   # Pinned by tag AND digest, like the other images. linux/amd64 only, about 2.9 GB. The tag is the
   # adam-rs commit in dev/coder/UPSTREAM, which dev/coder/check-vendored.sh asserts.

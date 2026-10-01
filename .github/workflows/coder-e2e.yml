@@ -99,10 +99,10 @@ jobs:
           push: false
           tags: another-agentic-system/web:dev
           cache-from: type=gha,scope=web
-      - name: Pull the coder and build the git server and the mock CI
+      - name: Pull the coder and build the git server, the mock CI and the mock web search
         run: |
           docker compose pull coder
-          docker compose build git-server mock-ci
+          docker compose build git-server mock-ci mock-mcp-search
       - name: Start the stack
         run: docker compose up -d --no-build --wait --wait-timeout 600
       - name: Every scenario of the local stack (dev/e2e-all.sh)
