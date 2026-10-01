@@ -1,7 +1,94 @@
 # MVP — build order
 
-Smallest working loop first. Each step is usable on its own; nothing
-multi-agent until one agent works end to end.
+> Re-planned 2026-10-01. Steps 1 and 2 of the first plan delivered the plumbing; the owner judged
+> the MVP **not ready**. This page says why, then gives the new build order toward the
+> [vision](vision.md). The first plan and its slices are kept below as a record:
+> [the first plan](#the-first-plan-a-record).
+
+## Where we are
+
+The first plan built a working loop: chat → orchestrator → one A2A agent → pushed branch → CI result,
+behind a verification gate, durable across restarts, driven from the web over AG-UI and from other
+systems over MCP and webhooks. Diagrams: [Architecture: as built](architecture.md#as-built). That
+work stands and the vision builds on it.
+
+The owner tested it on 2026-10-01 (orchestrator, web chat, adam-coder as the only agent) and
+concluded: "the adam part is not complete; the system part is not even 10% in the direction I
+thought it would be. The MVP is not ready." What they met:
+
+- **One hard-wired agent.** Agents come from a static file; the platform appears only as a release
+  picker ([ADR 0008](decisions/0008-platform-integration-via-a2a-extension.md)). The system is "not
+  simply a chat for testing, it's a 'system'."
+- **A coder for every chat.** Asked "hi", it answered "give me a repo". It could not work without a
+  repository, explain its tools in plain words, or say its name (adam-rs
+  [#52](https://github.com/vymalo/another-adam-rs/issues/52) to
+  [#55](https://github.com/vymalo/another-adam-rs/issues/55)).
+- **Plain answers, plain questions.** Agents cannot show cards, choices, a graph, or ask through a
+  component; `ask_user` takes and returns text.
+- **Unreadable steps.** 7 messages gave 336 status events, 197 of them OpenCode's, in one flat list.
+- **No streaming, no titles.** A reply appears 2–8 s later in one piece; every thread is called "Hi"
+  (system [#65](https://github.com/vymalo/another-agentic-system/issues/65) and
+  [#66](https://github.com/vymalo/another-agentic-system/issues/66), adam-rs
+  [#51](https://github.com/vymalo/another-adam-rs/issues/51)).
+- **No tools from the person, no second agent.** Tools cannot be attached to a chat; nobody can be
+  mentioned.
+- **Prompts compiled in.** Changing the coder's instructions means rebuilding adam-coder.
+
+## The new build order
+
+Thin vertical slices: each one goes from the agent to the screen and can be shown to the owner on its
+own. Repositories: **sys** is this one, **adam** is vymalo/another-adam-rs, **platform** is
+vymalo/another-agentic-platform. The order follows dependencies: agents that can be configured come
+first, because every later slice needs more than one kind of agent to show anything.
+
+| # | Slice | Where | Done when | Needs | Issues, ADRs |
+|---|---|---|---|---|---|
+| 0 | **This plan**: the [vision](vision.md), ADRs 0022–0026, open questions 34–39 | sys | The owner reads it and recognises what they asked for. | — | — |
+| 1 | **Agents configured at run time.** adam-coder reads its `agent/` folder (instructions, skills, subagents, `mcp.json`) from a directory at run time, with the embedded copy as fallback (`adam-agent-fs` already has the run-time `Dir` path); adam-coder moves from `crates/` to `bin/`; it answers a greeting with a greeting, says its name and explains itself in plain words. Compose mounts the folder. | adam, sys | Editing `instructions.md` in the mounted folder changes the answer without a rebuild; "hi" gets a greeting, not "give me a repo". | — | adam [#55](https://github.com/vymalo/another-adam-rs/issues/55) |
+| 2 | **Agents for several uses.** A general adam agent served from any folder; compose and the live example run a chat agent and a researcher (on a mocked web-search MCP server) beside the coder. | adam, sys | The local stack lists three agents and each answers in its role on mocks; `dev/README.md` says how to add a fourth by writing a folder. | 1 | — |
+| 3 | **The catalog handshake and Choices.** The web's catalog (Choices first) goes at conversation start and again on a new digest; the `ui_catalog` event; the extension with `inlineCatalogs`; the refetch seam; adam-rs turns the catalog into model tools and `ask_user` with options into Choices; the answer comes back as the person's. | sys, adam | The coder asks three questions as radio lists, the person answers by clicking, and the agent continues with the answers; one thread opened in two UI versions gets the newer catalog. | 1 | [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md), question 36 |
+| 4 | **Cards and Mermaid.** Two output components, and one answer that combines text, cards and a graph. | sys, adam | The researcher answers with cards and a mermaid graph in one message; a surface that breaks a component's schema is refused visibly. | 3 | ADR 0023 |
+| 5 | **Nested steps.** Steps carry their source path; `agent_step`; AG-UI subagents nested by `parentSubagentRunId`; the web's collapsible tree with progressive disclosure and spinners; adam-rs reports OpenCode's tool calls as child steps. | sys, adam | A coder turn with an OpenCode delegation reads as one collapsed line per level; each click shows a little more; the log keeps a bounded number of updates per step. | 1 | [ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md) |
+| 6 | **Streaming and titles.** The model's answer streams over A2A and grows in the chat; only the final text is stored; threads get a short title. | adam, sys | The scenarios of the three issues pass, including a reconnect mid-stream and the `split` profile. | — | adam [#51](https://github.com/vymalo/another-adam-rs/issues/51), sys [#65](https://github.com/vymalo/another-agentic-system/issues/65), [#66](https://github.com/vymalo/another-agentic-system/issues/66) |
+| 7 | **The GitHub MCP coder and workspaces.** GitHub through MCP servers; the trusted parts (sandbox preparation, the named-repository rule, check runs bound to the pushed commit) in a small server of our own; workspaces of several repositories that grow with the person's permission; ephemeral scratch workspaces; credentials per installation (GitHub App or PAT); direct file tools; creating a repository on request. | adam, sys | Scratch work → a named repository → a pull request behind the gate; a second repository is pulled only after the person agrees; the stack runs once with a GitHub App mock and once with a PAT. | 1, 3 (permission as Choices) | adam [#52](https://github.com/vymalo/another-adam-rs/issues/52), [#53](https://github.com/vymalo/another-adam-rs/issues/53), [#54](https://github.com/vymalo/another-adam-rs/issues/54); questions 24, 35 |
+| 8 | **MCP tools per conversation.** The person attaches a listed MCP server to a thread; the agent gets it through the extension; tool steps show the tool's icon. | sys, adam | The chat agent answers with web search the person attached, and the step shows the tool's icon; an agent without the extension is flagged before sending. | 2, 5; question 35 decided | [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md) |
+| 9 | **The live registry.** The `AgentRegistry` port; the static file as one implementation, the platform as another; a registry mock in compose. | sys, platform | An agent added to the mock registry appears in the picker without a restart; a registry that is down leaves the static agents and the UI says so; releases still come from each card. | 2; question 39 agreed | [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md), questions 23, 39 |
+| 10 | **Mentions.** Autocomplete from the registry; structured references in the message; the chosen coordination; mentioned agents nested in the steps. | sys, adam | The owner's football example runs on mocked researcher, browser and coder agents, each agent's work nested under the step that asked for it. | 5, 9; question 34 decided | [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md) |
+
+```mermaid
+flowchart LR
+  s1[1 Agents at run time] --> s2[2 Several agents]
+  s1 --> s3[3 Catalog and Choices]
+  s3 --> s4[4 Cards and Mermaid]
+  s1 --> s5[5 Nested steps]
+  s6[6 Streaming and titles]
+  s1 --> s7[7 GitHub MCP coder, workspaces]
+  s3 --> s7
+  s2 --> s8[8 Tools per conversation]
+  s5 --> s8
+  s2 --> s9[9 Live registry]
+  s5 --> s10[10 Mentions]
+  s9 --> s10
+```
+
+Slice 6 depends on nothing and can run beside any other. 3 → 4 and 5 can run in parallel after 1.
+
+**After these slices:** the remaining components (List, Stepper, Agent suggestion, Skill request,
+then Image and Web view after question 38, Notification opt-in after question 37); the first plan's
+steps 4 (planner and parallel agents) and 5 (reviewers), which the coordination choice of slice 10
+reshapes; OIDC for MCP (first plan, slice 14).
+
+## Out of scope for the MVP
+
+- Hosting agents, sandboxes or runtimes (another-agentic-platform's job).
+- Managing agents (system prompts, revisions, promotion, tags): the platform does it; the system
+  reads the result ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)).
+- Multi-tenant auth beyond "you, via Keycloak".
+
+## The first plan, a record
+
+The plan as it stood on 2026-09-30, with the status of each step and slice. It is kept as written;
+the new order above replaces its later steps.
 
 This system needs agents to drive but does not host them. The first coding
 agent is built **once** as another-agentic-platform's scenario-B harness
@@ -26,7 +113,7 @@ platform harness remains the way to host agents later.
 
 Diagrams of what is built: [Architecture: as built](architecture.md#as-built).
 
-## The slices of steps 2, 3 and 6
+### The slices of steps 2, 3 and 6
 
 **Slices 2 to 13 are built (2026-09-30); slice 14 (OIDC bearer tokens for MCP, after the MVP) is planned, not built** (owner decisions and design of 2026-09-30: [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0017](decisions/0017-ci-results-by-webhook.md), [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md),
@@ -58,7 +145,7 @@ largest change. The shared files are `config.rs`, `compose.yaml`, the Caddyfile,
 and again, bound to the pushed commit, from `commit_and_push` (adam-rs `ae540e9`, 2026-09-30), so the coder's dev gate is its
 own checks and CI.
 
-## Beyond the numbered steps: AG-UI
+### Beyond the numbered steps: AG-UI
 
 The user-facing protocol moves to AG-UI 1.0 ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
 binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step:
@@ -78,9 +165,3 @@ binding in [`api/agui.md`](api/agui.md)). It is a set of slices, not an MVP step
 | The legacy chat API surface removed (2026-09-30): the crate `orch-surface-chat-api`, its feature `surface-chat-api`, the four operations and their schemas in `chat-api.yaml`; `ORCH_SURFACES` naming `chat-api` fails closed at startup (exit 78) and points to AG-UI; the resource API stays | Built |
 | A2UI on the orchestrator: surfaces from agents, actions from users, capability detection ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) | Built |
 | A2UI rendering in the web: the validator (64 KiB, 400 components, 2000 nodes after expansion, 100 per template, depth 24, a ten-component vocabulary, http(s) links only), the shadcn vocabulary, actions on a user gesture only, the mock and the system tests ([`web/README.md`](../web/README.md#a2ui-surfaces)) | Built |
-
-## Out of scope for the MVP
-
-- Hosting agents, sandboxes or runtimes (another-agentic-platform's job).
-- Multi-tenant auth beyond "you, via Keycloak".
-- Any UI beyond the chat surface and a job list.
