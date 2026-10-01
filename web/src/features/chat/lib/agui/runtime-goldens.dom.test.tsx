@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, configure, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { buildTurnSteps, type StepMessage, type StepNode } from "../step-tree";
 import { framesThrough, LiveStream, loadGolden, sse } from "./testing";
 import { mountRuntime, type Summary, summarize } from "./testing-runtime";
 
@@ -205,10 +206,44 @@ const EXPECTED: Record<string, Summary> = {
       parts: [ACTOR, "status:working", "status:failed"],
     },
   ],
+  // nested steps (ADR 0025): a sub-agent step opens its own subagent in the stream, which the
+  // runtime turns into one more actor marker; each step is one part, said again in place
+  steps: [
+    USER("steps run the tests"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [ACTOR, "status:working", ACTOR, "step", "step", "text:Done.", "status:completed"],
+    },
+  ],
+  // the agent asked while a command waited: the question ends the run, the answer's run says the
+  // command and the sub-agent again (the preamble does not start the sub-agent a second time)
+  "steps-ask": [
+    USER("steps-ask clean the build"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [
+        ACTOR,
+        "status:working",
+        ACTOR,
+        "step",
+        "step",
+        "text:Allow rm -rf build?",
+        "status:input_required",
+      ],
+    },
+    USER("yes"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [ACTOR, "status:working", "step", "step", "text:Done.", "status:completed"],
+    },
+  ],
 };
 
 /** The scenarios the orchestrator's e2e tests also record over real HTTP (connect-<name>). */
-const CONNECT = ["echo", "ask", "cancel", "verify-green", "verify-red", "ci"];
+const CONNECT = ["echo", "ask", "cancel", "verify-green", "verify-red", "ci", "steps", "steps-ask"];
 
 async function play(name: string) {
   const stream = new LiveStream();
@@ -347,6 +382,101 @@ describe("the goldens through the runtime", () => {
       { name: "ci/build", conclusion: "success", passed: true, actor: { type: "system" } },
     ]);
     agent.stop();
+  });
+
+  /** One line per node, indented by depth: `kind:label[state]`. */
+  const outline = (nodes: readonly StepNode[], depth = 0): string[] =>
+    nodes.flatMap((n) => [
+      `${"  ".repeat(depth)}${n.kind}:${n.label}[${n.state}]`,
+      ...outline(n.children, depth + 1),
+    ]);
+
+  for (const name of ["steps", "connect-steps"]) {
+    it(`${name}: the sub-agent holds its command, and the turn says what failed`, async () => {
+      const { messages, agent } = await play(name);
+      const turns = buildTurnSteps(messages() as unknown as StepMessage[], {
+        state: "done",
+        waiting: false,
+        agentId: "plain",
+      });
+      expect(turns).toHaveLength(1);
+      const [turn] = turns;
+      expect(outline(turn?.roots ?? [])).toEqual([
+        "agent:plain[completed]",
+        "  status:Started working[completed]",
+        "  subagent:OpenCode[completed]",
+        "    command:npm test[failed]",
+      ]);
+      expect(turn).toMatchObject({
+        number: 1,
+        state: "completed",
+        summary: { total: 3, running: 0, failed: 1 },
+      });
+      agent.stop();
+    });
+  }
+
+  for (const name of ["steps-ask", "connect-steps-ask"]) {
+    it(`${name}: the turn that asked stays paused with its command waiting, the next one ends it`, async () => {
+      const { messages, agent } = await play(name);
+      const turns = buildTurnSteps(messages() as unknown as StepMessage[], {
+        state: "done",
+        waiting: false,
+        agentId: "plain",
+      });
+      expect(turns.map((t) => [t.number, t.state])).toEqual([
+        [1, "waiting"],
+        [2, "completed"],
+      ]);
+      expect(outline(turns[0]?.roots ?? [])).toEqual([
+        "agent:plain[waiting]",
+        "  status:Started working[completed]",
+        "  subagent:OpenCode[waiting]",
+        "    command:rm -rf build[waiting]",
+      ]);
+      // the answer's run says both again, attributed to the agent: the parent is not in this turn
+      expect(outline(turns[1]?.roots ?? [])).toEqual([
+        "agent:plain[completed]",
+        "  status:Started working[completed]",
+        "  command:rm -rf build[completed]",
+        "  subagent:OpenCode[completed]",
+      ]);
+      expect(turns.map((t) => t.summary.failed)).toEqual([0, 0]);
+      agent.stop();
+    });
+  }
+
+  it("a turn that did not change is the same object when a later one grows (nothing is rebuilt)", async () => {
+    const stream = new LiveStream();
+    const mounted = mountRuntime(() => sse(stream.body));
+    mounted.agent.start();
+    const all = loadGolden("steps-ask");
+    // up to the answer's run being open: the first turn is closed (its interrupt was answered)
+    const first = framesThrough(all, 8);
+    await act(async () => {
+      stream.frames(first);
+    });
+    await waitFor(() => expect(mounted.messages()).toHaveLength(4));
+    await waitFor(() => expect(mounted.messages()[1]?.status?.type).toBe("complete"));
+    const asMessages = () => mounted.messages() as unknown as StepMessage[];
+    const before = buildTurnSteps(asMessages(), {
+      state: "working",
+      waiting: false,
+      agentId: "plain",
+    });
+    expect(before).toHaveLength(2);
+    await act(async () => {
+      stream.frames(all.slice(first.length));
+    });
+    await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(all.at(-1)?.id));
+    await waitFor(() => expect(mounted.messages()[3]?.status?.type).toBe("complete"));
+    const after = buildTurnSteps(asMessages(), { state: "done", waiting: false, agentId: "plain" });
+    expect(after).toHaveLength(2);
+    // the runtime keeps a message that did not change as the same object, so its turn is too
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).not.toBe(before[1]);
+    expect(after[1]?.state).toBe("completed");
+    mounted.agent.stop();
   });
 
   it("followup: the agent holds job 2 of the thread, done, and nothing of the first job", async () => {

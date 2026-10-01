@@ -7,6 +7,7 @@ import {
   parseAnswers,
   parseArtifact,
   parseStatus,
+  parseStep,
   type ReworkContent,
 } from "@/features/chat/lib/agui/vymalo";
 import { detectPullRequest, locatePullRequest } from "./artifact";
@@ -27,6 +28,7 @@ const STEP_PARTS = new Set(
     ACTIVITY.ci,
     ACTIVITY.rework,
     ACTIVITY.action,
+    ACTIVITY.step,
     ACTIVITY.job,
   ].map(activityPartName),
 );
@@ -74,6 +76,7 @@ export function drawsStep(part: PartLike): boolean {
     return status !== "completed" && status !== "input_required" && status !== undefined;
   }
   if (part.name === activityPartName(ACTIVITY.artifact)) return parseArtifact(part.data) !== null;
+  if (part.name === activityPartName(ACTIVITY.step)) return parseStep(part.data) !== null;
   return true;
 }
 

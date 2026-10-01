@@ -30,6 +30,7 @@ describe("which parts are steps", () => {
     expect(isStepPart(data(ACTIVITY.rework, {}))).toBe(true);
     expect(isStepPart(data(ACTIVITY.action, {}))).toBe(true);
     expect(isStepPart(data(ACTIVITY.job, {}))).toBe(true);
+    expect(isStepPart(data(ACTIVITY.step, {}))).toBe(true);
     expect(isStepPart({ type: "data", name: ACTOR_PART, data: {} })).toBe(true);
     // the words, an error and a surface stand on their own
     expect(isStepPart({ type: "text", text: "hello" })).toBe(false);
@@ -46,6 +47,14 @@ describe("which parts are steps", () => {
     expect(drawsStep(data(ACTIVITY.job, { job: 2 }))).toBe(false);
     expect(drawsStep({ type: "data", name: ACTOR_PART, data: {} })).toBe(false);
     expect(drawsStep(data(ACTIVITY.artifact, { nope: 1 }))).toBe(false);
+  });
+
+  it("a step of steps/v1 draws a line when it validates, and nothing when it does not", () => {
+    const report = { id: "T/a", kind: "tool", label: "read", state: "running", path: [] };
+    expect(drawsStep(data(ACTIVITY.step, report))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.step, report))).toBe(true);
+    expect(drawsStep(data(ACTIVITY.step, { ...report, state: "?" }))).toBe(false);
+    expect(drawsPart(data(ACTIVITY.step, { id: "T/a" }))).toBe(false);
   });
 });
 

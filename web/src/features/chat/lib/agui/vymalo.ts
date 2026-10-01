@@ -21,6 +21,11 @@ export const ACTIVITY = {
   /** A CI system reported a check on a commit (ADR 0017), whether or not the gate counted it. */
   ci: "vymalo.ci",
   /**
+   * A step of the agent's work (ADR 0025, steps/v1): the same activity says the step again at each
+   * of its events, under one message id, and its `path` places it in the tree.
+   */
+  step: "vymalo.step",
+  /**
    * An A2UI surface, as `ThreadAgent` hands it to the runtime. On the wire it is
    * `a2ui-surface` ({@link A2UI_SURFACE}); see `thread-agent.ts` for why it is renamed.
    */
@@ -138,6 +143,46 @@ export type ReworkContent = WithActor<{
   attempt: number;
   maxAttempts: number;
   findings: ReworkFindings[];
+}>;
+
+export const STEP_KINDS = ["subagent", "tool", "command", "message"] as const;
+export type StepKind = (typeof STEP_KINDS)[number];
+export const STEP_STATES = ["running", "waiting", "completed", "failed", "canceled"] as const;
+export type StepState = (typeof STEP_STATES)[number];
+/** The icon vocabulary of steps/v1 (docs/api/steps-v1.md): anything else is ignored. */
+export const STEP_ICONS = [
+  "agent",
+  "read",
+  "edit",
+  "delete",
+  "move",
+  "search",
+  "execute",
+  "think",
+  "fetch",
+  "web",
+  "git",
+  "test",
+  "file",
+  "tool",
+] as const;
+export type StepIcon = (typeof STEP_ICONS)[number];
+
+/**
+ * A step of the agent's work as it stands (`vymalo.step`, docs/api/agui.md "Nested steps"). `id` is
+ * unique in the thread and `path` the ids of the steps it runs under, outermost first. `label` and
+ * `detail` come from an agent: untrusted text, drawn as text. `at` is the time of this event and
+ * `startedAt` the time of the step's first.
+ */
+export type StepContent = WithActor<{
+  id: string;
+  path: string[];
+  kind: StepKind;
+  label: string;
+  state: StepState;
+  icon?: StepIcon;
+  detail?: string;
+  startedAt?: string;
 }>;
 
 /** `job` of a `STATE_SNAPSHOT` and of `Thread` (chat-api.yaml, `ThreadJob`): only under a gate. */
@@ -372,6 +417,37 @@ export function parseRework(v: unknown): ReworkContent | null {
     : [];
   const actor = readActor(v.actor);
   return { attempt, maxAttempts, findings, ...(actor ? { actor } : {}), ...readAt(v) };
+}
+
+/**
+ * `vymalo.step`; a payload without an `id`, a `label` and a known `state` renders nothing (the
+ * orchestrator's door checked it already, and the log is data). An unknown `kind` is a tool, an
+ * icon outside the vocabulary is none, a `path` that is not a list of strings is the top level.
+ */
+export function parseStep(v: unknown): StepContent | null {
+  if (!isRecord(v)) return null;
+  const id = str(v.id);
+  const label = str(v.label);
+  const state = str(v.state);
+  if (!id || label === undefined || !state) return null;
+  if (!(STEP_STATES as readonly string[]).includes(state)) return null;
+  const kind = str(v.kind);
+  const icon = str(v.icon);
+  const detail = str(v.detail);
+  const actor = readActor(v.actor);
+  const startedAt = str(v.startedAt);
+  return {
+    id,
+    path: Array.isArray(v.path) ? v.path.filter((p): p is string => typeof p === "string") : [],
+    kind: kind && (STEP_KINDS as readonly string[]).includes(kind) ? (kind as StepKind) : "tool",
+    label,
+    state: state as StepState,
+    ...(icon && (STEP_ICONS as readonly string[]).includes(icon) ? { icon: icon as StepIcon } : {}),
+    ...(detail ? { detail } : {}),
+    ...(startedAt && !Number.isNaN(Date.parse(startedAt)) ? { startedAt } : {}),
+    ...(actor ? { actor } : {}),
+    ...readAt(v),
+  };
 }
 
 /** `job` of a snapshot or of the thread resource; null when it is absent or not a job. */

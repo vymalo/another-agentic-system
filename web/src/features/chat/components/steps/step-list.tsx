@@ -11,11 +11,15 @@ import {
   parseCi,
   parseRework,
   parseStatus,
+  parseStep,
 } from "@/features/chat/lib/agui/vymalo";
+import { stepNode } from "@/features/chat/lib/step-tree";
 import { drawsStep } from "@/features/chat/lib/steps";
 import { CheckStep } from "./check-step";
 import { CiStep } from "./ci-step";
+import { NO_EXPANSION } from "./expansion";
 import { ActionStep, ArtifactStep, ReworkStep, StatusStep } from "./step-items";
+import { StepNodeView, type TreeScope } from "./step-node";
 
 /** Past this many steps the earliest fold behind a control; the latest stay in view. */
 export const STEPS_SHOWN = 30;
@@ -23,6 +27,9 @@ export const STEPS_SHOWN = 30;
 const STEPS_KEPT = 20;
 
 type Part = { type: string; name?: string; data?: unknown };
+
+/** A step of steps/v1 in this flat list has no tree to open: the side panel is where it nests. */
+const FLAT: TreeScope = { turnId: "flat", expanded: NO_EXPANSION, onExpandedChange: () => {} };
 
 /** One step: the part drawn by the renderer of its activity. `live` marks the agent's current one. */
 function Step({ part, live, running }: { part: Part; live: boolean; running: boolean }) {
@@ -50,6 +57,10 @@ function Step({ part, live, running }: { part: Part; live: boolean; running: boo
     case activityPartName(ACTIVITY.action): {
       const action = parseAction(part.data);
       return action ? <ActionStep data={action} /> : null;
+    }
+    case activityPartName(ACTIVITY.step): {
+      const step = parseStep(part.data);
+      return step ? <StepNodeView node={stepNode(step)} scope={FLAT} /> : null;
     }
     default:
       return null;
