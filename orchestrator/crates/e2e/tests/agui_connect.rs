@@ -399,6 +399,14 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             .await;
             chat.wait_state(thread, "done").await;
         }
+        // A person renames the thread after it is done (`patchThread`); a viewer that connects
+        // afterwards reads the whole log, with the title the thread has now.
+        "title" => {
+            run(input(thread, "run-1", &[("msg-1", "echo hi")], json!({}))).await;
+            chat.wait_state(thread, "done").await;
+            let (status, renamed) = chat.rename(thread, "Fix the build").await;
+            assert_eq!(status, 200, "{renamed}");
+        }
         "cancel" => {
             let sse = chat
                 .agui_run(
@@ -546,6 +554,7 @@ async fn connect_streams_match_docs_api_examples() {
         "catalog",
         "steps",
         "steps-ask",
+        "title",
     ]
     .into_iter()
     .enumerate()

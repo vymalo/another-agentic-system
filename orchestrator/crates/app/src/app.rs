@@ -7,8 +7,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, Classify, Command, Event, EventKind, GatePolicy, Input, Job,
-    LiveText, Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, UiCatalogData,
-    UserId, WatchKey, is_commit_hash, repo_key, report, transition,
+    LiveText, Origin, Snapshot, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource,
+    UiCatalogData, UserId, WatchKey, check_title, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -790,6 +790,12 @@ impl<P: Ports> App<P> {
                     "this input cannot be submitted by a user".to_owned(),
                 ));
             }
+            // The title is stored as it is written, so it must be what `check_title` returns.
+            Input::Rename { title, .. } => {
+                if check_title(title).as_deref() != Ok(title.as_str()) {
+                    return Err(AppError::Invalid("invalid title".to_owned()));
+                }
+            }
             Input::Cancel { .. }
             | Input::Agent { .. }
             | Input::DeliveryFailed { .. }
@@ -798,6 +804,42 @@ impl<P: Ports> App<P> {
         }
         self.get_thread(user, id).await?;
         self.apply(id, input, key, None, None).await
+    }
+
+    /// Renames one of the user's threads, whatever state it is in (a finished thread too: the
+    /// title labels the conversation). From then on the title is the person's and nothing else
+    /// replaces it. `title` is trimmed and must be one line of 1 to
+    /// [`MAX_TITLE_CHARS`](orch_core::MAX_TITLE_CHARS) characters, else
+    /// [`AppError::Invalid`]. A thread that has this title from the person already is left as it
+    /// is, with no event. Returns the thread as it is afterwards.
+    ///
+    /// # Errors
+    /// [`AppError::Invalid`] for a title that cannot be used, [`AppError::NotFound`] for a thread
+    /// that is not the user's.
+    pub async fn rename_thread(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+        title: &str,
+    ) -> Result<ThreadRecord, AppError> {
+        let title = check_title(title).map_err(|e| AppError::Invalid(e.to_string()))?;
+        let record = self.get_thread(user, id).await?;
+        if record.title == title && record.job.title.source() == TitleSource::User {
+            return Ok(record);
+        }
+        let input = Input::Rename {
+            user: user.clone(),
+            title,
+        };
+        match self.apply(id, input, None, None, None).await? {
+            ApplyOutcome::Applied { thread, .. } => Ok(thread),
+            ApplyOutcome::Duplicate => Err(AppError::internal(
+                "a rename without an idempotency key was reported as a duplicate",
+            )),
+            ApplyOutcome::Fenced => Err(AppError::internal(
+                "a commit without a lease was reported as fenced",
+            )),
+        }
     }
 
     /// Records a step of the thread's work that the orchestrator reports itself (ADR 0025): a
@@ -854,6 +896,7 @@ impl<P: Ports> App<P> {
         let mut outbox = Vec::new();
         let mut watches = Vec::new();
         let mut timers = Vec::new();
+        let mut title = None;
         for cmd in cmds {
             match cmd {
                 Command::Append(draft) => {
@@ -911,6 +954,8 @@ impl<P: Ports> App<P> {
                     after,
                     timer,
                 }),
+                // Stored with the `thread_titled` event that says so, in this commit.
+                Command::SetTitle(new) => title = Some(new),
                 // The request is an outbox row in this commit, so it cannot be lost or made
                 // twice; the dispatcher asks the verifier and feeds the verdict back.
                 Command::RequestVerification {
@@ -943,6 +988,7 @@ impl<P: Ports> App<P> {
             timers,
             inbox: None,
             finishes_outbox: None,
+            title,
         }
     }
 
@@ -1049,6 +1095,7 @@ impl<P: Ports> App<P> {
                 && commit.outbox.is_empty()
                 && commit.binding.is_none()
                 && commit.job.is_none()
+                && commit.title.is_none()
                 && commit.watches.is_empty()
                 && commit.timers.is_empty()
                 && next == record.state
@@ -1253,6 +1300,7 @@ impl<P: Ports> App<P> {
                 timers: Vec::new(),
                 inbox: None,
                 finishes_outbox: None,
+                title: None,
             };
             match self
                 .ports

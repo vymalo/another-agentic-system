@@ -96,6 +96,16 @@ const EXPECTED: Record<string, Summary> = {
       parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
     },
   ],
+  // a rename inside the run is a snapshot of it; the rename after the cancel is a run of its own
+  // that holds only a snapshot, which the transcript never shows
+  title: [
+    USER("slow work"),
+    {
+      role: "assistant",
+      status: "incomplete:cancelled",
+      parts: [ACTOR, "status:working", "status:canceled"],
+    },
+  ],
   // a surface (one part, its two snapshots replaced in place), the question, then the owner's action
   a2ui: [
     USER("ui pick one"),
@@ -287,6 +297,17 @@ describe("the goldens through the runtime", () => {
       agent.stop();
     });
   }
+
+  it("connect-title: a finished thread that was renamed reads as it did, the rename adds no message and moves the title", async () => {
+    const { messages, agent } = await play("connect-title");
+    expect(summarize(messages())).toEqual(EXPECTED.echo);
+    expect(agent.getSnapshot()).toMatchObject({
+      state: "done",
+      title: "Fix the build",
+      openRun: null,
+    });
+    agent.stop();
+  });
 
   it("ask, before the answer: the run ended in an interrupt the runtime holds and the UI can answer", async () => {
     const stream = new LiveStream();

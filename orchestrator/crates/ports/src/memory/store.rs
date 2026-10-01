@@ -136,6 +136,9 @@ fn write_commit(
     if let Some(job) = commit.job {
         entry.record.job = job;
     }
+    if let Some(title) = commit.title {
+        entry.record.title = title;
+    }
     entry.record.version += 1;
     entry.record.updated_at = commit.now;
     if let Some(update) = &commit.binding {
@@ -284,6 +287,7 @@ impl ThreadStore for MemoryStore {
         let first = Commit {
             inbox: None,
             finishes_outbox: None,
+            title: None,
             ..first
         };
         let mut inner = self.lock();

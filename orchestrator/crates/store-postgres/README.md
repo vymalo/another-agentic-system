@@ -59,7 +59,7 @@ database; stale test schemas older than an hour are dropped.
   0001 to 0003 (the new tables take rows, refuse a repeated key, an unknown kind and an unknown status,
   and a deleted thread takes its watches); that migration 0007 upgrades one that ran 0001 to 0006 and
   holds a log (the old event stays, the old constraint refuses an `agent_step`, the new one takes it and
-  still refuses an unknown kind); that receiving and re-arming wake a subscriber in another
+  still refuses an unknown kind), and migration 0008 the same for a `thread_titled` on one that ran 0001 to 0007; that receiving and re-arming wake a subscriber in another
   process; that a park waits for a commit that is adding its watch and then puts the row back, and that
   a commit adding a watch waits for a park and then re-arms the row it set aside (each holds the advisory
   lock in a transaction of the test, proves from `pg_locks` that the other call is blocked on it, and

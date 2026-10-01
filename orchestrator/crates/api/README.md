@@ -36,7 +36,9 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `sse::keep_alive`, `sse::stream_headers` | the `: keepalive` comment and the no-buffering headers every stream shares |
 
 Routes served here: `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /api/agents`,
-`GET /api/threads`, `GET /api/threads/{id}`, `GET /api/threads/{id}/export`,
+`GET /api/threads`, `GET /api/threads/{id}`, `PATCH /api/threads/{id}` (rename: a body of
+`{"title"}` and nothing else, in any state of the thread, see `App::rename_thread`; 400 for a title that cannot be
+used or another member), `GET /api/threads/{id}/export`,
 `POST /api/threads/{id}/cancel`. The interaction routes come from a
 surface (`/agui/*`, from `orch-surface-agui`). Bodies are limited to 1 MiB; request ids are set and
 propagated. The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,

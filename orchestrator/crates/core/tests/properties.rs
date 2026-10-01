@@ -93,6 +93,10 @@ fn arb_input() -> impl Strategy<Value = Input> {
             revision: None,
             update: AgentUpdate::Step(report)
         }),
+        "[a-z]{1,8}".prop_map(|title| Input::Rename {
+            user: UserId::new("u@x.io"),
+            title
+        }),
     ]
 }
 
@@ -166,7 +170,16 @@ proptest! {
                             prop_assert_eq!(delegations, 1);
                         } else {
                             prop_assert_eq!(next, state);
-                            prop_assert_eq!(&next_snap.job, &snap.job);
+                            // a rename is the one input that changes a finished thread's job
+                            let ledger = if matches!(input, Input::Rename { .. }) {
+                                next_snap.job.title
+                            } else {
+                                snap.job.title
+                            };
+                            prop_assert_eq!(
+                                &next_snap.job,
+                                &Job { title: ledger, ..snap.job.clone() }
+                            );
                         }
                     } else {
                         // The job number only moves when a job starts from a finished thread.

@@ -212,6 +212,78 @@ describe("ThreadAgent: the connect stream", () => {
     expect(two.userMessages).toMatchObject([{ text: "main" }]);
     agent.stop();
   });
+
+  it("drops a run that holds nothing but snapshots (a rename of a finished thread): the title moves, the runtime never hears of it", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(loadGolden("connect-title"));
+    // the run of the echo, then the rename's own run `run-6`: RUN_STARTED, STATE_SNAPSHOT, RUN_FINISHED
+    const one = (await agent.nextExternalRun()) as ExternalRun;
+    expect(one.runId).toBe("run-1");
+    await until(() => agent.getSnapshot().lastSeq === 6, "the rename's run");
+    expect(agent.getSnapshot()).toMatchObject({
+      title: "Fix the build",
+      state: "done",
+      openRun: null,
+      failure: null,
+    });
+    expect(await Promise.race([agent.nextExternalRun(AbortSignal.timeout(30)), null])).toBeNull();
+    // the first run is whole: the rename did not become a second message of it
+    expect(kinds(await collect(one)).at(-1)).toBe("RUN_FINISHED");
+    agent.stop();
+  });
+
+  it("a rename inside a run is a snapshot of that run, and the run is delivered as before", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    stream.frames(loadGolden("title"));
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    expect(run.runId).toBe("run-1");
+    const titles = (await collect(run)).flatMap((e) => {
+      const snapshot = (e as BaseEvent & { snapshot?: { thread?: { title?: string } } }).snapshot;
+      return e.type === EventType.STATE_SNAPSHOT && snapshot?.thread?.title
+        ? [snapshot.thread.title]
+        : [];
+    });
+    expect(titles).toEqual(["slow work", "slow work", "Fix the login", "Fix the login"]);
+    // the second run, after the cancel, holds only the rename of a cancelled thread
+    await until(() => agent.getSnapshot().lastSeq === 6, "the second rename");
+    expect(agent.getSnapshot()).toMatchObject({ title: "Fix the login page", state: "cancelled" });
+    expect(await Promise.race([agent.nextExternalRun(AbortSignal.timeout(30)), null])).toBeNull();
+    agent.stop();
+  });
+
+  it("a run with a user message but nothing else is still a run for the transcript", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    // cancelled before the agent started: the user's message, a snapshot, RUN_FINISHED
+    stream.frames([
+      { event: { type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-1" } },
+      { event: { type: "STATE_SNAPSHOT", snapshot: { thread: { state: "queued", title: "t" } } } },
+      { event: { type: "TEXT_MESSAGE_START", messageId: "m-1", role: "user" } },
+      { event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m-1", delta: "hello" } },
+      { id: 1, event: { type: "TEXT_MESSAGE_END", messageId: "m-1" } },
+      {
+        event: { type: "STATE_SNAPSHOT", snapshot: { thread: { state: "cancelled", title: "t" } } },
+      },
+      {
+        id: 2,
+        event: {
+          type: "RUN_FINISHED",
+          threadId: THREAD_ID,
+          runId: "run-1",
+          outcome: { type: "cancelled" },
+        },
+      },
+    ]);
+    const run = (await agent.nextExternalRun()) as ExternalRun;
+    expect(run.userMessages).toMatchObject([{ text: "hello" }]);
+    expect(kinds(await collect(run)).at(-1)).toBe("RUN_FINISHED");
+    agent.stop();
+  });
 });
 
 describe("ThreadAgent.run", () => {

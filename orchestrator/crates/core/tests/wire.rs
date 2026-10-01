@@ -95,6 +95,10 @@ fn every_kind_roundtrips_and_never_emits_null() {
             icon: Some("execute".into()),
             detail: Some("12 passed".into()),
         }),
+        EventBody::ThreadTitled(ThreadTitledData {
+            title: "Fix the build".into(),
+            source: TitledBy::User,
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());
@@ -626,4 +630,38 @@ fn an_event_of_an_unknown_kind_or_a_malformed_ui_body_does_not_read() {
     assert!(serde_json::from_value::<Event>(base("ui_other", json!({}))).is_err());
     assert!(serde_json::from_value::<Event>(base("ui_surface", json!({"operations": 1}))).is_err());
     assert!(serde_json::from_value::<Event>(base("ui_action", json!({"name": "x"}))).is_err());
+}
+
+/// A rename is the person's event: its data is the new title and who wrote it, and a source this
+/// build does not know does not read (the first message's words are a thread's start, never an
+/// event).
+#[test]
+fn a_thread_titled_is_the_persons_event_with_the_title_and_its_writer() {
+    let e = event(
+        EventBody::ThreadTitled(ThreadTitledData {
+            title: "Fix the build".into(),
+            source: TitledBy::User,
+        }),
+        Actor::user(&UserId::new("me@example.com")),
+    );
+    assert_eq!(e.kind(), EventKind::ThreadTitled);
+    assert_eq!(e.kind().as_str(), "thread_titled");
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        v,
+        json!({
+            "seq": 3,
+            "threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "at": "2026-09-29T10:00:00.123456Z",
+            "kind": "thread_titled",
+            "actor": {"type": "user", "name": "me@example.com"},
+            "data": {"title": "Fix the build", "source": "user"}
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(v.clone()).unwrap(), e);
+    for bad in ["first_message", "robot"] {
+        let mut v = v.clone();
+        v["data"]["source"] = json!(bad);
+        assert!(serde_json::from_value::<Event>(v).is_err(), "{bad}");
+    }
 }

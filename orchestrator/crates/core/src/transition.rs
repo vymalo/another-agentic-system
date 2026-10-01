@@ -30,6 +30,7 @@ use crate::gate::{
 use crate::ids::{AgentId, UserId};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
+use crate::title::{ThreadTitledData, TitledBy};
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
 use crate::ui_catalog::{UiCatalogData, UiDelivery};
 use crate::verify;
@@ -149,6 +150,16 @@ pub enum Input {
     },
     /// A deadline armed by [`Command::Schedule`] passed.
     TimerFired(Timer),
+    /// The user renamed the thread. Valid in every state, finished or not: a title is a label of
+    /// the conversation, not a step of a job. The caller has checked `title`
+    /// ([`check_title`](crate::check_title)). From then on the thread's title is the person's, and
+    /// nothing else replaces it.
+    Rename {
+        /// Who renamed it.
+        user: UserId,
+        /// The new title.
+        title: String,
+    },
 }
 
 impl Input {
@@ -168,6 +179,7 @@ impl Input {
             Input::VerifierReported { .. } => "verifier report",
             Input::VerifierFailed { .. } => "verifier failure",
             Input::TimerFired(_) => "timer",
+            Input::Rename { .. } => "rename",
         }
     }
 }
@@ -225,6 +237,9 @@ pub enum Command {
         /// What to feed back.
         timer: Timer,
     },
+    /// Store this as the thread's title (`threads.title`), in the commit of the `thread_titled`
+    /// event that says so.
+    SetTitle(String),
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
     /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
     /// `verification`, or with [`Input::VerifierFailed`] when it cannot get an answer.
@@ -625,6 +640,22 @@ fn decide(
             reason,
         } => Ok(verifier_failed(state, job, *attempt, *verification, reason)),
         Input::TimerFired(timer) => Ok(timer_fired(state, job, *timer)),
+        Input::Rename { user, title } => {
+            job.title.written_by(TitledBy::User);
+            Ok((
+                state,
+                vec![
+                    append(
+                        Actor::user(user),
+                        EventBody::ThreadTitled(ThreadTitledData {
+                            title: title.clone(),
+                            source: TitledBy::User,
+                        }),
+                    ),
+                    Command::SetTitle(title.clone()),
+                ],
+            ))
+        }
     }
 }
 

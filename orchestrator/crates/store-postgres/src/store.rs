@@ -663,8 +663,8 @@ impl ThreadStore for PgStore {
         // without one leaves the stored job alone.
         let job = commit.job.as_ref().map(job_json).transpose()?;
         let row = sqlx::query(concat!(
-            "UPDATE threads SET state = $2, job = COALESCE($5, job), version = version + 1, \
-             last_seq = $3, updated_at = $4 WHERE id = $1 RETURNING ",
+            "UPDATE threads SET state = $2, job = COALESCE($5, job), title = COALESCE($6, title), \
+             version = version + 1, last_seq = $3, updated_at = $4 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(thread.0)
@@ -672,6 +672,7 @@ impl ThreadStore for PgStore {
         .bind(new_last_seq)
         .bind(to_db(commit.now))
         .bind(job)
+        .bind(commit.title.as_deref())
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;

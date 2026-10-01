@@ -25,6 +25,7 @@ the log itself, which the AG-UI streams below project.)
 | `catalog.events.json` | `echo hi` through the AG-UI run route with the screen's UI catalog, version 1, then `echo again` with version 2 and `echo once more` with version 1 again, each a job of the thread (ADR 0023, MVP slice 3): `ui_catalog` is the first event of the first two jobs (version 1, then 2) and the third writes none, because its digest is known; the log holds the consumer's message and run ids, which a route that carries a catalog has | `done`, job 3 |
 | `steps.events.json` | `steps run the tests` on the fake agent with `steps/v1` in its card (ADR 0025, MVP slice 5): a sub-agent step `OpenCode`, a command `npm test` under it that fails with the detail `1 failed`, the sub-agent's end, then the agent's words and `completed`. Step ids are `<task>/<agent's id>`; the task id is normalised to `T` | `done` |
 | `steps-ask.events.json` | `steps-ask clean the build`: the same sub-agent with a command that is `waiting` when the agent asks (`input_required`); after the answer (`yes`) the command and the sub-agent end in the next run | `done` |
+| `title.events.json` | `slow work`, then a person renames the thread while it works (`PATCH /api/threads/{id}`: `thread_titled` with `source: user`), Cancel, and renames it again once it is cancelled: the title is the person's from the first rename on, and a rename of a finished thread is an event like any other (MVP slice 6) | `cancelled` |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
@@ -157,6 +158,7 @@ everything, including the user messages the requester holds already. The consume
 | `connect-verify-verifier-red.agui.json` | the same, against a verifier that never passes | three attempts and three verifier subagents, ending in `RUN_ERROR` `checks_failed` |
 | `connect-ci.agui.json` | `verify-ci fix the login` under a CI gate, a red report then a green one | the replay of one run across two attempts with a `vymalo.ci` card for each report |
 | `connect-cursor.agui.json` | `gate hold`, the client held log event 2 and reconnects with `Last-Event-ID: 2` | the **preamble** (`RUN_STARTED` of the same run, `SUBAGENT_STARTED`, `STATE_SNAPSHOT`, none with an `id:`), then the rest of the run |
+| `connect-title.agui.json` | `echo hi`, finished, then renamed `Fix the build` | the replay of the run, every snapshot of it saying the title the thread has now, then the rename's own run: `RUN_STARTED`, `STATE_SNAPSHOT`, `RUN_FINISHED` with nothing between |
 
 [`agui/capabilities-<agent>.json`](agui/) is the `AgentCapabilities` document
 (`GET /agui/agents/{agentId}/capabilities`, see [`../agui.md`](../agui.md#capabilities-document)) of the two

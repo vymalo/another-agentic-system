@@ -8,7 +8,7 @@ use orch_ports::Ports;
 use serde::Deserialize;
 
 use crate::ApiState;
-use crate::extract::ApiQuery;
+use crate::extract::{ApiJson, ApiQuery};
 use crate::problem::{ApiError, Problem};
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -94,6 +94,35 @@ pub(crate) async fn get_thread<P: Ports>(
     Ok(Json(
         state.app.get_thread(&user, parse_thread_id(&id)?).await?,
     ))
+}
+
+/// Renames the thread (see [`orch_app::App::rename_thread`]): 200 with the thread, 400 for a title
+/// that cannot be used, 404 for a thread that is not the caller's.
+///
+/// The body is an object with a `title` string and nothing else: a member this API does not know
+/// is refused, so that a client that thinks it can change more learns it cannot. (It is read as a
+/// map, not as a struct, because a struct also reads from a JSON array.)
+pub(crate) async fn patch_thread<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
+) -> ApiResult<Json<ThreadRecord>> {
+    let id = parse_thread_id(&id)?;
+    let mut title = None;
+    for (member, value) in body {
+        match (member.as_str(), value) {
+            ("title", serde_json::Value::String(text)) => title = Some(text),
+            ("title", _) => return Err(Problem::bad_request("`title` must be a string").into()),
+            (other, _) => {
+                return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
+            }
+        }
+    }
+    let Some(title) = title else {
+        return Err(Problem::bad_request("`title` is required").into());
+    };
+    Ok(Json(state.app.rename_thread(&user, id, &title).await?))
 }
 
 pub(crate) async fn cancel_thread<P: Ports>(

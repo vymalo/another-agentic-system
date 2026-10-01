@@ -120,8 +120,8 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
     if (snapshot.lastSeq > 0) refetchSoon();
   }, [snapshot.lastSeq, refetchSoon]);
   useEffect(() => {
-    setThreadsKey(`${threadId}:${state}:${meta.thread?.lastSeq}`);
-  }, [threadId, state, meta.thread?.lastSeq]);
+    setThreadsKey(`${threadId}:${state}:${meta.thread?.lastSeq}:${meta.thread?.title}`);
+  }, [threadId, state, meta.thread?.lastSeq, meta.thread?.title]);
 
   const cancel = useCallback(() => {
     agent.cancel().catch((e: unknown) => setSendError(problemMessage(e)));
@@ -243,6 +243,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                       waiting={snapshot.waiting}
                       connection={snapshot.connection}
                       leading={leading}
+                      onRenamed={meta.apply}
                     />
                     {meta.error ? (
                       <div className="mx-auto w-full max-w-3xl px-4 md:px-6">

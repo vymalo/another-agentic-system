@@ -136,6 +136,19 @@ async function exportItem(): Promise<HTMLElement> {
   return screen.findByRole("menuitem", { name: /Export JSON|Exporting…/ });
 }
 
+/** "Rename" is the first item of the same menu. */
+async function renameItem(): Promise<HTMLElement> {
+  const trigger = await screen.findByRole("button", { name: "Thread options" });
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+  return screen.findByRole("menuitem", { name: "Rename" });
+}
+
+/** The title field the header turns into while the thread is renamed. */
+const titleField = () => screen.findByRole("textbox", { name: "Thread title" });
+
 /** The agent picker of the top bar: "Agent: Coder", a menu button. */
 const agentPicker = () => screen.findByRole("button", { name: /^Agent:/ });
 /** Opens the agent menu from the keyboard, as `exportItem` opens the thread's. */
@@ -490,6 +503,100 @@ describe("ChatShell over AG-UI", () => {
       click.mockRestore();
       setTimeoutSpy.mockRestore();
     }
+  });
+
+  it("Rename turns the title into a field; Enter saves it through the API and the header and the sidebar say it", async () => {
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    const heading = () => screen.getByRole("heading", { level: 1 });
+    expect(heading().textContent).toBe("Implement the thing");
+
+    fireEvent.click(await renameItem());
+    const field = (await titleField()) as HTMLInputElement;
+    // it starts from the title the thread has, selected, and has the focus
+    expect(field.value).toBe("Implement the thing");
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    fireEvent.change(field, { target: { value: "  Fix the build  " } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(calls).toContain(`PATCH /api/threads/${id} 200`));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull());
+    expect(heading().textContent).toBe("Fix the build");
+    // the sidebar lists the thread under its new title, without waiting for anything else
+    await waitFor(() =>
+      expect(screen.getAllByText("Fix the build").length).toBeGreaterThanOrEqual(2),
+    );
+    // and so does the server
+    const got = await realFetch(`${base}/api/threads/${id}`);
+    expect(((await got.json()) as { title: string }).title).toBe("Fix the build");
+    expect(screen.queryByText(/Could not rename/)).toBeNull();
+  });
+
+  it("Escape gives the rename up and sends nothing", async () => {
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    fireEvent.click(await renameItem());
+    const field = await titleField();
+    fireEvent.change(field, { target: { value: "Something else" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull());
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Implement the thing");
+    expect(calls.filter((c) => c.startsWith("PATCH"))).toEqual([]);
+  });
+
+  it("leaving the field saves it once, and the same title or an empty one is no rename", async () => {
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+
+    fireEvent.click(await renameItem());
+    let field = await titleField();
+    fireEvent.change(field, { target: { value: "   " } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull());
+    fireEvent.click(await renameItem());
+    field = await titleField();
+    fireEvent.change(field, { target: { value: "Implement the thing " } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull());
+    expect(calls.filter((c) => c.startsWith("PATCH"))).toEqual([]);
+
+    fireEvent.click(await renameItem());
+    field = await titleField();
+    fireEvent.change(field, { target: { value: "Fix the build" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.blur(field); // a field that is removed blurs: still one rename
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fix the build"),
+    );
+    expect(calls.filter((c) => c.startsWith("PATCH"))).toEqual([`PATCH /api/threads/${id} 200`]);
+  });
+
+  it("a refused rename says why, keeps the field and what was typed, and works once the server does", async () => {
+    const id = await makeThread("Implement the thing");
+    shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    failing = { key: `PATCH /api/threads/${id}`, status: 503, detail: "storage is unavailable" };
+    fireEvent.click(await renameItem());
+    const field = (await titleField()) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "Fix the build" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not rename the thread: storage is unavailable");
+    expect((await titleField()) as HTMLInputElement).toBe(field);
+    expect(field.value).toBe("Fix the build");
+    expect(screen.getByRole("heading", { level: 1, hidden: true }).textContent).toBe(
+      "Implement the thing",
+    );
+
+    failing = undefined;
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fix the build"),
+    );
+    expect(screen.queryByText(/Could not rename/)).toBeNull();
   });
 
   it("a refused export says why and downloads nothing", async () => {

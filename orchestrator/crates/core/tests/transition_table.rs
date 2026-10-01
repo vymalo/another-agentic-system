@@ -53,6 +53,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
+            | Command::SetTitle(_)
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -264,6 +265,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 hold: None,
                 catalog: catalog.clone(),
                 steps: steps_job.steps.clone(),
+                title: TitleLedger::default(),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -1053,6 +1055,7 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::RequestCancel { .. }
         | Command::Watch { .. }
         | Command::Schedule { .. }
+        | Command::SetTitle(_)
         | Command::RequestVerification { .. } => None,
     });
     let only = found.next().expect("a delegation");
@@ -1239,4 +1242,35 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             "{s:?}"
         );
     }
+}
+
+#[test]
+fn row16_a_rename_is_valid_in_every_state_and_changes_nothing_but_the_title() {
+    let rename = Input::Rename {
+        user: user(),
+        title: "Fix the build".into(),
+    };
+    for s in ALL {
+        let (next, cmds) = run(s, &rename);
+        assert_eq!(next, s, "{s:?}");
+        assert_eq!(
+            cmds,
+            vec![
+                Command::Append(EventDraft {
+                    actor: Actor::user(&user()),
+                    body: EventBody::ThreadTitled(ThreadTitledData {
+                        title: "Fix the build".into(),
+                        source: TitledBy::User,
+                    }),
+                }),
+                Command::SetTitle("Fix the build".into()),
+            ],
+            "{s:?}"
+        );
+    }
+    // being verified is a state of the thread as well
+    let (next, cmds) = run(Verifying, &rename);
+    assert_eq!(next, Verifying);
+    assert_eq!(cmds.len(), 2);
+    assert_eq!(rename.name(), "rename");
 }

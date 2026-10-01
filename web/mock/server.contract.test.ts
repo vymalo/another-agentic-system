@@ -109,6 +109,13 @@ const post = (p: string, body?: unknown) =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
+const patch = (p: string, body?: unknown) =>
+  fetch(base + p, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+
 let counter = 0;
 const newId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;
 
@@ -346,6 +353,103 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const res = await post(`/api/threads/${id}/cancel`);
     expect(res.status).toBe(404);
     await expectDocumented("/api/threads/{threadId}/cancel", "post", res);
+    const renamed = await patch(`/api/threads/${id}`, { title: "x" });
+    expect(renamed.status).toBe(404);
+    await expectDocumented("/api/threads/{threadId}", "patch", renamed);
+  });
+
+  it("rename (patchThread): the new title, a thread_titled event of the person, a snapshot on the stream", async () => {
+    const { threadId } = await startThread("echo");
+    await waitForState(threadId, ["done"]);
+    const res = await patch(`/api/threads/${threadId}`, { title: "  A better name  " });
+    expect(res.status).toBe(200);
+    const thread = (await expectDocumented("/api/threads/{threadId}", "patch", res)) as Thread;
+    expect(thread).toMatchObject({ id: threadId, title: "A better name", state: "done" });
+    const got = await fetch(`${base}/api/threads/${threadId}`);
+    expect(((await got.json()) as Thread).title).toBe("A better name");
+    const listed = (await (await fetch(`${base}/api/threads`)).json()) as Thread[];
+    expect(listed.find((t) => t.id === threadId)?.title).toBe("A better name");
+
+    const doc = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      events: { kind: string; actor: unknown; data: unknown }[];
+    };
+    const last = doc.events.at(-1);
+    expect(last).toMatchObject({
+      kind: "thread_titled",
+      actor: { type: "user" },
+      data: { title: "A better name", source: "user" },
+    });
+    // the same title again writes nothing
+    const again = await patch(`/api/threads/${threadId}`, { title: "A better name" });
+    expect(again.status).toBe(200);
+    const after = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      events: unknown[];
+    };
+    expect(after.events).toHaveLength(doc.events.length);
+
+    // a viewer that connects reads the new title, and the rename's own run holds only a snapshot
+    const list = await validated(
+      await frames(await connect(base, threadId, { mode: "run" })),
+      "replay",
+    );
+    const snapshots = list.filter((f) => f.event.type === "STATE_SNAPSHOT");
+    expect(
+      snapshots.every(
+        (f) => (f.event.snapshot as { thread: { title: string } }).thread.title === "A better name",
+      ),
+    ).toBe(true);
+    expect(types(list).slice(-3)).toEqual(["RUN_STARTED", "STATE_SNAPSHOT", "RUN_FINISHED"]);
+  });
+
+  it("rename while the run is open: a state snapshot on the open stream, no run of its own", async () => {
+    const { threadId } = await startThread("slow task", "reviewer");
+    await waitForState(threadId, ["working"]);
+    const stream = await connect(base, threadId);
+    expect(stream.status).toBe(200);
+    const res = await patch(`/api/threads/${threadId}`, { title: "Mid-run" });
+    expect(res.status).toBe(200);
+    const seen = await frames(
+      stream,
+      (f) =>
+        f.event.type === "STATE_SNAPSHOT" &&
+        (f.event.snapshot as { thread: { title: string } }).thread.title === "Mid-run",
+    );
+    const last = seen.at(-1);
+    expect(last?.id).toBeDefined();
+    expect(seen.filter((f) => f.event.type === "RUN_STARTED")).toHaveLength(1);
+  });
+
+  it("rename refuses what cannot be a title with a documented 400 and writes nothing", async () => {
+    const { threadId } = await startThread("echo");
+    await waitForState(threadId, ["done"]);
+    const before = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+    const bad: unknown[] = [
+      { title: "" },
+      { title: "   " },
+      { title: "two\nlines" },
+      { title: "x".repeat(201) },
+      { title: 3 },
+      { title: null },
+      {},
+      { title: "x", state: "done" },
+      ["title"],
+    ];
+    for (const body of bad) {
+      const res = await patch(`/api/threads/${threadId}`, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      await expectDocumented("/api/threads/{threadId}", "patch", res);
+    }
+    const notJson = await fetch(`${base}/api/threads/${threadId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    expect(notJson.status).toBe(400);
+    await expectDocumented("/api/threads/{threadId}", "patch", notJson);
+    const after = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+    expect(after).toEqual(before);
+    const fits = await patch(`/api/threads/${threadId}`, { title: "x".repeat(200) });
+    expect(fits.status).toBe(200);
   });
 
   it("export: the thread as a ThreadExport attachment, with its whole log", async () => {

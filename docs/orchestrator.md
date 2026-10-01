@@ -673,6 +673,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
 | `CancelledBeforeStart` | → `cancelled`; `thread_state` | → `cancelled` | No-op |
 | `CancelRejected` | State kept; append `error` | Same | No-op |
+| `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
 
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
 `cancelled`; entering `queued` or `working` is implied by `user_message` and `agent_status`. The
@@ -695,6 +696,7 @@ starts job *n+1*. `Job::next()` keeps the gate and the verification count and re
 | `attempt` | 1 |
 | `task` | the new message |
 | `catalog` | kept: the UI catalogs the conversation has seen belong to it, not to a job ([ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
+| `title` | kept: whose title the thread has (the first message's words, or a person's) belongs to the conversation, not to a job |
 | `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps` | cleared |
 
 A late agent update, timer, verdict or CI report for a finished thread is still dropped (a CI report keeps its
@@ -1327,7 +1329,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1382,6 +1384,10 @@ so that parallel slices do not collide:
 - **`0007` (steps, built):** `events.kind` gains `agent_step` ([ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md)).
   The ledger of open steps lives inside `threads.job` (`steps`; a ledger without it has none open), so no column is
   added.
+- **`0008` (thread titles, built):** `events.kind` gains `thread_titled` (a person renamed the thread). The title is
+  written to `threads.title` in the commit of the event that says so (`Commit.title`, `COALESCE`d: a commit without
+  one leaves it), and whose title the thread has lives inside `threads.job` (`title`; a ledger without it has the
+  first message's words), so no column is added.
 
 ```mermaid
 erDiagram

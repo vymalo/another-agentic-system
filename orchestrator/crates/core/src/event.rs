@@ -6,6 +6,7 @@ use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::step::AgentStepData;
 use crate::thread::ThreadState;
+use crate::title::ThreadTitledData;
 use crate::ui::{UiActionData, UiSurfaceData};
 use crate::ui_catalog::UiCatalogData;
 
@@ -41,6 +42,8 @@ pub enum EventKind {
     UiCatalog,
     /// A step of the agent's work started, moved or ended (ADR 0025).
     AgentStep,
+    /// The thread has a new title: a person renamed it.
+    ThreadTitled,
 }
 
 impl EventKind {
@@ -61,6 +64,7 @@ impl EventKind {
             EventKind::JobStarted => "job_started",
             EventKind::UiCatalog => "ui_catalog",
             EventKind::AgentStep => "agent_step",
+            EventKind::ThreadTitled => "thread_titled",
         }
     }
 }
@@ -300,6 +304,8 @@ pub enum EventBody {
     UiCatalog(UiCatalogData),
     /// See [`AgentStepData`].
     AgentStep(AgentStepData),
+    /// See [`ThreadTitledData`].
+    ThreadTitled(ThreadTitledData),
 }
 
 impl EventBody {
@@ -320,6 +326,7 @@ impl EventBody {
             EventBody::JobStarted(_) => EventKind::JobStarted,
             EventBody::UiCatalog(_) => EventKind::UiCatalog,
             EventBody::AgentStep(_) => EventKind::AgentStep,
+            EventBody::ThreadTitled(_) => EventKind::ThreadTitled,
         }
     }
 
@@ -340,6 +347,7 @@ impl EventBody {
             EventBody::JobStarted(d) => serde_json::to_value(d),
             EventBody::UiCatalog(d) => serde_json::to_value(d),
             EventBody::AgentStep(d) => serde_json::to_value(d),
+            EventBody::ThreadTitled(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -362,6 +370,7 @@ impl EventBody {
             EventKind::JobStarted => EventBody::JobStarted(serde_json::from_value(data)?),
             EventKind::UiCatalog => EventBody::UiCatalog(serde_json::from_value(data)?),
             EventKind::AgentStep => EventBody::AgentStep(serde_json::from_value(data)?),
+            EventKind::ThreadTitled => EventBody::ThreadTitled(serde_json::from_value(data)?),
         })
     }
 }

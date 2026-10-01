@@ -49,8 +49,8 @@ use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
     ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody,
     GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData, StepKind,
-    StepPhase, SurfaceOp, ThreadId, ThreadState, UiActionData, UiCatalogLedger, UiSurfaceData,
-    UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
+    StepPhase, SurfaceOp, ThreadId, ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger,
+    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -486,6 +486,12 @@ impl Projector {
                 self.pending_error = pending_error;
             }
             EventBody::AgentStep(d) => self.on_agent_step(event, d, &mut out),
+            // Like the catalog, not part of the transcript; unlike it, the screen is told: the
+            // title is part of every `STATE_SNAPSHOT`.
+            EventBody::ThreadTitled(d) => {
+                self.on_thread_titled(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -851,6 +857,26 @@ impl Projector {
             }
         }
         if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The thread has a new title (a person renamed it). The title is part of the thread in every
+    /// `STATE_SNAPSHOT`, so the event is said as one. Inside a run: a `STATE_SNAPSHOT` with the new
+    /// title. Outside any run, with the thread idle or finished: a producer-initiated run of its
+    /// own that holds that snapshot and ends at once (`RUN_STARTED`, `STATE_SNAPSHOT`,
+    /// `RUN_FINISHED` or what the thread's state closes a run with), which a client that has
+    /// nothing else to show for it drops. Outside a run with the thread active (its run closed
+    /// early): the run opens, as it does for any event of an active thread.
+    fn on_thread_titled(&mut self, ev: &Event, d: &ThreadTitledData, out: &mut Vec<agui::Event>) {
+        self.meta.title.clone_from(&d.title);
+        if self.run.is_some() {
+            out.push(self.state_snapshot());
+        } else if is_active(self.state) {
+            self.open_run(format!("run-{}", ev.seq), true, out);
+        } else {
+            self.open_run(format!("run-{}", ev.seq), false, out);
+            // the closing snapshot says the new title
             self.settle(ev, out);
         }
     }

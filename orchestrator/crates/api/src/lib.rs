@@ -188,7 +188,10 @@ pub fn router_with_surfaces<P: Ports>(
     let resource = Router::new()
         .route("/api/agents", get(routes::list_agents::<P>))
         .route("/api/threads", get(routes::list_threads::<P>))
-        .route("/api/threads/{thread_id}", get(routes::get_thread::<P>))
+        .route(
+            "/api/threads/{thread_id}",
+            get(routes::get_thread::<P>).patch(routes::patch_thread::<P>),
+        )
         .route(
             "/api/threads/{thread_id}/export",
             get(routes::export_thread::<P>),

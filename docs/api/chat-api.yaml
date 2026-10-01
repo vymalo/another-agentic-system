@@ -92,6 +92,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
         "404": { $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: patchThread
+      summary: Rename a thread
+      description: |
+        Gives the thread a new title, in any state of the thread, finished ones included (the title
+        labels the conversation, not a job). The title is trimmed, then must be one line of 1 to
+        200 characters with no control character. A rename is logged as a `thread_titled` event
+        (`source: user`) and is final: nothing else replaces a title a person wrote. Renaming to
+        the title the thread has from the person already writes nothing. A member other than
+        `title` is a 400, so that a client that thinks it can change more learns it cannot. The
+        caller's own threads only: someone else's is a 404 indistinguishable from one that does not
+        exist. Everything else about the thread is as `getThread` says.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ThreadPatch" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The thread, with its new title
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/export:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -311,9 +337,11 @@ components:
             and the newest ones are kept, and a line `[… earlier messages omitted …]` stands for
             the ones left out), `branchProblem` (why the agent's last `branch` artifact could not
             be used, when it could not), `summary`, `pushed` (`repository`, `branch`, `commit`),
-            `results` (what each source said in the current attempt) and `hold`. The members
+            `results` (what each source said in the current attempt), `hold` and `title` (whose title
+            the thread has: `{"source": "user"}` once a person renamed it, absent while it has the
+            first message's words). The members
             of the job itself that are empty (`task`, `branchProblem`, `summary`, `pushed`,
-            `results`, `hold`) are absent; `gate` is always whole, and its `verifier` is `null`
+            `results`, `hold`, `title`) are absent; `gate` is always whole, and its `verifier` is `null`
             when there is none.
         binding:
           type: [object, "null"]
@@ -373,6 +401,16 @@ components:
         agent ran itself (its `checks` artifact), or a second agent that reviews the commit. A
         build honours only some of them; configuration spells them `ci`, `agent-checks` and
         `verifier`.
+    ThreadPatch:
+      type: object
+      required: [title]
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "The new title: one line, no control character. Spaces around it are cut before the length is checked."
     Event:
       type: object
       required: [seq, threadId, at, kind, actor, data]
@@ -402,6 +440,7 @@ components:
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
         - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. Additive.
+        - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`; `model` is for a title the orchestrator wrote and is not logged yet); attributed to the person. `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
     Actor:
       type: object
       required: [type, name]
@@ -472,7 +511,15 @@ components:
           additionalProperties: true
           description: "ui_catalog only: the catalog, `{catalogId, components: {<Name>: <JSON Schema of the component>}}`: an A2UI inline catalog, at most 64 KiB and 64 components, with no `$ref`, `$id`, `$anchor` or `$schema` and only integer numbers. Stored, relayed to agents, never interpreted by the orchestrator."
         source:
-          $ref: "#/components/schemas/CheckSource"
+          description: "check_result: the source that answered. thread_titled: who wrote the title (a person, or the model)."
+          anyOf:
+            - { $ref: "#/components/schemas/CheckSource" }
+            - { type: string, enum: [model, user] }
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "thread_titled only: the thread's new title."
         job:
           type: integer
           minimum: 2

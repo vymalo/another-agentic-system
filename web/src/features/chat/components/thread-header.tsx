@@ -1,9 +1,11 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { InlineStatus } from "@/components/inline-status";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentMenu } from "@/features/agents/components/agent-menu";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
 import { useExportThread } from "@/features/chat/hooks/use-export-thread";
+import { type ThreadRenamer, useRenameThread } from "@/features/chat/hooks/use-rename-thread";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
@@ -20,14 +22,56 @@ type Props = {
   waiting: boolean;
   /** The sidebar controls in front of the picker (open the sidebar, the sheet on a phone). */
   leading?: ReactNode;
+  /** The server renamed the thread: here it is, so the title is not stale until the next fetch. */
+  onRenamed: (thread: ApiThread) => void;
 };
+
+/** The title as a field while it is renamed: Enter or leaving it saves, Escape gives it up. */
+function TitleField({ renamer, current }: { renamer: ThreadRenamer; current: string }) {
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      renamer.save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      renamer.cancel();
+    }
+  };
+  return (
+    <>
+      {/* the page keeps its heading while the field is open */}
+      <h1 className="sr-only">{current}</h1>
+      <Input
+        ref={renamer.field}
+        value={renamer.draft ?? ""}
+        onChange={(event) => renamer.change(event.target.value)}
+        onKeyDown={onKeyDown}
+        onBlur={renamer.save}
+        maxLength={200}
+        disabled={renamer.saving}
+        aria-label="Thread title"
+        aria-invalid={renamer.error !== null}
+        className="h-8 max-w-md text-[0.9375rem]"
+      />
+    </>
+  );
+}
 
 /**
  * The top bar of a thread: the agent picker (a menu, like a model picker), the title, the state,
  * and the overflow menu. The title is the page's heading; below `md` it is for screen readers only.
  */
-export function ThreadHeader({ thread, agents, state, connection, waiting, leading }: Props) {
+export function ThreadHeader({
+  thread,
+  agents,
+  state,
+  connection,
+  waiting,
+  leading,
+  onRenamed,
+}: Props) {
   const exporter = useExportThread(thread?.id ?? null);
+  const renamer = useRenameThread(thread, onRenamed);
   return (
     <>
       <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
@@ -41,7 +85,9 @@ export function ThreadHeader({ thread, agents, state, connection, waiting, leadi
           }}
         />
         <div className="flex min-w-0 flex-1 items-center ps-2">
-          {thread ? (
+          {thread && renamer.draft !== null ? (
+            <TitleField renamer={renamer} current={thread.title} />
+          ) : thread ? (
             <h1
               className="min-w-0 truncate text-[0.9375rem] text-muted-foreground max-md:sr-only"
               title={thread.title}
@@ -67,10 +113,17 @@ export function ThreadHeader({ thread, agents, state, connection, waiting, leadi
           <StateBadge state={state} needsAnswer={waiting} />
           <div className="flex items-center">
             <PanelToggle />
-            <ThreadMenu exporter={exporter} disabled={thread === null} />
+            <ThreadMenu exporter={exporter} renamer={renamer} disabled={thread === null} />
           </div>
         </div>
       </header>
+      {renamer.error ? (
+        <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+          <InlineStatus tone="error" role="alert">
+            Could not rename the thread: {renamer.error}
+          </InlineStatus>
+        </div>
+      ) : null}
       {exporter.error ? (
         <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
           <InlineStatus tone="error" role="alert">

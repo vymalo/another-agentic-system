@@ -155,6 +155,10 @@ pub enum Action {
         state: u8,
         by_orchestrator: bool,
     },
+    /// The user renames the thread to `title <n>`, in any state.
+    Rename {
+        n: u8,
+    },
 }
 
 /// Step kind `n % 4`; sub-agent steps are the interesting ones.
@@ -261,6 +265,7 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
                 conclusion: if ok { CiConclusion::Success } else { CiConclusion::Failure },
             }
         ),
+        2 => (0u8..4).prop_map(|n| Action::Rename { n }),
         10 => (0u8..5, proptest::option::of(0u8..5), 0u8..4, 0u8..5, any::<bool>()).prop_map(
             |(id, parent, kind, state, by_orchestrator)| Action::Step {
                 id,
@@ -475,6 +480,10 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     agent_input(AgentUpdate::Step(report))
                 }
             }
+            Action::Rename { n } => Input::Rename {
+                user: user.clone(),
+                title: format!("title {n}"),
+            },
             Action::UiAct { ids } => {
                 users += 1;
                 Input::UiAction {

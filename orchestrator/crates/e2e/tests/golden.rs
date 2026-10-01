@@ -196,6 +196,20 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(event["kind"], "user_message");
             (id, "done")
         }
+        // A person renames the thread (`patchThread`): once while it works (the title is the
+        // person's from then on), once more after it is done. The log says who wrote each.
+        "title" => {
+            let id = chat.seed_thread("plain", "slow work", None).await;
+            chat.wait_state(&id, "working").await;
+            let (status, thread) = chat.rename(&id, "Fix the login").await;
+            assert_eq!(status, 200, "{thread}");
+            assert_eq!(thread["title"], "Fix the login");
+            assert_eq!(chat.cancel(&id).await, 202);
+            chat.wait_state(&id, "cancelled").await;
+            let (status, thread) = chat.rename(&id, "Fix the login page").await;
+            assert_eq!(status, 200, "{thread}");
+            (id, "cancelled")
+        }
         // The UI's catalog (ADR 0023), through the AG-UI run route, which is the only door a
         // catalog has: the first run of the thread carries version 1; the next job, a message
         // on the finished thread, version 2; the third job version 1 again, from an older
@@ -233,7 +247,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 17] = [
+const SCENARIOS: [&str; 18] = [
     "echo",
     "ask",
     "cancel",
@@ -251,6 +265,7 @@ const SCENARIOS: [&str; 17] = [
     "catalog",
     "steps",
     "steps-ask",
+    "title",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.

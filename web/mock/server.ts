@@ -1,6 +1,6 @@
 /**
  * A small stateful mock of the orchestrator for `pnpm dev:mock` and the e2e tests: the REST
- * resource API of docs/api/chat-api.yaml (agents, threads, cancel) and the AG-UI operations
+ * resource API of docs/api/chat-api.yaml (agents, threads, rename, cancel) and the AG-UI operations
  * (`POST /agui/agents/{agentId}`, `GET /agui/threads/{id}/connect`, capabilities).
  *
  * It is typed from the generated contract types and checked against the contract by
@@ -414,10 +414,53 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const thread = threads.get(id);
       if (!thread) return problem(res, 404, "Thread not found");
       if (!sub && method === "GET") return sendJson(res, 200, viewOf(thread));
+      if (!sub && method === "PATCH") return renameThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
       if (sub === "export" && method === "GET") return exportThread(res, thread);
     }
     return problem(res, 404, "Not found");
+  }
+
+  /**
+   * `PATCH /api/threads/{id}` (`patchThread`): a person renames the thread, in any state. The body
+   * is `{title}` and nothing else; the title is trimmed and is one line of 1 to 200 characters. A
+   * rename is a `thread_titled` event of the person and the thread's new title; the same title
+   * again, once a person has written it, writes nothing.
+   */
+  async function renameThread(req: http.IncomingMessage, res: http.ServerResponse, thread: Thread) {
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch {
+      return problem(res, 400, "Bad Request", "the body is not JSON");
+    }
+    if (!isRecord(body)) return problem(res, 400, "Bad Request", "the body must be an object");
+    const unknown = Object.keys(body).find((k) => k !== "title");
+    if (unknown !== undefined) {
+      return problem(res, 400, "Bad Request", `unknown member \`${unknown}\``);
+    }
+    if (typeof body.title !== "string") {
+      return problem(res, 400, "Bad Request", "`title` must be a string");
+    }
+    const title = body.title.trim();
+    if (title === "") return problem(res, 400, "Bad Request", "the title is empty");
+    if (/\p{Cc}/u.test(title)) {
+      return problem(res, 400, "Bad Request", "the title has a control character");
+    }
+    if ([...title].length > 200) {
+      return problem(res, 400, "Bad Request", "the title is longer than 200 characters");
+    }
+    const written = (events.get(thread.id) ?? []).some((e) => e.kind === "thread_titled");
+    if (!(written && thread.title === title)) {
+      thread.title = title;
+      append(
+        thread.id,
+        "thread_titled",
+        { type: "user", name: DEV_USER },
+        { title, source: "user" },
+      );
+    }
+    return sendJson(res, 200, viewOf(thread));
   }
 
   /** `GET /api/threads/{id}/export`: the thread, its job, its binding and its whole log, as a file. */

@@ -126,6 +126,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
+            | Command::SetTitle(_)
             | Command::RequestVerification { .. } => None,
         })
         .collect()
