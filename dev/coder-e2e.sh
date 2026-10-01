@@ -32,6 +32,16 @@
 #     for a mismatch of repository spelling or commit);
 #   * the thread exports (dev/export-thread.sh, GET /api/threads/{id}/export): a version 1 `thread-export` whose
 #     job holds the pushed commit and the agent's checks passed on it, and whose log is not empty;
+#   * the coder's work is a tree of steps (`steps/v1`, adam-rs e1d77be; docs/api/agui.md, "Nested steps"): the calls of
+#     prepare_workspace, run_checks, commit_and_push and open_pull_request are `vymalo.step` activities, `delegate_to_opencode` is a
+#     sub-agent step labelled OpenCode (a SUBAGENT_STARTED inside the coder's invocation, ended completed, finished once after its
+#     last step) with at least one command or tool step running under it (OpenCode's own bash call), and the log keeps no more than
+#     6 `agent_step` events of any one step (a start, at most four updates, an end). With NO_OPENCODE=1 there is no OpenCode step;
+#   * the coder's answer is shown as it is written (`text-stream/v1`, adam-rs cf6ddbb; docs/api/agui.md, "Live text"): on the run
+#     stream an assistant message marked `metadata["vymalo.live"]` opens, grows in at least two live deltas from offset 0, and the log's
+#     final message completes the SAME message id (one START, the live deltas, the final delta, one END); what the deltas say, read by
+#     offset, is the text of the one final agent_message of the log, which starts with "Opened the pull request"; a connection opened
+#     after the run (the replay) reads that message once, plain, with no live frame; no artifact is named `reply`;
 #   * mock-github saw exactly one POST /repos/local/sandbox/pulls, head = the branch, base = main;
 #   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
 #   * git-server has the branch, and hello.txt on it is `hello`.
@@ -265,6 +275,162 @@ if BASE_URL=$base AUTH_EMAIL=$email sh "$root/dev/export-thread.sh" "$thread" "$
 else
   bad "dev/export-thread.sh failed: $(head -c 300 "$tmp/export.err")"
 fi
+
+# --- nested steps: the coder's work as a tree (steps/v1, adam-rs e1d77be) --------------------------------------------
+# The orchestrator activates `steps/v1` (the coder's card lists it, read at every send), so what the coder did arrives as
+# agent_step events that carry their path, not as a flood of status lines: every tool call is a step, `delegate_to_opencode` is a
+# sub-agent step labelled OpenCode, and what OpenCode did under it (its bash command, its summary) are steps that run under that
+# one. The projection draws the tree with AG-UI's subagents (SUBAGENT_STARTED, nested by parentSubagentRunId) and one
+# `vymalo.step` activity per step (docs/api/agui.md, "Nested steps"; the golden docs/api/examples/agui/steps.agui.json), and the log
+# keeps a bounded number of reports per step: the start, at most four updates and the end (docs/api/steps-v1.md). The frames are the
+# thread's replay ($events), the log is the export.
+# shellcheck disable=SC2016 # jq's own variables, not the shell's
+steps_def='def steps: .[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.step"); def under($id): (.content.path // []) | any(. == $id); '
+top_tools=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and ((.content.path // []) | length) == 0) | .content.label] | unique | join(" ")' "$events" 2>/dev/null || true)
+for tool in prepare_workspace run_checks commit_and_push open_pull_request; do
+  case " $top_tools " in
+    *" $tool "*) ok "steps: the call of $tool is a step of its own (vymalo.step, kind tool, at the top)" ;;
+    *) bad "steps: no vymalo.step for the call of $tool (top-level tool steps: ${top_tools:-none}); does the coder's card list steps/v1?" ;;
+  esac
+done
+opencode_ids=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and .content.label == "OpenCode") | .content.id] | unique | join(" ")' "$events" 2>/dev/null || true)
+oid=
+if [ "${NO_OPENCODE:-}" = 1 ]; then
+  if [ -z "$opencode_ids" ]; then
+    ok "steps: no OpenCode step ([mock:no-opencode]: OpenCode is not started)"
+  else
+    bad "steps: an OpenCode step ($opencode_ids) although OpenCode is not started"
+  fi
+else
+  case $opencode_ids in
+    '') bad "steps: no sub-agent step labelled OpenCode among the thread's vymalo.step activities" ;;
+    *' '*) bad "steps: several OpenCode steps ($opencode_ids), the script delegates once" ;;
+    *)
+      oid=$opencode_ids
+      ok "steps: one sub-agent step labelled OpenCode ($oid)"
+      oc_state=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(.content.id == $id) | .content.state] | last // empty' "$events" 2>/dev/null || true)
+      if [ "$oc_state" = completed ]; then ok "steps: the OpenCode step ended completed"; else bad "steps: the OpenCode step ended '${oc_state:-none}', want completed"; fi
+      # What runs under it: the activities whose path holds its id, one line per step.
+      children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id))] | group_by(.content.id) | map(.[0].content | "\(.kind):\(.label)") | join(" | ")' "$events" 2>/dev/null || true)
+      n_children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id)) | .content.id] | unique | length' "$events" 2>/dev/null || echo 0)
+      if [ "${n_children:-0}" -ge 1 ]; then
+        ok "steps: $n_children step(s) run under OpenCode: $children"
+      else
+        bad "steps: nothing runs under the OpenCode step (no vymalo.step whose path holds $oid)"
+      fi
+      tool_children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id) and (.content.kind == "command" or .content.kind == "tool")) | .content.id] | unique | length' "$events" 2>/dev/null || echo 0)
+      if [ "${tool_children:-0}" -ge 1 ]; then ok "steps: OpenCode's own tool call is one of them (a command or tool step under it)"; else bad "steps: no command or tool step under OpenCode (children: ${children:-none})"; fi
+      # The tree in subagents: OpenCode is a subagent of the coder's invocation, its steps carry its own subagentRunId, and it ends once.
+      sub=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "OpenCode")] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
+      parent=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "OpenCode")] | first | .parentSubagentRunId // empty' "$events" 2>/dev/null || true)
+      invocation=$(jq -r --arg a "$agent_id" '[.[] | select(.type == "SUBAGENT_STARTED" and .name == $a and (.parentSubagentRunId == null))] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
+      if [ -n "$sub" ] && [ -n "$parent" ] && [ "$parent" = "$invocation" ]; then
+        ok "steps: OpenCode is a subagent ($sub) of the $agent_id invocation ($invocation)"
+      else
+        bad "steps: SUBAGENT_STARTED OpenCode is '${sub:-none}' in '${parent:-none}', want it inside the $agent_id invocation '${invocation:-none}'"
+      fi
+      own=$(jq -r --arg id "$oid" --arg sub "$sub" "$steps_def"'[steps | select(under($id)) | .subagentRunId] | unique | if . == [$sub] then "yes" else "no: \(tostring)" end' "$events" 2>/dev/null || true)
+      if [ -n "$sub" ] && [ "$own" = yes ]; then ok "steps: the steps under OpenCode are attributed to its subagent"; else bad "steps: the steps under OpenCode carry the subagentRunId $own, want $sub"; fi
+      # It ends once, after its last step, and not as an error.
+      closing=$(jq -r --arg sub "$sub" 'to_entries as $e
+        | ([$e[] | select(.value.type == "SUBAGENT_FINISHED" and .value.subagentRunId == $sub)] | map(.key)) as $fin
+        | ([$e[] | select(.value.type == "SUBAGENT_ERROR" and .value.subagentRunId == $sub)] | length) as $err
+        | ([$e[] | select(.value.type == "ACTIVITY_SNAPSHOT" and .value.activityType == "vymalo.step" and .value.subagentRunId == $sub)] | map(.key) | max // -1) as $lastchild
+        | "\($fin | length) \($err) \($lastchild) \($fin | first // -1)"' "$events" 2>/dev/null || true)
+      # closing = <SUBAGENT_FINISHED count> <SUBAGENT_ERROR count> <frame of its last step> <frame of its SUBAGENT_FINISHED>
+      # shellcheck disable=SC2086 # four numbers, split on purpose
+      set -- $closing
+      if [ "$#" = 4 ] && [ "$1" = 1 ] && [ "$2" = 0 ] && [ "$3" -ge 0 ] && [ "$4" -gt "$3" ]; then
+        ok "steps: the OpenCode subagent finished once, after its last step"
+      else
+        bad "steps: the OpenCode subagent: '${closing:-nothing}' (finished, errors, last step frame, finished at frame), want 1 0 and a finish after the last step"
+      fi
+      ;;
+  esac
+fi
+# The log: the same tree, bounded (a retry would start a step again, and the script has none).
+if [ -s "$tmp/export.json" ]; then
+  logged=$(jq -r '[.events[] | select(.kind == "agent_step")] | length' "$tmp/export.json" 2>/dev/null || echo 0)
+  most=$(jq -r '[.events[] | select(.kind == "agent_step") | .data.id] | group_by(.) | map(length) | max // 0' "$tmp/export.json" 2>/dev/null || echo 99)
+  if [ "${logged:-0}" -ge 1 ] && [ "$most" -le 6 ]; then
+    ok "steps: the log holds $logged agent_step events and no step has more than $most of them (a start, at most four updates, an end: at most 6)"
+  else
+    bad "steps: the log holds ${logged:-0} agent_step events and one step has $most, want some, and at most 6 of any one step"
+  fi
+  if [ -n "$oid" ]; then
+    shape=$(jq -r --arg id "$oid" '[.events[] | select(.kind == "agent_step" and .data.id == $id) | .data.phase] | "\(first // "none")..\(last // "none")"' "$tmp/export.json" 2>/dev/null || true)
+    in_log=$(jq -r --arg id "$oid" '[.events[] | select(.kind == "agent_step" and (.data.path | any(. == $id))) | .data.id] | unique | length' "$tmp/export.json" 2>/dev/null || echo 0)
+    if [ "$shape" = start..end ] && [ "${in_log:-0}" -ge 1 ]; then
+      ok "steps: the log has the OpenCode step from its start to its end, and $in_log step(s) whose path holds it"
+    else
+      bad "steps: in the log the OpenCode step runs '$shape' with $in_log step(s) under it, want start..end and at least one"
+    fi
+  fi
+else
+  bad "steps: no export to read the log's agent_step events from"
+fi
+
+# --- the answer, as it was written (text-stream/v1, adam-rs cf6ddbb) ----------------------------------------------------
+# The coder streams its model calls and the orchestrator activates `text-stream/v1` (the card lists it), so the last answer
+# reaches the run stream while it is written: TEXT_MESSAGE_* frames marked metadata["vymalo.live"] (docs/api/agui.md, "Live
+# text"; the golden docs/api/examples/agui/stream.agui.json), and then the log's message, final, completes the SAME message id.
+# The pieces are never in the log, so they are in the run stream, not in the replay ($events): the replay holds the message once,
+# plain. The script's last answer is a text the mock model dribbles over about two seconds, so it comes in several pieces.
+# `reading` is how a client keeps a message: a live delta continues from its offset (UTF-16 code units; the mock's words are ASCII,
+# so they are jq's string positions), any other delta is appended.
+# shellcheck disable=SC2016 # jq's own variables, not the shell's
+reading='reduce (.[] | select(.type == "TEXT_MESSAGE_CONTENT" and .messageId == $id)) as $c ("";
+  (if $c.metadata["vymalo.live"].offset != null then .[0:$c.metadata["vymalo.live"].offset] else . end) + $c.delta)'
+run_frames=$tmp/run-frames.json
+sse_events "$tmp/run.sse" | jq -s '.' > "$run_frames" 2>/dev/null || echo '[]' > "$run_frames"
+live_id=$(jq -r '[.[] | select(.type == "TEXT_MESSAGE_START" and .role == "assistant" and .metadata["vymalo.live"] != null) | .messageId] | last // empty' "$run_frames" 2>/dev/null || true)
+if [ -z "$live_id" ]; then
+  bad "live text: no assistant message marked vymalo.live on the run stream: the coder's answer was not shown as it was written (does its card list text-stream/v1? frames: $(jq -c '[.[].type] | group_by(.) | map("\(.[0]) \(length)")' "$run_frames" 2>/dev/null | head -c 400))"
+else
+  ok "live text: the run stream opened a live message ($live_id)"
+  shape=$(jq -r --arg id "$live_id" '[.[] | select(.messageId == $id and (.type | startswith("TEXT_MESSAGE_"))) | if .type == "TEXT_MESSAGE_START" then "S" elif .type == "TEXT_MESSAGE_END" then "E" elif (.metadata["vymalo.live"].final // false) then "F" else "c" end] | join("")' "$run_frames" 2>/dev/null || true)
+  pieces=$(printf '%s' "$shape" | tr -cd c | wc -c | tr -d ' ')
+  if [ "$pieces" -ge 2 ]; then ok "live text: the answer grew in $pieces live deltas"; else bad "live text: the answer came in $pieces live delta(s) (frames: $shape), want at least 2"; fi
+  if printf '%s' "$shape" | grep -Eq '^Sc+FE$'; then
+    ok "live text: one START, the live deltas, then the log's final delta and one END, all under the same message id"
+  else
+    bad "live text: the frames of the message are '$shape', want one START (S), the live deltas (c), the final delta (F) and one END (E): ScccFE"
+  fi
+  first_offset=$(jq -r --arg id "$live_id" '[.[] | select(.type == "TEXT_MESSAGE_CONTENT" and .messageId == $id and .metadata["vymalo.live"] != null)] | first | .metadata["vymalo.live"].offset // "none"' "$run_frames" 2>/dev/null || true)
+  if [ "$first_offset" = 0 ]; then ok "live text: the first piece begins at offset 0"; else bad "live text: the first piece begins at offset '$first_offset', want 0"; fi
+  read_live=$(jq -r --arg id "$live_id" "$reading" "$run_frames" 2>/dev/null || true)
+  final_text=
+  if [ -s "$tmp/export.json" ]; then
+    final_text=$(jq -r --arg id "$live_id" '[.events[] | select(.kind == "agent_message" and .data.messageId == $id and .data.final == true) | .data.text] | first // empty' "$tmp/export.json" 2>/dev/null || true)
+    finals=$(jq -r --arg id "$live_id" '[.events[] | select(.kind == "agent_message" and .data.messageId == $id and .data.final == true)] | length' "$tmp/export.json" 2>/dev/null || echo '?')
+    partials=$(jq -r '[.events[] | select(.kind == "agent_message" and .data.final == false)] | length' "$tmp/export.json" 2>/dev/null || echo '?')
+    if [ "$finals" = 1 ] && [ "$partials" = 0 ]; then
+      ok "live text: the log holds the answer once, as one final agent_message under the live message's id, and no partial one"
+    else
+      bad "live text: the log holds $finals final agent_message(s) under $live_id and $partials partial one(s), want 1 and 0"
+    fi
+  fi
+  case $final_text in
+    "Opened the pull request"*) ok "live text: the log's text is the coder's answer: $final_text" ;;
+    *) bad "live text: the log's text under $live_id is '$final_text', want the coder's answer (Opened the pull request ...)" ;;
+  esac
+  if [ -n "$final_text" ] && [ "$read_live" = "$final_text" ]; then
+    ok "live text: the deltas read by offset, then completed by the log's message, are the logged text"
+  else
+    bad "live text: the run stream reads '$read_live', the log says '$final_text'"
+  fi
+  replay_live=$(jq -r '[.[] | select(.metadata["vymalo.live"] != null)] | length' "$events" 2>/dev/null || echo '?')
+  replay_starts=$(jq -r --arg id "$live_id" '[.[] | select(.type == "TEXT_MESSAGE_START" and .messageId == $id)] | length' "$events" 2>/dev/null || echo '?')
+  read_replay=$(jq -r --arg id "$live_id" "$reading" "$events" 2>/dev/null || true)
+  if [ "$replay_live" = 0 ] && [ "$replay_starts" = 1 ] && [ "$read_replay" = "$final_text" ]; then
+    ok "live text: a connection opened after the run reads the answer once, plain, with no live frame"
+  else
+    bad "live text: the replay holds $replay_live live frame(s), starts the answer $replay_starts time(s) and reads '$read_replay', want 0, 1 and '$final_text'"
+  fi
+fi
+# The chunks the agent sends are not a tool's artifact: they are the live words, and neither the run nor the replay shows one.
+reply_artifacts=$(jq -s '[.[][] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.artifact" and .content.name == "reply")] | length' "$run_frames" "$events" 2>/dev/null || echo '?')
+if [ "$reply_artifacts" = 0 ]; then ok "live text: no artifact named reply (the chunks are live words, not an artifact)"; else bad "live text: $reply_artifacts vymalo.artifact(s) named reply, want none"; fi
 
 # --- mock-github's journal ------------------------------------------------------------------
 found=$tmp/found.json

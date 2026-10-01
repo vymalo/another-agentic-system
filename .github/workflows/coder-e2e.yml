@@ -121,7 +121,8 @@ jobs:
         # searches the mock web search and answers with one surface of a Text, three cards and a Mermaid graph (dev/cards-e2e.sh; a screen
         # without Cards gets words only), the orchestrator's own model call (dev/title-e2e.sh: a thread is titled by `mock-title` after the agent's
         # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), chat -> coder ->
-        # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone), red once -> sent back -> green and red always -> failed (the mock
+        # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone; the coder's work as a tree of steps with OpenCode a
+        # sub-agent step, and its answer shown live, then completed by the log's message), red once -> sent back -> green and red always -> failed (the mock
         # agent behind `mock-coder-gated`, which a run may not weaken), the verifier's findings -> rework -> pass
         # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
         # agent back and then ends the job (`mock-coder-ci`, dev/ci-webhook.sh through the edge's /webhooks/*), and, last, the

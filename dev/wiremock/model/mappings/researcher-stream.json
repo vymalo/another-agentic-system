@@ -1,0 +1,144 @@
+{
+  "mappings": [
+    {
+      "name": "researcher script: the search results hold no link, say that no source was found (stream)",
+      "priority": -1,
+      "metadata": {
+        "twinOf": "researcher script: the search results hold no link, say that no source was found"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.messages[-1].content",
+              "doesNotMatch": "(?s).*https://.*"
+            }
+          },
+          {
+            "doesNotContain": "[mock:cards]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I searched \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"the web \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"for you, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"but I \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"did not \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"find a \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"source to \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"give you.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-no-source\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    },
+    {
+      "name": "researcher script: the search results are in, answer with the first source (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "researcher script: the search results are in, answer with the first source"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "doesNotContain": "[mock:cards]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I searched \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"the web \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"for you. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The best \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"source I \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"found is \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{{regexExtract (jsonPath request.body '$.messages[-1].content') 'https://[A-Za-z0-9./_-]+'}}.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    },
+    {
+      "name": "researcher script: search the web for the person's words (stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "researcher script: search the web for the person's words"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "doesNotContain": "[mock:cards]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"researcher-call-1\",\"type\":\"function\",\"function\":{\"name\":\"search__web_search\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"query\\\":\\\"{{regexExtract (jsonPath request.body '$.messages[-1].content') '[A-Za-z0-9 ]{1,60}'}}\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-script-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    }
+  ]
+}

@@ -65,7 +65,8 @@ In http://git-server:8080/local/sandbox.git (base branch main), add hello.txt co
 The scripted model always does the same job (clone `local/sandbox.git`, write `hello.txt`, push a branch, open a
 pull request on the mock GitHub); the text only has to name the seeded repository. What you see, in order:
 
-1. **Working**, with the coder's status lines and its artifacts as cards: the coder's `checks` (twice: the run
+1. **Working**, with the coder's work as steps in the side panel (one for each tool call, and OpenCode's own under the step labelled OpenCode:
+   [Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) and its artifacts as cards: the coder's `checks` (twice: the run
    of the checks, then the same result bound to the commit it pushed), the `branch` it pushed and the `pull_request` it
    opened (JSON, not a link).
 2. The pill turns to **Checking the work…**: the coder is gated on two things, its own checks and CI
@@ -130,8 +131,8 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
 | `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
-| `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once |
-| `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change |
+| `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once; the coder's work reads as a tree of steps (OpenCode a sub-agent step with its own steps under it, the log bounded per step) and its answer is shown as it is written, then completed by the log's message ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) |
+| `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change (no OpenCode step) |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
 | `verifier` | `dev/verifier-e2e.sh` | the verifier finds fault, the agent is sent back, the verifier passes it |
 | `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
@@ -188,6 +189,9 @@ Notes on going live:
 - **The edge still authenticates nobody** and still says `dev@example.com` for every request. Live means a real model and a real
   GitHub, not a stack you may expose. The MCP token and the webhook secret are the only credentials that mean anything.
 - A variable exported in your shell **wins over `.env`**: an exported `GITHUB_TOKEN` (common when you use `gh`) is the one the coder gets. `docker compose ... config` shows the result.
+- **The agents stream their model calls** since adam-rs `cf6ddbb`: the coder and the agents that are folders ask the endpoint for `"stream": true` (with the usage chunk), so a
+  model endpoint that cannot stream does not work with them, and adam-rs does not expose a switch to turn it off yet (its ADR 0007, "Consequences of the streamed text", read 2026-10-01).
+  *Unverified:* which providers accept the request as sent; the offline mocks do ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)).
 - **The CI gate is opt-in live**, because the check name `mock-ci/build` means nothing on GitHub: edit `agents.live.yaml` as its comments say
   (the exact name of the check run, and the webhook below).
 - **GitHub webhooks need a public URL.** GitHub cannot reach `127.0.0.1`. Either expose port 8080's `/webhooks/github` yourself
@@ -248,9 +252,9 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
-| `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`. Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
+| `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`, and the SSE twin of each script of `mock-coder` that answers a request with `"stream": true` (the coder streams its model calls). Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
 | `agents-postgres` | `postgres:16.15-alpine` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
-| `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
+| `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings), and an SSE twin of the first two (`*-stream.json`: the agents stream their model calls). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
 | `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses to open a pull request. Vendored. |
@@ -314,7 +318,7 @@ Everything else the coder needs is vendored from the same adam-rs commit, named 
 
 | Vendored path | Upstream path | What it is |
 |---|---|---|
-| `coder/wiremock/mock-openai/` | `dev/wiremock/mock-openai/` | `mappings/coder-script.json`, `coder-choices.json` ([Choices](#choices-the-coder-asks-with-a-form)) and `opencode-script.json`, plus the bodies they reference (`opencode-bash.sse`, `opencode-done.sse`, and `chat-text.sse` and `chat-text.json` as OpenCode's fallbacks). Nothing else of the upstream mock: an off-script request must be a 404. |
+| `coder/wiremock/mock-openai/` | `dev/wiremock/mock-openai/` | `mappings/coder-script.json`, `coder-choices.json` ([Choices](#choices-the-coder-asks-with-a-form)) and `opencode-script.json`, and the SSE twins of the first two, `coder-script-stream.json` and `coder-choices-stream.json` ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)), plus the bodies they reference (`opencode-bash.sse`, `opencode-done.sse`, and `chat-text.sse` and `chat-text.json` as OpenCode's fallbacks). Nothing else of the upstream mock: an off-script request must be a 404. |
 | `coder/wiremock/mock-github/` | `dev/wiremock/mock-github/` | `mappings/pulls.json` and its two bodies. |
 | `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint and the seed of `local/sandbox.git`. |
 | `coder/agent/` | `bin/adam-coder/agent/` | The agent folder the coder reads at run time (`instructions.md`: its name, its card, its instructions), mounted at `/etc/adam/agent`. The whole upstream folder, nothing else. |
@@ -530,6 +534,14 @@ model name; an off-script request is a 404, and `/__admin/requests/unmatched` li
 | `mock-researcher` | a tool call `search__web_search` with the person's words as `query`, then `I searched the web for you. The best source I found is <link>.` | the turn is told by the **last** message: a tool result means the search came back, so it answers with the first `https://` link of it (or says no source was found); anything else is a question, so it searches. The query is the first run of letters, digits and spaces of the question (at most 60 characters), because a template must not put a quote or a backslash into JSON, and `[mock:empty]` or `[mock:error]` therefore cannot reach the search through this model |
 | `mock-researcher` with `[mock:cards]` in the conversation | four turns, told by the call ids the history holds: `search__web_search` for `async programming` (`cards-call-1`), then `ui_catalog` (`cards-call-2`), then `show` with a Text, a Cards of the three links of the search's `async` results and a Mermaid `graph TD` (`cards-call-3`), then `Here are the three sources I found: <the three links>.` | [`researcher-cards.json`](wiremock/model/mappings/researcher-cards.json). The three scripts above carry `doesNotContain "[mock:cards]"`, so a conversation that holds the keyword never reaches them; the blocks were validated against the web's catalog schemas when the file was written |
 
+**Every script has an SSE twin.** Since adam-rs `cf6ddbb` the agents stream their model calls (`"stream": true`, with the usage chunk asked for), and a stub that
+does not say it streams answers plain JSON, which a client that asked for a stream does not read as one. So each stub of `persona.json`, `researcher.json` and
+`researcher-cards.json` has a twin in the file of the same name ending in `-stream.json`: the same matchers plus `$.stream == "true"`, **one priority above** the
+original, answering as a chat-completion stream (a text in about eight content deltas dribbled over half a second, a tool call in a few argument deltas, the usage chunk, `[DONE]`),
+the same shape as adam-rs's twins of its own scripts. `dev/check-agent-mocks.sh` plays every probe both ways and requires what a client assembles from the stream (the content
+joined, the arguments of each tool call joined, the finish reason) to equal the plain answer, so a twin cannot drift from its original; `mock-title` has none, because the
+orchestrator asks it for a plain completion.
+
 Limits of the scripts: the first three ignore the history (a second question in the thread is searched like the first, with the same tool call id
 `researcher-call-1`; `[mock:cards]` reads the history, by its call ids, and once `cards-call-3` is in it answers in words only), and a real model is what makes the agent *good*, which the mocks cannot show ([Going live](#going-live)).
 
@@ -571,7 +583,7 @@ server that is down **at startup** keeps the researcher from starting (`depends_
 ### Add a fourth agent by writing a folder
 
 An agent is a folder and about a dozen lines of compose. This adds a `poet` that answers in rhyme (on the mocks it greets in role, which is
-what the model mock gives any folder; to script more, add a model name to `wiremock/model/mappings/`).
+what the model mock gives any folder; to script more, add a model name to `wiremock/model/mappings/`, a script and its `-stream.json` twin).
 
 1. **Write the folder** `dev/agents/poet/agent/instructions.md`, readable by uid 10001 (`chmod -R a+rX dev/agents/poet`):
 
@@ -833,6 +845,77 @@ newer), so the orchestrator tells the agent the thread's current catalog **by re
 that run, what the orchestrator owns: **no `ui_catalog` is added to the log and the thread's catalog stays at its version**. A screen that really is on a catalog without
 `Cards` (run 3, a new thread) is the case the agent can see, and the researcher answers it in words. The catalog the script uses for it is the shipped one without `Cards` and
 `Mermaid` and one version down, its digest recomputed with `jq` and `sha256sum`.
+
+## Steps and live text: the coder shows its work as a tree, and its words as it writes them
+
+Since adam-rs `cf6ddbb` ([#61](https://github.com/vymalo/another-adam-rs/pull/61), steps, and [#63](https://github.com/vymalo/another-adam-rs/pull/63), streamed text; MVP slices 5 and 6 of
+[`docs/mvp.md`](../docs/mvp.md); adam-rs ADR 0007) the coder, and every agent served by `adam-agent`, tell the orchestrator two more things, each an optional extension of A2A read live
+from the card, never cached, failing closed ([ADR 0008](../docs/decisions/0008-platform-integration-via-a2a-extension.md)). Nothing about the decision of the coder changes: it is still a plain A2A agent.
+
+| Extension | What the agent sends | What the screen gets |
+|---|---|---|
+| `steps/v1` ([`steps-v1.md`](../docs/api/steps-v1.md), [ADR 0025](../docs/decisions/0025-nested-steps-events-carry-their-source-path.md)) | every tool call as a step (`prepare_workspace`, `run_checks`, ...); `delegate_to_opencode` as a **sub-agent step labelled OpenCode**, and what OpenCode did under it (its bash command, its summary) as child steps | `agent_step` events that carry their path, kept bounded (a start, at most four updates, an end), and in AG-UI a subagent per sub-agent step and one `vymalo.step` activity per step ([`agui.md`](../docs/api/agui.md#nested-steps)); the web draws the tree in its side panel |
+| `text-stream/v1` ([`text-stream-v1.md`](../docs/api/text-stream-v1.md), [ADR 0027](../docs/decisions/0027-live-text-relayed-not-stored.md)) | the model's answer as chunks while it is written (artifact updates named `reply`), then the whole text once, naming the stream | the words as `TEXT_MESSAGE_*` frames marked `metadata["vymalo.live"]`, never stored, and then the log's one final `agent_message` completing the same message ([`agui.md`](../docs/api/agui.md#live-text)) |
+
+The orchestrator side was built before the pin ([#78](https://github.com/vymalo/another-agentic-system/pull/78), [#80](https://github.com/vymalo/another-agentic-system/pull/80)), and nothing is configured here:
+the orchestrator reads each card at every send and activates what it lists. What the pin changes in this directory:
+
+| What | Where |
+|---|---|
+| The image and the mocks | `x-adam-image` and [`coder/UPSTREAM`](coder/UPSTREAM) move to `cf6ddbb`. Of the vendored files only two are new, the SSE twins `coder-script-stream.json` and `coder-choices-stream.json` of the coder's scripts (the same matchers plus `$.stream == "true"`, one priority above; the coder's last answer is dribbled over about two seconds so that it comes in pieces, the other texts over half a second) |
+| The model of the chat and the researcher | `persona-stream.json`, `researcher-stream.json` and `researcher-cards-stream.json` in [`wiremock/model/mappings/`](wiremock/model/mappings): ours, the twins of the three scripts ([Several agents](#several-agents)), because the agents stream |
+| The scenarios | `coder-e2e.sh` reads the tree and the live words (below). `cards-e2e.sh` and `choices-e2e.sh`, which read the words of a run stream, now read each message the way a client does, a live delta continuing from its offset, and no longer join the deltas with a space (a piece boundary may fall inside a word) |
+
+```mermaid
+sequenceDiagram
+  actor U as coder-e2e.sh
+  participant O as orchestrator
+  participant C as coder
+  participant M as mock-openai
+  U->>O: POST /agui/agents/coder, the task
+  O->>C: SendStreamingMessage, A2A-Extensions: steps/v1, text-stream/v1 (the card lists both)
+  C->>M: chat completions, stream: true, the tool calls of the script
+  C-->>O: a step per tool call, OpenCode a sub-agent step with its own steps under it
+  O-->>U: SUBAGENT_STARTED OpenCode, vymalo.step activities with their path, SUBAGENT_FINISHED
+  C->>M: the last turn, stream: true (the answer is dribbled over about two seconds)
+  M-->>C: content deltas
+  C-->>O: reply chunks (artifact updates), the first at offset 0
+  O-->>U: TEXT_MESSAGE_START (vymalo.live), TEXT_MESSAGE_CONTENT per piece, each with its offset
+  C-->>O: completed, the whole text and the stream's id
+  O-->>U: TEXT_MESSAGE_CONTENT (final) and TEXT_MESSAGE_END, the log holds one agent_message
+  U->>O: GET /api/threads/{id}/export and the replay: the log, the answer once, no live frame
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Open: the first piece, at offset 0
+  Open --> Growing: more pieces, each continuing from its offset
+  Growing --> Growing: another piece
+  Growing --> Completed: the log's final agent_message with the same id (the final delta and the end)
+  Open --> Completed: the log's message arrives first
+  Growing --> Abandoned: the agent gave up, or the run ended first
+  Completed --> Replayed: a connection opened later reads the one plain message
+  Replayed --> [*]
+  Abandoned --> [*]
+```
+
+What `dev/coder-e2e.sh` asserts about them (the header of the script says it line by line):
+
+- **Steps, from the frames of the thread's replay and from the export.** The calls of `prepare_workspace`, `run_checks`, `commit_and_push` and `open_pull_request` are `vymalo.step` activities
+  of kind `tool` at the top; exactly one sub-agent step is labelled OpenCode (none with `NO_OPENCODE=1`), ended `completed`, a `SUBAGENT_STARTED` inside the coder's invocation and finished once
+  after its last step, with at least one `command` or `tool` step whose path holds it and whose activities carry the subagent's own id; in the log no step has more than six `agent_step` events,
+  and the OpenCode step runs from its `start` to its `end` with a step under it.
+- **Live words, from the run stream.** One assistant message marked `vymalo.live` opens, grows in at least two live deltas from offset 0 and is completed by the log's final delta and one `TEXT_MESSAGE_END` under the
+  same message id (the frames of that id spell `S`, the live deltas, `F`, `E`); the deltas read by offset are the text of the one final `agent_message` of the export, which starts with
+  `Opened the pull request`; the replay holds that message once, plain, with no live frame; no artifact is named `reply`.
+
+Two things to know when you write a script against it. **Live frames are never in a replay**: a connection opened after the run (`connect?mode=run`, as the scripts here do for the thread's frames) reads the log, so the words
+are there once, whole; to see them grow, read the run stream (the response of the `POST`) or a connect stream held open during the run (`split-e2e.sh` does, for the mock agent's `stream` keyword). And **read a message by offset**,
+as `reading` in `coder-e2e.sh` does, never by joining its deltas: a live delta continues from its `offset` (UTF-16 code units), and a final one that does not start with what was said replaces it.
+
+*Unverified where this was written*, because the stack was not started (the disk of the machine was too small for the orchestrator and web builds): the scenario in containers, which is the first
+run of the coder at `cf6ddbb` behind the real orchestrator (the `Coder E2E` workflow of the pull request that pins it runs it), the kinds and labels of the steps a real OpenCode reports for its bash call (the script asks for at least one `command` or `tool` step
+under OpenCode and does not name its label), and how many pieces the relay merges (the script asks for two or more of a two-second answer).
 
 ## Thread titles: the orchestrator asks a model
 
@@ -1445,7 +1528,7 @@ ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
 ## Changing a mock
 
 (The mock web search is not WireMock: [Mock web search (MCP)](#mock-web-search-mcp). The model of the chat and the researcher is: edit
-`wiremock/model/mappings/*.json` and `docker compose --profile app restart mock-model`; `dev/check-agent-mocks.sh` says whether it still answers as documented.) Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
+`wiremock/model/mappings/*.json` and `docker compose --profile app restart mock-model`; a change to a script goes into its `-stream.json` twin too, and `dev/check-agent-mocks.sh` says whether it still answers as documented and whether the twin still says what the script says.) Stubs are files: `wiremock/<mock>/mappings/*.json` (matching and response settings, one stub per file,
 lower `priority` wins) and `wiremock/<mock>/__files/*` (bodies; JSON-RPC frames use Handlebars
 templates, see WireMock's response templating). The three mocks are separate directories so each can
 diverge; a change to a shared behaviour goes into all of them. The directories are mounted read-only, so
@@ -1691,3 +1774,34 @@ Cards and Mermaid (MVP slice 4, `dev/cards-e2e.sh`; the image is the one pinned 
 *Unverified*: the scenario in containers (the Docker stack was not started: the disk was too small for the builds), so that the researcher in the image really answers with a surface of those three
 components, one agent message, from the `ui` artifact the orchestrator maps to an `a2ui-surface`, and that the `ui_catalog` and `show` results read as the script expects (`Cards` and `Mermaid` named in the
 first, "Shown to the person." in the second, from adam-rs's README); what an older screen's browser does with a `Cards` (the web's tests); and what a live model chooses to show.
+
+Steps and live text (MVP slices 5 and 6, the coder side: the pin to adam-rs `cf6ddbb`, the SSE twins, `dev/coder-e2e.sh`):
+
+*Verified 2026-10-01*:
+
+- **The pin.** `coder:sha-cf6ddbb@sha256:45f1afd1...` is the manifest digest the ghcr API returns for that tag (anonymous token, HTTP 200; a request with no token is a 401), and the sha-256 of the manifest body it
+  returned; one `linux/amd64` manifest of ten layers (2.88 GB compressed), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` = `cf6ddbb45a44afce99f437dbd370ef59bdf095d0`. It was
+  published by adam-rs's `coder` workflow for `main` at that commit (the run was still in progress when this work started and the tag appeared within fifteen minutes). `dev/coder/check-vendored.sh` passes at `cf6ddbb`: of the
+  vendored paths only two files are new, the twins `coder-script-stream.json` and `coder-choices-stream.json`; every other vendored file is byte for byte what it was at `c13ddf1`, and the agent folder is unchanged
+  (the two extensions are added to the card by the binary, not by the folder).
+- **The vendored twins in WireMock itself.** `wiremock-standalone-3.13.2.jar` (the version compose pins, with `--global-response-templating --disable-banner`) on `dev/coder/wiremock/mock-openai`: a streamed "hi" to `mock-coder`
+  is the greeting in eight content deltas, a streamed last turn is the coder's answer in eight deltas over 2.1 s, and nothing was unmatched.
+- **Our twins in WireMock itself.** The same jar on `dev/wiremock/model` and the real `mock-mcp-search` (`server.mjs`) against `dev/check-agent-mocks.sh`: 68 checks, all `ok`, among them 20 new ones that play every probe of
+  `mock-persona` and `mock-researcher` (the persona, a fourth agent, a tool result, the search, the first link, no link, a follow-up, four turns of `[mock:cards]`) both ways and require what a client assembles from the stream
+  to equal the plain answer, the stream to be a `text/event-stream` with the usage chunk ending with `[DONE]`, a text to arrive in at least two deltas, the arguments of `show` to arrive in several, and a request that does not
+  ask for a stream to still get plain JSON. With a word of a twin edited the matching checks failed as they must. Fact found there: WireMock takes a negative `priority`, so a twin can sit one above an original of priority 0.
+- **`dev/coder-e2e.sh` on a stand-in.** The script (both variants) against a Python stand-in for the edge, the orchestrator and the coder (frames shaped like [`steps.agui.json`](../docs/api/examples/agui/steps.agui.json) and
+  [`stream.agui.json`](../docs/api/examples/agui/stream.agui.json), an export in the contract's shape), a bare git repository, and the vendored `mock-github` and `mock-openai` in WireMock 3.13.2, in a private network namespace:
+  every check printed `ok` (47 lines with OpenCode, 40 with `NO_OPENCODE=1`, exit 0). Eleven breakages of the stand-in each failed exactly the checks that read what was broken: no live message, one live piece, no child
+  under OpenCode, a child attributed to another subagent, OpenCode outside the coder's invocation, a step with eight events in the log, no final message in the log, two, a different text, a live frame in the replay, and a
+  `reply` artifact. That tests the script's own `jq` and shell logic, not the stack. The reader of a run stream's words that `cards-e2e.sh` and `choices-e2e.sh` now use was run on the live and the plain goldens (the
+  deltas of one message cut inside a word read whole; a final delta that replaces what was said; two messages joined by a space).
+- `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh`, `docker compose --profile '*' config -q`, the live override against `.env.example` (all three agents on the pinned image), `actionlint` on
+  `coder-e2e.yml`, the docs check and the AG-UI conformance check (45 goldens) are clean.
+
+*Unverified where this was written*: the stack in containers (it was not started: the disk of the machine was too small for the orchestrator and web builds), so that the real orchestrator's frames hold what the script
+reads when the coder at `cf6ddbb` is behind it, which is the first run of the chain and is the `Coder E2E` workflow of the pull request that pins it: the kind of the step a real OpenCode reports for its bash call (the script asks
+for a `command` or `tool` step under the OpenCode step and names no label), that the relay yields at least two live deltas of the two-second answer, that the `agents`, `greeting`, `choices`, `cards` and `title` scenarios
+are unchanged by the agents' streaming (the live words are in a run stream only, where `cards-e2e.sh` counts the assistant messages and wants one: a live message is one `TEXT_MESSAGE_START` that the log's final
+message completes; `title-e2e.sh` asks the model once because the core asks once for an agent that says two things in one reply, here the final message and the status that ends the turn, unless the title came back between the two),
+and how a real model provider takes a streamed request.

@@ -1,0 +1,182 @@
+{
+  "mappings": [
+    {
+      "name": "researcher cards 1: search the web for async programming (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "researcher cards 1: search the web for async programming"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "contains": "[mock:cards]"
+          },
+          {
+            "doesNotContain": "cards-call-1"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-cards-search\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"cards-call-1\",\"type\":\"function\",\"function\":{\"name\":\"search__web_search\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-search\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"query\\\": \\\"async programming\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-search\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-search\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "researcher cards 2: read which components the screen has (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "researcher cards 2: read which components the screen has"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "contains": "[mock:cards]"
+          },
+          {
+            "contains": "cards-call-1"
+          },
+          {
+            "doesNotContain": "cards-call-2"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-cards-catalog\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"cards-call-2\",\"type\":\"function\",\"function\":{\"name\":\"ui_catalog\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-catalog\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-catalog\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-catalog\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "researcher cards 3: show the sources as cards and a graph (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "researcher cards 3: show the sources as cards and a graph"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "contains": "[mock:cards]"
+          },
+          {
+            "contains": "cards-call-2"
+          },
+          {
+            "doesNotContain": "cards-call-3"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"cards-call-3\",\"type\":\"function\",\"function\":{\"name\":\"show\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"blocks\\\":[{\\\"component\\\":\\\"Text\\\",\\\"text\\\":\\\"Three sources on async programming\\\",\\\"variant\\\":\\\"h4\\\"},{\\\"component\\\":\\\"Cards\\\",\\\"title\\\":\\\"Sources\\\",\\\"layout\\\":\\\"list\\\",\\\"cards\\\":[{\\\"title\\\":\\\"Asynchronous programming in Rust\\\",\\\"subtitle\\\":\\\"example.org\\\",\\\"body\\\":\\\"A function that returns a future, and how an executor runs it.\\\",\\\"url\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\":\\\"https://example.org/mock-search/async-book\\\",\\\"tags\\\":[\\\"async\\\",\\\"rust\\\"]},{\\\"title\\\":\\\"How a future is polled\\\",\\\"subtitle\\\":\\\"example.org\\\",\\\"body\\\":\\\"A future does nothing until it is polled; a waker tells the executor when to poll it again.\\\",\\\"url\\\":\\\"https://example.org/mock-search/async-futures\\\",\\\"tags\\\":[\\\"futur\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"es\\\"]},{\\\"title\\\":\\\"Tokio, an asynchronous runtime\\\",\\\"subtitle\\\":\\\"example.org\\\",\\\"body\\\":\\\"A runtime for writing reliable asynchronous applications.\\\",\\\"url\\\":\\\"https://example.org/mock-search/async-tokio\\\",\\\"tags\\\":[\\\"async\\\",\\\"runtime\\\"]}]},{\\\"component\\\":\\\"Mermaid\\\",\\\"title\\\":\\\"How it fits together\\\",\\\"code\\\":\\\"graph TD\\\\n  Futu\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"re --> Executor\\\\n  Executor --> Waker\\\\n  Waker --> Future\\\",\\\"caption\\\":\\\"An executor polls a future until it is ready.\\\"}]}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-show\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "researcher cards 4: the show call is answered, answer in words (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "researcher cards 4: the show call is answered, answer in words"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-researcher"
+            }
+          },
+          {
+            "contains": "[mock:cards]"
+          },
+          {
+            "contains": "cards-call-3"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Here are \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"the three \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"sources I \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"found: https://example.org/mock-search/async-book, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"https://example.org/mock-search/async-futures and \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"https://example.org/mock-search/async-tokio.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-researcher-cards-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-researcher\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    }
+  ]
+}
