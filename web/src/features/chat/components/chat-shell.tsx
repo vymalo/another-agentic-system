@@ -11,6 +11,7 @@ import {
   NewChatGreeting,
   Suggestions,
 } from "@/features/agents/components/new-thread-panel";
+import { RegistryNotice } from "@/features/agents/components/registry-notice";
 import { useAgents } from "@/features/agents/hooks/use-agents";
 import { effectiveSelection, requestedAgent } from "@/features/agents/lib/selection";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
@@ -219,6 +220,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
                         <NewChatGreeting agents={agents} selection={effective} />
                         <AgentsProblem agents={agents} />
+                        <RegistryNotice agents={agents} />
                         {composer}
                         <Suggestions inputRef={composerRef} />
                       </div>

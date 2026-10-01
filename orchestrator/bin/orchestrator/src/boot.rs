@@ -33,7 +33,9 @@ use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
 use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig, InboxWorker};
 use orch_core::BoxError;
-use orch_ports::{AgentTransport, PortSet, SystemClock, UuidV7Ids};
+use orch_ports::{
+    AgentTransport, CompositeRegistry, FixedRegistry, PortSet, SystemClock, UuidV7Ids,
+};
 use orch_store_postgres::{PgStore, PgWakeup};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -226,7 +228,64 @@ fn thread_tools_routes<P: orch_ports::Ports>(
     Ok(orch_surface_thread_tools::routes(Arc::clone(app), config))
 }
 
-type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids, ConfiguredModel>;
+/// The platform's registry type: the real one with the feature `registry-platform`, else a type
+/// that exists and is never built (the registry is then always `None`).
+#[cfg(feature = "registry-platform")]
+type Platform = orch_registry_platform::PlatformRegistry;
+#[cfg(not(feature = "registry-platform"))]
+type Platform = FixedRegistry;
+
+/// The agents a person can pick (ADR 0022): the deployment's own list, then the platform's
+/// registry when `AGENT_REGISTRY_URL` is set. Static dispatch over both, one build either way.
+type Registry = CompositeRegistry<FixedRegistry, Option<Platform>>;
+
+type Stack = PortSet<PgStore, PgWakeup, Agents, SystemClock, UuidV7Ids, ConfiguredModel, Registry>;
+
+/// The platform's registry client, when `AGENT_REGISTRY_URL` is set.
+#[cfg(feature = "registry-platform")]
+fn platform_registry(cfg: &Config) -> Result<Option<Platform>, ConfigError> {
+    use orch_registry_platform::{BuildError, PlatformConfig, PlatformRegistry};
+
+    let Some(settings) = &cfg.registry else {
+        return Ok(None);
+    };
+    let mut client = PlatformConfig::new(settings.url.clone())
+        .with_timeout(settings.timeout)
+        .with_max_age(settings.max_age);
+    if let Some(token) = &settings.token {
+        client = client.with_token(token.clone());
+    }
+    if let Some(token) = &settings.agent_token {
+        client = client.with_agent_token(token.clone());
+    }
+    if settings.url.starts_with("http://")
+        && (settings.token.is_some() || settings.agent_token.is_some())
+    {
+        tracing::warn!("a bearer token is sent to the agent registry over plain http");
+    }
+    let registry = PlatformRegistry::new(client).map_err(|e| ConfigError::Invalid {
+        var: match e {
+            BuildError::BadToken("agent") => "AGENT_REGISTRY_AGENT_TOKEN",
+            BuildError::BadToken(_) => "AGENT_REGISTRY_TOKEN",
+            BuildError::BadUrl | BuildError::Http(_) => "AGENT_REGISTRY_URL",
+        },
+        reason: e.to_string(),
+    })?;
+    tracing::info!(
+        agents_file = cfg.agents.len(),
+        timeout_secs = settings.timeout.as_secs(),
+        max_age_secs = settings.max_age.as_secs(),
+        "the agent registry of the platform is read live beside AGENTS_FILE"
+    );
+    Ok(Some(registry))
+}
+
+/// Without the feature there is no registry (a URL for one was refused when the configuration
+/// was read).
+#[cfg(not(feature = "registry-platform"))]
+fn platform_registry(_cfg: &Config) -> Result<Option<Platform>, ConfigError> {
+    Ok(None)
+}
 
 /// The A2A client's configuration: the defaults, and the issuer of the thread-tools grants when the
 /// keys and the URL are set (every role has them: the worker sends, the control plane serves).
@@ -302,6 +361,8 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     }
 
     // The database is migrated and reachable by now, so the app starts ready.
+    let directory = AgentDirectory::new(cfg.agents.clone());
+    let platform = platform_registry(cfg)?;
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
@@ -312,8 +373,9 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                 ids: UuidV7Ids,
                 model: ConfiguredModel::build(cfg.model.as_ref())
                     .context("cannot build the title model (ORCH_MODEL_BASE_URL)")?,
+                registry: CompositeRegistry::new(directory.fixed_registry(), platform),
             },
-            AgentDirectory::new(cfg.agents.clone()),
+            directory,
             cfg.app_config(),
         )
         .map_err(|e| ConfigError::Gate {

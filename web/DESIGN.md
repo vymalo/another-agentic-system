@@ -143,8 +143,16 @@ like the new ChatGPT"). It is a menu button in the top bar, on the new chat and 
   Changing the agent of a thread will be a fork (plan 08, F-series): the conversation so far copied into a
   new thread that talks to the other agent; until it is built, this is what the menu offers.
 - **A notice slot** under the lists, inside the menu: a failed refresh of the list is said there ("Could not
-  refresh the agents: …", with Retry, the list stays as it was), and the agent registry's "unreachable,
-  showing the configured agents only" (plan 05) goes in the same place.
+  refresh the agents: …", with Retry, the list stays as it was), and so is the agent registry's "The agent
+  registry is unreachable; showing the configured agents only." (ADR 0022: the platform's registry could not be
+  read, so none of its agents are listed and the configured ones stay). It is a label in the warning colour
+  (a menu allows no live region) with a Retry item; on a new chat the same sentence is also a quiet inline
+  warning line under the greeting, with a Retry button, so it is seen without opening the menu. Nothing is
+  said while every source answered, and nothing when the orchestrator does not say (an older one).
+- **An agent of the registry** is one line longer: the labels the platform keeps on it (`writing · docs`), in
+  the muted colour under what it does. They route and select nothing. The configured agents come first, so
+  the default agent never moves because a registry changed. The list is also read again when the window gets
+  the focus back (at most every 5 s), so an agent the platform added shows without a reload.
 
 ## Panel
 

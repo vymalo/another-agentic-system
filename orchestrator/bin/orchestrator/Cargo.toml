@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook", "registry-platform"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -30,6 +30,11 @@ surface-thread-tools = ["dep:orch-surface-thread-tools", "dep:orch-thread-token"
 # The webhook routes (ADR 0017): signed CI results, machine routes outside the identity layer.
 # On by default, but a route is mounted only when ORCH_SURFACES names it and its secrets are set.
 surface-webhook = ["dep:orch-surface-webhook"]
+# The platform's agent registry (`agent-registry/v1`, ADR 0022): the agents another-agentic-platform
+# provisions, read live over HTTP beside the static AGENTS_FILE. On by default; it is used only when
+# AGENT_REGISTRY_URL is set. Without the feature an AGENT_REGISTRY_URL is refused at startup
+# (exit 78), never quietly ignored.
+registry-platform = ["dep:orch-registry-platform"]
 # In-process agents (`transport: local` in AGENTS_FILE, ADR 0015): adam-rs agents hosted by this
 # process, journaled in the orchestrator's own Postgres under the prefix `orch_agent_`. Off by
 # default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
@@ -49,6 +54,7 @@ orch-thread-token = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true
+orch-registry-platform = { workspace = true, optional = true }
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true

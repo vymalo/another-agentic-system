@@ -36,6 +36,7 @@ const view = (over: Partial<AgentsView> = {}): AgentsView => ({
   agents: [coder, reviewer, plain],
   loading: false,
   error: null,
+  registry: { unreachable: [] },
   retry: vi.fn(),
   ...over,
 });
@@ -154,10 +155,62 @@ describe("AgentMenu on a new chat", () => {
     expect(agents.retry).toHaveBeenCalled();
   });
 
-  it("has a slot for a notice under the lists (the registry's, plan 05)", async () => {
-    renderNew({ notice: <p>The agent registry is unreachable.</p> });
+  it("has a slot for a notice under the lists", async () => {
+    renderNew({ notice: <p>Something true of every agent.</p> });
     const menu = await open();
-    expect(within(menu).getByText("The agent registry is unreachable.")).toBeTruthy();
+    expect(within(menu).getByText("Something true of every agent.")).toBeTruthy();
+  });
+
+  it("says nothing about the registry while every source answered", async () => {
+    renderNew();
+    const menu = await open();
+    expect(within(menu).queryByText(/registry/i)).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Retry" })).toBeNull();
+  });
+
+  it("says the registry is unreachable, keeps the configured agents and offers Retry (ADR 0022)", async () => {
+    const agents = view({ registry: { unreachable: ["platform"] } });
+    renderNew({ agents });
+    const menu = await open();
+    // the agents that are listed stay choosable
+    expect(item(menu, /^Coder/)).toBeTruthy();
+    expect(
+      within(menu).getByText(
+        "The agent registry is unreachable; showing the configured agents only.",
+      ),
+    ).toBeTruthy();
+    // asking again is the menu's own retry: a menu item, so the keyboard reaches it
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Retry" }));
+    expect(agents.retry).toHaveBeenCalled();
+  });
+
+  it("shows the registry notice on a thread's menu too, whatever agent the thread has", async () => {
+    render(
+      <AgentMenu
+        mode="thread"
+        agents={view({ registry: { unreachable: ["platform"] } })}
+        value={{ agentId: "coder", release: "production" }}
+      />,
+    );
+    const menu = await open();
+    expect(within(menu).getByText(/registry is unreachable/)).toBeTruthy();
+  });
+
+  it("an agent from the registry shows the labels the platform keeps on it, in one line", async () => {
+    const helper: ApiAgent = {
+      id: "helper",
+      name: "Helper",
+      source: "registry",
+      description: "Writes the docs.",
+      tags: ["writing", "docs"],
+    };
+    renderNew({ agents: view({ agents: [coder, helper] }) });
+    const menu = await open();
+    const label = item(menu, /^Helper/).textContent;
+    expect(label).toContain("Writes the docs.");
+    expect(label).toContain("writing · docs");
+    // an agent without tags shows none
+    expect(item(menu, /^Coder/).textContent).not.toContain("·  ");
   });
 
   it("is a skeleton while the first list loads, and says what is wrong when it did not", async () => {

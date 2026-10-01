@@ -66,6 +66,7 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
         ..A2aConfig::default()
     })
     .unwrap();
+    let directory = AgentDirectory::new(entries);
     let app = Arc::new(
         App::new(
             PortSet {
@@ -75,8 +76,9 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
                 clock: SystemClock,
                 ids: UuidV7Ids,
                 model: orch_ports::NoModel,
+                registry: directory.fixed_registry(),
             },
-            AgentDirectory::new(entries),
+            directory,
             AppConfig {
                 stream_poll: Duration::from_millis(100),
                 // `dev/agents.yaml` gates `mock-coder-gated` (its own checks must pass) and

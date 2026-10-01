@@ -12,16 +12,16 @@ use orch_core::{
 };
 pub use orch_ports::Received;
 use orch_ports::{
-    AgentBinding, AgentCardInfo, AgentClient, AgentError, AgentTransport, BindingUpdate, Clock,
-    Commit, CommitOutcome, IdGen, InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent,
-    NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports,
+    AgentBinding, AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentListing,
+    AgentRegistry, AgentTransport, BindingUpdate, Clock, Commit, CommitOutcome, IdGen, InboxFinal,
+    InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord,
+    NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry, SourceStatus,
     StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
 use crate::{
-    AgentDirectory, AgentEntry, AppError, GateError, GateLayer, GateRules, Layer,
-    check_catalog_schemas,
+    AgentDirectory, AppError, GateError, GateLayer, GateRules, Layer, check_catalog_schemas,
 };
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
@@ -112,16 +112,32 @@ impl Default for AppConfig {
     }
 }
 
-/// A configured agent with what its live card says right now (see [`App::describe_agent`]).
+/// A listed agent with what its live card says right now (see [`App::describe_agent`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDescription {
-    /// Configuration key, e.g. `coder`.
+    /// The agent's id, e.g. `coder`.
     pub id: AgentId,
-    /// Display name from the configuration.
+    /// Display name, from the configuration or the registry.
     pub name: String,
     /// The live card; `None` when it could not be read in time.
     pub card: Option<AgentCardInfo>,
 }
+
+/// The agents a person can pick, with how each source of agents fared (see
+/// [`App::list_agents`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentList {
+    /// The agents, in display order, each with what its live card says.
+    pub agents: Vec<AgentInfo>,
+    /// One status per source of agents: the static list is always there and available; a
+    /// registry that could not be read is `available: false` and none of its agents are in
+    /// `agents` (ADR 0022: fail closed).
+    pub sources: Vec<SourceStatus>,
+}
+
+/// How many agent cards a listing reads at once. A registry may list hundreds of agents; the
+/// card of each is read live, and a listing must not open hundreds of connections at once.
+const CARD_READS_AT_ONCE: usize = 16;
 
 /// Everything the orchestrator holds about one thread, read for [`App::export_thread`].
 ///
@@ -290,7 +306,9 @@ impl<P: Ports> App<P> {
         &self.ports
     }
 
-    /// The configured agents.
+    /// The agents the deployment configures (`AGENTS_FILE`): the static set the gate is
+    /// validated on. Which agents a person can *target* is [`App::resolve_agent`] and
+    /// [`App::list_agents`], which read the registry.
     pub fn directory(&self) -> &AgentDirectory {
         &self.agents
     }
@@ -340,32 +358,39 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// The live card of a configured agent; `None` when it cannot be read in time (fail closed,
+    /// The live card of an agent; `None` when it cannot be read in time (fail closed,
     /// ADR 0008: nothing the card would have said is assumed).
-    async fn live_card(&self, entry: &AgentEntry) -> Option<AgentCardInfo> {
+    async fn live_card(&self, endpoint: &AgentEndpoint) -> Option<AgentCardInfo> {
         let card = tokio::time::timeout(
             self.cfg.card_timeout,
-            self.ports.agents().read_card(&entry.endpoint),
+            self.ports.agents().read_card(endpoint),
         )
         .await;
         match card {
             Ok(Ok(card)) => Some(card),
             Ok(Err(e)) => {
-                tracing::warn!(agent = %entry.endpoint.id, error = %report(&e), class = ?e.class(), "agent card unreadable");
+                tracing::warn!(agent = %endpoint.id, error = %report(&e), class = ?e.class(), "agent card unreadable");
                 None
             }
             Err(_) => {
-                tracing::warn!(agent = %entry.endpoint.id, "agent card timed out");
+                tracing::warn!(agent = %endpoint.id, "agent card timed out");
                 None
             }
         }
     }
 
-    /// Lists the configured agents with their live card data. A card that cannot be read
-    /// in time yields an agent without `description` and `releases` (fail closed, ADR 0008).
-    pub async fn list_agents(&self) -> Vec<AgentInfo> {
-        let lookups = self.agents.iter().map(|entry| async move {
-            let (description, releases) = match self.live_card(entry).await {
+    /// Lists the agents a person can pick, with their live card data, and how each source of
+    /// agents fared. The registry is read now (ADR 0022); a source that cannot be read lists
+    /// none of its agents and says so in `sources`. A card that cannot be read in time yields an
+    /// agent without `description` and `releases` (fail closed, ADR 0008).
+    pub async fn list_agents(&self) -> AgentList {
+        let listing = self.ports.registry().list().await;
+        for source in listing.unavailable() {
+            tracing::warn!(source = %source.name, detail = ?source.detail, "a source of agents could not be read; its agents are not listed");
+        }
+        let AgentListing { entries, sources } = listing;
+        let lookups = entries.into_iter().map(|entry| async move {
+            let (description, releases) = match self.live_card(&entry.endpoint).await {
                 Some(card) => (card.description, card.releases),
                 None => (None, None),
             };
@@ -375,31 +400,71 @@ impl<P: Ports> App<P> {
                 AgentTransport::Local { .. } => None,
             };
             AgentInfo {
-                id: entry.endpoint.id.clone(),
-                name: entry.name.clone(),
+                id: entry.endpoint.id,
+                name: entry.name,
                 description,
                 card_url,
                 releases,
+                source: entry.origin,
+                tags: entry.tags,
             }
         });
-        futures::future::join_all(lookups).await
+        // `buffered` keeps the registry's order, which is the display order.
+        let agents = futures::stream::iter(lookups)
+            .buffered(CARD_READS_AT_ONCE)
+            .collect()
+            .await;
+        AgentList { agents, sources }
     }
 
-    /// One configured agent and its live card, read now and never cached; `None` when no agent
-    /// has this id. `card` is `None` when the card cannot be read in time (fail closed, ADR 0008).
-    pub async fn describe_agent(&self, id: &AgentId) -> Option<AgentDescription> {
-        let entry = self.agents.get(id)?;
-        Some(AgentDescription {
+    /// The agent `id` as the registry lists it now: `Ok(Some)` when listed, `Ok(None)` when every
+    /// source answered and none lists it, and [`AppError::RegistryUnavailable`] when a source
+    /// that could list it did not answer (so "no such agent" is never said while the registry is
+    /// down). Read live, never cached here (ADR 0022).
+    pub async fn resolve_agent(&self, id: &AgentId) -> Result<Option<RegistryEntry>, AppError> {
+        self.ports
+            .registry()
+            .get(id)
+            .await
+            .map_err(|source| AppError::RegistryUnavailable { source })
+    }
+
+    /// How each source of agents answers now (the static list, a platform registry): what
+    /// `GET /api/registry` says. No agent card is read.
+    pub async fn registry_sources(&self) -> Vec<SourceStatus> {
+        self.ports.registry().list().await.sources
+    }
+
+    /// The agent a job is started on when the caller does not name one: the first agent listed
+    /// (ADR 0014: the first is the default), `None` when nothing is listed.
+    pub async fn default_agent(&self) -> Option<AgentId> {
+        self.ports
+            .registry()
+            .list()
+            .await
+            .entries
+            .first()
+            .map(|e| e.endpoint.id.clone())
+    }
+
+    /// One listed agent and its live card, read now and never cached; `None` when no agent has
+    /// this id. `card` is `None` when the card cannot be read in time (fail closed, ADR 0008).
+    /// [`AppError::RegistryUnavailable`] when the registry cannot say.
+    pub async fn describe_agent(&self, id: &AgentId) -> Result<Option<AgentDescription>, AppError> {
+        let Some(entry) = self.resolve_agent(id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(AgentDescription {
             id: entry.endpoint.id.clone(),
             name: entry.name.clone(),
-            card: self.live_card(entry).await,
-        })
+            card: self.live_card(&entry.endpoint).await,
+        }))
     }
 
     async fn validate_target(&self, target: &AgentTarget) -> Result<(), AppError> {
         let entry = self
-            .agents
-            .get(&target.agent_id)
+            .resolve_agent(&target.agent_id)
+            .await?
             .ok_or_else(|| AppError::Invalid(format!("unknown agent '{}'", target.agent_id)))?;
         let Some(release) = &target.release else {
             return Ok(());

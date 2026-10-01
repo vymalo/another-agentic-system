@@ -46,6 +46,12 @@ const DEFAULT_DISPATCHER_CONCURRENCY: usize = 32;
 const DEFAULT_OUTBOX_LEASE_SECS: u64 = 30;
 const DEFAULT_VERIFIER_WATCH_SECS: u64 = 5;
 const DEFAULT_MODEL_TIMEOUT_SECS: u64 = 20;
+/// `AGENT_REGISTRY_TIMEOUT_SECS`, when unset, and the most it may be.
+const DEFAULT_REGISTRY_TIMEOUT_SECS: u64 = 3;
+const MAX_REGISTRY_TIMEOUT_SECS: u64 = 60;
+/// `AGENT_REGISTRY_MAX_AGE_SECS`, when unset, and the most it may be.
+const DEFAULT_REGISTRY_MAX_AGE_SECS: u64 = 60;
+const MAX_REGISTRY_MAX_AGE_SECS: u64 = 3600;
 #[cfg(feature = "agent-local")]
 const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
@@ -60,7 +66,6 @@ const MIN_MCP_TOKEN_BYTES: usize = 32;
 /// `WEBHOOK_GENERIC_MAX_SKEW_SECS`, when unset (ADR 0017).
 #[cfg(feature = "surface-webhook")]
 const DEFAULT_WEBHOOK_MAX_SKEW_SECS: u64 = orch_surface_webhook::generic::DEFAULT_MAX_SKEW_SECS;
-const MAX_AGENT_ID_LEN: usize = 63;
 
 /// A configuration problem. The message is what the operator sees.
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +127,14 @@ pub enum ConfigError {
         /// The Cargo feature of the `orchestrator` package that provides it.
         feature: &'static str,
     },
+    /// `AGENT_REGISTRY_URL` is set, and this build has no platform registry. Fail closed, like a
+    /// surface that is not compiled in: the setting is never quietly ignored.
+    #[cfg(not(feature = "registry-platform"))]
+    #[error(
+        "AGENT_REGISTRY_URL is set, and this build has no platform registry; it needs the Cargo \
+         feature \"registry-platform\" (ADR 0022)"
+    )]
+    RegistryNotCompiled,
     /// An `AGENTS_FILE` entry asks for `transport: local`, and this build has no in-process
     /// agents. Fail closed, like a surface that is not compiled in: the entry is never quietly
     /// dropped or served by the A2A client.
@@ -596,9 +609,50 @@ pub struct Args {
     #[arg(long, env = "DATABASE_URL", value_name = "URL", hide_env_values = true)]
     pub database_url: Option<String>,
 
-    /// YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}` (required).
+    /// YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}`: the agents of
+    /// this deployment, listed first. Required unless AGENT_REGISTRY_URL is set, and then it may
+    /// be unset or list no agent.
     #[arg(long, env = "AGENTS_FILE", value_name = "PATH")]
     pub agents_file: Option<String>,
+
+    /// The platform's agent registry (`agent-registry/v1`, ADR 0022): the full URL of the
+    /// document, `http` or `https`, without a user name or password
+    /// (`https://platform.example.com/registry/v1/agents`). The agents it lists are read live,
+    /// beside the agents of AGENTS_FILE (which come first and win on an id both list), and a
+    /// registry that cannot be read leaves only those. Unset (the default) means no registry.
+    /// Needs the Cargo feature `registry-platform` (exit 78 without it).
+    #[arg(long, env = "AGENT_REGISTRY_URL", value_name = "URL")]
+    pub registry_url: Option<String>,
+
+    /// The bearer token sent to the registry, when it wants one. Never logged.
+    #[arg(
+        long,
+        env = "AGENT_REGISTRY_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    pub registry_token: Option<String>,
+
+    /// The bearer token sent to every agent the registry lists: one deployment-wide credential
+    /// until authentication to the agents is decided (open question 11). Never logged.
+    #[arg(
+        long,
+        env = "AGENT_REGISTRY_AGENT_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    pub registry_agent_token: Option<String>,
+
+    /// Seconds one read of the registry may take, 1 to 60 (default 3). A registry that is slower
+    /// is treated as down: its agents are not listed.
+    #[arg(long, env = "AGENT_REGISTRY_TIMEOUT_SECS", value_name = "SECS")]
+    pub registry_timeout_secs: Option<String>,
+
+    /// The most seconds a copy of the registry document is kept before it is read again, 1 to
+    /// 3600 (default 60), whatever the registry's own `Cache-Control` allows. The copy is kept in
+    /// this process only.
+    #[arg(long, env = "AGENT_REGISTRY_MAX_AGE_SECS", value_name = "SECS")]
+    pub registry_max_age_secs: Option<String>,
 
     /// Address to listen on (default 0.0.0.0:8080).
     #[arg(long, env = "LISTEN_ADDR", value_name = "ADDR")]
@@ -870,7 +924,12 @@ pub struct Config {
     /// `LISTEN_ADDR`.
     pub listen_addr: SocketAddr,
     /// `AGENTS_FILE`, resolved: bearer tokens already read from their environment variables.
+    /// Empty only when `AGENT_REGISTRY_URL` is set and the file is unset or lists none.
     pub agents: Vec<AgentEntry>,
+    /// `AGENT_REGISTRY_URL` and the variables that go with it: the platform's agent registry,
+    /// read beside `agents`. `None` when the URL is unset. Redacted in `Debug`.
+    #[cfg(feature = "registry-platform")]
+    pub registry: Option<RegistrySettings>,
     /// The gate new threads start under before an agent's entry or a request changes it:
     /// `ORCH_GATE`, `ORCH_MAX_ATTEMPTS`, `ORCH_VERIFIER`, `ORCH_VERIFIER_TIMEOUT_SECS`.
     pub gate: GatePolicy,
@@ -951,6 +1010,8 @@ impl fmt::Debug for Config {
             .field("shutdown_grace", &self.shutdown_grace);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
+        #[cfg(feature = "registry-platform")]
+        debug.field("registry", &self.registry);
         #[cfg(feature = "surface-thread-tools")]
         debug.field("thread_tools", &self.thread_tools);
         #[cfg(feature = "surface-webhook")]
@@ -991,14 +1052,43 @@ impl Config {
                 reason: format!("{listen_addr:?} is not a socket address like 0.0.0.0:8080 ({e})"),
             })?;
 
-        let agents_file =
-            PathBuf::from(clean(args.agents_file).ok_or(ConfigError::Missing("AGENTS_FILE"))?);
-        let text = read(&agents_file).map_err(|source| ConfigError::AgentsFileRead {
-            path: agents_file.clone(),
-            source,
-        })?;
-        let (agents, target_gates) =
-            parse_agents_full(&text, &agents_file, get_env, LocalAgentKind::compiled_in)?;
+        let registry_vars = RegistryVars {
+            url: clean(args.registry_url),
+            #[cfg(feature = "registry-platform")]
+            token: clean(args.registry_token),
+            #[cfg(feature = "registry-platform")]
+            agent_token: clean(args.registry_agent_token),
+            timeout_secs: clean(args.registry_timeout_secs),
+            max_age_secs: clean(args.registry_max_age_secs),
+        };
+        // The registry's own variables are checked whether or not the URL is set (a bad number
+        // is a typo to hear about now), and a URL with no registry in this build is refused.
+        #[cfg(feature = "registry-platform")]
+        let registry = registry_settings(registry_vars)?;
+        #[cfg(not(feature = "registry-platform"))]
+        let registry_url_set = refuse_registry(registry_vars)?;
+        #[cfg(feature = "registry-platform")]
+        let registry_url_set = registry.is_some();
+        // Without a registry the agents are the file's, which must list some. With one, the file
+        // may be unset or empty: the registry is where the agents come from.
+        let (agents, target_gates) = match clean(args.agents_file) {
+            Some(path) => {
+                let agents_file = PathBuf::from(path);
+                let text = read(&agents_file).map_err(|source| ConfigError::AgentsFileRead {
+                    path: agents_file.clone(),
+                    source,
+                })?;
+                parse_agents_full(
+                    &text,
+                    &agents_file,
+                    get_env,
+                    LocalAgentKind::compiled_in,
+                    registry_url_set,
+                )?
+            }
+            None if registry_url_set => (Vec::new(), BTreeMap::new()),
+            None => return Err(ConfigError::Missing("AGENTS_FILE")),
+        };
         // Blank is unset, so `all`. The enum and its names belong to adam-host; a name it does
         // not know is refused here, so the error is the usual one, naming the variable (78).
         let role =
@@ -1200,6 +1290,8 @@ impl Config {
             database_url,
             listen_addr,
             agents,
+            #[cfg(feature = "registry-platform")]
+            registry,
             gate,
             gate_rules,
             target_gates,
@@ -1325,6 +1417,157 @@ fn model_settings(
         api_key: api_key.map(SecretString::from),
         timeout: Duration::from_secs(timeout),
     }))
+}
+
+/// The raw values of the registry's environment variables (blank already counted as unset).
+struct RegistryVars {
+    url: Option<String>,
+    /// Only read by a build that has a registry.
+    #[cfg(feature = "registry-platform")]
+    token: Option<String>,
+    #[cfg(feature = "registry-platform")]
+    agent_token: Option<String>,
+    timeout_secs: Option<String>,
+    max_age_secs: Option<String>,
+}
+
+/// The platform's agent registry (`AGENT_REGISTRY_URL` and the variables that go with it).
+#[cfg(feature = "registry-platform")]
+#[derive(Clone)]
+pub struct RegistrySettings {
+    /// `AGENT_REGISTRY_URL`: an absolute `http(s)` URL with a host and no credentials.
+    pub url: String,
+    /// `AGENT_REGISTRY_TOKEN`: the bearer token for the registry, when it wants one.
+    pub token: Option<SecretString>,
+    /// `AGENT_REGISTRY_AGENT_TOKEN`: the bearer token sent to every agent the registry lists.
+    pub agent_token: Option<SecretString>,
+    /// `AGENT_REGISTRY_TIMEOUT_SECS`: how long one read may take.
+    pub timeout: Duration,
+    /// `AGENT_REGISTRY_MAX_AGE_SECS`: the longest a copy of the document is kept.
+    pub max_age: Duration,
+}
+
+#[cfg(feature = "registry-platform")]
+impl fmt::Debug for RegistrySettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The URL may carry a secret in its query: show where it goes, not what it says.
+        let shown = url::Url::parse(&self.url)
+            .map(|u| {
+                let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+                format!(
+                    "{}://{}{port}{}",
+                    u.scheme(),
+                    u.host_str().unwrap_or(""),
+                    u.path()
+                )
+            })
+            .unwrap_or_else(|_| "<not a URL>".to_owned());
+        f.debug_struct("RegistrySettings")
+            .field("url", &shown)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "agent_token",
+                &self.agent_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("timeout", &self.timeout)
+            .field("max_age", &self.max_age)
+            .finish()
+    }
+}
+
+/// A number of seconds in `min..=max`.
+fn seconds_between(
+    raw: Option<String>,
+    var: &'static str,
+    default: u64,
+    min: u64,
+    max: u64,
+) -> Result<u64, ConfigError> {
+    let value = number(raw, var, default, min)?;
+    if value > max {
+        return Err(ConfigError::Invalid {
+            var,
+            reason: format!("must be at most {max}"),
+        });
+    }
+    Ok(value)
+}
+
+/// The registry's settings: none when `AGENT_REGISTRY_URL` is unset (the other variables are then
+/// only checked for being numbers in range), else the URL, which must be an absolute `http(s)`
+/// URL with a host and no user name or password.
+#[cfg(feature = "registry-platform")]
+fn registry_settings(vars: RegistryVars) -> Result<Option<RegistrySettings>, ConfigError> {
+    let timeout = seconds_between(
+        vars.timeout_secs,
+        "AGENT_REGISTRY_TIMEOUT_SECS",
+        DEFAULT_REGISTRY_TIMEOUT_SECS,
+        1,
+        MAX_REGISTRY_TIMEOUT_SECS,
+    )?;
+    let max_age = seconds_between(
+        vars.max_age_secs,
+        "AGENT_REGISTRY_MAX_AGE_SECS",
+        DEFAULT_REGISTRY_MAX_AGE_SECS,
+        1,
+        MAX_REGISTRY_MAX_AGE_SECS,
+    )?;
+    let Some(url) = vars.url else {
+        return Ok(None);
+    };
+    let bad = |reason: &str| ConfigError::Invalid {
+        var: "AGENT_REGISTRY_URL",
+        reason: reason.to_owned(),
+    };
+    let parsed = Url::parse(&url).map_err(|_| {
+        bad("expected an absolute http:// or https:// URL, like https://platform.example.com/registry/v1/agents")
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
+        return Err(bad(
+            "expected an absolute http:// or https:// URL, like https://platform.example.com/registry/v1/agents",
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(bad(
+            "must not carry a user name or password (use AGENT_REGISTRY_TOKEN for a bearer token)",
+        ));
+    }
+    Ok(Some(RegistrySettings {
+        url,
+        token: vars.token.map(SecretString::from),
+        agent_token: vars.agent_token.map(SecretString::from),
+        timeout: Duration::from_secs(timeout),
+        max_age: Duration::from_secs(max_age),
+    }))
+}
+
+/// A build without the platform registry: a URL for one is an error, and the numbers are still
+/// checked. Whether a registry is configured is then always `false`.
+#[cfg(not(feature = "registry-platform"))]
+fn refuse_registry(vars: RegistryVars) -> Result<bool, ConfigError> {
+    let RegistryVars {
+        url,
+        timeout_secs,
+        max_age_secs,
+    } = vars;
+    seconds_between(
+        timeout_secs,
+        "AGENT_REGISTRY_TIMEOUT_SECS",
+        DEFAULT_REGISTRY_TIMEOUT_SECS,
+        1,
+        MAX_REGISTRY_TIMEOUT_SECS,
+    )?;
+    seconds_between(
+        max_age_secs,
+        "AGENT_REGISTRY_MAX_AGE_SECS",
+        DEFAULT_REGISTRY_MAX_AGE_SECS,
+        1,
+        MAX_REGISTRY_MAX_AGE_SECS,
+    )?;
+    if url.is_some() {
+        return Err(ConfigError::RegistryNotCompiled);
+    }
+    Ok(false)
 }
 
 /// The raw values of the gate's environment variables (blank already counted as unset).
@@ -1863,17 +2106,6 @@ where
     Ok(value)
 }
 
-/// `^[a-z0-9][a-z0-9-]{0,62}$`: safe in URLs, file names and labels.
-fn valid_agent_id(id: &str) -> bool {
-    let mut chars = id.chars();
-    let first_ok = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    first_ok
-        && id.len() <= MAX_AGENT_ID_LEN
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
 fn invalid(id: &str, reason: impl Into<String>) -> ConfigError {
     ConfigError::InvalidAgent {
         id: id.to_owned(),
@@ -1900,15 +2132,18 @@ fn parse_agents_with(
     env: impl Fn(&str) -> Option<String>,
     local_compiled_in: impl Fn(LocalAgentKind) -> bool,
 ) -> Result<Vec<AgentEntry>, ConfigError> {
-    parse_agents_full(yaml, path, env, local_compiled_in).map(|(entries, _)| entries)
+    parse_agents_full(yaml, path, env, local_compiled_in, false).map(|(entries, _)| entries)
 }
 
 /// The entries of the YAML list and the `gate` key of each that has one.
+///
+/// `allow_empty`: a file that lists no agent is fine (a registry lists them).
 fn parse_agents_full(
     yaml: &str,
     path: &Path,
     env: impl Fn(&str) -> Option<String>,
     local_compiled_in: impl Fn(LocalAgentKind) -> bool,
+    allow_empty: bool,
 ) -> Result<(Vec<AgentEntry>, BTreeMap<AgentId, GateLayer>), ConfigError> {
     let specs: Option<Vec<AgentSpec>> =
         serde_norway::from_str(yaml).map_err(|e| ConfigError::AgentsFileParse {
@@ -1916,7 +2151,7 @@ fn parse_agents_full(
             message: e.to_string(),
         })?;
     let specs = specs.unwrap_or_default();
-    if specs.is_empty() {
+    if specs.is_empty() && !allow_empty {
         return Err(ConfigError::NoAgents {
             path: path.to_owned(),
         });
@@ -1925,7 +2160,7 @@ fn parse_agents_full(
     let mut entries: Vec<AgentEntry> = Vec::with_capacity(specs.len());
     let mut gates: BTreeMap<AgentId, GateLayer> = BTreeMap::new();
     for spec in specs {
-        if !valid_agent_id(&spec.id) {
+        if !orch_core::is_valid_agent_id(&spec.id) {
             return Err(invalid(
                 &spec.id,
                 "id must match ^[a-z0-9][a-z0-9-]{0,62}$ (lower-case letters, digits, dashes)",
@@ -2079,6 +2314,11 @@ mod tests {
             let slot = match *name {
                 "DATABASE_URL" => &mut args.database_url,
                 "AGENTS_FILE" => &mut args.agents_file,
+                "AGENT_REGISTRY_URL" => &mut args.registry_url,
+                "AGENT_REGISTRY_TOKEN" => &mut args.registry_token,
+                "AGENT_REGISTRY_AGENT_TOKEN" => &mut args.registry_agent_token,
+                "AGENT_REGISTRY_TIMEOUT_SECS" => &mut args.registry_timeout_secs,
+                "AGENT_REGISTRY_MAX_AGE_SECS" => &mut args.registry_max_age_secs,
                 "LISTEN_ADDR" => &mut args.listen_addr,
                 "ORCH_ROLE" => &mut args.role,
                 "ORCH_SURFACES" => &mut args.surfaces,
@@ -2268,6 +2508,188 @@ mod tests {
         assert!(cfg.model.unwrap().api_key.is_none());
     }
 
+    /// An environment with a registry URL and no `AGENTS_FILE`.
+    fn registry_only<'a>() -> Vec<(&'a str, &'a str)> {
+        let mut env = base();
+        env.retain(|(k, _)| *k != "AGENTS_FILE");
+        env.push((
+            "AGENT_REGISTRY_URL",
+            "https://platform.example.com/registry/v1/agents",
+        ));
+        env
+    }
+
+    #[cfg(feature = "registry-platform")]
+    #[test]
+    fn there_is_no_registry_unless_its_url_is_set() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(cfg.registry.is_none());
+        // the other variables alone turn nothing on
+        let mut env = base();
+        env.extend([
+            ("AGENT_REGISTRY_TOKEN", "reg-secret"),
+            ("AGENT_REGISTRY_AGENT_TOKEN", "agent-secret"),
+        ]);
+        assert!(load(&env, AGENTS).unwrap().registry.is_none());
+    }
+
+    #[cfg(feature = "registry-platform")]
+    #[test]
+    fn a_registry_is_read_with_its_defaults_and_its_secrets_stay_out_of_every_debug() {
+        let mut env = base();
+        env.extend([
+            (
+                "AGENT_REGISTRY_URL",
+                "http://platform.agents.svc:8080/registry/v1/agents?tenant=secret-tenant",
+            ),
+            ("AGENT_REGISTRY_TOKEN", "reg-secret"),
+            ("AGENT_REGISTRY_AGENT_TOKEN", "agent-secret"),
+        ]);
+        let cfg = load(&env, AGENTS).unwrap();
+        let registry = cfg.registry.as_ref().unwrap();
+        assert_eq!(
+            registry.url,
+            "http://platform.agents.svc:8080/registry/v1/agents?tenant=secret-tenant"
+        );
+        assert_eq!(registry.timeout, Duration::from_secs(3));
+        assert_eq!(registry.max_age, Duration::from_secs(60));
+        assert_eq!(cfg.agents.len(), 2, "the file's agents are still there");
+        for text in [format!("{cfg:?}"), format!("{registry:?}")] {
+            assert!(!text.contains("reg-secret"), "{text}");
+            assert!(!text.contains("agent-secret"), "{text}");
+            assert!(
+                !text.contains("secret-tenant"),
+                "no query in a log line: {text}"
+            );
+            assert!(text.contains("<redacted>"), "{text}");
+            assert!(
+                text.contains("platform.agents.svc:8080/registry/v1/agents"),
+                "{text}"
+            );
+        }
+
+        env.extend([
+            ("AGENT_REGISTRY_TIMEOUT_SECS", "10"),
+            ("AGENT_REGISTRY_MAX_AGE_SECS", "3600"),
+        ]);
+        let cfg = load(&env, AGENTS).unwrap();
+        let registry = cfg.registry.unwrap();
+        assert_eq!(registry.timeout, Duration::from_secs(10));
+        assert_eq!(registry.max_age, Duration::from_secs(3600));
+    }
+
+    #[cfg(feature = "registry-platform")]
+    #[test]
+    fn the_registry_url_must_be_an_absolute_http_url_without_credentials() {
+        for bad in [
+            "platform.example.com/registry",
+            "/registry/v1/agents",
+            "ftp://platform.example.com/registry",
+            "file:///etc/passwd",
+            "https://",
+            "https://user:pw@platform.example.com/registry/v1/agents",
+            "https://user@platform.example.com/registry/v1/agents",
+        ] {
+            let mut env = base();
+            env.push(("AGENT_REGISTRY_URL", bad));
+            let err = load(&env, AGENTS).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "AGENT_REGISTRY_URL",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+            assert!(!err.to_string().contains("pw"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_registry_numbers_are_validated_whether_or_not_a_registry_is_set() {
+        for (var, bad) in [
+            ("AGENT_REGISTRY_TIMEOUT_SECS", "0"),
+            ("AGENT_REGISTRY_TIMEOUT_SECS", "61"),
+            ("AGENT_REGISTRY_TIMEOUT_SECS", "soon"),
+            ("AGENT_REGISTRY_MAX_AGE_SECS", "0"),
+            ("AGENT_REGISTRY_MAX_AGE_SECS", "3601"),
+            ("AGENT_REGISTRY_MAX_AGE_SECS", "-1"),
+        ] {
+            let mut env = base();
+            env.push((var, bad));
+            let err = load(&env, AGENTS).unwrap_err();
+            match &err {
+                ConfigError::Invalid { var: got, .. } => assert_eq!(*got, var, "{bad}"),
+                other => panic!("{var}={bad}: {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(feature = "registry-platform")]
+    #[test]
+    fn agents_file_is_optional_when_a_registry_is_set() {
+        // unset
+        let cfg = load(&registry_only(), AGENTS).unwrap();
+        assert!(cfg.agents.is_empty());
+        assert!(cfg.target_gates.is_empty());
+        assert!(cfg.registry.is_some());
+        // set, and listing nothing
+        let mut env = base();
+        env.push((
+            "AGENT_REGISTRY_URL",
+            "https://platform.example.com/registry/v1/agents",
+        ));
+        for empty in ["[]", "", "# nothing yet\n"] {
+            let cfg = load(&env, empty).unwrap();
+            assert!(cfg.agents.is_empty(), "{empty:?}");
+        }
+        // set, and listing agents: they stay, and come first
+        let cfg = load(&env, AGENTS).unwrap();
+        assert_eq!(cfg.agents.len(), 2);
+        // a file that is set is still read and still validated
+        let err = load(
+            &env,
+            "- id: Bad_Id\n  name: X\n  cardUrl: https://x.example.com/c\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAgent { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn without_a_registry_the_agent_file_is_still_required_and_must_list_agents() {
+        let mut env = base();
+        env.retain(|(k, _)| *k != "AGENTS_FILE");
+        assert!(matches!(
+            load(&env, AGENTS),
+            Err(ConfigError::Missing("AGENTS_FILE"))
+        ));
+        assert!(matches!(
+            load(&base(), "[]"),
+            Err(ConfigError::NoAgents { .. })
+        ));
+    }
+
+    #[cfg(not(feature = "registry-platform"))]
+    #[test]
+    fn a_registry_url_in_a_build_without_the_registry_is_refused_not_ignored() {
+        let err = load(&registry_only(), AGENTS).unwrap_err();
+        assert!(matches!(err, ConfigError::RegistryNotCompiled), "{err:?}");
+        assert!(err.to_string().contains("registry-platform"), "{err}");
+        let mut env = base();
+        env.push((
+            "AGENT_REGISTRY_URL",
+            "https://platform.example.com/registry/v1/agents",
+        ));
+        assert!(matches!(
+            load(&env, AGENTS),
+            Err(ConfigError::RegistryNotCompiled)
+        ));
+        // and without a URL nothing changes
+        assert_eq!(load(&base(), AGENTS).unwrap().agents.len(), 2);
+    }
+
     #[test]
     fn the_agent_list_is_parsed_and_tokens_are_read_from_their_variables() {
         let cfg = load(&base(), AGENTS).unwrap();
@@ -2341,9 +2763,9 @@ mod tests {
                 "{bad:?} must be refused"
             );
         }
-        assert!(valid_agent_id("a"));
-        assert!(valid_agent_id("coder-2"));
-        assert!(valid_agent_id(&"a".repeat(63)));
+        assert!(orch_core::is_valid_agent_id("a"));
+        assert!(orch_core::is_valid_agent_id("coder-2"));
+        assert!(orch_core::is_valid_agent_id(&"a".repeat(63)));
     }
 
     #[test]
@@ -3758,6 +4180,7 @@ mod tests {
             &agents_with_gate("{maxAttempts: 4}"),
         )
         .unwrap();
+        let directory = AgentDirectory::new(cfg.agents.clone());
         let app = App::new(
             PortSet {
                 store: MemoryStore::new(),
@@ -3766,8 +4189,9 @@ mod tests {
                 clock: SystemClock,
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                registry: directory.fixed_registry(),
             },
-            AgentDirectory::new(cfg.agents.clone()),
+            directory,
             cfg.app_config(),
         )
         .unwrap();

@@ -46,6 +46,7 @@ fn new_app() -> Arc<App<Stack>> {
         ),
         name: "Plain".to_owned(),
     };
+    let directory = AgentDirectory::new(vec![entry]);
     Arc::new(
         App::new(
             PortSet {
@@ -55,8 +56,9 @@ fn new_app() -> Arc<App<Stack>> {
                 clock: SystemClock,
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                registry: directory.fixed_registry(),
             },
-            AgentDirectory::new(vec![entry]),
+            directory,
             AppConfig::default(),
         )
         .expect("a valid gate"),

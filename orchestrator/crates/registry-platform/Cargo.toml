@@ -1,0 +1,33 @@
+[package]
+name = "orch-registry-platform"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "AgentRegistry over the platform's agent-registry/v1: a linkset of agent cards, read live over HTTP with its cache headers and failing closed."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+axum.workspace = true
+proptest.workspace = true
+url.workspace = true
+secrecy.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

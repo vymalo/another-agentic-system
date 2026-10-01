@@ -8,17 +8,20 @@
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
 //!   and [`ByTransport`], which serves one endpoint set from two clients (remote A2A, in-process);
 //! - [`ChatModel`]: one question to a language model and its answer (the orchestrator's titles);
+//! - [`AgentRegistry`]: which agents exist right now, read live and failing closed (ADR 0022), with
+//!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one);
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
 //! this crate ships in-memory ones behind the `testkit` feature together with a conformance
-//! testkit every `ThreadStore` / `Wakeup` implementation must pass.
+//! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` implementation must pass.
 
 mod agent;
 mod bundle;
 mod clock;
 mod inbox;
 mod model;
+mod registry;
 mod route;
 mod store;
 mod wakeup;
@@ -39,6 +42,10 @@ pub use inbox::{
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
 };
 pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
+pub use registry::{
+    AgentListing, AgentRegistry, CompositeRegistry, FixedRegistry, RegistryEntry, RegistryError,
+    STATIC_SOURCE, SourceStatus,
+};
 pub use route::ByTransport;
 pub use store::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, Lease, NewEvent, NewOutbox,

@@ -2162,6 +2162,7 @@ dependencies = [
  "orch-app",
  "orch-core",
  "orch-ports",
+ "orch-registry-platform",
  "orch-store-postgres",
  "orch-surface-mcp",
  "orch-surface-thread-tools",
@@ -2208,7 +2209,26 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tracing",
  "uuid",
+]
+
+[[package]]
+name = "orch-registry-platform"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "orch-core",
+ "orch-ports",
+ "proptest",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2386,6 +2406,7 @@ dependencies = [
  "orch-core",
  "orch-model-openai",
  "orch-ports",
+ "orch-registry-platform",
  "orch-store-postgres",
  "orch-surface-agui",
  "orch-surface-mcp",

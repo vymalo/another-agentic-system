@@ -53,11 +53,14 @@ paths:
       operationId: listAgents
       summary: Agents the user can target
       description: |
-        Configured A2A agents (static configuration in the MVP). For each, the
-        orchestrator reads the live agent card; `releases` is present only when
-        the card advertises the release-channels extension (ADR 0008).
-        Listed in configuration order; the first is the default target, which clients
-        preselect. An agent whose card cannot be read stays in its place.
+        The agents the deployment lists (`AGENTS_FILE`, `source: static`) and, when it reads one,
+        the agents of the platform's registry (`source: registry`, [ADR 0022](../decisions/0022-platform-provisions-agents-system-discovers-them.md)).
+        The list is read now, on every request: an agent added to the registry shows on the next
+        request, and one it removed is gone. For each, the orchestrator reads the live agent card;
+        `releases` is present only when the card advertises the release-channels extension (ADR 0008).
+        Listed in display order, the static agents first; the first is the default target, which
+        clients preselect. An agent whose card cannot be read stays in its place. A registry that
+        cannot be read lists none of its agents (fail closed) and the static agents stay.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
@@ -65,6 +68,27 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
+  /api/registry:
+    get:
+      operationId: getRegistry
+      summary: Whether each source of agents could be read
+      description: |
+        How each source of the agent list answered on a read made now
+        ([ADR 0022](../decisions/0022-platform-provisions-agents-system-discovers-them.md)): the
+        deployment's own list (`static`, always `ok`) and, when the deployment reads one, the
+        platform's registry (`platform`). A client reads it beside `listAgents` to say that the
+        list is incomplete: a registry that cannot be read lists none of its agents (fail closed),
+        and `listAgents` alone cannot tell "the platform has none" from "the platform cannot be
+        reached". No agent card is read, and neither a URL nor a credential is in the answer.
+        Never cached.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: One status per source, in the order the sources are read
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Registry" }
   /api/threads:
     get:
       operationId: listThreads
@@ -185,14 +209,14 @@ paths:
               x-itemSchema: { $ref: "#/components/schemas/AgUiSseFrame" }
         "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
-        "404": { description: "The agent is not configured, or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else (indistinguishable from one that does not exist, including a minted id that collides with another owner's thread)", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
         "409": { description: "The thread targets another agent, a run is already open on it, the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
         "422": { description: "Nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
-        "503": { description: "Storage is unavailable, the thread is contended, or the target agent is rate limiting; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, the thread is contended, the target agent is rate limiting, or the agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/threads/{threadId}/connect:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -238,7 +262,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AgUiAgentCapabilities" }
         "401": { $ref: "#/components/responses/Problem" }
-        "404": { description: "The agent is not configured", $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not listed (the registry answered without it)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
     proxyIdentity:
@@ -276,9 +301,22 @@ components:
       type: object
       required: [id, name]
       properties:
-        id: { type: string, description: "Configuration key, e.g. coder" }
+        id: { type: string, description: "The agent's id: its configuration key or its registry service id, e.g. coder" }
         name: { type: string }
         description: { type: string }
+        source:
+          type: string
+          enum: [static, registry]
+          description: |
+            Where the agent is listed from: `static` (the deployment's own list) or `registry` (the
+            platform's agent registry). Always sent; a client that reads an orchestrator from before
+            the registry treats an absent value as `static`.
+        tags:
+          type: array
+          items: { type: string }
+          description: |
+            Labels the registry keeps on the agent, for a client to show and to filter by; they route,
+            authorise and select nothing. Omitted when there are none (a static agent has none).
         cardUrl:
           type: string
           format: uri
@@ -291,6 +329,29 @@ components:
             defaultChannel: { type: string }
             channels: { type: object, additionalProperties: { type: string } }
             revisions: { type: array, items: { type: string } }
+    Registry:
+      type: object
+      required: [sources]
+      properties:
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/RegistrySource" }
+    RegistrySource:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: "`static` (the deployment's own list) or `platform` (the platform's registry)"
+        status:
+          type: string
+          enum: [ok, unavailable]
+        detail:
+          type: string
+          description: |
+            Present only when `unavailable`: why, in words fit for a person ("the registry could not
+            be reached", "the registry refused the orchestrator's credentials", "a registry document
+            this build cannot read"). Never a URL or a credential.
     AgentTarget:
       type: object
       required: [agentId]

@@ -64,10 +64,17 @@ x-orchestrator: &orchestrator
       condition: service_healthy
     mock-verifier:
       condition: service_healthy
+    mock-registry:
+      condition: service_healthy
 
 x-orchestrator-env: &orchestrator-env
   DATABASE_URL: postgres://postgres:postgres@postgres:5432/orch
   AGENTS_FILE: /etc/orchestrator/agents.yaml
+  # The platform's agent registry (agent-registry/v1, ADR 0022), here the WireMock `mock-registry`: its agents are read live beside
+  # the ones of dev/agents.yaml (which come first), so an agent added to the mock shows in the picker without a restart, and a mock
+  # that is down leaves the static agents and says so (dev/README.md, "The agent registry"). Unset it and only dev/agents.yaml is read.
+  AGENT_REGISTRY_URL: http://mock-registry:8080/registry/v1/agents
+  AGENT_REGISTRY_AGENT_TOKEN: dev-registry-agent-token # sent to every agent the registry lists; the mocks accept any token
   MOCK_AGENT_TOKEN: dev-mock-token # named by `tokenEnv` in dev/agents.yaml; the mocks accept any token
   CODER_A2A_TOKEN: dev-coder-token # named by `tokenEnv` in dev/agents.yaml; must equal A2A_BEARER_TOKENS of `coder`
   CHAT_A2A_TOKEN: dev-chat-token # the same for `chat` ...
@@ -182,6 +189,17 @@ services:
     volumes:
       - ./dev/wiremock/verifier/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/verifier/__files:/home/wiremock/__files:ro
+
+  # The platform's agent registry (agent-registry/v1, ADR 0022) as a WireMock stub: a linkset that lists one agent,
+  # `platform-coder`, at the card of `mock-agent-releases`. The orchestrator reads it (AGENT_REGISTRY_URL); dev/registry-e2e.sh
+  # changes it through WireMock's admin API (adds an agent, makes it answer 503) and checks the picker follows.
+  mock-registry:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_REGISTRY_PORT:-8084}:8080"
+    volumes:
+      - ./dev/wiremock/registry/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/registry/__files:/home/wiremock/__files:ro
 
   orchestrator:
     <<: *orchestrator

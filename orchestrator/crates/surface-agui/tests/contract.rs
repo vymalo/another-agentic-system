@@ -460,6 +460,12 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     seen.problem("getAgentCapabilities", 401, &r);
     let r = h.get("/agui/agents/nobody/capabilities", Some(ALICE)).await;
     seen.problem("getAgentCapabilities", 404, &r);
+    // A registry that cannot say whether the agent exists is a 503, never a 404 (ADR 0022).
+    h.registry.set_down(true);
+    let r = h.get("/agui/agents/nobody/capabilities", Some(ALICE)).await;
+    seen.problem("getAgentCapabilities", 503, &r);
+    assert!(r.headers.contains_key("retry-after"));
+    h.registry.set_down(false);
 
     // The documented statuses are the answered ones, operation by operation. A store that fails
     // to read a thread (a 503 of connectThread, `App::get_thread` through `problem_for`) cannot be

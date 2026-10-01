@@ -34,7 +34,7 @@
 //!                         -> follows the job (progress notifications), then the summary + outcome
 //! answer {job_id, text}   -> {job_id, state}
 //! cancel_job {job_id}     -> {job_id, state, finished}
-//! list_agents {}          -> {agents: [{id, name, description}]}
+//! list_agents {}          -> {agents: [{id, name, description}], unavailable_sources?: [name]}
 //! ```
 //!
 //! # Response framing

@@ -13,7 +13,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
-import { AGENTS, DEV_USER } from "./fixtures";
+import { AGENTS, DEV_USER, REGISTRY_UNREACHABLE } from "./fixtures";
 import { LiveOverlay, type LivePiece } from "./live";
 import {
   type Audience,
@@ -29,6 +29,7 @@ import { cancelSteps, type Step, scriptFor } from "./scripts";
 type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
 type Actor = components["schemas"]["Actor"];
+type Agent = components["schemas"]["Agent"];
 type ThreadState = components["schemas"]["ThreadState"];
 
 const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
@@ -163,6 +164,38 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    */
   const writing = new Map<string, { messageId: string; agent: string; text: string }>();
   let cutNextConnectAfter: number | undefined;
+  /**
+   * The platform's agent registry (ADR 0022), as a test sets it: the agents it lists (after the
+   * configured ones, `source: "registry"`) and whether it can be read. A registry that cannot be
+   * read lists none of its agents, and a run on one of them is a 503, never a 404.
+   *
+   * The state is kept per session, so that e2e tests running in parallel against one mock do not
+   * see each other's registry: a browser says which in the cookie `mock-registry`, a test hook in
+   * `?session=`. No session is the `default` one.
+   */
+  type Registry = { agents: Agent[]; down: boolean };
+  const registries = new Map<string, Registry>();
+  const registryOf = (session: string): Registry => {
+    let registry = registries.get(session);
+    if (!registry) {
+      registry = { agents: [], down: false };
+      registries.set(session, registry);
+    }
+    return registry;
+  };
+  const sessionOf = (req: http.IncomingMessage): string =>
+    /(?:^|;\s*)mock-registry=([^;]+)/.exec(req.headers.cookie ?? "")?.[1] ?? "default";
+  const listedAgents = (req: http.IncomingMessage): Agent[] => {
+    const registry = registryOf(sessionOf(req));
+    return [...AGENTS, ...(registry.down ? [] : registry.agents)];
+  };
+  const findAgent = (req: http.IncomingMessage, id: string): Agent | undefined =>
+    listedAgents(req).find((a) => a.id === id);
+  /** Every agent any session's registry lists: a thread keeps its agent when a session's registry goes. */
+  const everyAgent = (): Agent[] => [
+    ...AGENTS,
+    ...[...registries.values()].flatMap((r) => r.agents),
+  ];
 
   const reset = () => {
     writing.clear();
@@ -174,6 +207,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     runs.clear();
     gates.clear();
     cutNextConnectAfter = undefined;
+    registries.clear();
   };
 
   // ---- helpers -------------------------------------------------------------------------
@@ -387,7 +421,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   };
 
   function agentActor(t: Thread): Actor {
-    const agent = AGENTS.find((a) => a.id === t.target.agentId);
+    const agent = everyAgent().find((a) => a.id === t.target.agentId);
     const releases = agent?.releases;
     let revision: string | undefined;
     if (releases) {
@@ -454,14 +488,36 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       cutNextConnectAfter = Number(url.searchParams.get("frames") ?? 0) || 0;
       return void res.writeHead(204).end();
     }
-    if (path === "/api/agents" && method === "GET") return sendJson(res, 200, AGENTS);
+    // The registry as a test sets it (per session, see above): `?down=true` makes it unreachable,
+    // a body adds an agent.
+    const session = url.searchParams.get("session") ?? "default";
+    if (path === "/__mock/registry" && method === "POST") {
+      registryOf(session).down = url.searchParams.get("down") === "true";
+      return void res.writeHead(204).end();
+    }
+    if (path === "/__mock/registry/agents" && method === "POST") {
+      const agent = (await readJson(req)) as Agent;
+      registryOf(session).agents.push({ ...agent, source: "registry" });
+      return void res.writeHead(204).end();
+    }
+    if (path === "/api/agents" && method === "GET") return sendJson(res, 200, listedAgents(req));
+    if (path === "/api/registry" && method === "GET") {
+      return sendJson(res, 200, {
+        sources: [
+          { name: "static", status: "ok" },
+          registryOf(sessionOf(req)).down
+            ? { name: "platform", status: "unavailable", detail: REGISTRY_UNREACHABLE }
+            : { name: "platform", status: "ok" },
+        ],
+      });
+    }
 
     if (path === "/api/threads" && method === "GET") return listThreads(res, url);
 
     const run = /^\/agui\/agents\/([^/]+)$/.exec(path);
     if (run && method === "POST") return runAgent(req, res, decodeURIComponent(run[1] ?? ""));
     const caps = /^\/agui\/agents\/([^/]+)\/capabilities$/.exec(path);
-    if (caps && method === "GET") return capabilities(res, decodeURIComponent(caps[1] ?? ""));
+    if (caps && method === "GET") return capabilities(req, res, decodeURIComponent(caps[1] ?? ""));
     const connect = /^\/agui\/threads\/([^/]+)\/connect$/.exec(path);
     if (connect && method === "GET") {
       return connectThread(req, res, url, decodeURIComponent(connect[1] ?? ""));
@@ -558,9 +614,26 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     sendJson(res, 200, all.slice(0, limit).map(viewOf));
   }
 
-  function capabilities(res: http.ServerResponse, agentId: string) {
-    const agent = AGENTS.find((a) => a.id === agentId);
-    if (!agent) return problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
+  /** The agent `agentId`, or the answer for one that is not listed: 503 while the registry is down. */
+  function agentOrRefuse(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    agentId: string,
+  ): Agent | undefined {
+    const agent = findAgent(req, agentId);
+    if (agent) return agent;
+    if (registryOf(sessionOf(req)).down) {
+      res.setHeader("Retry-After", "5");
+      problem(res, 503, "Service Unavailable", "the agent registry is unreachable");
+    } else {
+      problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
+    }
+    return undefined;
+  }
+
+  function capabilities(req: http.IncomingMessage, res: http.ServerResponse, agentId: string) {
+    const agent = agentOrRefuse(req, res, agentId);
+    if (!agent) return;
     res.setHeader("Cache-Control", "no-store");
     sendJson(res, 200, {
       identity: {
@@ -633,8 +706,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     if (!UUID.test(threadId))
       return problem(res, 400, "Invalid request", "threadId must be a UUID");
-    const agent = AGENTS.find((a) => a.id === agentId);
-    if (!agent) return problem(res, 404, "Unknown agent", `No agent "${agentId}"`);
+    const agent = agentOrRefuse(req, res, agentId);
+    if (!agent) return;
     let catalog: CatalogSent | undefined;
     try {
       catalog = await readCatalog(body.forwardedProps);

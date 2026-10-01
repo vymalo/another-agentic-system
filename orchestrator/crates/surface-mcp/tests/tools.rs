@@ -3,10 +3,25 @@
 
 mod support;
 
-use orch_core::{AgentId, AgentUpdate, EventBody, EventKind, GatePolicy, Input, Origin};
-use orch_ports::ThreadStore;
+use orch_core::{
+    AgentId, AgentSource, AgentUpdate, EventBody, EventKind, GatePolicy, Input, Origin,
+};
+use orch_ports::{AgentEndpoint, RegistryEntry, ThreadStore};
 use serde_json::{Value, json};
 use support::*;
+
+fn platform_agent(id: &str) -> RegistryEntry {
+    RegistryEntry {
+        endpoint: AgentEndpoint::a2a(
+            AgentId::new(id),
+            format!("https://{id}.agents.example.com/.well-known/agent-card.json"),
+            None,
+        ),
+        name: "Helper".to_owned(),
+        tags: Vec::new(),
+        origin: AgentSource::Registry,
+    }
+}
 
 async fn events(h: &Harness, job: &str) -> Vec<orch_core::Event> {
     h.store.list_events(thread(job), 0, 100).await.unwrap()
@@ -29,6 +44,64 @@ async fn list_agents_gives_the_configured_agents_in_order() {
     assert_eq!(out.value["agents"][0]["description"], "scripted agent");
     // The result is text for the model as well as structured.
     assert!(out.text.contains("\"plain\""), "{}", out.text);
+}
+
+#[tokio::test]
+async fn list_agents_reads_the_registry_now_and_says_when_a_source_could_not_be_read() {
+    let h = Harness::start().await;
+    let client = h.client(ALICE_TOKEN).await;
+    let ids = |out: &Outcome| -> Vec<String> {
+        out.value["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let out = call(&client, "list_agents", json!({})).await;
+    assert_eq!(ids(&out), ["plain", "coder"]);
+    assert!(
+        out.value.get("unavailable_sources").is_none(),
+        "nothing is missing, and nothing says so: {}",
+        out.value
+    );
+
+    // An agent the platform adds is there at once, after the deployment's own.
+    h.registry.add(platform_agent("helper"));
+    let out = call(&client, "list_agents", json!({})).await;
+    assert_eq!(ids(&out), ["plain", "coder", "helper"]);
+
+    // A registry that cannot be read lists none of its agents, and the tool says which source.
+    h.registry.set_down(true);
+    let out = call(&client, "list_agents", json!({})).await;
+    assert!(!out.is_error);
+    assert_eq!(ids(&out), ["plain", "coder"]);
+    assert_eq!(out.value["unavailable_sources"], json!(["memory"]));
+
+    // The first agent is still the default of start_job, registry or not.
+    let started = call(&client, "start_job", json!({"text": "echo hi"})).await;
+    assert!(!started.is_error, "{started:?}");
+    let job = started.value["job_id"].as_str().unwrap().to_owned();
+    let record = h
+        .app
+        .get_thread(&orch_core::UserId::new(ALICE), thread(&job))
+        .await
+        .unwrap();
+    assert_eq!(record.target.agent_id, AgentId::new("plain"));
+
+    // An agent only the registry could list cannot be told to exist while it is down.
+    let refused = call(
+        &client,
+        "start_job",
+        json!({"text": "echo hi", "agent": "helper"}),
+    )
+    .await;
+    assert!(refused.is_error, "{refused:?}");
+    assert!(
+        refused.text.contains("temporarily unavailable"),
+        "{}",
+        refused.text
+    );
 }
 
 #[tokio::test]

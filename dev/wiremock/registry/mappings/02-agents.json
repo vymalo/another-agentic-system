@@ -1,0 +1,18 @@
+{
+  "name": "The registry document of agent-registry/v1: one agent, platform-coder (the card of mock-agent-releases)",
+  "priority": 2,
+  "request": {
+    "method": "GET",
+    "urlPath": "/registry/v1/agents"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/linkset+json; profile=\"https://www.rfc-editor.org/info/rfc9727\"",
+      "Cache-Control": "private, max-age=2",
+      "ETag": "\"r-2026-10-01T09:00:00Z\"",
+      "Vary": "Authorization"
+    },
+    "bodyFileName": "agents.json"
+  }
+}

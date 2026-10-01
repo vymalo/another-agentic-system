@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use orch_core::{AgentId, Classify, ErrorClass, TransitionError};
-use orch_ports::{AgentError, StoreError};
+use orch_ports::{AgentError, RegistryError, StoreError};
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
 ///
@@ -34,6 +34,14 @@ pub enum AppError {
         /// What went wrong with it.
         #[source]
         source: AgentError,
+    },
+    /// The agent registry could not say whether an agent exists (ADR 0022: fail closed). The
+    /// caller is not wrong; it can try again once the registry answers.
+    #[error("the agent registry is unreachable")]
+    RegistryUnavailable {
+        /// What the registry said (its source and why, never a URL).
+        #[source]
+        source: RegistryError,
     },
     /// The thread kept changing under the optimistic commit loop; try again.
     #[error("the thread is being changed concurrently")]
@@ -81,6 +89,7 @@ impl Classify for AppError {
             AppError::Store(e) => e.class(),
             AppError::Transition(e) => e.class(),
             AppError::Upstream { source, .. } => source.class(),
+            AppError::RegistryUnavailable { source } => source.class(),
             AppError::Contended => ErrorClass::Conflict,
             AppError::Internal { .. } => ErrorClass::Internal,
         }
@@ -90,6 +99,7 @@ impl Classify for AppError {
         match self {
             AppError::Store(e) => e.retry_after(),
             AppError::Upstream { source, .. } => source.retry_after(),
+            AppError::RegistryUnavailable { .. } => None,
             AppError::NotFound
             | AppError::Invalid(_)
             | AppError::Finished
@@ -123,6 +133,9 @@ mod tests {
                 input: "cancel",
             }),
             AppError::upstream(&AgentId::new("coder"), AgentError::unreachable("card")),
+            AppError::RegistryUnavailable {
+                source: RegistryError::unavailable("platform", "the registry could not be reached"),
+            },
             AppError::Contended,
             AppError::internal("broken"),
         ];
@@ -135,6 +148,7 @@ mod tests {
                 AppError::Store(inner) => inner.class(),
                 AppError::Transition(inner) => inner.class(),
                 AppError::Upstream { source, .. } => source.class(),
+                AppError::RegistryUnavailable { source } => source.class(),
                 AppError::Contended => ErrorClass::Conflict,
                 AppError::Internal { .. } => ErrorClass::Internal,
             };

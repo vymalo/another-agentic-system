@@ -61,7 +61,9 @@ pub(crate) async fn run<P: Ports>(
     let catalog = catalog_request(&input)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     let agent = AgentId::new(agent_id);
-    if state.app.directory().get(&agent).is_none() {
+    // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
+    // and a registry that cannot say is a 503, never a 404.
+    if state.app.resolve_agent(&agent).await?.is_none() {
         return Err(Problem::not_found("no such agent").into());
     }
     for _ in 0..MAX_ATTEMPTS {

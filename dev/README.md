@@ -173,6 +173,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
 | `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
+| `registry` | `dev/registry-e2e.sh` | the platform's agent registry ([`mock-registry`](#the-agent-registry), `agent-registry/v1`): its agent `platform-coder` is listed after the agents of `dev/agents.yaml` (`source: registry`, its title and tags) with the releases of **its own card**, and a thread on it ends `done` with the deployment-wide agent token; an agent added to the registry through WireMock's admin API shows up in `GET /api/agents` within 10 s, no restart; a registry that answers 503 leaves exactly the static agents, `GET /api/registry` says `unavailable` (no URL in it), a run on a registry agent is a 503 with `Retry-After` (never a 404), and a static agent still answers; after a reset it is read again |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once; the coder's work reads as a tree of steps (OpenCode a sub-agent step with its own steps under it, the log bounded per step) and its answer is shown as it is written, then completed by the log's message ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change (no OpenCode step) |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
@@ -185,7 +186,7 @@ Every script prints one `ok` or `FAIL` line per check and exits non-zero on a fa
 failed and prints the tail of its output. `ci` passes **once per database** (a commit belongs to the first job that
 pushed it), so a second run of it is reported as `SKIP`, not as a failure (so is `folder` where there is no `docker compose`): `docker compose --profile app down -v` and
 `up` again to run it fresh. The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 
 ### Connect Claude Code over MCP
 
@@ -288,6 +289,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
+| `mock-registry` | `wiremock/wiremock:3.13.2` | `8084` (`MOCK_REGISTRY_PORT`) | default | The platform's agent registry ([`agent-registry/v1`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md), [ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md)) as a stub: a linkset that lists `platform-coder`. The orchestrator reads it (`AGENT_REGISTRY_URL`); see [The agent registry](#the-agent-registry). |
 | `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
@@ -970,6 +972,41 @@ as `reading` in `coder-e2e.sh` does, never by joining its deltas: a live delta c
 *Unverified where this was written*, because the stack was not started (the disk of the machine was too small for the orchestrator and web builds): the scenario in containers, which is the first
 run of the coder at `cf6ddbb` behind the real orchestrator (the `Coder E2E` workflow of the pull request that pins it runs it), the kinds and labels of the steps a real OpenCode reports for its bash call (the script asks for at least one `command` or `tool` step
 under OpenCode and does not name its label), and how many pieces the relay merges (the script asks for two or more of a two-second answer).
+
+## The agent registry
+
+MVP slice 9 ([ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md); [`orchestrator/crates/registry-platform`](../orchestrator/crates/registry-platform/README.md)).
+another-agentic-platform provisions A2A agents and lists them in one document, the contract
+[`agent-registry/v1`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md): a linkset of agent cards, with each agent's service
+id, title and tags. The orchestrator reads it live and lists those agents **after** the ones of [`agents.yaml`](agents.yaml), which stay the default and win on an id both list. Here
+the platform is a WireMock stub, `mock-registry`.
+
+| What | Where |
+|---|---|
+| The settings | `AGENT_REGISTRY_URL` (`http://mock-registry:8080/registry/v1/agents`), `AGENT_REGISTRY_AGENT_TOKEN` (`dev-registry-agent-token`, sent to every agent the registry lists; the mocks accept any token), set on the orchestrator and the split workers in [`compose.yaml`](../compose.yaml). Unset `AGENT_REGISTRY_URL` and only `agents.yaml` is read (and `AGENTS_FILE` may then be the only source, or, with a registry, unset). Also `AGENT_REGISTRY_TOKEN` (a bearer for the registry itself), `AGENT_REGISTRY_TIMEOUT_SECS` (3) and `AGENT_REGISTRY_MAX_AGE_SECS` (60) |
+| The document | [`wiremock/registry/__files/agents.json`](wiremock/registry/__files/agents.json): one agent, `platform-coder` ("Platform coder", tags `coding` and `git`), at the card of `mock-agent-releases`. [`02-agents.json`](wiremock/registry/mappings/02-agents.json) serves it as `application/linkset+json` with `Cache-Control: private, max-age=2` and an `ETag`; [`01-not-modified.json`](wiremock/registry/mappings/01-not-modified.json) answers a request that asks with that ETag `304` |
+| The releases | not in the registry: the card of `mock-agent-releases` declares them ([release channels](#release-channels-mock-agent-releases)), and `GET /api/agents` shows them on `platform-coder` as on any agent |
+| The scenario | `dev/registry-e2e.sh`, `registry` in `dev/e2e-all.sh`; it resets `mock-registry` and empties the request journal of `mock-agent-releases` first |
+
+To see it in the chat, start the `app` profile and open the picker: `Platform coder` is the fourth of the coder's group, after the agents of `agents.yaml`, with its tags under its name. Add an agent to the registry
+**while the stack runs**, with WireMock's admin API, and open the picker again (or focus the window): it is there, with no restart.
+
+```sh
+curl -fsS -X POST http://127.0.0.1:8084/__admin/mappings -H 'content-type: application/json' -d '{
+  "priority": 1,
+  "request": {"method": "GET", "urlPath": "/registry/v1/agents"},
+  "response": {"status": 200,
+    "headers": {"Content-Type": "application/linkset+json", "Cache-Control": "private, max-age=2"},
+    "jsonBody": {"linkset": [{"profile": [{"href": "https://agents.vymalo.com/registry/v1"}], "item": [
+      {"href": "http://mock-agent:8080/.well-known/agent-card.json", "title": "Platform helper", "service": ["platform-helper"], "tags": ["writing"]}]}]}}}'
+```
+
+Make the registry answer 503 (`"response": {"status": 503}` in the same stub) and its agents leave the list: the picker keeps the agents of `agents.yaml` and says "The agent registry is unreachable; showing the
+configured agents only." (`GET /api/registry` says which source and why; a run on a registry agent is a 503, not a 404, and a message already accepted waits for the registry instead of failing).
+`curl -X POST http://127.0.0.1:8084/__admin/mappings/reset` puts the stubs of the files back. A change shows within a few seconds, not at once: the document is held in the process for as long as its
+`Cache-Control` allows (here two seconds), never in the database, and a registry that cannot be read is never served from that copy.
+
+Gate layers and the verifier belong to the agents of `agents.yaml`: a registry agent runs under the deployment's gate (`ORCH_GATE`, none here).
 
 ## Thread titles: the orchestrator asks a model
 

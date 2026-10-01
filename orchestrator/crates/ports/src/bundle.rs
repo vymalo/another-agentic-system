@@ -1,4 +1,6 @@
-use crate::{AgentClient, ChatModel, Clock, IdGen, ThreadStore, Wakeup};
+use crate::{
+    AgentClient, AgentRegistry, ChatModel, Clock, FixedRegistry, IdGen, ThreadStore, Wakeup,
+};
 
 /// A static-dispatch bundle of every port (ADR 0009: composition happens at build time).
 pub trait Ports: Send + Sync + 'static {
@@ -14,6 +16,8 @@ pub trait Ports: Send + Sync + 'static {
     type Ids: IdGen;
     /// The language model (`NoModel` in a deployment without one).
     type Model: ChatModel;
+    /// The agents that exist right now (ADR 0022).
+    type Registry: AgentRegistry;
 
     /// The store.
     fn store(&self) -> &Self::Store;
@@ -27,11 +31,14 @@ pub trait Ports: Send + Sync + 'static {
     fn ids(&self) -> &Self::Ids;
     /// The language model.
     fn model(&self) -> &Self::Model;
+    /// The agent registry.
+    fn registry(&self) -> &Self::Registry;
 }
 
-/// The plain struct implementation of [`Ports`].
+/// The plain struct implementation of [`Ports`]. The registry type defaults to the static list,
+/// so a `PortSet<S, W, A, C, I, M>` that never heard of registries still names a complete bundle.
 #[derive(Debug, Clone)]
-pub struct PortSet<S, W, A, C, I, M> {
+pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry> {
     /// The store.
     pub store: S,
     /// The wakeup channel.
@@ -44,9 +51,11 @@ pub struct PortSet<S, W, A, C, I, M> {
     pub ids: I,
     /// The language model.
     pub model: M,
+    /// The agent registry.
+    pub registry: R,
 }
 
-impl<S, W, A, C, I, M> Ports for PortSet<S, W, A, C, I, M>
+impl<S, W, A, C, I, M, R> Ports for PortSet<S, W, A, C, I, M, R>
 where
     S: ThreadStore,
     W: Wakeup,
@@ -54,6 +63,7 @@ where
     C: Clock,
     I: IdGen,
     M: ChatModel,
+    R: AgentRegistry,
 {
     type Store = S;
     type Wakeup = W;
@@ -61,6 +71,7 @@ where
     type Clock = C;
     type Ids = I;
     type Model = M;
+    type Registry = R;
 
     fn store(&self) -> &S {
         &self.store
@@ -79,5 +90,8 @@ where
     }
     fn model(&self) -> &M {
         &self.model
+    }
+    fn registry(&self) -> &R {
+        &self.registry
     }
 }

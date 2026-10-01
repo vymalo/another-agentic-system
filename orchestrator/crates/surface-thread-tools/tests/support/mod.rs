@@ -105,6 +105,7 @@ impl Harness {
             name: name.to_owned(),
         };
         let ids = SeqIds::default();
+        let directory = AgentDirectory::new(vec![entry("plain", "Plain"), entry("coder", "Coder")]);
         let app = Arc::new(
             App::new(
                 PortSet {
@@ -114,8 +115,9 @@ impl Harness {
                     clock: SystemClock,
                     ids: ids.clone(),
                     model: orch_ports::NoModel,
+                    registry: directory.fixed_registry(),
                 },
-                AgentDirectory::new(vec![entry("plain", "Plain"), entry("coder", "Coder")]),
+                directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     ..AppConfig::default()

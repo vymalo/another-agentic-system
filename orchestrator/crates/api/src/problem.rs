@@ -106,6 +106,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Rejected` | 409 |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
+/// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
 /// | an agent that rate limits | 503 + its `Retry-After` |
 /// | any other agent failure | 502 |
 /// | `Corrupt`, `Internal`, anything else | 500 |
@@ -124,6 +125,15 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         } else {
             (Problem::new(StatusCode::BAD_GATEWAY, err.to_string()), None)
         };
+    }
+    if matches!(err, AppError::RegistryUnavailable { .. }) {
+        // The caller did nothing wrong and the cause is not storage: say what is down. The
+        // detail is fixed text; the source and the reason are logged.
+        tracing::warn!(error = %report(err), "the agent registry could not be read");
+        return (
+            Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+            Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
+        );
     }
     match class {
         ErrorClass::NotFound => (Problem::not_found("no such thread"), None),
@@ -185,7 +195,7 @@ impl IntoResponse for ApiError {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use orch_core::{AgentId, ThreadState, TransitionError};
-    use orch_ports::{AgentError, StoreError};
+    use orch_ports::{AgentError, RegistryError, StoreError};
 
     use super::*;
 
@@ -263,6 +273,13 @@ mod tests {
                 503,
                 Some("5"),
             ),
+            (
+                AppError::RegistryUnavailable {
+                    source: RegistryError::unavailable("platform", "could not be reached"),
+                },
+                503,
+                Some("5"),
+            ),
         ];
         for (err, status, retry) in table {
             let label = format!("{err:?}");
@@ -299,6 +316,10 @@ mod tests {
                 &AgentId::new("coder"),
                 AgentError::unreachable("card").with_source(io(secret)),
             ),
+            AppError::RegistryUnavailable {
+                source: RegistryError::unavailable("platform", "the registry could not be reached")
+                    .with_source(io(secret)),
+            },
         ] {
             let (problem, _) = problem_for(&err);
             let text = serde_json::to_string(&problem).unwrap();
@@ -312,6 +333,13 @@ mod tests {
         assert_eq!(
             problem.detail.as_deref(),
             Some("agent coder is unavailable")
+        );
+        let (problem, _) = problem_for(&AppError::RegistryUnavailable {
+            source: RegistryError::unavailable("platform", "the registry could not be reached"),
+        });
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("the agent registry is unreachable")
         );
     }
 }

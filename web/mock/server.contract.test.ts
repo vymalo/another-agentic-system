@@ -174,6 +174,72 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(agents.find((a) => a.id === "reviewer")?.releases).toBeUndefined();
   });
 
+  it("the registry: its agents come after the configured ones, and none while it cannot be read", async () => {
+    const list = async () => {
+      const res = await fetch(`${base}/api/agents`);
+      return (await expectDocumented(
+        "/api/agents",
+        "get",
+        res,
+      )) as components["schemas"]["Agent"][];
+    };
+    const status = async () => {
+      const res = await fetch(`${base}/api/registry`);
+      return (await expectDocumented("/api/registry", "get", res)) as {
+        sources: { name: string; status: string; detail?: string }[];
+      };
+    };
+    try {
+      expect((await list()).map((a) => a.source)).toEqual(["static", "static", "static"]);
+      expect(await status()).toEqual({
+        sources: [
+          { name: "static", status: "ok" },
+          { name: "platform", status: "ok" },
+        ],
+      });
+
+      await post("/__mock/registry/agents", { id: "helper", name: "Helper", tags: ["writing"] });
+      const agents = await list();
+      expect(agents.map((a) => a.id)).toEqual(["coder", "reviewer", "verifier", "helper"]);
+      expect(agents[3]).toMatchObject({ source: "registry", tags: ["writing"] });
+
+      // down: none of the registry's agents, and the status says which source and why
+      await post("/__mock/registry?down=true");
+      expect((await list()).map((a) => a.id)).toEqual(["coder", "reviewer", "verifier"]);
+      expect(await status()).toEqual({
+        sources: [
+          { name: "static", status: "ok" },
+          { name: "platform", status: "unavailable", detail: "the registry could not be reached" },
+        ],
+      });
+      // an agent that cannot be said to exist is a 503, never a 404 (and a static one still runs)
+      const res = await postRun(base, "helper", {
+        threadId: newId(),
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: "hi" }],
+      });
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).not.toBeNull();
+      await expectDocumented("/agui/agents/{agentId}", "post", res);
+      const caps = await fetch(`${base}/agui/agents/helper/capabilities`);
+      expect(caps.status).toBe(503);
+      await expectDocumented("/agui/agents/{agentId}/capabilities", "get", caps);
+      const ok = await postRun(base, "reviewer", {
+        threadId: newId(),
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: "echo hi" }],
+      });
+      expect(ok.status).toBe(200);
+      await ok.body?.cancel();
+    } finally {
+      await post("/__mock/registry?down=false");
+    }
+    // up again: back, and reset forgets the registry's agents
+    expect((await list()).map((a) => a.id)).toContain("helper");
+    await post("/__mock/reset");
+    expect((await list()).map((a) => a.id)).toEqual(["coder", "reviewer", "verifier"]);
+  });
+
   it("run route: RUN_STARTED first, the run to its terminal event, then EOF; frames conform", async () => {
     const { threadId, body } = await startThread("Implement the thing");
     expect(body[0]?.event).toMatchObject({ type: "RUN_STARTED", threadId, runId: "run-1" });

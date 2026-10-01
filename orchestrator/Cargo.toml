@@ -23,6 +23,7 @@ orch-store-postgres = { path = "crates/store-postgres" }
 orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }
+orch-registry-platform = { path = "crates/registry-platform" }
 orch-model-openai = { path = "crates/model-openai" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }

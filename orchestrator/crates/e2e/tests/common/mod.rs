@@ -328,6 +328,7 @@ impl World {
                     clock: SystemClock,
                     ids: UuidV7Ids,
                     model: self.model.clone(),
+                    registry: self.directory().fixed_registry(),
                 },
                 self.directory(),
                 AppConfig {

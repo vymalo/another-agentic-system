@@ -80,13 +80,14 @@ flowchart TB
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
   subgraph G_PORTS["Ports: traits only"]
-    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, ChatModel, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
+    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, AgentRegistry, ChatModel, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
   end
   subgraph G_ADAPT["Adapters: implement the ports"]
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
     a2a["<b>orch-agent-a2a</b><br/>AgentClient over A2A 1.0<br/>a2a-client-lf"]
     adam["<b>orch-agent-adam</b><br/>AgentClient over adam-rs agents<br/>hosted in this process (feature agent-local)"]
     openai["<b>orch-model-openai</b><br/>ChatModel over an OpenAI-compatible<br/>chat completions endpoint (thread titles)"]
+    registry["<b>orch-registry-platform</b><br/>AgentRegistry over the platform's agent-registry/v1<br/>read live, cache headers, fails closed (feature registry-platform)"]
   end
   subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
@@ -109,7 +110,7 @@ flowchart TB
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, surface-webhook (default), agent-local (off)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, surface-webhook, registry-platform (default), agent-local (off)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -122,6 +123,7 @@ flowchart TB
   a2a --> a2amap
   a2a --> token
   adam --> ports
+  registry --> ports
   adam --> a2amap
   a2amap --> ports
   app --> ports
@@ -133,6 +135,7 @@ flowchart TB
   bin --> api
   bin --> pg
   bin --> a2a
+  bin -. "feature registry-platform" .-> registry
   bin -. "feature agent-local" .-> adam
   bin -. "feature surface-agui" .-> surfagui
   bin -. "feature surface-mcp" .-> surfmcp
@@ -186,8 +189,10 @@ Rules the graph enforces, each checkable in the manifests:
   the feature off, `cargo tree -p orchestrator -i adam-runtime` finds nothing.
 - **`orch-app` and `orch-api` name no adapter.** Only `bin/orchestrator` depends on
   the Postgres and agent crates and chooses them (`type Stack = PortSet<PgStore, PgWakeup, Agents,
-  SystemClock, UuidV7Ids>` in `boot.rs`, where `Agents` is `A2aAgentClient`, or with `agent-local`
-  `ByTransport<A2aAgentClient, LocalAgentClient>`, defined in `local.rs`).
+  SystemClock, UuidV7Ids, ConfiguredModel, Registry>` in `boot.rs`, where `Agents` is `A2aAgentClient`, or with `agent-local`
+  `ByTransport<A2aAgentClient, LocalAgentClient>`, defined in `local.rs`, and `Registry` is
+  `CompositeRegistry<FixedRegistry, Option<PlatformRegistry>>`: the `AGENTS_FILE` agents first, then the
+  platform's registry when `AGENT_REGISTRY_URL` is set).
 - **A surface depends on `orch-app` and `orch-api`, never on an adapter.** `orch-api` names no surface.
 - **`orch-agui-proto` depends on nothing of ours**, so it can be checked against the vendored
   AG-UI schema and moved on its own.
@@ -195,8 +200,9 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` and `agent_registry_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
+| `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | **Built** (MVP slice 9) |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
 | `orch-model-openai` (`crates/model-openai`) | `ChatModel` over an OpenAI-compatible `POST {base}/chat/completions`: the orchestrator's first model call, the title of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); `reqwest` only, no vendor SDK, the key never in an error or a `Debug` | **Built** |
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
