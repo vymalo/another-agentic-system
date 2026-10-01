@@ -143,6 +143,9 @@ stateDiagram-v2
   pull requests and files the agent shared follow as cards (`cards/turn-cards.tsx`). The statuses
   that come with words (`completed`, `input_required`) draw no step: the words and the state pill
   say it. A shape a renderer does not know renders nothing.
+- **Agent markdown** (`markdown-text.tsx`) is untrusted: raw HTML stays text, every link opens in
+  a new tab without an opener, and an image is **never fetched**: `![alt](url)` is its alt text and,
+  for an http(s) URL outside a link, a link to it (a URL can carry what the agent read).
 - **Thread ids** are UUIDv7 (`src/lib/uuid.ts`): the consumer mints them, and the orchestrator lists
   threads by id, newest first.
 

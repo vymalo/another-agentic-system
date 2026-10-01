@@ -7,11 +7,12 @@ import {
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
-import { CheckIcon, CopyIcon } from "lucide-react";
-import { type FC, memo, useMemo, useRef } from "react";
+import { CheckIcon, CopyIcon, ImageIcon } from "lucide-react";
+import { createContext, type FC, memo, useContext, useMemo, useRef } from "react";
 import remarkGfm from "remark-gfm";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 
@@ -76,6 +77,9 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   );
 };
 
+/** Whether a markdown element sits inside a link (an image there must not be a link too). */
+const InLink = createContext(false);
+
 const defaultComponents = memoizeMarkdownComponents({
   h1: ({ className, ...props }) => (
     <h1
@@ -130,7 +134,7 @@ const defaultComponents = memoizeMarkdownComponents({
   ),
   // Agent text is untrusted: every link opens in a new tab without an opener. Raw HTML stays off
   // (react-markdown's default), and react-markdown drops javascript: and data: URLs.
-  a: ({ className, ...props }) => (
+  a: ({ className, children, ...props }) => (
     <a
       className={cn(
         "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
@@ -139,8 +143,40 @@ const defaultComponents = memoizeMarkdownComponents({
       target="_blank"
       rel="noopener noreferrer"
       {...props}
-    />
+    >
+      <InLink.Provider value={true}>{children}</InLink.Provider>
+    </a>
   ),
+  // Agent text is untrusted, and an image is a request the browser makes on its own (a URL can
+  // carry what the agent read): an image is never drawn. It is its alt text and, when its URL is
+  // http(s), a link a person may follow.
+  img: function Img({ src, alt }) {
+    // inside a link (`[![x](img)](page)`) it is text: a link in a link is no link
+    const inLink = useContext(InLink);
+    const href = inLink ? undefined : safeHttpUrl(typeof src === "string" ? src : undefined);
+    const label = alt?.trim() || "image";
+    const content = (
+      <>
+        <ImageIcon aria-hidden="true" className="me-1 inline size-3.5 align-[-0.15em]" />
+        {label}
+      </>
+    );
+    return href ? (
+      <a
+        data-slot="md-image-link"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="aui-md-a text-primary hover:text-primary/80 underline underline-offset-2"
+      >
+        {content} <span className="sr-only">(image, opens in a new tab)</span>
+      </a>
+    ) : (
+      <span data-slot="md-image-text" className="text-muted-foreground">
+        {content}
+      </span>
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(
