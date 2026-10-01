@@ -3,7 +3,7 @@
 import { useAui } from "@assistant-ui/react";
 import { ChevronDownIcon } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import { BrandMark } from "@/components/brand-mark";
+import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus } from "@/components/inline-status";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
@@ -141,14 +141,14 @@ export function AgentsProblem({ agents }: { agents: AgentsView }) {
   return <InlineStatus>No agents are configured.</InlineStatus>;
 }
 
-/** The greeting of a new chat: the mark, a two-line welcome and what the chosen agent does. */
+/** The greeting of a new chat: the panda, a line of welcome and what the chosen agent does. */
 export function NewChatGreeting({ agents, selection }: Omit<Props, "onSelect">) {
   const agent = selected(agents.agents, selection);
   return (
     <div className="flex flex-col items-center gap-4 text-center">
-      <BrandMark className="size-11" />
+      <PandaMark size={96} className="size-[72px] sm:size-24" />
       <h1 className="text-[1.75rem] leading-tight font-medium tracking-tight text-balance sm:text-[2rem]">
-        What should we build today?
+        What should we get done?
       </h1>
       <p className="max-w-md text-[0.9375rem] text-muted-foreground text-balance">
         {agent?.description ?? "Describe a task, and an agent takes it from there."}

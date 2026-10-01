@@ -1,13 +1,23 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "@fontsource-variable/inter";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SIDEBAR_SCRIPT } from "@/features/threads/lib/sidebar-state";
 import "./globals.css";
 
+// The icons are the file conventions of this folder (favicon.ico, icon.svg, apple-icon.png) and
+// manifest.ts; web/DESIGN.md "Brand" says where they come from.
 export const metadata: Metadata = {
-  title: "Chat — another-agentic-system",
+  title: { default: "another·agentic", template: "%s · another·agentic" },
+  applicationName: "another·agentic",
   description: "Chat surface for the another-agentic-system orchestration layer",
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#141614" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -33,10 +33,10 @@ import { useView } from "./view-context";
 
 const TILE =
   "relative flex min-h-11 gap-3 rounded-lg border bg-background px-3 py-2.5 text-sm transition-colors " +
-  "has-[:checked]:border-primary has-[:checked]:bg-primary/5 " +
+  "has-[:checked]:border-brand has-[:checked]:bg-brand/5 " +
   "has-[:focus-visible]:ring-3 has-[:focus-visible]:ring-ring/50 " +
   "has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60";
-const CONTROL = "mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed";
+const CONTROL = "mt-0.5 size-4 shrink-0 accent-brand disabled:cursor-not-allowed";
 
 /** One option: the whole tile is the click target (the label's `::after` covers it). */
 function OptionTile({

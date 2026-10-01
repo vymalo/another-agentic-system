@@ -137,7 +137,7 @@ const defaultComponents = memoizeMarkdownComponents({
   a: ({ className, children, ...props }) => (
     <a
       className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
+        "aui-md-a text-brand hover:text-brand/80 underline underline-offset-2",
         className,
       )}
       target="_blank"
@@ -167,7 +167,7 @@ const defaultComponents = memoizeMarkdownComponents({
         href={href}
         target="_blank"
         rel="noopener noreferrer"
-        className="aui-md-a text-primary hover:text-primary/80 underline underline-offset-2"
+        className="aui-md-a text-brand hover:text-brand/80 underline underline-offset-2"
       >
         {content} <span className="sr-only">(image, opens in a new tab)</span>
       </a>

@@ -1,7 +1,7 @@
-import { BrandMark } from "@/components/brand-mark";
+import { AgentAvatar } from "@/components/brand/agent-avatar";
 import { cn } from "@/lib/utils";
 
-/** Who the thread talks to: the agent's mark, its id and, when pinned, its release. */
+/** Who the thread talks to: the agent's avatar, its id and, when pinned, its release. */
 export function AgentPill({
   agentId,
   release,
@@ -19,7 +19,7 @@ export function AgentPill({
         className,
       )}
     >
-      <BrandMark className="size-5" />
+      <AgentAvatar agentId={agentId} name={agentId} size={20} />
       <span className="truncate">
         <span className="font-medium capitalize">{agentId}</span>
         {release ? <span className="text-muted-foreground"> · {release}</span> : null}

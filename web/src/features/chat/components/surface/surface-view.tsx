@@ -204,7 +204,7 @@ function CheckBoxInput({ label, fieldKey }: { label?: unknown; fieldKey?: unknow
       <input
         id={id}
         type="checkbox"
-        className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+        className="size-4 accent-brand disabled:cursor-not-allowed disabled:opacity-50"
         checked={view.values[key] === true}
         disabled={!view.live}
         onChange={(e) => view.setValue(key, e.target.checked)}

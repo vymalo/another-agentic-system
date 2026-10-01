@@ -11,7 +11,7 @@ export type StepState = "done" | "live" | "failed" | "pending" | "warning" | "mu
 
 const RING: Record<StepState, string> = {
   done: "bg-muted text-muted-foreground",
-  live: "bg-primary/10 text-primary",
+  live: "bg-brand/10 text-brand",
   failed: "bg-destructive-soft text-destructive",
   pending: "bg-verifying/10 text-verifying",
   warning: "bg-warning-soft text-warning",

@@ -26,7 +26,8 @@
     "test:e2e": "playwright test",
     "test:e2e:system": "playwright test -c playwright.system.config.ts",
     "screens": "playwright test -c playwright.screens.config.ts",
-    "catalog:lock": "tsx scripts/catalog-lock.ts"
+    "catalog:lock": "tsx scripts/catalog-lock.ts",
+    "brand:icons": "node scripts/brand-icons.mjs"
   },
   "dependencies": {
     "@ag-ui/client": "1.0.0",

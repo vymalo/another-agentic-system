@@ -6,70 +6,73 @@
 @custom-variant dark (@media (prefers-color-scheme: dark));
 
 /*
- * web/DESIGN.md is the brief: a neutral canvas, one blue accent, semantic colours only for state
- * (always next to a word and an icon), the sidebar and the person's bubble one step off the canvas.
+ * web/DESIGN.md is the brief: a warm neutral canvas, ink for the actions, one bamboo green for what
+ * is ours (links, the focus ring, the live dot, a menu's check, the active tab), semantic colours
+ * only for state (always next to a word and an icon), the sidebar and the person's bubble one step
+ * off the canvas. The panda's own three fills never change with the scheme (public/brand/panda.svg).
  * Every text colour is checked by axe in both schemes (e2e/a11y.spec.ts).
  */
 :root {
+  --brand: #3f7341;
   --background: #ffffff;
-  --foreground: #1b1c1e;
-  --sidebar: #f3f5f8;
-  --sidebar-accent: #e4e9f0;
-  --bubble: #eef2f7;
+  --foreground: #1a1d1a;
+  --sidebar: #f6f5f0;
+  --sidebar-accent: #eae8e0;
+  --bubble: #f1f0ea;
   --card: #ffffff;
-  --card-foreground: #1b1c1e;
+  --card-foreground: #1a1d1a;
   --popover: #ffffff;
-  --popover-foreground: #1b1c1e;
-  --primary: #0b57d0;
+  --popover-foreground: #1a1d1a;
+  --primary: #1a1d1a;
   --primary-foreground: #ffffff;
-  --secondary: #f1f3f6;
-  --secondary-foreground: #1b1c1e;
-  --muted: #f1f3f6;
-  --muted-foreground: #5b5f66;
-  --accent: #eef2f7;
-  --accent-foreground: #1b1c1e;
+  --secondary: #f3f2ec;
+  --secondary-foreground: #1a1d1a;
+  --muted: #f3f2ec;
+  --muted-foreground: #5c6058;
+  --accent: #f1f0ea;
+  --accent-foreground: #1a1d1a;
   --destructive: #b3261e;
   --destructive-soft: #fcefee;
   --success: #137333;
   --warning: #8a5300;
   --warning-soft: #fdf4e3;
   --verifying: #6b3fa0;
-  --border: #e4e7ec;
-  --input: #d9dde3;
-  --ring: #0b57d0;
+  --border: #e7e5dd;
+  --input: #dad8cf;
+  --ring: var(--brand);
   --radius: 0.75rem;
-  --composer-shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 6px 24px -4px rgb(16 24 40 / 0.1);
+  --composer-shadow: 0 1px 2px rgb(26 29 26 / 0.05), 0 6px 24px -4px rgb(26 29 26 / 0.1);
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #131314;
-    --foreground: #e6e7e9;
-    --sidebar: #1b1c1e;
-    --sidebar-accent: #2a2c30;
-    --bubble: #2a2c2f;
-    --card: #1c1d1f;
-    --card-foreground: #e6e7e9;
-    --popover: #232427;
-    --popover-foreground: #e6e7e9;
-    --primary: #a8c7fa;
-    --primary-foreground: #062e6f;
-    --secondary: #26282b;
-    --secondary-foreground: #e6e7e9;
-    --muted: #222326;
-    --muted-foreground: #a3a7ad;
-    --accent: #2a2c2f;
-    --accent-foreground: #e6e7e9;
+    --brand: #8dc58b;
+    --background: #141614;
+    --foreground: #e8e9e4;
+    --sidebar: #1b1e1b;
+    --sidebar-accent: #2a2e2a;
+    --bubble: #282c28;
+    --card: #1a1d1a;
+    --card-foreground: #e8e9e4;
+    --popover: #222622;
+    --popover-foreground: #e8e9e4;
+    --primary: #f2f1ea;
+    --primary-foreground: #141614;
+    --secondary: #232723;
+    --secondary-foreground: #e8e9e4;
+    --muted: #232723;
+    --muted-foreground: #a6aba3;
+    --accent: #282c28;
+    --accent-foreground: #e8e9e4;
     --destructive: #f2b8b5;
     --destructive-soft: #3a2322;
     --success: #81c995;
     --warning: #f5c46a;
     --warning-soft: #352a15;
     --verifying: #cfb6f7;
-    --border: #2f3237;
-    --input: #3a3d42;
-    --ring: #a8c7fa;
+    --border: #2e332e;
+    --input: #3a3f3a;
     --composer-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 28px -6px rgb(0 0 0 / 0.55);
   }
 }
@@ -89,6 +92,7 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-brand: var(--brand);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -156,7 +160,7 @@
 
   /* Preflight resets links; keep them underlined so they never rely on colour alone. */
   a {
-    color: var(--primary);
+    color: var(--brand);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
