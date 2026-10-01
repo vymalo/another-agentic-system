@@ -903,7 +903,7 @@ sequenceDiagram
   B->>M: SubscribeToTask (task not found), then GetTask
   M-->>B: completed
   B->>P: thread_state done, row delivered
-  U->>E: GET /api/threads/id, done, and connect?mode=run holds one RUN_FINISHED
+  U->>E: GET /api/threads/id, done, and connect?mode=run holds one run of the agent, finished once
   U->>C: /metrics through edge: due 0, leased 0
   U->>A: docker compose up (started again)
 ```
