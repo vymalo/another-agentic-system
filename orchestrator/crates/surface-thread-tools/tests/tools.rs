@@ -229,3 +229,31 @@ async fn a_providers_tools_are_listed_for_each_request_not_remembered() {
     tool_names(&client).await;
     assert_eq!(probe.seen().iter().filter(|s| s.what == "list").count(), 2);
 }
+
+/// `get_ui_catalog` still answers the thread's current catalog when more than 32 catalogs of
+/// lower versions were recorded after it (the ledger records every new digest; only a version at
+/// least the current one becomes current).
+#[tokio::test]
+async fn the_current_catalog_is_still_given_after_many_older_ones_were_recorded() {
+    let h = Harness::start().await;
+    let thread = h.thread("plain").await;
+    let client = client_for(&h, thread, "plain").await;
+    let current = catalog(50, "current");
+    h.show(thread, &current).await;
+    for n in 0..40 {
+        h.show(thread, &catalog(1 + n % 9, &format!("old-{n}")))
+            .await;
+    }
+    let out = call(&client, "get_ui_catalog", json!({})).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(out.value["version"], 50);
+    assert_eq!(out.value["digest"], json!(current.digest));
+    assert_eq!(out.value["catalog"], current.catalog);
+    let out = call(
+        &client,
+        "get_ui_catalog",
+        json!({"knownDigest": current.digest}),
+    )
+    .await;
+    assert_eq!(out.value["unchanged"], true);
+}

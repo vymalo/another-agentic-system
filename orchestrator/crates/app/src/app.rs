@@ -33,9 +33,6 @@ pub const DEFAULT_MAX_EXPORT_EVENTS: usize = 50_000;
 pub const DEFAULT_MAX_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 /// Events read from the store per page when exporting.
 const EXPORT_PAGE: u32 = 500;
-/// How many of a thread's newest `ui_catalog` events [`App::thread_ui_catalog`] looks through: the
-/// ledger keeps at most `MAX_SEEN_CATALOGS` (32) digests, and each is appended once.
-const MAX_CATALOG_EVENTS_READ: u32 = 32;
 
 /// The bytes `value` takes as compact JSON, counted without building the text.
 fn serialized_len(value: &impl serde::Serialize) -> usize {
@@ -609,16 +606,17 @@ impl<P: Ports> App<P> {
     }
 
     /// The UI catalog `get_ui_catalog` gives for thread `id`: the one its ledger names as current
-    /// (the highest version recorded, ADR 0023), read from the `ui_catalog` event that carried it.
-    /// `None` when the thread has none (the web that opened it sent none) or does not exist.
+    /// (the highest version recorded, ADR 0023), read from the `ui_catalog` event that carried it,
+    /// found by its digest ([`ThreadStore::ui_catalog_event`]) however many catalogs of lower
+    /// versions were recorded after it. `None` when the thread has none (the web that opened it
+    /// sent none) or does not exist.
     ///
     /// No user check: the token the endpoint verified authorised this thread.
     ///
     /// # Errors
     ///
     /// [`AppError::Store`] when the store fails, and [`AppError::Internal`] when the ledger names
-    /// a catalog none of the thread's newest [`MAX_CATALOG_EVENTS_READ`] `ui_catalog` events
-    /// holds (the ledger and the log disagree).
+    /// a catalog the log does not hold (the ledger and the log disagree: a bug).
     pub async fn thread_ui_catalog(&self, id: ThreadId) -> Result<Option<UiCatalogData>, AppError> {
         let store = self.ports.store();
         let Some(thread) = store.get_thread(None, id).await? else {
@@ -627,19 +625,15 @@ impl<P: Ports> App<P> {
         let Some(current) = thread.job.catalog.current() else {
             return Ok(None);
         };
-        let events = store
-            .latest_events(id, EventKind::UiCatalog, MAX_CATALOG_EVENTS_READ)
-            .await?;
-        events
-            .into_iter()
-            .find_map(|event| match event.body {
-                orch_core::EventBody::UiCatalog(data) if data.digest == current.digest => {
-                    Some(data)
-                }
-                _ => None,
-            })
-            .map(Some)
-            .ok_or_else(|| AppError::internal("the thread's current UI catalog is not in its log"))
+        match store.ui_catalog_event(id, &current.digest).await? {
+            Some(Event {
+                body: orch_core::EventBody::UiCatalog(data),
+                ..
+            }) => Ok(Some(data)),
+            _ => Err(AppError::internal(
+                "the thread's current UI catalog is not in its log",
+            )),
+        }
     }
 
     /// A snapshot of one of the user's threads for sharing: the thread with its job ledger, its

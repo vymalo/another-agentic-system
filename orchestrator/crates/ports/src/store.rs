@@ -551,6 +551,17 @@ pub trait ThreadStore: Send + Sync + 'static {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
 
+    /// The newest `ui_catalog` event of `thread` whose catalog has this `digest`, or `None` when the
+    /// thread has none (or no thread has this id): the thread-tools endpoint reads the catalog its
+    /// ledger names as current with it (ADR 0023). A query by what the event holds, not a window
+    /// of the newest events: the ledger records every new digest, so any number of later,
+    /// lower-versioned catalogs can follow the current one in the log.
+    fn ui_catalog_event(
+        &self,
+        thread: ThreadId,
+        digest: &str,
+    ) -> impl Future<Output = Result<Option<Event>, StoreError>> + Send;
+
     /// The thread's A2A binding.
     fn get_binding(
         &self,

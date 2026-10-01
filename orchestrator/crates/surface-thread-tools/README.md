@@ -59,7 +59,7 @@ nothing, so any replica serves any request; a call is one `application/json` res
 `cargo test -p orch-surface-thread-tools`, with rmcp's own client over a real TCP port on the in-memory stack:
 
 * `tests/tools.rs`: `tools/list` and its schemas; `get_ui_catalog` with no catalog (an error to read), with version 1
-  then 2 recorded (the newest, the same JSON as text), with `knownDigest` (unchanged, no catalog), an older screen (the
+  then 2 recorded (the newest, the same JSON as text), the current catalog still given after 40 older screens were recorded after it, with `knownDigest` (unchanged, no catalog), an older screen (the
   newest stays), one catalog per thread, arguments that do not parse (`-32602`), an unknown name; the provider seam (order
   of the listing, routing of calls, the context a provider gets, a provider that cannot take a built-in's name, the
   listing built for each request).

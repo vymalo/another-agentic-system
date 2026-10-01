@@ -343,3 +343,68 @@ async fn the_thread_tools_endpoint_reads_the_thread_and_the_newest_catalog_witho
     assert_eq!(app.thread_ui_catalog(t.id).await.unwrap(), Some(v2));
     run.shutdown().await;
 }
+
+/// The ledger records every new digest and only a version at least the current one becomes
+/// current, so any number of lower-versioned catalogs can follow the current one in the log. Its
+/// event is found by its digest, not by a window of the newest events (which 33 or more such
+/// catalogs would push it out of).
+#[tokio::test]
+async fn the_current_catalog_is_found_however_many_older_ones_were_recorded_after_it() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let current = catalog(50, "current");
+
+    let t = create(&app, &alice(), "plain", "echo first").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.submit(
+        &alice(),
+        t.id,
+        message("echo current", Some(&current)),
+        None,
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(
+        app.thread_ui_catalog(t.id).await.unwrap(),
+        Some(current.clone())
+    );
+
+    // 40 older screens, each its own digest, after the newest one
+    for n in 0..40 {
+        let older = catalog(1 + n % 9, &format!("old-{n}"));
+        app.submit(&alice(), t.id, message("echo older", Some(&older)), None)
+            .await
+            .unwrap();
+        wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    }
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(catalog_events(&ev).len(), 41, "every digest was recorded");
+    let record = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(
+        record.job.catalog.current().map(|c| c.version),
+        Some(50),
+        "the thread keeps the newest"
+    );
+    // more than 32 `ui_catalog` events came after the current one's: a window of the newest 32 of
+    // the kind does not hold it
+    let newest_32: Vec<_> = ev
+        .iter()
+        .rev()
+        .filter(|e| e.kind() == EventKind::UiCatalog)
+        .take(32)
+        .collect();
+    assert!(
+        newest_32
+            .iter()
+            .all(|e| !matches!(&e.body, orch_core::EventBody::UiCatalog(d) if *d == current)),
+        "the current catalog's event is outside the newest 32"
+    );
+    assert_eq!(
+        app.thread_ui_catalog(t.id).await.unwrap(),
+        Some(current),
+        "still the current one"
+    );
+    run.shutdown().await;
+}
