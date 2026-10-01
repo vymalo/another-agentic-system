@@ -955,7 +955,7 @@ async fn the_thread_tools_endpoint_is_mounted_by_its_name_and_a_minted_token_ope
     use orch_thread_token::{ThreadToolsIssuer, ThreadToolsKeys};
     use secrecy::{ExposeSecret, SecretString};
 
-    const KEY: &str = "smoke-thread-tools-key-0123456789abcdef0123456789abcdef";
+    const KEY: &str = "not-a-real-secret-smoke-thread-tools-0123456789abcdef";
     let Some(db) = pgdb::TestDb::new().await else {
         eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
         return;
@@ -1108,7 +1108,7 @@ async fn the_thread_tools_endpoint_is_mounted_by_its_name_and_a_minted_token_ope
 #[cfg(feature = "surface-thread-tools")]
 #[tokio::test]
 async fn an_agent_that_lists_the_extension_calls_the_binary_back_with_the_grant_it_was_given() {
-    const KEY: &str = "smoke-loop-key-0123456789abcdef0123456789abcdef0123456789";
+    const KEY: &str = "not-a-real-secret-smoke-loop-0123456789abcdef0123456789";
     let Some(db) = pgdb::TestDb::new().await else {
         eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
         return;
@@ -1389,7 +1389,7 @@ async fn thread_tools_is_not_there_unless_it_is_named() {
         "no-thread-tools.log",
         &[
             "--thread-tools-secret",
-            "smoke-thread-tools-key-0123456789abcdef0123456789abcdef",
+            "not-a-real-secret-smoke-thread-tools-0123456789abcdef",
             "--thread-tools-url",
             "http://orchestrator:8080",
         ],

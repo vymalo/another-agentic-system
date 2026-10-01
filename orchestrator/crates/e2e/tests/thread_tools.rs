@@ -210,7 +210,7 @@ async fn a_token_that_is_not_the_threads_is_refused_and_nothing_is_written(backe
     let good = claims(&a, "plain");
     let now = Timestamp::now().as_second();
     let other_keys = ThreadToolsKeys::new(
-        SecretString::from("an-unknown-key-0123456789abcdef0123456789abcdef".to_owned()),
+        SecretString::from("an-unknown-secret-0123456789abcdef0123456789abcdef".to_owned()),
         None,
     )
     .unwrap();

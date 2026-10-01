@@ -208,6 +208,11 @@ characters of hexadecimal, which is what `openssl rand -hex 32` gives); `kid` is
 the SHA-256 of those bytes; the header and the claims are compact JSON in the order shown (no spaces); the signature is
 HMAC-SHA-256 over the first two segments with the dot, as written.
 
+**These are test vectors, not credentials.** Each token below is signed with the made-up test key printed beside it (a counting
+sequence, a descending one), names a made-up thread, agent and message, and expired on the day it was written; no
+deployment holds these keys, so the tokens open nothing. (A secret scanner reports each as a JWT: that is what a
+known-answer vector is.) Never use these keys in a deployment: `openssl rand -hex 32` gives a real one.
+
 **Vector 1: the thread's addressed agent**, signed with key 1, minted at 2026-10-01T12:00:00Z (`iat` 1790856000) for
 two hours.
 

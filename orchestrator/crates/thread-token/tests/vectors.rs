@@ -14,6 +14,7 @@ use secrecy::{ExposeSecret, SecretString};
 /// 2026-10-01T12:00:00Z.
 const ISSUED: i64 = 1_790_856_000;
 
+// The keys of these vectors are made up for the tests (a counting sequence, and a descending one).
 const KEY_1: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 const KID_1: &str = "6c86c6aac5fb24bc";
 const KEY_2: &str = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
@@ -23,9 +24,11 @@ const THREAD: &str = "01927a4e-3b00-7000-8000-000000000001";
 
 const VECTOR_1_HEADER: &str = r#"{"alg":"HS256","typ":"JWT","kid":"6c86c6aac5fb24bc"}"#;
 const VECTOR_1_CLAIMS: &str = r#"{"iss":"orch","aud":"thread-tools","sub":"01927a4e-3b00-7000-8000-000000000001","job":3,"agt":"coder","caller":"main","depth":0,"jti":"5b0b9c2e-7f61-4d1c-9a43-2f3f6d0f9c11","iat":1790856000,"exp":1790863200}"#;
+// nosemgrep: a known-answer test vector, signed with the made-up test key above, not a credential
 const VECTOR_1: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjZjODZjNmFhYzVmYjI0YmMifQ.eyJpc3MiOiJvcmNoIiwiYXVkIjoidGhyZWFkLXRvb2xzIiwic3ViIjoiMDE5MjdhNGUtM2IwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiam9iIjozLCJhZ3QiOiJjb2RlciIsImNhbGxlciI6Im1haW4iLCJkZXB0aCI6MCwianRpIjoiNWIwYjljMmUtN2Y2MS00ZDFjLTlhNDMtMmYzZjZkMGY5YzExIiwiaWF0IjoxNzkwODU2MDAwLCJleHAiOjE3OTA4NjMyMDB9.jloITlRjG0bpM62IXeLGZq-mUH1badzKsCjKn0E5vvM";
 
 const VECTOR_2_CLAIMS: &str = r#"{"iss":"orch","aud":"thread-tools","sub":"01927a4e-3b00-7000-8000-000000000001","job":3,"agt":"researcher","caller":"ask:2","depth":1,"jti":"a7d2e1c0-0b3f-4e55-8d7a-9c1e4f6b2a30","iat":1790856000,"exp":1790856060}"#;
+// nosemgrep: a known-answer test vector, signed with the made-up test key above, not a credential
 const VECTOR_2: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ijg1ODhjZGZjZDZkMmIwZDUifQ.eyJpc3MiOiJvcmNoIiwiYXVkIjoidGhyZWFkLXRvb2xzIiwic3ViIjoiMDE5MjdhNGUtM2IwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiam9iIjozLCJhZ3QiOiJyZXNlYXJjaGVyIiwiY2FsbGVyIjoiYXNrOjIiLCJkZXB0aCI6MSwianRpIjoiYTdkMmUxYzAtMGIzZi00ZTU1LThkN2EtOWMxZTRmNmIyYTMwIiwiaWF0IjoxNzkwODU2MDAwLCJleHAiOjE3OTA4NTYwNjB9.aIdaJXz3PRX8xbeV4LHMn9V3bH1tpaoa_ReeOq5STmg";
 
 fn secret(s: &str) -> SecretString {

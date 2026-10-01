@@ -455,11 +455,11 @@ pub const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
 pub const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
 
 /// The thread-tools key of these tests (what `THREAD_TOOLS_SECRET` would be), and the previous one
-/// of a rotation.
+/// of a rotation: made-up values, not credentials.
 pub const THREAD_TOOLS_KEY: &str =
-    "e2e-thread-tools-key-0123456789abcdef0123456789abcdef0123456789abcdef";
+    "not-a-real-secret-e2e-thread-tools-0123456789abcdef0123456789abcdef";
 pub const THREAD_TOOLS_OLD_KEY: &str =
-    "e2e-thread-tools-old-key-fedcba9876543210fedcba9876543210fedcba98765432";
+    "not-a-real-secret-e2e-thread-tools-old-fedcba9876543210fedcba9876543210";
 
 /// The extra surfaces an instance mounts beside AG-UI.
 #[derive(Debug, Clone, Copy)]
