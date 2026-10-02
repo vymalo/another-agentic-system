@@ -128,6 +128,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::Schedule { .. }
             | Command::SetTitle(_)
             | Command::RequestTitle { .. }
+            | Command::SetDescription(_)
+            | Command::RequestDescription { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -200,7 +202,19 @@ fn a_gate_that_requires_nothing_leaves_the_job_alone() {
         ],
     );
     assert_eq!(snap.state, Done);
-    assert_eq!(snap.job, start.job, "the job is never touched");
+    // the gate never touches the job; the one thing that changes is the description's ledger, which
+    // the end of the job asks for (ADR 0035)
+    assert!(snap.job.description.may_ask(2), "job 1 has asked");
+    assert!(!snap.job.description.may_ask(1));
+    let mut job = snap.job.clone();
+    job.description = start.job.description;
+    assert_eq!(job, start.job, "the job is never touched");
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| matches!(c, Command::RequestDescription { job: 1 }))
+            .count(),
+        1
+    );
     assert!(watches(&cmds).is_empty());
     assert!(schedules(&cmds).is_empty());
     assert!(check_results(&cmds).is_empty());
@@ -225,6 +239,7 @@ fn a_gate_that_requires_nothing_completes_exactly_as_before() {
                 actor: Actor::system(),
                 body: EventBody::ThreadState(ThreadStateData { state: Done })
             }),
+            Command::RequestDescription { job: 1 },
         ]
     );
 }

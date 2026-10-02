@@ -55,6 +55,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::Schedule { .. }
             | Command::SetTitle(_)
             | Command::RequestTitle { .. }
+            | Command::SetDescription(_)
+            | Command::RequestDescription { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -285,6 +287,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 steps: steps_job.steps.clone(),
                 answer: announced.clone(),
                 title: TitleLedger::default(),
+                description: DescriptionLedger::default(),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -1115,6 +1118,8 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::Schedule { .. }
         | Command::SetTitle(_)
         | Command::RequestTitle { .. }
+        | Command::SetDescription(_)
+        | Command::RequestDescription { .. }
         | Command::RequestVerification { .. } => None,
     });
     let only = found.next().expect("a delegation");

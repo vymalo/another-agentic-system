@@ -18,6 +18,7 @@ use jiff::SignedDuration;
 
 use crate::agent::{AgentTaskState, AgentUpdate};
 use crate::answer::announce;
+use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
@@ -195,6 +196,35 @@ pub enum Input {
         /// The request it answers.
         ask: u8,
     },
+    /// The user wrote, or cleared, the thread's description (ADR 0035). Valid in every state,
+    /// finished or not. The caller has checked `description`
+    /// ([`check_description`](crate::check_description)); empty is the person clearing it. From
+    /// then on the description is the person's, an empty one included, and the model is never
+    /// asked again for this thread.
+    SetDescription {
+        /// Who wrote it.
+        user: UserId,
+        /// The new description, possibly empty.
+        description: String,
+    },
+    /// The model wrote a description for the thread, asked for by
+    /// [`Command::RequestDescription`] at the end of `job`. The dispatcher built it from the
+    /// model's answer ([`clean_description`](crate::clean_description)). It is the thread's
+    /// description unless a person wrote or cleared it meanwhile, in any state of the thread; the
+    /// core checks it again ([`check_description`](crate::check_description)). An answer to an
+    /// ask that is not the one in flight is ignored.
+    Described {
+        /// The job whose end asked.
+        job: u32,
+        /// The description.
+        description: String,
+    },
+    /// The model had no description to give for the ask of `job` (too few new messages, nothing
+    /// to describe yet, it could not be reached, the answer was not usable): nothing changes.
+    DescriptionDeclined {
+        /// The job whose end asked.
+        job: u32,
+    },
 }
 
 impl Input {
@@ -218,6 +248,9 @@ impl Input {
             Input::Rename { .. } => "rename",
             Input::Titled { .. } => "title",
             Input::TitleDeclined { .. } => "title declined",
+            Input::SetDescription { .. } => "set description",
+            Input::Described { .. } => "description",
+            Input::DescriptionDeclined { .. } => "description declined",
         }
     }
 }
@@ -285,6 +318,17 @@ pub enum Command {
     RequestTitle {
         /// Which request.
         ask: u8,
+    },
+    /// Store this as the thread's description (`threads.description`; empty clears it), in the
+    /// commit of the `thread_described` event that says so.
+    SetDescription(String),
+    /// Ask the model for a description of the thread (outbox kind `description`), because
+    /// `job` has just ended or paused for the person: at most once per job. The dispatcher
+    /// answers with exactly one [`Input::Described`] or [`Input::DescriptionDeclined`] for it.
+    /// An application with no description task drops it.
+    RequestDescription {
+        /// The job whose end asks.
+        job: u32,
     },
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
     /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
@@ -484,7 +528,26 @@ pub fn transition(
         | ThreadState::Failed
         | ThreadState::Cancelled => job.title.reply_over(),
     }
+    let mut commands = commands;
+    ask_for_description(snapshot.state, state, &mut job, &mut commands);
     Ok((Snapshot { state, job }, commands))
+}
+
+/// A job has just ended (`done`) or paused for the person (`blocked`): the model is asked for a
+/// description of the thread, once for the job, unless a person wrote it (ADR 0035). `failed` and
+/// `cancelled` never ask, and a state the thread was in already asks nothing: only the transition
+/// that gets there does.
+fn ask_for_description(
+    before: ThreadState,
+    after: ThreadState,
+    job: &mut Job,
+    cmds: &mut Vec<Command>,
+) {
+    let stops = matches!(after, ThreadState::Done | ThreadState::Blocked);
+    if stops && before != after && job.description.may_ask(job.number) {
+        job.description.asked(job.number);
+        cmds.push(Command::RequestDescription { job: job.number });
+    }
 }
 
 /// Most bytes of a verifier failure's reason that reach the log.
@@ -739,6 +802,56 @@ fn decide(
         }
         Input::TitleDeclined { ask } => {
             job.title.answered_ask(*ask);
+            Ok((state, vec![]))
+        }
+        Input::SetDescription { user, description } => {
+            job.description.written_by(DescribedBy::User);
+            Ok((
+                state,
+                vec![
+                    append(
+                        Actor::user(user),
+                        EventBody::ThreadDescribed(ThreadDescribedData {
+                            description: description.clone(),
+                            source: DescribedBy::User,
+                        }),
+                    ),
+                    Command::SetDescription(description.clone()),
+                ],
+            ))
+        }
+        Input::Described {
+            job: asked,
+            description,
+        } => {
+            let current = job.description.answered(*asked);
+            match check_description(description) {
+                // a person's description (or clearing) came first: it is final
+                Ok(text)
+                    if current
+                        && !text.is_empty()
+                        && job.description.source() != DescriptionSource::User =>
+                {
+                    job.description.written_by(DescribedBy::Model);
+                    Ok((
+                        state,
+                        vec![
+                            append(
+                                Actor::system(),
+                                EventBody::ThreadDescribed(ThreadDescribedData {
+                                    description: text.clone(),
+                                    source: DescribedBy::Model,
+                                }),
+                            ),
+                            Command::SetDescription(text),
+                        ],
+                    ))
+                }
+                Ok(_) | Err(_) => Ok((state, vec![])),
+            }
+        }
+        Input::DescriptionDeclined { job: asked } => {
+            job.description.answered(*asked);
             Ok((state, vec![]))
         }
         Input::Rename { user, title } => {

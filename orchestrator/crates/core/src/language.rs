@@ -200,19 +200,54 @@ impl Lang {
     /// script that several languages share it names the script and says to keep the person's
     /// language.
     pub fn instruction(self) -> String {
+        self.instruction_for("title")
+    }
+
+    /// [`instruction`](Self::instruction) for the text `what` names ("title", "description"):
+    /// "Write the description in English."
+    pub fn instruction_for(self, what: &str) -> String {
         match self {
             Lang::Cyrillic | Lang::Arabic | Lang::Devanagari => format!(
-                "Write the title in the language the person wrote in, in {}.",
+                "Write the {what} in the language the person wrote in, in {}.",
                 self.name()
             ),
-            _ => format!("Write the title in {}.", self.name()),
+            _ => format!("Write the {what} in {}.", self.name()),
         }
+    }
+
+    /// The language a configuration names (`tasks.<task>.language`): the lower case English name
+    /// of the language, or `cyrillic`, `arabic` and `devanagari` for those scripts. `None` for
+    /// any other word. This is the closed set of [`Lang`].
+    pub fn from_config_name(name: &str) -> Option<Lang> {
+        Some(match name {
+            "english" => Lang::English,
+            "french" => Lang::French,
+            "german" => Lang::German,
+            "spanish" => Lang::Spanish,
+            "portuguese" => Lang::Portuguese,
+            "italian" => Lang::Italian,
+            "chinese" => Lang::Chinese,
+            "japanese" => Lang::Japanese,
+            "korean" => Lang::Korean,
+            "cyrillic" => Lang::Cyrillic,
+            "arabic" => Lang::Arabic,
+            "hebrew" => Lang::Hebrew,
+            "greek" => Lang::Greek,
+            "devanagari" => Lang::Devanagari,
+            "thai" => Lang::Thai,
+            _ => return None,
+        })
     }
 }
 
 /// The instruction when the language is not known: still last, still explicit about whose
 /// language it is.
 pub const INSTRUCTION_UNKNOWN: &str = "Write the title in the language the person wrote in.";
+
+/// [`INSTRUCTION_UNKNOWN`] for the text `what` names ("title", "description").
+pub fn instruction_unknown_for(what: &str) -> String {
+    format!("Write the {what} in the language the person wrote in.")
+}
 
 /// Words that mark a Latin-script language, for the vote. Only words that are not also common
 /// words of the others; a word is lower case, with its accents.
@@ -380,9 +415,105 @@ pub fn script_mismatch(person: &[&str], title: &str) -> Result<(), ScriptMismatc
     }
 }
 
+/// Whether `text` is in a script that `lang` is not written in: what a fixed language of a task
+/// checks the model's answer against (a deployment whose titles are always English declines a Han
+/// title even in a Chinese conversation). `Err` names the first such script.
+///
+/// The Latin script is always allowed, as in [`script_mismatch`] (a product name is Latin in every
+/// language), and so are the kanji of Japanese.
+///
+/// # Errors
+/// [`ScriptMismatch`] when `text` has letters of a script other than Latin that `lang` does not
+/// use.
+pub fn script_mismatch_fixed(lang: Lang, text: &str) -> Result<(), ScriptMismatch> {
+    let mut allowed = BTreeSet::from([Script::Latin, lang.script()]);
+    if lang == Lang::Japanese {
+        allowed.insert(Script::Han);
+    }
+    match scripts_of(text).into_iter().find(|s| !allowed.contains(s)) {
+        Some(script) => Err(ScriptMismatch { script }),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fixed_language_checks_the_answer_against_its_own_script() {
+        assert_eq!(
+            script_mismatch_fixed(Lang::English, "Fix the build"),
+            Ok(())
+        );
+        assert_eq!(
+            script_mismatch_fixed(Lang::English, "修复构建"),
+            Err(ScriptMismatch {
+                script: Script::Han
+            })
+        );
+        assert_eq!(
+            script_mismatch_fixed(Lang::Chinese, "修复 Node.js 构建"),
+            Ok(())
+        );
+        assert_eq!(
+            script_mismatch_fixed(Lang::Japanese, "ビルドを直す 修正"),
+            Ok(())
+        );
+        assert_eq!(
+            script_mismatch_fixed(Lang::Korean, "ビルド"),
+            Err(ScriptMismatch {
+                script: Script::Kana
+            })
+        );
+        assert_eq!(script_mismatch_fixed(Lang::French, "12 + 3"), Ok(()));
+    }
+
+    #[test]
+    fn a_language_is_read_from_its_configuration_name() {
+        for lang in [
+            Lang::English,
+            Lang::French,
+            Lang::German,
+            Lang::Spanish,
+            Lang::Portuguese,
+            Lang::Italian,
+            Lang::Chinese,
+            Lang::Japanese,
+            Lang::Korean,
+            Lang::Cyrillic,
+            Lang::Arabic,
+            Lang::Hebrew,
+            Lang::Greek,
+            Lang::Devanagari,
+            Lang::Thai,
+        ] {
+            let name = lang.name().to_lowercase();
+            let key = name.split(' ').next().unwrap_or_default();
+            assert_eq!(Lang::from_config_name(key), Some(lang), "{key}");
+        }
+        assert_eq!(Lang::from_config_name("klingon"), None);
+        assert_eq!(Lang::from_config_name("English"), None);
+    }
+
+    #[test]
+    fn the_instruction_names_what_is_written() {
+        assert_eq!(
+            Lang::French.instruction_for("description"),
+            "Write the description in French."
+        );
+        assert_eq!(Lang::French.instruction(), "Write the title in French.");
+        assert!(
+            Lang::Cyrillic
+                .instruction_for("description")
+                .starts_with("Write the description in the language the person wrote in")
+        );
+        assert_eq!(
+            instruction_unknown_for("description"),
+            "Write the description in the language the person wrote in."
+        );
+        assert_eq!(instruction_unknown_for("title"), INSTRUCTION_UNKNOWN);
+    }
 
     #[test]
     fn scripts_are_told_apart() {

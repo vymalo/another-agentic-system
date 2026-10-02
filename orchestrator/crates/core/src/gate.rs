@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::answer::AnswerLedger;
+use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
@@ -322,6 +323,12 @@ pub struct Job {
     /// field existed has the first message's words, which is what its thread has.
     #[serde(skip_serializing_if = "TitleLedger::is_empty")]
     pub title: TitleLedger,
+    /// Whose words the thread's description is, and which job asked for it last (ADR 0035): a
+    /// person's edit is never replaced, and a job asks at most once. Belongs to the conversation,
+    /// not to a job: a new job keeps it ([`Job::next`]). A ledger stored before the field existed
+    /// has no description, which is what its thread has.
+    #[serde(skip_serializing_if = "DescriptionLedger::is_empty")]
+    pub description: DescriptionLedger,
 }
 
 fn is_first_job(number: &u32) -> bool {
@@ -345,6 +352,7 @@ impl Default for Job {
             steps: StepLedger::default(),
             answer: AnswerLedger::default(),
             title: TitleLedger::default(),
+            description: DescriptionLedger::default(),
         }
     }
 }
@@ -373,6 +381,7 @@ impl Job {
             verification: self.verification,
             catalog: self.catalog.clone(),
             title: self.title,
+            description: self.description,
             ..Job::default()
         }
     }
