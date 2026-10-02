@@ -7,8 +7,10 @@
   the port `ArtifactStore`, its conformance testkit, the directory store and the S3 store, the `artifacts` keys of the
   configuration file ([`docs/api/config.md`](../api/config.md)) and the binary's wiring. **Built (2026-10-02, PR S11):**
   the ingest, the serving route, the SVG sanitizer, the projection and the contract: see the status note below.
-  **Not built:** `share_file` in adam-rs (adam A4, its ADR 0012, merged on the adam side), the web (S12: the file card, the
-  preview, the catalog's `Image`).
+  **Built (2026-10-02, PR S12):** the web: the file card with its preview and download, the Sources panel's files, and the
+  catalog's `Image` (UI catalog v4): see the second status note below.
+  **Not built:** `share_file` in adam-rs (adam A4, its ADR 0012, merged on the adam side), the compose stack and its
+  scenario (S13).
 
 ## Context
 
@@ -222,3 +224,32 @@ Decisions 5 to 10 are built as written. The details the text left open, and the 
 - **Not built here:** the `dev/artifact-e2e.sh` scenario (S13, with the adam pin); the dev stack keeps files in the named
   volume `orchestrator-artifacts`, which every role mounts.
 
+## Status note (2026-10-02, PR S12): the web, and where it differs
+
+Decisions 8 to 11 are drawn by the web as written. What the text left open, and the places the code differs from it:
+
+- **A kept file is told by `href`** (the projection's `kind: "file"` is also every other artifact that is nothing else). The
+  web reads `href`, `sha256`, `size`, `filename?` and `preview` only when the `href` is exactly `/api/threads/<id>/artifacts/<sha256>`
+  and says the same hash as `sha256`, and the size is a count of bytes; otherwise the artifact is **not** a kept file and none of
+  the reference is read. The agent's `uri` is never fetched. A file that was not kept keeps the old card (its words), and the
+  `error` that follows it (the three reasons of S11) is the existing error line.
+- **The card** shows the file name (else the artifact's name), the size (`1.5 KB`, powers of 1024) and the sniffed type, a
+  **Download** link to `href` + `?download=1` (with the `download` attribute, so a click never navigates), and a preview by
+  `preview`: an image is an `<img src=href>` with the file name as its alt (a generic "File from the agent" without one) and a
+  line that says so when the browser cannot decode it, never inline markup; a text file is **fetched** from `href`, the first
+  **64 KiB** only (the stream is cancelled after that), decoded as UTF-8 and drawn in a `<pre>` as text, with a line saying how
+  much was cut; `null` is the card alone. A file reported twice in a turn (the same hash) is one card.
+- **The Sources panel lists every kept file** of the thread, once per hash, under "Files": its name as a link that opens it
+  (inline for a preview type, an attachment otherwise), its size and type, a download button and the turns that cited it.
+- **`Image`'s validator is the web's `prepareSurface`.** It is given the thread's kept files (from the transcript) and refuses
+  the **whole surface** (rule `artifact`) when an `Image`'s `artifact` is not the hash of one of them, or is the hash of a file
+  whose `preview` is not `"image"`; with no files it refuses every `Image`. The schema (catalog v4, digest in
+  `catalog.lock.json`) has no member that can carry a URL and requires `alt`. The component checks again when it draws (a file
+  that is missing draws a line, never a broken image) and fetches nothing but the file's own `href`. A surface that names a file
+  the thread does not hold *yet* is refused until it does: the file's own `artifact` event comes first in the log, so a replay
+  has it. A thread whose catalog is v4 and a build that has only v3 say "needs a newer version of the app", as for any component.
+- **The catalog's `Choices` description starts "ask_user only"** (plan 10, E12): an agent that shows a form with `show` is told
+  nothing waits for its answer. It is a change of text, so it is part of version 4's digest.
+- **Not done here:** the web's mock keeps one store for every thread, so it cannot play the 404 of another thread's hash in the
+  UI (the unit tests and the API's own tests do); the real thing is S13's scenario. A check in a real browser that an SVG in an
+  `<img>` runs nothing (decision 9's *unverified*) is still open: the web's e2e draws a PNG.
