@@ -100,7 +100,11 @@ export function quiesce(
   });
 }
 
-/** Applies one external run and resolves when the runtime finished it. */
+/**
+ * Applies one external run and resolves when the runtime finished it, with how many messages the
+ * transcript will show once the run is in it (the messages it had, the run's own user messages and
+ * its assistant message), or null when that is not known (an interrupt was answered).
+ */
 export async function applyExternalRun(
   agent: ThreadAgent,
   run: ExternalRun,
@@ -108,10 +112,17 @@ export async function applyExternalRun(
   steerAway: SteerAway,
   /** A run was applied before this one: the transcript may not show it yet (see `quiesce`). */
   after = false,
-): Promise<void> {
+  /**
+   * What that run said the transcript will hold. Without it a run that has no message of the
+   * person (the card of a rename or of a server attached to a finished thread, the marker of a
+   * fork) can follow another such run before the transcript shows the first, and hang off the
+   * message before it: the earlier run's message is then replaced.
+   */
+  shows = 0,
+): Promise<number | null> {
   await run.leadIn;
   const thread = runtime.thread;
-  if (after) await quiesce(thread);
+  if (after) await quiesce(thread, QUIESCE_TIMEOUT_MS, SETTLE_MS, shows);
   const users = [...run.userMessages];
   const pending = runtime.unstable_getPendingInterrupts();
   agent.adopt(run);
@@ -124,12 +135,13 @@ export async function applyExternalRun(
         pending.map((i) => ({ interruptId: i.id, status: "cancelled" as const })),
       );
     }
-    return;
+    return null;
   }
   // `append` and `startRun` read the transcript `thread.getState()` shows (see `quiesce`): after an
   // earlier run, let it show what has been appended before each step. The first run has no
   // transcript to hang off: its parent is the start.
   let shown = thread.getState().messages.length;
+  const before = shown;
   for (const m of users) {
     await thread.append(userMessage(m, false));
     // the message is in the transcript before the next step reads it
@@ -137,6 +149,7 @@ export async function applyExternalRun(
   }
   const head = thread.getState().messages.at(-1);
   await thread.startRun({ parentId: head?.id ?? null });
+  return before + users.length + 1;
 }
 
 /** The loop: takes external runs in order until `signal` aborts. */
@@ -147,14 +160,16 @@ export async function driveExternalRuns(
   signal: AbortSignal,
 ): Promise<void> {
   let applied = false;
+  let shows = 0;
   for (;;) {
     const run = await agent.nextExternalRun(signal);
     if (!run || signal.aborted) return;
     try {
       const after = applied;
       applied = true;
-      await applyExternalRun(agent, run, runtime(), steerAway(), after);
+      shows = (await applyExternalRun(agent, run, runtime(), steerAway(), after, shows)) ?? 0;
     } catch (e) {
+      shows = 0;
       // A run that ended in RUN_ERROR rejects the runtime's run: its transcript is complete.
       if (!isRunFailure(e)) console.warn("Could not apply a run to the transcript", e);
     }

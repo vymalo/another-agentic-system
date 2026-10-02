@@ -397,6 +397,33 @@ describe("the goldens through the runtime", () => {
     }
   }
 
+  it("tools-attach (ADR 0024): a thread created with a server and then one added and one dropped; the card is a part of the run it came in, a run of its own once the thread is done, and the snapshot says the set", async () => {
+    const { messages, agent } = await play("tools-attach");
+    const summary = summarize(messages());
+    // the first run: the person's message, then the card of the attach among the agent's parts
+    expect(summary[0]).toEqual(USER("echo hi"));
+    expect(summary[1]?.parts).toContain("tools");
+    // each later change, made once the thread was finished, is a run of its own that holds only the card,
+    // and the second follows the first without replacing it
+    expect(summary.slice(2)).toEqual([
+      { role: "assistant", status: DONE, parts: ["tools"] },
+      { role: "assistant", status: DONE, parts: ["tools"] },
+    ]);
+    const cards = messages().flatMap((m) =>
+      m.content.flatMap((p) =>
+        p.type === "data" && p.name === "agui-activity/vymalo.tools" ? [p.data] : [],
+      ),
+    );
+    expect(cards).toMatchObject([
+      { attached: ["websearch"] },
+      { attached: ["docs"] },
+      { detached: ["websearch"] },
+    ]);
+    // the stream's last snapshot has the set the log leaves: the first server was dropped
+    expect(agent.getSnapshot().tools).toEqual(["docs"]);
+    agent.stop();
+  });
+
   it("connect-title: a finished thread that was renamed reads as it did, the rename adds no message and moves the title", async () => {
     const { messages, agent } = await play("connect-title");
     expect(summarize(messages())).toEqual(EXPECTED.echo);
