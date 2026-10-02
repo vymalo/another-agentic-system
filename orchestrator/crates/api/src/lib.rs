@@ -1,5 +1,5 @@
-//! The HTTP edge of the orchestrator over [`orch_app::App`]: proxy-identity auth, RFC 9457
-//! problems, the resource API (agents, thread list and details, export, cancel, fork, branches) and health, in
+//! The HTTP edge of the orchestrator over [`orch_app::App`]: authentication through the
+//! `Authenticator` port, RFC 9457 problems, the resource API (agents, thread list and details, export, cancel, fork, branches) and health, in
 //! `docs/api/chat-api.yaml`.
 //!
 //! Interaction surfaces (AG-UI, MCP) are separate crates. Each builds [`SurfaceRoutes`], and
@@ -8,10 +8,15 @@
 //! caller that has no oauth2-proxy cookie (an MCP client with a bearer token), which the surface
 //! guards itself.
 //!
-//! Identity comes from `X-Auth-Request-Email` (set by oauth2-proxy). Requests without it are
-//! refused with 401 everywhere except `/healthz`, `/readyz` and `/metrics` (fail closed); the optional
-//! `AUTH_DEV_USER` identity applies only when configured. **The identity header is only
+//! Identity is whatever the application's `Authenticator` ([ADR 0033]) makes of the request's
+//! credentials: the `Authorization: Bearer` token, and the `X-Auth-Request-Email` header
+//! oauth2-proxy sets. Requests it does not authenticate are refused everywhere except `/healthz`,
+//! `/readyz` and `/metrics` (fail closed): 401, with `WWW-Authenticate: Bearer` when a bearer token
+//! is a credential it reads, or 503 when it cannot tell (the token issuer's keys cannot be
+//! fetched). `/readyz` is 503 while it cannot authenticate. **The identity header is only
 //! trustworthy behind a proxy that strips client-supplied copies.**
+//!
+//! [ADR 0033]: ../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md
 
 mod auth;
 mod export;
@@ -40,7 +45,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-pub use auth::{AuthConfig, IDENTITY_HEADER};
+pub use auth::IDENTITY_HEADER;
 pub use export::{FORMAT as EXPORT_FORMAT, VERSION as EXPORT_VERSION};
 pub use extract::{ApiJson, ApiQuery};
 pub use host::is_host_authority;
@@ -50,8 +55,6 @@ pub use routes::parse_thread_id;
 /// Everything configurable about the router.
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
-    /// Identity handling.
-    pub auth: AuthConfig,
     /// Interval of the SSE `: keepalive` comment (15 s per the contract; shorter in tests).
     /// Not used by the resource API itself: surfaces read it and pass it to their streams.
     pub sse_keepalive: Duration,
@@ -62,7 +65,6 @@ pub struct ApiConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         ApiConfig {
-            auth: AuthConfig::default(),
             sse_keepalive: Duration::from_secs(15),
             request_timeout: Duration::from_secs(30),
         }
@@ -184,6 +186,7 @@ pub fn router_with_surfaces<P: Ports>(
     surfaces: Vec<SurfaceRoutes>,
 ) -> Router {
     let state = ApiState { app };
+    let identity_app = Arc::clone(&state.app);
     let health = health_routes(state.clone());
     let resource = Router::new()
         .route("/api/agents", get(routes::list_agents::<P>))
@@ -228,8 +231,8 @@ pub fn router_with_surfaces<P: Ports>(
         .fallback(routes::not_found)
         .method_not_allowed_fallback(routes::method_not_allowed)
         .layer(from_fn_with_state(
-            Arc::new(cfg.auth),
-            auth::require_identity,
+            identity_app,
+            auth::require_identity::<P>,
         ));
     // Machine routes are merged beside the identity-guarded routes, not under them: their surface
     // guards them. A path they do not own falls through to the guarded router's 401/404.

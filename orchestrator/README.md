@@ -92,7 +92,7 @@ An empty value counts as unset.
 | `MCP_WAIT_MAX_CONCURRENT`, `MCP_WAIT_MAX_PER_USER` | `256`, `16` | The most `wait_for_job` calls one process, and one user, may hold open (flags `--mcp-wait-max-concurrent`, `--mcp-wait-max-per-user`), at least 1; a call over either is a tool error "too many waits". |
 | `MCP_ALLOWED_ORIGINS` | none | Comma-separated browser origins (`https://app.example.com`) the MCP server lets through (flag `--mcp-allowed-origins`). A request with any other `Origin` is 403; clients that are not browsers send none. |
 | `ORCH_PUBLIC_URL` | unset | The chat's public origin, for example `https://chat.example.com` (flag `--public-url`). The MCP server gives `start_job` a `web_url` of `<origin>/threads/<job_id>` from it; without it there is none. A malformed value (not an http(s) origin) is a startup error. |
-| `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot. Unset, such requests get 401. |
+| `AUTH_DEV_USER` | unset | An e-mail served for requests **without** `X-Auth-Request-Email`. Development only: the orchestrator logs a warning at boot, and the file refuses it with an `auth.mode` other than `proxy_header`. Unset, such requests get 401. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | At least 2: the wakeup listener holds one connection. |
 | `DISPATCHER_CONCURRENCY` | `32` | Delegations processed at the same time by this replica. |
 | `ORCH_TITLE_MODEL`, `ORCH_MODEL_BASE_URL`, `ORCH_MODEL_API_KEY`, `ORCH_MODEL_TIMEOUT_SECS` | unset, unset, unset, `20` | The model that writes thread titles ([ADR 0005](../docs/decisions/0005-openai-compatible-model-endpoint.md)): an OpenAI-compatible endpoint (`…/v1`, up to and not including `/chat/completions`), its bearer token when it wants one, and the model's name there; the first reply of the agent asks it for a 3 to 6 word title (twice at most per thread; a person's rename is final). **`ORCH_TITLE_MODEL` unset turns titles off**; set, it needs `ORCH_MODEL_BASE_URL` (exit 78). A model that is down or says nothing costs the thread nothing. See [`bin/orchestrator`](bin/orchestrator/README.md#environment). |
@@ -227,6 +227,8 @@ change of the composition root, never a runtime plugin.
 | [`crates/surface-thread-tools`](crates/surface-thread-tools/README.md) | `orch-surface-thread-tools` | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (rmcp, streamable HTTP, stateless): `get_ui_catalog` behind the thread-scoped token, and the provider seam later slices add tools through; a machine route straight to `App`. Feature `surface-thread-tools` of the binary, on by default, mounted by `ORCH_SURFACES=thread-tools`. |
 | [`crates/surface-webhook`](crates/surface-webhook/README.md) | `orch-surface-webhook` | The webhook surfaces: `POST /webhooks/ci` (a signed CI report, HMAC-SHA-256 over the timestamp and body) and `POST /webhooks/github` (GitHub's own deliveries, HMAC over the body), secrets with rotation, stored in the inbox through `App::receive`. Machine routes. |
 | [`crates/store-postgres`](crates/store-postgres/README.md) | `orch-store-postgres` | `ThreadStore` + `Wakeup` on Postgres (sqlx): per-thread `seq` from a counter row in the writing transaction, outbox claims with `FOR UPDATE SKIP LOCKED` leases, `LISTEN/NOTIFY`, embedded idempotent migrations. |
+| [`crates/auth-jwt`](crates/auth-jwt/README.md) | `orch-auth-jwt` | `Authenticator` over OAuth2 bearer tokens: JWTs validated against the issuer's JWKS (RS256, RS384, ES256, EdDSA), a key cache refreshed after 10 minutes and fetched again for an unknown `kid` at most once in 30 s, failing closed. Feature `auth-jwt` of the binary. |
+| [`crates/auth-header`](crates/auth-header/README.md) | `orch-auth-header` | `Authenticator` over `X-Auth-Request-Email` and the optional development user (what `orch-api` did before ADR 0033). Feature `auth-header` of the binary. |
 | [`crates/registry-platform`](crates/registry-platform/README.md) | `orch-registry-platform` | `AgentRegistry` over the platform's `agent-registry/v1` (an RFC 9727-shaped linkset of agent cards): read live over HTTP with its cache headers and a validator, in this process only, single flight, failing closed (a read that fails drops the copy; its agents are not listed and the source says so). Feature `registry-platform` of the binary. |
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
 | [`crates/model-openai`](crates/model-openai/README.md) | `orch-model-openai` | `ChatModel` over an OpenAI-compatible `POST {base}/chat/completions` (`reqwest`, no vendor SDK): the orchestrator's first model call, the title of a thread. The key is a sensitive header, never in an error or a `Debug`. |
@@ -243,15 +245,18 @@ in the same change as the crate's API, environment variables or tests. The docs
 check fails when one is missing.
 
 Dependency direction: `core` ← `ports` ← `app` ← `api` ← the surface crates; adapters
-(`store-postgres`, `agent-a2a`, `agent-adam`, `model-openai`, `registry-platform`; `agent-a2a` and `agent-adam` build on the pure `a2a-mapping`) implement the ports;
+(`store-postgres`, `agent-a2a`, `agent-adam`, `model-openai`, `registry-platform`, `auth-jwt`, `auth-header`; `agent-a2a` and `agent-adam` build on the pure `a2a-mapping`) implement the ports;
 only `bin/orchestrator` depends on all of them.
 
 ## Behaviour worth knowing
 
-- **Identity.** The API trusts `X-Auth-Request-Email` and answers 401 without it
-  on every path except `/healthz` and `/readyz`. `AUTH_DEV_USER` (an e-mail)
-  supplies an identity only when it is set. The header is only trustworthy
-  behind a proxy such as oauth2-proxy that strips client-supplied copies.
+- **Identity.** An `Authenticator` ([ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md))
+  decides who is calling, chosen by `auth.mode` in the configuration file (default `proxy_header`: the API trusts
+  `X-Auth-Request-Email` and answers 401 without it on every path except `/healthz` and `/readyz`; `AUTH_DEV_USER`
+  supplies an identity only when it is set). With `auth.mode: jwt` it validates the `Authorization: Bearer` token against
+  the issuer's JWKS (401 with `WWW-Authenticate: Bearer`, 503 while the keys cannot be fetched, `/readyz` with it).
+  The header is only trustworthy behind a proxy such as oauth2-proxy that strips client-supplied copies, and is refused
+  when `server.environment` is `production`.
 - **`thread_state` events** are appended only when a thread *enters* `blocked`,
   `done`, `failed` or `cancelled`; entering `queued`/`working` is implied by
   `user_message` / `agent_status`.

@@ -28,6 +28,7 @@ url.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
+orch-auth-header.workspace = true
 axum.workspace = true
 futures.workspace = true
 jiff.workspace = true

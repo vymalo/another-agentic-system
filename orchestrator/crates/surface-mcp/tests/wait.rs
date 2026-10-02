@@ -112,6 +112,7 @@ impl World {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    auth: orch_ports::RefuseAll,
                     registry: directory.fixed_registry(),
                 },
                 directory,

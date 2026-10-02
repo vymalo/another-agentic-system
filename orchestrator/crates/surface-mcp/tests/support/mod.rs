@@ -5,8 +5,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use orch_api::{ApiConfig, AuthConfig};
+use orch_api::ApiConfig;
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig};
+use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, GatePolicy, ThreadId, UserId};
 use orch_ports::memory::{MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{
@@ -33,6 +34,7 @@ pub type Ports = PortSet<
     SeqIds,
     orch_ports::NoModel,
     CompositeRegistry<FixedRegistry, MemoryRegistry>,
+    orch_auth_header::HeaderAuth,
 >;
 pub type Client = RunningService<RoleClient, Progress>;
 
@@ -138,6 +140,10 @@ impl Harness {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    auth: match options.dev_user {
+                        Some(user) => HeaderAuth::new().with_dev_user(UserId::new(user)),
+                        None => HeaderAuth::new(),
+                    },
                     registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
                 },
                 directory,
@@ -177,12 +183,7 @@ impl Harness {
                 .with_allowed_origins(options.allowed_origins.iter().copied())
                 .unwrap();
         }
-        let api = ApiConfig {
-            auth: AuthConfig {
-                dev_user: options.dev_user.map(UserId::new),
-            },
-            ..ApiConfig::default()
-        };
+        let api = ApiConfig::default();
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             api,

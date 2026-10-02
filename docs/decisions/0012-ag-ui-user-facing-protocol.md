@@ -1,6 +1,6 @@
 # ADR 0012 — AG-UI as the user-facing protocol
 
-- **Status:** accepted (2026-09-29). Status note (2026-09-29): the run route is built. The "inbox
+- **Status:** accepted (2026-09-29). Amended (2026-10-02): the bullet "Authentication stays at the edge" (ADR 0033). Status note (2026-09-29): the run route is built. The "inbox
   key" `(agui, <threadId>:<messageId>)` of this ADR is realised, while there is no inbox table, as the
   event's per-thread idempotency key `agui:<threadId>:msg:<messageId>` (`…:run:<runId>` for an answer with
   no message id of its own); the decision stands. Details: [`api/agui.md`](../api/agui.md#run-binding).
@@ -341,7 +341,10 @@ fix proposed upstream.
   standard semantics into `CUSTOM`.
 - **Authentication stays at the edge.** `X-Auth-Request-Email`, fail closed, with the ownership
   check before any stream byte (404). Identity never comes from `forwardedProps`, `state` or
-  message fields.
+  message fields. *Amended (2026-10-02, [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md)): identity
+  is what an `Authenticator` makes of the request's credentials; with `auth.mode: jwt` the orchestrator itself
+  validates the bearer token oauth2-proxy forwards, and the header is only trusted in `proxy_header` mode (the
+  default). The ownership check and the rule that identity never comes from the body stand.*
 - **Protocol version.** We declare `protocolVersion: "1.0"` on `RUN_STARTED`, serve any 1.x input
   with a warning, and reject another major before the stream (400).
 

@@ -16,10 +16,6 @@ pub struct Reserved {
 /// Every reserved key.
 pub const RESERVED: &[Reserved] = &[
     Reserved {
-        path: "server.environment",
-        by: "PR S14 (ADR 0033, authentication and roles)",
-    },
-    Reserved {
         path: "tasks.title.system",
         by: "PR S18 (ADR 0035, utility model tasks)",
     },
@@ -48,20 +44,12 @@ pub const RESERVED: &[Reserved] = &[
         by: "PR S18 and S19 (ADR 0034 and ADR 0035, the public subset served as GET /api/config)",
     },
     Reserved {
-        path: "auth.mode",
-        by: "PR S14 and S15 (ADR 0033, authentication and roles)",
-    },
-    Reserved {
-        path: "auth.jwt",
-        by: "PR S14 and S15 (ADR 0033, authentication and roles)",
-    },
-    Reserved {
         path: "auth.defaultRole",
-        by: "PR S14 and S15 (ADR 0033, authentication and roles)",
+        by: "PR S15 (ADR 0033, roles and permissions)",
     },
     Reserved {
         path: "auth.roles",
-        by: "PR S14 and S15 (ADR 0033, authentication and roles)",
+        by: "PR S15 (ADR 0033, roles and permissions)",
     },
     Reserved {
         path: "artifacts.maxPerJobBytes",

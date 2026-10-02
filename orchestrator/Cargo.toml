@@ -25,6 +25,8 @@ orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }
 orch-registry-platform = { path = "crates/registry-platform" }
+orch-auth-header = { path = "crates/auth-header" }
+orch-auth-jwt = { path = "crates/auth-jwt" }
 orch-model-openai = { path = "crates/model-openai" }
 orch-artifacts-fs = { path = "crates/artifacts-fs" }
 orch-artifacts-s3 = { path = "crates/artifacts-s3" }

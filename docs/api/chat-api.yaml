@@ -8,11 +8,15 @@ info:
     from the thread's append-only event log (an Event, below); the UI renders it,
     it never invents state.
 
-    Authentication: the API sits behind oauth2-proxy. The orchestrator trusts
-    `X-Auth-Request-Email` (and `X-Auth-Request-User`) set by the proxy and
-    rejects requests without it with 401 (fail closed). Local development may
-    set `AUTH_DEV_USER` to inject a fixed identity; it must be refused when
-    unset.
+    Authentication ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)):
+    the orchestrator is an OAuth2 resource server behind oauth2-proxy. With `auth.mode: jwt` the
+    identity is the `Authorization: Bearer <JWT>` the proxy forwards (or a client's own token),
+    validated against the issuer's keys; a request without a valid token gets 401 with
+    `WWW-Authenticate: Bearer`, and 503 (`Retry-After`) while the keys cannot be fetched (fail
+    closed, and `/readyz` with it). With the default `auth.mode: proxy_header` the orchestrator
+    trusts `X-Auth-Request-Email` set by the proxy and rejects requests without it with 401.
+    Local development may set `AUTH_DEV_USER` to inject a fixed identity (`proxy_header` only);
+    it must be refused when unset.
 
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
@@ -30,6 +34,7 @@ info:
 servers:
   - url: /
 security:
+  - bearerToken: []
   - proxyIdentity: []
 paths:
   /healthz:
@@ -349,11 +354,21 @@ paths:
         "503": { description: "The agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        A JWT signed by the configured issuer (RS256, RS384, ES256 or EdDSA), with the configured audience.
+        Read when `auth.mode` is `jwt` or `jwt_or_proxy_header`. A missing or refused token gets 401 with
+        `WWW-Authenticate: Bearer`; an issuer whose keys cannot be fetched gets 503.
     proxyIdentity:
       type: apiKey
       in: header
       name: X-Auth-Request-Email
-      description: Set by oauth2-proxy after OIDC login; requests without it get 401.
+      description: >
+        Set by oauth2-proxy after OIDC login; requests without it get 401. Read when `auth.mode` is
+        `proxy_header` (the default) or `jwt_or_proxy_header` without a bearer token.
   parameters:
     ThreadId:
       name: threadId

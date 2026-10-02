@@ -37,6 +37,8 @@ type Stack<S, W> = PortSet<
     SystemClock,
     UuidV7Ids,
     orch_ports::NoModel,
+    orch_ports::FixedRegistry,
+    orch_auth_header::HeaderAuth,
 >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +179,7 @@ fn app<S: ThreadStore, W: Wakeup>(
                 clock: SystemClock,
                 ids: UuidV7Ids,
                 model: orch_ports::NoModel,
+                auth: orch_auth_header::HeaderAuth::new(),
                 registry: World::directory().fixed_registry(),
             },
             World::directory(),

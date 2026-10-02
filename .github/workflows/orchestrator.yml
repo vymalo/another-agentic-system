@@ -101,9 +101,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The binary without its surfaces (each is a Cargo feature): it must still build and its
-      # configuration must still be valid.
+      # configuration must still be valid. A control plane needs an authenticator (ADR 0033: the
+      # default mode, `proxy_header`, is the feature `auth-header`), so the tests keep that one.
+      - run: cargo clippy -p orchestrator --no-default-features --features auth-header --bins --locked -- -D warnings
+      - run: cargo test -p orchestrator --no-default-features --features auth-header --bins --locked
+      # The other combinations of the authenticators must build: only tokens, and none (a worker).
+      - run: cargo clippy -p orchestrator --no-default-features --features auth-jwt --bins --locked -- -D warnings
       - run: cargo clippy -p orchestrator --no-default-features --bins --locked -- -D warnings
-      - run: cargo test -p orchestrator --no-default-features --bins --locked
       - run: cargo test --workspace --locked
       # In-process agents (ADR 0015) are a Cargo feature of the binary, off by default and so
       # not covered by the workspace commands above: lint it, and run its own tests (the

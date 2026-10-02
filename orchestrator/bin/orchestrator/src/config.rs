@@ -13,6 +13,7 @@
 mod file;
 
 pub use file::{FlagSecrets, Loaded, secret_flags};
+pub use orch_config::AuthMode;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -159,6 +160,18 @@ pub enum ConfigError {
     /// credential.
     #[error("{0}")]
     Artifacts(String),
+    /// `auth.mode` names an authenticator whose Cargo feature was not compiled in. Fail closed,
+    /// like a surface that is not compiled in: the setting is never quietly ignored, and a
+    /// process that cannot authenticate is not started to refuse everybody.
+    #[error(
+        "auth.mode {mode} is not in this build; it needs the Cargo feature {feature:?} (ADR 0033)"
+    )]
+    AuthNotCompiled {
+        /// The mode, as written in the file.
+        mode: &'static str,
+        /// The Cargo feature of the `orchestrator` package that provides what the mode needs.
+        feature: &'static str,
+    },
     /// `MCP_TOKENS_FILE` could not be read.
     #[error("cannot read MCP_TOKENS_FILE {}", path.display())]
     McpTokensFileRead {
@@ -954,6 +967,58 @@ pub struct Args {
     pub hostname: Option<String>,
 }
 
+/// How requests are authenticated: `auth.mode` and `auth.jwt` (ADR 0033). Without a file, the
+/// proxy header, as before the file existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthSettings {
+    /// `auth.mode`.
+    pub mode: AuthMode,
+    /// `auth.jwt`: set exactly when the mode reads tokens.
+    pub jwt: Option<JwtSettings>,
+}
+
+/// `auth.jwt`: the token issuer and what is read from its tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JwtSettings {
+    /// `auth.jwt.issuer`.
+    pub issuer: String,
+    /// `auth.jwt.audiences`.
+    pub audiences: Vec<String>,
+    /// `auth.jwt.jwksUrl`.
+    pub jwks_url: Option<String>,
+    /// `auth.jwt.userClaim`.
+    pub user_claim: String,
+    /// `auth.jwt.rolesClaim`.
+    pub roles_claim: Option<String>,
+}
+
+impl AuthSettings {
+    /// The settings of a valid file's `auth` section.
+    fn from_file(auth: &orch_config::Auth) -> Self {
+        AuthSettings {
+            mode: auth.mode,
+            jwt: auth.jwt.as_ref().map(|jwt| JwtSettings {
+                issuer: jwt.issuer.trim().to_owned(),
+                audiences: jwt.audiences.iter().map(|a| a.trim().to_owned()).collect(),
+                jwks_url: jwt.jwks_url.as_ref().map(|u| u.trim().to_owned()),
+                user_claim: jwt.user_claim.trim().to_owned(),
+                roles_claim: jwt.roles_claim.as_ref().map(|c| c.trim().to_owned()),
+            }),
+        }
+    }
+
+    /// The Cargo feature this build lacks for the mode, when it lacks one.
+    fn missing_feature(&self) -> Option<&'static str> {
+        if self.mode.reads_tokens() && !cfg!(feature = "auth-jwt") {
+            Some("auth-jwt")
+        } else if self.mode.reads_header() && !cfg!(feature = "auth-header") {
+            Some("auth-header")
+        } else {
+            None
+        }
+    }
+}
+
 /// The complete, validated configuration.
 pub struct Config {
     /// `DATABASE_URL`. May contain a password: never logged.
@@ -997,8 +1062,11 @@ pub struct Config {
     /// if the route is to be mounted). Redacted in `Debug` like the generic one.
     #[cfg(feature = "surface-webhook")]
     pub webhook_github: Option<GithubConfig>,
-    /// `AUTH_DEV_USER`: an identity for requests without `X-Auth-Request-Email`. Dev only.
+    /// `AUTH_DEV_USER`: an identity for requests without `X-Auth-Request-Email`. Dev only, and only
+    /// with `auth.mode: proxy_header`.
     pub auth_dev_user: Option<UserId>,
+    /// `auth.mode` and `auth.jwt`: how requests are authenticated (the proxy header, without a file).
+    pub auth: AuthSettings,
     /// `DATABASE_MAX_CONNECTIONS` (at least 2: the wakeup listener holds one).
     pub database_max_connections: u32,
     /// `DISPATCHER_CONCURRENCY`: outbox rows processed at once.
@@ -1046,6 +1114,7 @@ impl fmt::Debug for Config {
             .field("surfaces", &self.surfaces)
             .field("mcp", &self.mcp)
             .field("auth_dev_user", &self.auth_dev_user)
+            .field("auth", &self.auth)
             .field("database_max_connections", &self.database_max_connections)
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
             .field("outbox_lease", &self.outbox_lease)
@@ -1274,6 +1343,18 @@ impl Config {
             }
         };
 
+        // The authenticator the mode needs is compiled in, or the process does not start (a
+        // process that serves no routes authenticates nobody, and needs none).
+        let auth = resolved.auth;
+        if role.runs_control_plane()
+            && let Some(feature) = auth.missing_feature()
+        {
+            return Err(ConfigError::AuthNotCompiled {
+                mode: auth.mode.as_str(),
+                feature,
+            });
+        }
+
         let database_max_connections = number(
             clean(args.database_max_connections),
             "DATABASE_MAX_CONNECTIONS",
@@ -1372,6 +1453,7 @@ impl Config {
             #[cfg(feature = "surface-webhook")]
             webhook_github,
             auth_dev_user,
+            auth,
             database_max_connections,
             dispatcher_concurrency,
             #[cfg(feature = "agent-local")]
@@ -2111,6 +2193,8 @@ impl WebhookSecrets {
 struct Resolved {
     /// `artifacts`, read as the file said it (it has no variable).
     artifacts: Option<ArtifactSettings>,
+    /// `auth.mode` and `auth.jwt`: keys that have no variable, so no string to go through.
+    auth: AuthSettings,
     /// `webhooks.generic.secrets`, separated.
     #[cfg(feature = "surface-webhook")]
     webhook_generic: Option<Vec<String>>,
@@ -4342,6 +4426,7 @@ mod tests {
                 clock: SystemClock,
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                auth: orch_ports::RefuseAll,
                 registry: directory.fixed_registry(),
             },
             directory,

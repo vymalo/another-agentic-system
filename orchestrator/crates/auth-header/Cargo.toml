@@ -1,0 +1,20 @@
+[package]
+name = "orch-auth-header"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Authenticator over the identity header a proxy in front sets (X-Auth-Request-Email), with an optional development user: the behaviour the orchestrator had before it was an OAuth2 resource server."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

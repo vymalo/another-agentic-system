@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "auth-header", "auth-jwt"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -44,6 +44,14 @@ registry-platform = ["dep:orch-registry-platform"]
 # stack): a build that does not need it drops the feature.
 artifacts-fs = ["dep:orch-artifacts-fs"]
 artifacts-s3 = ["dep:orch-artifacts-s3"]
+# The proxy-header authenticator (`auth.mode: proxy_header`, the default, and `jwt_or_proxy_header`,
+# ADR 0033): the identity oauth2-proxy sets in `X-Auth-Request-Email`, and the development user.
+# On by default. Without it those modes are refused at startup (exit 78), never quietly ignored.
+auth-header = ["dep:orch-auth-header"]
+# The JWT authenticator (`auth.mode: jwt` and `jwt_or_proxy_header`, ADR 0033): the orchestrator as
+# an OAuth2 resource server, validating bearer tokens against the issuer's JWKS. On by default.
+# Without it those modes are refused at startup (exit 78).
+auth-jwt = ["dep:orch-auth-jwt"]
 # In-process agents (`transport: local` in AGENTS_FILE, ADR 0015): adam-rs agents hosted by this
 # process, journaled in the orchestrator's own Postgres under the prefix `orch_agent_`. Off by
 # default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
@@ -67,6 +75,8 @@ orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
 orch-artifacts-fs = { workspace = true, optional = true }
 orch-artifacts-s3 = { workspace = true, optional = true }
+orch-auth-header = { workspace = true, optional = true }
+orch-auth-jwt = { workspace = true, optional = true }
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true
@@ -89,6 +99,8 @@ uuid.workspace = true
 [dev-dependencies]
 futures.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
+# The token issuer on a local port that the tests of `auth.mode: jwt` ask the binary to trust.
+orch-auth-jwt = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 reqwest.workspace = true
 sha2.workspace = true

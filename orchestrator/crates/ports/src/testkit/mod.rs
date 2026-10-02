@@ -1,6 +1,7 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
-//! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel)
-//! and [`AgentRegistry`](crate::AgentRegistry) implementation must pass it.
+//! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
+//! [`AgentRegistry`](crate::AgentRegistry) and [`Authenticator`](crate::Authenticator)
+//! implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -10,6 +11,8 @@
 
 pub mod agent_client;
 pub mod artifact_store;
+pub mod authenticator;
+pub mod bearer;
 pub mod chat_model;
 pub mod registry;
 pub mod thread_store;
@@ -224,6 +227,67 @@ macro_rules! agent_registry_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::registry::$case(fixture).await,
                     None => eprintln!("skipped: no registry available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `Authenticator` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated
+/// [`AuthFixture`](authenticator::AuthFixture) (`None` skips the suite). Each case gives up after
+/// 10 s. The calling crate needs `tokio` (with `macros` and `rt`) as a dev-dependency.
+#[macro_export]
+macro_rules! authenticator_conformance {
+    ($make:path) => {
+        $crate::authenticator_conformance!(@cases $make;
+            valid_credentials_name_the_user no_credentials_is_missing
+            refused_credentials_are_invalid the_credential_is_never_in_an_error
+            unavailable_is_closed_and_distinguishable ready_when_it_can_authenticate
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::authenticator::$case(fixture).await,
+                    None => eprintln!("skipped: no authenticator available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per conformance case of an `Authenticator` that reads signed
+/// bearer tokens (the policy of ADR 0033). `$make` is an `async fn() -> Option<F>` returning a
+/// fresh, isolated [`TokenFixture`](bearer::TokenFixture) whose authenticator has never fetched
+/// the issuer's keys (`None` skips the suite). Each case gives up after 10 s. The calling crate
+/// needs `tokio` (with `macros` and `rt`) as a dev-dependency.
+#[macro_export]
+macro_rules! bearer_token_conformance {
+    ($make:path) => {
+        $crate::bearer_token_conformance!(@cases $make;
+            a_valid_token_names_the_user an_expired_token_is_refused
+            a_token_not_yet_valid_is_refused the_issuer_must_match_exactly
+            the_audience_must_be_the_configured_one exp_and_iat_are_required
+            alg_none_is_refused hs256_signed_with_a_public_key_is_refused
+            a_token_from_an_unpublished_key_is_refused
+            an_unknown_kid_refetches_at_most_once_per_interval
+            a_rotated_key_is_found_once_published
+            the_issuer_down_is_unavailable_and_closed
+            a_missing_or_malformed_bearer_is_unauthenticated
+            email_verified_false_is_refused the_user_claim_is_the_configured_one
+            roles_come_from_the_roles_claim the_token_is_never_in_an_error
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::bearer::$case(fixture).await,
+                    None => eprintln!("skipped: no token issuer available"),
                 }
             }
         )*

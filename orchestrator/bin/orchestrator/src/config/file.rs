@@ -1034,6 +1034,7 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
     }
     let resolved = Resolved {
         artifacts: artifact_settings(valid),
+        auth: super::AuthSettings::from_file(&c.auth),
         #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]
@@ -1198,6 +1199,7 @@ mod tests {
     #[cfg(feature = "registry-platform")]
     use std::time::Duration;
 
+    use super::super::AuthMode;
     use super::super::tests::{args_of, env_of};
     use super::*;
 
@@ -1270,6 +1272,124 @@ threadTools:
             ConfigError::Document(lines) => lines,
             other => vec![other.to_string()],
         }
+    }
+
+    const JWT: &str = "\
+auth:
+  mode: jwt
+  jwt:
+    issuer: https://idp.example/realms/main
+    audiences: [orchestrator-web]
+    userClaim: preferred_username
+    rolesClaim: realm_access.roles
+";
+
+    #[test]
+    fn without_an_auth_section_the_proxy_header_is_how_requests_are_authenticated() {
+        let c = load_file_only(&base(), FILE).unwrap().config;
+        assert_eq!(c.auth, super::super::AuthSettings::default());
+        assert_eq!(c.auth.mode, AuthMode::ProxyHeader);
+        // And without a file at all.
+        let env = Config::load(
+            args_of(&[
+                ("DATABASE_URL", "postgres://u:hunter2@db/orch"),
+                ("AGENTS_FILE", "/etc/orch/agents.yaml"),
+                ("CODER_A2A_TOKEN", "tok-123"),
+            ]),
+            env_of(&[("CODER_A2A_TOKEN", "tok-123")]),
+            |_| Ok(AGENTS.to_owned()),
+        )
+        .unwrap();
+        assert_eq!(env.auth.mode, AuthMode::ProxyHeader);
+    }
+
+    #[test]
+    #[cfg(feature = "auth-jwt")]
+    fn the_auth_section_reaches_the_configuration() {
+        let c = load_file_only(&base(), &format!("{FILE}{JWT}"))
+            .unwrap()
+            .config;
+        assert_eq!(c.auth.mode, AuthMode::Jwt);
+        let jwt = c.auth.jwt.unwrap();
+        assert_eq!(jwt.issuer, "https://idp.example/realms/main");
+        assert_eq!(jwt.audiences, ["orchestrator-web"]);
+        assert_eq!(jwt.user_claim, "preferred_username");
+        assert_eq!(jwt.roles_claim.as_deref(), Some("realm_access.roles"));
+        assert!(jwt.jwks_url.is_none());
+    }
+
+    #[test]
+    fn auth_mode_and_the_development_user_are_refused_together_through_the_variable_too() {
+        // AUTH_DEV_USER is the variable of auth.devUser: the rule of the file applies to it.
+        let mut pairs = base();
+        pairs.push(("AUTH_DEV_USER", "dev@example.com"));
+        let errors = lines(load_file_only(&pairs, &format!("{FILE}{JWT}")));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("auth.devUser: only with auth.mode proxy_header")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_mode_whose_feature_is_not_in_the_build_is_refused() {
+        let jwt = load_file_only(&base(), &format!("{FILE}{JWT}"));
+        let jwt_or = load_file_only(
+            &base(),
+            &format!(
+                "{FILE}auth: {{ mode: jwt_or_proxy_header, jwt: {{ issuer: 'https://i.example', audiences: [a] }} }}\n"
+            ),
+        );
+        if cfg!(feature = "auth-jwt") {
+            assert!(jwt.is_ok());
+        } else {
+            let line = lines(jwt).join("\n");
+            assert!(
+                line.contains("auth.mode jwt is not in this build") && line.contains("auth-jwt"),
+                "{line}"
+            );
+        }
+        if cfg!(all(feature = "auth-jwt", feature = "auth-header")) {
+            assert!(jwt_or.is_ok());
+        } else {
+            assert!(jwt_or.is_err());
+        }
+        // The default mode needs the header authenticator.
+        let header = load_file_only(&base(), FILE);
+        if cfg!(feature = "auth-header") {
+            assert!(header.is_ok());
+        } else {
+            let line = lines(header).join("\n");
+            assert!(
+                line.contains("auth.mode proxy_header is not in this build")
+                    && line.contains("auth-header"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_worker_needs_no_authenticator() {
+        let mut pairs = base();
+        pairs.push(("ORCH_ROLE", "worker"));
+        let c = load_file_only(&pairs, FILE).unwrap().config;
+        assert!(!c.role.runs_control_plane());
+    }
+
+    #[test]
+    #[cfg(feature = "auth-jwt")]
+    fn print_config_shows_the_auth_section() {
+        let merged = load_file_only(&base(), &format!("{FILE}{JWT}"))
+            .unwrap()
+            .merged
+            .unwrap();
+        assert!(
+            merged.contains("mode: jwt")
+                && merged.contains("issuer: https://idp.example/realms/main"),
+            "{merged}"
+        );
+        assert!(merged.contains("userClaim: preferred_username"), "{merged}");
     }
 
     #[test]

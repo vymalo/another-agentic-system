@@ -1,6 +1,6 @@
 use crate::{
-    AgentClient, AgentRegistry, ArtifactStore, ChatModel, Clock, FixedRegistry, IdGen, NoArtifacts,
-    ThreadStore, Wakeup,
+    AgentClient, AgentRegistry, ArtifactStore, Authenticator, ChatModel, Clock, FixedRegistry,
+    IdGen, NoArtifacts, RefuseAll, ThreadStore, Wakeup,
 };
 
 /// A static-dispatch bundle of every port (ADR 0009: composition happens at build time).
@@ -17,6 +17,9 @@ pub trait Ports: Send + Sync + 'static {
     type Ids: IdGen;
     /// The language model (`NoModel` in a deployment without one).
     type Model: ChatModel;
+    /// Who is calling: the authenticator of the HTTP edge (ADR 0033; `RefuseAll` in a process that
+    /// serves no routes).
+    type Auth: Authenticator;
     /// The agents that exist right now (ADR 0022).
     type Registry: AgentRegistry;
     /// The files agents hand over (`NoArtifacts` in a deployment without a store, ADR 0032).
@@ -34,17 +37,20 @@ pub trait Ports: Send + Sync + 'static {
     fn ids(&self) -> &Self::Ids;
     /// The language model.
     fn model(&self) -> &Self::Model;
+    /// The authenticator.
+    fn auth(&self) -> &Self::Auth;
     /// The agent registry.
     fn registry(&self) -> &Self::Registry;
     /// The artifact store.
     fn artifacts(&self) -> &Self::Artifacts;
 }
 
-/// The plain struct implementation of [`Ports`]. The registry type defaults to the static list and
-/// the artifact store to none, so a `PortSet<S, W, A, C, I, M>` that never heard of registries or
-/// files still names a complete bundle.
+/// The plain struct implementation of [`Ports`]. The registry type defaults to the static list,
+/// the authenticator to [`RefuseAll`] (which lets nobody in) and the artifact store to none, so a
+/// `PortSet<S, W, A, C, I, M>` that never heard of registries, authentication or files still names
+/// a complete bundle.
 #[derive(Debug, Clone)]
-pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry, X = NoArtifacts> {
+pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry, U = RefuseAll, X = NoArtifacts> {
     /// The store.
     pub store: S,
     /// The wakeup channel.
@@ -57,13 +63,15 @@ pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry, X = NoArtifacts> {
     pub ids: I,
     /// The language model.
     pub model: M,
+    /// The authenticator.
+    pub auth: U,
     /// The agent registry.
     pub registry: R,
     /// The artifact store.
     pub artifacts: X,
 }
 
-impl<S, W, A, C, I, M, R, X> Ports for PortSet<S, W, A, C, I, M, R, X>
+impl<S, W, A, C, I, M, R, U, X> Ports for PortSet<S, W, A, C, I, M, R, U, X>
 where
     S: ThreadStore,
     W: Wakeup,
@@ -72,6 +80,7 @@ where
     I: IdGen,
     M: ChatModel,
     R: AgentRegistry,
+    U: Authenticator,
     X: ArtifactStore,
 {
     type Store = S;
@@ -80,6 +89,7 @@ where
     type Clock = C;
     type Ids = I;
     type Model = M;
+    type Auth = U;
     type Registry = R;
     type Artifacts = X;
 
@@ -100,6 +110,9 @@ where
     }
     fn model(&self) -> &M {
         &self.model
+    }
+    fn auth(&self) -> &U {
+        &self.auth
     }
     fn registry(&self) -> &R {
         &self.registry

@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use orch_core::{AgentInfo, AgentTarget, ThreadId, ThreadRecord, UserId};
-use orch_ports::Ports;
+use orch_ports::{Authenticator, Ports};
 use serde::{Deserialize, Serialize};
 
 use crate::ApiState;
@@ -30,11 +30,19 @@ pub(crate) async fn healthz<P: Ports>(State(state): State<ApiState<P>>) -> Respo
 }
 
 pub(crate) async fn readyz<P: Ports>(State(state): State<ApiState<P>>) -> Response {
-    if state.app.is_ready().await {
-        plain(StatusCode::OK, "ready")
-    } else {
-        plain(StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    if !state.app.is_ready().await {
+        return plain(StatusCode::SERVICE_UNAVAILABLE, "not ready");
     }
+    // Ready to serve means ready to authenticate: while the issuer's keys have never been
+    // fetched, every request would be refused (ADR 0033).
+    if let Err(error) = state.app.ports().auth().ready().await {
+        tracing::warn!(%error, "not ready: cannot authenticate");
+        return plain(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: cannot authenticate",
+        );
+    }
+    plain(StatusCode::OK, "ready")
 }
 
 fn plain(status: StatusCode, body: &'static str) -> Response {

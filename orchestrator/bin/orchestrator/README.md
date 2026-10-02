@@ -70,7 +70,7 @@ that hold secrets.
 | `AGENT_REGISTRY_MAX_AGE_SECS` | `60` | 1 to 3600 (flag `--registry-max-age-secs`); the longest a copy of the document is kept in this process, whatever the registry's `Cache-Control` allows. Checked whether or not a URL is set |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
 | `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
-| `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning |
+| `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning; the file refuses it unless `auth.mode` is `proxy_header` |
 | `DATABASE_MAX_CONNECTIONS` | `10` | at least 2 |
 | `DISPATCHER_CONCURRENCY` | `32` | |
 | `OUTBOX_LEASE_SECS` | `30` | also the lease of a local agent's run |
@@ -157,6 +157,18 @@ orchestrator --config dev/orchestrator.yaml --print-config     # the merged conf
 * The compose stack is configured this way: [`dev/orchestrator.yaml`](../../../dev/orchestrator.yaml) (and
   [`dev/orchestrator.live.yaml`](../../../dev/orchestrator.live.yaml) for `compose.live.yaml`). The `local-agent` profile stays on
   variables, which keeps the old path covered by a stack that runs.
+
+### Authentication
+
+`auth.mode` ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md), keys in
+[`docs/api/config.md`](../../../docs/api/config.md#authentication)) has no variable: `proxy_header` (the default, nothing changes), `jwt`,
+or `jwt_or_proxy_header`. `src/auth.rs` builds the one `ConfiguredAuth` of the binary's `PortSet` (static dispatch over
+`RefuseAll`, the header authenticator, the JWT authenticator and `ByCredential` of both); the log says which at startup, and warns
+that the header is trusted when the mode reads it. The configuration refuses, before anything connects: `auth.jwt` missing
+(or present with `proxy_header`), `auth.devUser` with another mode, `proxy_header` when `server.environment` is `production`, an
+issuer that is not an `http(s)` URL without credentials, query or fragment, no audience, and a mode whose feature is not compiled in. In
+`jwt` mode `/readyz` is 503 until the issuer's keys have been fetched (the probe is what fetches them), and the first fetch that
+fails is not repeated for 5 seconds.
 
 ### The verification gate
 
@@ -255,6 +267,8 @@ noted in `src/main.rs`.
 | `surface-mcp` | yes | [`orch-surface-mcp`](../../crates/surface-mcp/README.md), the surface name `mcp` ([ADR 0019](../../../docs/decisions/0019-mcp-server-over-streamable-http.md)). On by default like `surface-agui`, so the image has it; it is mounted only when `ORCH_SURFACES` names it |
 | `surface-thread-tools` | yes | [`orch-surface-thread-tools`](../../crates/surface-thread-tools/README.md) (the surface name `thread-tools`) and [`orch-thread-token`](../../crates/thread-token/README.md) ([`docs/api/thread-tools-v1.md`](../../../docs/api/thread-tools-v1.md)). On by default; mounted only when `ORCH_SURFACES` names it, and then `THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL` are required in every role. Without the feature those variables are not read and naming the surface is refused |
 | `surface-webhook` | yes | [`orch-surface-webhook`](../../crates/surface-webhook/README.md), the surface names `webhook-generic` (`POST /webhooks/ci`) and `webhook-github` (`POST /webhooks/github`) |
+| `auth-header` | yes | [`orch-auth-header`](../../crates/auth-header/README.md): the proxy-header authenticator, `auth.mode: proxy_header` (the default) and `jwt_or_proxy_header` ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)). Without it those modes are refused at startup (78, naming the feature); a process that serves no routes needs none. The tests of `--no-default-features` keep this feature, because the default mode needs it |
+| `auth-jwt` | yes | [`orch-auth-jwt`](../../crates/auth-jwt/README.md): the OAuth2 resource server, `auth.mode: jwt` and `jwt_or_proxy_header` (`auth.jwt`: issuer, audiences, `jwksUrl`, `userClaim`, `rolesClaim`). Without it those modes are refused (78) |
 | `registry-platform` | yes | [`orch-registry-platform`](../../crates/registry-platform/README.md): the platform's agent registry (`AGENT_REGISTRY_URL` and the variables that go with it). Used only when the URL is set; without the feature a URL is a startup error (78) |
 | `artifacts-fs` | yes | [`orch-artifacts-fs`](../../crates/artifacts-fs/README.md): `artifacts.store: fs`, a directory. Without the feature the key is refused at startup (78), never ignored |
 | `artifacts-s3` | yes | [`orch-artifacts-s3`](../../crates/artifacts-s3/README.md): `artifacts.store: s3`, a bucket, through the S3 backend of `object_store` (six crates more in the lock file, on the workspace's `reqwest` and `aws-lc-rs`, so still one TLS stack). On by default so that the image can be configured for production with no other build; a build that does not need it drops the feature, and a file that names `s3` is then refused (78) |
@@ -328,6 +342,7 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
   line (an instance with a quote stays valid JSON, no fields means the stock line).
 * Unit tests of the thread-tools settings in `src/config.rs`: the key, the URL, the lifetime and the hosts read (the default host from the URL and its port, a rotation, a lifetime from 60 to 86400), read by every role and without the surface when set, refused when the surface is named without them, when only one of the key and the URL is set, when a key is short, repeated as the previous one or the previous one has no current key, and for a URL, lifetime or host that is not one; nothing prints a key, in `Debug` or in an error; a build without the feature refuses the surface.
 * Unit tests of the title model in `src/config.rs`: off unless `ORCH_TITLE_MODEL` is set (the endpoint variables alone turn nothing on), the endpoint required with it (`Missing`), the trailing slash cut, the scheme checked (`Invalid` for `ftp://`, a bare host, `https://`), the timeout at least 1 and refused even when titles are off, the name and timeout reaching `AppConfig`, and no key in `Debug`.
+* `src/config/file.rs` tests of `auth`: without a section the mode is `proxy_header` (and without a file too); the section reaches the configuration; `AUTH_DEV_USER` beside `jwt` is refused through the file's rule; a mode whose feature is missing is refused naming it; a worker needs none; `--print-config` shows it. `tests/smoke.rs`: `in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the_keys` (a real process against a local issuer: 503 and `/readyz` 503 while the keys cannot be fetched, 200 once they can; no token, a client-supplied header, a wrong audience, garbage, an unpublished key and `alg: none` are 401 with the challenge; no token reaches the log) and `a_production_process_refuses_the_proxy_header_before_anything_connects`.
 * Unit tests of the registry settings in `src/config.rs`: no registry unless `AGENT_REGISTRY_URL` is set (the tokens alone turn nothing on), the defaults (3 s, 60 s) and the values read, the URL refused unless it is an absolute `http(s)` URL with a host and no user name or password (and the refusal repeats no password), the two numbers refused out of 1 to 60 and 1 to 3600 whether or not a registry is set, no secret and no query string in any `Debug`, `AGENTS_FILE` optional (unset, `[]`, empty, only comments) when a registry is set and still read and validated when it is, and still required, with agents, without one; and, in a build without the feature (`--no-default-features`), a URL refused with `RegistryNotCompiled` naming `registry-platform`.
 * Unit tests of the MCP settings in `src/config.rs`: tokens, hosts, public URL and wait bound read and normalised (user lower-cased, token trimmed, hosts split and required to be authorities, origins, the 32-byte token minimum, the wait limits; `MCP_WAIT_MAX_SECS` 1 to 86400), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
 * Unit tests of the file loader in `src/config/file.rs` (no database, no environment): **a file gives the `Config` the variables

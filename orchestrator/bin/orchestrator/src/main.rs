@@ -4,6 +4,7 @@
 //! validates the file, the flags, the environment and the agent list.
 
 mod artifacts;
+mod auth;
 mod boot;
 mod config;
 mod local;

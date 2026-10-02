@@ -23,6 +23,7 @@ type Stack = PortSet<
     SeqIds,
     NoModel,
     CompositeRegistry<FixedRegistry, MemoryRegistry>,
+    orch_auth_header::HeaderAuth,
 >;
 
 const ALICE: &str = "alice@example.com";
@@ -60,6 +61,7 @@ async fn start() -> Api {
                 clock: SystemClock,
                 ids: SeqIds::default(),
                 model: NoModel,
+                auth: orch_auth_header::HeaderAuth::new(),
                 registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
             },
             directory,

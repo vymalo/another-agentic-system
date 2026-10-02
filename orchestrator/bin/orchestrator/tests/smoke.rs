@@ -1163,6 +1163,192 @@ async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
     assert!(log.contains("\"surfaces\":\"agui\""), "{log}");
 }
 
+// ---- authentication (ADR 0033) ---------------------------------------------------------------
+
+/// Starts the binary on a free port from a configuration file that is `CONFIG` and `extra`, and
+/// waits for `/healthz` (the process is alive; it may not be ready).
+async fn serve_configured(
+    db: &pgdb::TestDb,
+    scratch: &Scratch,
+    log_name: &str,
+    extra: &str,
+) -> (std::cell::RefCell<Running>, String, reqwest::Client) {
+    write_agents(scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(scratch, &format!("{CONFIG}{extra}"));
+    let addr = format!("127.0.0.1:{}", free_port());
+    let database_url = database_url_of(db);
+    let run = std::cell::RefCell::new(spawn_with_args(
+        scratch,
+        log_name,
+        &["--listen-addr", addr.as_str()],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", &database_url),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{addr}");
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+    (run, base, client)
+}
+
+#[tokio::test]
+async fn in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the_keys() {
+    use orch_auth_jwt::testkit::TestIdp;
+    use orch_ports::testkit::bearer::{Alg, Signing};
+
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let idp = TestIdp::start().await;
+    // The issuer cannot be reached when the process starts: nobody gets in, and it says so.
+    idp.set_jwks_down(true);
+    let (run, base, client) = serve_configured(
+        &db,
+        &scratch,
+        "jwt.log",
+        &format!(
+            // Development: the local issuer is plain http, which production refuses.
+            "auth:\n  mode: jwt\n  jwt:\n    issuer: {}\n    audiences: [orchestrator-web]\n",
+            idp.issuer()
+        ),
+    )
+    .await;
+    let get = |path: &'static str, headers: Vec<(&'static str, String)>| {
+        let (client, base) = (client.clone(), base.clone());
+        async move {
+            let mut req = client.get(format!("{base}{path}"));
+            for (name, value) in headers {
+                req = req.header(name, value);
+            }
+            req.send().await.unwrap()
+        }
+    };
+    let bearer = |token: &str| vec![("Authorization", format!("Bearer {token}"))];
+    let good = idp.token("orchestrator-web", "alice@example.com");
+
+    let ready = get("/readyz", vec![]).await;
+    assert_eq!(ready.status(), 503, "never fetched: not ready");
+    let down = get("/api/agents", bearer(&good)).await;
+    assert_eq!(down.status(), 503, "a valid token cannot be checked yet");
+    assert!(down.headers().contains_key("retry-after"));
+    assert_eq!(
+        get("/healthz", vec![]).await.status(),
+        200,
+        "alive all the while"
+    );
+
+    // The issuer comes back; readiness (what the probe asks) is what fetches the keys.
+    idp.set_jwks_down(false);
+    eventually("the keys are fetched and /readyz says ready", || async {
+        (get("/readyz", vec![]).await.status() == 200).then_some(())
+    })
+    .await;
+
+    let ok = get("/api/agents", bearer(&good)).await;
+    assert_eq!(ok.status(), 200);
+    // No token: 401 with the challenge. The identity header is not an identity in this mode.
+    let none = get("/api/agents", vec![]).await;
+    assert_eq!(none.status(), 401);
+    assert_eq!(
+        none.headers()["www-authenticate"],
+        "Bearer realm=\"orchestrator\""
+    );
+    let header_only = get(
+        "/api/agents",
+        vec![("X-Auth-Request-Email", "alice@example.com".into())],
+    )
+    .await;
+    assert_eq!(
+        header_only.status(),
+        401,
+        "a client-supplied header is no identity"
+    );
+    // A bad token: 401 saying so, and the header beside it does not rescue it.
+    let wrong_audience = idp.token("another-api", "alice@example.com");
+    for (what, token) in [
+        ("wrong audience", wrong_audience),
+        ("garbage", "not.a.jwt".to_owned()),
+        (
+            "unpublished key",
+            idp.mint(
+                &idp.claims("orchestrator-web", "alice@example.com"),
+                Signing::Unpublished(Alg::Rs256),
+            ),
+        ),
+        (
+            "alg none",
+            idp.mint(
+                &idp.claims("orchestrator-web", "alice@example.com"),
+                Signing::NoneAlg,
+            ),
+        ),
+    ] {
+        let mut headers = bearer(&token);
+        headers.push(("X-Auth-Request-Email", "alice@example.com".to_owned()));
+        let r = get("/api/agents", headers).await;
+        assert_eq!(r.status(), 401, "{what}");
+        assert!(
+            r.headers()["www-authenticate"]
+                .to_str()
+                .unwrap()
+                .contains("error=\"invalid_token\""),
+            "{what}"
+        );
+    }
+    // The token's user owns what it creates: alice's threads are not bob's.
+    let bob = idp.token("orchestrator-web", "bob@example.com");
+    assert_eq!(get("/api/threads", bearer(&good)).await.status(), 200);
+    assert_eq!(get("/api/threads", bearer(&bob)).await.status(), 200);
+
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("\"mode\":\"jwt\""), "{log}");
+    assert!(
+        !log.contains(&good) && !log.contains(&bob),
+        "a token reached the log:\n{log}"
+    );
+}
+
+#[test]
+fn a_production_process_refuses_the_proxy_header_before_anything_connects() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!("{CONFIG}server: {{ environment: production }}\n"),
+    );
+    let out = run_to_end(
+        &[],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", SECRET_URL),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("auth.mode: proxy_header is for a single user on a local machine"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("hunter2-s3cr3t"));
+}
+
 // ---- the MCP surface (ADR 0019) ---------------------------------------------------------------
 
 const MCP_TOKENS: &str = "- user: mcp-user@example.com\n  tokenEnv: MCP_TOKEN_SMOKE\n";
