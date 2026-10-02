@@ -176,6 +176,30 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
     })
 }
 
+/// What `mark_sent` records with the message: the task it reached and, while that task is not
+/// over, its state. The binding records a task as over only once its end is applied to the
+/// thread (`apply_envelope` commits the two together, and drops an end the binding records
+/// already, ADR 0036). A task can be over before its stream says anything (a fast agent's stream
+/// begins with a snapshot of the finished task): recording that end with the message would have
+/// the end dropped as already applied, and the thread would wait forever. Until its envelope is
+/// applied the task is `submitted`, which also replaces the state the binding kept of the task
+/// before it.
+fn sent_binding(
+    task_id: String,
+    state: Option<AgentTaskState>,
+    revision: Option<String>,
+) -> BindingUpdate {
+    BindingUpdate {
+        task_id: Some(task_id),
+        task_state: Some(
+            state
+                .filter(|s| !s.is_terminal())
+                .unwrap_or(AgentTaskState::Submitted),
+        ),
+        revision,
+    }
+}
+
 fn add(ts: Timestamp, d: Duration) -> Timestamp {
     SignedDuration::try_from(d)
         .ok()
@@ -557,10 +581,7 @@ impl<P: Ports> Dispatcher<P> {
                 .find_task_by_message(&ctx.endpoint, &binding.context_id, &row.id.to_string())
                 .await
         {
-            let update = BindingUpdate {
-                task_id: Some(task_id.clone()),
-                ..BindingUpdate::default()
-            };
+            let update = sent_binding(task_id.clone(), None, None);
             if !self
                 .store()
                 .mark_sent(&ctx.lease, update, self.now())
@@ -788,11 +809,11 @@ impl<P: Ports> Dispatcher<P> {
             match next {
                 Some(Ok(env)) => {
                     if !marked {
-                        let update = BindingUpdate {
-                            task_id: Some(env.task_id.clone()),
-                            task_state: env_state(&env),
-                            revision: env.revision.clone(),
-                        };
+                        let update = sent_binding(
+                            env.task_id.clone(),
+                            env_state(&env),
+                            env.revision.clone(),
+                        );
                         if !self
                             .store()
                             .mark_sent(&ctx.lease, update, self.now())
