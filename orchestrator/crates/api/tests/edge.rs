@@ -469,6 +469,11 @@ async fn no_identity_is_401_everywhere_except_the_probes() {
         let p: serde_json::Value = r.json().await.unwrap();
         assert_eq!(p["status"], 401);
         assert_eq!(p["title"], "Unauthorized");
+        // The web shows this detail: it names the header the proxy did not send.
+        assert_eq!(
+            p["detail"], "missing X-Auth-Request-Email",
+            "{method} {path}"
+        );
     }
     // Nothing was changed by the anonymous requests: the thread is still queued.
     let record = e

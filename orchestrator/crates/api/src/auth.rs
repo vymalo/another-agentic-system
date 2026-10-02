@@ -59,7 +59,8 @@ fn refusal(error: &AuthError, accepts_bearer: bool) -> Response {
                 _ if accepts_bearer => {
                     "authentication required: send Authorization: Bearer <token>".to_owned()
                 }
-                _ => "authentication required".to_owned(),
+                // Only the proxy's header is accepted: name it, as before ADR 0033.
+                _ => "missing X-Auth-Request-Email".to_owned(),
             };
             let mut response = Problem::unauthorized(detail).into_response();
             if accepts_bearer {
