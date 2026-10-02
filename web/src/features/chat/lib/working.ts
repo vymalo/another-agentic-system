@@ -20,6 +20,9 @@ import { drawsStep } from "./steps";
  *
  * - in a turn that is over, the last unmarked text is the answer, and the text before it is working
  *   (when a text is marked `answer`, that is the answer and an unmarked one is working);
+ * - a turn has one answer: when more than one text is marked `answer` (an agent that announced its
+ *   answer with `turn_output`, then announced it again), the last is the answer and the earlier ones
+ *   are working text (ADR 0031, the amendment);
  * - in a turn that runs, an unmarked text shows as a draft of the answer until a step starts after
  *   it, and then it folds into the steps. (An artifact, a check or a CI report after the words is
  *   not a step of the agent: the words are still the last thing it said.)
@@ -59,6 +62,11 @@ export function textRoles(content: readonly PartLike[], running: boolean): Map<n
       texts.push({ index, purpose: purposeBefore(content, index) });
     }
   });
+  // a turn has one answer: the last text marked `answer`; an earlier one was replaced
+  const lastAnswer = texts.findLast((t) => t.purpose === "answer")?.index;
+  for (const text of texts) {
+    if (text.purpose === "answer" && text.index !== lastAnswer) text.purpose = "working";
+  }
   const roles = new Map<number, TextRole>();
   if (running) {
     for (const { index, purpose } of texts) {
