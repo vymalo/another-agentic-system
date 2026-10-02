@@ -97,6 +97,27 @@ threadTools:
   secret: { env: THREAD_TOOLS_SECRET }
   allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
 
+# What a person may attach to a conversation (ADR 0024, docs/api/config.md "toolServers"): the deployment's own list, never a URL a
+# person types. `websearch` is the stack's mock web search (`mock-mcp-search`, dev/mock-mcp-search), offered for the chat and the coder
+# (the researcher has a search of its own, in its folder). The orchestrator calls it for the agent, as one step per call with the icon
+# `mcp-server:websearch`, and holds what it needs: `bearer` is sent as `Authorization: Bearer <value>`, and `headers` are sent as they
+# are. Both are secrets, so references (compose.yaml sets the two variables to dummies; the mock requires the token and journals the
+# header, which dev/tools-e2e.sh reads). `tools` lets the agent have `web_search` and nothing else the server might add. The icon is the
+# mock's own (a magnifier), a `data:` URI the screen draws as it is: an icon at a URL is never fetched. The live stack lists
+# `searxng-mcp` under the same id (dev/orchestrator.live.yaml).
+toolServers:
+  - id: websearch
+    name: Web search
+    description: Search the web (canned results, for tests).
+    url: http://mock-mcp-search:8080/mcp
+    icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE4YzRkIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTEiIGN5PSIxMSIgcj0iNyIvPjxwYXRoIGQ9Im0yMCAyMC0zLjUtMy41Ii8+PC9zdmc+
+    bearer: { env: WEBSEARCH_TOKEN }
+    headers:
+      X-Search-Tenant: { env: WEBSEARCH_TENANT }
+    tools: [web_search]
+    agents: [chat, coder]
+    timeoutSecs: 30
+
 # The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which does not put it behind oauth2-proxy: the
 # server authenticates a static bearer token itself. The token is named by mcp-tokens.yaml and belongs to dev@example.com with the
 # role `user` (one of `auth.roles` below), so the jobs it starts are in that user's chat. `Host` values are the edge's own address
