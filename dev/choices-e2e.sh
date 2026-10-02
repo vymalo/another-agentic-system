@@ -27,8 +27,8 @@
 #     thread `blocked`; the coder's words are the question; there is exactly one `a2ui-surface`, which names the
 #     screen's catalogId (createSurface) and holds one `Choices` of three questions (db, auth, deploy); the state of the
 #     thread says which catalog it holds (`thread.uiCatalog`); the model of the coder was offered `ask_user` with a
-#     `choices` parameter, `show`, `ui_catalog` and `get_ui_catalog` (the tool of the thread's own endpoint: the
-#     thread-tools grant reached the coder over plain http, which needs MCP_ALLOW_INSECURE on the coder);
+#     `choices` parameter, `show` and `ui_catalog`, not `get_ui_catalog` (one catalog tool), and the coder's log says it
+#     listed the thread tools (the grant reached it over plain http, which needs MCP_ALLOW_INSECURE on the coder);
 #   * RUN 2, the answers (db=pg, auth=keycloak, deploy=compose) as ONE `forwardedProps.a2uiAction.userAction`: the thread
 #     records a `vymalo.action` that carries them, and the coder's next words quote "Postgres", "Keycloak" and "Compose"
 #     (the mock says that only when the tool result it was given holds `db: pg`); the model got all three answers as
@@ -63,6 +63,8 @@ coder=${coder%/}
 timeout=${TIMEOUT:-120}
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+# when this run began: the agent's log is read from here on (grant_reached)
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 catalog_file=${CATALOG_FILE:-$root/web/src/features/chat/lib/a2ui/catalog/catalog.json}
 catalog_lock=${CATALOG_LOCK:-$root/web/src/features/chat/lib/a2ui/catalog/catalog.lock.json}
 
@@ -282,16 +284,29 @@ else
 fi
 reqs=$(requests)
 offered=$(printf '%s' "$reqs" | jq -r '[.[0].body.tools // [] | .[].function.name] | join(" ")')
-for tool in ask_user show ui_catalog get_ui_catalog; do
-  hint=
-  if [ "$tool" = get_ui_catalog ]; then
-    hint="; the thread-tools grant did not reach the coder: is MCP_ALLOW_INSECURE set on it, and thread-tools in ORCH_SURFACES?"
-  fi
+for tool in ask_user show ui_catalog; do
   case " $offered " in
     *" $tool "*) ok "run 1: the model was offered $tool" ;;
-    *) bad "run 1: the model was not offered $tool (tools: ${offered:-none})$hint" ;;
+    *) bad "run 1: the model was not offered $tool (tools: ${offered:-none})" ;;
   esac
 done
+# One catalog tool: the thread-tools endpoint's get_ui_catalog is hidden from the model, which has ui_catalog (adam-rs ADR 0006
+# status note, d56dd94). So the tool list no longer shows that the grant reached the agent; its log does: adam warns "the
+# thread tools could not be listed" when it holds a grant it cannot use (plain http without MCP_ALLOW_INSECURE, an endpoint
+# that does not answer).
+case " $offered " in
+  *" get_ui_catalog "*) bad "run 1: the model was offered get_ui_catalog beside ui_catalog (tools: $offered)" ;;
+  *) ok "run 1: the model was not offered get_ui_catalog (one catalog tool, ui_catalog)" ;;
+esac
+if command -v docker >/dev/null 2>&1; then
+  if docker compose -f "$root/compose.yaml" --profile app logs --no-color --since "$started" coder 2>&1 | grep -q 'the thread tools could not be listed'; then
+    bad "run 1: the coder could not list the thread tools: is MCP_ALLOW_INSECURE set on it, and thread-tools in ORCH_SURFACES?"
+  else
+    ok "run 1: the coder listed the thread tools (no warning in its log since $started)"
+  fi
+else
+  echo "skip run 1: docker is not available, so the coder's log was not read for the thread-tools grant"
+fi
 if printf '%s' "$reqs" | jq -e '.[0].body.tools // [] | map(select(.function.name == "ask_user")) | .[0].function.parameters.properties | has("choices")' >/dev/null 2>&1; then
   ok "run 1: ask_user takes a choices parameter"
 else

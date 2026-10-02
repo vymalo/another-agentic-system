@@ -842,8 +842,8 @@ What an agent of the stack receives, **only if its card lists** `https://agents.
 | `split` profile | the control plane serves it, the workers (same variables) mint |
 
 The coder and the agents that are folders (`chat`, `researcher`) list the extension since adam-rs `d411249` (the WireMock agents do not), and
-list the endpoint's tools at every model turn with the grant of the message, so the model is offered what it lists (`get_ui_catalog` today) under its listed
-name; the URL is plain `http` on the compose network, so these services set `MCP_ALLOW_INSECURE` ([Choices](#choices-the-coder-asks-with-a-form)).
+list the endpoint's tools at every model turn with the grant of the message, so the model is offered what it lists under its listed name, except `get_ui_catalog`, which adam-rs hides since
+`d56dd94` because the model has `ui_catalog` for the same thing (the catalog is still read through the endpoint); the URL is plain `http` on the compose network, so these services set `MCP_ALLOW_INSECURE` ([Choices](#choices-the-coder-asks-with-a-form)).
 The endpoint answers the checks of
 [`orchestrator/crates/surface-thread-tools`](../orchestrator/crates/surface-thread-tools/README.md) and the whole loop is
 tested by [`orchestrator/crates/e2e/tests/thread_tools.rs`](../orchestrator/crates/e2e/tests/thread_tools.rs) (the real
@@ -884,7 +884,7 @@ sequenceDiagram
   U->>O: run 1: "[mock:choices] ...", forwardedProps vymalo.uiCatalog (the web's catalog)
   O->>C: SendStreamingMessage: ui-catalog/v1 (inline), A2UI capabilities, thread-tools/v1 {url, token}
   C->>O: tools/list at the thread's endpoint (plain http, MCP_ALLOW_INSECURE)
-  C->>M: chat completions, model mock-coder, tools ask_user, show, ui_catalog, get_ui_catalog
+  C->>M: chat completions, model mock-coder, tools ask_user, show, ui_catalog (get_ui_catalog hidden)
   M-->>C: ask_user with three questions
   C-->>O: input-required: the question and one a2ui-surface (a Choices, under the catalog's id)
   O-->>U: the frames, then RUN_FINISHED (interrupt)
@@ -912,7 +912,8 @@ stateDiagram-v2
 ```
 
 The script prints one `ok` or `FAIL` line per check, and what it asserts is at the top of the file: the card, the one surface and its
-`Choices`, the state's `thread.uiCatalog`, the tools the model was offered (`get_ui_catalog` among them: the grant arrived), the action and the
+`Choices`, the state's `thread.uiCatalog`, the tools the model was offered (`ui_catalog` and not `get_ui_catalog`), that the coder's log has no "the thread tools could not be
+listed" (the grant arrived and was usable), the action and the
 quoted answers, the second `ui_catalog`, and a model mock that answered every request. **To try it in the chat**, send the coder `[mock:choices] set up
 the project`: a form with three questions should appear, and your answers come back as your own message, "Your answers". (That click path is covered by the
 web's own tests on a fake agent; against the coder in containers it is *unverified* here, the script drives the same requests without a browser.)

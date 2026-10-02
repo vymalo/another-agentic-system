@@ -28,7 +28,8 @@
 #     message that names the three links; exactly one `a2ui-surface`, under the screen's catalogId, whose components
 #     are a Column, a Text, a Cards of three cards whose links are the ones the search returned, and a Mermaid
 #     `graph TD`; `thread.uiCatalog` says version 3; the mock web search got exactly one call (`web_search`, a query
-#     with "async"); the model was offered `search__web_search`, `ui_catalog`, `show` and `get_ui_catalog`, got the
+#     with "async"); the model was offered `search__web_search`, `ui_catalog` and `show` (not `get_ui_catalog`: one catalog
+#     tool) and its log says it could list the thread tools, got the
 #     components of the screen from `ui_catalog` (Cards and Mermaid among them) and "Shown to the person." from `show`;
 #   * RUN 2, the same thread from an OLDER screen: such a screen sends no catalog (it sends one only when the thread has
 #     none or its own is newer, docs/api/ui-catalog-v1.md), so the run adds no `ui_catalog` to the thread's log, the
@@ -67,6 +68,8 @@ researcher=${researcher%/}
 timeout=${TIMEOUT:-120}
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+# when this run began: the agent's log is read from here on (grant_reached)
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 catalog_file=${CATALOG_FILE:-$root/web/src/features/chat/lib/a2ui/catalog/catalog.json}
 catalog_lock=${CATALOG_LOCK:-$root/web/src/features/chat/lib/a2ui/catalog/catalog.lock.json}
 results_file=${SEARCH_RESULTS:-$root/dev/mock-mcp-search/results.json}
@@ -358,16 +361,29 @@ case $query in
 esac
 reqs=$(requests)
 offered=$(printf '%s' "$reqs" | jq -r '[.[0].body.tools // [] | .[].function.name] | join(" ")')
-for tool in search__web_search ui_catalog show get_ui_catalog; do
-  hint=
-  if [ "$tool" = get_ui_catalog ]; then
-    hint="; the thread-tools grant did not reach the researcher: is MCP_ALLOW_INSECURE set on it, and thread-tools in ORCH_SURFACES?"
-  fi
+for tool in search__web_search ui_catalog show; do
   case " $offered " in
     *" $tool "*) ok "run 1: the model was offered $tool" ;;
-    *) bad "run 1: the model was not offered $tool (tools: ${offered:-none})$hint" ;;
+    *) bad "run 1: the model was not offered $tool (tools: ${offered:-none})" ;;
   esac
 done
+# One catalog tool: the thread-tools endpoint's get_ui_catalog is hidden from the model, which has ui_catalog (adam-rs ADR 0006
+# status note, d56dd94). So the tool list no longer shows that the grant reached the agent; its log does: adam warns "the
+# thread tools could not be listed" when it holds a grant it cannot use (plain http without MCP_ALLOW_INSECURE, an endpoint
+# that does not answer).
+case " $offered " in
+  *" get_ui_catalog "*) bad "run 1: the model was offered get_ui_catalog beside ui_catalog (tools: $offered)" ;;
+  *) ok "run 1: the model was not offered get_ui_catalog (one catalog tool, ui_catalog)" ;;
+esac
+if command -v docker >/dev/null 2>&1; then
+  if docker compose -f "$root/compose.yaml" --profile app logs --no-color --since "$started" researcher 2>&1 | grep -q 'the thread tools could not be listed'; then
+    bad "run 1: the researcher could not list the thread tools: is MCP_ALLOW_INSECURE set on it, and thread-tools in ORCH_SURFACES?"
+  else
+    ok "run 1: the researcher listed the thread tools (no warning in its log since $started)"
+  fi
+else
+  echo "skip run 1: docker is not available, so the researcher's log was not read for the thread-tools grant"
+fi
 case $(tool_result "$reqs" cards-call-1) in
   *"$(printf '%s' "$expected" | cut -d ' ' -f 1)"*) ok "run 1: the results of the search went back to the model" ;;
   *) bad "run 1: the model got no search result for cards-call-1 ('$(tool_result "$reqs" cards-call-1 | head -c 200)')" ;;
