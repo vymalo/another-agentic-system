@@ -861,6 +861,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const now = new Date().toISOString();
     const created: Thread = {
       id: forkId,
+      owner: DEV_USER,
       title: parent.title,
       ...(parent.description ? { description: parent.description } : {}),
       target: to,
@@ -1118,6 +1119,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const now = new Date().toISOString();
       const created: Thread = {
         id: threadId,
+        owner: DEV_USER,
         title: text.slice(0, 60),
         target: { agentId: agent.id, ...(typeof release === "string" ? { release } : {}) },
         state: "queued",
