@@ -2168,6 +2168,7 @@ dependencies = [
  "jiff",
  "jsonschema",
  "orch-app",
+ "orch-auth-header",
  "orch-core",
  "orch-ports",
  "reqwest",
@@ -2235,6 +2236,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-auth-header"
+version = "0.1.0"
+dependencies = [
+ "orch-core",
+ "orch-ports",
+ "tokio",
+]
+
+[[package]]
 name = "orch-config"
 version = "0.1.0"
 dependencies = [
@@ -2274,6 +2284,7 @@ dependencies = [
  "orch-agui-proto",
  "orch-api",
  "orch-app",
+ "orch-auth-header",
  "orch-core",
  "orch-ports",
  "orch-registry-platform",
@@ -2378,6 +2389,7 @@ dependencies = [
  "orch-agui-proto",
  "orch-api",
  "orch-app",
+ "orch-auth-header",
  "orch-core",
  "orch-ports",
  "reqwest",
@@ -2398,6 +2410,7 @@ dependencies = [
  "jiff",
  "orch-api",
  "orch-app",
+ "orch-auth-header",
  "orch-core",
  "orch-ports",
  "orch-testsupport",
@@ -2425,6 +2438,7 @@ dependencies = [
  "jiff",
  "orch-api",
  "orch-app",
+ "orch-auth-header",
  "orch-core",
  "orch-ports",
  "orch-testsupport",
@@ -2451,6 +2465,7 @@ dependencies = [
  "jiff",
  "orch-api",
  "orch-app",
+ "orch-auth-header",
  "orch-core",
  "orch-ports",
  "reqwest",
@@ -2523,6 +2538,7 @@ dependencies = [
  "orch-app",
  "orch-artifacts-fs",
  "orch-artifacts-s3",
+ "orch-auth-header",
  "orch-config",
  "orch-core",
  "orch-model-openai",

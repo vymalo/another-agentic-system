@@ -37,6 +37,7 @@ type Stack = PortSet<
     UuidV7Ids,
     NoModel,
     CompositeRegistry<FixedRegistry, PlatformRegistry>,
+    orch_auth_header::HeaderAuth,
 >;
 
 const ALICE: &str = "alice@example.com";
@@ -168,6 +169,7 @@ async fn world() -> World {
                 clock: SystemClock,
                 ids: UuidV7Ids,
                 model: NoModel,
+                auth: orch_auth_header::HeaderAuth::new(),
                 registry: CompositeRegistry::new(directory.fixed_registry(), registry),
             },
             directory,

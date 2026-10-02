@@ -75,7 +75,16 @@ macro_rules! backends {
     };
 }
 
-type Ports<S, W> = PortSet<S, W, ScriptedAgent, FixedClock, SeqIds, orch_ports::NoModel>;
+type Ports<S, W> = PortSet<
+    S,
+    W,
+    ScriptedAgent,
+    FixedClock,
+    SeqIds,
+    orch_ports::NoModel,
+    orch_ports::FixedRegistry,
+    orch_auth_header::HeaderAuth,
+>;
 
 /// The application, its inbox worker, the HTTP route and the clock, on one store.
 struct Rig<S: ThreadStore, W: Wakeup> {
@@ -129,6 +138,7 @@ async fn rig<S: ThreadStore, W: Wakeup>(
                 clock: clock.clone(),
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                auth: orch_auth_header::HeaderAuth::new(),
                 registry: directory.fixed_registry(),
             },
             directory,

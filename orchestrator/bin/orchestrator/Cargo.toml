@@ -67,6 +67,7 @@ orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
 orch-artifacts-fs = { workspace = true, optional = true }
 orch-artifacts-s3 = { workspace = true, optional = true }
+orch-auth-header.workspace = true
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true

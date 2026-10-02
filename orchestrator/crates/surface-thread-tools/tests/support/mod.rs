@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jiff::Timestamp;
-use orch_api::{ApiConfig, AuthConfig};
+use orch_api::ApiConfig;
 use orch_app::{
     AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig, Inbound, NewThread,
 };
@@ -30,8 +30,16 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub type Ports =
-    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
+pub type Ports = PortSet<
+    MemoryStore,
+    MemoryWakeup,
+    ScriptedAgent,
+    SystemClock,
+    SeqIds,
+    orch_ports::NoModel,
+    orch_ports::FixedRegistry,
+    orch_auth_header::HeaderAuth,
+>;
 pub type Client = RunningService<RoleClient, ()>;
 
 pub const ALICE: &str = "alice@example.com";
@@ -116,6 +124,7 @@ impl Harness {
                     clock: SystemClock,
                     ids: ids.clone(),
                     model: orch_ports::NoModel,
+                    auth: orch_auth_header::HeaderAuth::new(),
                     registry: directory.fixed_registry(),
                 },
                 directory,
@@ -136,10 +145,7 @@ impl Harness {
         let config = shape(ThreadToolsConfig::new(keys, ["127.0.0.1", "localhost"]).unwrap());
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
-            ApiConfig {
-                auth: AuthConfig::default(),
-                ..ApiConfig::default()
-            },
+            ApiConfig::default(),
             vec![orch_surface_thread_tools::routes(Arc::clone(&app), config)],
         );
         let server = tokio::spawn(async move {

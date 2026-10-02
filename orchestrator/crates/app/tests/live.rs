@@ -226,6 +226,7 @@ async fn a_wakeup_without_live_text_changes_nothing_about_the_log() {
                 clock: SystemClock,
                 ids: w.ids.clone(),
                 model: w.model.clone(),
+                auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
             },
             directory(),

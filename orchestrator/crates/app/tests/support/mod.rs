@@ -82,6 +82,7 @@ impl World {
                     clock: SystemClock,
                     ids: self.ids.clone(),
                     model: self.model.clone(),
+                    auth: orch_ports::RefuseAll,
                     registry: directory().fixed_registry(),
                 },
                 directory(),

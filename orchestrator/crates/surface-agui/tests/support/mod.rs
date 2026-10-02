@@ -8,8 +8,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_agui_proto::testkit::assert_json_conforms;
-use orch_api::{ApiConfig, AuthConfig};
+use orch_api::ApiConfig;
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig};
+use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, UserId};
 use orch_ports::memory::{
     MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds, sample_releases,
@@ -28,6 +29,7 @@ pub type Ports = PortSet<
     SeqIds,
     orch_ports::NoModel,
     CompositeRegistry<FixedRegistry, MemoryRegistry>,
+    orch_auth_header::HeaderAuth,
 >;
 
 pub const ALICE: &str = "alice@example.com";
@@ -251,14 +253,23 @@ pub fn fast_dispatcher() -> DispatcherConfig {
 
 impl Harness {
     pub async fn start() -> Self {
-        Self::start_with(ApiConfig {
-            sse_keepalive: Duration::from_millis(150),
-            ..ApiConfig::default()
-        })
-        .await
+        Self::start_as(None).await
     }
 
-    pub async fn start_with(api: ApiConfig) -> Self {
+    /// With a development user: the identity of a request without the header.
+    pub async fn start_as(dev_user: Option<&str>) -> Self {
+        let api = ApiConfig {
+            sse_keepalive: Duration::from_millis(150),
+            ..ApiConfig::default()
+        };
+        let auth = match dev_user {
+            Some(user) => HeaderAuth::new().with_dev_user(UserId::new(user)),
+            None => HeaderAuth::new(),
+        };
+        Self::start_with(api, auth).await
+    }
+
+    pub async fn start_with(api: ApiConfig, auth: HeaderAuth) -> Self {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
         let entry = |id: &str, name: &str| AgentEntry {
@@ -281,6 +292,7 @@ impl Harness {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: orch_ports::NoModel,
+                    auth,
                     registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
                 },
                 directory,
@@ -494,16 +506,6 @@ pub async fn resp_of(resp: reqwest::Response) -> Resp {
         content_type,
         headers,
         body: resp.bytes().await.unwrap().to_vec(),
-    }
-}
-
-pub fn dev_config(dev_user: Option<&str>) -> ApiConfig {
-    ApiConfig {
-        auth: AuthConfig {
-            dev_user: dev_user.map(UserId::new),
-        },
-        sse_keepalive: Duration::from_millis(150),
-        ..ApiConfig::default()
     }
 }
 

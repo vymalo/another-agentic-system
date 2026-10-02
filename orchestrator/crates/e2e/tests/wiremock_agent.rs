@@ -77,6 +77,7 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
                 clock: SystemClock,
                 ids: UuidV7Ids,
                 model: orch_ports::NoModel,
+                auth: orch_auth_header::HeaderAuth::new(),
                 registry: directory.fixed_registry(),
             },
             directory,

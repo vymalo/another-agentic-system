@@ -9,15 +9,24 @@ use std::time::Duration;
 use axum::Extension;
 use axum::Router;
 use axum::routing::get;
-use orch_api::{ApiConfig, AuthConfig, SurfaceRoutes};
+use orch_api::{ApiConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, NewThread};
+use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock};
 use tokio::task::JoinHandle;
 
-type Stack =
-    PortSet<MemoryStore, MemoryWakeup, ScriptedAgent, SystemClock, SeqIds, orch_ports::NoModel>;
+type Stack = PortSet<
+    MemoryStore,
+    MemoryWakeup,
+    ScriptedAgent,
+    SystemClock,
+    SeqIds,
+    orch_ports::NoModel,
+    orch_ports::FixedRegistry,
+    orch_auth_header::HeaderAuth,
+>;
 
 const ALICE: &str = "alice@example.com";
 
@@ -38,6 +47,10 @@ impl Drop for Edge {
 const AGENT_BEARER: &str = "agent-bearer-0123456789-not-for-export";
 
 fn new_app() -> Arc<App<Stack>> {
+    new_app_with(HeaderAuth::new())
+}
+
+fn new_app_with(auth: HeaderAuth) -> Arc<App<Stack>> {
     let entry = AgentEntry {
         endpoint: AgentEndpoint::a2a(
             AgentId::new("plain"),
@@ -57,6 +70,7 @@ fn new_app() -> Arc<App<Stack>> {
                 clock: SystemClock,
                 ids: SeqIds::default(),
                 model: orch_ports::NoModel,
+                auth,
                 registry: directory.fixed_registry(),
             },
             directory,
@@ -67,7 +81,12 @@ fn new_app() -> Arc<App<Stack>> {
 }
 
 async fn edge(cfg: ApiConfig, surfaces: Vec<SurfaceRoutes>) -> Edge {
-    let app = new_app();
+    edge_with(cfg, surfaces, HeaderAuth::new()).await
+}
+
+/// The edge over an application whose authenticator is `auth` (a development user, say).
+async fn edge_with(cfg: ApiConfig, surfaces: Vec<SurfaceRoutes>, auth: HeaderAuth) -> Edge {
+    let app = new_app_with(auth);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = orch_api::router_with_surfaces(Arc::clone(&app), cfg, surfaces);
@@ -356,13 +375,12 @@ async fn a_mounted_surface_sits_behind_the_identity_layer() {
     );
 
     // A surface does not weaken the malformed-header rule, even with a dev user configured.
-    let cfg = ApiConfig {
-        auth: AuthConfig {
-            dev_user: Some(UserId::new("dev@example.com")),
-        },
-        ..ApiConfig::default()
-    };
-    let e = edge(cfg, vec![test_surface(Duration::ZERO)]).await;
+    let e = edge_with(
+        ApiConfig::default(),
+        vec![test_surface(Duration::ZERO)],
+        HeaderAuth::new().with_dev_user(UserId::new("dev@example.com")),
+    )
+    .await;
     assert_eq!(
         e.call(reqwest::Method::GET, "/x/whoami", None)
             .await
@@ -564,13 +582,12 @@ async fn identity_is_case_and_space_insensitive() {
 
 #[tokio::test]
 async fn dev_user_applies_only_when_configured() {
-    let cfg = ApiConfig {
-        auth: AuthConfig {
-            dev_user: Some(UserId::new("dev@example.com")),
-        },
-        ..ApiConfig::default()
-    };
-    let with = edge(cfg, vec![]).await;
+    let with = edge_with(
+        ApiConfig::default(),
+        vec![],
+        HeaderAuth::new().with_dev_user(UserId::new("dev@example.com")),
+    )
+    .await;
     let r = with.call(reqwest::Method::GET, "/api/agents", None).await;
     assert_eq!(r.status(), 200);
     // The dev user owns what was created as the dev user and lists it without any header.
@@ -645,12 +662,14 @@ async fn a_machine_route_needs_its_own_guard_and_not_the_identity() {
     let cfg = ApiConfig {
         // The plain timeout would cut a slow call; a machine route is not subject to it.
         request_timeout: Duration::from_millis(50),
-        auth: AuthConfig {
-            dev_user: Some(UserId::new("dev@example.com")),
-        },
         ..ApiConfig::default()
     };
-    let e = edge(cfg, vec![test_surface(Duration::ZERO), machine]).await;
+    let e = edge_with(
+        cfg,
+        vec![test_surface(Duration::ZERO), machine],
+        HeaderAuth::new().with_dev_user(UserId::new("dev@example.com")),
+    )
+    .await;
     let call = |key: Option<&'static str>, user: Option<&'static str>| {
         let mut req = e.client.get(format!("{}/m/who", e.base));
         if let Some(key) = key {

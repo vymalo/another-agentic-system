@@ -7,6 +7,8 @@
 //!   ADR 0027);
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
 //!   and [`ByTransport`], which serves one endpoint set from two clients (remote A2A, in-process);
+//! - [`Authenticator`]: who is calling, from the credentials a request carried (a bearer token or
+//!   the identity header of a proxy), failing closed (ADR 0033);
 //! - [`ChatModel`]: one question to a language model and its answer (the orchestrator's titles);
 //! - [`AgentRegistry`]: which agents exist right now, read live and failing closed (ADR 0022), with
 //!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one);
@@ -21,6 +23,7 @@
 
 mod agent;
 mod artifacts;
+mod auth;
 mod bundle;
 mod clock;
 mod inbox;
@@ -42,6 +45,9 @@ pub use agent::{
 pub use artifacts::{
     ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
     MAX_NAME_BYTES, NoArtifacts, stream_of,
+};
+pub use auth::{
+    AuthError, Authenticator, ByCredential, CredentialKind, Credentials, Principal, RefuseAll, Role,
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};

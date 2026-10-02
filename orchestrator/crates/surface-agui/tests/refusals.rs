@@ -34,7 +34,7 @@ async fn the_edge_identity_is_required() {
 
 #[tokio::test]
 async fn a_dev_user_serves_a_request_without_the_header() {
-    let h = Harness::start_with(dev_config(Some("dev@example.com"))).await;
+    let h = Harness::start_as(Some("dev@example.com")).await;
     let thread = new_thread_id();
     let resp = h
         .post("plain", None, &input(&thread, "r", &[("m", "echo hi")]))

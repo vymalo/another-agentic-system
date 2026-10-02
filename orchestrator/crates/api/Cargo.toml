@@ -22,6 +22,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
+orch-auth-header.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -42,7 +42,16 @@ pub use orch_testsupport::{eventually, shape};
 #[path = "../../../store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
-pub type Stack<S, W> = PortSet<S, W, A2aAgentClient, SystemClock, UuidV7Ids, ScriptedModel>;
+pub type Stack<S, W> = PortSet<
+    S,
+    W,
+    A2aAgentClient,
+    SystemClock,
+    UuidV7Ids,
+    ScriptedModel,
+    orch_ports::FixedRegistry,
+    orch_auth_header::HeaderAuth,
+>;
 
 /// Which store a scenario runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +338,7 @@ impl World {
                     clock: SystemClock,
                     ids: UuidV7Ids,
                     model: self.model.clone(),
+                    auth: orch_auth_header::HeaderAuth::new(),
                     registry: self.directory().fixed_registry(),
                 },
                 self.directory(),

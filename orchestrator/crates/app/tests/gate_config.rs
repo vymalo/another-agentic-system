@@ -758,6 +758,7 @@ fn try_app(w: &World, cfg: AppConfig) -> Result<TestApp, GateError> {
             clock: SystemClock,
             ids: w.ids.clone(),
             model: w.model.clone(),
+            auth: orch_ports::RefuseAll,
             registry: directory().fixed_registry(),
         },
         directory(),
