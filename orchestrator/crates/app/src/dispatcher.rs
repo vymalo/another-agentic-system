@@ -850,6 +850,23 @@ impl<P: Ports> Dispatcher<P> {
             task_state: env_state(env),
             revision: env.revision.clone(),
         };
+        // The end of a task that the binding records as over already is the same end seen twice:
+        // by the stream of the delegation and by a cancel that read the task back (ADR 0036). It
+        // is dropped, because the thread may have moved on to the next job meanwhile (a stop
+        // that landed), and the late word of the task it abandoned must not end that job.
+        if let Some(AgentUpdate::Status { state, .. }) = &env.update
+            && state.is_terminal()
+            && self
+                .store()
+                .get_binding(ctx.thread)
+                .await?
+                .is_some_and(|b| {
+                    b.task_id.as_deref() == Some(env.task_id.as_str())
+                        && b.task_state.is_some_and(AgentTaskState::is_terminal)
+                })
+        {
+            return Ok(());
+        }
         match &env.update {
             Some(update) => {
                 // A file is put in the artifact store before anything is committed (ADR 0032): the
@@ -965,7 +982,7 @@ impl<P: Ports> Dispatcher<P> {
                     self.finish(&row, OutboxFinal::Delivered).await
                 }
                 Err(AgentError::NotCancelable(reason) | AgentError::TaskNotFound(reason)) => {
-                    self.reject_cancel(&row, reason, false, OutboxFinal::Delivered)
+                    self.reject_cancel(&row, &ctx.agent, reason, false, OutboxFinal::Delivered)
                         .await
                 }
                 Err(e) if e.is_retryable() && row.attempts < self.cfg.max_cancel_attempts => {
@@ -976,6 +993,7 @@ impl<P: Ports> Dispatcher<P> {
                     let retryable = e.is_retryable();
                     self.reject_cancel(
                         &row,
+                        &ctx.agent,
                         e.public_detail(),
                         retryable,
                         OutboxFinal::Dead { error: report(&e) },
@@ -1018,6 +1036,7 @@ impl<P: Ports> Dispatcher<P> {
         }
         self.reject_cancel(
             &row,
+            &ctx.agent,
             "delegation still in flight".to_owned(),
             true,
             OutboxFinal::Dead {
@@ -1030,13 +1049,18 @@ impl<P: Ports> Dispatcher<P> {
     async fn reject_cancel(
         &self,
         row: &OutboxItem,
+        agent: &AgentId,
         reason: String,
         retryable: bool,
         outcome: OutboxFinal,
     ) -> Done {
         self.apply_quiet(
             row,
-            Input::CancelRejected { reason, retryable },
+            Input::CancelRejected {
+                agent: agent.clone(),
+                reason,
+                retryable,
+            },
             format!("cancelrej:{}", row.id),
         )
         .await?;

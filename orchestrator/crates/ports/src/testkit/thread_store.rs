@@ -241,6 +241,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             message_id: Some("msg-1".into()),
             run_id: Some("run-1".into()),
             origin: Origin::Agui,
+            // ADR 0036: how a message sent while a job ran reached it comes back as written
+            delivery: Some(orch_core::Delivery::Interrupt),
         }),
         idempotency_key: None,
     };
@@ -250,6 +252,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             message_id: None,
             run_id: Some("run-2".into()),
             origin: Origin::Agui,
+            delivery: None,
         }),
         ..user_event("unused", None)
     };
@@ -353,7 +356,9 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     let data: Vec<serde_json::Value> = read.iter().map(|e| e.body.data_value()).collect();
     assert_eq!(
         data[0],
-        serde_json::json!({"text": "with ids", "messageId": "msg-1", "runId": "run-1"})
+        serde_json::json!({
+            "text": "with ids", "messageId": "msg-1", "runId": "run-1", "delivery": "interrupt"
+        })
     );
     assert_eq!(data[1], serde_json::json!({"text": "no ids"}));
     assert_eq!(
@@ -1777,6 +1782,8 @@ fn busy_job() -> Job {
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
         description: orch_core::DescriptionLedger::of(orch_core::DescriptionSource::Model),
         tools: vec!["docs".to_owned(), "websearch".to_owned()],
+        // ADR 0036: the text a job being stopped holds for the next one
+        after_stop: Some("do X instead".to_owned()),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.

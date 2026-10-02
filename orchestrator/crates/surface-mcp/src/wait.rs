@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_app::{App, AppError, Requester};
-use orch_core::{Event, EventBody, ThreadId, ThreadRecord, ThreadState};
+use orch_core::{Delivery, Event, EventBody, ThreadId, ThreadRecord, ThreadState};
 use orch_ports::Ports;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -126,7 +126,23 @@ fn stopped(thread: &ThreadRecord) -> Option<WaitEnd> {
 /// flattened onto one line.
 pub fn describe(event: &Event) -> Option<String> {
     let text = match &event.body {
-        EventBody::UserMessage(m) => format!("message from {}", m.origin.as_str()),
+        // How a message sent while a job ran reached it (ADR 0036) is said, so a client that is
+        // watching knows the job it follows was stopped, or told something.
+        EventBody::UserMessage(m) => match m.delivery {
+            None => format!("message from {}", m.origin.as_str()),
+            Some(Delivery::Steer) => {
+                format!(
+                    "message from {}, sent while the agent worked",
+                    m.origin.as_str()
+                )
+            }
+            Some(Delivery::Interrupt) => {
+                format!(
+                    "message from {}, sent to stop the job and start the next",
+                    m.origin.as_str()
+                )
+            }
+        },
         EventBody::AgentMessage(m) if m.is_final => format!("agent message: {}", m.text),
         EventBody::AgentMessage(_) => return None,
         EventBody::AgentStatus(s) => match &s.detail {
@@ -322,8 +338,8 @@ async fn finish<P: Ports>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use orch_core::{
-        Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, Origin,
-        ThreadStateData, UserMessageData,
+        Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, Delivery, ErrorData,
+        Origin, ThreadStateData, UserMessageData,
     };
 
     use super::*;
@@ -369,6 +385,21 @@ mod tests {
                     ..UserMessageData::new("hi")
                 }),
                 "#1 message from mcp",
+            ),
+            (
+                EventBody::UserMessage(UserMessageData {
+                    delivery: Some(Delivery::Steer),
+                    ..UserMessageData::new("hi")
+                }),
+                "#1 message from agui, sent while the agent worked",
+            ),
+            (
+                EventBody::UserMessage(UserMessageData {
+                    origin: Origin::Mcp,
+                    delivery: Some(Delivery::Interrupt),
+                    ..UserMessageData::new("hi")
+                }),
+                "#1 message from mcp, sent to stop the job and start the next",
             ),
             (
                 EventBody::AgentStatus(AgentStatusData {

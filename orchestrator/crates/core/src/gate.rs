@@ -335,7 +335,21 @@ pub struct Job {
     /// before the field existed has none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    /// The text the thread's **next** job starts with, once a person has sent a message with
+    /// "Stop & send" while this job ran (ADR 0036). A job that has it is **stopping**: the cancel
+    /// of its task is on its way, it is still `queued` or `working` (stopping is not a state),
+    /// and when its task ends the next job starts with this text, with no gate, no verification
+    /// and no rework for this one. Messages sent meanwhile are joined to it after a blank line
+    /// (at most [`MAX_AFTER_STOP_BYTES`] bytes). [`Job::next`] clears it; a ledger stored before
+    /// the field existed has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_stop: Option<String>,
 }
+
+/// The most bytes of text a stopping job holds for the next one ([`Job::after_stop`]): the
+/// messages sent after Stop & send, joined. A message that would take it over is refused
+/// ([`TransitionError::TextTooLong`](crate::TransitionError::TextTooLong)).
+pub const MAX_AFTER_STOP_BYTES: usize = 64 * 1024;
 
 fn is_first_job(number: &u32) -> bool {
     *number == 1
@@ -360,6 +374,7 @@ impl Default for Job {
             title: TitleLedger::default(),
             description: DescriptionLedger::default(),
             tools: Vec::new(),
+            after_stop: None,
         }
     }
 }
@@ -381,6 +396,9 @@ impl Job {
     /// `verification` is **kept**: it counts the verifications of the thread, so a timer, a
     /// verdict or a `verify` row of an earlier job names a verification the new job has not
     /// reached and is stale by the comparison the core already makes.
+    ///
+    /// `after_stop` is **cleared**: it is the text this job exists to start, and the job it
+    /// started has it as its first message (ADR 0036).
     #[must_use]
     pub fn next(&self) -> Job {
         Job {

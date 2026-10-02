@@ -455,6 +455,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             },
             Action::CancelledBeforeStart => Input::CancelledBeforeStart,
             Action::CancelRejected { retryable } => Input::CancelRejected {
+                agent: AgentId::new("coder"),
                 reason: "cancel refused".to_owned(),
                 retryable: *retryable,
             },

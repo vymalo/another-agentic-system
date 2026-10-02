@@ -21,13 +21,13 @@ use crate::answer::announce;
 use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
-    Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
-    JobStartedData, Origin, ThreadStateData, UserMessageData,
+    Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, Delivery, ErrorData,
+    EventBody, JobStartedData, Origin, ThreadStateData, UserMessageData,
 };
 use crate::gate::{
-    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_SUMMARY_BYTES, PushedRef,
-    Recognised, Snapshot, Timer, Verdict, WatchKey, add_task_message, cap_findings,
-    recognise_artifact, repo_key, truncate_to,
+    CheckResult, CheckSource, CheckStatus, CiReport, Hold, Job, MAX_AFTER_STOP_BYTES,
+    MAX_SUMMARY_BYTES, PushedRef, Recognised, Snapshot, Timer, Verdict, WatchKey, add_task_message,
+    cap_findings, recognise_artifact, repo_key, truncate_to,
 };
 use crate::ids::{AgentId, UserId};
 use crate::step::{StepReport, StepSource, record_step};
@@ -57,6 +57,26 @@ pub enum Input {
         /// The UI catalog the person's screen sent with it, when it sent one (ADR 0023): the
         /// caller has checked it ([`UiCatalogData::from_json`]). The thread records a digest it
         /// has not seen, and the agent is sent it when it becomes the current catalog.
+        catalog: Option<UiCatalogData>,
+    },
+    /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
+    /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
+    /// `queued` or `working` it asks the agent to cancel the running task, keeps the text, and
+    /// starts the next job with it once the task has ended ([`Job::after_stop`]); the
+    /// `user_message` it logs says `delivery: interrupt`. On any other state nothing is running,
+    /// so it is exactly [`Input::UserMessage`] (`delivery` absent).
+    StopAndSend {
+        /// Author.
+        user: UserId,
+        /// Text.
+        text: String,
+        /// The id the surface gave the message, recorded in the log.
+        message_id: Option<String>,
+        /// The id of the run the surface started or continued with it, recorded in the log.
+        run_id: Option<String>,
+        /// The surface the message came in through, recorded in the log (ADR 0019).
+        origin: Origin,
+        /// The UI catalog the person's screen sent with it, as for [`Input::UserMessage`].
         catalog: Option<UiCatalogData>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
@@ -133,6 +153,8 @@ pub enum Input {
     CancelledBeforeStart,
     /// The agent refused to cancel (or cancelling failed for good).
     CancelRejected {
+        /// The agent that was asked.
+        agent: AgentId,
         /// Why.
         reason: String,
         /// Whether retrying can help.
@@ -246,6 +268,7 @@ impl Input {
     pub fn name(&self) -> &'static str {
         match self {
             Input::UserMessage { .. } => "user message",
+            Input::StopAndSend { .. } => "stop and send",
             Input::UiAction { .. } => "ui action",
             Input::Redeliver { .. } => "redelivery",
             Input::Cancel { .. } => "cancel",
@@ -290,6 +313,26 @@ pub enum Command {
         text: String,
         /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023).
         catalog: Option<UiDelivery>,
+    },
+    /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
+    /// runs, with no stop on its way. The steer row and its extension (`steer/v1`) are built by
+    /// the dispatcher; until then the application writes it as the delegation it always was
+    /// (outbox kind `delegate`), which reaches the agent after its turn.
+    Steer {
+        /// The user's text.
+        text: String,
+        /// What to tell the agent of the person's UI catalog, if the thread has one (ADR 0023);
+        /// the delegation this stands for carries it.
+        catalog: Option<UiDelivery>,
+    },
+    /// Finish the thread's **unsent** `delegate` rows (and, once built, `steer` rows) of the jobs
+    /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
+    /// that stopped `job` supersedes them. Without it a delegation of the abandoned job that had
+    /// not been sent would be claimed before the next job's and Stop & send would stop nothing.
+    /// The messages stay in the log; the rows written by the same commit are not touched.
+    DropQueued {
+        /// The abandoned job: the one the stop was for.
+        job: u32,
     },
     /// Delegate a user's action on an A2UI surface to the target agent (outbox kind `delegate`).
     DelegateAction {
@@ -381,6 +424,16 @@ pub enum TransitionError {
         /// The input's name.
         input: &'static str,
     },
+    /// The text a job being stopped would start the next one with is too long (ADR 0036): the
+    /// messages sent after Stop & send, joined, may hold at most [`MAX_AFTER_STOP_BYTES`] bytes.
+    /// Nothing was written; the person sends less, or waits for the stop to land.
+    #[error(
+        "the messages sent while the job is stopping may hold at most {max} bytes of text together"
+    )]
+    TextTooLong {
+        /// The most bytes of text held.
+        max: usize,
+    },
 }
 
 impl Classify for TransitionError {
@@ -389,6 +442,7 @@ impl Classify for TransitionError {
             TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
                 ErrorClass::Rejected
             }
+            TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
         }
     }
 }
@@ -479,32 +533,100 @@ fn deliver(
     (record, accepted.delivery)
 }
 
-fn user_message(
-    job: &mut Job,
-    user: &UserId,
-    text: &str,
-    message_id: &Option<String>,
-    run_id: &Option<String>,
+/// What a person sent as a message, borrowed from the input that carried it.
+struct Said<'a> {
+    user: &'a UserId,
+    text: &'a str,
+    message_id: &'a Option<String>,
+    run_id: &'a Option<String>,
     origin: Origin,
-    catalog: &Option<UiCatalogData>,
-) -> Vec<Command> {
-    job.answer.reset();
-    let (record, delivery) = deliver(job, user, catalog.as_ref());
-    let mut cmds: Vec<Command> = record.into_iter().collect();
-    cmds.push(append(
-        Actor::user(user),
+    catalog: &'a Option<UiCatalogData>,
+}
+
+/// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
+fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
+    append(
+        Actor::user(said.user),
         EventBody::UserMessage(UserMessageData {
-            text: text.to_owned(),
-            message_id: message_id.clone(),
-            run_id: run_id.clone(),
-            origin,
+            text: said.text.to_owned(),
+            message_id: said.message_id.clone(),
+            run_id: said.run_id.clone(),
+            origin: said.origin,
+            delivery,
         }),
-    ));
+    )
+}
+
+/// A message that goes to the agent as a delegation (the thread is blocked, being verified or
+/// finished, or the message starts a job): the catalog it carried, the message, the delegation.
+fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
+    job.answer.reset();
+    let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
+    let mut cmds: Vec<Command> = record.into_iter().collect();
+    cmds.push(user_message_event(said, None));
     cmds.push(Command::Delegate {
-        text: text.to_owned(),
+        text: said.text.to_owned(),
         catalog: delivery,
     });
     cmds
+}
+
+/// A message written while a job runs and no stop is on its way (ADR 0036, row 3): it is the
+/// same job and the same attempt, and it is steered to the running task.
+fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
+    job.answer.reset();
+    let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
+    let mut cmds: Vec<Command> = record.into_iter().collect();
+    cmds.push(user_message_event(said, Some(Delivery::Steer)));
+    cmds.push(Command::Steer {
+        text: said.text.to_owned(),
+        catalog: delivery,
+    });
+    cmds
+}
+
+/// A message that stops the running job (ADR 0036, rows 1 and 2): it is logged `interrupt` and
+/// its text is held for the next job, after a blank line from what the stop holds already. The
+/// first of them also asks for the cancel. Nothing is changed when the text held would be over
+/// [`MAX_AFTER_STOP_BYTES`].
+fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, TransitionError> {
+    let held = match &job.after_stop {
+        Some(held) => format!("{held}\n\n{}", said.text),
+        None => said.text.to_owned(),
+    };
+    if held.len() > MAX_AFTER_STOP_BYTES {
+        return Err(TransitionError::TextTooLong {
+            max: MAX_AFTER_STOP_BYTES,
+        });
+    }
+    let first = job.after_stop.is_none();
+    job.after_stop = Some(held);
+    let (record, _) = deliver(job, said.user, said.catalog.as_ref());
+    let mut cmds: Vec<Command> = record.into_iter().collect();
+    cmds.push(user_message_event(said, Some(Delivery::Interrupt)));
+    if first {
+        cmds.push(Command::RequestCancel { job: job.number });
+    }
+    Ok(cmds)
+}
+
+/// The next job, started by what the stopped one held ([`Job::after_stop`], ADR 0036): the job
+/// the stop was for is replaced (no gate, no verification and no rework for it), its unsent
+/// delegations are dropped, and the held text is delegated as the first message of the new job.
+/// The thread is `queued` again.
+fn start_after_stop(job: &mut Job) -> Vec<Command> {
+    let text = job.after_stop.take().unwrap_or_default();
+    let abandoned = job.number;
+    *job = job.next();
+    note_task(job, &text);
+    vec![
+        job_started(job),
+        Command::DropQueued { job: abandoned },
+        Command::Delegate {
+            text,
+            catalog: job.catalog.redelivery(),
+        },
+    ]
 }
 
 fn job_started(job: &Job) -> Command {
@@ -614,6 +736,102 @@ pub(crate) fn note_summary(job: &mut Job, text: &str) {
     }
 }
 
+/// The transition of a thread's **first** message, under `gate` (the thread does not exist yet):
+/// the thread is `queued` with the first job, and the message is delegated. Nothing is running
+/// that it could steer or stop, so it carries no `delivery` (ADR 0036): [`transition`] from a
+/// `queued` thread would say `steer`, which is what a message to a job that has begun is.
+///
+/// Any input but a message is [`transition`] of a new thread.
+///
+/// # Errors
+///
+/// As [`transition`].
+pub fn start_thread(
+    gate: crate::gate::GatePolicy,
+    input: &Input,
+) -> Result<(Snapshot, Vec<Command>), TransitionError> {
+    match input {
+        Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+        }
+        | Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+        } => {
+            let said = Said {
+                user,
+                text,
+                message_id,
+                run_id,
+                origin: *origin,
+                catalog,
+            };
+            let mut job = Job::with_gate(gate);
+            note_task(&mut job, text);
+            let cmds = user_message(&mut job, &said);
+            Ok((
+                Snapshot {
+                    state: ThreadState::Queued,
+                    job,
+                },
+                cmds,
+            ))
+        }
+        other => transition(&Snapshot::queued(gate), other),
+    }
+}
+
+/// A message from the person, or one that asks to stop (`stop`: [`Input::StopAndSend`]).
+///
+/// While a job runs (`queued`, `working`) there are three cases (ADR 0036): a stop is on its way
+/// already, so the message is joined to what the next job starts with (row 2); it asks to stop
+/// (row 1); or it is steered (row 3). In every other state nothing runs: a stop has nothing to
+/// stop (row 4), and the rules of ADR 0020 are unchanged.
+fn message(
+    state: ThreadState,
+    job: &mut Job,
+    said: &Said<'_>,
+    stop: bool,
+) -> Result<(ThreadState, Vec<Command>), TransitionError> {
+    match state {
+        ThreadState::Queued | ThreadState::Working => {
+            if stop || job.after_stop.is_some() {
+                Ok((state, stopping_message(job, said)?))
+            } else {
+                note_task(job, said.text);
+                Ok((state, steered_message(job, said)))
+            }
+        }
+        // Blocked, or being verified: the user's message re-delegates. It does not use an
+        // attempt: an attempt is used only when the gate fails.
+        ThreadState::Blocked | ThreadState::Verifying => {
+            note_task(job, said.text);
+            job.hold = None;
+            Ok((ThreadState::Queued, user_message(job, said)))
+        }
+        // The thread is a conversation (ADR 0020): the next message is the next job, on the
+        // same agent and under the same gate, whatever state the last one ended in. The next
+        // job keeps the catalogs the conversation has seen.
+        ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
+            *job = job.next();
+            note_task(job, said.text);
+            let mut cmds = user_message(job, said);
+            // the boundary comes right after the message, before its delegation
+            cmds.insert(cmds.len().saturating_sub(1), job_started(job));
+            Ok((ThreadState::Queued, cmds))
+        }
+    }
+}
+
 fn decide(
     state: ThreadState,
     job: &mut Job,
@@ -627,42 +845,47 @@ fn decide(
             run_id,
             origin,
             catalog,
-        } => match state {
-            ThreadState::Queued | ThreadState::Working => {
-                note_task(job, text);
-                Ok((
-                    state,
-                    user_message(job, user, text, message_id, run_id, *origin, catalog),
-                ))
-            }
-            // Blocked, or being verified: the user's message re-delegates. It does not use an
-            // attempt: an attempt is used only when the gate fails.
-            ThreadState::Blocked | ThreadState::Verifying => {
-                note_task(job, text);
-                job.hold = None;
-                Ok((
-                    ThreadState::Queued,
-                    user_message(job, user, text, message_id, run_id, *origin, catalog),
-                ))
-            }
-            // The thread is a conversation (ADR 0020): the next message is the next job, on the
-            // same agent and under the same gate, whatever state the last one ended in. The next
-            // job keeps the catalogs the conversation has seen.
-            ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
-                *job = job.next();
-                note_task(job, text);
-                let mut cmds = user_message(job, user, text, message_id, run_id, *origin, catalog);
-                // the boundary comes right after the message, before its delegation
-                cmds.insert(cmds.len().saturating_sub(1), job_started(job));
-                Ok((ThreadState::Queued, cmds))
-            }
-        },
+        } => {
+            let said = Said {
+                user,
+                text,
+                message_id,
+                run_id,
+                origin: *origin,
+                catalog,
+            };
+            message(state, job, &said, false)
+        }
+        Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+        } => {
+            let said = Said {
+                user,
+                text,
+                message_id,
+                run_id,
+                origin: *origin,
+                catalog,
+            };
+            message(state, job, &said, true)
+        }
         Input::Redeliver { text } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
             // after what that job has been told, so it may reach the agent out of the order it
             // was written in (open question 33).
             ThreadState::Queued | ThreadState::Working => {
+                // A job that is being stopped starts the next one with what the person sent
+                // with the stop: a message of the job it abandons is superseded, as the rows
+                // `DropQueued` finishes are (ADR 0036).
+                if job.after_stop.is_some() {
+                    return Ok((state, vec![]));
+                }
                 note_task(job, text);
                 Ok((state, vec![redelegate(job, text)]))
             }
@@ -687,6 +910,14 @@ fn decide(
             action,
             catalog,
         } => match state {
+            // An answer to a job that is being stopped is not wanted (ADR 0036): its surface
+            // belongs to a job the person has replaced.
+            ThreadState::Queued | ThreadState::Working if job.after_stop.is_some() => {
+                Err(TransitionError::InvalidInState {
+                    state,
+                    input: input.name(),
+                })
+            }
             ThreadState::Queued | ThreadState::Working => {
                 Ok((state, ui_action(job, user, action, catalog)))
             }
@@ -700,6 +931,10 @@ fn decide(
         },
         Input::Cancel { .. } => match state {
             ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
+                // The person pressed Stop while a Stop & send was landing: they want it over,
+                // not continued. The text they sent stays in the log and is never sent
+                // (ADR 0036, row 9).
+                job.after_stop = None;
                 Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
@@ -754,6 +989,13 @@ fn decide(
             Ok((state, cmds))
         }
         Input::DeliveryFailed { reason, retryable } => match state {
+            // The job a person is replacing ends here (row 5): the error is logged, and the next
+            // job starts. The thread is not blocked or failed for it.
+            ThreadState::Queued | ThreadState::Working if job.after_stop.is_some() => {
+                let mut cmds = vec![error_event(reason, *retryable)];
+                cmds.extend(start_after_stop(job));
+                Ok((ThreadState::Queued, cmds))
+            }
             ThreadState::Queued
             | ThreadState::Working
             | ThreadState::Blocked
@@ -785,6 +1027,11 @@ fn decide(
             }
         },
         Input::CancelledBeforeStart => match state {
+            // The agent was never sent the delegation of the job being replaced: there is
+            // nothing to cancel, and the next job starts (row 8).
+            ThreadState::Queued | ThreadState::Working if job.after_stop.is_some() => {
+                Ok((ThreadState::Queued, start_after_stop(job)))
+            }
             ThreadState::Queued
             | ThreadState::Working
             | ThreadState::Blocked
@@ -794,7 +1041,34 @@ fn decide(
             )),
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => Ok((state, vec![])),
         },
-        Input::CancelRejected { reason, retryable } => match state {
+        Input::CancelRejected {
+            agent,
+            reason,
+            retryable,
+        } => match state {
+            // The agent cannot be stopped (row 7): the person's text goes to it as a message of
+            // the job that goes on. A rejection that may pass is logged, and the stop waits.
+            ThreadState::Queued | ThreadState::Working
+                if job.after_stop.is_some() && !*retryable =>
+            {
+                let text = job.after_stop.take().unwrap_or_default();
+                note_task(job, &text);
+                Ok((
+                    state,
+                    vec![
+                        error_event(
+                            &format!(
+                                "{agent} could not be stopped; your message was sent to it instead"
+                            ),
+                            false,
+                        ),
+                        Command::Steer {
+                            text,
+                            catalog: job.catalog.redelivery(),
+                        },
+                    ],
+                ))
+            }
             ThreadState::Queued
             | ThreadState::Working
             | ThreadState::Blocked
@@ -1103,13 +1377,72 @@ fn agent_input(
                 ) => job.answer.status_words(&actor, detail.as_deref()),
                 _ => None,
             };
-            let (next, mut cmds) = status_input(state, job, actor, *task, detail)?;
+            let stopping = job.after_stop.is_some()
+                && matches!(state, ThreadState::Queued | ThreadState::Working);
+            let (next, mut cmds) = if stopping {
+                stopping_status(state, job, actor, *task, detail)?
+            } else {
+                status_input(state, job, actor, *task, detail)?
+            };
             if let Some(words) = words {
                 cmds.insert(0, words);
             }
             Ok((next, cmds))
         }
     }
+}
+
+/// The agent reported a state of a task whose job is being stopped (`job.after_stop`, ADR 0036).
+/// What it says is logged as always, but the job is not judged:
+///
+/// - the task ends (`completed`, `failed`, `canceled`, `rejected`): no gate, no verification, no
+///   rework, no attempt used and no `thread_state`; the next job starts (row 5);
+/// - it asks for input or authentication: logged, and the thread stays as it is, because an
+///   answer to a job being abandoned is not wanted (row 6);
+/// - anything else is as it is without a stop.
+fn stopping_status(
+    state: ThreadState,
+    job: &mut Job,
+    actor: Actor,
+    task: AgentTaskState,
+    detail: &Option<String>,
+) -> Result<(ThreadState, Vec<Command>), TransitionError> {
+    let status = match task {
+        AgentTaskState::Submitted | AgentTaskState::Working => {
+            return status_input(state, job, actor, task, detail);
+        }
+        AgentTaskState::InputRequired => {
+            return Ok((
+                state,
+                vec![agent_status(
+                    actor,
+                    AgentStatus::InputRequired,
+                    detail.clone(),
+                )],
+            ));
+        }
+        AgentTaskState::AuthRequired => {
+            return Ok((
+                state,
+                vec![agent_status(
+                    actor,
+                    AgentStatus::AuthRequired,
+                    detail.clone(),
+                )],
+            ));
+        }
+        AgentTaskState::Completed => agent_status(actor, AgentStatus::Completed, detail.clone()),
+        AgentTaskState::Failed => agent_status(actor, AgentStatus::Failed, detail.clone()),
+        AgentTaskState::Rejected => agent_status(
+            actor,
+            AgentStatus::Failed,
+            Some(prefixed("rejected", detail)),
+        ),
+        AgentTaskState::Canceled => agent_status(actor, AgentStatus::Canceled, detail.clone()),
+    };
+    let mut cmds = vec![status];
+    cmds.extend(start_after_stop(job));
+    Ok((ThreadState::Queued, cmds))
 }
 
 /// The agent waits for the user (input or authentication): the thread blocks, and a repeat of
@@ -1584,6 +1917,7 @@ mod tests {
                 state: ThreadState::Queued,
                 input: "cancel",
             },
+            TransitionError::TextTooLong { max: 1 },
         ];
         for e in errors {
             // Exhaustive: a new variant forces a class decision.
@@ -1591,6 +1925,7 @@ mod tests {
                 TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
                     ErrorClass::Rejected
                 }
+                TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
             };
             assert_eq!(e.class(), expected);
             assert!(!e.is_retryable());

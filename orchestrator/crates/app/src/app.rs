@@ -8,11 +8,11 @@ use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command,
     DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
-    LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Origin, Replacement, Snapshot, TaskKind,
+    LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Origin, Replacement, TaskKind,
     ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
     UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
     check_title, copied, family_root, fork_commit, fork_cut, is_commit_hash, repo_key, report,
-    transition,
+    start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -774,8 +774,8 @@ impl<P: Ports> App<P> {
         let tools = self.checked_tools(&req.target.agent_id, &[], &inbound.tools)?;
 
         let now = self.ports.clock().now();
-        let (mut next, mut cmds) = transition(
-            &Snapshot::queued(gate),
+        let (mut next, mut cmds) = start_thread(
+            gate,
             &Input::UserMessage {
                 user: user.clone(),
                 text: req.text.clone(),
@@ -1495,32 +1495,66 @@ impl<P: Ports> App<P> {
     }
 
     /// Appends a user message and queues its delegation. Returns the `user_message` event.
+    ///
+    /// While a job runs the message is **sent** (ADR 0036): logged at once with
+    /// `delivery: steer`, and delivered to the agent after its turn until the dispatcher steers
+    /// it into the running task.
     pub async fn post_message(
         &self,
         who: &impl Requester,
         id: ThreadId,
         text: String,
     ) -> Result<Event, AppError> {
+        self.send_message(who, id, text, false).await
+    }
+
+    /// **Stop & send** (ADR 0036): like [`post_message`](Self::post_message), and while a job
+    /// runs it asks the agent to cancel the running task and starts the next job with the text
+    /// once the task has ended (the new task names the cancelled one in `referenceTaskIds`).
+    /// Logged with `delivery: interrupt`. When nothing is running it is exactly a message.
+    /// A text that, joined to what an earlier stop holds, is over
+    /// [`MAX_AFTER_STOP_BYTES`](orch_core::MAX_AFTER_STOP_BYTES) is [`AppError::Unprocessable`].
+    pub async fn stop_and_send(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        text: String,
+    ) -> Result<Event, AppError> {
+        self.send_message(who, id, text, true).await
+    }
+
+    async fn send_message(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        text: String,
+        stop: bool,
+    ) -> Result<Event, AppError> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
         self.may_invoke(&access, &thread)?;
         validate_text(&text)?;
-        let outcome = self
-            .apply(
-                id,
-                Input::UserMessage {
-                    user: who.user().clone(),
-                    text,
-                    message_id: None,
-                    run_id: None,
-                    origin: Origin::default(),
-                    catalog: None,
-                },
-                None,
-                None,
-                None,
-            )
-            .await?;
+        let user = who.user().clone();
+        let input = if stop {
+            Input::StopAndSend {
+                user,
+                text,
+                message_id: None,
+                run_id: None,
+                origin: Origin::default(),
+                catalog: None,
+            }
+        } else {
+            Input::UserMessage {
+                user,
+                text,
+                message_id: None,
+                run_id: None,
+                origin: Origin::default(),
+                catalog: None,
+            }
+        };
+        let outcome = self.apply(id, input, None, None, None).await?;
         match outcome {
             ApplyOutcome::Applied { events, .. } => events
                 .into_iter()
@@ -1551,11 +1585,14 @@ impl<P: Ports> App<P> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
         // What starts the agent's work takes the right to invoke it.
-        if matches!(input, Input::UserMessage { .. } | Input::UiAction { .. }) {
+        if matches!(
+            input,
+            Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
+        ) {
             self.may_invoke(&access, &thread)?;
         }
         match &input {
-            Input::UserMessage { text, catalog, .. } => {
+            Input::UserMessage { text, catalog, .. } | Input::StopAndSend { text, catalog, .. } => {
                 validate_text(text)?;
                 check_catalog(catalog.as_ref())?;
             }
@@ -1916,15 +1953,19 @@ impl<P: Ports> App<P> {
                         idempotency_key,
                     });
                 }
-                Command::Delegate { text, catalog } => outbox.push(NewOutbox {
-                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
-                    payload: OutboxPayload::Delegate {
-                        text,
-                        release: target.release.clone(),
-                        new_job,
-                        ui_catalog: catalog,
-                    },
-                }),
+                // The steer row (ADR 0036) is the dispatcher's, built with `steer/v1`; until then
+                // a message to a running job is the delegation it has always been, which
+                // reaches the agent after its turn.
+                Command::Delegate { text, catalog } | Command::Steer { text, catalog } => outbox
+                    .push(NewOutbox {
+                        id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                        payload: OutboxPayload::Delegate {
+                            text,
+                            release: target.release.clone(),
+                            new_job,
+                            ui_catalog: catalog,
+                        },
+                    }),
                 Command::DelegateAction { action, catalog } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Action {
@@ -1934,6 +1975,9 @@ impl<P: Ports> App<P> {
                         ui_catalog: catalog,
                     },
                 }),
+                // The unsent rows of the abandoned job were finished before this commit was
+                // made (see `apply_fenced`), so none of the rows written here is touched.
+                Command::DropQueued { .. } => {}
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel { job: Some(job) },
@@ -2112,6 +2156,16 @@ impl<P: Ports> App<P> {
                 .ok_or(AppError::NotFound)?;
             let (next, cmds) = transition(&record.snapshot(), &input)?;
             let now = self.ports.clock().now();
+            // The commit that starts the job after a Stop & send supersedes the unsent
+            // delegations of the abandoned job (ADR 0036): they are finished first, so that
+            // the one this commit writes is the next the dispatcher claims, never behind them.
+            // Done again by a retry of the commit, and harmless then: the rows are skipped.
+            if cmds.iter().any(|c| matches!(c, Command::DropQueued { .. })) {
+                self.ports
+                    .store()
+                    .skip_unsent_delegates(thread, now)
+                    .await?;
+            }
             let job = (next.job != record.job).then_some(next.job);
             let next = next.state;
             let mut commit = self.build_commit(

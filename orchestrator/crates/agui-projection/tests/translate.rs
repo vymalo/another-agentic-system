@@ -832,6 +832,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 message_id: Some("client-1".into()),
                 run_id: Some("run-a".into()),
                 origin: orch_core::Origin::Agui,
+                delivery: None,
             }),
         ),
         ev(
@@ -888,6 +889,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             message_id: message_id.clone(),
             run_id: run_id.clone(),
             origin: orch_core::Origin::Agui,
+            delivery: None,
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.

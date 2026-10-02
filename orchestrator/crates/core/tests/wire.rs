@@ -764,6 +764,7 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
             message_id: Some("msg-1".into()),
             run_id: Some("run-1".into()),
             origin: orch_core::Origin::Agui,
+            delivery: None,
         }),
         Actor::system(),
     );
@@ -816,6 +817,68 @@ fn a_message_from_a_tool_says_so_and_an_old_one_reads_as_the_chat() {
         (Origin::Agui.as_str(), Origin::Mcp.as_str()),
         ("agui", "mcp")
     );
+}
+
+/// ADR 0036: `delivery` is `steer` or `interrupt`, written by the core only for a message sent
+/// while a job ran. A log written before the field existed reads with none, and writes none back.
+#[test]
+fn a_message_sent_while_a_job_runs_says_how_it_was_delivered_and_an_old_one_says_nothing() {
+    for (delivery, spelled) in [
+        (Delivery::Steer, "steer"),
+        (Delivery::Interrupt, "interrupt"),
+    ] {
+        assert_eq!(delivery.as_str(), spelled);
+        let message = UserMessageData {
+            delivery: Some(delivery),
+            ..UserMessageData::new("you were wrong since line 1")
+        };
+        let v = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            v,
+            json!({"text": "you were wrong since line 1", "delivery": spelled})
+        );
+        assert_eq!(
+            serde_json::from_value::<UserMessageData>(v).unwrap(),
+            message
+        );
+    }
+    let old: UserMessageData = serde_json::from_value(json!({"text": "hi", "runId": "r"})).unwrap();
+    assert_eq!(old.delivery, None);
+    assert_eq!(
+        serde_json::to_value(&old).unwrap(),
+        json!({"text": "hi", "runId": "r"}),
+        "an absent delivery is not spelled, not even as null"
+    );
+    // closed: a word this build does not know is refused, not read as something else
+    assert!(
+        serde_json::from_value::<UserMessageData>(json!({"text": "x", "delivery": "queue"}))
+            .is_err()
+    );
+}
+
+/// ADR 0036: `afterStop` is the job ledger's, absent unless a stop is on its way, and a ledger
+/// stored before the field existed reads as one that is not stopping.
+#[test]
+fn a_job_ledger_without_after_stop_is_not_stopping_and_does_not_write_one() {
+    let old: Job = serde_json::from_value(json!({"number": 2, "attempt": 1})).unwrap();
+    assert_eq!(old.after_stop, None);
+    assert_eq!(old.number, 2);
+    assert!(
+        serde_json::to_value(&old)
+            .unwrap()
+            .get("afterStop")
+            .is_none()
+    );
+
+    let stopping = Job {
+        after_stop: Some("do X instead".into()),
+        ..Job::default()
+    };
+    let v = serde_json::to_value(&stopping).unwrap();
+    assert_eq!(v["afterStop"], "do X instead");
+    assert_eq!(serde_json::from_value::<Job>(v).unwrap(), stopping);
+    // the next job is what the text was held for
+    assert_eq!(stopping.next().after_stop, None);
 }
 
 #[test]
