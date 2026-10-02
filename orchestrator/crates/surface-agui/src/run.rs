@@ -19,10 +19,9 @@ use orch_app::{
     THREAD_UI_CATALOG_KEY, check_catalog_schemas,
 };
 use orch_core::{
-    AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UiCatalogData, UserId,
-    report,
+    AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UiCatalogData, report,
 };
-use orch_ports::Ports;
+use orch_ports::{Ports, Principal};
 
 use crate::refuse::{check_accept, check_json, input_error};
 use crate::stream::{Feed, Start, frames};
@@ -37,7 +36,7 @@ const MAX_ATTEMPTS: usize = 3;
 
 pub(crate) async fn run<P: Ports>(
     State(state): State<SurfaceState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(agent_id): Path<String>,
     request: Request,
 ) -> Result<Response, ApiError> {
@@ -69,7 +68,7 @@ pub(crate) async fn run<P: Ports>(
     for _ in 0..MAX_ATTEMPTS {
         if let Some(feed) = attempt(
             &state.app,
-            &user,
+            &principal,
             &agent,
             thread,
             &input,
@@ -207,13 +206,13 @@ pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
 /// Every event of the thread, oldest first.
 async fn load_events<P: Ports>(
     app: &App<P>,
-    user: &UserId,
+    principal: &Principal,
     id: ThreadId,
 ) -> Result<Vec<Event>, AppError> {
     let mut all: Vec<Event> = Vec::new();
     loop {
         let after = all.last().map_or(0, |e| e.seq);
-        let page = app.list_events(user, id, after, PAGE).await?;
+        let page = app.list_events(principal, id, after, PAGE).await?;
         let full = page.len() >= PAGE as usize;
         all.extend(page);
         if !full {
@@ -265,17 +264,19 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
 /// of it (an attach).
 async fn attempt<P: Ports>(
     app: &std::sync::Arc<App<P>>,
-    user: &UserId,
+    principal: &Principal,
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
     gate: Option<&GateLayer>,
     catalog: Option<&UiCatalogData>,
 ) -> Result<Option<Feed>, ApiError> {
-    // The thread as the log holds it now, if there is one.
-    let known = match app.find_thread(user, thread).await? {
+    let user = &principal.user;
+    // The thread as the log holds it now, if there is one, and the person may act on it: a run
+    // writes (a thread someone else owns is not the caller's to run, ADR 0033).
+    let known = match app.find_thread(principal, thread).await? {
         Some(record) => {
-            let events = load_events(app, user, thread).await?;
+            let events = load_events(app, principal, thread).await?;
             let mut projector = Projector::new(meta_of(&record));
             for event in &events {
                 let _ = projector.apply(event, Audience::Viewer);
@@ -339,7 +340,7 @@ async fn attempt<P: Ports>(
         return Ok(Some(Feed {
             projector: Projector::new(meta_of(&record)),
             backlog: events.into(),
-            live: app.thread_feed(user, thread, last_seq).await?,
+            live: app.thread_feed(principal, thread, last_seq).await?,
             start: Start::Run(input.run_id.to_string()),
             held,
         }));
@@ -378,7 +379,10 @@ async fn attempt<P: Ports>(
                 origin: Origin::Agui,
                 ui_catalog: catalog.cloned(),
             };
-            match app.create_thread_as(user, thread, new, inbound).await? {
+            match app
+                .create_thread_as(principal, thread, new, inbound)
+                .await?
+            {
                 Creation::Created {
                     thread: record,
                     events,
@@ -387,7 +391,7 @@ async fn attempt<P: Ports>(
                     Ok(Some(Feed {
                         projector: Projector::new(meta_of(&record)),
                         backlog: std::collections::VecDeque::new(),
-                        live: app.thread_feed(user, thread, 0).await?,
+                        live: app.thread_feed(principal, thread, 0).await?,
                         start: Start::Seq(events.first().map_or(1, |e| e.seq)),
                         held,
                     }))
@@ -402,7 +406,7 @@ async fn attempt<P: Ports>(
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
-                match app.submit(user, thread, next, key).await? {
+                match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
                     }
@@ -419,7 +423,7 @@ async fn attempt<P: Ports>(
             Ok(Some(Feed {
                 projector,
                 backlog: std::collections::VecDeque::new(),
-                live: app.thread_feed(user, thread, last_seq).await?,
+                live: app.thread_feed(principal, thread, last_seq).await?,
                 start: Start::Seq(start),
                 held,
             }))
@@ -430,7 +434,7 @@ async fn attempt<P: Ports>(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use orch_core::{UiActionData, UiVersion};
+    use orch_core::{UiActionData, UiVersion, UserId};
     use serde_json::json;
 
     use super::*;

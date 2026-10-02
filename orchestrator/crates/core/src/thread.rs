@@ -101,14 +101,14 @@ impl Releases {
     }
 }
 
-/// A thread as stored. Serialises to the contract `Thread` (owner and version stay internal).
+/// A thread as stored. Serialises to the contract `Thread` (the version stays internal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRecord {
     /// Thread id.
     pub id: ThreadId,
-    /// Owner (never serialised).
-    #[serde(skip)]
+    /// Owner: the e-mail of the person the thread belongs to. Serialised, so that a person who may
+    /// read other people's threads (an administrator, ADR 0033) can tell theirs from the rest.
     pub owner: UserId,
     /// Title.
     pub title: String,

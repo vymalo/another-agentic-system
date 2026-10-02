@@ -14,7 +14,7 @@ use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, NewThread};
 use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, AgentTarget, ThreadId, UserId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
-use orch_ports::{AgentEndpoint, PortSet, SystemClock};
+use orch_ports::{AgentEndpoint, PortSet, Principal, SystemClock};
 use tokio::task::JoinHandle;
 
 type Stack = PortSet<
@@ -143,8 +143,8 @@ impl Edge {
 /// A surface with plain routes (`/x/whoami` replies with the identity, `/x/slow-plain` after
 /// `delay`) and one streaming route (`/x/slow-stream`, after `delay`).
 fn test_surface(delay: Duration) -> SurfaceRoutes {
-    async fn whoami(Extension(user): Extension<UserId>) -> String {
-        user.as_str().to_owned()
+    async fn whoami(Extension(principal): Extension<Principal>) -> String {
+        principal.user.as_str().to_owned()
     }
     let slow = move || async move {
         tokio::time::sleep(delay).await;
@@ -656,10 +656,10 @@ async fn a_machine_route_needs_its_own_guard_and_not_the_identity() {
         }
     }
     async fn who(request: Request) -> String {
-        // The identity layer did not run: there is no `UserId`, and the route never reads the header.
+        // The identity layer did not run: there is no `Principal`, and the route never reads the header.
         format!(
             "machine, identity extension: {}",
-            request.extensions().get::<UserId>().is_some()
+            request.extensions().get::<Principal>().is_some()
         )
     }
     let machine =
@@ -806,9 +806,10 @@ async fn the_export_holds_the_log_in_order_and_no_credential_of_the_orchestrator
         .collect();
     assert_eq!(seqs, (1..=601).collect::<Vec<i64>>());
     assert_eq!(doc["thread"]["lastSeq"], 601);
-    // The owner's address is in the log, as the actor of their messages, and nowhere else.
+    // The owner's address is in the log, as the actor of their messages, and is the thread's
+    // `owner`, as in `getThread` (which an administrator reading others' threads needs).
     assert_eq!(doc["events"][0]["actor"]["name"], ALICE);
-    assert!(doc["thread"].get("owner").is_none());
+    assert_eq!(doc["thread"]["owner"], ALICE);
 }
 
 #[tokio::test]

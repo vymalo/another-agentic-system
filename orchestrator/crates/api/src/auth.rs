@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use orch_app::App;
-use orch_ports::{AuthError, Authenticator, CredentialKind, Credentials, Ports};
+use orch_ports::{AuthError, Authenticator, CredentialKind, Credentials, Ports, Principal};
 
 use crate::problem::Problem;
 
@@ -98,8 +98,8 @@ fn refusal(error: &AuthError, accepts_bearer: bool) -> Response {
 }
 
 /// Refuses requests that are not authenticated (401, or 503 when authentication is unavailable)
-/// and stores the [`Principal`] and its [`UserId`](orch_core::UserId) in the request extensions.
-/// A credential that is present and bad is refused even when another would have served.
+/// and stores the [`Principal`] in the request extensions (its `user` is what a person owns). A
+/// credential that is present and bad is refused even when another would have served.
 pub(crate) async fn require_identity<P: Ports>(
     State(app): State<Arc<App<P>>>,
     mut req: Request,
@@ -114,8 +114,30 @@ pub(crate) async fn require_identity<P: Ports>(
         Ok(principal) => principal,
         Err(error) => return refusal(&error, auth.accepts_bearer()),
     };
-    req.extensions_mut().insert(principal.user.clone());
     req.extensions_mut().insert(principal);
+    next.run(req).await
+}
+
+/// Refuses a person whose roles grant nothing at all (403): a valid token with no role the
+/// configuration knows, and no `auth.defaultRole` to fall back on (ADR 0033). It wraps every route
+/// but `GET /api/me`, which answers for such a person so that a client can say why. A person whose
+/// roles grant something is let through to the route, whose own permission checks decide.
+pub(crate) async fn require_access<P: Ports>(
+    State(app): State<Arc<App<P>>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let granted = req
+        .extensions()
+        .get::<Principal>()
+        .is_some_and(|principal| !app.access(principal).is_empty());
+    if !granted {
+        // Without a principal nothing was authenticated: the identity layer is missing, and this
+        // must not be the one that lets the request through.
+        return Problem::forbidden("your roles do not grant access to this API")
+            .with_code("no_access")
+            .into_response();
+    }
     next.run(req).await
 }
 

@@ -1,5 +1,7 @@
 //! Static bearer tokens (ADR 0019): who a token belongs to, and the check that guards the route.
+//! A token is a principal (ADR 0033): a user, and the roles the configuration gives that token.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -9,6 +11,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use orch_api::Problem;
 use orch_core::UserId;
+use orch_ports::{Principal, Role};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -40,13 +43,14 @@ pub enum TokenError {
 /// nothing slows down a guess, so it must be a random secret, not a word.
 pub const MIN_TOKEN_BYTES: usize = 32;
 
-/// The user a request is authenticated as: what the bearer check puts in the request, and what
+/// The principal a request is authenticated as: what the bearer check puts in the request, and what
 /// the tools read. It is the only identity an MCP call has (`X-Auth-Request-Email` is never read).
+/// Its roles are the ones the token's entry names; none means the policy's default role.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpUser(pub UserId);
+pub struct McpUser(pub Principal);
 
 struct Entry {
-    user: UserId,
+    principal: Principal,
     /// SHA-256 of the token. The token itself is not kept: it is hashed once, at startup.
     digest: [u8; 32],
 }
@@ -66,7 +70,11 @@ impl fmt::Debug for TokenTable {
         f.debug_struct("TokenTable")
             .field(
                 "users",
-                &self.entries.iter().map(|e| &e.user).collect::<Vec<_>>(),
+                &self
+                    .entries
+                    .iter()
+                    .map(|e| &e.principal.user)
+                    .collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
     }
@@ -77,12 +85,26 @@ fn digest_of(token: &str) -> [u8; 32] {
 }
 
 impl TokenTable {
-    /// Builds the table from `(user, token)` pairs.
+    /// Builds the table from `(user, token)` pairs: tokens that carry no role, so that their
+    /// holders have what the policy's default role grants.
     pub fn new(
         tokens: impl IntoIterator<Item = (UserId, SecretString)>,
     ) -> Result<Self, TokenError> {
+        Self::with_roles(
+            tokens
+                .into_iter()
+                .map(|(user, token)| (user, BTreeSet::new(), token)),
+        )
+    }
+
+    /// Builds the table from `(user, roles, token)` triples (ADR 0033: `role` of an entry of the
+    /// tokens file). The roles are as an identity provider would spell them, compared exactly to
+    /// the names of `auth.roles`.
+    pub fn with_roles(
+        tokens: impl IntoIterator<Item = (UserId, BTreeSet<Role>, SecretString)>,
+    ) -> Result<Self, TokenError> {
         let mut entries: Vec<Entry> = Vec::new();
-        for (user, token) in tokens {
+        for (user, roles, token) in tokens {
             let token = token.expose_secret();
             if token.len() < MIN_TOKEN_BYTES {
                 return Err(TokenError::TooShort {
@@ -92,11 +114,19 @@ impl TokenTable {
             let digest = digest_of(token);
             if let Some(other) = entries.iter().find(|e| e.digest == digest) {
                 return Err(TokenError::Shared {
-                    first: other.user.to_string(),
+                    first: other.principal.user.to_string(),
                     second: user.to_string(),
                 });
             }
-            entries.push(Entry { user, digest });
+            entries.push(Entry {
+                principal: Principal {
+                    email: Some(user.to_string()),
+                    user,
+                    name: None,
+                    roles,
+                },
+                digest,
+            });
         }
         if entries.is_empty() {
             return Err(TokenError::NoTokens);
@@ -104,14 +134,14 @@ impl TokenTable {
         Ok(TokenTable { entries })
     }
 
-    /// The user the token belongs to, or `None` for a token nobody has.
-    pub fn authenticate(&self, presented: &str) -> Option<&UserId> {
+    /// The principal the token belongs to, or `None` for a token nobody has.
+    pub fn authenticate(&self, presented: &str) -> Option<&Principal> {
         let presented = digest_of(presented);
         let mut found = None;
         for entry in &self.entries {
             // No early exit: every entry is compared.
             if bool::from(entry.digest.ct_eq(&presented)) {
-                found = Some(&entry.user);
+                found = Some(&entry.principal);
             }
         }
         found
@@ -164,12 +194,12 @@ pub(crate) async fn require_bearer(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let user = bearer(request.headers()).and_then(|token| tokens.authenticate(token));
-    let Some(user) = user else {
+    let principal = bearer(request.headers()).and_then(|token| tokens.authenticate(token));
+    let Some(principal) = principal else {
         return unauthorized();
     };
     // Whatever a client sent, the only identity is the token's.
-    request.extensions_mut().insert(McpUser(user.clone()));
+    request.extensions_mut().insert(McpUser(principal.clone()));
     next.run(request).await
 }
 
@@ -200,12 +230,15 @@ mod tests {
         let t = table();
         assert_eq!(t.len(), 3);
         assert_eq!(
-            t.authenticate(BOB_TOKEN).unwrap().as_str(),
+            t.authenticate(BOB_TOKEN).unwrap().user.as_str(),
             "bob@example.com"
         );
         // A rotation: both of alice's tokens work.
         for token in [ALICE_TOKEN, ALICE_NEXT] {
-            assert_eq!(t.authenticate(token).unwrap().as_str(), "alice@example.com");
+            assert_eq!(
+                t.authenticate(token).unwrap().user.as_str(),
+                "alice@example.com"
+            );
         }
         let (with_space, upper, with_newline) = (
             format!("{ALICE_TOKEN} "),
@@ -215,6 +248,33 @@ mod tests {
         for wrong in ["", "alice", &with_space, &upper, &with_newline] {
             assert!(t.authenticate(wrong).is_none(), "{wrong:?}");
         }
+    }
+
+    #[test]
+    fn a_token_carries_the_roles_of_its_entry_and_none_by_default() {
+        let t = TokenTable::with_roles([
+            (
+                UserId::new("alice@example.com"),
+                BTreeSet::from([Role::new("admin"), Role::new("ci")]),
+                secret(ALICE_TOKEN),
+            ),
+            (
+                UserId::new("bob@example.com"),
+                BTreeSet::new(),
+                secret(BOB_TOKEN),
+            ),
+        ])
+        .unwrap();
+        let alice = t.authenticate(ALICE_TOKEN).unwrap();
+        assert_eq!(
+            alice.roles.iter().map(Role::as_str).collect::<Vec<_>>(),
+            ["admin", "ci"]
+        );
+        assert!(t.authenticate(BOB_TOKEN).unwrap().roles.is_empty());
+        // `new` is a token with no role.
+        assert!(table().authenticate(ALICE_TOKEN).unwrap().roles.is_empty());
+        // Roles are not part of what a table shows either.
+        assert!(!format!("{t:?}").contains("admin"));
     }
 
     #[test]

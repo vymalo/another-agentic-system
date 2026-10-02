@@ -3,10 +3,11 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use orch_app::{Owners, Permission, Scope};
 use orch_core::{
     AgentInfo, AgentTarget, ThreadId, ThreadRecord, UserId, check_description, check_title,
 };
-use orch_ports::{Authenticator, Ports};
+use orch_ports::{Authenticator, Ports, Principal};
 use serde::{Deserialize, Serialize};
 
 use crate::ApiState;
@@ -66,8 +67,9 @@ pub(crate) async fn method_not_allowed() -> Problem {
 
 pub(crate) async fn list_agents<P: Ports>(
     State(state): State<ApiState<P>>,
-) -> Json<Vec<AgentInfo>> {
-    Json(state.app.list_agents().await.agents)
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Json<Vec<AgentInfo>>> {
+    Ok(Json(state.app.list_agents(&principal).await?.agents))
 }
 
 /// Contract `Registry`: how each source of agents answered on the last read.
@@ -88,11 +90,14 @@ pub(crate) struct SourceView {
 /// `GET /api/registry`: whether each source of agents (the deployment's own list, the platform's
 /// registry) could be read, so a client can say when the list is incomplete. The registry is read
 /// now and the answer is never cached; no agent card is read, and no URL or credential is in it.
-pub(crate) async fn registry_status<P: Ports>(State(state): State<ApiState<P>>) -> Response {
+pub(crate) async fn registry_status<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Response> {
     let sources = state
         .app
-        .registry_sources()
-        .await
+        .registry_sources(&principal)
+        .await?
         .into_iter()
         .map(|source| SourceView {
             name: source.name,
@@ -109,7 +114,7 @@ pub(crate) async fn registry_status<P: Ports>(State(state): State<ApiState<P>>) 
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -117,11 +122,12 @@ pub(crate) struct ListThreadsQuery {
     limit: Option<i64>,
     before: Option<String>,
     branches: Option<String>,
+    owner: Option<String>,
 }
 
 pub(crate) async fn list_threads<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     ApiQuery(q): ApiQuery<ListThreadsQuery>,
 ) -> ApiResult<Json<Vec<ThreadRecord>>> {
     let limit = q.limit.unwrap_or(50);
@@ -142,27 +148,46 @@ pub(crate) async fn list_threads<P: Ports>(
         Some("include") => true,
         Some(_) => return Err(Problem::bad_request("branches must be `include`").into()),
     };
-    Ok(Json(
-        state
-            .app
-            .list_threads(&user, before, limit, include_edits)
-            .await?,
-    ))
+    // Whose threads: the caller's own unless `owner` says another's, or `*` for everyone's, which
+    // the application allows the administrators only (ADR 0033).
+    let owner = match q.owner.as_deref().map(str::trim) {
+        None => None,
+        Some("") => return Err(Problem::bad_request("owner must not be empty").into()),
+        Some("*") => Some(None),
+        Some(email) if email.contains('@') => Some(Some(UserId::new(email))),
+        Some(_) => {
+            return Err(Problem::bad_request("owner must be an e-mail address, or *").into());
+        }
+    };
+    let owners = match &owner {
+        None => Owners::Mine,
+        Some(None) => Owners::All,
+        Some(Some(owner)) => Owners::One(owner),
+    };
+    let threads = state
+        .app
+        .list_threads_of(&principal, owners, before, limit, include_edits)
+        .await?;
+    Ok(Json(threads))
 }
 
 pub(crate) async fn get_thread<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ThreadRecord>> {
     Ok(Json(
-        state.app.get_thread(&user, parse_thread_id(&id)?).await?,
+        state
+            .app
+            .get_thread(&principal, parse_thread_id(&id)?)
+            .await?,
     ))
 }
 
 /// Changes what a person writes about the thread (see [`orch_app::App::rename_thread`] and
 /// [`orch_app::App::describe_thread`]): 200 with the thread, 400 for a title or a description that
-/// cannot be used, 404 for a thread that is not the caller's.
+/// cannot be used, 403 for a thread the caller may read and not change, 404 for one they may not
+/// read.
 ///
 /// The body is an object with a `title` string and/or a `description` string (empty clears it) and
 /// nothing else, and at least one: a member this API does not know is refused, so that a client
@@ -171,7 +196,7 @@ pub(crate) async fn get_thread<P: Ports>(
 /// a JSON array.)
 pub(crate) async fn patch_thread<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
 ) -> ApiResult<Json<ThreadRecord>> {
@@ -202,10 +227,15 @@ pub(crate) async fn patch_thread<P: Ports>(
     }
     let mut thread = None;
     if let Some(title) = title {
-        thread = Some(state.app.rename_thread(&user, id, &title).await?);
+        thread = Some(state.app.rename_thread(&principal, id, &title).await?);
     }
     if let Some(description) = description {
-        thread = Some(state.app.describe_thread(&user, id, &description).await?);
+        thread = Some(
+            state
+                .app
+                .describe_thread(&principal, id, &description)
+                .await?,
+        );
     }
     match thread {
         Some(thread) => Ok(Json(thread)),
@@ -224,23 +254,23 @@ pub(crate) async fn public_config<P: Ports>(
 
 pub(crate) async fn cancel_thread<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    state.app.cancel(&user, parse_thread_id(&id)?).await?;
+    state.app.cancel(&principal, parse_thread_id(&id)?).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
 /// The thread as one downloadable JSON document (see [`crate::export`]). Authorised exactly like
-/// reading the thread: the same identity layer, the same owner-only read, the same 404 for a
-/// thread that is someone else's or does not exist.
+/// reading the thread: the same identity layer, the same `thread.read`, the same 404 for a thread
+/// the caller may not read or that does not exist.
 pub(crate) async fn export_thread<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     let id = parse_thread_id(&id)?;
-    let export = state.app.export_thread(&user, id).await?;
+    let export = state.app.export_thread(&principal, id).await?;
     // Pretty, because a person opens it, and a developer diffs it.
     let body = serde_json::to_vec_pretty(&crate::export::document(&export))
         .map_err(|e| orch_app::AppError::internal(format!("export document: {e}")))?;
@@ -321,15 +351,16 @@ impl ForkBody {
 
 /// Forks the thread (see [`orch_app::App::fork_thread`]): 201 with the new thread and its
 /// `Location`; 200 with the existing one when the body's `id` is a fork of this thread made
-/// already. 400 for a body that cannot be read or a text or target that cannot be used, 404 for a
-/// thread that is not the caller's, 409 while the turn is going on (`turn_open`) or for an id
+/// already. 400 for a body that cannot be read or a text or target that cannot be used, 403 for a
+/// thread the caller may read and not change and for an agent their roles do not allow, 404 for a
+/// thread they may not read, 409 while the turn is going on (`turn_open`) or for an id
 /// another thread has, 422 for a point that is not in the log or not a person's message.
 ///
 /// The body is read as an object first, so that an array or a member this API does not know is
 /// refused, not skipped.
 pub(crate) async fn fork_thread<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
 ) -> ApiResult<Response> {
@@ -338,7 +369,7 @@ pub(crate) async fn fork_thread<P: Ports>(
         .map_err(|e| Problem::bad_request(format!("invalid body: {e}")))?;
     let forked = state
         .app
-        .fork_thread(&user, id, body.into_request()?)
+        .fork_thread(&principal, id, body.into_request()?)
         .await?;
     let status = if forked.created {
         StatusCode::CREATED
@@ -380,10 +411,13 @@ struct SiblingBody {
 /// The messages of the thread that have other versions (see [`orch_app::App::branches`]).
 pub(crate) async fn list_branches<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<BranchesView>> {
-    let branches = state.app.branches(&user, parse_thread_id(&id)?).await?;
+    let branches = state
+        .app
+        .branches(&principal, parse_thread_id(&id)?)
+        .await?;
     Ok(Json(BranchesView {
         root: branches.root,
         points: branches
@@ -404,4 +438,62 @@ pub(crate) async fn list_branches<P: Ports>(
             })
             .collect(),
     }))
+}
+
+/// Contract `Me`: who the caller is and what their roles let them do.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Me {
+    user: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    roles: Vec<String>,
+    permissions: Vec<PermissionView>,
+    agents: AgentsView,
+}
+
+/// Contract `Permission`.
+#[derive(Serialize)]
+struct PermissionView {
+    permission: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<&'static str>,
+}
+
+/// Contract `MeAgents`: the agents the person's roles name, for each agent permission.
+#[derive(Serialize)]
+struct AgentsView {
+    read: Vec<String>,
+    invoke: Vec<String>,
+}
+
+/// `GET /api/me`: who the caller is, the roles that count, and what those roles grant. It is for
+/// a client to show what its person may do and hide what they may not; it is never a check, the
+/// orchestrator enforces every request. It answers a person whose roles grant nothing (every
+/// other route is 403 for them), so a client can say why.
+pub(crate) async fn me<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+) -> Json<Me> {
+    let access = state.app.access(&principal);
+    Json(Me {
+        user: principal.user.to_string(),
+        email: principal.email.clone(),
+        name: principal.name.clone(),
+        roles: access.roles().map(ToString::to_string).collect(),
+        permissions: access
+            .permissions()
+            .into_iter()
+            .map(|(permission, scope)| PermissionView {
+                permission: permission.as_str(),
+                scope: scope.map(Scope::as_str),
+            })
+            .collect(),
+        agents: AgentsView {
+            read: access.agents(Permission::AgentRead).patterns(),
+            invoke: access.agents(Permission::AgentInvoke).patterns(),
+        },
+    })
 }

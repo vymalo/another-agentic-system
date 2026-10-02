@@ -1,10 +1,8 @@
 //! What the tools say about a job: the summary of `get_job` and the small answers of the others.
 //! Everything here is a function of the thread record and its event log.
 
-use orch_app::{App, AppError};
-use orch_core::{
-    CheckSource, CheckStatus, EventBody, EventKind, ThreadRecord, UserId, pull_request_url,
-};
+use orch_app::{App, AppError, Requester};
+use orch_core::{CheckSource, CheckStatus, EventBody, EventKind, ThreadRecord, pull_request_url};
 use orch_ports::Ports;
 use serde::Serialize;
 
@@ -127,7 +125,7 @@ fn cap(text: &str, max: usize) -> String {
 /// The newest pull request the log mentions, from one bounded read of the newest artifacts.
 async fn find_pull_request<P: Ports>(
     app: &App<P>,
-    user: &UserId,
+    user: &impl Requester,
     thread: &ThreadRecord,
 ) -> Result<Option<PullRequest>, AppError> {
     let id = thread.id;
@@ -165,7 +163,7 @@ fn newest_pull_request(newest: &[orch_core::Event], since: i64) -> Option<PullRe
 /// Summarises `thread`, which belongs to `user`.
 pub async fn summarise<P: Ports>(
     app: &App<P>,
-    user: &UserId,
+    user: &impl Requester,
     thread: &ThreadRecord,
 ) -> Result<JobSummary, AppError> {
     let pull_request = find_pull_request(app, user, thread).await?;
@@ -229,6 +227,7 @@ pub fn summary_of(thread: &ThreadRecord, pull_request: Option<PullRequest>) -> J
 mod tests {
     use orch_core::{
         AgentId, AgentTarget, CheckResult, GatePolicy, Hold, Job, PushedRef, ThreadId, ThreadState,
+        UserId,
     };
 
     use super::*;

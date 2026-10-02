@@ -162,7 +162,7 @@ async fn validation() {
 async fn list_agents_reads_live_cards_and_fails_closed() {
     let w = World::new();
     let app = w.app();
-    let list = app.list_agents().await;
+    let list = app.list_agents(&alice()).await.unwrap();
     let agents = list.agents;
     assert_eq!(
         agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
@@ -186,7 +186,7 @@ async fn list_agents_reads_live_cards_and_fails_closed() {
     );
     assert!(agents[1].releases.is_none());
     w.agent.set_card_down("coder", true);
-    let agents = app.list_agents().await.agents;
+    let agents = app.list_agents(&alice()).await.unwrap().agents;
     assert_eq!(
         agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
         ["coder", "plain"],
@@ -199,7 +199,11 @@ async fn list_agents_reads_live_cards_and_fails_closed() {
     assert!(agents[0].description.is_none());
     // Live, never cached: back up, back to offering releases.
     w.agent.set_card_down("coder", false);
-    assert!(app.list_agents().await.agents[0].releases.is_some());
+    assert!(
+        app.list_agents(&alice()).await.unwrap().agents[0]
+            .releases
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -207,7 +211,7 @@ async fn describe_agent_is_one_agent_with_its_live_card() {
     let w = World::new();
     let app = w.app();
     let coder = app
-        .describe_agent(&AgentId::new("coder"))
+        .describe_agent(&alice(), &AgentId::new("coder"))
         .await
         .unwrap()
         .unwrap();
@@ -216,7 +220,7 @@ async fn describe_agent_is_one_agent_with_its_live_card() {
     assert_eq!(card.version.as_deref(), Some("1.0.0"));
     assert_eq!(card.releases.unwrap().default_channel, "stable");
     assert!(
-        app.describe_agent(&AgentId::new("nobody"))
+        app.describe_agent(&alice(), &AgentId::new("nobody"))
             .await
             .unwrap()
             .is_none(),
@@ -225,7 +229,7 @@ async fn describe_agent_is_one_agent_with_its_live_card() {
     // Fail closed, live, never cached.
     w.agent.set_card_down("coder", true);
     let down = app
-        .describe_agent(&AgentId::new("coder"))
+        .describe_agent(&alice(), &AgentId::new("coder"))
         .await
         .unwrap()
         .unwrap();
@@ -233,7 +237,7 @@ async fn describe_agent_is_one_agent_with_its_live_card() {
     assert!(down.card.is_none());
     w.agent.set_card_down("coder", false);
     assert!(
-        app.describe_agent(&AgentId::new("coder"))
+        app.describe_agent(&alice(), &AgentId::new("coder"))
             .await
             .unwrap()
             .unwrap()

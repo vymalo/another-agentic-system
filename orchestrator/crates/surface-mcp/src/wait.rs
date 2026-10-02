@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use orch_app::{App, AppError};
-use orch_core::{Event, EventBody, ThreadId, ThreadRecord, ThreadState, UserId};
+use orch_app::{App, AppError, Requester};
+use orch_core::{Event, EventBody, ThreadId, ThreadRecord, ThreadState};
 use orch_ports::Ports;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -204,7 +204,7 @@ impl<S: ProgressSink> Reporter<'_, S> {
 /// The call is [`AppError::NotFound`] for a job that is not the user's, before anything is read.
 pub async fn wait_for_job<P: Ports>(
     app: &Arc<App<P>>,
-    user: &UserId,
+    user: &impl Requester,
     id: ThreadId,
     request: &WaitRequest,
     sink: &impl ProgressSink,
@@ -299,7 +299,7 @@ pub async fn wait_for_job<P: Ports>(
 /// read to `cursor` (a state seen late is still the state).
 async fn finish<P: Ports>(
     app: &Arc<App<P>>,
-    user: &UserId,
+    user: &impl Requester,
     id: ThreadId,
     end: WaitEnd,
     cursor: i64,
