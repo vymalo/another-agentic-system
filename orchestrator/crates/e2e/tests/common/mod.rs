@@ -15,11 +15,11 @@ use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_api::ApiConfig;
 use orch_app::{
     AgentDirectory, AgentEntry, App, AppConfig, ApplyOutcome, GateLayer, GateRules, InboxConfig,
-    InboxWorker, NewThread, Received,
+    InboxWorker, NewThread, Received, TaskSettings,
 };
 use orch_core::{
     AgentId, AgentTarget, CiConclusion, CiPolicy, CiProvider, CiReport, Event, GatePolicy, Input,
-    ThreadId, ThreadRecord, UserId,
+    TaskKind, ThreadId, ThreadRecord, UserId,
 };
 use orch_ports::memory::{MemoryStore, MemoryWakeup, ScriptedModel};
 use orch_ports::{
@@ -147,6 +147,9 @@ pub struct Setup {
     /// Whether the instances have a title model (the scripted one, `World::model`, asked as
     /// `mock-title`): without it a thread keeps the first words of its first message.
     pub titles: bool,
+    /// Whether the instances have a description task (the scripted model, asked as
+    /// `mock-description` after two new messages): without it no thread has a description.
+    pub descriptions: bool,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -189,6 +192,7 @@ impl Default for Setup {
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
             titles: false,
+            descriptions: false,
         }
     }
 }
@@ -233,6 +237,7 @@ pub struct World {
     /// The model that titles threads; asked only when the setup has [`Setup::titles`].
     pub model: ScriptedModel,
     titles: bool,
+    descriptions: bool,
     /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
     /// the first instance with the thread-tools surface serves on it.
     thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
@@ -299,8 +304,9 @@ impl World {
             gate: setup.gate,
             target_gates: setup.target_gates,
             gate_rules: setup.gate_rules,
-            model: ScriptedModel::default(),
+            model: ScriptedModel::default().with_endpoints(["default"]),
             titles: setup.titles,
+            descriptions: setup.descriptions,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
@@ -326,6 +332,28 @@ impl World {
         AgentDirectory::new(entries)
     }
 
+    /// The utility tasks the instances run: the title and the description, each only when the
+    /// setup asked for it, at the endpoint `default` the scripted model holds.
+    fn tasks(&self) -> BTreeMap<TaskKind, TaskSettings> {
+        let mut tasks = BTreeMap::new();
+        if self.titles {
+            tasks.insert(
+                TaskKind::Title,
+                TaskSettings::new(TaskKind::Title, "default", "mock-title"),
+            );
+        }
+        if self.descriptions {
+            tasks.insert(
+                TaskKind::Description,
+                TaskSettings {
+                    min_new_messages: 2,
+                    ..TaskSettings::new(TaskKind::Description, "default", "mock-description")
+                },
+            );
+        }
+        tasks
+    }
+
     /// A new orchestrator process (app state is per process; the database is shared).
     fn app<S: ThreadStore, W: Wakeup>(&self, store: S, wakeup: W) -> Arc<App<Stack<S, W>>> {
         Arc::new(
@@ -344,7 +372,7 @@ impl World {
                 self.directory(),
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
-                    title_model: self.titles.then(|| "mock-title".to_owned()),
+                    tasks: self.tasks(),
                     gate: self.gate.clone(),
                     target_gates: self.target_gates.clone(),
                     gate_rules: self.gate_rules.clone(),

@@ -174,7 +174,10 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::TimerFired(_)
         | Input::Rename { .. }
         | Input::Titled { .. }
-        | Input::TitleDeclined { .. }) => other,
+        | Input::TitleDeclined { .. }
+        | Input::SetDescription { .. }
+        | Input::Described { .. }
+        | Input::DescriptionDeclined { .. }) => other,
     }
 }
 
@@ -195,6 +198,7 @@ pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
     ThreadMeta {
         thread_id: thread.id,
         title: thread.title.clone(),
+        description: thread.description.clone(),
         target: thread.target.clone(),
         gate: thread.job.gate.clone(),
     }
@@ -249,7 +253,10 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::TimerFired(_)
         | Input::Rename { .. }
         | Input::Titled { .. }
-        | Input::TitleDeclined { .. } => None,
+        | Input::TitleDeclined { .. }
+        | Input::SetDescription { .. }
+        | Input::Described { .. }
+        | Input::DescriptionDeclined { .. } => None,
     }
 }
 

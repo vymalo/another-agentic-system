@@ -292,8 +292,83 @@ async fn a_reply_gets_a_title_and_a_persons_rename_is_final(backend: Backend) {
     assert_eq!(world.model.calls().len(), 2);
 }
 
+/// The orchestrator's own model call for a description (ADR 0035): when a job ends the thread is
+/// described, the thread and the sidebar's list say it, the log says who wrote it, and a person's
+/// edit, an empty one included, is final: the model is not asked again.
+async fn a_finished_job_gets_a_description_and_a_persons_edit_is_final(backend: Backend) {
+    let world = World::with(
+        backend,
+        Setup {
+            descriptions: true,
+            ..Setup::default()
+        },
+    )
+    .await;
+    world
+        .model
+        .then_answer("The person wants a plan for a test.")
+        .then_answer("Never used");
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+
+    // the agent says a sentence: two messages, which is what the task wants
+    let id = chat
+        .seed_thread("plain", "talk to me about the test", None)
+        .await;
+    chat.wait_state(&id, "done").await;
+    eventually("the model's description", || async {
+        let (_, t) = chat.get(&format!("/api/threads/{id}")).await;
+        (t["description"] == "The person wants a plan for a test.").then_some(())
+    })
+    .await;
+    let (_, listed) = chat.get("/api/threads").await;
+    assert_eq!(
+        listed[0]["description"], "The person wants a plan for a test.",
+        "the sidebar's list says it"
+    );
+    let described: Vec<serde_json::Value> = chat
+        .events(&id)
+        .await
+        .into_iter()
+        .filter(|e| e["kind"] == "thread_described")
+        .collect();
+    assert_eq!(described.len(), 1);
+    assert_eq!(
+        described[0]["data"],
+        json!({"description": "The person wants a plan for a test.", "source": "model"})
+    );
+    assert_eq!(
+        described[0]["actor"],
+        json!({"type": "system", "name": "orchestrator"})
+    );
+    let calls = world.model.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].endpoint, "default");
+    assert_eq!(calls[0].model, "mock-description");
+    assert!(
+        calls[0].user.contains("talk to me about the test"),
+        "{}",
+        calls[0].user
+    );
+
+    // a person writes their own: that is final, and so is clearing it
+    let (status, thread) = chat.describe(&id, "Mine").await;
+    assert_eq!(status, 200, "{thread}");
+    assert_eq!(thread["description"], "Mine");
+    let (status, thread) = chat.describe(&id, "").await;
+    assert_eq!(status, 200, "{thread}");
+    assert!(thread.get("description").is_none(), "{thread}");
+    chat.seed_message(&id, "talk to me again").await;
+    chat.wait_state(&id, "done").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (_, thread) = chat.get(&format!("/api/threads/{id}")).await;
+    assert!(thread.get("description").is_none(), "{thread}");
+    assert_eq!(world.model.calls().len(), 1, "the model is not asked again");
+}
+
 backends!(
     a_reply_gets_a_title_and_a_persons_rename_is_final,
+    a_finished_job_gets_a_description_and_a_persons_edit_is_final,
     a_run_streams_the_expected_sequence_and_the_log_agrees,
     concurrent_threads_of_two_users_do_not_interfere,
     the_legacy_interaction_routes_are_gone,

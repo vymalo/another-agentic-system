@@ -75,6 +75,7 @@ fn forked(cut: i64, kind: ForkKind) -> Event {
             },
             kind,
             title: "Fix the redirect loop".to_owned(),
+            description: None,
             target: AgentTarget {
                 agent_id: AgentId::new("plain"),
                 release: None,

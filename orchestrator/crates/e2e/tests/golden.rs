@@ -236,6 +236,28 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(status, 200, "{thread}");
             (id, "cancelled")
         }
+        // A job's end gets the thread a description from the orchestrator's own model (ADR 0035,
+        // `world_for`: the description task is on and the model says one sentence), and a person
+        // clears it afterwards: an empty `thread_described`, which is final.
+        "description" => {
+            world
+                .model
+                .then_answer("The person wants a plan for a test.");
+            let id = chat.seed_thread("plain", "talk to me", None).await;
+            chat.wait_state(&id, "done").await;
+            eventually("the model's description", || async {
+                chat.events(&id)
+                    .await
+                    .iter()
+                    .any(|e| e["kind"] == "thread_described")
+                    .then_some(())
+            })
+            .await;
+            let (status, thread) = chat.describe(&id, "").await;
+            assert_eq!(status, 200, "{thread}");
+            assert!(thread.get("description").is_none(), "{thread}");
+            (id, "done")
+        }
         // Forking a thread (ADR 0029). The log is the fork's: a copy of the parent's events up to
         // the cut, `thread_forked`, then its own life. `fork`: the second message of a finished
         // thread is edited, so the fork holds the first turn and the replacing message, which
@@ -309,7 +331,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 22] = [
+const SCENARIOS: [&str; 23] = [
     "echo",
     "ask",
     "cancel",
@@ -330,6 +352,7 @@ const SCENARIOS: [&str; 22] = [
     "working",
     "turn-output",
     "title",
+    "description",
     "fork",
     "fork-blocked",
 ];
@@ -395,6 +418,17 @@ async fn world_for(name: &str) -> World {
                         ],
                         ..FakeAgentOptions::default()
                     },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // the description task is on, at the one endpoint the scripted model holds
+        "description" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    descriptions: true,
                     ..Setup::default()
                 },
             )

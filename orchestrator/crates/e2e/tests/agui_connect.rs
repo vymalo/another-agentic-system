@@ -506,6 +506,15 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             let (status, renamed) = chat.rename(thread, "Fix the build").await;
             assert_eq!(status, 200, "{renamed}");
         }
+        // A person writes the thread's description after it is done (`patchThread`, ADR 0035); a
+        // viewer that connects afterwards reads the whole log, with the description the thread has
+        // now in every snapshot.
+        "description" => {
+            run(input(thread, "run-1", &[("msg-1", "echo hi")], json!({}))).await;
+            chat.wait_state(thread, "done").await;
+            let (status, described) = chat.describe(thread, "Saying hi to the agent.").await;
+            assert_eq!(status, 200, "{described}");
+        }
         "cancel" => {
             let sse = chat
                 .agui_run(
@@ -728,6 +737,7 @@ async fn connect_streams_match_docs_api_examples() {
         "steps",
         "steps-ask",
         "title",
+        "description",
         "fork",
         "fork-blocked",
     ]
