@@ -31,7 +31,11 @@ test("a fork's agent is told the conversation, in a context of its own", async (
   await startThread(page, "echo first", "Plain");
   await expect(badge(page)).toHaveText("Done");
   const parent = threadId(page);
-  const [first] = await callsFor(page.request, "plain", "echo first");
+  // the parent's own call (other specs send `echo first` to `plain` too, and the journals outlive resetDb)
+  const [first] = (await callsFor(page.request, "plain", "echo first")).filter(
+    (c) => c.contextId === parent,
+  );
+  expect(first).toBeDefined();
 
   await forkButton(page).click();
   await expect(divider(page)).toContainText("Forked from echo first");
