@@ -84,6 +84,10 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        // A failed assertion shows what the binary said: the scratch directory goes with the test.
+        if std::thread::panicking() {
+            eprintln!("--- log of {} ---\n{}", self.log.display(), self.log());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
