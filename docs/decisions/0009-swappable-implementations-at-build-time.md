@@ -17,7 +17,7 @@
   variables only; [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md) makes it one YAML file read by the
   composition root, secrets by reference, with the variables over the file for one release. Configuration stays the
   composition root's input, not a port, and still selects only among compiled-in implementations (no runtime
-  plugins). Not built (plan 10, S9).
+  plugins). Built (plan 10, S9, 2026-10-02): `orch-config` and the loader of the binary.
 
 ## Context
 

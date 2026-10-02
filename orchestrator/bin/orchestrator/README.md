@@ -26,6 +26,10 @@ a git dependency pinned to a full commit sha in `orchestrator/Cargo.toml`
 (ADR 0015, decision 4); a PR bumps it. Without the feature `agent-local` it brings two crates into the
 dependency tree, `adam-host` and `adam-error`, and nothing else from adam-rs: `cargo tree -p orchestrator -i adam-runtime`
 finds nothing.
+The configuration file is defined and validated by the pure crate [`orch-config`](../../crates/config/README.md); this
+binary reads the file, the environment and the secret files and builds its own `Config` from them
+([below](#the-configuration-file)). Configuration is the composition root's input, not a port
+([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md), decision 5).
 Running it, the container image, configuration and shutdown are documented in
 [`orchestrator/README.md`](../../README.md); the design is in
 [`docs/orchestrator.md`](../../../docs/orchestrator.md).
@@ -34,9 +38,10 @@ Running it, the container image, configuration and shutdown are documented in
 
 | File | What |
 |---|---|
-| `src/main.rs` | tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
+| `src/main.rs` | the command line (clap), `--print-config`, tracing setup, signals (SIGTERM, SIGINT), sysexits-style exit codes (`78` configuration, `69` database unavailable, `71` listen address, `70` a component of the service stopped, ended early or panicked (`adam_host::HostError`), `1` otherwise) |
 | `src/model.rs` | `ConfiguredModel`, the one `ChatModel` type of the binary's `PortSet`: `Off(NoModel)` or `OpenAi(OpenAiChat)` (from `orch-model-openai`), built from `Config.model` (`ConfiguredModel::build`). Static dispatch over two variants, so titles on and titles off are the same build |
 | `src/config.rs` | `Args` (clap derive: a flag per setting, falling back to its environment variable), `Config`, `ModelSettings` (the title model: its name, the endpoint, the key as a `SecretString`, the timeout; `None` when `ORCH_TITLE_MODEL` is unset, redacted in `Debug`; `Config::app_config` carries the model's name and timeout into `AppConfig`), `RegistrySettings` (the platform registry: the URL, the two tokens as `SecretString`s, the timeout and the longest a copy stays fresh; `None` when `AGENT_REGISTRY_URL` is unset, redacted in `Debug`, with the URL's query left out; `AGENTS_FILE` may then be unset or empty), `McpSettings` (the tokens as `SecretString`s read through the `env` and `read` closures, the hosts and the public URL, when `mcp` is mounted on a role that serves HTTP), `Surface`, `LocalAgentKind` (the closed set of in-process agent kinds `transport: local` may name; `Echo` so far; compiled in with the feature `agent-local`; `needs_model()` says whether a kind calls a model), `LogFormat`, `ConfigError`. Clap only collects raw strings; `Config::load` validates them, reading the agent file and the `tokenEnv` variables through closures, so tests build `Args` by hand and never touch the process environment. Every problem names the variable, file or agent at fault, carries no secret and exits 78 |
+| `src/config/file.rs` | the configuration file's loader (ADR 0034): `Loaded::from_process` / `Loaded::load` (the environment and the file system passed in as closures, so a test reads neither), the table `SETTINGS` of the 51 legacy variables and the key each became (and how each is read: `Text`, `Uint`, `Bool`, `List`, `Role`, `Surfaces`, `Gate`, `LogFormat`, `Secret`, `SecretList`), the overlay of the variables onto the tree, the projection of the valid file onto `Args` (so [`Config::load`] and its rules are the one source of what is valid), the legacy errors put in the file's words and scrubbed of anything quoted, and `Note`: what startup says about where a setting came from |
 | `src/local.rs` | the one place that knows `orch-agent-adam`, in two variants of one surface. With the feature `agent-local`: `Local::start` builds the local agents' own pool on `DATABASE_URL` and migrates their journal (only when `AGENTS_FILE` lists a local agent), `compose` builds `ByTransport<A2aAgentClient, LocalAgentClient>`, `Local::register` adds the agents' worker as a worker component in the roles that run workers, `is_unavailable` maps a transient failure to exit 69. Without it: `Agents` is the A2A client alone and `Local` cannot be built |
 | `src/boot.rs` | `run(cfg, shutdown)`: shared `setup` (pool, migrations, wakeup, A2A client, agent directory, `App`), then the components of `cfg.role`, registered with `adam_host::Host`: the HTTP server (`control_plane_router` plus `serve`: health, the resource API, the configured surfaces) as a control-plane component, the dispatcher and the inbox worker (timers and stored reports, `orch_app::InboxWorker`) as worker components, and for a worker-only process the health-only router ([`orch_api::health_router`](../../crates/api/README.md)) on `LISTEN_ADDR`. `Host` starts only what the role asks for, treats the first component to end on its own as fatal (exit `70`), and stops the control plane before the workers, each bounded by `SHUTDOWN_GRACE_SECS` and aborted after that (the dispatcher and the inbox worker release their leases as they stop). Readiness flips first, so probes answer 503 for the whole drain |
 
@@ -44,12 +49,15 @@ Running it, the container image, configuration and shutdown are documented in
 
 Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on; `orchestrator --help`), and a flag wins over its variable.
 
-Planned ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md), plan 10 S9): one YAML
-file (`ORCH_CONFIG_FILE`) replaces these variables, secrets by reference; each variable below keeps working, over the
-file, for one release. The key each one becomes is in [`docs/api/config.md`](../../../docs/api/config.md#every-key).
+**Deprecated in this release** ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)):
+each variable below is a key of the [configuration file](#the-configuration-file) now (the key each one became is in
+[`docs/api/config.md`](../../../docs/api/config.md#every-key)). It still works, over the file, and logs a warning when it is set; the
+next release removes them, except `ORCH_CONFIG_FILE`, `ORCH_ROLE`, `ORCH_INSTANCE_ID`, `RUST_LOG`, `HOSTNAME` and the variables
+that hold secrets.
 
 | Variable | Default | |
 |---|---|---|
+| `ORCH_CONFIG_FILE` | unset | the configuration file (flag `--config`): YAML, `version: 1`, read once at startup ([below](#the-configuration-file)). Unset: the environment alone configures the process, as before, with one warning. Kept for good |
 | `DATABASE_URL` | required | Postgres connection string, never logged |
 | `AGENTS_FILE` | required, unless `AGENT_REGISTRY_URL` is set | YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}` ([`agents.example.yaml`](../../agents.example.yaml)); `gate` is the entry's verification gate, `{require?, maxAttempts?, verifier?, ci?: {required?, timeoutSecs?}}` with `deny_unknown_fields` (see [The gate](#the-verification-gate)); `transport` is `a2a` (the default when absent; `cardUrl` required) or `local` (`agent` required, names a `LocalAgentKind`; `cardUrl` and `tokenEnv` refused). `local` is refused with `LocalAgentsNotCompiled` (78) unless the build has the Cargo feature `agent-local`; any other `transport` is a startup error |
 | `AGENT_REGISTRY_URL` | unset | the platform's agent registry, `agent-registry/v1` ([ADR 0022](../../../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md), [`orch-registry-platform`](../../crates/registry-platform/README.md)): the full URL of the document, `http` or `https` with a host and no user name or password (flag `--registry-url`). The agents it lists are read live, beside the `AGENTS_FILE` agents (which come first, win on an id both list and are the default agent); a registry that cannot be read leaves only those, and `GET /api/registry` says so. With it set, `AGENTS_FILE` may be unset or list no agent. Needs the Cargo feature `registry-platform`: without it the URL is refused at startup (78), never ignored. The registry is never read into the database: the copy lives in this process only |
@@ -102,6 +110,45 @@ file, for one release. The key each one becomes is in [`docs/api/config.md`](../
 | `ORCH_PUBLIC_URL` | unset | the chat's public origin (`--public-url`), for the `web_url` of `start_job`; an origin with no path |
 | `ORCH_INSTANCE_ID` | `$HOSTNAME-<uuid>` | names this replica in leases |
 | `RUST_LOG`, `LOG_FORMAT` | `info,rmcp=warn`, `json` | `LOG_FORMAT=text` for humans; `RUST_LOG` replaces the default whole (the MCP library logs a line per request at `info`) |
+
+### The configuration file
+
+One YAML file replaces the variables above ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md);
+every key, the variable it replaces and the PR that builds it are in [`docs/api/config.md`](../../../docs/api/config.md); the JSON Schema
+is [`docs/api/config.schema.json`](../../../docs/api/config.schema.json), which an editor can validate against). It is read once, at
+startup: processes are stateless and restart cheaply, so there is no hot reload (open question 43).
+
+```sh
+ORCH_CONFIG_FILE=dev/orchestrator.yaml orchestrator            # or --config dev/orchestrator.yaml
+orchestrator --config dev/orchestrator.yaml --print-config     # the merged configuration, secrets as references; exit 0 or 78
+```
+
+* **Secrets are references**, `{ env: NAME }` or `{ file: PATH }`, never a value; a plain string where a secret goes is an
+  error. The variables and files are read at startup, and a reference that does not resolve is an error naming the key and the
+  variable or path. A process that serves no routes (`worker`) is not asked for the secrets of the routes it would not mount.
+* **Precedence**: a flag or its variable, then the file, then the default. Each variable that is set is read with its own
+  parser first (`ORCH_STEPS_RECORD_IO=yes` is `true`), laid over the file, and logged once at startup: a `warn` naming the variable
+  and the key (`ORCH_TITLE_MODEL overrides tasks.title.model of the configuration file`), never the value. A secret variable counts
+  as a reference to itself, so a file that names `{ env: DATABASE_URL }` is not overridden by `DATABASE_URL`. `ORCH_ROLE` and
+  `ORCH_INSTANCE_ID` are process overrides (one file serves a control plane and its workers): they win over `server.role` and
+  `server.instanceId` and log at `info`, as do `RUST_LOG` and `HOSTNAME`, which have no key.
+* **Three passes, then the rules the binary has always had** ([`orch-config`](../../crates/config/README.md#the-three-passes)):
+  syntax (reported alone, by line and column); the variables over the tree; the shape against the JSON Schema (every violation,
+  with reserved keys named by the PR and ADR that bring them); the rules between keys and the secrets. The valid file is then
+  handed to [`Config::load`](src/config.rs), the same rules the variables go through (a gate against the agents, a surface this build
+  compiled in, the agents file, the MCP tokens), so the file and the variables cannot disagree on what is valid. Any error is
+  exit **78**, listed on stderr one per line, each naming a key path (a variable that does not parse names the variable) and
+  **never a value**: a message of a library or of today's parsers that quotes the value it refused is scrubbed.
+* **`--print-config`** prints the configuration this process would run with, the defaults filled in, and opens no connection (it
+  reads the agents file and the secrets' variables, as a start does). The notes about variables go to stderr. With no file it
+  prints what the environment alone says.
+* `agents.file` and `mcp.tokensFile` (and a `{ file }` secret) are relative to the directory of the configuration file, also when a
+  legacy variable gave them. The agents file and the MCP tokens file keep their formats.
+* A build without a Cargo feature refuses the keys that need it, naming the feature (`server.surfaces` naming a surface that is not
+  compiled in, `agents.registry` without `registry-platform`, `agents.localConcurrency` without `agent-local`).
+* The compose stack is configured this way: [`dev/orchestrator.yaml`](../../../dev/orchestrator.yaml) (and
+  [`dev/orchestrator.live.yaml`](../../../dev/orchestrator.live.yaml) for `compose.live.yaml`). The `local-agent` profile stays on
+  variables, which keeps the old path covered by a stack that runs.
 
 ### The verification gate
 
@@ -271,12 +318,23 @@ mint as `threadId`), read the log with `GET /agui/threads/{threadId}/connect`
 * Unit tests of the title model in `src/config.rs`: off unless `ORCH_TITLE_MODEL` is set (the endpoint variables alone turn nothing on), the endpoint required with it (`Missing`), the trailing slash cut, the scheme checked (`Invalid` for `ftp://`, a bare host, `https://`), the timeout at least 1 and refused even when titles are off, the name and timeout reaching `AppConfig`, and no key in `Debug`.
 * Unit tests of the registry settings in `src/config.rs`: no registry unless `AGENT_REGISTRY_URL` is set (the tokens alone turn nothing on), the defaults (3 s, 60 s) and the values read, the URL refused unless it is an absolute `http(s)` URL with a host and no user name or password (and the refusal repeats no password), the two numbers refused out of 1 to 60 and 1 to 3600 whether or not a registry is set, no secret and no query string in any `Debug`, `AGENTS_FILE` optional (unset, `[]`, empty, only comments) when a registry is set and still read and validated when it is, and still required, with agents, without one; and, in a build without the feature (`--no-default-features`), a URL refused with `RegistryNotCompiled` naming `registry-platform`.
 * Unit tests of the MCP settings in `src/config.rs`: tokens, hosts, public URL and wait bound read and normalised (user lower-cased, token trimmed, hosts split and required to be authorities, origins, the 32-byte token minimum, the wait limits; `MCP_WAIT_MAX_SECS` 1 to 86400), nothing read unless `mcp` is mounted (and not by a `worker`), every missing piece named (`Missing`, `McpTokenEnvMissing`, `McpTokensFileRead`, `Invalid` for a bad file, host list or URL), a rotation allowed and a shared token refused, no token in `Debug`; `src/main.rs` maps the new errors to exit 78.
+* Unit tests of the file loader in `src/config/file.rs` (no database, no environment): **a file gives the `Config` the variables
+  would have given** (compared whole, instance id apart); without a file, the environment alone and one note; a variable over the
+  file is a note naming the variable and the key and never the value; one that says what the file says, or that the file names as
+  `{ env }`, overrides nothing; a secret variable is a reference to itself and a flag wins over its variable; the process
+  overrides are `Process` notes; each variable read with its own parser (`yes` is `true`, a comma list); one that does not
+  parse is an error naming the variable and no value; the rest of a group whose first key is not set is read and left out; the
+  `ORCH_MODEL_*` variables are the endpoint `default` and a file that names another is an error naming both; the webhook
+  variables keep their comma rule and a file secret is one secret; the rules the binary has always had are put in the file's
+  words with no value; every shape error at once; `--print-config` shows references and no value, and what it prints reads back;
+  the table covers every variable and each key is a row of `docs/api/config.md`; `agents.localConcurrency` is refused without
+  `agent-local` and read with it.
 * `tests/local.rs` (`#![cfg(feature = "agent-local")]`, run with `--features agent-local`): the executable hosting
   a local `echo` agent answers an AG-UI run and the journal holds the run (`orch_agent_runs`); a `control-plane`
   process with a local agent starts, accepts a run and leaves it `queued` with an empty journal until a `worker`
   process starts and completes it. Unit tests in `src/config.rs` cover the flavours: without the feature a local agent is
   refused naming `agent-local`, with it it is accepted, and `AGENT_LOCAL_CONCURRENCY` defaults to 4.
-* `tests/smoke.rs`: the built executable as a process. With a database and a linkset server of its own, `the_platforms_agents_are_served_with_no_agent_file_and_leave_when_the_registry_goes_down`: no `AGENTS_FILE`, `AGENT_REGISTRY_URL` naming the registry; `/api/agents` lists its agent (`source: registry`, its tags), `/api/registry` says both sources are `ok`, a thread runs on that agent and the agent receives `AGENT_REGISTRY_AGENT_TOKEN`, then with the registry down the list is empty, `/api/registry` says `unavailable` with its detail, a run on the agent is a 503, and the list is back when the registry is; no secret in the log. Without the feature, a registry URL exits 78 naming `registry-platform`. Without the feature, `transport: local` exits 78 naming `agent-local`. Configuration-error
+* `tests/smoke.rs`: the built executable as a process. The configuration file: a file with many mistakes lists every one on stderr and exits 78 with no value in any line; a syntax error and a missing file are 78; `--print-config` prints the merged configuration with references and never a value (and the variable that won on stderr), lists errors with exit 78, and **runs on `dev/orchestrator.yaml` and `dev/orchestrator.live.yaml`**, each beside its agents file, as a control plane and as a worker that is not given the routes' secrets; a variable over the file is a `WARN` naming the variable and the key and a process override an `INFO`, before anything connects; without a file, one warning. With a database and a linkset server of its own, `the_platforms_agents_are_served_with_no_agent_file_and_leave_when_the_registry_goes_down`: no `AGENTS_FILE`, `AGENT_REGISTRY_URL` naming the registry; `/api/agents` lists its agent (`source: registry`, its tags), `/api/registry` says both sources are `ok`, a thread runs on that agent and the agent receives `AGENT_REGISTRY_AGENT_TOKEN`, then with the registry down the list is empty, `/api/registry` says `unavailable` with its detail, a run on the agent is a 503, and the list is back when the registry is; no secret in the log. Without the feature, a registry URL exits 78 naming `registry-platform`. Without the feature, `transport: local` exits 78 naming `agent-local`. Configuration-error
   tests always run (including a gate this build cannot run (the verifier with no agent to ask), in the environment and in `AGENTS_FILE`: exit 78; the unreachable-database one waits out sqlx's 30 s
   connect timeout). The CLI tests spawn the executable: `--help`, each variable
   read from the environment alone, a flag over its variable, a usage error, the removed

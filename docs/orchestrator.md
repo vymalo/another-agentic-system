@@ -69,7 +69,7 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has eighteen
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has nineteen
 library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
@@ -92,6 +92,7 @@ flowchart TB
   subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
     token["<b>orch-thread-token</b><br/>the thread-tools token: HS256 JWS,<br/>claims, keys, issuer, vectors"]
+    config["<b>orch-config</b><br/>the configuration file: types, JSON Schema,<br/>three-pass validation, secrets by reference"]
   end
   subgraph G_APP["Application: written against the ports"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
@@ -134,6 +135,7 @@ flowchart TB
   bin --> app
   bin --> api
   bin --> pg
+  bin --> config
   bin --> a2a
   bin -. "feature registry-platform" .-> registry
   bin -. "feature agent-local" .-> adam
@@ -216,10 +218,11 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
 | `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
+| `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit | **Built** (S9) |
 | `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through; feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
-| `orchestrator` (`bin/orchestrator`) | The composition root | **Built** |
+| `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config` | **Built** |
 
 ### Cargo features
 

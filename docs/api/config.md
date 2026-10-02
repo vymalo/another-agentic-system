@@ -1,11 +1,15 @@
 # The orchestrator's configuration file
 
-> **Status: contract accepted 2026-10-02, not built.** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
 > validation, migration) and [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections).
-> PR S9 of plan 10 builds every key marked **now**; a key marked **reserved** belongs to the PR named beside it and
-> is refused (exit 78, naming that ADR) until it lands. Until S9 lands, the orchestrator reads the environment
-> variables of [`orchestrator/bin/orchestrator/README.md`](../../orchestrator/bin/orchestrator/README.md#environment).
+> The loader builds every key marked **now** (crate [`orch-config`](../../orchestrator/crates/config/README.md), the
+> loader in [`orchestrator/bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-configuration-file));
+> a key marked **reserved** belongs to the PR named beside it and is refused (exit 78, naming that PR and ADR) until it
+> lands. The JSON Schema is [`config.schema.json`](config.schema.json). `GET /api/config` is not served yet (S18).
+> The environment variables of
+> [`orchestrator/bin/orchestrator/README.md`](../../orchestrator/bin/orchestrator/README.md#environment) still work in
+> this release, over the file.
 
 One YAML file, named by `ORCH_CONFIG_FILE` (or `--config <path>`), read once at startup. It configures the
 orchestrator only: the web has no configuration and no secrets ([architecture](../architecture.md)), and reads the
@@ -16,25 +20,42 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
 - **`version: 1`** is required. Another value, or none, is exit 78 ("this build reads version 1").
 - **Unknown keys are errors** (`deny_unknown_fields` on every struct; the schema says `additionalProperties: false`).
 - **A secret is a reference**, never a value: `{ env: NAME }` (the variable must be set and not empty) or
-  `{ file: /run/secrets/name }` (read at startup; one trailing `\n` or `\r\n` is cut, as a `tokenEnv` value is
-  trimmed today). A plain string where a secret goes is exit 78: `database.url: a secret is a reference: { env: NAME }
+  `{ file: /run/secrets/name }` (read at startup, at most 64 KiB; one trailing `\n` or `\r\n` is cut; an `{ env }`
+  value is trimmed, as a `tokenEnv` value is today). A plain string where a secret goes is exit 78: `database.url: a secret is a reference: { env: NAME }
   or { file: PATH }`. The message never carries a value.
 - **Relative paths** (`agents.file`, `mcp.tokensFile`, a secret's or a prompt's `file`) are relative to the directory
   of the configuration file.
 - **No value in an error.** A message names the key path, what is wrong and what is allowed, never a value of the
   file, the environment or a secret file.
 - **A key repeated in one mapping is an error**, never "the last one wins".
-- **Every error at once.** A YAML syntax error is reported alone (nothing after it can be read). Otherwise the
-  loader lists every shape error (unknown key, wrong type, missing required key, a plain string as a secret) and every
-  rule error (a range, a URL, a cross-key rule such as "a gate that requires `ci` names a check") in one message, each
-  with its key path, then exits 78.
+- **Every error at once.** A YAML syntax error is reported alone (nothing after it can be read). Otherwise each pass
+  lists all of its errors, each with its key path, then the process exits 78: the shape errors (unknown or reserved key,
+  wrong type, missing required key, a value out of range or not allowed, a plain string as a secret), and, when there
+  are none, the rule errors (a URL, a cross-key rule such as "both or neither of `threadTools.url` and `secret`", a
+  secret that cannot be read) and then the rules of the gate against the agents, the surfaces and features this build
+  has, the agents file and the MCP tokens, which are checked one at a time. A pass runs only when the one before it found
+  none: a rule cannot be checked on a value that is not there.
 - **Anchors and aliases** are resolved by the parser and merge keys (`<<:`) are applied before validation; a YAML tag
   (`!something`) is an error.
 - **A key that selects an implementation** (`artifacts.store`, `auth.mode`, a surface in `server.surfaces`) names only
   what this build compiled in; anything else is exit 78 naming the Cargo feature, as `ORCH_SURFACES` does today.
 - The JSON Schema of the file is generated from the Rust types (`schemars`) and committed at
-  `docs/api/config.schema.json` by S9; a test fails when the types and the committed file differ (regenerate with
-  `UPDATE_SCHEMA=1`, as the goldens do with `UPDATE_GOLDEN=1`). Editors can validate against it.
+  [`docs/api/config.schema.json`](config.schema.json); a test fails when the types and the committed file differ
+  (regenerate with `UPDATE_SCHEMA=1 cargo test -p orch-config --test schema`, as the goldens do with `UPDATE_GOLDEN=1`).
+  Editors can validate against it. An optional key is simply optional in it: a key written with nothing after it is a
+  type error.
+- **The variables over the file** (this release). A flag or its variable that is set wins over the file, which wins
+  over the default, and the process logs one warning per variable naming the variable and the key (never the value).
+  Each is read with its own parser first (`ORCH_STEPS_RECORD_IO=yes` is `true`, `ORCH_SURFACES` a comma list), and a
+  value that does not parse is an error naming the variable. `ORCH_ROLE`, `ORCH_INSTANCE_ID`, `RUST_LOG` and
+  `HOSTNAME` are logged at info. A variable that says what the file says, or that the file names as `{ env: NAME }`,
+  overrides nothing. The `ORCH_MODEL_*` variables are the endpoint `default`, `ORCH_TITLE_MODEL` is `tasks.title.model`
+  (with `tasks.title.endpoint: default` when the file has none); a file that names another endpoint beside them is an
+  error naming both. A variable of a group whose first key is not set (a registry timeout with no registry URL, the
+  model key or timeout with no base URL, a webhook age with no secrets) is read, and left out, as it always was.
+- **A process that serves no routes** (`server.role: worker`) is not asked for the secrets of the routes it would not
+  mount (`webhooks.*`), so one file serves a control plane and its workers; the secrets every role uses
+  (`database.url`, the registry's, `threadTools`, a model endpoint's) are read by all.
 
 ## An example
 
@@ -78,7 +99,8 @@ webhooks:
 
 `orchestrator --print-config` prints the configuration this process would run with (the file, the environment over it,
 the defaults filled in), secrets as their references, and exits 0; with errors it lists them and exits 78. It opens no
-connection.
+connection. It reads the secrets' variables and files, as a start does, so it checks a file where it will run (any dummy
+value does for a check elsewhere); the notes about variables that override the file go to stderr, the YAML to stdout.
 
 ## Every key
 
