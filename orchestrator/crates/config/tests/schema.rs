@@ -77,11 +77,14 @@ fn the_secrets_are_the_ten_the_contract_names() {
 fn the_schema_is_closed_and_has_no_null() {
     let text = orch_config::schema_text();
     assert!(text.ends_with("}\n"));
-    assert!(
-        !text.contains("\"null\""),
-        "an optional key is optional, not nullable"
-    );
+    // `auth.defaultRole` is the one key where `null` is a value (no default role), and says so.
+    let nulls = text.matches("\"null\"").count();
+    assert_eq!(nulls, 1, "an optional key is optional, not nullable");
     let schema = orch_config::schema();
+    assert_eq!(
+        schema["$defs"]["Auth"]["properties"]["defaultRole"]["x-null-is-a-value"],
+        Value::Bool(true)
+    );
     for (name, def) in schema["$defs"].as_object().unwrap() {
         if def.get("properties").is_some() {
             assert_eq!(

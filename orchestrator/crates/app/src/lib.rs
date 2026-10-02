@@ -3,6 +3,7 @@
 //! written against the ports (ADR 0009), so any composition of adapters can run it.
 
 mod app;
+mod authz;
 mod catalog;
 mod directory;
 mod dispatcher;
@@ -14,7 +15,11 @@ mod tasks;
 pub use app::{
     AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView, Branches, Creation,
     DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, ForkAt, ForkRequest, Forked,
-    Inbound, NewThread, Received, SiblingView, ThreadExport,
+    Inbound, NewThread, Owners, Received, SiblingView, ThreadExport,
+};
+pub use authz::{
+    Access, AgentScope, Denied, Permission, Policy, PolicyError, Requester, Resource, RoleGrant,
+    Scope, built_in_roles,
 };
 pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schemas};
 pub use directory::{AgentDirectory, AgentEntry};

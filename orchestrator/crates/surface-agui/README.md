@@ -37,7 +37,7 @@ Mounted by `orch-api`, the route sits behind the identity layer like every route
    dropped with a warning), ids of at most 256 bytes.
 2. **Thread.** `threadId` is a UUID the consumer minted (400 otherwise). The thread is the caller's, or
    free, or someone else's (404, the same answer as for a thread that does not exist for the caller, so a
-   collision reveals nothing). The `agentId` of the URL exists (404) and is the thread's (409).
+   collision reveals nothing; an administrator may read another's thread, but a run **continues** only the caller's own: 403 `read_only`). The caller needs `thread.write` and `agent.invoke` for the agent (403, `forbidden`, [ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)). The `agentId` of the URL exists (404) and is the thread's (409).
 3. **Translate.** The log is folded into a `Projector`, and `orch_agui_projection::translate` reconciles
    the transcript by message id, reads `resume`, and returns one core input, or none (attach), or a
    refusal (400, 409, 422). Warnings (ignored `tools`, `context`, non-text parts, …) are logged.
@@ -62,7 +62,7 @@ resource API does, and the outcome arrives as `RUN_FINISHED` with outcome `cance
 1. **Parameters.** `Accept` admits `text/event-stream` or is absent (406); `Last-Event-ID` is a
    non-negative integer, or absent or empty (400 otherwise); `?mode` is absent or `run` (400).
 2. **Thread.** `parse_thread_id` and `App::get_thread`: a thread that does not exist for the caller, a
-   malformed id and someone else's thread are the same 404 problem, before any stream byte.
+   malformed id and a thread the caller may not read (someone else's, unless their roles read every thread) are the same 404 problem, before any stream byte; roles with no `thread.read` are 403. The stream is bounded by the token it was opened with: it ends at its `exp` plus 60 s, and after an hour at most (`orch_api::sse::bounded`), and the client reconnects with `Last-Event-ID`; a credential that does not run out is not bounded.
 3. **Stream.** `App::event_stream(user, thread, 0)` reads the log from the first event and then follows
    it (wakeups, with a poll under them), so the same code serves a replay, a cursor and the live tail
    on any replica. [`orch_agui_projection::Connect`](../agui-projection/README.md) folds the events,
@@ -105,6 +105,7 @@ serve `tests/contract.rs`.
   its end, earlier runs can be attached to, two concurrent requests with the same ids write one message,
   a retried answer.
 - `tests/ui_catalog.rs`: the UI catalog on a run: a first run records it first and every snapshot names it, a thread without one says nothing (and `null` is none), the same request again attaches and records nothing twice (and ignores a newer catalog), a newer version on a later run is recorded and an older one never becomes current, an answer can carry a newer catalog, the 400 for each rule of the envelope and of the schemas (the reason in `detail`), the 413, and a bad catalog refused on a continuing thread and on an attach with nothing written.
+- `tests/roles.rs`: an administrator follows any thread and runs only their own (403 `read_only`, nothing sent to the agent), a role that names some agents runs only those (and reads capabilities only of those), a person whose roles grant nothing is 403 `no_access` before any stream, and a stream ends with its token and goes on without an expiry.
 - `tests/refusals.rs`: every status of the table in `docs/api/agui.md` (400, 401, 404, 406, 409, 413,
   415, 422, 502) as a problem, with nothing written; another owner's thread id; a message on a finished
   thread is served as the next job (and its retry is an attach, not a third job), a run while another is open is a 409.

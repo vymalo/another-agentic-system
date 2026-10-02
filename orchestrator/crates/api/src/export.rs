@@ -28,8 +28,8 @@ pub const VERSION: u32 = 1;
 /// * `eventsTruncated`: `true` when the log was longer than the export reads (it reads the head
 ///   of the log, up to a count of events and a number of bytes).
 ///
-/// The owner's identity is not a member. It is in the log, as the `actor.name` of the owner's
-/// messages.
+/// The owner's identity is the `owner` of `thread` (as `GET /api/threads/{id}` says it), and in the
+/// log, as the `actor.name` of the owner's messages.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Document<'a> {

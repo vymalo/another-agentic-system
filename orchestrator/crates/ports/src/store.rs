@@ -566,6 +566,17 @@ pub trait ThreadStore: Send + Sync + 'static {
         include_edits: bool,
     ) -> impl Future<Output = Result<Vec<ThreadRecord>, StoreError>> + Send;
 
+    /// Every owner's threads, newest first: [`list_threads`](Self::list_threads) without the owner.
+    /// For an administrator who may read every thread (ADR 0033); the application decides who
+    /// may ask. `before` is an exclusive cursor, and one that names no thread yields an empty
+    /// list.
+    fn list_all_threads(
+        &self,
+        before: Option<ThreadId>,
+        limit: u32,
+        include_edits: bool,
+    ) -> impl Future<Output = Result<Vec<ThreadRecord>, StoreError>> + Send;
+
     /// Atomically inserts a thread that begins as a copy of another's log (ADR 0029): the thread
     /// (state, job and events from `first`, version 1, `forked_from` set), its binding (agent from
     /// the target, context from `new`, then `first.binding`), the parent's events `1..=origin.cut`

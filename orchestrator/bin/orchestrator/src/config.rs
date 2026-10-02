@@ -15,7 +15,7 @@ mod file;
 pub use file::{FlagSecrets, Loaded, secret_flags};
 pub use orch_config::AuthMode;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
@@ -27,8 +27,9 @@ use std::time::Duration;
 use adam_host::Role;
 use clap::Parser;
 use orch_app::{
-    AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules,
-    InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, PublicConfig, TaskSettings, known_sources,
+    AgentDirectory, AgentEntry, AgentScope, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer,
+    GateRules, InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, Permission, Policy, PublicConfig,
+    RoleGrant, Scope, TaskSettings, built_in_roles, known_sources,
 };
 use orch_core::{
     AgentId, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
@@ -256,8 +257,9 @@ pub enum ConfigError {
 /// The MCP server's configuration (ADR 0019), read when the surface `mcp` is mounted.
 #[derive(Clone)]
 pub struct McpSettings {
-    /// `MCP_TOKENS_FILE`, resolved: each `tokenEnv` already read. A user may have several tokens.
-    pub tokens: Vec<(UserId, SecretString)>,
+    /// `MCP_TOKENS_FILE`, resolved: each `tokenEnv` already read, with the roles of the entry
+    /// (its `role`, or none). A user may have several tokens.
+    pub tokens: Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)>,
     /// `MCP_ALLOWED_HOSTS`: the `Host` values the server accepts.
     pub allowed_hosts: Vec<String>,
     /// `ORCH_PUBLIC_URL`: the chat's public origin, for the `web_url` of `start_job`.
@@ -277,7 +279,11 @@ impl fmt::Debug for McpSettings {
         f.debug_struct("McpSettings")
             .field(
                 "tokens",
-                &self.tokens.iter().map(|(user, _)| user).collect::<Vec<_>>(),
+                &self
+                    .tokens
+                    .iter()
+                    .map(|(user, ..)| user)
+                    .collect::<Vec<_>>(),
             )
             .field("allowed_hosts", &self.allowed_hosts)
             .field("public_url", &self.public_url)
@@ -311,6 +317,9 @@ pub struct ThreadToolsSettings {
 struct TokenSpec {
     user: String,
     token_env: String,
+    /// The role the token has (ADR 0033), one of `auth.roles`; none: the default role.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 /// The `transport` key of an `AGENTS_FILE` entry: how the orchestrator reaches the agent.
@@ -975,6 +984,9 @@ pub struct AuthSettings {
     pub mode: AuthMode,
     /// `auth.jwt`: set exactly when the mode reads tokens.
     pub jwt: Option<JwtSettings>,
+    /// `auth.roles` and `auth.defaultRole`: what each role grants (the built-in `user` and `admin`
+    /// without a file, as before roles existed everyone is a `user`).
+    pub policy: Policy,
 }
 
 /// `auth.jwt`: the token issuer and what is read from its tokens.
@@ -997,6 +1009,7 @@ impl AuthSettings {
     fn from_file(auth: &orch_config::Auth) -> Self {
         AuthSettings {
             mode: auth.mode,
+            policy: policy_of(auth),
             jwt: auth.jwt.as_ref().map(|jwt| JwtSettings {
                 issuer: jwt.issuer.trim().to_owned(),
                 audiences: jwt.audiences.iter().map(|a| a.trim().to_owned()).collect(),
@@ -1017,6 +1030,64 @@ impl AuthSettings {
             None
         }
     }
+}
+
+/// The policy of a valid file's `auth` section (ADR 0033): its roles, or the built-in `user` and
+/// `admin`; its default role, which is `user` only when no role is defined (a deployment that
+/// defines its roles names the default, or has none: such a person is refused).
+///
+/// The file's rules have checked the default role against the roles, so the error arm is not a
+/// path a running service takes; it is the policy that grants nothing.
+fn policy_of(auth: &orch_config::Auth) -> Policy {
+    let scope = |scope: orch_config::AuthScope| match scope {
+        orch_config::AuthScope::Own => Scope::Own,
+        orch_config::AuthScope::Any => Scope::Any,
+    };
+    let permission = |p: orch_config::AuthPermission| match p {
+        orch_config::AuthPermission::AgentRead => Permission::AgentRead,
+        orch_config::AuthPermission::AgentInvoke => Permission::AgentInvoke,
+        orch_config::AuthPermission::ThreadRead => Permission::ThreadRead,
+        orch_config::AuthPermission::ThreadWrite => Permission::ThreadWrite,
+        orch_config::AuthPermission::ArtifactRead => Permission::ArtifactRead,
+        orch_config::AuthPermission::Admin => Permission::Admin,
+    };
+    let (roles, built_in_default) = match &auth.roles {
+        None => (built_in_roles(), Some("user")),
+        Some(roles) => (
+            roles
+                .iter()
+                .map(|(name, role)| {
+                    let (read, write) =
+                        role.scope
+                            .as_ref()
+                            .map_or((Scope::Own, Scope::Own), |scopes| {
+                                let (read, write) = scopes.read_write();
+                                (scope(read), scope(write))
+                            });
+                    let grant = RoleGrant {
+                        permissions: role.permissions.iter().copied().map(permission).collect(),
+                        read,
+                        write,
+                        agents: role
+                            .agents
+                            .as_ref()
+                            .map_or(AgentScope::All, AgentScope::from_patterns),
+                    };
+                    (orch_ports::Role::new(name.as_str()), grant)
+                })
+                .collect(),
+            None,
+        ),
+    };
+    let default_role = match &auth.default_role {
+        None => built_in_default.map(str::to_owned),
+        Some(None) => None,
+        Some(Some(name)) => Some(name.trim().to_owned()),
+    };
+    Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
+        Policy::deny_all()
+    })
 }
 
 /// The complete, validated configuration.
@@ -1359,6 +1430,29 @@ impl Config {
             });
         }
 
+        // A token's role is one the policy defines: a typo would otherwise hand its holder the
+        // default role, which is not what the operator wrote (fail closed, ADR 0033).
+        if let Some(mcp) = &mcp {
+            for (user, roles, _) in &mcp.tokens {
+                for role in roles {
+                    if !auth.policy.role_names().any(|known| known == role) {
+                        return Err(ConfigError::Invalid {
+                            var: "MCP_TOKENS_FILE",
+                            reason: format!(
+                                "the role {:?} of {user} is not one of auth.roles ({})",
+                                role.as_str(),
+                                auth.policy
+                                    .role_names()
+                                    .map(|r| r.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
         let database_max_connections = number(
             clean(args.database_max_connections),
             "DATABASE_MAX_CONNECTIONS",
@@ -1510,6 +1604,7 @@ impl Config {
             record_step_io: self.steps_record_io,
             tasks: self.models.tasks.clone(),
             public: self.public.clone(),
+            policy: self.auth.policy.clone(),
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2032,7 +2127,7 @@ fn parse_mcp_tokens(
     path: Option<String>,
     env: &impl Fn(&str) -> Option<String>,
     read: &impl Fn(&Path) -> io::Result<String>,
-) -> Result<Vec<(UserId, SecretString)>, ConfigError> {
+) -> Result<Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)>, ConfigError> {
     let invalid = |reason: String| ConfigError::Invalid {
         var: "MCP_TOKENS_FILE",
         reason,
@@ -2044,7 +2139,7 @@ fn parse_mcp_tokens(
     })?;
     let specs: Option<Vec<TokenSpec>> = serde_norway::from_str(&text).map_err(|e| {
         invalid(format!(
-            "{} is not a list of {{user, tokenEnv}}: {e}",
+            "{} is not a list of {{user, tokenEnv, role?}}: {e}",
             path.display()
         ))
     })?;
@@ -2052,7 +2147,8 @@ fn parse_mcp_tokens(
     if specs.is_empty() {
         return Err(invalid(format!("{} lists no tokens", path.display())));
     }
-    let mut tokens: Vec<(UserId, SecretString)> = Vec::with_capacity(specs.len());
+    let mut tokens: Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)> =
+        Vec::with_capacity(specs.len());
     for spec in specs {
         let user = spec.user.trim();
         if !user.contains('@') {
@@ -2078,15 +2174,20 @@ fn parse_mcp_tokens(
             )));
         }
         let user = UserId::new(user);
-        if let Some((other, _)) = tokens
+        if let Some((other, ..)) = tokens
             .iter()
-            .find(|(_, t)| t.expose_secret() == token.as_str())
+            .find(|(.., t)| t.expose_secret() == token.as_str())
         {
             return Err(invalid(format!(
                 "the same token is configured for {other} and for {user}"
             )));
         }
-        tokens.push((user, SecretString::from(token)));
+        let roles = match spec.role.as_deref().map(str::trim) {
+            None => BTreeSet::new(),
+            Some("") => return Err(invalid(format!("the role of {user} is empty"))),
+            Some(role) => BTreeSet::from([orch_ports::Role::new(role)]),
+        };
+        tokens.push((user, roles, SecretString::from(token)));
     }
     Ok(tokens)
 }
@@ -4590,7 +4691,7 @@ mod tests {
         let tokens: Vec<(&str, &str)> = mcp
             .tokens
             .iter()
-            .map(|(user, token)| (user.as_str(), token.expose_secret()))
+            .map(|(user, _, token)| (user.as_str(), token.expose_secret()))
             .collect();
         // The user is normalised and the token is trimmed, as everywhere else.
         assert_eq!(
@@ -4613,6 +4714,54 @@ mod tests {
         let shown = format!("{mcp:?}");
         assert!(!shown.contains("secret"), "{shown}");
         assert!(shown.contains("alice@example.com"), "{shown}");
+    }
+
+    #[cfg(feature = "surface-mcp")]
+    #[test]
+    fn a_token_has_the_role_its_entry_names_and_the_role_must_be_defined() {
+        let tokens = "\
+- { user: alice@example.com, tokenEnv: MCP_TOKEN_ALICE, role: admin }
+- { user: bob@example.com, tokenEnv: MCP_TOKEN_BOB }
+";
+        let cfg = load_mcp(&mcp_env(), tokens).unwrap();
+        let mcp = cfg.mcp.unwrap();
+        let roles: Vec<Vec<&str>> = mcp
+            .tokens
+            .iter()
+            .map(|(_, roles, _)| roles.iter().map(orch_ports::Role::as_str).collect())
+            .collect();
+        assert_eq!(roles, [vec!["admin"], Vec::<&str>::new()]);
+        // A role nobody defined is an error naming the file's key, not the default role.
+        for (entry, expected) in [
+            (
+                "role: wizard",
+                "the role \"wizard\" of alice@example.com is not one of auth.roles (admin, user)",
+            ),
+            ("role: ' '", "the role of alice@example.com is empty"),
+        ] {
+            let tokens =
+                format!("- {{ user: alice@example.com, tokenEnv: MCP_TOKEN_ALICE, {entry} }}\n");
+            let error = load_mcp(&mcp_env(), &tokens).err().unwrap();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn without_a_file_every_role_the_policy_knows_is_the_built_in_pair() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        let policy = &cfg.auth.policy;
+        assert_eq!(
+            policy
+                .role_names()
+                .map(orch_ports::Role::as_str)
+                .collect::<Vec<_>>(),
+            ["admin", "user"]
+        );
+        assert_eq!(
+            policy.default_role().map(orch_ports::Role::as_str),
+            Some("user")
+        );
+        assert_eq!(cfg.app_config().policy, *policy);
     }
 
     #[test]

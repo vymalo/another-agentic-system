@@ -681,6 +681,40 @@ impl ThreadStore for PgStore {
         .collect()
     }
 
+    async fn list_all_threads(
+        &self,
+        before: Option<ThreadId>,
+        limit: u32,
+        include_edits: bool,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        if let Some(cursor) = before {
+            let known = sqlx::query("SELECT 1 FROM threads WHERE id = $1")
+                .bind(cursor.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_err)?;
+            if known.is_none() {
+                return Ok(Vec::new());
+            }
+        }
+        sqlx::query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE ($1::uuid IS NULL OR id < $1) \
+             AND ($3 OR fork_kind IS DISTINCT FROM 'edit') \
+             ORDER BY id DESC LIMIT $2"
+        ))
+        .bind(before.map(|b| b.0))
+        .bind(i64::from(limit))
+        .bind(include_edits)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?
+        .iter()
+        .map(thread_from_row)
+        .collect()
+    }
+
     async fn commit(
         &self,
         thread: ThreadId,

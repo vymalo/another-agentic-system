@@ -92,7 +92,8 @@ impl<P: Ports> Clone for ApiState<P> {
 ///
 /// `plain` routes get the request timeout; `streaming` routes (SSE) do not. Both sit behind
 /// the identity layer once mounted by [`router_with_surfaces`], and a handler can take
-/// `Extension<orch_core::UserId>`. `machine` routes sit behind neither.
+/// `Extension<orch_ports::Principal>` (who is calling and their roles; pass it to the application,
+/// which enforces ADR 0033). `machine` routes sit behind neither.
 #[derive(Debug, Default)]
 pub struct SurfaceRoutes {
     plain: Router,
@@ -191,6 +192,7 @@ pub fn router_with_surfaces<P: Ports>(
     surfaces: Vec<SurfaceRoutes>,
 ) -> Router {
     let state = ApiState { app };
+    let state_for_me = state.clone();
     let identity_app = Arc::clone(&state.app);
     let health = health_routes(state.clone());
     let resource = Router::new()
@@ -231,13 +233,24 @@ pub fn router_with_surfaces<P: Ports>(
         streaming = streaming.merge(surface.streaming);
         machine = machine.merge(surface.machine);
     }
-    let plain = plain.layer(TimeoutLayer::with_status_code(
+    let timeout = TimeoutLayer::with_status_code(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         cfg.request_timeout,
+    );
+    let plain = plain.layer(timeout);
+    // A person whose roles grant nothing is refused by every route but `/api/me` (ADR 0033), which
+    // tells them so. The guard wraps what the resource API and the surfaces route, not `/api/me`.
+    let guarded = plain.merge(streaming).layer(from_fn_with_state(
+        Arc::clone(&identity_app),
+        auth::require_access::<P>,
     ));
+    let me = Router::new()
+        .route("/api/me", get(routes::me::<P>))
+        .with_state(state_for_me)
+        .layer(timeout);
     // The identity layer wraps every non-health path, unknown ones included.
-    let api = plain
-        .merge(streaming)
+    let api = guarded
+        .merge(me)
         .fallback(routes::not_found)
         .method_not_allowed_fallback(routes::method_not_allowed)
         .layer(from_fn_with_state(

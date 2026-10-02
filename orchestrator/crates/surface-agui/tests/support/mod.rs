@@ -270,6 +270,19 @@ impl Harness {
     }
 
     pub async fn start_with(api: ApiConfig, auth: HeaderAuth) -> Self {
+        Self::start_configured(api, auth, orch_app::Policy::default()).await
+    }
+
+    /// With the roles `policy` gives: `Policy::deny_all()` grants nobody anything.
+    pub async fn start_with_policy(policy: orch_app::Policy) -> Self {
+        let api = ApiConfig {
+            sse_keepalive: Duration::from_millis(150),
+            ..ApiConfig::default()
+        };
+        Self::start_configured(api, HeaderAuth::new(), policy).await
+    }
+
+    async fn start_configured(api: ApiConfig, auth: HeaderAuth, policy: orch_app::Policy) -> Self {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
         let entry = |id: &str, name: &str| AgentEntry {
@@ -298,6 +311,7 @@ impl Harness {
                 directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
+                    policy,
                     ..AppConfig::default()
                 },
             )

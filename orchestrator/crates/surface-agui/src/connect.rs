@@ -10,8 +10,8 @@
 //! run.
 //!
 //! Every refusal is an RFC 9457 problem and comes before the first stream byte: 404 for a thread
-//! that does not exist for the caller (missing, malformed id, or someone else's, all the same
-//! answer), 400 for a cursor or `mode` that is not understood, 406 for an `Accept` that excludes
+//! that does not exist for the caller (missing, malformed id, or one they may not read, all the same
+//! answer; an administrator may read everyone's, ADR 0033), 403 for roles that hold no `thread.read`, 400 for a cursor or `mode` that is not understood, 406 for an `Accept` that excludes
 //! `text/event-stream`.
 
 use std::collections::VecDeque;
@@ -25,11 +25,10 @@ use axum::response::{IntoResponse, Response};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use orch_agui_projection::{Connect, Follow, Frame, LiveOverlay};
-use orch_api::sse::{keep_alive, stream_headers};
+use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, ApiQuery, Problem, parse_thread_id};
 use orch_app::FeedItem;
-use orch_core::UserId;
-use orch_ports::Ports;
+use orch_ports::{Clock, Ports, Principal};
 use serde::Deserialize;
 
 use crate::State as SurfaceState;
@@ -70,7 +69,7 @@ fn cursor_of(headers: &HeaderMap) -> Result<i64, Problem> {
 
 pub(crate) async fn connect<P: Ports>(
     State(state): State<SurfaceState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<ConnectQuery>,
     headers: HeaderMap,
@@ -83,13 +82,13 @@ pub(crate) async fn connect<P: Ports>(
     };
     // 404 is decided here, before any stream byte is sent.
     let thread = parse_thread_id(&id)?;
-    let record = state.app.get_thread(&user, thread).await?;
+    let record = state.app.get_thread(&principal, thread).await?;
     let connect = Connect::new(meta_of(&record), cursor, record.last_seq, follow);
     // From the first event, always: the fold up to the cursor is silent, and is what makes the
     // preamble the same on every replica. `head` is `record.last_seq`; what arrives after it is
     // live.
     // The log, and the live text of the thread's replies mixed in (ADR 0027).
-    let live = state.app.thread_feed(&user, thread, 0).await?;
+    let live = state.app.thread_feed(&principal, thread, 0).await?;
     tracing::debug!(
         %thread,
         cursor = connect.cursor(),
@@ -97,7 +96,11 @@ pub(crate) async fn connect<P: Ports>(
         ?follow,
         "a viewer connected"
     );
-    let sse = Sse::new(frames(connect, live)).keep_alive(keep_alive(state.keepalive));
+    // The stream lasts as long as the token it was opened with (ADR 0033): the client reconnects
+    // with `Last-Event-ID` and a fresh one.
+    let budget = stream_budget(&principal, state.app.ports().clock().now());
+    let sse =
+        Sse::new(bounded(frames(connect, live), budget)).keep_alive(keep_alive(state.keepalive));
     Ok((stream_headers(), sse).into_response())
 }
 

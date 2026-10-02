@@ -26,8 +26,8 @@ use tokio::time::Instant;
 
 use crate::dispatcher::FileLimits;
 use crate::{
-    AgentDirectory, AppError, GateError, GateLayer, GateRules, Layer, PublicConfig, TaskSettings,
-    check_catalog_schemas,
+    Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
+    Policy, PublicConfig, Requester, Resource, Scope, TaskSettings, check_catalog_schemas,
 };
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
@@ -110,6 +110,10 @@ pub struct AppConfig {
     /// `artifacts.maxPerJobBytes`, and 50 files a job), enforced by the dispatcher before it puts a
     /// file in the artifact store. Without a store every file is refused as "could not be kept".
     pub files: FileLimits,
+    /// Which roles may do what (ADR 0033: `auth.roles` and `auth.defaultRole`). The default is the
+    /// ADR's `user` and `admin`, and everyone without a known role a `user`, so that a process
+    /// that configures none behaves as before roles existed.
+    pub policy: Policy,
 }
 
 impl Default for AppConfig {
@@ -127,6 +131,7 @@ impl Default for AppConfig {
             tasks: BTreeMap::new(),
             public: PublicConfig::default(),
             files: FileLimits::default(),
+            policy: Policy::default(),
         }
     }
 }
@@ -359,6 +364,26 @@ fn validate_text(text: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// What a refused agent permission is to the caller: a permission the roles lack, or an agent the
+/// roles do not name. Agents are not secret (the web lists them), so both are 403.
+fn denied_agent(denied: Denied, agent: &AgentId) -> AppError {
+    match denied {
+        Denied::Permission(permission) => AppError::missing_permission(permission),
+        Denied::OutOfScope(permission) => AppError::agent_not_allowed(permission, agent),
+    }
+}
+
+/// Whose threads a listing is about ([`App::list_threads_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owners<'a> {
+    /// The caller's own: what everybody may ask.
+    Mine,
+    /// One person's. Another person's takes `admin` and a `thread.read` over any thread.
+    One(&'a UserId),
+    /// Every owner's, newest first. Takes `admin` and a `thread.read` over any thread.
+    All,
+}
+
 /// Whether `thread` was forked from `parent`.
 fn is_fork_of(thread: &ThreadRecord, parent: ThreadId) -> bool {
     thread.forked_from.and_then(|f| f.thread_id) == Some(parent)
@@ -417,6 +442,16 @@ impl<P: Ports> App<P> {
     /// The ports this service runs on.
     pub fn ports(&self) -> &P {
         &self.ports
+    }
+
+    /// The roles and what they grant (ADR 0033).
+    pub fn policy(&self) -> &Policy {
+        &self.cfg.policy
+    }
+
+    /// What `who` may do: the grants of their roles.
+    pub fn access(&self, who: &impl Requester) -> Access<'_> {
+        self.cfg.policy.access(who)
     }
 
     /// The agents the deployment configures (`AGENTS_FILE`): the static set the gate is
@@ -501,13 +536,31 @@ impl<P: Ports> App<P> {
     /// agents fared. The registry is read now (ADR 0022); a source that cannot be read lists
     /// none of its agents and says so in `sources`. A card that cannot be read in time yields an
     /// agent without `description` and `releases` (fail closed, ADR 0008).
-    pub async fn list_agents(&self) -> AgentList {
+    ///
+    /// Only the agents `who` may read (`agent.read` and the agents of their roles, ADR 0033) are
+    /// listed; the sources are as they are.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] when no role of `who` holds `agent.read`.
+    pub async fn list_agents(&self, who: &impl Requester) -> Result<AgentList, AppError> {
+        let access = self.access(who);
+        if !access.has(Permission::AgentRead) {
+            return Err(AppError::missing_permission(Permission::AgentRead));
+        }
         let listing = self.ports.registry().list().await;
         for source in listing.unavailable() {
             tracing::warn!(source = %source.name, detail = ?source.detail, "a source of agents could not be read; its agents are not listed");
         }
         let AgentListing { entries, sources } = listing;
-        let lookups = entries.into_iter().map(|entry| async move {
+        let entries = entries.into_iter().filter(|entry| {
+            access.allows(
+                Permission::AgentRead,
+                &Resource::Agent {
+                    id: &entry.endpoint.id,
+                },
+            )
+        });
+        let lookups = entries.map(|entry| async move {
             let (description, releases) = match self.live_card(&entry.endpoint).await {
                 Some(card) => (card.description, card.releases),
                 None => (None, None),
@@ -532,10 +585,12 @@ impl<P: Ports> App<P> {
             .buffered(CARD_READS_AT_ONCE)
             .collect()
             .await;
-        AgentList { agents, sources }
+        Ok(AgentList { agents, sources })
     }
 
-    /// The agent `id` as the registry lists it now: `Ok(Some)` when listed, `Ok(None)` when every
+    /// The agent `id` as the registry lists it now, for the system and for callers that have
+    /// checked what the person may do with it (it asks nothing of anybody's roles): `Ok(Some)` when
+    /// listed, `Ok(None)` when every
     /// source answered and none lists it, and [`AppError::RegistryUnavailable`] when a source
     /// that could list it did not answer (so "no such agent" is never said while the registry is
     /// down). Read live, never cached here (ADR 0022).
@@ -549,26 +604,47 @@ impl<P: Ports> App<P> {
 
     /// How each source of agents answers now (the static list, a platform registry): what
     /// `GET /api/registry` says. No agent card is read.
-    pub async fn registry_sources(&self) -> Vec<SourceStatus> {
-        self.ports.registry().list().await.sources
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] when no role of `who` holds `agent.read`: the answer is about the
+    /// list of agents.
+    pub async fn registry_sources(
+        &self,
+        who: &impl Requester,
+    ) -> Result<Vec<SourceStatus>, AppError> {
+        if !self.access(who).has(Permission::AgentRead) {
+            return Err(AppError::missing_permission(Permission::AgentRead));
+        }
+        Ok(self.ports.registry().list().await.sources)
     }
 
     /// The agent a job is started on when the caller does not name one: the first agent listed
-    /// (ADR 0014: the first is the default), `None` when nothing is listed.
-    pub async fn default_agent(&self) -> Option<AgentId> {
+    /// that `who` may invoke (ADR 0014: the first is the default; ADR 0033), `None` when nothing
+    /// is listed or they may invoke none of it.
+    pub async fn default_agent(&self, who: &impl Requester) -> Option<AgentId> {
+        let access = self.access(who);
         self.ports
             .registry()
             .list()
             .await
             .entries
-            .first()
-            .map(|e| e.endpoint.id.clone())
+            .into_iter()
+            .map(|e| e.endpoint.id)
+            .find(|id| access.allows(Permission::AgentInvoke, &Resource::Agent { id }))
     }
 
     /// One listed agent and its live card, read now and never cached; `None` when no agent has
     /// this id. `card` is `None` when the card cannot be read in time (fail closed, ADR 0008).
-    /// [`AppError::RegistryUnavailable`] when the registry cannot say.
-    pub async fn describe_agent(&self, id: &AgentId) -> Result<Option<AgentDescription>, AppError> {
+    /// [`AppError::RegistryUnavailable`] when the registry cannot say, and [`AppError::Forbidden`]
+    /// for an agent `who` may not read (`agent.read`, ADR 0033).
+    pub async fn describe_agent(
+        &self,
+        who: &impl Requester,
+        id: &AgentId,
+    ) -> Result<Option<AgentDescription>, AppError> {
+        self.access(who)
+            .check(Permission::AgentRead, &Resource::Agent { id })
+            .map_err(|denied| denied_agent(denied, id))?;
         let Some(entry) = self.resolve_agent(id).await? else {
             return Ok(None);
         };
@@ -579,7 +655,20 @@ impl<P: Ports> App<P> {
         }))
     }
 
-    async fn validate_target(&self, target: &AgentTarget) -> Result<(), AppError> {
+    async fn validate_target(
+        &self,
+        access: &Access<'_>,
+        target: &AgentTarget,
+    ) -> Result<(), AppError> {
+        // Before the registry is asked: what a person may invoke does not depend on it.
+        access
+            .check(
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &target.agent_id,
+                },
+            )
+            .map_err(|denied| denied_agent(denied, &target.agent_id))?;
         let entry = self
             .resolve_agent(&target.agent_id)
             .await?
@@ -619,12 +708,12 @@ impl<P: Ports> App<P> {
     /// Creates a thread whose first message is already in the event log and queued for delegation.
     pub async fn create_thread(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         req: NewThread,
     ) -> Result<ThreadRecord, AppError> {
         let id = ThreadId(self.ports.ids().new_id());
         match self
-            .create_thread_as(user, id, req, Inbound::default())
+            .create_thread_as(who, id, req, Inbound::default())
             .await?
         {
             Creation::Created { thread, .. } => Ok(thread),
@@ -641,13 +730,21 @@ impl<P: Ports> App<P> {
     /// id that does not exist for the caller, so a collision does not reveal the other thread.
     /// The caller's own thread with that id is [`Creation::Exists`] (only a concurrent request
     /// with the same id can have created it).
+    ///
+    /// The person needs `thread.write` and `agent.invoke` for the target's agent
+    /// ([`AppError::Forbidden`], ADR 0033).
     pub async fn create_thread_as(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         req: NewThread,
         inbound: Inbound,
     ) -> Result<Creation, AppError> {
+        let user = who.user();
+        let access = self.access(who);
+        access
+            .check(Permission::ThreadWrite, &Resource::Anything)
+            .map_err(|_| AppError::missing_permission(Permission::ThreadWrite))?;
         validate_text(&req.text)?;
         check_catalog(inbound.ui_catalog.as_ref())?;
         if let Some(title) = &req.title
@@ -657,7 +754,7 @@ impl<P: Ports> App<P> {
                 "title must be at most {MAX_TITLE_CHARS} characters"
             )));
         }
-        self.validate_target(&req.target).await?;
+        self.validate_target(&access, &req.target).await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
         let now = self.ports.clock().now();
@@ -761,13 +858,28 @@ impl<P: Ports> App<P> {
         Ok(&requested != current)
     }
 
-    /// The thread `id` when it exists and is the user's; `None` when nothing has this id;
-    /// [`AppError::NotFound`] when it belongs to someone else.
+    /// The thread `id` when it exists and `who` may act on it (`thread.write`); `None` when
+    /// nothing has this id; otherwise what acting on someone else's thread is
+    /// ([`AppError::NotFound`], or [`AppError::Forbidden`] for one they may read).
     ///
     /// The three-way answer is for surfaces that let the consumer choose thread ids: `None`
     /// means the id is free to create, and someone else's thread must look like any other
     /// refusal to the caller.
     pub async fn find_thread(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+    ) -> Result<Option<ThreadRecord>, AppError> {
+        match self.ports.store().get_thread(None, id).await? {
+            Some(thread) => self.for_writing(&self.access(who), thread).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The thread `id` when it exists and is the person's own, `None` when nothing has this id,
+    /// [`AppError::NotFound`] for someone else's, whatever the person's roles are: the question of
+    /// an id that is free to take.
+    async fn find_own_thread(
         &self,
         user: &UserId,
         id: ThreadId,
@@ -779,24 +891,113 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// `thread` for reading, or why not: [`AppError::Forbidden`] when no role holds `permission`
+    /// (`thread.read`, or `artifact.read`), and [`AppError::NotFound`] when the person's scope
+    /// does not reach it: a thread they may not read does not exist for them (ADR 0033).
+    fn for_reading(
+        &self,
+        access: &Access<'_>,
+        permission: Permission,
+        thread: ThreadRecord,
+    ) -> Result<ThreadRecord, AppError> {
+        match access.check(
+            permission,
+            &Resource::Thread {
+                owner: &thread.owner,
+            },
+        ) {
+            Ok(()) => Ok(thread),
+            Err(Denied::Permission(p)) => Err(AppError::missing_permission(p)),
+            Err(Denied::OutOfScope(_)) => Err(AppError::NotFound),
+        }
+    }
+
+    /// `thread` for acting on (`thread.write`), or why not: [`AppError::Forbidden`] when no role
+    /// holds it, and for a thread the person may read but not change (an administrator's view of
+    /// someone else's), [`AppError::NotFound`] when they may not read it either.
+    fn for_writing(
+        &self,
+        access: &Access<'_>,
+        thread: ThreadRecord,
+    ) -> Result<ThreadRecord, AppError> {
+        let resource = Resource::Thread {
+            owner: &thread.owner,
+        };
+        match access.check(Permission::ThreadWrite, &resource) {
+            Ok(()) => Ok(thread),
+            Err(Denied::Permission(p)) => Err(AppError::missing_permission(p)),
+            Err(Denied::OutOfScope(_)) => {
+                if access.allows(Permission::ThreadRead, &resource) {
+                    Err(AppError::read_only_thread())
+                } else {
+                    Err(AppError::NotFound)
+                }
+            }
+        }
+    }
+
+    /// The thread `id` for acting on it ([`for_writing`](Self::for_writing)); a thread that does
+    /// not exist is [`AppError::NotFound`].
+    async fn writable_thread(
+        &self,
+        access: &Access<'_>,
+        id: ThreadId,
+    ) -> Result<ThreadRecord, AppError> {
+        // The permission first, so that what is refused for a missing permission is refused for
+        // every id alike.
+        if !access.has(Permission::ThreadWrite) {
+            return Err(AppError::missing_permission(Permission::ThreadWrite));
+        }
+        let thread = self
+            .ports
+            .store()
+            .get_thread(None, id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.for_writing(access, thread)
+    }
+
+    /// A message to the agent of `thread` takes `agent.invoke` for it, beside `thread.write`.
+    fn may_invoke(&self, access: &Access<'_>, thread: &ThreadRecord) -> Result<(), AppError> {
+        access
+            .check(
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &thread.target.agent_id,
+                },
+            )
+            .map_err(|denied| denied_agent(denied, &thread.target.agent_id))
+    }
+
     /// A file of a thread, for the person who may read it (`GET /api/threads/{id}/artifacts/{sha256}`,
     /// ADR 0032): its meta and its content as a stream, never held whole.
     ///
-    /// **The access rule is this one line** (`get_thread`: the thread's owner, a foreign thread is
-    /// `NotFound`, so is a file that is not there, a hash that is not 64 lowercase hex digits, and a
-    /// deployment with no artifact store). The role permission `artifact.read` of ADR 0033 (S15)
-    /// comes here, beside it: no caller of this method decides who may read.
+    /// **The access rule is the permission `artifact.read`** (ADR 0033), over the thread the file
+    /// belongs to: the thread's owner under a scope of `own`, anyone under `any`. A thread the
+    /// permission does not reach is `NotFound`, so is a file that is not there, a hash that is not
+    /// 64 lowercase hex digits, and a deployment with no artifact store; a person whose roles hold
+    /// no `artifact.read` is `Forbidden`. No caller of this method decides who may read.
     ///
     /// # Errors
-    /// [`AppError::NotFound`]; [`AppError::Artifacts`] when the store fails.
+    /// [`AppError::NotFound`]; [`AppError::Forbidden`]; [`AppError::Artifacts`] when the store
+    /// fails.
     pub async fn open_artifact(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         thread: ThreadId,
         sha256: &str,
     ) -> Result<(ArtifactMeta, ByteStream), AppError> {
-        // The seam for RBAC: who may read the files of this thread.
-        self.get_thread(user, thread).await?;
+        let access = self.access(who);
+        if !access.has(Permission::ArtifactRead) {
+            return Err(AppError::missing_permission(Permission::ArtifactRead));
+        }
+        let record = self
+            .ports
+            .store()
+            .get_thread(None, thread)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.for_reading(&access, Permission::ArtifactRead, record)?;
         let key = ArtifactKey::parse(&format!("threads/{thread}/{sha256}"))
             .map_err(|_| AppError::NotFound)?;
         match self.ports.artifacts().get(&key).await {
@@ -806,20 +1007,85 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// The user's threads, newest first. The threads made by an edit of a message are branches of
-    /// a conversation the list already shows: they are listed only with `include_edits`.
+    /// The person's own threads, newest first ([`list_threads_of`](Self::list_threads_of) with
+    /// [`Owners::Mine`]). The threads made by an edit of a message are branches of a conversation
+    /// the list already shows: they are listed only with `include_edits`.
     pub async fn list_threads(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         before: Option<ThreadId>,
         limit: u32,
         include_edits: bool,
     ) -> Result<Vec<ThreadRecord>, AppError> {
-        Ok(self
-            .ports
-            .store()
-            .list_threads(user, before, limit, include_edits)
-            .await?)
+        self.list_threads_of(who, Owners::Mine, before, limit, include_edits)
+            .await
+    }
+
+    /// The threads of `owners`, newest first (ADR 0033). A person's own take `thread.read`;
+    /// another person's, or everyone's, take the `admin` permission and a `thread.read` that
+    /// reaches those threads (a scope of `any`).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] for a listing the person's roles do not allow.
+    pub async fn list_threads_of(
+        &self,
+        who: &impl Requester,
+        owners: Owners<'_>,
+        before: Option<ThreadId>,
+        limit: u32,
+        include_edits: bool,
+    ) -> Result<Vec<ThreadRecord>, AppError> {
+        let access = self.access(who);
+        let me = who.user();
+        let owners = match owners {
+            Owners::One(owner) if owner == me => Owners::Mine,
+            other => other,
+        };
+        if !access.has(Permission::ThreadRead) {
+            return Err(AppError::missing_permission(Permission::ThreadRead));
+        }
+        let store = self.ports.store();
+        Ok(match owners {
+            Owners::Mine => {
+                access
+                    .check(Permission::ThreadRead, &Resource::Thread { owner: me })
+                    .map_err(|_| AppError::missing_permission(Permission::ThreadRead))?;
+                store.list_threads(me, before, limit, include_edits).await?
+            }
+            Owners::One(owner) => {
+                self.may_list_others(&access, Some(owner))?;
+                store
+                    .list_threads(owner, before, limit, include_edits)
+                    .await?
+            }
+            Owners::All => {
+                self.may_list_others(&access, None)?;
+                store.list_all_threads(before, limit, include_edits).await?
+            }
+        })
+    }
+
+    /// Listing another person's threads (`owner` is that person) or everyone's (`None`).
+    fn may_list_others(&self, access: &Access<'_>, owner: Option<&UserId>) -> Result<(), AppError> {
+        if !access.has(Permission::Admin) {
+            return Err(AppError::missing_permission(Permission::Admin));
+        }
+        // The reach of `thread.read` over the owners asked for: any, unless it is for one person
+        // and that person's threads are reached some other way.
+        let reaches = match owner {
+            Some(owner) => access.allows(Permission::ThreadRead, &Resource::Thread { owner }),
+            None => access.scope(Permission::ThreadRead) == Some(Scope::Any),
+        };
+        if reaches {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden {
+                permission: Permission::ThreadRead,
+                detail: "your roles do not grant thread.read over other people's threads"
+                    .to_owned(),
+                read_only: false,
+            })
+        }
     }
 
     /// Makes a new thread from one of the user's (ADR 0029): the parent's events up to a cut,
@@ -837,13 +1103,16 @@ impl<P: Ports> App<P> {
     /// agent's card unreachable).
     pub async fn fork_thread(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         parent_id: ThreadId,
         req: ForkRequest,
     ) -> Result<Forked, AppError> {
-        let parent = self.get_thread(user, parent_id).await?;
+        let user = who.user();
+        let access = self.access(who);
+        // A fork is a thread of the person's own, and a copy of one they may act on.
+        let parent = self.writable_thread(&access, parent_id).await?;
         if let Some(id) = req.id {
-            match self.find_thread(user, id).await? {
+            match self.find_own_thread(user, id).await? {
                 Some(existing) if is_fork_of(&existing, parent_id) => {
                     return Ok(Forked {
                         thread: existing,
@@ -878,7 +1147,7 @@ impl<P: Ports> App<P> {
             }
         };
         let target = req.target.unwrap_or_else(|| parent.target.clone());
-        self.validate_target(&target).await?;
+        self.validate_target(&access, &target).await?;
         let gate = self.resolve_gate(&target.agent_id, None)?;
         if kind == ForkKind::Edit {
             let family = self.ports.store().fork_family(user, parent_id).await?;
@@ -992,9 +1261,11 @@ impl<P: Ports> App<P> {
     ///
     /// # Errors
     /// [`AppError::NotFound`] for a thread that is not the user's.
-    pub async fn branches(&self, user: &UserId, id: ThreadId) -> Result<Branches, AppError> {
-        let thread = self.get_thread(user, id).await?;
-        let family = self.ports.store().fork_family(user, id).await?;
+    pub async fn branches(&self, who: &impl Requester, id: ThreadId) -> Result<Branches, AppError> {
+        let thread = self.get_thread(who, id).await?;
+        // The family is the thread's owner's, whoever may read it.
+        let owner = thread.owner.clone();
+        let family = self.ports.store().fork_family(&owner, id).await?;
         let root = family_root(&family, id).unwrap_or(thread.id);
         let mut titles: BTreeMap<ThreadId, String> = BTreeMap::new();
         let mut points = Vec::new();
@@ -1012,7 +1283,7 @@ impl<P: Ports> App<P> {
                         let title = self
                             .ports
                             .store()
-                            .get_thread(Some(user), sibling.thread_id)
+                            .get_thread(Some(&owner), sibling.thread_id)
                             .await?
                             .map(|t| t.title)
                             .unwrap_or_default();
@@ -1035,13 +1306,25 @@ impl<P: Ports> App<P> {
         Ok(Branches { root, points })
     }
 
-    /// One of the user's threads; someone else's thread is `NotFound`.
-    pub async fn get_thread(&self, user: &UserId, id: ThreadId) -> Result<ThreadRecord, AppError> {
-        self.ports
+    /// A thread `who` may read (`thread.read`, ADR 0033): their own, or anyone's under a scope of
+    /// `any`. A thread they may not read is `NotFound`, the answer for one that does not exist; no
+    /// role holding `thread.read` is `Forbidden`, whatever `id` is.
+    pub async fn get_thread(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+    ) -> Result<ThreadRecord, AppError> {
+        let access = self.access(who);
+        if !access.has(Permission::ThreadRead) {
+            return Err(AppError::missing_permission(Permission::ThreadRead));
+        }
+        let thread = self
+            .ports
             .store()
-            .get_thread(Some(user), id)
+            .get_thread(None, id)
             .await?
-            .ok_or(AppError::NotFound)
+            .ok_or(AppError::NotFound)?;
+        self.for_reading(&access, Permission::ThreadRead, thread)
     }
 
     /// The thread `id` for the thread-tools endpoint (`thread-tools/v1`), whatever its owner: what
@@ -1092,10 +1375,10 @@ impl<P: Ports> App<P> {
     /// says so (`truncated`): what is read is always the head of the log.
     pub async fn export_thread(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
     ) -> Result<ThreadExport, AppError> {
-        let thread = self.get_thread(user, id).await?;
+        let thread = self.get_thread(who, id).await?;
         let store = self.ports.store();
         let mut events: Vec<Event> = Vec::new();
         let mut bytes = 0_usize;
@@ -1135,12 +1418,12 @@ impl<P: Ports> App<P> {
     /// Events with `seq > after`, oldest first.
     pub async fn list_events(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         after: i64,
         limit: u32,
     ) -> Result<Vec<Event>, AppError> {
-        self.get_thread(user, id).await?;
+        self.get_thread(who, id).await?;
         Ok(self.ports.store().list_events(id, after, limit).await?)
     }
 
@@ -1148,29 +1431,31 @@ impl<P: Ports> App<P> {
     /// bounded read; someone else's thread is `NotFound`).
     pub async fn latest_events(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         kind: EventKind,
         limit: u32,
     ) -> Result<Vec<Event>, AppError> {
-        self.get_thread(user, id).await?;
+        self.get_thread(who, id).await?;
         Ok(self.ports.store().latest_events(id, kind, limit).await?)
     }
 
     /// Appends a user message and queues its delegation. Returns the `user_message` event.
     pub async fn post_message(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         text: String,
     ) -> Result<Event, AppError> {
+        let access = self.access(who);
+        let thread = self.writable_thread(&access, id).await?;
+        self.may_invoke(&access, &thread)?;
         validate_text(&text)?;
-        self.get_thread(user, id).await?;
         let outcome = self
             .apply(
                 id,
                 Input::UserMessage {
-                    user: user.clone(),
+                    user: who.user().clone(),
                     text,
                     message_id: None,
                     run_id: None,
@@ -1204,11 +1489,17 @@ impl<P: Ports> App<P> {
     /// this, and nothing was written.
     pub async fn submit(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         input: Input,
         key: Option<String>,
     ) -> Result<ApplyOutcome, AppError> {
+        let access = self.access(who);
+        let thread = self.writable_thread(&access, id).await?;
+        // What starts the agent's work takes the right to invoke it.
+        if matches!(input, Input::UserMessage { .. } | Input::UiAction { .. }) {
+            self.may_invoke(&access, &thread)?;
+        }
         match &input {
             Input::UserMessage { text, catalog, .. } => {
                 validate_text(text)?;
@@ -1260,7 +1551,6 @@ impl<P: Ports> App<P> {
             | Input::CancelledBeforeStart
             | Input::CancelRejected { .. } => {}
         }
-        self.get_thread(user, id).await?;
         self.apply(id, input, key, None, None).await
     }
 
@@ -1276,17 +1566,17 @@ impl<P: Ports> App<P> {
     /// that is not the user's.
     pub async fn rename_thread(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         title: &str,
     ) -> Result<ThreadRecord, AppError> {
+        let record = self.writable_thread(&self.access(who), id).await?;
         let title = check_title(title).map_err(|e| AppError::Invalid(e.to_string()))?;
-        let record = self.get_thread(user, id).await?;
         if record.title == title && record.job.title.source() == TitleSource::User {
             return Ok(record);
         }
         let input = Input::Rename {
-            user: user.clone(),
+            user: who.user().clone(),
             title,
         };
         match self.apply(id, input, None, None, None).await? {
@@ -1312,20 +1602,20 @@ impl<P: Ports> App<P> {
     /// thread that is not the user's.
     pub async fn describe_thread(
         &self,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         description: &str,
     ) -> Result<ThreadRecord, AppError> {
+        let record = self.writable_thread(&self.access(who), id).await?;
         let description =
             check_description(description).map_err(|e| AppError::Invalid(e.to_string()))?;
-        let record = self.get_thread(user, id).await?;
         if record.description.as_deref().unwrap_or_default() == description
             && record.job.description.source() == DescriptionSource::User
         {
             return Ok(record);
         }
         let input = Input::SetDescription {
-            user: user.clone(),
+            user: who.user().clone(),
             description,
         };
         match self.apply(id, input, None, None, None).await? {
@@ -1402,10 +1692,18 @@ impl<P: Ports> App<P> {
     }
 
     /// Requests cancellation of the thread's running work. A finished thread is a no-op.
-    pub async fn cancel(&self, user: &UserId, id: ThreadId) -> Result<(), AppError> {
-        self.get_thread(user, id).await?;
-        self.apply(id, Input::Cancel { user: user.clone() }, None, None, None)
-            .await?;
+    pub async fn cancel(&self, who: &impl Requester, id: ThreadId) -> Result<(), AppError> {
+        self.writable_thread(&self.access(who), id).await?;
+        self.apply(
+            id,
+            Input::Cancel {
+                user: who.user().clone(),
+            },
+            None,
+            None,
+            None,
+        )
+        .await?;
         Ok(())
     }
 
@@ -1895,11 +2193,11 @@ impl<P: Ports> App<P> {
     /// Once shutdown started and the stream has caught up, it ends (within one poll interval).
     pub async fn event_stream(
         self: &Arc<Self>,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         after: i64,
     ) -> Result<BoxStream<'static, Event>, AppError> {
-        let thread = self.get_thread(user, id).await?;
+        let thread = self.get_thread(who, id).await?;
         Ok(self.events_after(&thread, after))
     }
 
@@ -1917,11 +2215,11 @@ impl<P: Ports> App<P> {
     /// does (the process is shutting down).
     pub async fn thread_feed(
         self: &Arc<Self>,
-        user: &UserId,
+        who: &impl Requester,
         id: ThreadId,
         after: i64,
     ) -> Result<BoxStream<'static, FeedItem>, AppError> {
-        let thread = self.get_thread(user, id).await?;
+        let thread = self.get_thread(who, id).await?;
         let head = thread.last_seq;
         // Before the first read, so a piece published while the log is being read is not lost.
         let live = self.ports.wakeup().subscribe_live();

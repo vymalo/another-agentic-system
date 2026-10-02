@@ -346,7 +346,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 |---|---|
 | Unknown `agentId` in the URL | 404 before the stream |
 | Unknown `threadId` (a UUID), one new user message | Create the thread, owned by the edge identity, targeting the URL's `agentId` and the release in `forwardedProps["https://agents.vymalo.com/a2a/extensions/release-channels/v1"].release` (validated against the live card, fail closed, ADR 0008); then `Input::UserMessage{text}` with `messageId` and `runId` recorded |
-| `threadId` owned by someone else, or colliding with another owner's thread | 404 before the stream |
+| `threadId` owned by someone else, or colliding with another owner's thread | 404 before the stream if the caller may not read it; **403 `read_only`** if they may (an administrator reads every thread and changes only their own, [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)) |
 | Known `threadId`, URL `agentId` is not the thread's target | 409 before the stream |
 | Known `threadId`, exactly one user message id not in the log, text content | `Input::UserMessage` |
 | Several new messages, or a new non-user message | 422 before the stream (the orchestrator owns the history) |
@@ -840,7 +840,8 @@ was streamed and nothing was written.
 |---|---|
 | 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`) |
 | 401 | No edge identity |
-| 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
+| 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); the run continues a thread the caller may read and not change (`code: read_only`); their roles grant nothing (`code: no_access`) |
+| 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
 | 409 | The thread targets another agent; a run is open on it; the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
@@ -869,7 +870,8 @@ sequence and state diagrams are in [ADR 0012](../decisions/0012-ag-ui-user-facin
 |---|---|
 | 400 | `Last-Event-ID` is not a non-negative integer; `mode` is not `run` |
 | 401 | No edge identity |
-| 404 | The thread does not exist for the caller: it is missing, its id is not a UUID, or it belongs to someone else. One answer for all three; nothing in it names the thread or its owner. |
+| 403 | The caller's roles lack `thread.read` (`code: forbidden`), or grant nothing (`code: no_access`) |
+| 404 | The thread does not exist for the caller: it is missing, its id is not a UUID, or the caller may not read it (someone else's, unless their roles read every thread: an administrator's do). One answer for all three; nothing in it names the thread or its owner. |
 | 406 | `Accept` excludes `text/event-stream` |
 | 503 | The store is unavailable (`Retry-After`) |
 

@@ -542,7 +542,8 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 10] = [
+    let auth_ops: [(&str, reqwest::Method, String); 11] = [
+        ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("getConfig", reqwest::Method::GET, "/api/config".into()),
@@ -583,6 +584,26 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         assert_eq!(r.status, 401, "{op}");
         c.check(op, &r);
     }
+
+    // getMe: who the proxy says, with the roles of the default role (the header carries none)
+    let r = h.get("/api/me", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("getMe", &r);
+    let me = r.json();
+    assert_eq!(me["user"], ALICE);
+    assert_eq!(me["roles"], json!(["user"]));
+    assert_eq!(
+        me["permissions"],
+        json!([
+            {"permission": "agent.read"},
+            {"permission": "agent.invoke"},
+            {"permission": "thread.read", "scope": "own"},
+            {"permission": "thread.write", "scope": "own"},
+            {"permission": "artifact.read", "scope": "own"},
+        ])
+    );
+    assert_eq!(me["agents"], json!({"read": ["*"], "invoke": ["*"]}));
 
     // listAgents
     let r = h.get("/api/agents", Some(ALICE)).await;
@@ -1377,6 +1398,7 @@ mod validator_bites {
     fn good_thread() -> serde_json::Value {
         json!({
             "id": "0190aaaa-0000-7000-8000-000000000123",
+            "owner": "alice@example.com",
             "title": "t",
             "target": {"agentId": "a"},
             "state": "working",

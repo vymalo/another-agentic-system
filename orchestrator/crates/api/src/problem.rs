@@ -58,6 +58,11 @@ impl Problem {
     pub fn not_found(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, detail)
     }
+
+    /// 403.
+    pub fn forbidden(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, detail)
+    }
 }
 
 impl IntoResponse for Problem {
@@ -114,6 +119,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | class | status |
 /// |---|---|
 /// | `NotFound` | 404 |
+/// | `Forbidden` | 403, the domain message, with `code: forbidden` (`read_only` for a thread the person may read and not change) |
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
@@ -161,6 +167,13 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
                 None,
             ),
         };
+    }
+    if let AppError::Forbidden {
+        detail, read_only, ..
+    } = err
+    {
+        let code = if *read_only { "read_only" } else { "forbidden" };
+        return (Problem::forbidden(detail.clone()).with_code(code), None);
     }
     match class {
         ErrorClass::NotFound => (Problem::not_found("no such thread"), None),

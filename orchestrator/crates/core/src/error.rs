@@ -30,6 +30,9 @@ pub enum ErrorClass {
     Rejected,
     /// Credentials missing or refused.
     Unauthenticated,
+    /// The caller is who they say, and what they ask is not theirs to do: a permission their
+    /// roles lack (ADR 0033).
+    Forbidden,
     /// The peer does not offer this operation.
     Unsupported,
     /// Stored or received data breaks an invariant: alert.
@@ -116,6 +119,7 @@ mod tests {
             NotFound => (false, false),
             Rejected => (false, false),
             Unauthenticated => (false, false),
+            Forbidden => (false, false),
             Unsupported => (false, false),
             Corrupt => (false, true),
             Internal => (false, true),
@@ -128,6 +132,7 @@ mod tests {
             NotFound,
             Rejected,
             Unauthenticated,
+            Forbidden,
             Unsupported,
             Corrupt,
             Internal,

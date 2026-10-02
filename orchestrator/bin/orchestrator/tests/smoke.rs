@@ -1323,6 +1323,119 @@ async fn in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the
     );
 }
 
+/// ADR 0033: the roles of a token decide what it may do. The process is configured from a file
+/// whose `auth.roles` define `admin` and `staff`, with no default role.
+#[tokio::test]
+async fn in_jwt_mode_the_roles_of_the_token_decide_what_it_may_do() {
+    use orch_auth_jwt::testkit::TestIdp;
+    use orch_ports::testkit::bearer::{Alg, Signing};
+
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let idp = TestIdp::start().await;
+    let (run, base, client) = serve_configured(
+        &db,
+        &scratch,
+        "roles.log",
+        &format!(
+            "auth:
+  mode: jwt
+  jwt:
+    issuer: {}
+    audiences: [orchestrator-web]
+    rolesClaim: realm_access.roles
+  roles:
+    staff:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read]
+    admin:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin]
+      scope: {{ read: any, write: own }}
+",
+            idp.issuer()
+        ),
+    )
+    .await;
+    // Ready once the keys are fetched.
+    eventually("the keys are fetched", || async {
+        (http_status(&client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
+    let token = |email: &str, roles: &[&str]| {
+        let mut claims = idp.claims("orchestrator-web", email);
+        claims.insert(
+            "realm_access".to_owned(),
+            serde_json::json!({ "roles": roles }),
+        );
+        idp.mint(&claims, Signing::Published(Alg::Rs256))
+    };
+    let get = |path: &str, token: &str| {
+        let (client, url, token) = (client.clone(), format!("{base}{path}"), token.to_owned());
+        async move {
+            let resp = client.get(url).bearer_auth(token).send().await.unwrap();
+            let status = resp.status().as_u16();
+            (
+                status,
+                resp.json::<serde_json::Value>().await.unwrap_or_default(),
+            )
+        }
+    };
+    let staff = token("sam@example.com", &["staff", "offline_access"]);
+    let admin = token("ada@example.com", &["admin"]);
+    let nobody = token("nia@example.com", &["offline_access"]);
+
+    // `/api/me` says who and what, from the token's roles claim and `auth.roles`.
+    let (status, me) = get("/api/me", &staff).await;
+    assert_eq!(status, 200);
+    assert_eq!(me["user"], "sam@example.com");
+    assert_eq!(
+        me["roles"],
+        serde_json::json!(["staff"]),
+        "roles the file does not define do not count"
+    );
+    let (_, me) = get("/api/me", &admin).await;
+    assert_eq!(me["roles"], serde_json::json!(["admin"]));
+    let scope = |me: &serde_json::Value, permission: &str| {
+        me["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["permission"] == permission)
+            .map(|p| p["scope"].clone())
+    };
+    assert_eq!(scope(&me, "thread.read"), Some(serde_json::json!("any")));
+    assert_eq!(scope(&me, "thread.write"), Some(serde_json::json!("own")));
+
+    // The administrator lists everyone's threads; staff do not.
+    assert_eq!(get("/api/threads?owner=*", &admin).await.0, 200);
+    let (status, problem) = get("/api/threads?owner=*", &staff).await;
+    assert_eq!((status, problem["code"].as_str()), (403, Some("forbidden")));
+    // A person none of whose roles the file defines, with no default role, is refused everywhere
+    // but `/api/me`, which says why.
+    for path in ["/api/agents", "/api/threads", "/api/config"] {
+        let (status, problem) = get(path, &nobody).await;
+        assert_eq!(
+            (status, problem["code"].as_str()),
+            (403, Some("no_access")),
+            "{path}"
+        );
+    }
+    let (status, me) = get("/api/me", &nobody).await;
+    assert_eq!(status, 200);
+    assert_eq!(me["roles"], serde_json::json!([]));
+    assert_eq!(me["permissions"], serde_json::json!([]));
+
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(
+        !log.contains(&staff) && !log.contains(&admin),
+        "a token reached the log:\n{log}"
+    );
+}
+
 #[test]
 fn a_production_process_refuses_the_proxy_header_before_anything_connects() {
     let scratch = Scratch::new();

@@ -1,17 +1,16 @@
 //! The MCP server: `initialize`, `tools/list` and `tools/call` over [`App`].
 //!
-//! A tool call is one `App` call made as the token's user, so it is scoped exactly as the
-//! resource API is: a job that is not the caller's is "no such job", never "forbidden". No tool
-//! keeps state in the process; a fresh server is built for every request (stateless mode).
+//! A tool call is one `App` call made as the token's principal (its user and role, ADR 0033), so it
+//! is scoped exactly as the resource API is: a job the caller may not read is "no such job", never
+//! "forbidden"; what their roles do not allow is refused as `not permitted`. No tool keeps state
+//! in the process; a fresh server is built for every request (stateless mode).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use orch_app::{App, AppError, Creation, Inbound, NewThread};
-use orch_core::{
-    AgentId, AgentTarget, Classify, ErrorClass, Input, Origin, ThreadId, UserId, report,
-};
-use orch_ports::{IdGen, Ports};
+use orch_core::{AgentId, AgentTarget, Classify, ErrorClass, Input, Origin, ThreadId, report};
+use orch_ports::{IdGen, Ports, Principal};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ServerCapabilities,
@@ -116,9 +115,9 @@ async fn within(
     }
 }
 
-/// The user the bearer check let in. A request that reaches a tool without one did not pass the
-/// check, which only a wiring mistake can cause: the call is refused (fail closed).
-fn caller(context: &RequestContext<RoleServer>) -> Result<UserId, ErrorData> {
+/// The principal the bearer check let in. A request that reaches a tool without one did not pass
+/// the check, which only a wiring mistake can cause: the call is refused (fail closed).
+fn caller(context: &RequestContext<RoleServer>) -> Result<Principal, ErrorData> {
     context
         .extensions
         .get::<axum::http::request::Parts>()
@@ -161,6 +160,8 @@ fn job_id(raw: &str) -> Option<ThreadId> {
 fn failure(err: &AppError) -> Result<CallToolResult, ErrorData> {
     match err.class() {
         ErrorClass::NotFound => Ok(refused("no such job")),
+        // The roles of the token do not allow it: the detail names a permission, never a job.
+        ErrorClass::Forbidden => Ok(refused(format!("not permitted: {err}"))),
         ErrorClass::Invalid => Ok(refused(err.to_string())),
         ErrorClass::Rejected => Ok(refused(match err {
             AppError::Finished => "this card belongs to a finished request".to_owned(),
@@ -180,8 +181,11 @@ fn failure(err: &AppError) -> Result<CallToolResult, ErrorData> {
 }
 
 impl<P: Ports> McpServer<P> {
-    async fn list_agents(&self) -> Result<CallToolResult, ErrorData> {
-        let list = self.app.list_agents().await;
+    async fn list_agents(&self, who: &Principal) -> Result<CallToolResult, ErrorData> {
+        let list = match self.app.list_agents(who).await {
+            Ok(list) => list,
+            Err(e) => return failure(&e),
+        };
         let agents: Vec<Value> = list
             .agents
             .iter()
@@ -210,9 +214,10 @@ impl<P: Ports> McpServer<P> {
 
     async fn start_job(
         &self,
-        user: &UserId,
+        who: &Principal,
         args: StartJobArgs,
     ) -> Result<CallToolResult, ErrorData> {
+        let user = &who.user;
         let client_request_id = match args.client_request_id.as_deref().map(str::trim) {
             None => None,
             Some("") => return Ok(refused("client_request_id must not be empty")),
@@ -237,9 +242,21 @@ impl<P: Ports> McpServer<P> {
         let agent_id = match &named_agent {
             Some(id) => id.clone(),
             // The first agent listed (ADR 0014), read now from the registry (ADR 0022).
-            None => match self.app.default_agent().await {
+            None => match self.app.default_agent(who).await {
                 Some(id) => id,
-                None => return Ok(refused("no agent is configured")),
+                None => {
+                    // A token whose roles hold no `agent.invoke` is refused for that; one that
+                    // may invoke some agent, and finds none listed, is told so.
+                    return match self.app.access(who).check(
+                        orch_app::Permission::AgentInvoke,
+                        &orch_app::Resource::Anything,
+                    ) {
+                        Err(_) => failure(&AppError::missing_permission(
+                            orch_app::Permission::AgentInvoke,
+                        )),
+                        Ok(()) => Ok(refused("no agent you may use is configured")),
+                    };
+                }
             },
         };
         // A retried call names the same job; without a request id every call is new.
@@ -260,18 +277,18 @@ impl<P: Ports> McpServer<P> {
             gate: gate.clone(),
             ..Inbound::default()
         };
-        let (thread, created) = match self.app.create_thread_as(user, id, new, inbound).await {
+        let (thread, created) = match self.app.create_thread_as(who, id, new, inbound).await {
             Ok(Creation::Created { thread, .. }) => (thread, true),
             // The caller's own job with this id: a retry, or a request that lost a race with
             // itself. Nothing was written. It is the same request, or it is refused.
             Ok(Creation::Exists) => {
-                let thread = match self.app.get_thread(user, id).await {
+                let thread = match self.app.get_thread(who, id).await {
                     Ok(thread) => thread,
                     Err(e) => return failure(&e),
                 };
                 match self
                     .difference_from_first_request(
-                        user,
+                        who,
                         &thread,
                         &args,
                         named_agent.as_ref(),
@@ -321,13 +338,13 @@ impl<P: Ports> McpServer<P> {
     /// asks for one that would change the job's. `None` when it is the same request.
     async fn difference_from_first_request(
         &self,
-        user: &UserId,
+        who: &Principal,
         thread: &orch_core::ThreadRecord,
         args: &StartJobArgs,
         named_agent: Option<&AgentId>,
         gate: Option<&orch_app::GateLayer>,
     ) -> Result<Option<&'static str>, AppError> {
-        let first = self.app.list_events(user, thread.id, 0, 1).await?;
+        let first = self.app.list_events(who, thread.id, 0, 1).await?;
         let first_text = first.first().and_then(|e| match &e.body {
             orch_core::EventBody::UserMessage(m) => Some(m.text.as_str()),
             _ => None,
@@ -349,15 +366,19 @@ impl<P: Ports> McpServer<P> {
         Ok(None)
     }
 
-    async fn get_job(&self, user: &UserId, args: GetJobArgs) -> Result<CallToolResult, ErrorData> {
+    async fn get_job(
+        &self,
+        who: &Principal,
+        args: GetJobArgs,
+    ) -> Result<CallToolResult, ErrorData> {
         let Some(id) = job_id(&args.job_id) else {
             return Ok(refused("no such job"));
         };
-        let thread = match self.app.get_thread(user, id).await {
+        let thread = match self.app.get_thread(who, id).await {
             Ok(thread) => thread,
             Err(e) => return failure(&e),
         };
-        match summarise(&self.app, user, &thread).await {
+        match summarise(&self.app, who, &thread).await {
             Ok(summary) => success(&summary),
             Err(e) => failure(&e),
         }
@@ -365,7 +386,7 @@ impl<P: Ports> McpServer<P> {
 
     async fn wait_for_job(
         &self,
-        user: &UserId,
+        who: &Principal,
         args: WaitForJobArgs,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
@@ -377,7 +398,7 @@ impl<P: Ports> McpServer<P> {
         }
         let token = context.meta.get_progress_token();
         // A wait stays open; only so many are allowed at once, per process and per user.
-        let _slot = match self.settings.waits.acquire(user) {
+        let _slot = match self.settings.waits.acquire(&who.user) {
             Ok(slot) => slot,
             Err(busy) => return Ok(refused(busy.message())),
         };
@@ -395,11 +416,11 @@ impl<P: Ports> McpServer<P> {
             peer: context.peer.clone(),
             token,
         };
-        let waited = match wait_for_job(&self.app, user, id, &request, &sink, &context.ct).await {
+        let waited = match wait_for_job(&self.app, who, id, &request, &sink, &context.ct).await {
             Ok(waited) => waited,
             Err(e) => return failure(&e),
         };
-        match summarise(&self.app, user, &waited.thread).await {
+        match summarise(&self.app, who, &waited.thread).await {
             Ok(job) => success(&WaitResult {
                 outcome: waited.end.as_str(),
                 resume_after_seq: waited.resume_after_seq,
@@ -411,12 +432,12 @@ impl<P: Ports> McpServer<P> {
         }
     }
 
-    async fn answer(&self, user: &UserId, args: AnswerArgs) -> Result<CallToolResult, ErrorData> {
+    async fn answer(&self, who: &Principal, args: AnswerArgs) -> Result<CallToolResult, ErrorData> {
         let Some(id) = job_id(&args.job_id) else {
             return Ok(refused("no such job"));
         };
         let input = Input::UserMessage {
-            user: user.clone(),
+            user: who.user.clone(),
             text: args.text,
             message_id: None,
             run_id: None,
@@ -424,7 +445,7 @@ impl<P: Ports> McpServer<P> {
             catalog: None,
         };
         // No idempotency key: an `answer` is not made safe to retry (ADR 0019).
-        match self.app.submit(user, id, input, None).await {
+        match self.app.submit(who, id, input, None).await {
             Ok(orch_app::ApplyOutcome::Applied { thread, .. }) => success(&json!({
                 "job_id": thread.id,
                 "state": thread.state.as_str(),
@@ -440,17 +461,17 @@ impl<P: Ports> McpServer<P> {
 
     async fn cancel_job(
         &self,
-        user: &UserId,
+        who: &Principal,
         args: CancelJobArgs,
     ) -> Result<CallToolResult, ErrorData> {
         let Some(id) = job_id(&args.job_id) else {
             return Ok(refused("no such job"));
         };
         // Cancelling a finished job is a no-op, as in the chat.
-        if let Err(e) = self.app.cancel(user, id).await {
+        if let Err(e) = self.app.cancel(who, id).await {
             return failure(&e);
         }
-        let thread = match self.app.get_thread(user, id).await {
+        let thread = match self.app.get_thread(who, id).await {
             Ok(thread) => thread,
             Err(e) => return failure(&e),
         };
@@ -499,7 +520,7 @@ impl<P: Ports> ServerHandler for McpServer<P> {
         let result = match tool {
             ToolName::ListAgents => {
                 parse_args::<NoArgs>(request.arguments)?;
-                within(limit, tool, self.list_agents()).await
+                within(limit, tool, self.list_agents(&user)).await
             }
             ToolName::StartJob => {
                 let args = parse_args(request.arguments)?;

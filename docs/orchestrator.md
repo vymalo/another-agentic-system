@@ -100,7 +100,7 @@ flowchart TB
     svgclean["<b>orch-svg-clean</b><br/>allow-list sanitizer for SVG<br/>quick-xml, served inline"]
   end
   subgraph G_APP["Application: written against the ports"]
-    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
+    app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>authz: roles to permissions, enforced on every read and act<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
   end
   subgraph G_EDGE["HTTP edge"]
     api["<b>orch-api</b><br/>identity, RFC 9457 problems, resource API,<br/>health, SurfaceRoutes"]
@@ -1243,8 +1243,8 @@ goes on in every case. A file is stored before its event is committed, so a refe
 commit was lost is put again by the retry, which is the same key.
 
 `GET /api/threads/{threadId}/artifacts/{sha256}` serves it (`orch-api`, [`api/chat-api.yaml`](api/chat-api.yaml), `getArtifact`):
-`App::open_artifact` is the one place that says who may read (the thread's owner today, the role permission `artifact.read` of ADR
-0033 next), every miss is a 404, the body is streamed, only the preview types are inline (an SVG only after `orch-svg-clean`), and
+`App::open_artifact` is the one place that says who may read (the permission `artifact.read` of ADR 0033 over the thread: the owner's, or
+anyone's for a role whose scope is `any`), every miss is a 404, the body is streamed, only the preview types are inline (an SVG only after `orch-svg-clean`), and
 every response is `nosniff`, sandboxed by its `Content-Security-Policy` and immutable in the cache. The projection says it as
 `vymalo.artifact{kind:"file", href, sha256, size, filename?, preview}` ([`api/agui.md`](api/agui.md#typed-artifacts)).
 

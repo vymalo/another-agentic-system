@@ -1,8 +1,8 @@
 //! `GET /api/threads/{threadId}/artifacts/{sha256}`: a file an agent handed over, from the artifact
 //! store (ADR 0032, decision 8).
 //!
-//! Who may read it is [`orch_app::App::open_artifact`]'s (the thread's owner today, the role
-//! permission of ADR 0033 later); this module only says **how** a file is sent, and that is the
+//! Who may read it is [`orch_app::App::open_artifact`]'s (the permission `artifact.read` of ADR 0033
+//! over the thread); this module only says **how** a file is sent, and that is the
 //! whole of the safety of serving what an agent wrote:
 //!
 //! - the body is **streamed** from the store, never held whole (an SVG is the one exception: it is
@@ -25,8 +25,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use futures::StreamExt as _;
-use orch_core::{Preview, UserId};
-use orch_ports::{ArtifactMeta, Ports};
+use orch_core::Preview;
+use orch_ports::{ArtifactMeta, Ports, Principal};
 use serde::Deserialize;
 
 use crate::ApiState;
@@ -51,7 +51,7 @@ pub(crate) struct DownloadQuery {
 /// `GET /api/threads/{threadId}/artifacts/{sha256}[?download=1]`.
 pub(crate) async fn get_artifact<P: Ports>(
     State(state): State<ApiState<P>>,
-    Extension(user): Extension<UserId>,
+    Extension(principal): Extension<Principal>,
     Path((thread, sha256)): Path<(String, String)>,
     crate::ApiQuery(query): crate::ApiQuery<DownloadQuery>,
 ) -> Result<Response, ApiError> {
@@ -62,7 +62,7 @@ pub(crate) async fn get_artifact<P: Ports>(
     };
     let (meta, stream) = state
         .app
-        .open_artifact(&user, parse_thread_id(&thread)?, &sha256)
+        .open_artifact(&principal, parse_thread_id(&thread)?, &sha256)
         .await?;
     let inline = !download && Preview::of(&meta.media_type).is_some();
 
@@ -82,7 +82,7 @@ pub(crate) async fn get_artifact<P: Ports>(
         // Not served inline: read the file again for the attachment.
         let (meta, stream) = state
             .app
-            .open_artifact(&user, parse_thread_id(&thread)?, &sha256)
+            .open_artifact(&principal, parse_thread_id(&thread)?, &sha256)
             .await?;
         return Ok(respond(
             &meta,

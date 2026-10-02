@@ -97,7 +97,7 @@ async fn an_agent_the_platform_adds_is_listed_and_can_be_picked_without_a_restar
     let w = World::new();
     let registry = MemoryRegistry::new();
     let app = app_over(&w, &registry);
-    let before = app.list_agents().await;
+    let before = app.list_agents(&alice()).await.unwrap();
     assert_eq!(
         before
             .agents
@@ -107,7 +107,7 @@ async fn an_agent_the_platform_adds_is_listed_and_can_be_picked_without_a_restar
         ["coder", "plain"]
     );
     assert!(
-        app.describe_agent(&AgentId::new("helper"))
+        app.describe_agent(&alice(), &AgentId::new("helper"))
             .await
             .unwrap()
             .is_none()
@@ -119,7 +119,7 @@ async fn an_agent_the_platform_adds_is_listed_and_can_be_picked_without_a_restar
 
     registry.add(platform_agent("helper", "Helper", &["writing", "docs"]));
 
-    let after = app.list_agents().await;
+    let after = app.list_agents(&alice()).await.unwrap();
     assert_eq!(
         after
             .agents
@@ -140,9 +140,12 @@ async fn an_agent_the_platform_adds_is_listed_and_can_be_picked_without_a_restar
     assert_eq!(after.agents[0].source, AgentSource::Static);
     assert!(after.sources.iter().all(|s| s.available));
     assert_eq!(after.sources.len(), 2, "the static list and the registry");
-    assert_eq!(app.default_agent().await, Some(AgentId::new("coder")));
+    assert_eq!(
+        app.default_agent(&alice()).await,
+        Some(AgentId::new("coder"))
+    );
     assert!(
-        app.describe_agent(&AgentId::new("helper"))
+        app.describe_agent(&alice(), &AgentId::new("helper"))
             .await
             .unwrap()
             .is_some()
@@ -168,10 +171,10 @@ async fn a_registry_that_is_down_leaves_the_static_agents_and_says_so() {
     let registry = MemoryRegistry::new();
     registry.add(platform_agent("helper", "Helper", &[]));
     let app = app_over(&w, &registry);
-    assert_eq!(app.list_agents().await.agents.len(), 3);
+    assert_eq!(app.list_agents(&alice()).await.unwrap().agents.len(), 3);
 
     registry.set_down(true);
-    let list = app.list_agents().await;
+    let list = app.list_agents(&alice()).await.unwrap();
     assert_eq!(
         list.agents
             .iter()
@@ -182,7 +185,7 @@ async fn a_registry_that_is_down_leaves_the_static_agents_and_says_so() {
     );
     let down: Vec<_> = list.sources.iter().filter(|s| !s.available).collect();
     assert_eq!(down.len(), 1, "{:?}", list.sources);
-    assert_eq!(app.registry_sources().await, list.sources);
+    assert_eq!(app.registry_sources(&alice()).await.unwrap(), list.sources);
     // The static agents are still found and targeted; the registry's cannot be said to exist.
     assert!(
         app.resolve_agent(&AgentId::new("coder"))
@@ -209,14 +212,21 @@ async fn a_registry_that_is_down_leaves_the_static_agents_and_says_so() {
             "{who}: a registry that cannot say is not \"unknown agent\": {err:?}"
         );
         assert!(matches!(
-            app.describe_agent(&AgentId::new(who)).await,
+            app.describe_agent(&alice(), &AgentId::new(who)).await,
             Err(AppError::RegistryUnavailable { .. })
         ));
     }
 
     registry.set_down(false);
-    assert_eq!(app.list_agents().await.agents.len(), 3);
-    assert!(app.list_agents().await.sources.iter().all(|s| s.available));
+    assert_eq!(app.list_agents(&alice()).await.unwrap().agents.len(), 3);
+    assert!(
+        app.list_agents(&alice())
+            .await
+            .unwrap()
+            .sources
+            .iter()
+            .all(|s| s.available)
+    );
 }
 
 #[tokio::test]
@@ -307,7 +317,7 @@ async fn the_static_entry_wins_over_a_registry_agent_with_the_same_id() {
     let registry = MemoryRegistry::new();
     registry.add(platform_agent("coder", "Platform coder", &["coding"]));
     let app = app_over(&w, &registry);
-    let list = app.list_agents().await;
+    let list = app.list_agents(&alice()).await.unwrap();
     assert_eq!(
         list.agents
             .iter()

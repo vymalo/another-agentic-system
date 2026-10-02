@@ -3,6 +3,8 @@ use std::time::Duration;
 use orch_core::{AgentId, Classify, ErrorClass, ForkError, TransitionError};
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
+use crate::authz::Permission;
+
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
 ///
 /// A message describes this layer only; the lower error is the `source`.
@@ -12,6 +14,19 @@ pub enum AppError {
     /// No such thread for this user (a foreign thread is indistinguishable from a missing one).
     #[error("not found")]
     NotFound,
+    /// The person is who they say, and their roles do not let them do this (ADR 0033): a permission
+    /// they lack, an agent their roles do not name, or a thread they may read and not change.
+    /// Never said about a thread the person may not read: that is [`AppError::NotFound`].
+    #[error("{detail}")]
+    Forbidden {
+        /// The permission that was needed.
+        permission: Permission,
+        /// What was refused, fit to show the caller: it names no one else's thread or role.
+        detail: String,
+        /// Whether the thread is the person's to read and someone else's to change, which a client
+        /// shows as a read-only thread.
+        read_only: bool,
+    },
     /// The request is invalid.
     #[error("{0}")]
     Invalid(String),
@@ -65,6 +80,33 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// The roles of the person do not hold `permission`.
+    pub fn missing_permission(permission: Permission) -> Self {
+        AppError::Forbidden {
+            permission,
+            detail: format!("your roles do not grant {permission}"),
+            read_only: false,
+        }
+    }
+
+    /// The roles of the person do not name `agent` for `permission`.
+    pub fn agent_not_allowed(permission: Permission, agent: &AgentId) -> Self {
+        AppError::Forbidden {
+            permission,
+            detail: format!("your roles do not grant {permission} for the agent {agent}"),
+            read_only: false,
+        }
+    }
+
+    /// A thread the person may read and not change.
+    pub fn read_only_thread() -> Self {
+        AppError::Forbidden {
+            permission: Permission::ThreadWrite,
+            detail: "this thread is read-only for you: you may read it, not change it".to_owned(),
+            read_only: true,
+        }
+    }
+
     /// A broken application invariant.
     pub fn internal(detail: impl Into<String>) -> Self {
         AppError::Internal {
@@ -100,6 +142,7 @@ impl Classify for AppError {
     fn class(&self) -> ErrorClass {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
+            AppError::Forbidden { .. } => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
             AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
             AppError::Fork(e) => e.class(),
@@ -119,6 +162,7 @@ impl Classify for AppError {
             AppError::Upstream { source, .. } => source.retry_after(),
             AppError::RegistryUnavailable { .. } => None,
             AppError::NotFound
+            | AppError::Forbidden { .. }
             | AppError::Invalid(_)
             | AppError::Finished
             | AppError::Refused(_)
@@ -146,6 +190,9 @@ mod tests {
     fn class_table() {
         let all = [
             AppError::NotFound,
+            AppError::missing_permission(Permission::ThreadWrite),
+            AppError::read_only_thread(),
+            AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
             AppError::Invalid("bad".into()),
             AppError::Finished,
             AppError::Refused("taken".into()),
@@ -169,6 +216,7 @@ mod tests {
             // Exhaustive: a new variant forces a class decision.
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
+                AppError::Forbidden { .. } => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
                 AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
                 AppError::Fork(inner) => inner.class(),

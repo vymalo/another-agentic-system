@@ -23,14 +23,6 @@ pub const RESERVED: &[Reserved] = &[
         path: "tasks.stepLabel",
         by: "a later task of ADR 0035 that has no PR yet",
     },
-    Reserved {
-        path: "auth.defaultRole",
-        by: "PR S15 (ADR 0033, roles and permissions)",
-    },
-    Reserved {
-        path: "auth.roles",
-        by: "PR S15 (ADR 0033, roles and permissions)",
-    },
 ];
 
 /// The reservation that covers `path` (dotted, such as `tasks.title.system`), if any.

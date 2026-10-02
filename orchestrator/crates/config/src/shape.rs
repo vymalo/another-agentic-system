@@ -49,7 +49,10 @@ fn tidy(node: &mut Value) {
                     object.extend(kept);
                 }
             }
-            if let Some(Value::Array(types)) = object.get("type")
+            // `null` is a value of a few keys (`auth.defaultRole`), which say so.
+            let null_is_a_value = object.contains_key("x-null-is-a-value");
+            if !null_is_a_value
+                && let Some(Value::Array(types)) = object.get("type")
                 && types.len() == 2
                 && types.iter().any(|t| t.as_str() == Some("null"))
                 && let Some(kept) = types.iter().find(|t| t.as_str() != Some("null")).cloned()

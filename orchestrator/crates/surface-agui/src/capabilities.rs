@@ -6,22 +6,27 @@
 //! transport and the interrupt support are ours to state, and nothing the card would have added
 //! (description, version, release channels, A2UI) is assumed.
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use orch_agui_projection::{CardFacts, agent_capabilities};
 use orch_api::{ApiError, Problem};
 use orch_core::AgentId;
-use orch_ports::Ports;
+use orch_ports::{Ports, Principal};
 
 use crate::State as SurfaceState;
 
 pub(crate) async fn capabilities<P: Ports>(
     State(state): State<SurfaceState<P>>,
+    Extension(principal): Extension<Principal>,
     Path(agent_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let Some(agent) = state.app.describe_agent(&AgentId::new(agent_id)).await? else {
+    let Some(agent) = state
+        .app
+        .describe_agent(&principal, &AgentId::new(agent_id))
+        .await?
+    else {
         return Err(Problem::not_found("no such agent").into());
     };
     let facts = agent.card.map(|card| CardFacts {

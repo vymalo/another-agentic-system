@@ -17,8 +17,10 @@ use url::Url;
 
 use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
+use crate::tree::child;
 use crate::types::{
-    ArtifactStoreKind, Artifacts, AuthMode, Config, Environment, Prompt, SecretRef, Surface,
+    ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, Config, Environment, Prompt,
+    SecretRef, Surface,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -391,6 +393,7 @@ impl Checker<'_> {
                  one release of migration)",
             );
         }
+        self.roles(auth);
         match (&auth.jwt, auth.mode.reads_tokens()) {
             (None, true) => self.invalid(
                 "auth.jwt",
@@ -459,6 +462,79 @@ impl Checker<'_> {
                     self.invalid("auth.jwt.rolesClaim", "a claim name is not empty");
                 }
             }
+        }
+    }
+
+    /// `auth.roles` and `auth.defaultRole` (ADR 0033): every role can be told apart, nothing is set
+    /// that its role ignores, and the default role is one of the roles.
+    fn roles(&mut self, auth: &Auth) {
+        use AuthPermission::{AgentInvoke, AgentRead, ArtifactRead, ThreadRead, ThreadWrite};
+        let mut names: Vec<&str> = Vec::new();
+        match &auth.roles {
+            // The built-in roles.
+            None => names.extend(["user", "admin"]),
+            Some(roles) if roles.is_empty() => self.invalid(
+                "auth.roles",
+                "at least one role is needed (leave the key out for the built-in user and admin)",
+            ),
+            Some(roles) => {
+                for (name, role) in roles {
+                    let at = child("auth.roles", name);
+                    // A role is compared exactly: a space around it is a role nobody has.
+                    if name.trim().is_empty() || name.trim() != name {
+                        self.invalid(&at, "a role name is not empty and has no space around it");
+                    }
+                    names.push(name);
+                    for (i, permission) in role.permissions.iter().enumerate() {
+                        if role.permissions[..i].contains(permission) {
+                            self.invalid(
+                                format!("{at}.permissions[{i}]"),
+                                format!("{} is listed twice", permission.as_str()),
+                            );
+                        }
+                    }
+                    let holds = |wanted: &[AuthPermission]| {
+                        role.permissions.iter().any(|p| wanted.contains(p))
+                    };
+                    if role.scope.is_some() && !holds(&[ThreadRead, ThreadWrite, ArtifactRead]) {
+                        self.invalid(
+                            format!("{at}.scope"),
+                            "only with a role that holds thread.read, thread.write or \
+                             artifact.read: it would silently do nothing",
+                        );
+                    }
+                    if let Some(agents) = &role.agents {
+                        if !holds(&[AgentRead, AgentInvoke]) {
+                            self.invalid(
+                                format!("{at}.agents"),
+                                "only with a role that holds agent.read or agent.invoke: it \
+                                 would silently do nothing",
+                            );
+                        } else if agents.is_empty() {
+                            self.invalid(
+                                format!("{at}.agents"),
+                                "at least one agent id, or \"*\" for every agent",
+                            );
+                        }
+                        for (i, agent) in agents.iter().enumerate() {
+                            if agent.trim().is_empty() {
+                                self.invalid(
+                                    format!("{at}.agents[{i}]"),
+                                    "an agent id is not empty",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(Some(default)) = &auth.default_role
+            && !names.contains(&default.as_str())
+        {
+            self.invalid(
+                "auth.defaultRole",
+                format!("not one of the roles ({})", names.join(", ")),
+            );
         }
     }
 
