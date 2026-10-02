@@ -24,6 +24,7 @@ globalThis.ResizeObserver ??= class {
 
 const thread = (id: string, title: string, description?: string): ApiThread => ({
   id,
+  owner: "dev@example.com",
   title,
   ...(description ? { description } : {}),
   target: { agentId: "coder" },
