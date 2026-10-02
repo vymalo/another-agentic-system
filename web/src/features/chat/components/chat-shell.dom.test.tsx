@@ -441,25 +441,26 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => within(log()).getByText("echo go on"));
   });
 
-  it("while the agent works the box is open for drafting, Enter does not send, and the button says Stop", async () => {
+  it("while the agent works the box is open: Stop is always there, a draft brings Send, and Stop keeps the draft", async () => {
     const id = await makeThread("slow work", "reviewer", true);
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Working…"));
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
     expect(box.disabled).toBe(false);
+    // nothing to send yet: Stop alone (sending while the agent works is chat-shell-steer's)
     expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
     fireEvent.change(box, { target: { value: "a draft for later" } });
-    fireEvent.keyDown(box, { key: "Enter" });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([]);
-    expect(box.value).toContain("a draft for later");
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(stateBadge().textContent).toBe("Stopped"));
-    // the draft is still there, and the button is Send again
+    // nothing was sent, the draft is still there, and the button is the plain Send again
+    expect(calls.filter((c) => c.startsWith("POST /agui/agents"))).toEqual([]);
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe(
       "a draft for later",
     );
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delivery options" })).toBeNull();
   });
 
   it("Export JSON downloads the whole thread as a file, through the API client", async () => {

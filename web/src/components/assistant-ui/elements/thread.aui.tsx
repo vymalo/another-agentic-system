@@ -18,6 +18,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnswerBubble } from "@/features/chat/components/answer-bubble";
 import { TurnCards } from "@/features/chat/components/cards/turn-cards";
+import { DeliveryNote } from "@/features/chat/components/delivery-note";
 import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { useThreadView } from "@/features/chat/components/thread-view";
@@ -236,6 +237,7 @@ export const UserMessage: FC = () => {
           </div>
         </WithTime>
       )}
+      {editing ? null : <DeliveryNote />}
       {editing ? null : (
         <div className="mt-0.5 flex items-center gap-0.5 text-muted-foreground">
           <MessageBranches seq={seq} />
