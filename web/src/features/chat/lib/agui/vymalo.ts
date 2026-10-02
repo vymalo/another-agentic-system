@@ -95,6 +95,9 @@ export type StatusContent = WithActor<{ status: AgentStatus; detail?: string }>;
 export const ARTIFACT_KINDS = ["branch", "checks", "pull_request", "file"] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
+/** What a person can look at in a kept file without downloading it (`preview` of a `file`). */
+export type FilePreview = "image" | "text";
+
 /**
  * An artifact as the projection typed it (docs/api/agui.md, "Typed artifacts"): `kind` and the
  * fields its card needs. An artifact of an older orchestrator, or of a kind this UI does not know,
@@ -114,6 +117,18 @@ export type ArtifactContent = WithActor<{
   url?: string;
   number?: number;
   passed?: boolean;
+  /**
+   * A file the artifact store kept (ADR 0032): where the API serves it (`href`, always
+   * `/api/threads/<thread>/artifacts/<sha256>`), its hash, size in bytes, the agent's file name
+   * (untrusted text) and how it can be previewed (`null`: an attachment only). Present together,
+   * and only for a `kind: "file"` whose `href` says the same hash as `sha256`; a file that was not
+   * kept has none of them.
+   */
+  href?: string;
+  sha256?: string;
+  size?: number;
+  filename?: string;
+  preview?: FilePreview | null;
 }>;
 export type ErrorContent = WithActor<{ message: string; retryable: boolean }>;
 export type ActionContent = WithActor<{
@@ -333,6 +348,31 @@ export function parseStatus(v: unknown): StatusContent | null {
   };
 }
 
+/** Where the API serves a thread's file: the one place a file is ever fetched from. */
+const FILE_HREF = /^\/api\/threads\/[A-Za-z0-9_-]{1,64}\/artifacts\/([0-9a-f]{64})$/;
+
+/**
+ * The fields of a kept file (`href`, `sha256`, `size`, `filename?`, `preview`), or nothing: a
+ * payload whose `href` is not the API's route, whose hash is not the one in the `href` or whose
+ * size is not a count of bytes is not a file this app offers. The agent's `uri` is never a source.
+ */
+function readKeptFile(v: Record<string, unknown>): Partial<ArtifactContent> {
+  const href = str(v.href);
+  const sha256 = str(v.sha256);
+  const size = v.size;
+  if (href === undefined || sha256 === undefined) return {};
+  if (FILE_HREF.exec(href)?.[1] !== sha256) return {};
+  if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) return {};
+  const filename = str(v.filename);
+  return {
+    href,
+    sha256,
+    size,
+    ...(filename ? { filename } : {}),
+    preview: v.preview === "image" || v.preview === "text" ? v.preview : null,
+  };
+}
+
 export function parseArtifact(v: unknown): ArtifactContent | null {
   if (!isRecord(v)) return null;
   const name = str(v.name);
@@ -349,11 +389,10 @@ export function parseArtifact(v: unknown): ArtifactContent | null {
   const url = link?.startsWith("https://") ? link : undefined;
   const number = positiveInt(v.number);
   const actor = readActor(v.actor);
+  const resolved =
+    kind && (ARTIFACT_KINDS as readonly string[]).includes(kind) ? (kind as ArtifactKind) : "file";
   return {
-    kind:
-      kind && (ARTIFACT_KINDS as readonly string[]).includes(kind)
-        ? (kind as ArtifactKind)
-        : "file",
+    kind: resolved,
     name,
     ...(mimeType !== undefined ? { mimeType } : {}),
     ...(uri !== undefined ? { uri } : {}),
@@ -365,6 +404,7 @@ export function parseArtifact(v: unknown): ArtifactContent | null {
     ...(url ? { url } : {}),
     ...(number !== undefined ? { number } : {}),
     ...(typeof v.passed === "boolean" ? { passed: v.passed } : {}),
+    ...(resolved === "file" ? readKeptFile(v) : {}),
     ...(actor ? { actor } : {}),
     ...readAt(v),
   };
