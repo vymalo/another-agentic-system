@@ -40,6 +40,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **A fork opens with its copied history and a marker** (2026-10-01, [ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)):
 > the `thread_forked` event is a run of its own with a `vymalo.fork` activity, and every `STATE_SNAPSHOT` from it on says
 > `thread.forkedFrom`; see [Forks](#forks).
+> **Working text and the answer** (2026-10-02, [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md)): an
+> agent's words may be marked by what they are for, `metadata["vymalo.purpose"]` `"working"` or `"answer"` on the
+> `TEXT_MESSAGE_START`, and a live message that turns out to be working text says so on its `END`; see
+> [The agent's words](#the-agents-words).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -127,7 +131,7 @@ gets everything.
 |---|---|---|
 | `user_message{text}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor"}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
 | `user_message` | Run open (a follow-up mid-run) | The user triad inside the current run |
-| `agent_message{messageId, text, final:true}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId}` → `CONTENT` → `END` |
+| `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
 | `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
 | `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
 | `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
@@ -208,6 +212,28 @@ projection emits, **before** the status activity and inside the open invocation:
   as before. `working` keeps its `detail` too: it is a step, not an answer.
 - The interrupt of an `input_required`/`auth_required` still carries the words as its `message`.
 
+**What the words are for** ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md)). An agent's text in a
+turn is of two kinds: what it says while it works (the sentence before a tool call) and what the turn ends with. A2A
+already tells them apart, by the status the text is stated on, and the adapter writes it down on the
+`agent_message`: `purpose: "working"` for a `working` status, `purpose: "answer"` for `completed`, `input_required`
+and `auth_required`. A plain A2A `Message` and the words of any other status say nothing (no member), and neither
+does any log written before the field existed. The projection puts it on the message's `START`:
+
+| `agent_message` | `TEXT_MESSAGE_START.metadata` |
+|---|---|
+| `purpose: "working"` | `{"vymalo.actor", "vymalo.purpose": "working"}` |
+| `purpose: "answer"` | `{"vymalo.actor", "vymalo.purpose": "answer"}`, and `"vymalo.via": "turn_output"` when `via` is `turn_output` (reserved: nothing writes it yet) |
+| no `purpose` | `{"vymalo.actor"}`, as before |
+
+- **A generic AG-UI client reads today's transcript**: the working sentences and the answer are all assistant
+  messages, in order. A screen that knows the key can keep the answer in the conversation and put the working text with
+  the steps. The words stated on a status with no stream marker are the [status words](#the-agents-words) above, `st-<seq>`,
+  and carry no purpose: an agent that does not state its reply as a stream gets the screen's fallback (in an ended turn
+  the last text is the answer).
+- **Rejected: `REASONING_*`.** A live text message cannot become a reasoning message after the fact, so a generic client
+  would show both; with metadata it shows the transcript it always showed.
+- A message that is still open when a connection opens is told again with the same metadata.
+
 ### Live text
 
 The words of a reply that is still being written ([ADR 0027](../decisions/0027-live-text-relayed-not-stored.md),
@@ -221,6 +247,7 @@ ignores them still reads every reply, whole, when the log says it.
 | A piece of reply `S` that starts at offset 0, with the invocation open | `TEXT_MESSAGE_START{messageId:S, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.live":{}}}` → `TEXT_MESSAGE_CONTENT{delta, subagentRunId, metadata:{"vymalo.live":{offset}}}` |
 | A later piece of `S` | `TEXT_MESSAGE_CONTENT{delta: the part beyond what was said, metadata:{"vymalo.live":{offset}}}`. An overlap is trimmed, a piece that repeats what was said says nothing, and a gap is ignored until the text is sent again from offset 0 |
 | The log's final `agent_message` with the id `S` (`S` open) | `TEXT_MESSAGE_CONTENT{delta: the rest, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}` with the event's `id:`. A final that does not start with what was said replaces it: `offset: 0`, the whole text |
+| The same, when the log marked `S` **working text** (`purpose: "working"`) | The same frames, and the `END` says it: `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true, purpose:"working"}}}`. The live message opened before anyone knew what its words were for; this is where a screen learns they were not the answer. An answer's `END` says nothing more than `final: true` |
 | The stream gives up, another stream opens, or the invocation or the run closes first | `TEXT_MESSAGE_END{metadata:{"vymalo.live":{abandoned:true}}}`, before the frame that closes the invocation or the run. A reply the log says later under that id is said under `<id>~final` (an id is never reused on a stream) |
 
 - **`offset`** is the number of UTF-16 code units already said before the delta (the unit of a browser's strings), so
@@ -1272,7 +1299,9 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
-| Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |
+| An agent message's `TEXT_MESSAGE_START` | `metadata["vymalo.purpose"]` | `"working"` or `"answer"` (ADR 0031): what the words are for, when the log says. No member when it does not |
+| The same `START`, beside `"answer"` | `metadata["vymalo.via"]` | `"turn_output"`: how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet |
+| Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, with `purpose: "working"` when the log marked that message working text (ADR 0031); `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |
 | `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?, forkedFrom?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
 | `STATE_SNAPSHOT.snapshot` | `thread.forkedFrom` | Only on a thread made by a fork, from its `thread_forked` on (ADR 0029): `{threadId, seq, kind}`, the thread it was cut from, the last event copied and `fork` or `edit`; the same object is `Thread.forkedFrom` of the resource API. A thread that was not forked has no member, as before. [Forks](#forks) |
 | `STATE_SNAPSHOT.snapshot` | `thread.uiCatalog` | Only when the thread has recorded a UI catalog (ADR 0023): `{catalogId, version, digest}` of the current one, the highest version recorded. A screen compares it with its own to decide whether to send its catalog with the next run; a thread without one has no member, as before |

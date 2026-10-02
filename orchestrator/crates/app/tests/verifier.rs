@@ -129,6 +129,7 @@ async fn verifying_with(
             message_id: "m1".into(),
             text: "I fixed the login.".into(),
             is_final: true,
+            purpose: None,
         },
         AgentUpdate::Status {
             state: AgentTaskState::Completed,

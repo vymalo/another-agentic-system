@@ -148,14 +148,22 @@ and **one text part**: the whole text, the concatenation of the stream's chunks.
 How the orchestrator reads a status whose message carries a valid marker (`streamId` of 1 to 128 printable bytes) and a
 text that is not blank:
 
-1. one `agent_message` `{messageId: S, text, final: true}`, under the key `a2a:msg:S` (so a replay, a resubscribe and a
-   poll collapse into one), **then**
+1. one `agent_message` `{messageId: S, text, final: true, purpose}`, under the key `a2a:msg:S` (so a replay, a
+   resubscribe and a poll collapse into one), **then**
 2. the status itself, as before: a `working` status has **no `detail`** (its words are the message), and a turn-ending
    status **keeps its `detail`** (an interrupt and the verifier's summary read it; the projection says words that equal the
    invocation's last final message only once).
 
 A status that carries a step ([`steps-v1.md`](steps-v1.md#3-the-report)) is a step and its text is its label: the marker is
 ignored. A marker that does not validate is ignored and the status is read as plain A2A.
+
+**What the words are for** ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md)). The status the text is
+stated on is what says it, so the agent sends nothing more: the orchestrator marks the `agent_message` `purpose:
+"working"` when the status is `working`, and `purpose: "answer"` when it is `completed`, `input_required` or
+`auth_required`. The words of any other status (a `failed` one) are not marked, and neither is a plain A2A `Message`.
+An agent therefore chooses the status each stream is stated on with some care: the words before a tool call on a
+`working` status, the reply that ends the turn on the status that ends it. A screen shows the answer in the
+conversation and the working text with the steps ([`agui.md`](agui.md#the-agents-words)).
 
 ## 5. What the orchestrator does with a chunk
 

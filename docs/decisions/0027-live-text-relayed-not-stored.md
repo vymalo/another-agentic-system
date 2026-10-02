@@ -4,6 +4,9 @@
   one-second refresh and the 64 KiB bound are defaults taken on it; the owner may revisit them).
   Amends [ADR 0012](0012-ag-ui-user-facing-protocol.md): "AG-UI is a view of the log" becomes "a view
   of the log, plus live frames that are never resume points".
+  Amended (2026-10-02, [ADR 0031](0031-working-text-and-the-turns-answer.md)): a live message may turn out to be
+  working text, not the answer; the `END` that closes it says so (`vymalo.live` `purpose: "working"`) and a screen
+  folds the draft away.
 
 ## Context
 

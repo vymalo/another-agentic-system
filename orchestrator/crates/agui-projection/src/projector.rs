@@ -47,11 +47,11 @@ use orch_agui_proto::{
 };
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
-    ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event, EventBody,
-    ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, Recognised, ReworkData,
-    StepKind, StepPhase, SurfaceOp, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData,
-    UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
-    recognise_artifact, serialized_len,
+    AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event,
+    EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
+    Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadForkedData, ThreadId,
+    ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
+    UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -61,8 +61,8 @@ use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
     ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS,
     ACTIVITY_STEP, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED,
-    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, problem_metadata, response_schema,
-    status_content,
+    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, message_metadata, problem_metadata,
+    response_schema, status_content,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -101,6 +101,11 @@ struct OpenText {
     source_id: String,
     /// The `messageId` on the wire (the same unless a rewrite forced a new message).
     wire_id: agui::MessageId,
+    /// What its words are for, as its `agent_message` said (a connection that opens while the
+    /// message is open is told it again).
+    purpose: Option<MessagePurpose>,
+    /// How an answer was announced, as its `agent_message` said.
+    via: Option<AnswerVia>,
 }
 
 /// What was emitted so far for one agent message id.
@@ -446,7 +451,7 @@ impl Projector {
                 TextMessageStartEvent::new(open.wire_id.clone(), TextMessageRole::Assistant);
             start.name = Some(inv.name.clone());
             start.subagent_run_id = Some(inv.id.clone());
-            start.base.metadata = Some(actor_metadata(&inv.actor));
+            start.base.metadata = Some(message_metadata(&inv.actor, open.purpose, open.via));
             out.push(start.into());
             let mut content =
                 TextMessageContentEvent::new(open.wire_id.clone(), record.text.clone());
@@ -639,7 +644,7 @@ impl Projector {
         let mut start = TextMessageStartEvent::new(wire_id.clone(), TextMessageRole::Assistant);
         start.name = Some(inv.name.clone());
         start.subagent_run_id = Some(inv.id.clone());
-        start.base.metadata = Some(actor_metadata(&ev.actor));
+        start.base.metadata = Some(message_metadata(&ev.actor, d.purpose, d.via));
         out.push(start.into());
         let mut content = TextMessageContentEvent::new(wire_id.clone(), d.text.clone());
         content.subagent_run_id = Some(inv.id.clone());
@@ -658,6 +663,8 @@ impl Projector {
             self.open_text = Some(OpenText {
                 source_id: d.message_id.clone(),
                 wire_id,
+                purpose: d.purpose,
+                via: d.via,
             });
         }
     }

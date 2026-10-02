@@ -591,6 +591,7 @@ fn row14_message_keeps_state() {
             message_id: "m1".into(),
             text: "hello".into(),
             is_final: true,
+            purpose: None,
         },
     };
     for s in OPEN {
@@ -601,9 +602,42 @@ fn row14_message_keeps_state() {
             [&EventBody::AgentMessage(AgentMessageData {
                 text: "hello".into(),
                 message_id: "m1".into(),
-                is_final: true
+                is_final: true,
+                purpose: None,
+                via: None,
             })]
         );
+    }
+}
+
+#[test]
+fn row14_message_copies_what_its_words_are_for_to_the_event() {
+    for purpose in [MessagePurpose::Working, MessagePurpose::Answer] {
+        let input = Input::Agent {
+            agent: agent(),
+            revision: None,
+            update: AgentUpdate::Message {
+                message_id: "m1".into(),
+                text: "hello".into(),
+                is_final: true,
+                purpose: Some(purpose),
+            },
+        };
+        for s in OPEN {
+            let (next, cmds) = run(s, &input);
+            assert_eq!(next, s);
+            assert_eq!(
+                bodies(&cmds),
+                [&EventBody::AgentMessage(AgentMessageData {
+                    text: "hello".into(),
+                    message_id: "m1".into(),
+                    is_final: true,
+                    purpose: Some(purpose),
+                    // reserved: nothing in the core says how an answer was announced yet
+                    via: None,
+                })]
+            );
+        }
     }
 }
 

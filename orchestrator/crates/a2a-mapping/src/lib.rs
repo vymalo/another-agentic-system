@@ -36,7 +36,10 @@
 //! never holds one (chunks are transient), so a snapshot skips an artifact that carries the entry.
 //! The agent states the whole text once, in a status message whose metadata names the stream
 //! (`{streamId}`) and whose text is the whole reply: that maps to one
-//! `AgentUpdate::Message { message_id: <stream id>, text, is_final: true }` first, then the status
+//! `AgentUpdate::Message { message_id: <stream id>, text, is_final: true, purpose }` first (ADR
+//! 0031: `purpose` is `working` for a `working` status and `answer` for `completed`,
+//! `input_required` and `auth_required`; a plain A2A `Message`, and the words of any other
+//! status, are not marked), then the status
 //! (a `working` one without a `detail`: its words are the message; a turn-ending one keeps its
 //! `detail`, which the interrupt and the verifier read, and the projection says words equal to the
 //! last final message only once). A status that is a step is a step and its text is its label: the
@@ -88,8 +91,9 @@ use a2a::{
     TaskStatus,
 };
 use orch_core::{
-    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, STEPS_EXTENSION, StepKind,
-    StepOutput, StepReport, StepState, TEXT_STREAM_EXTENSION, check_operations,
+    A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, MessagePurpose,
+    STEPS_EXTENSION, StepKind, StepOutput, StepReport, StepState, TEXT_STREAM_EXTENSION,
+    check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -277,6 +281,7 @@ fn status_envelopes(
                         message_id: stream_id.clone(),
                         text: text.clone(),
                         is_final: true,
+                        purpose: purpose_of(state),
                     }),
                     live: None,
                 });
@@ -292,6 +297,22 @@ fn status_envelopes(
         }
     }
     out
+}
+
+/// What the words an agent stated on a status in `state` are for (ADR 0031): working text on a
+/// `working` status, the turn's answer on a status that ends the turn, and nothing said on any
+/// other (a failure's words are its error, not an answer).
+fn purpose_of(state: Option<AgentTaskState>) -> Option<MessagePurpose> {
+    match state? {
+        AgentTaskState::Working => Some(MessagePurpose::Working),
+        AgentTaskState::Completed
+        | AgentTaskState::InputRequired
+        | AgentTaskState::AuthRequired => Some(MessagePurpose::Answer),
+        AgentTaskState::Submitted
+        | AgentTaskState::Failed
+        | AgentTaskState::Canceled
+        | AgentTaskState::Rejected => None,
+    }
 }
 
 /// The longest stream id an agent may send, in bytes (`docs/api/text-stream-v1.md`).
@@ -837,6 +858,8 @@ impl StreamMapper {
                     message_id: m.message_id.clone(),
                     text,
                     is_final: true,
+                    // a plain A2A `Message` says nothing about what its words are for
+                    purpose: None,
                 }),
                 live: None,
             }));
@@ -1127,7 +1150,8 @@ mod tests {
             Some(AgentUpdate::Message {
                 message_id: "m-9".into(),
                 text: "hello".into(),
-                is_final: true
+                is_final: true,
+                purpose: None
             })
         );
     }
@@ -2114,7 +2138,8 @@ mod tests {
             Some(AgentUpdate::Message {
                 message_id: "S".into(),
                 text: "Let me look at the repository.".into(),
-                is_final: true
+                is_final: true,
+                purpose: Some(MessagePurpose::Working)
             })
         );
         assert_eq!(
@@ -2144,7 +2169,8 @@ mod tests {
             assert_eq!(envs.len(), 2);
             assert!(matches!(
                 &envs[0].update,
-                Some(AgentUpdate::Message { message_id, .. }) if message_id == "S"
+                Some(AgentUpdate::Message { message_id, purpose, .. })
+                    if message_id == "S" && *purpose == Some(MessagePurpose::Answer)
             ));
             assert_eq!(
                 envs[1].update,
@@ -2155,6 +2181,52 @@ mod tests {
                 "the interrupt and the verifier's summary read it"
             );
         }
+    }
+
+    #[test]
+    fn stated_words_are_marked_by_the_status_they_came_on() {
+        let purpose = |state| {
+            let m = marked("sm-4", json!("S"), "Some words.");
+            let envs = ok(StreamMapper::default().map(status_update(state, Some(m))));
+            match &envs[0].update {
+                Some(AgentUpdate::Message { purpose, .. }) => *purpose,
+                other => panic!("not a message: {other:?}"),
+            }
+        };
+        // a `working` status: said while the agent goes on; a status that ends the turn: the answer
+        assert_eq!(purpose(TaskState::Working), Some(MessagePurpose::Working));
+        assert_eq!(purpose(TaskState::Completed), Some(MessagePurpose::Answer));
+        assert_eq!(
+            purpose(TaskState::InputRequired),
+            Some(MessagePurpose::Answer)
+        );
+        assert_eq!(
+            purpose(TaskState::AuthRequired),
+            Some(MessagePurpose::Answer)
+        );
+        // the words of a failure are its error, not an answer; nothing is said about them
+        assert_eq!(purpose(TaskState::Failed), None);
+        assert_eq!(purpose(TaskState::Canceled), None);
+        assert_eq!(purpose(TaskState::Rejected), None);
+    }
+
+    #[test]
+    fn a_plain_message_is_not_marked_whatever_the_task_is_doing() {
+        // an agent `Message` has no status to read a purpose from, and one that carries the
+        // stream marker in its metadata is still only a message
+        let mut m = StreamMapper::default();
+        let mut message = msg("m-10", Role::Agent, "hello");
+        message.task_id = Some(T.into());
+        message.context_id = Some(C.into());
+        message.metadata = Some(HashMap::from([(
+            TEXT_STREAM_EXTENSION.to_owned(),
+            json!({"streamId": "S"}),
+        )]));
+        let env = only(m.map(StreamResponse::Message(message)));
+        assert!(matches!(
+            env.update,
+            Some(AgentUpdate::Message { purpose: None, .. })
+        ));
     }
 
     #[test]

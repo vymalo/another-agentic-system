@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::event::MessagePurpose;
 use crate::step::StepReport;
 
 /// Protocol-neutral task state reported by an agent (mirrors A2A `TaskState`).
@@ -87,6 +88,9 @@ pub enum AgentUpdate {
         text: String,
         /// `false` for a streamed partial.
         is_final: bool,
+        /// What the words are for in the turn, when the agent's protocol says (ADR 0031): from
+        /// the status they were stated on. `None` for a plain A2A `Message`.
+        purpose: Option<MessagePurpose>,
     },
     /// An A2UI payload the agent sent, already through the envelope check
     /// ([`check_operations`](crate::check_operations)).

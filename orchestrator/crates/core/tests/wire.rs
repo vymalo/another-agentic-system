@@ -54,6 +54,13 @@ fn every_kind_roundtrips_and_never_emits_null() {
             text: "t".into(),
             message_id: "m".into(),
             is_final: false,
+            purpose: None,
+            via: None,
+        }),
+        EventBody::AgentMessage(AgentMessageData {
+            purpose: Some(MessagePurpose::Answer),
+            via: Some(AnswerVia::TurnOutput),
+            ..AgentMessageData::plain("m2", "t")
         }),
         EventBody::AgentStatus(AgentStatusData {
             status: AgentStatus::Canceled,
@@ -310,6 +317,8 @@ fn agent_message_uses_final_and_message_id() {
             text: "t".into(),
             message_id: "m1".into(),
             is_final: true,
+            purpose: None,
+            via: None,
         }),
         Actor::system(),
     );
@@ -317,6 +326,68 @@ fn agent_message_uses_final_and_message_id() {
         serde_json::to_value(&e).unwrap()["data"],
         json!({"text": "t", "messageId": "m1", "final": true})
     );
+}
+
+#[test]
+fn what_the_words_are_for_is_written_only_when_it_is_known() {
+    let marked = |purpose, via| {
+        event(
+            EventBody::AgentMessage(AgentMessageData {
+                purpose,
+                via,
+                ..AgentMessageData::plain("m1", "t")
+            }),
+            Actor::system(),
+        )
+    };
+    let data = |e: &Event| serde_json::to_value(e).unwrap()["data"].clone();
+    assert_eq!(
+        data(&marked(Some(MessagePurpose::Working), None)),
+        json!({"text": "t", "messageId": "m1", "final": true, "purpose": "working"})
+    );
+    assert_eq!(
+        data(&marked(
+            Some(MessagePurpose::Answer),
+            Some(AnswerVia::TurnOutput)
+        )),
+        json!({"text": "t", "messageId": "m1", "final": true, "purpose": "answer", "via": "turn_output"})
+    );
+    // and read back whole
+    for e in [
+        marked(Some(MessagePurpose::Working), None),
+        marked(Some(MessagePurpose::Answer), Some(AnswerVia::TurnOutput)),
+    ] {
+        let back: Event = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+        assert_eq!(back, e);
+    }
+}
+
+#[test]
+fn an_agent_message_logged_before_purpose_existed_still_reads() {
+    // the shape every log held until ADR 0031
+    let old = json!({
+        "seq": 3,
+        "threadId": "00000000-0000-7000-8000-000000000001",
+        "at": "2026-10-01T00:00:00Z",
+        "kind": "agent_message",
+        "actor": {"type": "agent", "name": "coder"},
+        "data": {"text": "t", "messageId": "m1", "final": true}
+    });
+    let e: Event = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        e.body,
+        EventBody::AgentMessage(AgentMessageData::plain("m1", "t"))
+    );
+    // a value this build does not know is refused, never guessed at (closed enums, ADR 0004)
+    let unknown = json!({
+        "seq": 3,
+        "threadId": "00000000-0000-7000-8000-000000000001",
+        "at": "2026-10-01T00:00:00Z",
+        "kind": "agent_message",
+        "actor": {"type": "agent", "name": "coder"},
+        "data": {"text": "t", "messageId": "m1", "final": true, "purpose": "pondering"}
+    });
+    assert!(serde_json::from_value::<Event>(unknown).is_err());
 }
 
 #[test]

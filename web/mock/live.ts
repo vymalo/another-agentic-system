@@ -37,7 +37,7 @@ const KEY = "vymalo.live";
 
 type Ev = Frame["event"];
 type Rewrite =
-  | { kind: "merge"; id: string; sent: string }
+  | { kind: "merge"; id: string; sent: string; working: boolean }
   | { kind: "rename"; from: string; to: string };
 
 export class LiveOverlay {
@@ -63,7 +63,11 @@ export class LiveOverlay {
       const id = typeof e.messageId === "string" ? e.messageId : "";
       if (e.type === "TEXT_MESSAGE_START") {
         if (this.open?.id === id) {
-          rewrite = { kind: "merge", id, sent: this.open.sent };
+          // the log's START says what the words are for (ADR 0031); the END of the live message
+          // repeats it for working text, which is where a screen learns the draft was not the answer
+          const working =
+            (e.metadata as Record<string, unknown> | undefined)?.["vymalo.purpose"] === "working";
+          rewrite = { kind: "merge", id, sent: this.open.sent, working };
           this.remember(id, "merged");
           this.open = null;
           continue; // the live message is open on the wire already
@@ -95,7 +99,15 @@ export class LiveOverlay {
         }
       } else if (e.type === "TEXT_MESSAGE_END" && rewrite) {
         if (rewrite.kind === "merge" && id === rewrite.id) {
-          out.push({ ...frame, event: { ...e, metadata: { [KEY]: { final: true } } } });
+          out.push({
+            ...frame,
+            event: {
+              ...e,
+              metadata: {
+                [KEY]: rewrite.working ? { final: true, purpose: "working" } : { final: true },
+              },
+            },
+          });
           rewrite = undefined;
           continue;
         }

@@ -183,6 +183,7 @@ fn says(text: &str) -> Input {
             message_id: "m".into(),
             text: text.into(),
             is_final: true,
+            purpose: None,
         },
     }
 }
@@ -234,6 +235,7 @@ fn what_is_no_words_for_the_conversation_asks_nothing() {
                 message_id: "m".into(),
                 text: "Wor".into(),
                 is_final: false,
+                purpose: None,
             },
         },
         status(AgentTaskState::Working, None),
@@ -519,6 +521,8 @@ fn agent_says(seq: i64, text: &str) -> Event {
             text: text.into(),
             message_id: format!("m{seq}"),
             is_final: true,
+            purpose: None,
+            via: None,
         }),
     )
 }

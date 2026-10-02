@@ -619,6 +619,8 @@ fn a_message_open_while_a_step_says_something_stays_open() {
                 text: "Wor".to_owned(),
                 message_id: "m".to_owned(),
                 is_final: false,
+                purpose: None,
+                via: None,
             }),
         ),
         step(4, "t/a", &[], Tool, Running, Start),
@@ -629,6 +631,8 @@ fn a_message_open_while_a_step_says_something_stays_open() {
                 text: "Working".to_owned(),
                 message_id: "m".to_owned(),
                 is_final: true,
+                purpose: None,
+                via: None,
             }),
         ),
     ];

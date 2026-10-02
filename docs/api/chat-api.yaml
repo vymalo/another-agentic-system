@@ -620,7 +620,7 @@ components:
       type: string
       enum:
         - user_message        # data: { text, messageId?, runId? }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise)
-        - agent_message       # data: { text, final: bool }  (final=false: streamed partial, replaced by the next agent_message with the same messageId)
+        - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: reserved, nothing writes it yet). Additive.
         - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to)
         - artifact            # data: { name, mimeType?, uri?, text? }  e.g. a branch, a PR URL, a patch
         - thread_state        # data: { state: ThreadState }
@@ -654,6 +654,14 @@ components:
           type: string
           description: "user_message, ui_action: the id of the run the message or action started or continued, when the surface names runs (optional, absent otherwise)."
         final: { type: boolean }
+        purpose:
+          type: string
+          enum: [working, answer]
+          description: "agent_message only (ADR 0031): what the words are for in the agent's turn. `working`: said while the agent works (the sentence before a tool call), stated on a `working` status. `answer`: the words that end the turn, stated on `completed`, `input_required` or `auth_required`. Absent when the protocol does not say (a plain A2A message, a log written before the field existed): a reader treats the last text of an ended turn as its answer."
+        via:
+          type: string
+          enum: [turn_output]
+          description: "agent_message only, with `purpose: answer` (ADR 0031): how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet."
         status:
           type: string
           description: "agent_status: submitted, working, input_required, auth_required, completed, failed or canceled. check_result: pending, passed or failed."

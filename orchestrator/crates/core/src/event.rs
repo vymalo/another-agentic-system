@@ -213,7 +213,56 @@ impl UserMessageData {
     }
 }
 
+/// What an agent's words are for within its turn (ADR 0031).
+///
+/// The adapter reads it off the A2A status the text came in: words stated on a `working` status
+/// are said while the agent is still going (the sentence before a tool call), and words stated
+/// on a status that ends the turn (`completed`, `input_required`, `auth_required`) are what the
+/// turn ends with. A message that came as a plain A2A `Message` says nothing about it, and the
+/// field is absent (as in every log written before it existed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePurpose {
+    /// Working text: said while the agent works, before a tool call or between steps.
+    Working,
+    /// The turn's answer: the words that end the turn.
+    Answer,
+}
+
+impl MessagePurpose {
+    /// The wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessagePurpose::Working => "working",
+            MessagePurpose::Answer => "answer",
+        }
+    }
+}
+
+/// How an answer was announced, when it was not by the status that ends the turn (ADR 0031).
+///
+/// Reserved: nothing produces it yet. The `turn_output` thread tool will (an agent that
+/// announces its answer and goes on working). It is a closed enum, so a new way is a new variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerVia {
+    /// The agent called the `turn_output` thread tool.
+    TurnOutput,
+}
+
+impl AnswerVia {
+    /// The wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnswerVia::TurnOutput => "turn_output",
+        }
+    }
+}
+
 /// `data` of an `agent_message`.
+///
+/// `purpose` and `via` are absent when nothing says (a plain A2A `Message`, and every log written
+/// before ADR 0031), never `null`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMessageData {
@@ -224,6 +273,25 @@ pub struct AgentMessageData {
     /// `false` for a streamed partial.
     #[serde(rename = "final")]
     pub is_final: bool,
+    /// What the words are for in the turn, when the agent's protocol says ([`MessagePurpose`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<MessagePurpose>,
+    /// How an answer was announced, when it was not by the turn's last status ([`AnswerVia`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<AnswerVia>,
+}
+
+impl AgentMessageData {
+    /// A final message that says nothing about its purpose: what a plain A2A `Message` is.
+    pub fn plain(message_id: impl Into<String>, text: impl Into<String>) -> Self {
+        AgentMessageData {
+            text: text.into(),
+            message_id: message_id.into(),
+            is_final: true,
+            purpose: None,
+            via: None,
+        }
+    }
 }
 
 /// `data` of an `agent_status`.

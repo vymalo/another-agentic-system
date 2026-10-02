@@ -27,8 +27,9 @@ mod verify;
 pub use agent::{AgentTaskState, AgentUpdate};
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
-    Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData,
-    Event, EventBody, EventKind, JobStartedData, Origin, ThreadStateData, UserMessageData,
+    Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
+    ErrorData, Event, EventBody, EventKind, JobStartedData, MessagePurpose, Origin,
+    ThreadStateData, UserMessageData,
 };
 pub use extension::{
     KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,

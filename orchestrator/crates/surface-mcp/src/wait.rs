@@ -431,12 +431,16 @@ mod tests {
             text: "half a sen".to_owned(),
             message_id: "m".to_owned(),
             is_final: false,
+            purpose: None,
+            via: None,
         });
         assert_eq!(describe(&event(2, partial)), None);
         let long = EventBody::AgentMessage(AgentMessageData {
             text: "x".repeat(1000),
             message_id: "m".to_owned(),
             is_final: true,
+            purpose: None,
+            via: None,
         });
         let line = describe(&event(3, long)).unwrap();
         assert!(line.chars().count() <= MAX_MESSAGE_CHARS + 3, "{line}");

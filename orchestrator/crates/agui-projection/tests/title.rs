@@ -237,6 +237,8 @@ fn a_rename_is_a_resume_point_only_when_no_message_is_open() {
                 text: "Wor".to_owned(),
                 message_id: "m1".to_owned(),
                 is_final: false,
+                purpose: None,
+                via: None,
             }),
         ),
         rename(4, "Mine"),

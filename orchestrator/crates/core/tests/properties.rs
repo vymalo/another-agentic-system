@@ -53,7 +53,8 @@ fn arb_input() -> impl Strategy<Value = Input> {
             update: AgentUpdate::Message {
                 message_id: "m".into(),
                 text: "t".into(),
-                is_final: true
+                is_final: true,
+                purpose: None,
             }
         }),
         (any::<bool>(), "[a-z]{1,5}")
