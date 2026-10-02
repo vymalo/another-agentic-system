@@ -138,6 +138,8 @@ struct Loaded {
     state: ThreadState,
     /// The number of the thread's current job (ADR 0020).
     job: u32,
+    /// The ids of the MCP servers attached to the thread when it was read (ADR 0024).
+    tools: Vec<String>,
     binding: orch_ports::AgentBinding,
     /// The last event the thread copied from its parent, when it is a fork (ADR 0029): the
     /// events `1..=cut` are the conversation its first task is told.
@@ -428,6 +430,7 @@ impl<P: Ports> Dispatcher<P> {
             ctx,
             state: thread.state,
             job: thread.job.number,
+            tools: thread.job.tools,
             binding,
             forked_at: thread.forked_from.map(|origin| origin.seq),
         }))
@@ -484,6 +487,7 @@ impl<P: Ports> Dispatcher<P> {
             ctx,
             state,
             job,
+            tools,
             binding,
             forked_at,
         }) = self.load(&row).await?
@@ -602,9 +606,15 @@ impl<P: Ports> Dispatcher<P> {
             content,
             release,
             ui_catalog,
-            // Who the agent is to be given the thread's tools as. The adapter turns it into a
-            // token when it sends, if the card lists the extension; nothing of it is stored.
-            thread_tools: Some(ToolsGrant::main(row.thread_id, job, ctx.agent.clone())),
+            // Who the agent is to be given the thread's tools as, and which servers are attached
+            // that it may use (ids, names and descriptions: no URL, no credential). The adapter
+            // turns it into a token when it sends, if the card lists the extension; nothing of
+            // it is stored. The servers are read now, not when the person attached them, so a
+            // retry sends what is attached at the retry.
+            thread_tools: Some(
+                ToolsGrant::main(row.thread_id, job, ctx.agent.clone())
+                    .with_attached(self.app.attached_for(&ctx.agent, &tools)),
+            ),
             history,
         };
         match self.app.ports().agents().send_stream(req).await {
@@ -919,6 +929,7 @@ impl<P: Ports> Dispatcher<P> {
             ctx,
             state,
             job,
+            tools: _,
             binding,
             forked_at: _,
         }) = self.load(&row).await?

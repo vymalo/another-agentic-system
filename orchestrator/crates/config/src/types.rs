@@ -111,6 +111,11 @@ pub struct Config {
     /// Authentication.
     #[serde(default)]
     pub auth: Auth,
+    /// The MCP servers a person may attach to a conversation (ADR 0024), in the order the web
+    /// lists them. Absent or empty: nothing is attachable. At most 64.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64))]
+    pub tool_servers: Vec<ToolServer>,
 }
 
 /// What this process runs. A closed enum owned by the host library (`adam-host`); the names are
@@ -1368,4 +1373,63 @@ pub struct Jwt {
 
 fn default_user_claim() -> String {
     "email".to_owned()
+}
+
+/// The default of `toolServers[].timeoutSecs`.
+pub const DEFAULT_TOOL_SERVER_TIMEOUT_SECS: u64 = 120;
+
+/// An MCP server a person may attach to a conversation (ADR 0024, `thread-tools/v1`). The orchestrator calls it for the agent and holds its credentials: they are secret references
+/// and appear in no event, no API answer, no log line and no agent message. A person cannot enter
+/// a URL: this list is the deployment's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolServer {
+    /// The server's id: `a-z`, `0-9` and `-`, starting with a letter or a digit, 1 to 31
+    /// characters, unique in the list. No `_`, so the first `__` of a relayed tool's name
+    /// (`<id>__<tool>`) is the split.
+    #[schemars(length(min = 1))]
+    pub id: String,
+    /// The name the picker and the steps show, 1 to 80 characters.
+    #[schemars(length(min = 1))]
+    pub name: String,
+    /// What the server is for, at most 500 characters. The web shows it, and the agent is told it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The server's MCP endpoint (streamable HTTP), `http` or `https`, with a host and no user
+    /// name, password, query or fragment: a credential goes in `bearer` or `headers`.
+    #[schemars(length(min = 1))]
+    pub url: String,
+    /// The icon the web draws for the server and for its steps: a `data:` URI,
+    /// `data:image/svg+xml;base64,...` (or `image/png`, `image/webp`), at most 8 KiB. An icon at a
+    /// URL is never fetched (open question 38), and the icons the server itself offers are
+    /// dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// A bearer token the server wants, sent as `Authorization: Bearer <value>` on the
+    /// orchestrator's own requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer: Option<SecretRef>,
+    /// Further headers the server wants: the header's name to a secret reference that holds its
+    /// value. `Authorization` (use `bearer`), `Accept`, `Content-Type`, `Host`, `Mcp-Session-Id`,
+    /// `Mcp-Protocol-Version` and `Last-Event-ID` are refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, SecretRef>,
+    /// An allow-list of the server's own tool names to relay (default: every tool whose name the
+    /// relay can expose: `a-z`, `A-Z`, `0-9`, `_` and `-`, not starting with `_`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    pub tools: Option<Vec<String>>,
+    /// The ids of the agents the server may be attached for (default: every agent). A thread
+    /// whose agent is not listed cannot attach it (422).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    pub agents: Option<Vec<String>>,
+    /// Seconds one call may take, 1 to 600 (default 120).
+    #[serde(default = "default_tool_server_timeout_secs")]
+    #[schemars(range(min = 1, max = 600))]
+    pub timeout_secs: u64,
+}
+
+fn default_tool_server_timeout_secs() -> u64 {
+    DEFAULT_TOOL_SERVER_TIMEOUT_SECS
 }

@@ -93,6 +93,7 @@ fn the_example_of_the_contract_is_valid() {
         .env("ORCH_MODEL_API_KEY", "model-key")
         .env("WEBHOOK_GENERIC_SECRET", LONG)
         .env("WEBHOOK_GITHUB_SECRET", LONG)
+        .env("WEBSEARCH_TOKEN", "search-token")
         .file("/run/secrets/registry-agent-token", "agent-token\n")
         .file("/run/secrets/thread-tools", &format!("{LONG}\n"));
     let valid = load(&documented_example(), &fake).unwrap_or_else(|e| panic!("{}", render(&e)));
@@ -140,6 +141,19 @@ fn the_example_of_the_contract_is_valid() {
     );
     assert_eq!(valid.secrets.webhook_generic.len(), 1);
     assert_eq!(valid.secrets.webhook_github.len(), 1);
+    // the servers a person may attach (ADR 0024)
+    let servers = &c.tool_servers;
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].id, "websearch");
+    assert_eq!(servers[0].agents.as_deref().map(<[String]>::len), Some(2));
+    assert_eq!(
+        valid.secrets.tool_servers["websearch"]
+            .bearer
+            .as_ref()
+            .unwrap()
+            .expose(),
+        "search-token"
+    );
 }
 
 #[test]

@@ -158,6 +158,8 @@ pub struct Setup {
     /// The hosts a `url` part of an artifact is fetched from (`artifacts.fetchHosts`); a host is
     /// `plain`'s own address when the test says so ([`World::plain_host`]).
     pub fetch_plain: bool,
+    /// The MCP servers a person may attach (ADR 0024): the public part of each; none by default.
+    pub tool_servers: Vec<orch_app::ToolServerInfo>,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -203,8 +205,25 @@ impl Default for Setup {
             descriptions: false,
             files: orch_app::FileLimits::default(),
             fetch_plain: false,
+            tool_servers: Vec::new(),
         }
     }
+}
+
+/// The servers of the tool-server scenarios: a web search for every agent and a repositories server
+/// only the coder may have.
+pub fn sample_tool_servers() -> Vec<orch_app::ToolServerInfo> {
+    vec![
+        orch_app::ToolServerInfo {
+            description: Some("Search the web.".to_owned()),
+            ..orch_app::ToolServerInfo::new("websearch", "Web search")
+        },
+        orch_app::ToolServerInfo::new("docs", "Documentation"),
+        orch_app::ToolServerInfo {
+            agents: Some(vec![AgentId::new("coder")]),
+            ..orch_app::ToolServerInfo::new("repos", "Repositories")
+        },
+    ]
 }
 
 /// `plain` requires the verifier `reviewer` (its `AGENTS_FILE` entry says so), which answers as
@@ -249,6 +268,7 @@ pub struct World {
     titles: bool,
     descriptions: bool,
     files: orch_app::FileLimits,
+    tool_servers: Vec<orch_app::ToolServerInfo>,
     /// Where the files are kept: a directory store in a temporary directory that lives as long as
     /// the world, shared by every instance as a shared volume would be.
     pub artifacts: orch_artifacts_fs::FsArtifacts,
@@ -337,6 +357,7 @@ impl World {
             titles: setup.titles,
             descriptions: setup.descriptions,
             files: setup.files,
+            tool_servers: setup.tool_servers,
             artifacts,
             artifacts_dir,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
@@ -409,6 +430,7 @@ impl World {
                     target_gates: self.target_gates.clone(),
                     gate_rules: self.gate_rules.clone(),
                     files: self.files,
+                    tool_servers: self.tool_servers.clone(),
                     ..AppConfig::default()
                 },
             )

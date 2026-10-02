@@ -138,6 +138,93 @@ async fn a_card_that_lists_the_extension_gets_the_endpoint_and_a_token_for_this_
     );
 }
 
+fn servers() -> Vec<orch_core::AttachedServer> {
+    vec![
+        orch_core::AttachedServer {
+            id: "docs".to_owned(),
+            name: "Documentation".to_owned(),
+            description: None,
+        },
+        orch_core::AttachedServer {
+            id: "websearch".to_owned(),
+            name: "Web search".to_owned(),
+            description: Some("Search the web.".to_owned()),
+        },
+    ]
+}
+
+/// The servers attached to the thread (ADR 0024) ride in the same metadata as the endpoint, by
+/// `server`, `name` and `description` when there is one, and never as anything that says where a
+/// server is or how to reach it; with none attached the member is not there.
+#[tokio::test]
+async fn the_attached_servers_are_named_in_the_metadata_beside_the_endpoint_and_only_then() {
+    let fake = agent(&[THREAD_TOOLS_EXTENSION]).await;
+    let client = client(Some(issuer()));
+    let call = send(
+        &client,
+        &fake,
+        request(&fake, "msg-1", Some(grant().with_attached(servers()))),
+    )
+    .await;
+    let metadata = call.thread_tools.clone().expect("a grant");
+    assert_eq!(
+        metadata["attached"],
+        serde_json::json!([
+            {"server": "docs", "name": "Documentation"},
+            {"server": "websearch", "name": "Web search", "description": "Search the web."},
+        ])
+    );
+    assert_eq!(
+        metadata.as_object().unwrap().len(),
+        4,
+        "url, token, expiresAt and attached: {metadata}"
+    );
+    assert_eq!(call.attached().len(), 2);
+    // the only URL in it is the endpoint's
+    let text = metadata.to_string();
+    assert_eq!(text.matches("http").count(), 1, "{text}");
+
+    // none attached: no member, so an agent that never heard of it reads what it always read
+    let none = send(&client, &fake, request(&fake, "msg-2", Some(grant()))).await;
+    assert!(
+        none.thread_tools
+            .as_ref()
+            .unwrap()
+            .get("attached")
+            .is_none()
+    );
+    assert!(none.attached().is_empty());
+    let (_, _, _) = grant_of(&none);
+}
+
+/// A card without the extension is told nothing, servers attached or not: the message is the one
+/// it got before the extension existed (ADR 0008, fail closed).
+#[tokio::test]
+async fn a_card_without_the_extension_is_not_told_the_servers_either() {
+    let keyed = client(Some(issuer()));
+    for listed in [vec![], vec![UI_CATALOG_EXTENSION]] {
+        let fake = agent(&listed).await;
+        let call = send(
+            &keyed,
+            &fake,
+            request(&fake, "msg-1", Some(grant().with_attached(servers()))),
+        )
+        .await;
+        assert_eq!(call.thread_tools, None, "{listed:?}");
+        assert!(call.attached().is_empty());
+        assert!(call.extensions_header.is_empty(), "{listed:?}");
+    }
+    // and an adapter with no keys gives no grant, so nothing is told
+    let fake = agent(&[THREAD_TOOLS_EXTENSION]).await;
+    let call = send(
+        &client(None),
+        &fake,
+        request(&fake, "msg-2", Some(grant().with_attached(servers()))),
+    )
+    .await;
+    assert_eq!(call.thread_tools, None);
+}
+
 #[tokio::test]
 async fn every_message_gets_a_token_of_its_own() {
     let fake = agent(&[THREAD_TOOLS_EXTENSION]).await;

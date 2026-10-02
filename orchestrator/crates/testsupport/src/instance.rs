@@ -364,6 +364,21 @@ impl Chat {
         .await
     }
 
+    /// `PUT /api/threads/{id}/tools` with `{"servers": servers}`: sets the MCP servers attached to
+    /// the thread (ADR 0024), as `(status, body)`.
+    pub async fn put_tools(&self, id: &str, servers: &[&str]) -> (u16, Value) {
+        Self::finish(
+            self.request(reqwest::Method::PUT, &format!("/api/threads/{id}/tools"))
+                .json(&serde_json::json!({ "servers": servers })),
+        )
+        .await
+    }
+
+    /// `GET /api/tool-servers`: the servers a person may attach, as `(status, body)`.
+    pub async fn tool_servers(&self) -> (u16, Value) {
+        self.get("/api/tool-servers").await
+    }
+
     async fn finish(req: reqwest::RequestBuilder) -> (u16, Value) {
         let resp = req.send().await.unwrap();
         let status = resp.status().as_u16();
@@ -399,6 +414,34 @@ impl Chat {
             None => json!({}),
         };
         let body = Self::agui_input(&thread, "run-1", &[("msg-1", text)], extra);
+        let response = self.agui_post(agent, &body).await;
+        let status = response.status().as_u16();
+        if status == 200 {
+            return (status, json!({ "threadId": thread }));
+        }
+        let bytes = response.bytes().await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// [`Chat::try_create_thread`] with MCP servers to attach (`forwardedProps["vymalo.tools"]`,
+    /// ADR 0024): `(200, {"threadId": …})` when the run was accepted, the status and the problem
+    /// otherwise.
+    pub async fn try_create_thread_with_tools(
+        &self,
+        agent: &str,
+        text: &str,
+        tools: &[&str],
+    ) -> (u16, Value) {
+        let thread = Uuid::now_v7().to_string();
+        let body = Self::agui_input(
+            &thread,
+            "run-1",
+            &[("msg-1", text)],
+            json!({"forwardedProps": {"vymalo.tools": tools}}),
+        );
         let response = self.agui_post(agent, &body).await;
         let status = response.status().as_u16();
         if status == 200 {

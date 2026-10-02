@@ -41,6 +41,11 @@ pub enum AppError {
     /// thread, a family of edits that has no room for another.
     #[error("{0}")]
     Refused(String),
+    /// The request is well formed, but what it names cannot be done: a tool server the deployment
+    /// does not list, or does not offer to the thread's agent, or more servers than a thread may
+    /// have (ADR 0024). The detail names the server's id and never a URL or a credential.
+    #[error("{0}")]
+    Unprocessable(String),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -144,7 +149,9 @@ impl Classify for AppError {
             AppError::NotFound => ErrorClass::NotFound,
             AppError::Forbidden { .. } => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
-            AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
+            AppError::Finished | AppError::Refused(_) | AppError::Unprocessable(_) => {
+                ErrorClass::Rejected
+            }
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -166,6 +173,7 @@ impl Classify for AppError {
             | AppError::Invalid(_)
             | AppError::Finished
             | AppError::Refused(_)
+            | AppError::Unprocessable(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -196,6 +204,7 @@ mod tests {
             AppError::Invalid("bad".into()),
             AppError::Finished,
             AppError::Refused("taken".into()),
+            AppError::Unprocessable("no such server".into()),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -218,7 +227,9 @@ mod tests {
                 AppError::NotFound => ErrorClass::NotFound,
                 AppError::Forbidden { .. } => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
-                AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
+                AppError::Finished | AppError::Refused(_) | AppError::Unprocessable(_) => {
+                    ErrorClass::Rejected
+                }
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
                 AppError::Artifacts(inner) => inner.class(),

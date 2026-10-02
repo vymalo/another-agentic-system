@@ -33,6 +33,7 @@ use crate::ids::{AgentId, UserId};
 use crate::step::{StepReport, StepSource, record_step};
 use crate::thread::ThreadState;
 use crate::title::{ThreadTitledData, TitleSource, TitledBy, check_title, speaks};
+use crate::tools::{ToolsData, changes, normalized};
 use crate::ui::{UiActionData, UiSurfaceData, check_operation_list};
 use crate::ui_catalog::{UiCatalogData, UiDelivery};
 use crate::verify;
@@ -225,6 +226,19 @@ pub enum Input {
         /// The job whose end asked.
         job: u32,
     },
+    /// The user set the MCP servers attached to the thread (ADR 0024): `servers` is the whole set
+    /// they want, by id. Valid in every state, finished or not: the set belongs to the
+    /// conversation and applies to the next message sent. The caller has checked it
+    /// ([`check_servers`](crate::check_servers), and that the deployment lists each server for
+    /// the thread's agent; the core knows ids only). The difference with what the thread has is
+    /// logged as a `tools_attached` and a `tools_detached`; the same set changes nothing and
+    /// logs nothing.
+    SetTools {
+        /// Who set it.
+        user: UserId,
+        /// The servers to have attached.
+        servers: Vec<String>,
+    },
 }
 
 impl Input {
@@ -251,6 +265,7 @@ impl Input {
             Input::SetDescription { .. } => "set description",
             Input::Described { .. } => "description",
             Input::DescriptionDeclined { .. } => "description declined",
+            Input::SetTools { .. } => "set tools",
         }
     }
 }
@@ -881,6 +896,25 @@ fn decide(
         Input::DescriptionDeclined { job: asked } => {
             job.description.answered(*asked);
             Ok((state, vec![]))
+        }
+        Input::SetTools { user, servers } => {
+            let wanted = normalized(servers);
+            let (attached, detached) = changes(&job.tools, &wanted);
+            let mut cmds = Vec::new();
+            if !attached.is_empty() {
+                cmds.push(append(
+                    Actor::user(user),
+                    EventBody::ToolsAttached(ToolsData { servers: attached }),
+                ));
+            }
+            if !detached.is_empty() {
+                cmds.push(append(
+                    Actor::user(user),
+                    EventBody::ToolsDetached(ToolsData { servers: detached }),
+                ));
+            }
+            job.tools = wanted;
+            Ok((state, cmds))
         }
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);

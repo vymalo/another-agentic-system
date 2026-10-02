@@ -9,6 +9,7 @@ use crate::ids::{AgentId, ThreadId, UserId};
 use crate::step::AgentStepData;
 use crate::thread::ThreadState;
 use crate::title::ThreadTitledData;
+use crate::tools::ToolsData;
 use crate::ui::{UiActionData, UiSurfaceData};
 use crate::ui_catalog::UiCatalogData;
 
@@ -51,6 +52,10 @@ pub enum EventKind {
     /// The thread has a new description: the model wrote one, or a person wrote or cleared it
     /// (ADR 0035).
     ThreadDescribed,
+    /// MCP servers were attached to the thread (ADR 0024): the ids of those newly attached.
+    ToolsAttached,
+    /// MCP servers were detached from the thread (ADR 0024): the ids of those detached.
+    ToolsDetached,
 }
 
 impl EventKind {
@@ -74,6 +79,8 @@ impl EventKind {
             EventKind::ThreadTitled => "thread_titled",
             EventKind::ThreadForked => "thread_forked",
             EventKind::ThreadDescribed => "thread_described",
+            EventKind::ToolsAttached => "tools_attached",
+            EventKind::ToolsDetached => "tools_detached",
         }
     }
 }
@@ -449,6 +456,10 @@ pub enum EventBody {
     ThreadForked(ThreadForkedData),
     /// See [`ThreadDescribedData`].
     ThreadDescribed(ThreadDescribedData),
+    /// See [`ToolsData`].
+    ToolsAttached(ToolsData),
+    /// See [`ToolsData`].
+    ToolsDetached(ToolsData),
 }
 
 impl EventBody {
@@ -472,6 +483,8 @@ impl EventBody {
             EventBody::ThreadTitled(_) => EventKind::ThreadTitled,
             EventBody::ThreadForked(_) => EventKind::ThreadForked,
             EventBody::ThreadDescribed(_) => EventKind::ThreadDescribed,
+            EventBody::ToolsAttached(_) => EventKind::ToolsAttached,
+            EventBody::ToolsDetached(_) => EventKind::ToolsDetached,
         }
     }
 
@@ -495,6 +508,8 @@ impl EventBody {
             EventBody::ThreadTitled(d) => serde_json::to_value(d),
             EventBody::ThreadForked(d) => serde_json::to_value(d),
             EventBody::ThreadDescribed(d) => serde_json::to_value(d),
+            EventBody::ToolsAttached(d) => serde_json::to_value(d),
+            EventBody::ToolsDetached(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -520,6 +535,8 @@ impl EventBody {
             EventKind::ThreadTitled => EventBody::ThreadTitled(serde_json::from_value(data)?),
             EventKind::ThreadForked => EventBody::ThreadForked(serde_json::from_value(data)?),
             EventKind::ThreadDescribed => EventBody::ThreadDescribed(serde_json::from_value(data)?),
+            EventKind::ToolsAttached => EventBody::ToolsAttached(serde_json::from_value(data)?),
+            EventKind::ToolsDetached => EventBody::ToolsDetached(serde_json::from_value(data)?),
         })
     }
 }

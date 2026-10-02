@@ -1900,6 +1900,164 @@ async fn migration_0011_upgrades_a_database_that_holds_a_log() {
     );
 }
 
+/// Migration 0012 on a database that has run 0001 to 0011 and holds a thread with a log: the old rows
+/// stay, the old constraint refuses a `tools_attached` and a `tools_detached` event, the new one takes
+/// them and still refuses a kind nobody knows, an event the core wrote reads back, the thread's set of
+/// servers (inside `threads.job`, so no column) survives a read, and the outbox is untouched (attaching
+/// writes no delegation).
+#[tokio::test]
+async fn migration_0012_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+        (
+            "0010_thread_forks.sql",
+            include_str!("../migrations/0010_thread_forks.sql"),
+        ),
+        (
+            "0011_thread_description.sql",
+            include_str!("../migrations/0011_thread_description.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let event = |seq: i64, kind: &'static str, data: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"user\",\"name\":\"alice@example.com\"}', $4::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    event(1, "user_message", r#"{"text":"hi"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for kind in ["tools_attached", "tools_detached"] {
+        assert!(
+            event(2, kind, r#"{"servers":["websearch"]}"#)
+                .execute(&pool)
+                .await
+                .is_err(),
+            "0011 has no event kind `{kind}`"
+        );
+    }
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    event(2, "tools_attached", r#"{"servers":["docs","websearch"]}"#)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    event(3, "tools_detached", r#"{"servers":["docs"]}"#)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        event(4, "tools_nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    // the old rows are as they were, and the new ones read back as the core reads them
+    let events = store.list_events(ThreadId(thread), 0, 10).await.unwrap();
+    assert_eq!(events.len(), 3);
+    assert!(matches!(&events[0].body, EventBody::UserMessage(m) if m.text == "hi"));
+    assert!(matches!(
+        &events[1].body,
+        EventBody::ToolsAttached(d) if d.servers == ["docs", "websearch"]
+    ));
+    assert!(matches!(
+        &events[2].body,
+        EventBody::ToolsDetached(d) if d.servers == ["docs"]
+    ));
+    // the old thread has no servers, and a job ledger that names some reads back
+    let old = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(old.job.tools.is_empty());
+    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+        .bind(thread)
+        .bind(r#"{"tools":["websearch"]}"#)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let set = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(set.job.tools, ["websearch"]);
+    // the outbox kinds are the ones 0011 left
+    let kinds: Vec<(String,)> = sqlx::query_as(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'outbox_kind_check'",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    assert!(
+        kinds[0].0.contains("'description'") && !kinds[0].0.contains("tools"),
+        "{kinds:?}"
+    );
+}
+
 /// A fork outlives its parent: deleting the parent leaves the fork whole, with its own copy of the
 /// log and an origin that no longer names a thread, and a family of edits starts again at the
 /// edit whose parent is gone.

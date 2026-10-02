@@ -22,6 +22,7 @@ mod task;
 mod thread;
 mod thread_tools;
 mod title;
+mod tools;
 mod transition;
 mod ui;
 mod ui_catalog;
@@ -83,6 +84,10 @@ pub use title::{
     MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
     TitleLanguageError, TitleLedger, TitleSource, TitledBy, check_title, check_title_language,
     clean_title, title_prompt, title_retry_prompt,
+};
+pub use tools::{
+    AttachedServer, MAX_ATTACHED_SERVERS, MAX_SERVER_ID_BYTES, ToolsData, ToolsError, attached_by,
+    check_servers, is_valid_server_id,
 };
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
 pub use ui::{

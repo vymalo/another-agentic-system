@@ -43,6 +43,11 @@ pub const ACTIVITY_JOB: &str = "vymalo.job";
 /// `thread_forked` event. A thread that began as a copy of another says so once, where the copy
 /// ends. `title` is the parent's, as it was when the fork was made.
 pub const ACTIVITY_FORK: &str = "vymalo.fork";
+/// Activity type of a change of the MCP servers attached to the thread (`vymalo.tools`, ADR 0024):
+/// the content is `{attached?: [id], detached?: [id], at}`, the server ids that came or went, and
+/// its id is `evt-<seq>` of the `tools_attached` or `tools_detached` event. Ids only: no URL, no
+/// credential.
+pub const ACTIVITY_TOOLS: &str = "vymalo.tools";
 /// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context, at}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 

@@ -50,8 +50,9 @@ use orch_core::{
     AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event,
     EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
     Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData,
-    ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger,
-    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
+    ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, ToolsData, UiActionData,
+    UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
+    recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -60,9 +61,9 @@ use crate::translate::{KnownThread, ThreadView};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
     ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS,
-    ACTIVITY_STEP, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED,
-    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, message_metadata, problem_metadata,
-    response_schema, status_content,
+    ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED,
+    CODE_DELIVERY_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, message_metadata,
+    problem_metadata, response_schema, status_content,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -85,6 +86,13 @@ pub struct ThreadMeta {
     /// gate that requires something keeps the run open while the work is verified and adds
     /// `job` to every `STATE_SNAPSHOT` (ADR 0018); the default requires nothing.
     pub gate: GatePolicy,
+}
+
+/// Which way a `tools_attached` or `tools_detached` event moves the thread's set.
+#[derive(Debug, Clone, Copy)]
+enum ToolsChange {
+    Attached,
+    Detached,
 }
 
 /// A subagent invocation that is open.
@@ -254,6 +262,11 @@ pub struct Projector {
     /// Where the thread was forked from, once its `thread_forked` has been read (ADR 0029): every
     /// `STATE_SNAPSHOT` from then on says so, as the thread's own.
     forked_from: Option<ForkedFrom>,
+    /// The MCP servers attached to the thread now (ADR 0024), by id, sorted: folded from the
+    /// `tools_attached` and `tools_detached` events, like the catalog. They belong to the
+    /// conversation, not to a job, so a new job keeps them. Every `STATE_SNAPSHOT` says them as
+    /// `thread.tools` when there are any.
+    tools: BTreeSet<String>,
     /// The time of the event being applied (RFC 3339), for the frames that close what is open
     /// without an event of their own to say when.
     now: String,
@@ -373,6 +386,7 @@ impl Projector {
             last_final: None,
             steps: BTreeMap::new(),
             forked_from: None,
+            tools: BTreeSet::new(),
             now: String::new(),
         }
     }
@@ -531,6 +545,15 @@ impl Projector {
                 self.pending_error = pending_error;
             }
             EventBody::ThreadForked(d) => self.on_thread_forked(event, d, &mut out),
+            // The set of tools is the thread's, in every snapshot, and the change is a card.
+            EventBody::ToolsAttached(d) => {
+                self.on_tools(event, d, ToolsChange::Attached, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ToolsDetached(d) => {
+                self.on_tools(event, d, ToolsChange::Detached, &mut out);
+                self.pending_error = pending_error;
+            }
         }
         let resumable = self.open_text.is_none();
         let last = out.len().checked_sub(1);
@@ -940,6 +963,59 @@ impl Projector {
         } else {
             self.open_run(format!("run-{}", ev.seq), false, out);
             // the closing snapshot says the new description
+            self.settle(ev, out);
+        }
+    }
+
+    /// MCP servers were attached to the thread, or detached from it (ADR 0024). The set is part of
+    /// the thread in every `STATE_SNAPSHOT` (`thread.tools`), and the change is a card of its own:
+    /// `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?,
+    /// detached?, at}}`, the ids that came or went. Inside a run: the new `STATE_SNAPSHOT`, then the
+    /// card. Outside any run the event opens a producer-initiated run of its own that holds both
+    /// and, with the thread idle or finished, closes as the thread's state closes a run (like a
+    /// late CI card), which a client that has nothing else to show for it drops. Only ids are said:
+    /// the screen knows each server's name and icon from `GET /api/tool-servers`.
+    fn on_tools(
+        &mut self,
+        ev: &Event,
+        d: &ToolsData,
+        change: ToolsChange,
+        out: &mut Vec<agui::Event>,
+    ) {
+        match change {
+            ToolsChange::Attached => self.tools.extend(d.servers.iter().cloned()),
+            ToolsChange::Detached => self.tools.retain(|id| !d.servers.contains(id)),
+        }
+        // Inside a run: the new snapshot. With the thread active and its run closed early, the run
+        // opens (its own snapshot says the new set). Otherwise a run of its own that closes at once,
+        // and the closing snapshot says it, as for a rename.
+        let settles = if self.run.is_some() {
+            out.push(self.state_snapshot());
+            false
+        } else if is_active(self.state) {
+            self.open_run(format!("run-{}", ev.seq), true, out);
+            false
+        } else {
+            self.open_run(format!("run-{}", ev.seq), false, out);
+            true
+        };
+        let mut content = Metadata::new();
+        content.insert(
+            match change {
+                ToolsChange::Attached => "attached",
+                ToolsChange::Detached => "detached",
+            }
+            .to_owned(),
+            Value::from(d.servers.clone()),
+        );
+        out.push(self.activity(
+            format!("evt-{}", ev.seq),
+            ACTIVITY_TOOLS,
+            content,
+            ev,
+            false,
+        ));
+        if settles {
             self.settle(ev, out);
         }
     }
@@ -1889,6 +1965,12 @@ impl Projector {
         // A thread with a description says it; one without says nothing more than before.
         if let Some(description) = &self.meta.description {
             snapshot["thread"]["description"] = Value::from(description.clone());
+        }
+        // The MCP servers attached to the thread (ADR 0024), by id; none says nothing more than
+        // before.
+        if !self.tools.is_empty() {
+            snapshot["thread"]["tools"] =
+                Value::from(self.tools.iter().cloned().collect::<Vec<_>>());
         }
         // The first job says nothing more than before; a later one says which it is.
         if self.job_number > 1 {

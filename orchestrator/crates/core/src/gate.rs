@@ -329,6 +329,12 @@ pub struct Job {
     /// has no description, which is what its thread has.
     #[serde(skip_serializing_if = "DescriptionLedger::is_empty")]
     pub description: DescriptionLedger,
+    /// The MCP servers attached to the thread (ADR 0024): their ids, sorted and unique, at most
+    /// [`MAX_ATTACHED_SERVERS`](crate::MAX_ATTACHED_SERVERS). Belongs to the conversation, not to
+    /// a job: a new job keeps it ([`Job::next`]) until a person detaches a server. A ledger stored
+    /// before the field existed has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
 }
 
 fn is_first_job(number: &u32) -> bool {
@@ -353,6 +359,7 @@ impl Default for Job {
             answer: AnswerLedger::default(),
             title: TitleLedger::default(),
             description: DescriptionLedger::default(),
+            tools: Vec::new(),
         }
     }
 }
@@ -367,7 +374,8 @@ impl Job {
     }
 
     /// The job that follows this one on the same thread (ADR 0020): the next number, the same
-    /// gate and the same UI catalogs (`catalog`), attempt 1 and an empty ledger (`task`,
+    /// gate, the same UI catalogs (`catalog`) and the same attached servers (`tools`), attempt 1
+    /// and an empty ledger (`task`,
     /// `pushed`, `results`, `summary`, `hold`, `branch_problem`, `steps`).
     ///
     /// `verification` is **kept**: it counts the verifications of the thread, so a timer, a
@@ -382,6 +390,7 @@ impl Job {
             catalog: self.catalog.clone(),
             title: self.title,
             description: self.description,
+            tools: self.tools.clone(),
             ..Job::default()
         }
     }

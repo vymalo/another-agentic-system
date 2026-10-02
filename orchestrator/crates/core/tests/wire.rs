@@ -123,6 +123,12 @@ fn every_kind_roundtrips_and_never_emits_null() {
                 release: None,
             },
         }),
+        EventBody::ToolsAttached(ToolsData {
+            servers: vec!["docs".into(), "websearch".into()],
+        }),
+        EventBody::ToolsDetached(ToolsData {
+            servers: vec!["docs".into()],
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());

@@ -16,7 +16,7 @@ use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
-    THREAD_UI_CATALOG_KEY, check_catalog_schemas,
+    THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY, check_catalog_schemas,
 };
 use orch_core::{
     AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UiCatalogData, report,
@@ -58,6 +58,7 @@ pub(crate) async fn run<P: Ports>(
     check_ids(&input)?;
     let gate = gate_request(&input)?;
     let catalog = catalog_request(&input)?;
+    let tools = tools_request(&input)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     let agent = AgentId::new(agent_id);
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
@@ -72,8 +73,11 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
-            gate.as_ref(),
-            catalog.as_ref(),
+            &Requested {
+                gate: gate.as_ref(),
+                catalog: catalog.as_ref(),
+                tools: &tools,
+            },
         )
         .await?
         {
@@ -134,6 +138,32 @@ fn catalog_request(input: &RunAgentInput) -> Result<Option<UiCatalogData>, ApiEr
     Ok(Some(catalog))
 }
 
+/// The MCP servers the run attaches, `forwardedProps["vymalo.tools"]` (ADR 0024): an array of
+/// server ids, `[]` or absent for none. Like the gate it is read on every run, so one that is not an
+/// array of strings is a 400 every time, before anything is written. It applies when the run creates
+/// the thread; on a run that continues one it is ignored (with a warning: use
+/// `PUT /api/threads/{id}/tools`), which is also what makes a retry of the creating run harmless.
+/// Whether each id names a server the deployment offers for the agent, and how many there are, is
+/// decided by [`App::create_thread_as`] (422).
+fn tools_request(input: &RunAgentInput) -> Result<Vec<String>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_TOOLS_KEY))
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(Vec::new());
+    };
+    let malformed =
+        || Problem::bad_request(format!("{THREAD_TOOLS_KEY} must be an array of server ids"));
+    value
+        .as_array()
+        .ok_or_else(malformed)?
+        .iter()
+        .map(|id| id.as_str().map(str::to_owned).ok_or_else(malformed))
+        .collect()
+}
+
 /// Gives the first input that is a message or an action the catalog the run carried, once.
 fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
     match input {
@@ -178,7 +208,8 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::TitleDeclined { .. }
         | Input::SetDescription { .. }
         | Input::Described { .. }
-        | Input::DescriptionDeclined { .. }) => other,
+        | Input::DescriptionDeclined { .. }
+        | Input::SetTools { .. }) => other,
     }
 }
 
@@ -257,8 +288,17 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::TitleDeclined { .. }
         | Input::SetDescription { .. }
         | Input::Described { .. }
-        | Input::DescriptionDeclined { .. } => None,
+        | Input::DescriptionDeclined { .. }
+        | Input::SetTools { .. } => None,
     }
+}
+
+/// What a run asks for beside its messages, read from its `forwardedProps` before anything is
+/// written: the gate, the UI catalog and the MCP servers to attach.
+struct Requested<'a> {
+    gate: Option<&'a GateLayer>,
+    catalog: Option<&'a UiCatalogData>,
+    tools: &'a [String],
 }
 
 /// One look at the thread and one try at doing what the request asks. `None` means "look
@@ -270,9 +310,13 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
-    gate: Option<&GateLayer>,
-    catalog: Option<&UiCatalogData>,
+    requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
+    let Requested {
+        gate,
+        catalog,
+        tools,
+    } = *requested;
     let user = &principal.user;
     // The thread as the log holds it now, if there is one, and the person may act on it: a run
     // writes (a thread someone else owns is not the caller's to run, ADR 0033).
@@ -380,6 +424,7 @@ async fn attempt<P: Ports>(
                 gate: gate.cloned(),
                 origin: Origin::Agui,
                 ui_catalog: catalog.cloned(),
+                tools: tools.to_vec(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -402,6 +447,9 @@ async fn attempt<P: Ports>(
             }
         }
         Some((_, _, projector)) => {
+            if !tools.is_empty() {
+                tracing::warn!(%thread, "{THREAD_TOOLS_KEY} on a run that continues a thread was ignored; use PUT /api/threads/{{id}}/tools");
+            }
             let mut start = None;
             // the catalog goes with the first message or action, which is the input it came with
             let mut carried = catalog.cloned();

@@ -153,6 +153,32 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PublicConfig" }
+  /api/tool-servers:
+    get:
+      operationId: listToolServers
+      summary: The MCP servers a person may attach to a conversation
+      description: |
+        The servers the deployment offers for attaching ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md),
+        the `toolServers` section of [`config.md`](config.md)), in the order the deployment lists them: what
+        the picker shows. A person cannot enter a URL; this list is the deployment's. **Neither a URL nor
+        a header nor a credential is in it**, nor the allow-list of a server's tools, nor its timeout: the
+        orchestrator calls the server for the agent and holds what it needs. `icon` is a `data:` URI the
+        screen draws as it is; an icon at a URL is never offered, and a client never fetches one
+        (open question 38). `agents` says which agents the server may be attached for, and is absent when
+        it may be attached for every agent: a thread whose agent is not listed is refused (`putThreadTools`, 422).
+        An empty list is a deployment with nothing to attach. Never cached. It takes `thread.write`, as
+        attaching does.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.write` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "200":
+          description: The servers, in the deployment's order
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ToolServer" }
   /api/threads:
     get:
       operationId: listThreads
@@ -239,6 +265,42 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "A thread the caller may read and not change (`code: read_only`), or no role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/tools:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    put:
+      operationId: putThreadTools
+      summary: Set the MCP servers attached to a thread
+      description: |
+        Sets the whole set of [MCP servers attached to the thread](../decisions/0024-mcp-tools-attached-per-conversation.md),
+        in any state of the thread, finished ones included (a thread is a conversation: the set applies to the next message
+        sent to the agent). `servers` lists the ids, from `listToolServers`, that should be attached afterwards. What differs
+        from what the thread has is logged as a `tools_attached` and a `tools_detached` event (attributed to the person); the
+        same set writes nothing and is still a 200, so the call is idempotent. The agent is told the attached servers it may
+        use (`attached` of the [`thread-tools/v1`](thread-tools-v1.md#the-attached-member) message) and finds their tools on
+        the thread's endpoint; an agent whose card does not list `thread-tools/v1` gets nothing, which a client says before the
+        person sends (the capabilities document).
+
+        Anyone who may act on the thread (`thread.write`) may attach, the servers the deployment offers for the thread's agent
+        (their `agents`). A server the thread has already is not checked again: a deployment that stopped listing it leaves the
+        thread its attachment, and a person can detach it. A thread the caller may not read is a **404** indistinguishable from
+        one that does not exist; one they may read and not change (an administrator reading another's thread) is a **403**
+        (`code: read_only`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ThreadToolsRequest" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The set after the change
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ThreadTools" }
+        "400": { description: "A body that is not exactly an object with a `servers` array of strings, or an id that is not `^[a-z0-9][a-z0-9-]{0,30}$`", $ref: "#/components/responses/Problem" }
+        "403": { description: "A thread the caller may read and not change (`code: read_only`), or no role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { description: "A server the deployment does not list, or does not offer for the thread's agent, or more than 16 servers; the detail names the server's id, never a URL", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/export:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -677,6 +739,15 @@ components:
             `getThread`, in the export's `thread` and in AG-UI's `STATE_SNAPSHOT.thread`. Additive.
         target: { $ref: "#/components/schemas/AgentTarget" }
         state: { $ref: "#/components/schemas/ThreadState" }
+        tools:
+          type: array
+          maxItems: 16
+          items: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,30}$" }
+          description: |
+            The ids of the MCP servers attached to the thread ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)),
+            sorted: set with `putThreadTools` or when the thread is created, and kept from job to job. Absent when there are none.
+            Present in `GET /api/threads` items, in `getThread`, in the export's `thread` and in AG-UI's
+            `STATE_SNAPSHOT.thread`. Additive.
         job:
           $ref: "#/components/schemas/ThreadJob"
         createdAt: { type: string, format: date-time }
@@ -691,6 +762,27 @@ components:
             threadId: { type: string, format: uuid, description: "The thread it was forked from; absent once that thread is deleted (the fork is whole)" }
             seq: { type: integer, format: int64, minimum: 0, description: "The last event of that thread that was copied" }
             kind: { type: string, enum: [fork, edit], description: "`fork`: from the end of a turn, a conversation of its own; `edit`: a branch made by editing a message" }
+    ToolServer:
+      type: object
+      description: "An MCP server the deployment offers for attaching ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)). No URL, header, credential, tool allow-list or timeout: those belong to the orchestrator."
+      required: [id, name]
+      properties:
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,30}$", description: "What a thread records, and the prefix of the server's tools on the thread's endpoint (`<id>__<tool>`)" }
+        name: { type: string, minLength: 1, maxLength: 80, description: "The name the picker and the steps show" }
+        description: { type: string, maxLength: 500, description: "What the server is for. Absent when the deployment says nothing" }
+        icon: { type: string, pattern: "^data:image/(svg\\+xml|png|webp);base64,", maxLength: 8192, description: "A `data:` URI of at most 8 KiB that the screen draws as it is (an SVG is drawn as an image, never inlined). Never a URL: nothing is fetched. Absent: a generic icon" }
+        agents: { type: array, minItems: 1, items: { type: string }, description: "The agent ids the server may be attached for. Absent: every agent" }
+    ThreadToolsRequest:
+      type: object
+      additionalProperties: false
+      required: [servers]
+      properties:
+        servers: { type: array, items: { type: string }, description: "The ids of the servers to have attached, from `listToolServers`: the whole set, `[]` for none. Repeats and order do not matter; at most 16 distinct ones" }
+    ThreadTools:
+      type: object
+      required: [servers]
+      properties:
+        servers: { type: array, maxItems: 16, items: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,30}$" }, description: "The ids attached after the change, sorted" }
     ForkRequest:
       type: object
       additionalProperties: false
@@ -867,6 +959,8 @@ components:
         - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`, attributed to the person) or the orchestrator had a model write one after the agent's first reply (`source: model`, attributed to the orchestrator, [ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): the model is asked at most twice per thread, and never once a person has renamed it). `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
         - thread_described    # data: { description, source: model|user }  the thread has a new description ([ADR 0035](../decisions/0035-utility-model-tasks.md)): the orchestrator had a model write one when a job ended or paused for the person (`source: model`, attributed to the orchestrator; at most once per job, and only when the conversation grew by `minNewMessages` since the last one) or a person wrote it (`patchThread`, `source: user`, attributed to the person; an empty `description` is the person clearing it). `threads.description` and this event are one commit. Once a person has written or cleared it, the model never writes it again. Additive.
         - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, description?, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's; `description` is the parent's description then (absent when it had none), and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
+        - tools_attached      # data: { servers: [string] }  MCP servers were attached to the thread (ADR 0024): the ids newly attached, sorted, never empty; attributed to the person, in the commit of the first message when the thread was created with servers (after the message), or alone (`putThreadTools`). Ids only: no URL, no credential. Additive. AG-UI says it as a `vymalo.tools` activity and `thread.tools` of the state snapshot.
+        - tools_detached      # data: { servers: [string] }  MCP servers were detached from the thread (ADR 0024): the ids detached, sorted, never empty; attributed to the person, or to the person's fork whose agent may not use a server its copied log had attached. Additive.
     ArtifactFile:
       type: object
       description: "A file kept in the artifact store, as an `artifact` event refers to it (ADR 0032). The bytes are never in the log; `GET /api/threads/{threadId}/artifacts/{sha256}` serves them."
@@ -908,6 +1002,10 @@ components:
         detail:
           type: string
           description: "agent_status: the agent's status message. agent_step: more words about the step (a failure, a result); untrusted text, at most 1000 characters."
+        servers:
+          type: array
+          items: { type: string }
+          description: "tools_attached, tools_detached: the server ids that were attached (or detached) by this event, sorted, never empty. Ids only."
         name: { type: string }
         mimeType: { type: string }
         uri: { type: string }

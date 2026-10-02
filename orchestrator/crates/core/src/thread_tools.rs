@@ -13,6 +13,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ids::{AgentId, ThreadId};
+use crate::tools::AttachedServer;
 
 /// Who is calling the thread's tools: a closed set (ADR 0004).
 ///
@@ -80,10 +81,12 @@ impl<'de> Deserialize<'de> for Caller {
 }
 
 /// What the endpoint's token is minted for, without the token: the thread, the job of the thread
-/// the message belongs to, the agent it is sent to, who calls, and how deep in a chain of asks.
+/// the message belongs to, the agent it is sent to, who calls, how deep in a chain of asks, and the
+/// MCP servers attached to the thread that the agent may use (ADR 0024).
 ///
 /// It rides on the send request (`orch_ports::SendRequest`); only the A2A adapter turns it into a
-/// token, when it sends. Nothing in it is a secret.
+/// token, when it sends. Nothing in it is a secret: the attached servers are named by id, name and
+/// description, never by a URL or a credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolsGrant {
     /// The one thread the token opens.
@@ -96,6 +99,11 @@ pub struct ToolsGrant {
     pub caller: Caller,
     /// 0 for [`Caller::Main`]; for an asked agent, its depth in the chain of asks.
     pub depth: u8,
+    /// The servers attached to the thread, at the moment of the send, that `agent` may use
+    /// (`attached` of the message metadata): sorted by id, at most
+    /// [`MAX_ATTACHED_SERVERS`](crate::MAX_ATTACHED_SERVERS). Empty when there are none, and the
+    /// metadata then has no `attached`.
+    pub attached: Vec<AttachedServer>,
 }
 
 impl ToolsGrant {
@@ -107,7 +115,14 @@ impl ToolsGrant {
             agent,
             caller: Caller::Main,
             depth: 0,
+            attached: Vec::new(),
         }
+    }
+
+    /// The same grant, told of these attached servers.
+    #[must_use]
+    pub fn with_attached(self, attached: Vec<AttachedServer>) -> Self {
+        ToolsGrant { attached, ..self }
     }
 
     /// Whether the fields agree: a job from 1, an `ask:<n>` with n from 1, and depth 0 exactly

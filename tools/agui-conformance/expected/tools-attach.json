@@ -1,0 +1,109 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-7",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-8",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-3",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "text": "echo hi"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "attached": [
+          "websearch"
+        ]
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo hi",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-5",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "attached": [
+          "docs"
+        ]
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "detached": [
+          "websearch"
+        ]
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "echo hi",
+      "tools": [
+        "docs"
+      ]
+    }
+  },
+  "pendingInterrupts": []
+}

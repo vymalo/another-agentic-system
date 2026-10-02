@@ -312,6 +312,15 @@ impl Harness {
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     policy,
+                    // the servers a run may attach to the thread it creates (ADR 0024); `repos` is
+                    // the coder's only
+                    tool_servers: vec![
+                        orch_app::ToolServerInfo::new("websearch", "Web search"),
+                        orch_app::ToolServerInfo {
+                            agents: Some(vec![AgentId::new("coder")]),
+                            ..orch_app::ToolServerInfo::new("repos", "Repositories")
+                        },
+                    ],
                     ..AppConfig::default()
                 },
             )

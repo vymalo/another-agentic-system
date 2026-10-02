@@ -15,7 +15,7 @@
 //! the URI, an adapter without keys and a request without a grant get exactly the message they
 //! got before the extension existed.
 
-use orch_core::{KnownExtension, ToolsGrant};
+use orch_core::{AttachedServer, KnownExtension, ToolsGrant};
 use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
@@ -51,14 +51,33 @@ pub(crate) fn mint(
     }
 }
 
-/// The value of the extension's key in the message metadata: `{url, token, expiresAt}`. `expiresAt`
+/// The value of the extension's key in the message metadata: `{url, token, expiresAt}` and, when
+/// servers are attached to the thread that the agent may use, `attached`
+/// (`[{server, name, description?}]`, [`docs/api/thread-tools-v1.md`]): ids, names and
+/// descriptions, **never a URL, a header or a credential** (`AttachedServer` has none). `expiresAt`
 /// is the token's `exp` as RFC 3339.
-pub fn thread_tools_metadata(grant: &ThreadToolsGrant) -> Value {
-    json!({
+///
+/// [`docs/api/thread-tools-v1.md`]: ../../../../docs/api/thread-tools-v1.md#the-attached-member
+pub fn thread_tools_metadata(grant: &ThreadToolsGrant, attached: &[AttachedServer]) -> Value {
+    let mut metadata = json!({
         "url": grant.url,
         "token": grant.token.expose_secret(),
         "expiresAt": grant.expires_at.to_string(),
-    })
+    });
+    if !attached.is_empty() {
+        let servers: Vec<Value> = attached
+            .iter()
+            .map(|s| {
+                let mut server = json!({"server": s.id, "name": s.name});
+                if let Some(description) = &s.description {
+                    server["description"] = json!(description);
+                }
+                server
+            })
+            .collect();
+        metadata["attached"] = Value::Array(servers);
+    }
+    metadata
 }
 
 #[cfg(test)]
@@ -131,7 +150,7 @@ mod tests {
             now(),
         )
         .unwrap();
-        let metadata = thread_tools_metadata(&minted);
+        let metadata = thread_tools_metadata(&minted, &[]);
         assert_eq!(metadata["url"], json!(minted.url));
         assert_eq!(metadata["token"], json!(minted.token.expose_secret()));
         assert_eq!(metadata["expiresAt"], "2026-10-01T14:00:00Z");

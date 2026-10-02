@@ -486,9 +486,13 @@ fn user_message(
     // The endpoint of the thread and the token that opens it: only in the message, never stored
     // or logged anywhere else (see `crate::thread_tools`).
     if let Some(grant) = thread_tools {
+        let attached = req
+            .thread_tools
+            .as_ref()
+            .map_or(&[][..], |g| g.attached.as_slice());
         metadata.insert(
             THREAD_TOOLS_EXTENSION.to_owned(),
-            thread_tools_metadata(grant),
+            thread_tools_metadata(grant, attached),
         );
     }
     let extensions = extensions_of(req, ui, catalog, thread_tools, reporting);

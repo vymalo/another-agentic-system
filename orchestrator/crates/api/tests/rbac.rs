@@ -178,6 +178,7 @@ impl Harness {
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     policy,
+                    tool_servers: vec![orch_app::ToolServerInfo::new("docs", "Documentation")],
                     ..AppConfig::default()
                 },
             )
@@ -432,6 +433,7 @@ async fn me_lists_the_agents_of_a_role_and_answers_a_person_who_may_do_nothing()
             "/api/agents",
             "/api/registry",
             "/api/config",
+            "/api/tool-servers",
             "/api/threads",
             "/api/threads/0190aaaa-0000-7000-8000-000000000123",
             "/api/nonsense",
@@ -552,6 +554,12 @@ async fn threads_belong_to_their_owner_and_an_administrator_reads_them_all() {
             reqwest::Method::POST,
             format!("/api/threads/{bobs}/fork"),
             Some(r#"{"replace":1,"text":"again"}"#),
+        ),
+        // the servers attached to a thread are the owner's to set (ADR 0024)
+        (
+            reqwest::Method::PUT,
+            format!("/api/threads/{alices}/tools"),
+            Some(r#"{"servers":["docs"]}"#),
         ),
     ] {
         h.refused(method, &path, "root", body, 403, Some("read_only"))
@@ -680,6 +688,25 @@ async fn files_are_read_by_artifact_read() {
         &path,
         "alice",
         None,
+        403,
+        Some("forbidden"),
+    )
+    .await;
+    // ...and one without thread.write may neither list the servers to attach nor attach one
+    h.refused(
+        reqwest::Method::GET,
+        "/api/tool-servers",
+        "alice",
+        None,
+        403,
+        Some("forbidden"),
+    )
+    .await;
+    h.refused(
+        reqwest::Method::PUT,
+        &format!("/api/threads/{thread}/tools"),
+        "alice",
+        Some(r#"{"servers":["docs"]}"#),
         403,
         Some("forbidden"),
     )
