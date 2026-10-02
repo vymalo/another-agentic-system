@@ -627,3 +627,161 @@ async fn a_title_nobody_can_submit_as_a_user() {
     assert_eq!(title_of(&app, t.id).await, "stream hello");
     let _ = AgentTaskState::Working;
 }
+
+// ---- the language of the title (plan 10, section 3.6) --------------------------------------------
+
+/// The last line of what the model was shown on its `n`-th call (from 0).
+fn last_line_of_call(w: &World, n: usize) -> String {
+    w.model.calls()[n].user.lines().last().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_chinese_title_for_an_english_conversation_is_declined_and_the_second_ask_gets_the_english_one()
+ {
+    let w = World::new();
+    // the model of the owner's thread: it drifts into Chinese the first time
+    w.model
+        .then_answer("Node.js 绘图导出")
+        .then_answer("Exporting the drawing");
+    let app = titling(&w);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(
+        &app,
+        &alice(),
+        "plain",
+        "ask how do I export the drawing to a file",
+    )
+    .await;
+    wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
+    eventually("the title", || async {
+        (title_of(&app, t.id).await == "Exporting the drawing").then_some(())
+    })
+    .await;
+    quiet(&w, t.id).await;
+    run.shutdown().await;
+
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(
+        titled(&ev),
+        [("Exporting the drawing", TitledBy::Model, "orchestrator")],
+        "the Chinese title is in no event"
+    );
+    // two questions in one row, each ending with the language
+    assert_eq!(w.model.calls().len(), 2);
+    assert_eq!(last_line_of_call(&w, 0), "Write the title in English.");
+    assert_eq!(last_line_of_call(&w, 1), "Write the title in English.");
+    let second = &w.model.calls()[1].user;
+    assert!(
+        second.contains("Your last title was in a script the person did not write in."),
+        "{second}"
+    );
+    assert!(!w.model.calls()[0].user.contains("Your last title"));
+    // one row, delivered; the ledger counts one ask
+    let rows = title_rows(&w, t.id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, orch_ports::OutboxStatus::Delivered);
+    assert_eq!(
+        app.get_thread(&alice(), t.id)
+            .await
+            .unwrap()
+            .job
+            .title
+            .asks(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_model_that_is_wrong_twice_leaves_the_first_words() {
+    let w = World::new();
+    w.model.then_answer("绘图导出").then_answer("导出图片问题");
+    let app = titling(&w);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(
+        &app,
+        &alice(),
+        "plain",
+        "ask how do I export the drawing to a file",
+    )
+    .await;
+    wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
+    quiet(&w, t.id).await;
+    run.shutdown().await;
+    assert_eq!(w.model.calls().len(), 2, "asked, asked again, and no more");
+    assert_eq!(
+        title_of(&app, t.id).await,
+        "ask how do I export the drawing to a file",
+        "the first words stay"
+    );
+    let ev = events(&app, &alice(), t.id).await;
+    assert!(titled(&ev).is_empty());
+    assert!(
+        ev.iter().all(|e| e.kind() != EventKind::Error),
+        "nothing visible failed: {:?}",
+        shape(&ev)
+    );
+    let rows = title_rows(&w, t.id);
+    assert_eq!(rows[0].status, orch_ports::OutboxStatus::Delivered);
+}
+
+#[tokio::test]
+async fn a_chinese_conversation_keeps_its_chinese_title_and_a_french_one_its_french_title() {
+    let w = World::new();
+    w.model.then_answer("登录页面修复");
+    let app = titling(&w);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "ask 请修复登录页面的重定向问题").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
+    eventually("the title", || async {
+        (title_of(&app, t.id).await == "登录页面修复").then_some(())
+    })
+    .await;
+    quiet(&w, t.id).await;
+    assert_eq!(
+        w.model.calls().len(),
+        1,
+        "a title in the person's script is not declined"
+    );
+    assert_eq!(last_line_of_call(&w, 0), "Write the title in Chinese.");
+
+    w.model.then_answer("Correction de la redirection");
+    let f = create(
+        &app,
+        &alice(),
+        "plain",
+        "ask peux-tu corriger la page de connexion et la redirection ?",
+    )
+    .await;
+    wait_state(&app, &alice(), f.id, ThreadState::Blocked).await;
+    eventually("the title", || async {
+        (title_of(&app, f.id).await == "Correction de la redirection").then_some(())
+    })
+    .await;
+    quiet(&w, f.id).await;
+    run.shutdown().await;
+    assert_eq!(w.model.calls().len(), 2);
+    assert_eq!(last_line_of_call(&w, 1), "Write the title in French.");
+}
+
+#[tokio::test]
+async fn a_model_that_says_none_is_not_asked_again_for_the_language() {
+    let w = World::new();
+    w.model.then_answer("NONE");
+    let app = titling(&w);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(
+        &app,
+        &alice(),
+        "plain",
+        "ask how do I export the drawing to a file",
+    )
+    .await;
+    wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
+    quiet(&w, t.id).await;
+    run.shutdown().await;
+    assert_eq!(
+        w.model.calls().len(),
+        1,
+        "NONE is no title, not a wrong language"
+    );
+}

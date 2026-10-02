@@ -1020,6 +1020,19 @@ stateDiagram-v2
   them at 4 KiB, in a code fence their text cannot close (the same `fenced` the verifier's prompt uses), and an
   instruction that says it is data to title and never instructions to follow, and to answer with 3 to 6 words or
   exactly `NONE`. The worker reads the head of the log (128 events) when the row is worked, so the row holds nothing of it.
+- **In the language of the conversation, and checked** (`orch_core::language`, pure; plan 10 section 3.6). An instruction
+  that only asks for "the language of the conversation" is not enough: a model that drifts titled an English coder
+  thread in Chinese. The prompt now names the language **last**, after the fence (`Write the title in English.`),
+  from what the person wrote (`conversation_language`: a census of the scripts of the letters of the person's
+  messages, and for Latin text a vote of stop words among English, French, German, Spanish, Portuguese and Italian; the
+  language of the first of their messages that says one; `Write the title in the language the person wrote in.` when none
+  does). A title whose letters are in a script that none of the person's messages uses is **declined**
+  (`check_title_language`; the Latin script is always allowed, so "Node.js" is fine in any conversation, and Han is
+  allowed to a Japanese conversation that wrote kana). The dispatcher then asks **once more in the same row**
+  (`title_retry_prompt`: the same request, what went wrong, and the language named last again) and declines the row if
+  that answer is wrong too: the thread keeps its first words, and the next reply may ask again as it may after `NONE` (2
+  asks per thread, so at most four calls). The check lives in the dispatcher because the core's `Input::Titled` has no
+  log to check against.
 - **What comes back** (`orch_core::clean_title`, pure): the first line, quotes, markdown and control characters taken
   off, spaces collapsed, 80 characters at most (cut at a word, with `…`), and `None` for nothing or `NONE`; the core
   checks the title again (`check_title`) before it appends anything, and every screen renders it as text.

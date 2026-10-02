@@ -12,6 +12,7 @@ mod extension;
 mod fork;
 mod gate;
 mod ids;
+mod language;
 mod live;
 mod redact;
 mod step;
@@ -49,6 +50,9 @@ pub use gate::{
     verifier_context,
 };
 pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};
+pub use language::{
+    INSTRUCTION_UNKNOWN, Lang, Script, ScriptMismatch, detect, script_mismatch, scripts_of,
+};
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
 pub use step::{
@@ -62,7 +66,8 @@ pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, Th
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
 pub use title::{
     MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
-    TitleLedger, TitleSource, TitledBy, check_title, clean_title, title_prompt,
+    TitleLanguageError, TitleLedger, TitleSource, TitledBy, check_title, check_title_language,
+    clean_title, conversation_language, title_prompt, title_retry_prompt,
 };
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
 pub use ui::{

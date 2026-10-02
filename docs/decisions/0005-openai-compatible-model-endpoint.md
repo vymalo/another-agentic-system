@@ -1,6 +1,6 @@
 # ADR 0005 — Model access through any OpenAI-compatible endpoint
 
-- **Status:** accepted (2026-09-28). Amends the earlier "AISIX as the single LLM gateway". Amended (2026-10-01): the orchestrator makes its first model call, thread titles, through the `ChatModel` port (status note at the end).
+- **Status:** accepted (2026-09-28). Amends the earlier "AISIX as the single LLM gateway". Amended (2026-10-01): the orchestrator makes its first model call, thread titles, through the `ChatModel` port (status note below). Amended (2026-10-02): the title is in the person's language, named in the prompt and checked (second status note).
 
 ## Context
 
@@ -59,3 +59,21 @@ asks of every boundary:
   gateway's. This call is small and bounded (a few hundred tokens, at most three tries, 20 seconds each, at most two
   asks per thread).
 
+## Status note, 2026-10-02: the title is in the conversation's language, and the core checks
+
+The instruction asked for a title "in the language of the conversation" and left the model to infer it, before the
+conversation, in English. A coder thread of the owner's, in English, was titled in Chinese ("Node.js 绘图导出"). The
+decision of this note (plan 10, section 3.6; verified by the scripted model of `dev/title-e2e.sh`, not against a real
+one):
+
+- The core finds the language the **person** wrote in (`orch_core::language`: a census of the scripts of their letters
+  and, for Latin text, a vote of stop words among six languages) and names it in the instruction, **last**:
+  `Write the title in English.`
+- A title in a script none of the person's messages has (other than Latin, which every language uses for names) is
+  **declined**. The dispatcher asks once more in the same row, naming the language again and what was wrong, and
+  declines the row when that answer is wrong too: the thread keeps its first words. A title in the person's own
+  script, or in the Latin script, is never declined by this rule.
+- It is a heuristic with one purpose. Latin-script languages are not told apart in the check (a French title for an
+  English conversation passes; the instruction is the only guard there), a language it does not know is `None`, and
+  what an agent or the model says never decides the language. The check is pure (`check_title_language`) and runs in the
+  dispatcher, which has the log; the core's `Input::Titled` has none.
