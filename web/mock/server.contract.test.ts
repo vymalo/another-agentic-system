@@ -1952,3 +1952,346 @@ describe("forking a thread (ADR 0029), as the mock does it", () => {
     await expectDocumented("/api/threads/{threadId}/branches", "get", missing);
   });
 });
+
+describe("who the session is, and what its roles let it do (ADR 0033), as the mock does it", () => {
+  type Me = components["schemas"]["Me"];
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+
+  let sessions = 0;
+  /** A session of its own (the cookie the web carries) that is `me`: the hook, then the headers. */
+  async function as(me: "user" | "admin" | "read-only" | "no-access") {
+    const session = `roles-${++sessions}`;
+    expect((await post(`/__mock/config?me=${me}&session=${session}`)).status).toBe(204);
+    return { Cookie: `mock-registry=${session}` };
+  }
+  const get = (p: string, headers: Record<string, string>) => fetch(base + p, { headers });
+  const send = (method: string, p: string, headers: Record<string, string>, body?: unknown) =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": "application/json", ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  /** A thread of `headers`' session, run to its end, and who owns it. */
+  async function threadOf(headers: Record<string, string>, text = "echo roles", agent = "coder") {
+    const threadId = newId();
+    const res = await fetch(`${base}/agui/agents/${agent}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...headers },
+      body: JSON.stringify({
+        state: {},
+        tools: [],
+        context: [],
+        forwardedProps: {},
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: text }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await frames(res);
+    return threadId;
+  }
+  const problemOf = async (
+    template: string,
+    method: string,
+    res: Response,
+    status: number,
+    code?: string,
+  ): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    const body = (await expectDocumented(template, method, res)) as Problem;
+    expect(body.code).toBe(code);
+    return body;
+  };
+
+  it("getMe: the default session is the person every session was before roles", async () => {
+    const res = await fetch(`${base}/api/me`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const me = (await expectDocumented("/api/me", "get", res)) as Me;
+    expect(me).toMatchObject({ user: "dev@example.com", roles: ["user"] });
+    expect(me.permissions).toContainEqual({ permission: "thread.write", scope: "own" });
+    expect(me.agents).toEqual({ read: ["*"], invoke: ["*"] });
+  });
+
+  it("getMe: each profile of the hook says what its roles grant, and the scope only where there is one", async () => {
+    const seen: Record<string, Me> = {};
+    for (const name of ["user", "admin", "read-only", "no-access"] as const) {
+      const res = await get("/api/me", await as(name));
+      seen[name] = (await expectDocumented("/api/me", "get", res)) as Me;
+    }
+    const scopes = (me: Me) =>
+      Object.fromEntries(me.permissions.map((p) => [p.permission, p.scope ?? null]));
+    // an administrator reads every thread and changes their own
+    expect(scopes(seen.admin as Me)).toMatchObject({
+      admin: null,
+      "thread.read": "any",
+      "thread.write": "own",
+      "agent.invoke": null,
+    });
+    // a read-only role: no write, and no agent it may invoke
+    expect(scopes(seen["read-only"] as Me)).not.toHaveProperty("thread.write");
+    expect(seen["read-only"]?.agents).toEqual({ read: ["*"], invoke: [] });
+    // nothing granted: empty, and still a 200
+    expect(seen["no-access"]).toMatchObject({ roles: [], permissions: [] });
+    expect(new Set(Object.values(seen).map((m) => m.user)).size).toBe(4);
+  });
+
+  it("the hook refuses a profile it does not have, and the default is back after a reset", async () => {
+    expect((await post("/__mock/config?me=root&session=roles-bad")).status).toBe(400);
+    const cookie = await as("admin");
+    expect(((await (await get("/api/me", cookie)).json()) as Me).user).toBe("admin@example.com");
+    expect((await post("/__mock/reset")).status).toBe(204);
+    expect(((await (await get("/api/me", cookie)).json()) as Me).user).toBe("dev@example.com");
+  });
+
+  it("no access: every route but getMe is a 403 no_access, and getMe still says who", async () => {
+    const nobody = await as("no-access");
+    const id = await threadOf({});
+    const refused: [string, string, string][] = [
+      ["/api/agents", "get", "/api/agents"],
+      ["/api/registry", "get", "/api/registry"],
+      ["/api/config", "get", "/api/config"],
+      ["/api/threads", "get", "/api/threads"],
+      ["/api/threads/{threadId}", "get", `/api/threads/${id}`],
+      ["/agui/threads/{threadId}/connect", "get", `/agui/threads/${id}/connect`],
+    ];
+    for (const [template, method, p] of refused) {
+      const body = await problemOf(template, method, await get(p, nobody), 403, "no_access");
+      expect(body.detail).toBe("your roles do not grant access to this API");
+    }
+    const run = await fetch(`${base}/agui/agents/coder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...nobody },
+      body: JSON.stringify({
+        threadId: newId(),
+        runId: "r",
+        messages: [{ id: "m", role: "user", content: "echo" }],
+      }),
+    });
+    await problemOf("/agui/agents/{agentId}", "post", run, 403, "no_access");
+    const me = (await (await get("/api/me", nobody)).json()) as Me;
+    expect(me.user).toBe("nobody@example.com");
+  });
+
+  it("a thread is its maker's: the owner is the session's person, and the list and the thread are theirs alone", async () => {
+    const admin = await as("admin");
+    const mine = await threadOf({}, "echo mine");
+    const theirs = await threadOf(admin, "echo theirs");
+    const owned = async (id: string, headers: Record<string, string> = {}) =>
+      ((await (await get(`/api/threads/${id}`, headers)).json()) as Thread).owner;
+    expect(await owned(mine)).toBe("dev@example.com");
+    expect(await owned(theirs, admin)).toBe("admin@example.com");
+
+    const listed = async (headers: Record<string, string>, query = "") =>
+      (await expectDocumented(
+        "/api/threads",
+        "get",
+        await get(`/api/threads?limit=100${query}`, headers),
+      )) as Thread[];
+    const own = await listed({});
+    expect(own.map((t) => t.id)).toContain(mine);
+    expect(own.map((t) => t.id)).not.toContain(theirs);
+    expect(own.every((t) => t.owner === "dev@example.com")).toBe(true);
+    // an administrator's plain list is their own too
+    expect((await listed(admin)).map((t) => t.id)).toEqual([theirs]);
+
+    // another's thread does not exist for someone who may not read it
+    const hidden = await get(`/api/threads/${theirs}`, {});
+    await problemOf("/api/threads/{threadId}", "get", hidden, 404);
+    await problemOf(
+      "/agui/threads/{threadId}/connect",
+      "get",
+      await get(`/agui/threads/${theirs}/connect`, {}),
+      404,
+    );
+    await problemOf(
+      "/api/threads/{threadId}/export",
+      "get",
+      await get(`/api/threads/${theirs}/export`, {}),
+      404,
+    );
+  });
+
+  it("listThreads with owner: everyone's for an administrator, a person's own address for anyone, else a 403", async () => {
+    const admin = await as("admin");
+    const mine = await threadOf({}, "echo a");
+    const theirs = await threadOf(admin, "echo b");
+    const listed = async (headers: Record<string, string>, owner: string) =>
+      (await expectDocumented(
+        "/api/threads",
+        "get",
+        await get(`/api/threads?limit=100&owner=${encodeURIComponent(owner)}`, headers),
+      )) as Thread[];
+
+    const everyone = await listed(admin, "*");
+    expect(everyone.map((t) => t.id)).toEqual(expect.arrayContaining([mine, theirs]));
+    expect(new Set(everyone.map((t) => t.owner))).toEqual(
+      new Set(["dev@example.com", "admin@example.com"]),
+    );
+    const times = everyone.map((t) => t.createdAt);
+    expect([...times].sort().reverse()).toEqual(times);
+    expect(
+      (await listed(admin, "dev@example.com")).every((t) => t.owner === "dev@example.com"),
+    ).toBe(true);
+    expect((await listed(admin, "DEV@example.com")).map((t) => t.id)).toContain(mine);
+
+    // a person who is not an administrator lists their own address, and is refused the rest
+    expect((await listed({}, "dev@example.com")).map((t) => t.id)).toContain(mine);
+    for (const owner of ["*", "admin@example.com"]) {
+      const res = await get(`/api/threads?owner=${encodeURIComponent(owner)}`, {});
+      const body = await problemOf("/api/threads", "get", res, 403, "forbidden");
+      expect(body.detail).toContain("admin");
+    }
+    // `admin` alone is not enough, nor is the scope: the viewer reads their own threads only
+    const viewer = await as("read-only");
+    expect((await get("/api/threads?owner=*", viewer)).status).toBe(403);
+    expect((await get("/api/threads?owner=", admin)).status).toBe(400);
+  });
+
+  it("an administrator reads another's thread and may not change it: 403 read_only on rename, cancel, fork and a run", async () => {
+    const admin = await as("admin");
+    const theirs = await threadOf({}, "echo theirs");
+    const read = await get(`/api/threads/${theirs}`, admin);
+    expect(((await expectDocumented("/api/threads/{threadId}", "get", read)) as Thread).owner).toBe(
+      "dev@example.com",
+    );
+    expect((await get(`/api/threads/${theirs}/export`, admin)).status).toBe(200);
+    expect((await get(`/agui/threads/${theirs}/connect?mode=run`, admin)).status).toBe(200);
+
+    const refused: [string, string, Response][] = [
+      [
+        "/api/threads/{threadId}",
+        "patch",
+        await send("PATCH", `/api/threads/${theirs}`, admin, { title: "mine now" }),
+      ],
+      [
+        "/api/threads/{threadId}/cancel",
+        "post",
+        await send("POST", `/api/threads/${theirs}/cancel`, admin),
+      ],
+      [
+        "/api/threads/{threadId}/fork",
+        "post",
+        await send("POST", `/api/threads/${theirs}/fork`, admin, { after: 1 }),
+      ],
+      [
+        "/agui/agents/{agentId}",
+        "post",
+        await send("POST", "/agui/agents/coder", admin, {
+          threadId: theirs,
+          runId: "run-x",
+          messages: [{ id: "m-x", role: "user", content: "echo more" }],
+        }),
+      ],
+    ];
+    for (const [template, method, res] of refused) {
+      const body = await problemOf(template, method, res, 403, "read_only");
+      expect(body.detail).toBe("this thread is read-only for you: you may read it, not change it");
+    }
+    // nothing was written: the title is the maker's
+    expect(((await (await get(`/api/threads/${theirs}`, {})).json()) as Thread).title).not.toBe(
+      "mine now",
+    );
+    // and the administrator's own thread is theirs to change
+    const own = await threadOf(admin, "echo own");
+    const renamed = await send("PATCH", `/api/threads/${own}`, admin, { title: "renamed" });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as Thread).owner).toBe("admin@example.com");
+  });
+
+  it("a role without thread.write or agent.invoke is a 403 forbidden for what it asks, thread or not", async () => {
+    const viewer = await as("read-only");
+    const id = await threadOf({}, "echo viewed");
+    // the viewer reads their own threads: hand the thread over, as a test can
+    expect((await post(`/__mock/owner?thread=${id}&owner=viewer@example.com`)).status).toBe(204);
+    const read = await get(`/api/threads/${id}`, viewer);
+    expect(((await expectDocumented("/api/threads/{threadId}", "get", read)) as Thread).owner).toBe(
+      "viewer@example.com",
+    );
+    expect((await get("/api/agents", viewer)).status).toBe(200);
+
+    const refused: [string, string, Response][] = [
+      [
+        "/api/threads/{threadId}",
+        "patch",
+        await send("PATCH", `/api/threads/${id}`, viewer, { title: "x" }),
+      ],
+      [
+        "/api/threads/{threadId}/cancel",
+        "post",
+        await send("POST", `/api/threads/${id}/cancel`, viewer),
+      ],
+      [
+        "/api/threads/{threadId}/fork",
+        "post",
+        await send("POST", `/api/threads/${id}/fork`, viewer, { after: 1 }),
+      ],
+    ];
+    for (const [template, method, res] of refused) {
+      const body = await problemOf(template, method, res, 403, "forbidden");
+      expect(body.detail).toBe("your roles do not grant thread.write");
+    }
+    // the same answer for a thread that is not there: it says nothing of what exists
+    const nothing = await send("PATCH", `/api/threads/${newId()}`, viewer, { title: "x" });
+    await problemOf("/api/threads/{threadId}", "patch", nothing, 403, "forbidden");
+    // a run is refused for the write, a person who may write for the agent
+    const run = await send("POST", "/agui/agents/coder", viewer, {
+      threadId: newId(),
+      runId: "run-x",
+      messages: [{ id: "m-x", role: "user", content: "echo" }],
+    });
+    await problemOf("/agui/agents/{agentId}", "post", run, 403, "forbidden");
+  });
+
+  it("an agent the roles do not name is a 403 for a run and a fork's target, though they read it and own the thread", async () => {
+    const limited = await as("limited");
+    expect(((await (await get("/api/me", limited)).json()) as Me).agents).toEqual({
+      read: ["*"],
+      invoke: ["reviewer"],
+    });
+    // they read all three agents, and invoke the reviewer
+    expect(await (await get("/api/agents", limited)).json()).toHaveLength(3);
+    expect((await get("/agui/agents/coder/capabilities", limited)).status).toBe(200);
+
+    const run = (agent: string, threadId: string) =>
+      send("POST", `/agui/agents/${agent}`, limited, {
+        threadId,
+        runId: "run-x",
+        messages: [{ id: `m-${threadId}`, role: "user", content: "echo more" }],
+      });
+    // the reviewer is theirs to start; the coder is a 403 that names the permission and the agent
+    const reviewed = await threadOf(limited, "echo review", "reviewer");
+    const refusedRun = await run("coder", newId());
+    const body = await problemOf("/agui/agents/{agentId}", "post", refusedRun, 403, "forbidden");
+    expect(body.detail).toBe("your roles do not grant agent.invoke for the agent coder");
+
+    // a thread of the coder's that is theirs: they read it, and rename it (thread.write is theirs),
+    // but writing to it starts the coder, and so does forking it
+    const coders = await threadOf({}, "echo coder");
+    expect((await post(`/__mock/owner?thread=${coders}&owner=limited@example.com`)).status).toBe(
+      204,
+    );
+    expect((await get(`/api/threads/${coders}`, limited)).status).toBe(200);
+    expect((await send("PATCH", `/api/threads/${coders}`, limited, { title: "mine" })).status).toBe(
+      200,
+    );
+    await problemOf("/agui/agents/{agentId}", "post", await run("coder", coders), 403, "forbidden");
+    const fork = await send("POST", `/api/threads/${coders}/fork`, limited, { after: 1 });
+    await problemOf("/api/threads/{threadId}/fork", "post", fork, 403, "forbidden");
+    const toReviewer = await send("POST", `/api/threads/${coders}/fork`, limited, {
+      after: 1,
+      target: { agentId: "reviewer" },
+    });
+    expect(toReviewer.status).toBe(201);
+    await toReviewer.text();
+    // and the reviewer's thread goes on
+    for (let i = 0; i < 200; i++) {
+      const state = ((await (await get(`/api/threads/${reviewed}`, limited)).json()) as Thread)
+        .state;
+      if (state === "done") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect((await run("reviewer", reviewed)).status).toBe(200);
+  });
+});
