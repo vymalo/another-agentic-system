@@ -156,8 +156,9 @@ stateDiagram-v2
   word, in the same transcript. The placeholder says what fits: "Describe a task for the agent…" (new), "Reply…" (the agent
   asked), "Tell the agent how to go on…" (failed or stopped), "Send a follow-up…" (otherwise). Nothing tells the
   person to start a new thread; the `vymalo.job` marker of a later job draws nothing. A replay that holds several jobs
-  applies their runs one after the other (`live-runs.ts`, `quiesce`: the runtime's transcript lags a render, and a
-  run applied before the earlier one showed would hang off the wrong message).
+  applies their runs one after the other (`live-runs.ts`, `untilShown`: the runtime's transcript lags a render, and a
+  run applied before the earlier one showed would hang off the wrong message, so each run waits until the transcript
+  shows the messages the runs before it left, a count the replay knows, never a time).
 - **Thread state** (the header pill, whether the composer shows Stop or Send) is the newest
   `STATE_SNAPSHOT.thread` the agent delivered, else `GET /api/threads/{id}`. `verifying` counts as
   active, like `working`: the run is open and Stop is offered. The snapshot also carries `job` and,

@@ -39,60 +39,47 @@ const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMes
   },
 });
 
-/**
- * How long the transcript must stay unchanged, and not running, to count as caught up: enough for
- * the runtime to commit what it has been handed (it does so over several turns of the event loop).
- */
-const SETTLE_MS = 20;
-/** How long `quiesce` waits for the runtime before it goes on without the transcript. */
-export const QUIESCE_TIMEOUT_MS = 5_000;
+/** How long `untilShown` waits for the runtime before it goes on without the transcript. */
+export const SHOWN_TIMEOUT_MS = 5_000;
 
 type Watched = Pick<LiveRunsRuntime["thread"], "getState" | "subscribe">;
 
 /**
- * Waits until the transcript `thread.getState()` shows has caught up with what the runtime holds:
- * the state lags the runtime by a render. `ThreadRuntime.append` hangs a message off the last
- * message of *that* state, so a run applied before the previous one showed up would start a
- * branch of its own and replace the earlier runs. A replay delivers every run of a thread at
- * once, and since a message on a finished thread starts the next job (ADR 0020) a thread has
- * several runs with nothing between them.
+ * Waits until the transcript `thread.getState()` shows `atLeast` messages and is not running.
  *
- * It listens to the runtime's own state subscription instead of polling: it resolves `true` when
- * the thread is not running, it shows at least `atLeast` messages (what the caller just appended)
- * and its message count has not changed for `settleMs`. If that does not
- * happen within `timeoutMs` (a run that never ends) it warns and resolves `false`, and the caller
- * goes on with the transcript it has.
+ * That transcript lags the runtime by a render, and `ThreadRuntime.append` hangs a message off its
+ * last message (as `startRun` does with the head it is given): a run applied before the earlier
+ * one showed up would start a branch of its own and replace the earlier runs for good. A replay
+ * delivers every run of a thread at once, and since a message on a finished thread starts the next
+ * job (ADR 0020) a thread has several runs with nothing between them. How late the render comes is
+ * up to the machine, so no time says it has come: what the replay knows does. Every run it applies
+ * leaves a known number of messages (`applyExternalRun`), and the next run waits until the
+ * transcript shows them all.
+ *
+ * It listens to the runtime's own state subscription instead of polling, and resolves `true` when
+ * the condition holds. If it does not hold within `timeoutMs` (a run that never ends, a count that
+ * is not what the replay expected) it warns and resolves `false`, and the caller goes on with the
+ * transcript it has.
  */
-export function quiesce(
+export function untilShown(
   thread: Watched,
-  timeoutMs = QUIESCE_TIMEOUT_MS,
-  settleMs = SETTLE_MS,
-  /** The transcript is not caught up before it shows this many messages. */
-  atLeast = 0,
+  atLeast: number,
+  timeoutMs = SHOWN_TIMEOUT_MS,
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    let settle: ReturnType<typeof setTimeout> | undefined;
     const finish = (caughtUp: boolean) => {
-      clearTimeout(settle);
       clearTimeout(timer);
       unsubscribe();
       if (!caughtUp) {
         console.warn(
-          `The transcript did not settle within ${timeoutMs} ms (the thread is still running): going on without it`,
+          `The transcript did not show ${atLeast} messages within ${timeoutMs} ms (it shows ${thread.getState().messages.length}): going on without them`,
         );
       }
       resolve(caughtUp);
     };
     const look = () => {
-      clearTimeout(settle);
       const state = thread.getState();
-      const count = state.messages.length;
-      if (state.isRunning || count < atLeast) return; // the next notification looks again
-      settle = setTimeout(() => {
-        const now = thread.getState();
-        if (!now.isRunning && now.messages.length === count) finish(true);
-        else look();
-      }, settleMs);
+      if (!state.isRunning && state.messages.length >= atLeast) finish(true);
     };
     const timer = setTimeout(() => finish(false), timeoutMs);
     const unsubscribe = thread.subscribe(look);
@@ -101,55 +88,58 @@ export function quiesce(
 }
 
 /**
- * Applies one external run and resolves when the runtime finished it, with how many messages the
- * transcript will show once the run is in it (the messages it had, the run's own user messages and
- * its assistant message), or null when that is not known (an interrupt was answered).
+ * What the replay knows of the transcript the runtime holds, whether or not it is shown yet: how
+ * many messages the runs applied so far leave in it (`applyExternalRun` raises it).
+ */
+export type Held = { messages: number };
+
+/**
+ * Applies one external run and resolves when the runtime finished it. Before that it sets
+ * `held.messages` to what the transcript holds once it shows the run: what it showed before, the
+ * run's user messages and the assistant message the runtime makes for the run (a run that has any
+ * material for the transcript always gets one, even with no output). It does so up front, so a run
+ * that ends in an error, which rejects, has counted too.
  */
 export async function applyExternalRun(
   agent: ThreadAgent,
   run: ExternalRun,
   runtime: LiveRunsRuntime,
   steerAway: SteerAway,
-  /** A run was applied before this one: the transcript may not show it yet (see `quiesce`). */
-  after = false,
-  /**
-   * What that run said the transcript will hold. Without it a run that has no message of the
-   * person (the card of a rename or of a server attached to a finished thread, the marker of a
-   * fork) can follow another such run before the transcript shows the first, and hang off the
-   * message before it: the earlier run's message is then replaced.
-   */
-  shows = 0,
-): Promise<number | null> {
+  /** What the runs before this one left in the transcript, which may not show it yet (see `untilShown`). */
+  held: Held = { messages: 0 },
+): Promise<void> {
   await run.leadIn;
   const thread = runtime.thread;
-  if (after) await quiesce(thread, QUIESCE_TIMEOUT_MS, SETTLE_MS, shows);
+  // The first run has no transcript to hang off: its parent is the start.
+  const after = held.messages > 0;
+  if (after) await untilShown(thread, held.messages);
   const users = [...run.userMessages];
   const pending = runtime.unstable_getPendingInterrupts();
+  let shown = thread.getState().messages.length;
+  held.messages = shown + users.length + 1;
   agent.adopt(run);
   if (pending.length > 0) {
     const last = users.pop();
-    for (const m of users) await thread.append(userMessage(m, false));
+    for (const m of users) {
+      await thread.append(userMessage(m, false));
+      if (after) await untilShown(thread, ++shown);
+    }
     if (last) await steerAway(userMessage(last, true));
     else {
       await runtime.unstable_submitInterruptResponses(
         pending.map((i) => ({ interruptId: i.id, status: "cancelled" as const })),
       );
     }
-    return null;
+    return;
   }
-  // `append` and `startRun` read the transcript `thread.getState()` shows (see `quiesce`): after an
-  // earlier run, let it show what has been appended before each step. The first run has no
-  // transcript to hang off: its parent is the start.
-  let shown = thread.getState().messages.length;
-  const before = shown;
+  // `append` and `startRun` read the transcript `thread.getState()` shows (see `untilShown`): after
+  // an earlier run, let it show each message that has been appended before the next step reads it.
   for (const m of users) {
     await thread.append(userMessage(m, false));
-    // the message is in the transcript before the next step reads it
-    if (after) await quiesce(thread, QUIESCE_TIMEOUT_MS, SETTLE_MS, ++shown);
+    if (after) await untilShown(thread, ++shown);
   }
   const head = thread.getState().messages.at(-1);
   await thread.startRun({ parentId: head?.id ?? null });
-  return before + users.length + 1;
 }
 
 /** The loop: takes external runs in order until `signal` aborts. */
@@ -159,17 +149,13 @@ export async function driveExternalRuns(
   steerAway: () => SteerAway,
   signal: AbortSignal,
 ): Promise<void> {
-  let applied = false;
-  let shows = 0;
+  const held: Held = { messages: 0 };
   for (;;) {
     const run = await agent.nextExternalRun(signal);
     if (!run || signal.aborted) return;
     try {
-      const after = applied;
-      applied = true;
-      shows = (await applyExternalRun(agent, run, runtime(), steerAway(), after, shows)) ?? 0;
+      await applyExternalRun(agent, run, runtime(), steerAway(), held);
     } catch (e) {
-      shows = 0;
       // A run that ended in RUN_ERROR rejects the runtime's run: its transcript is complete.
       if (!isRunFailure(e)) console.warn("Could not apply a run to the transcript", e);
     }

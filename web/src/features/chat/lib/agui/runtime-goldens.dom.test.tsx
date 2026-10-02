@@ -296,8 +296,8 @@ async function play(name: string) {
   await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(last));
   await waitFor(() => expect(mounted.runtime().thread.getState().isRunning).toBe(false));
   await waitFor(() => expect(mounted.messages().length).toBeGreaterThan(1));
-  // The runs of a replay are applied one after the other, each after the transcript has settled
-  // (`quiesce`): wait until the transcript stops changing instead of for a fixed time.
+  // The runs of a replay are applied one after the other, each once the transcript shows the runs
+  // before it (`untilShown`): wait until the transcript stops changing instead of for a fixed time.
   let seen = -1;
   for (let i = 0; i < 100; i++) {
     const count = mounted.messages().length;
