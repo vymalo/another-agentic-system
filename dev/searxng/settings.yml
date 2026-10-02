@@ -1,0 +1,22 @@
+# The settings of the `searxng` service of compose.live.yaml (dev/README.md, "Web search for real"), mounted read-only at
+# /etc/searxng/settings.yml. SearXNG is a metasearch engine: it asks Google, DuckDuckGo, Bing and others and merges what they answer.
+#
+# Only what the stack needs is set, on top of SearXNG's defaults (`use_default_settings`):
+#   * `json` among the formats: the web-search MCP server (dev/searxng-mcp) calls /search?q=...&format=json, and SearXNG
+#     answers 403 to a format it is not told to serve. html stays, so that a person can open the instance to look.
+#   * no limiter: it is a bot filter for an instance on the internet, and this one is reachable only from the compose network
+#     (the service publishes no port), where it would only refuse the MCP server.
+# The secret key is NOT here: the service sets SEARXNG_SECRET from `.env` (SearXNG reads that variable for `server.secret_key`).
+use_default_settings: true
+
+general:
+  instance_name: "another-agentic-system search"
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  public_instance: false
