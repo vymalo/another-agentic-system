@@ -244,6 +244,43 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: files the agent made (an image, a text preview, an archive), the Sources panel and an Image in an answer have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "files make some", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator('[data-slot="file-text"]')).toContainText("Results of the run");
+      await expect(page.getByRole("img", { name: "results.png" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // open by itself on a wide window, a sheet to open on a phone
+      const toggle = page.getByRole("button", { name: "Thread details" });
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      await page.getByRole("tab", { name: /^Sources/ }).click();
+      await expect(page.getByRole("region", { name: "Files" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+
+      await startThread(page, "file-image make a chart", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      const ui = page.getByRole("region", { name: "Interface from reviewer" });
+      await expect(
+        ui.getByRole("img", { name: "A chart of the results of the run" }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a file that was not kept (the card, the error) and a refused Image have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "file-lost now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.getByText("the file is too large to keep")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      await startThread(page, "file-image-foreign now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.getByText(/Interface not shown:/)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: a graph that does not parse, and a refused Cards, have no serious violations", async ({
       page,
     }) => {

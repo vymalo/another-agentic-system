@@ -1,5 +1,5 @@
 import type { components } from "../src/lib/api/schema";
-import { CHART } from "./files";
+import { CHART, EXPORT, HOSTILE_SVG, type MockFile, NOTES, RESULTS } from "./files";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
@@ -477,6 +477,16 @@ function finish(artifactText: string): Step[] {
     { kind: "thread_state", data: { state: "done" }, setState: "done", system: true },
   ];
 }
+
+/** An artifact that is a file the artifact store keeps (ADR 0032): the reference, never the bytes. */
+const keptFile = (file: MockFile, name: string): Step => ({
+  kind: "artifact",
+  data: {
+    name,
+    mimeType: file.mimeType,
+    file: { sha256: file.sha256, size: file.bytes.length, filename: file.filename },
+  },
+});
 
 /** The agent finished, with no artifact: an answer of words and a surface only. */
 const finishQuietly: Step[] = [
@@ -962,6 +972,12 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  * - `file`: one artifact that is a file the artifact store keeps (ADR 0032: a PNG, `chart.png`, the reference in
  *   the event's `file`), then done (the `file` golden). The mock serves it as `getArtifact` does.
  * - anything else (`echo`): working, result artifact (a PR link), done.
+ *
+ * Mock only, files (ADR 0032, plan 10 S12): `file-image` is the `file` scenario's chart, then an `Image` of the
+ * catalog (v4) that places it by its hash in an answer; `file-image-foreign` names a hash the thread does not hold
+ * (the surface is refused); `file-svg` keeps an SVG written to run a script and load a stylesheet and an image (the
+ * browser's e2e draws it as an `<img>`); `files` keeps three files, an image, a text file and an archive; `file-lost` is an
+ * artifact the store did not keep (no `file`) and the error that says why (the file is too large to keep).
  *
  * Mock-only, not produced by the current orchestrator:
  * - `ui-bad`: an A2UI surface the renderer refuses, then the result and done.
@@ -1922,6 +1938,88 @@ export function scriptFor(text: string): {
               mimeType: CHART.mimeType,
               file: { sha256: CHART.sha256, size: CHART.bytes.length, filename: CHART.filename },
             },
+          },
+          ...finishQuietly,
+        ],
+      };
+    // the same file, placed in the answer by an `Image` of the catalog (v4): by its hash, never a URL
+    case "file-image":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "I drew the chart of the results. It is a file of this chat, so you can place it, or download it.",
+            },
+          },
+          keptFile(RESULTS, "chart"),
+          ownSurface([
+            { id: "root", component: "Column", children: ["intro", "chart"] },
+            { id: "intro", component: "Text", text: "The results at a glance" },
+            {
+              id: "chart",
+              component: "Image",
+              artifact: RESULTS.sha256,
+              alt: "A chart of the results of the run",
+              caption: "Figure 1: the results of the run",
+            },
+          ]),
+          ...finishQuietly,
+        ],
+      };
+    // the same Image, with a hash this thread does not hold: the whole surface is refused
+    case "file-image-foreign":
+      return {
+        start: [
+          working,
+          keptFile(CHART, "chart"),
+          ownSurface([
+            { id: "root", component: "Column", children: ["chart"] },
+            {
+              id: "chart",
+              component: "Image",
+              artifact: "0".repeat(64),
+              alt: "A file of another thread",
+            },
+          ]),
+          ...finishQuietly,
+        ],
+      };
+    // three kept files of the three kinds: an image, a text file and an archive (preview `image`, `text`, none)
+    case "files":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "I made three files: a chart, my notes and an export of everything.",
+            },
+          },
+          keptFile(RESULTS, "chart"),
+          keptFile(NOTES, "notes"),
+          keptFile(EXPORT, "export"),
+          ...finishQuietly,
+        ],
+      };
+    // an SVG that tries to run and to load things, kept as a file: drawn as an `<img>`, it does neither
+    case "file-svg":
+      return { start: [working, keptFile(HOSTILE_SVG, "diagram"), ...finishQuietly] };
+    // a file the store did not keep: an artifact without `file`, and the error that says why
+    case "file-lost":
+      return {
+        start: [
+          working,
+          { kind: "artifact", data: { name: "dump", mimeType: "application/octet-stream" } },
+          {
+            kind: "error",
+            system: true,
+            data: { message: "the file is too large to keep", retryable: false },
           },
           ...finishQuietly,
         ],
