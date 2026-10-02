@@ -1,0 +1,29 @@
+[package]
+name = "orch-artifacts-s3"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "ArtifactStore over an S3 bucket (AWS or any S3-compatible server) through the object_store crate's S3 backend. The production store."
+readme = "README.md"
+
+[dependencies]
+orch-ports.workspace = true
+bytes.workspace = true
+futures.workspace = true
+object_store.workspace = true
+percent-encoding.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orch-core.workspace = true
+orch-ports = { workspace = true, features = ["testkit"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

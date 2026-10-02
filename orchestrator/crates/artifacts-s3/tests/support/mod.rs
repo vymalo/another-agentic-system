@@ -1,0 +1,206 @@
+//! A small S3 server for the tests: path-style `PUT`, `GET`, `HEAD` and `DELETE` of objects in one
+//! bucket, kept in memory. It checks the access key id of the `Authorization` header (not the
+//! signature), answers what S3 answers in XML, and can be told to fail, so the adapter is run over
+//! real HTTP with no server to install. A real S3-compatible server is the other half of the test
+//! (`ORCH_TEST_S3_URL`).
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+
+use axum::Router;
+use axum::body::{Body, Bytes, to_bytes};
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
+use axum::response::Response;
+
+pub const BUCKET: &str = "bucket";
+pub const ACCESS_KEY_ID: &str = "AKIDSTUBEXAMPLE";
+pub const SECRET_ACCESS_KEY: &str = "stub-secret-access-key-0123456789";
+
+#[derive(Clone)]
+pub struct Object {
+    pub body: Bytes,
+    /// `content-type` and every `x-amz-meta-*` header, as they came.
+    pub headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+/// What the stub was asked.
+#[derive(Clone, Debug)]
+pub struct Seen {
+    pub method: Method,
+    pub path: String,
+    pub access_key_id: Option<String>,
+    pub headers: HeaderMap,
+}
+
+/// How the stub answers.
+#[derive(Clone, Copy, Debug)]
+pub enum Mode {
+    Up,
+    /// Every request is answered with this status.
+    Fail(StatusCode),
+}
+
+#[derive(Clone)]
+pub struct Stub {
+    objects: Arc<Mutex<HashMap<String, Object>>>,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    mode: Arc<Mutex<Mode>>,
+    pub addr: SocketAddr,
+}
+
+impl Stub {
+    pub async fn start() -> Stub {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stub = Stub {
+            objects: Arc::default(),
+            seen: Arc::default(),
+            mode: Arc::new(Mutex::new(Mode::Up)),
+            addr,
+        };
+        let app = Router::new().fallback(handle).with_state(stub.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        stub
+    }
+
+    pub fn endpoint(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    pub fn set_mode(&self, mode: Mode) {
+        *self.mode.lock().unwrap() = mode;
+    }
+
+    pub fn seen(&self) -> Vec<Seen> {
+        self.seen.lock().unwrap().clone()
+    }
+
+    pub fn object(&self, key: &str) -> Option<Object> {
+        self.objects.lock().unwrap().get(key).cloned()
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<_> = self.objects.lock().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// An object put by someone else, with these headers.
+    pub fn insert(&self, key: &str, body: &[u8], headers: &[(&'static str, &str)]) {
+        let headers = headers
+            .iter()
+            .map(|(k, v)| {
+                (
+                    HeaderName::from_static(k),
+                    HeaderValue::from_str(v).unwrap(),
+                )
+            })
+            .collect();
+        self.objects.lock().unwrap().insert(
+            key.to_owned(),
+            Object {
+                body: Bytes::copy_from_slice(body),
+                headers,
+            },
+        );
+    }
+}
+
+fn xml(status: StatusCode, code: &str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/xml")
+        .body(Body::from(format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>{code}</Code><Message>{code}</Message></Error>"
+        )))
+        .unwrap()
+}
+
+fn access_key_id(headers: &HeaderMap) -> Option<String> {
+    let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let credential = auth.split("Credential=").nth(1)?;
+    Some(credential.split('/').next()?.to_owned())
+}
+
+async fn handle(State(stub): State<Stub>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let path = parts.uri.path().to_owned();
+    let seen = Seen {
+        method: parts.method.clone(),
+        path: path.clone(),
+        access_key_id: access_key_id(&parts.headers),
+        headers: parts.headers.clone(),
+    };
+    let id = seen.access_key_id.clone();
+    stub.seen.lock().unwrap().push(seen);
+
+    let mode = *stub.mode.lock().unwrap();
+    if let Mode::Fail(status) = mode {
+        return xml(status, "InternalError");
+    }
+    if id.as_deref() != Some(ACCESS_KEY_ID) {
+        return xml(StatusCode::FORBIDDEN, "InvalidAccessKeyId");
+    }
+    let Some(key) = path
+        .strip_prefix('/')
+        .and_then(|p| p.strip_prefix(BUCKET))
+        .and_then(|p| p.strip_prefix('/'))
+    else {
+        return xml(StatusCode::NOT_FOUND, "NoSuchBucket");
+    };
+    let key = key.to_owned();
+    match parts.method {
+        Method::PUT => {
+            let body = to_bytes(body, 64 * 1024 * 1024).await.unwrap();
+            let headers = parts
+                .headers
+                .iter()
+                .filter(|(name, _)| {
+                    name.as_str() == "content-type" || name.as_str().starts_with("x-amz-meta-")
+                })
+                .map(|(n, v)| (n.clone(), v.clone()))
+                .collect();
+            stub.objects
+                .lock()
+                .unwrap()
+                .insert(key, Object { body, headers });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::ETAG, "\"d41d8cd98f00b204e9800998ecf8427e\"")
+                .body(Body::empty())
+                .unwrap()
+        }
+        Method::GET | Method::HEAD => {
+            let Some(object) = stub.object(&key) else {
+                return xml(StatusCode::NOT_FOUND, "NoSuchKey");
+            };
+            let mut response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::ETAG, "\"d41d8cd98f00b204e9800998ecf8427e\"")
+                .header(header::LAST_MODIFIED, "Wed, 01 Jan 2025 00:00:00 GMT")
+                .header(header::CONTENT_LENGTH, object.body.len());
+            for (name, value) in &object.headers {
+                response = response.header(name, value);
+            }
+            let body = if parts.method == Method::GET {
+                Body::from(object.body)
+            } else {
+                Body::empty()
+            };
+            response.body(body).unwrap()
+        }
+        Method::DELETE => {
+            stub.objects.lock().unwrap().remove(&key);
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(Body::empty())
+                .unwrap()
+        }
+        _ => xml(StatusCode::METHOD_NOT_ALLOWED, "MethodNotAllowed"),
+    }
+}
