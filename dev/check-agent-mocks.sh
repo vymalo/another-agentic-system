@@ -273,7 +273,8 @@ twin "mock-researcher [mock:cards], the words" mock-researcher \
 check "twin: a request that does not ask for a stream still gets the plain JSON answer" \
   "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
-# `mock-title`: the orchestrator's own model call (the title of a thread, ADR 0005): a title, "no topic yet" and a failing model,
+# `mock-title`: the orchestrator's own model call (the title of a thread, ADR 0005): a title, "no topic yet", a failing model and
+# a model that answers in Chinese (once, or always),
 # chosen by the markers in the conversation it is shown. The agents' mocks above never answer it, and it never answers theirs.
 check "mock-title: any conversation is titled \"Mock thread title\"" \
   "$(completion mock-title "$(jq -cn '[{role: "system", content: "Reply with a 3 to 6 word title"}, {role: "user", content: "Title this conversation.\n```conversation\nuser: hello\nagent: hi there\n```"}]')" | jq -r '[.finish_reason, .message.content] | join(" | ")')" \
@@ -283,6 +284,16 @@ check "mock-title: [mock:untitled] in the conversation says NONE (no topic yet)"
   "NONE"
 check "mock-title: [mock:title-error] in the conversation is a 500" \
   "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "```conversation\nuser: [mock:title-error] hello\n```"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "500"
+# a model that drifts into Chinese, once (a WireMock scenario: its state is reset here and after), and one that is right to
+curl -sS -X POST "$MODEL/__admin/scenarios/reset" -o /dev/null
+chinese_body=$(jq -cn '[{role: "system", content: "Reply with a 3 to 6 word title"}, {role: "user", content: "```conversation\nuser: [mock:title-chinese] Please fix the login page\n```\nWrite the title in English."}]')
+check "mock-title: the first ask about [mock:title-chinese] is answered in Chinese" \
+  "$(completion mock-title "$chinese_body" | jq -r .message.content)" "绘图导出问题"
+check "mock-title: the next ask about it is the default title (the Chinese answer is given once)" \
+  "$(completion mock-title "$chinese_body" | jq -r .message.content)" "Mock thread title"
+check "mock-title: [mock:title-zh] in the conversation is always titled in Chinese" \
+  "$(completion mock-title "$(jq -cn '[{role: "user", content: "```conversation\nuser: [mock:title-zh] 请修复登录页面\n```"}]')" | jq -r .message.content)" "登录页面修复"
+curl -sS -X POST "$MODEL/__admin/scenarios/reset" -o /dev/null
 check "mock-title: the base path may be /chat/completions as well as /v1/chat/completions" \
   "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "hello"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
   "Mock thread title"

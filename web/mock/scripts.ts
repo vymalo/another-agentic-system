@@ -600,6 +600,7 @@ const agentStep = (
   phase: "start" | "update" | "end",
   icon?: string,
   detail?: string,
+  io?: StepIo,
 ): Step => ({
   kind: "agent_step",
   data: {
@@ -611,8 +612,23 @@ const agentStep = (
     phase,
     ...(icon ? { icon } : {}),
     ...(detail ? { detail } : {}),
+    ...(io?.input ? { input: io.input } : {}),
+    ...(io?.output ? { output: io.output } : {}),
+    ...(io?.ioDropped ? { ioDropped: true } : {}),
   },
 });
+
+/**
+ * What a step carries besides its words (ADR 0030): the input (an object) on its start or, for a
+ * step reported once as it ended, with that one report; the output on its end. The mock says them
+ * the way the orchestrator logs them: redacted (`"[redacted]"`) and cut (`truncated`, `bytes`).
+ */
+type StepIo = {
+  input?: Record<string, unknown>;
+  output?: { text: string; truncated?: true; bytes?: number; error?: true };
+  /** The job's budget had no room for the step's input and output. */
+  ioDropped?: true;
+};
 
 /** The coder's branch, checks and pull request artifacts for a commit. */
 function coderPushed(
@@ -701,6 +717,7 @@ const openCodeChild = (
   kind: "tool" | "command",
   icon: string,
   failed?: string,
+  io?: StepIo,
 ): Step => ({
   ...agentStep(
     `acp:c2:${n}`,
@@ -711,18 +728,53 @@ const openCodeChild = (
     "end",
     icon,
     failed,
+    io,
   ),
   quick: true,
 });
 
 /** What OpenCode does in the `Delegate` scenarios, in order: a failing test run among them. */
-const OPENCODE_WORK: [string, "tool" | "command", string, string?][] = [
-  ["read src/auth/login.rs", "tool", "read"],
+const OPENCODE_WORK: [string, "tool" | "command", string, string?, StepIo?][] = [
+  [
+    "read src/auth/login.rs",
+    "tool",
+    "read",
+    undefined,
+    {
+      input: { path: "src/auth/login.rs" },
+      output: {
+        text: 'pub fn login(req: &Request) -> Redirect {\n    let next = req.query("next");\n    Redirect::to(next.unwrap_or("/"))\n}\n',
+      },
+    },
+  ],
   ["read src/auth/session.rs", "tool", "read"],
-  ["search the repository for next=", "tool", "search"],
+  [
+    "search the repository for next=",
+    "tool",
+    "search",
+    undefined,
+    {
+      input: { pattern: "next=", glob: "**/*.rs" },
+      output: {
+        text: 'src/auth/login.rs:2: let next = req.query("next");\ntests/login.rs:9: get("/login?next=/billing")',
+      },
+    },
+  ],
   ["read tests/login.rs", "tool", "read"],
   ["cargo build -p auth", "command", "execute"],
-  ["cargo test -p auth login::", "command", "execute", "1 failed, 41 passed"],
+  [
+    "cargo test -p auth login::",
+    "command",
+    "execute",
+    "1 failed, 41 passed",
+    {
+      input: { command: "cargo test -p auth login::", cwd: "/work/demo" },
+      output: {
+        text: "running 42 tests\n...\nfailures:\n    login::keeps_the_next_url\n\ntest result: FAILED. 41 passed; 1 failed",
+        error: true,
+      },
+    },
+  ],
   ["read the failing test's output", "tool", "read"],
   ["edit src/auth/login.rs", "tool", "edit"],
   ["edit tests/login.rs", "tool", "edit"],
@@ -736,8 +788,8 @@ const OPENCODE_WORK: [string, "tool" | "command", string, string?][] = [
 /** The coder hands the work to OpenCode: `count` of its steps from the list above, then its end. */
 const openCodeSteps = (count: number, finish: boolean): Step[] => [
   agentStep("tool:c2", [], "subagent", "OpenCode", "running", "start", "agent"),
-  ...OPENCODE_WORK.slice(0, count).map(([label, kind, icon, failed], i) =>
-    openCodeChild(i + 1, label, kind, icon, failed),
+  ...OPENCODE_WORK.slice(0, count).map(([label, kind, icon, failed, io], i) =>
+    openCodeChild(i + 1, label, kind, icon, failed, io),
   ),
   ...(finish
     ? [agentStep("tool:c2", [], "subagent", "OpenCode", "completed", "end", "agent")]
@@ -770,6 +822,10 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   first commit, the agent sent back, a green one for the second (the `ci` golden).
  * - `steps`: nested steps (ADR 0025, the `steps` golden): a sub-agent step `OpenCode`, a command `npm test`
  *   under it that fails (`1 failed`), the sub-agent's end, the agent's words and `completed`.
+ * - `steps-io`: mock only: what a tool step can carry (ADR 0030), one leaf step of each shape: a search with its
+ *   input (start) and output (end), a cut output (`truncated`, `bytes`), an input too big to keep
+ *   (`{_cut, bytes}`), a failed command whose output is its error, a step the job's budget had no room for
+ *   (`ioDropped`), and a step with none. The `steps` golden's `npm test` carries input and output too.
  * - `steps-ask`: the same sub-agent with a command that is `waiting` when the agent asks "Allow rm -rf
  *   build?" and blocks (the `steps-ask` golden); the answer ends the command and the sub-agent.
  * - `slow`: works until cancelled.
@@ -1231,7 +1287,20 @@ export function scriptFor(text: string): {
         start: [
           working,
           agentStep("tool:c2", [], "subagent", "OpenCode", "running", "start", "agent"),
-          agentStep("acp:c2:1", ["tool:c2"], "command", "npm test", "running", "start", "execute"),
+          agentStep(
+            "acp:c2:1",
+            ["tool:c2"],
+            "command",
+            "npm test",
+            "running",
+            "start",
+            "execute",
+            undefined,
+            // what the agent sent, as the orchestrator logs it: the token is redacted (ADR 0030)
+            {
+              input: { command: "npm test", cwd: "web", env: { CI: "1", NPM_TOKEN: "[redacted]" } },
+            },
+          ),
           agentStep(
             "acp:c2:1",
             ["tool:c2"],
@@ -1241,8 +1310,134 @@ export function scriptFor(text: string): {
             "end",
             "execute",
             "1 failed",
+            {
+              output: {
+                text: "FAIL src/sum.test.ts\n  adds two numbers\n1 failed, 12 passed",
+                error: true,
+              },
+            },
           ),
           agentStep("tool:c2", [], "subagent", "OpenCode", "completed", "end", "agent"),
+          {
+            kind: "agent_message",
+            data: { messageId: nextMessageId(), final: true, text: "Done." },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: "Done." } },
+          done,
+        ],
+      };
+    case "steps-io":
+      // what a tool step can carry (ADR 0030), one leaf step of each shape, for the web's step block:
+      // a search with its arguments and result (start and end), a result the core cut, an input too
+      // big to keep, a failure whose output is the error, a step the job's budget had no room for,
+      // and a step that has nothing (an agent that sends no input or output)
+      return {
+        start: [
+          working,
+          agentStep(
+            "tool:s1",
+            [],
+            "tool",
+            "search__web_search",
+            "running",
+            "start",
+            "search",
+            undefined,
+            { input: { query: "Stephane Segning", limit: 3, api_key: "[redacted]" } },
+          ),
+          agentStep(
+            "tool:s1",
+            [],
+            "tool",
+            "search__web_search",
+            "completed",
+            "end",
+            "search",
+            undefined,
+            {
+              output: {
+                text: "1. Stephane Segning - vymalo\n   https://example.org/mock-search/1\n2. Another result\n   https://example.org/mock-search/2",
+              },
+            },
+          ),
+          agentStep(
+            "tool:s2",
+            [],
+            "tool",
+            "fetch__fetch_page",
+            "running",
+            "start",
+            "fetch",
+            undefined,
+            { input: { url: "https://example.org/long-page" } },
+          ),
+          agentStep(
+            "tool:s2",
+            [],
+            "tool",
+            "fetch__fetch_page",
+            "completed",
+            "end",
+            "fetch",
+            undefined,
+            {
+              output: {
+                text: `${"The first part of a long page. ".repeat(190)}\n\u2026 41808 bytes not kept \u2026\n${"The last part of it. ".repeat(95)}`,
+                truncated: true,
+                bytes: 50000,
+              },
+            },
+          ),
+          agentStep(
+            "tool:s3",
+            [],
+            "tool",
+            "files__write_many",
+            "completed",
+            "end",
+            "edit",
+            undefined,
+            { input: { _cut: true, bytes: 18432 } as Record<string, unknown> },
+          ),
+          agentStep(
+            "tool:s4",
+            [],
+            "command",
+            "npm run build",
+            "running",
+            "start",
+            "execute",
+            undefined,
+            { input: { command: "npm run build", cwd: "web" } },
+          ),
+          agentStep(
+            "tool:s4",
+            [],
+            "command",
+            "npm run build",
+            "failed",
+            "end",
+            "execute",
+            "exit 1",
+            {
+              output: {
+                text: "> web@0.1.0 build\n> next build\n\nFailed to compile.\n\n./src/app/page.tsx:12:7\nType error: Property 'title' does not exist on type 'Props'.",
+                error: true,
+              },
+            },
+          ),
+          agentStep(
+            "tool:s5",
+            [],
+            "tool",
+            "search__web_search",
+            "completed",
+            "end",
+            "search",
+            undefined,
+            { ioDropped: true },
+          ),
+          agentStep("tool:s6", [], "tool", "no_details", "completed", "end", "tool"),
           {
             kind: "agent_message",
             data: { messageId: nextMessageId(), final: true, text: "Done." },

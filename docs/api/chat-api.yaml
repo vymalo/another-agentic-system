@@ -632,7 +632,7 @@ components:
         - job_started         # data: { job: integer }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
-        - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. Additive.
+        - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail?, input?, output?, ioDropped? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. `input` (with the start) and `output` (with the end) say what the tool was called with and what it returned, cut, redacted and budgeted (ADR 0030). Additive.
         - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`, attributed to the person) or the orchestrator had a model write one after the agent's first reply (`source: model`, attributed to the orchestrator, [ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): the model is asked at most twice per thread, and never once a person has renamed it). `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
         - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
     Actor:
@@ -762,6 +762,35 @@ components:
         icon:
           type: string
           description: "agent_step only: a name from the icon vocabulary of `steps/v1` (agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool), or, for a step the orchestrator reports itself, `mcp-server:<id>`."
+        input:
+          type: object
+          additionalProperties: true
+          description: "agent_step only (ADR 0030): what the tool was called with, a JSON object of at most 4096 bytes serialized with credentials redacted (`\"[redacted]\"`), strings cut at 512 characters; or `{\"_cut\": true, \"bytes\": n}` when it was bigger. Logged once per step, with its start (or with the first report that has it). Absent when the agent sent none, when the record is off (`ORCH_STEPS_RECORD_IO=false`) or when the job's budget was spent. Untrusted."
+        output:
+          type: object
+          required: [text]
+          additionalProperties: false
+          properties:
+            text:
+              type: string
+              description: "What the tool returned, or the error it returned: at most 8192 bytes (the head and the tail of a longer text, with a line between that says how many bytes are not kept), credentials redacted, no control characters but line break and tab. Untrusted text."
+            truncated:
+              type: boolean
+              enum: [true]
+              description: "`text` is not all of what the tool returned. Absent when it is."
+            bytes:
+              type: integer
+              minimum: 0
+              description: "The size of all of what the tool returned, in bytes. Only with `truncated`."
+            error:
+              type: boolean
+              enum: [true]
+              description: "`text` is the error the tool returned. Absent otherwise."
+          description: "agent_step only (ADR 0030): what the tool returned, on the step's end. Same absences as `input`."
+        ioDropped:
+          type: boolean
+          enum: [true]
+          description: "agent_step only (ADR 0030): the step had an `input` or an `output` that the job's budget (2 MiB of both over all its steps) had no room for, and it was dropped. Absent otherwise."
         summary:
           type: string
           description: "check_result, ci_result: a one-line summary from the source. Untrusted text."

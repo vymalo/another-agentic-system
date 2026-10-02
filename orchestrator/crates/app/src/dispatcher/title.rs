@@ -16,6 +16,12 @@
 //!   nothing. What is read is untrusted text and goes to the model fenced, as data
 //!   ([`title_prompt`]); what comes back is cleaned to one line of plain text and checked again by
 //!   the core before it is logged.
+//! * **The title is in the person's language, and checked.** The prompt names the language last
+//!   ([`title_prompt`]); a title in a script none of the person's messages uses (the Chinese title
+//!   of an English thread) is declined by [`check_title_language`], and the model is asked **once
+//!   more in the same row**, with the language named again and what went wrong
+//!   ([`title_retry_prompt`]). If that answer is wrong too the row is declined: the thread keeps
+//!   the first message's words, and the next reply may ask again, as after `NONE`.
 //! * **A person's title wins.** A row whose thread has been renamed meanwhile is dropped, and the
 //!   core would ignore the model's title anyway.
 //! * **A model that stumbles is asked again, a little.** A transient failure (a timeout, a 5xx, a
@@ -26,7 +32,10 @@
 
 use std::time::Duration;
 
-use orch_core::{Classify, ErrorClass, Input, TitleSource, clean_title, report, title_prompt};
+use orch_core::{
+    Classify, ErrorClass, Event, Input, TitleSource, check_title_language, clean_title, report,
+    title_prompt, title_retry_prompt,
+};
 use orch_ports::{
     ChatModel, ChatRequest, ModelError, OutboxFinal, OutboxItem, OutboxPayload, Ports, ThreadStore,
 };
@@ -69,21 +78,8 @@ impl<P: Ports> Dispatcher<P> {
                     .store()
                     .list_events(row.thread_id, 0, TITLE_EVENTS)
                     .await?;
-                let (system, user) = title_prompt(&events);
-                let request = ChatRequest {
-                    model: model.to_owned(),
-                    system,
-                    user,
-                    max_tokens: TITLE_TOKENS,
-                };
-                match self.ask_model(&row, &request).await {
-                    Some(text) => match clean_title(&text) {
-                        Some(title) => Input::Titled { ask, title },
-                        None => {
-                            tracing::debug!(id = %row.id, "the model had no title for the conversation yet");
-                            Input::TitleDeclined { ask }
-                        }
-                    },
+                match self.title_in_language(&row, model, &events).await {
+                    Some(title) => Input::Titled { ask, title },
                     None => Input::TitleDeclined { ask },
                 }
             }
@@ -107,6 +103,60 @@ impl<P: Ports> Dispatcher<P> {
             Err(AppError::NotFound) => self.finish(&row, OutboxFinal::Skipped).await,
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// The title the model writes for the conversation `events`, in the person's language, or
+    /// `None`: it has no topic yet, it cannot be had, or it was in the wrong script twice.
+    async fn title_in_language(
+        &self,
+        row: &OutboxItem,
+        model: &str,
+        events: &[Event],
+    ) -> Option<String> {
+        let (system, user) = title_prompt(events);
+        let title = self.title_from(row, model, system, user).await?;
+        let Err(wrong) = check_title_language(events, &title) else {
+            return Some(title);
+        };
+        tracing::debug!(
+            id = %row.id,
+            script = ?wrong.script,
+            "the title is in a script the person did not write in; asking once more"
+        );
+        let (system, user) = title_retry_prompt(events);
+        let title = self.title_from(row, model, system, user).await?;
+        if let Err(wrong) = check_title_language(events, &title) {
+            tracing::debug!(
+                id = %row.id,
+                script = ?wrong.script,
+                "the second title is in the wrong script too; the thread keeps the first words"
+            );
+            return None;
+        }
+        Some(title)
+    }
+
+    /// One question to the model and the title its answer stands for (`None` for no topic yet or
+    /// no answer).
+    async fn title_from(
+        &self,
+        row: &OutboxItem,
+        model: &str,
+        system: String,
+        user: String,
+    ) -> Option<String> {
+        let request = ChatRequest {
+            model: model.to_owned(),
+            system,
+            user,
+            max_tokens: TITLE_TOKENS,
+        };
+        let text = self.ask_model(row, &request).await?;
+        let title = clean_title(&text);
+        if title.is_none() {
+            tracing::debug!(id = %row.id, "the model had no title for the conversation yet");
+        }
+        title
     }
 
     /// The model's answer, or `None` when it cannot be had (said in the log of the process, never

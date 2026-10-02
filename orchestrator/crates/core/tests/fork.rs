@@ -89,6 +89,9 @@ fn step(seq: i64) -> Event {
             phase: StepPhase::Start,
             icon: None,
             detail: None,
+            input: None,
+            output: None,
+            io_dropped: false,
         }),
     )
 }

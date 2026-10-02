@@ -78,6 +78,9 @@ fn step(
             phase,
             icon: None,
             detail: None,
+            input: None,
+            output: None,
+            io_dropped: false,
         }),
     )
 }
@@ -677,4 +680,63 @@ fn a_connect_stream_that_joins_in_the_middle_of_a_step_run_is_whole() {
             "the preamble re-opens at most the open subagents"
         );
     }
+}
+
+/// ADR 0030: the input is logged with the start and the output with the end, and every snapshot
+/// of the step says what the step has by then: the end's carries both, `ioDropped` only when the
+/// log says so, and none of them is there when the step had none.
+#[test]
+fn a_steps_activity_carries_its_input_and_output() {
+    let mut start = step(3, "t/c", &[], Tool, Running, Start);
+    let mut end = step(4, "t/c", &[], Tool, Failed, End);
+    if let EventBody::AgentStep(d) = &mut start.body {
+        d.input = serde_json::json!({"query": "node 24", "limit": 3})
+            .as_object()
+            .cloned();
+    }
+    if let EventBody::AgentStep(d) = &mut end.body {
+        d.output = Some(orch_core::StepOutput {
+            text: "no such host".to_owned(),
+            truncated: true,
+            bytes: Some(9000),
+            error: true,
+        });
+    }
+    let plain = step(5, "t/d", &[], Tool, Completed, End);
+    let events = [
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        start,
+        end,
+        plain,
+    ];
+    let frames = project(&events);
+    let flat = support::flatten(&frames);
+    let first = &frames[2]
+        .iter()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::ActivitySnapshot(e) => Some(e.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        first["input"],
+        serde_json::json!({"query": "node 24", "limit": 3})
+    );
+    assert!(first.get("output").is_none());
+    let last = activity(&flat, "step-3");
+    assert_eq!(last["content"]["state"], "failed");
+    assert_eq!(
+        last["content"]["input"],
+        serde_json::json!({"query": "node 24", "limit": 3}),
+        "the end says the input again"
+    );
+    assert_eq!(
+        last["content"]["output"],
+        serde_json::json!({"text": "no such host", "truncated": true, "bytes": 9000, "error": true})
+    );
+    assert!(last["content"].get("ioDropped").is_none());
+    let bare = activity(&flat, "step-5");
+    assert!(bare["content"].get("input").is_none());
+    assert!(bare["content"].get("output").is_none());
 }

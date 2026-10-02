@@ -155,7 +155,7 @@ gets everything.
 | `thread_state{blocked}` after `error{retryable:true}` (a timeout, or a verifier that could not be used) | The verifier's subagent is still open, and the gate does not require CI, so the hold can only be the verifier's | `SUBAGENT_ERROR{subagentRunId:"sub-verify-<verification>", message:<the error's>, code:"verifier_failed"}`, before the interrupt that closes the run |
 | `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<provider>-<sha>-<name>-<seq>", activityType:"vymalo.ci", replace:false, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
-| `agent_step{id, path, kind, label, state, phase, icon?, detail?}` (ADR 0025) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
+| `agent_step{id, path, kind, label, state, phase, icon?, detail?, input?, output?, ioDropped?}` (ADR 0025, ADR 0030) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
 | `thread_state{done}` | After the `check_result` events that passed | `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED{outcome:{type:"success"}}` |
 | Any other event | No run open, not user input (a webhook, a timer, a late delivery failure) | A producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` with no input echo, the event's frames, then closed by the same rules (open question 17) |
@@ -573,6 +573,12 @@ stateDiagram-v2
   the orchestrator reports itself (a relayed tool call, an agent it asked), the actor it names.
 - **Untrusted text.** `label` and `detail` come from an agent. The core cuts them (200 and 1000 characters) and drops
   control characters; a client draws them as text.
+- **Input and output** ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md),
+  [`steps-v1.md`](steps-v1.md#input-and-output)). The `vymalo.step` content gains `input` (an object, with the start),
+  `output` (`{text, truncated?, bytes?, error?}`, with the end) and `ioDropped`, **as logged**: the snapshot of an event says
+  the step as it stands, so the snapshot of the end carries the input that came with the start as well as the output. They
+  are additive: a client that ignores them draws the step as before. A step's `input` and `output` are untrusted text,
+  already cut and redacted by the core; a client draws them as text and does not parse `output.text`.
 - **The goldens** [`steps`](examples/agui/steps.agui.json) (a sub-agent step with a command that fails, and the sub-agent
   completing) and [`steps-ask`](examples/agui/steps-ask.agui.json) (a step waiting when the agent asks: the step subagent
   suspends with the invocation, and its end is said in the next run) are this section as streams; the reference client reads
@@ -1202,6 +1208,20 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "state": { "enum": ["running", "waiting", "completed", "failed", "canceled"] },
         "icon": { "type": "string", "description": "agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file or tool; for a step the orchestrator reports itself also mcp-server:<id>" },
         "detail": { "type": "string", "description": "At most 1000 characters" },
+        "input": { "type": "object", "description": "What the tool was called with (ADR 0030): a JSON object of at most 4096 bytes serialized, credentials redacted; or {\"_cut\": true, \"bytes\": n} when it was bigger. Logged with the start; every later snapshot of the step says it again" },
+        "output": {
+          "type": "object",
+          "description": "What the tool returned, or the error it returned (ADR 0030): on the snapshot of the step's end. Untrusted text",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": {
+            "text": { "type": "string", "description": "At most 8192 bytes: the head and the tail of a longer text, with a line between that says how much is not kept. Credentials redacted" },
+            "truncated": { "const": true, "description": "text is not all of what the tool returned" },
+            "bytes": { "type": "integer", "minimum": 0, "description": "The size of all of it, when truncated" },
+            "error": { "const": true, "description": "text is the error the tool returned" }
+          }
+        },
+        "ioDropped": { "const": true, "description": "The step had an input or an output that the job's budget (2 MiB) had no room for" },
         "startedAt": { "type": "string", "format": "date-time", "description": "When the step started (the time of its first event)" },
         "at": { "$ref": "#/$defs/at" }
       }

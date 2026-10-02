@@ -80,6 +80,105 @@
       }
     },
     {
+      "name": "title: the first ask about a conversation that holds [mock:title-chinese] is answered in Chinese (a model that drifts); every later ask gets the default title",
+      "priority": 1,
+      "scenarioName": "title-chinese-once",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "said-in-chinese",
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-title"
+            }
+          },
+          {
+            "contains": "[mock:title-chinese]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-title-zh-once",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-title",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "绘图导出问题"
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 6,
+            "total_tokens": 106
+          }
+        }
+      }
+    },
+    {
+      "name": "title: a conversation that holds [mock:title-zh] is titled in Chinese, as a Chinese conversation should be",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-title"
+            }
+          },
+          {
+            "contains": "[mock:title-zh]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-title-zh",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-title",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "登录页面修复"
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 6,
+            "total_tokens": 106
+          }
+        }
+      }
+    },
+    {
       "name": "title: any other conversation is titled \"Mock thread title\"",
       "priority": 2,
       "request": {

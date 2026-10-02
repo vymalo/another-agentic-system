@@ -6,6 +6,9 @@
   activities, and the A2A adapter that reads the extension).** The web's step tree and the right-hand panel are the
   web's slice; the adam-rs side (an agent that reports its tool calls and its sub-agent's as steps) is that
   repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
+  **Revised 2026-10-02 (additive, still v1): a step may carry `input` and `output`**
+  ([section 3](#3-the-report), [ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)).
+  An orchestrator that ignores them reads the step as before, and an agent that sends none still works.
 - **Decided in:** [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md) and its status note;
   the optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that delegate or call tools (adam-coder and its OpenCode
@@ -116,7 +119,9 @@ A step is a `TaskStatusUpdateEvent` whose `status.state` is `working` and whose 
   "label": "npm test",
   "state": "running",
   "icon": "execute",
-  "detail": "12 passed, 1 failed"
+  "detail": "12 passed, 1 failed",
+  "input": {"command": "npm test", "cwd": "web"},
+  "output": {"text": "FAIL src/sum.test.ts ...", "error": true}
 }}
 ```
 
@@ -129,6 +134,8 @@ A step is a `TaskStatusUpdateEvent` whose `status.state` is `working` and whose 
 | `state` | yes | `running`, `waiting` (for a permission, a person, another step), `completed`, `failed`, `canceled`. The last three **end** the step. |
 | `icon` | no | One of `agent`, `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `web`, `git`, `test`, `file`, `tool`. Anything else is ignored: the step stays, without an icon. |
 | `detail` | no | Plain text: a result, a failure. At most 1000 characters (more is cut, ending in `…`). Line breaks are kept. |
+| `input` | no | **A JSON object: what the tool was called with** (its arguments), on the step's start or on the first report that has it. See [Input and output](#input-and-output). |
+| `output` | no | **An object `{text, truncated?, bytes?, error?}`: what the tool returned**, on the step's end. See [Input and output](#input-and-output). |
 
 Semantics:
 
@@ -137,6 +144,9 @@ Semantics:
 - Agents SHOULD send at most one update per step per second; the start and the end always. The orchestrator keeps
   only a few updates anyway ([coalescing](#4-what-the-orchestrator-logs)).
 - A step that is reported ended without having started is one event, an end.
+- **`input` and `output` are read leniently.** A member of the wrong type (an `input` that is not an object, an `output`
+  with no string `text`) is dropped **and the step is kept**: unlike the members above, which identify the step, they
+  never cost it. An agent that sends neither is a step as before.
 - **Metadata that does not validate is ignored** and the status is read as plain A2A: no `id`, no `label`, no `state`,
   a `state` that is not one of the five, a member of the wrong type. A report is data from an agent and is checked as
   such, again in the core ([`StepReport::sanitize`](../../orchestrator/crates/core/src/step.rs)): ids with control
@@ -145,6 +155,36 @@ Semantics:
 - An agent SHOULD NOT report a step for a call it makes on the [thread tools](thread-tools-v1.md): the orchestrator
   reports those itself, with the tool server's icon.
 
+### Input and output
+
+*Added 2026-10-02 ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)); additive.*
+"What did it search for, and what did it find" is the question a person has when a tool step does not do what they
+expected, and `detail` (one short human line) cannot answer it.
+
+| Member | Shape | Sent |
+|---|---|---|
+| `input` | a JSON object (the call's arguments) | with the start, or with the first report that has one; a later report that repeats it is not logged again |
+| `output` | `{"text": string, "truncated"?: true, "bytes"?: number, "error"?: true}` | with the end. `text` is what the tool returned, or, when the step failed, the error it returned (`"error": true`). `truncated` says `text` is not all of it (the agent cut it), `bytes` is the size of all of it |
+
+`detail` stays the short line. An agent that cuts a long result itself SHOULD keep its head and its tail (errors are at
+the end) and say `truncated` and `bytes`.
+
+**The orchestrator bounds and redacts both, whatever the agent did** (the core's door,
+[`StepReport::sanitize`](../../orchestrator/crates/core/src/step.rs); the agent SHOULD redact what it knows exactly
+first, as adam-coder redacts its own secrets):
+
+| What | Bound |
+|---|---|
+| `input` | At most **4096 bytes** serialized. Strings longer than 512 characters are cut, ending in `…`; an `input` still over 4096 bytes is replaced by `{"_cut": true, "bytes": n}` (`n`: its size before the strings were cut). Nested deeper than 12 levels: the rest is `"…"`. An empty object is no input |
+| `output.text` | At most **8192 bytes**: a longer text keeps its head (three quarters) and its tail with a line between that says `… n bytes not kept …`, and `truncated` and `bytes` are set. An empty text is no output unless `error` |
+| a job | At most **2 MiB** of `input` and `output.text` together over all the steps of one job. Past it a member is dropped and the step is logged with `ioDropped: true`; the step itself is always kept |
+| characters | Control characters other than line break and tab are removed, in keys too |
+| credentials | The value under a key that ends in `authorization`, `api_key`, `apikey`, `token`, `secret`, `password`, `passwd`, `private_key`, `cookie` or `credential(s)` becomes `"[redacted]"`; text that looks like a bearer or basic credential, a JWT, a GitHub token, an `sk-` key, an AWS key id, a Slack token, a private key block, a password in a URL or a `password=` / `token=` pair is replaced by a marker. Redaction runs **before** the cut |
+
+**Redaction is a filter, not a guarantee.** A secret in a shape no rule knows passes. The record can be turned off for a
+deployment (`ORCH_STEPS_RECORD_IO=false`: a step is then its label and detail only), and the log is as sensitive as the
+chat. A step's text is untrusted: a screen draws it as text.
+
 ## 4. What the orchestrator logs
 
 Each valid report becomes an `agent_step` event ([`chat-api.yaml`](chat-api.yaml)), attributed to the agent:
@@ -152,11 +192,14 @@ Each valid report becomes an `agent_step` event ([`chat-api.yaml`](chat-api.yaml
 ```json
 {"seq": 5, "kind": "agent_step", "actor": {"type": "agent", "name": "coder", "revision": "rev-2"},
  "data": {"id": "task-1/acp:call_2:toolu_01", "path": ["task-1/tool:call_2"], "kind": "command",
-          "label": "npm test", "state": "failed", "phase": "end", "icon": "execute", "detail": "1 failed"}}
+          "label": "npm test", "state": "failed", "phase": "end", "icon": "execute", "detail": "1 failed",
+          "output": {"text": "FAIL src/sum.test.ts\n1 failed, 12 passed", "error": true}}}
 ```
 
 `path` is the chain of step ids the step runs under, outermost first (the parent's own path and the parent; at most the
-8 nearest). `phase` says which moment of the step the event is: `start`, `update` or `end`.
+8 nearest). `phase` says which moment of the step the event is: `start`, `update` or `end`. `input` is logged once per
+step (with its start), `output` with its end, and `ioDropped: true` marks an event whose `input` or `output` the job's
+budget had no room for ([Input and output](#input-and-output)). With `ORCH_STEPS_RECORD_IO=false` the log has neither.
 
 **The log is bounded.** The job's ledger (`threads.job`, so every replica decides the same) remembers which steps are
 open and how many updates each logged:
@@ -169,7 +212,8 @@ open and how many updates each logged:
 | open | an end | an `end`, with the path the step started with; the step is no longer open |
 
 So a step costs at most 2 + 4 events however often the agent reports. A job logs at most 2000 steps and tracks at most
-256 as open (a report that would exceed either is dropped). When the agent's task ends, whatever it left open is
+256 as open (a report that would exceed either is dropped). Input and output add at most 2 MiB to a job
+([Input and output](#input-and-output)). When the agent's task ends, whatever it left open is
 forgotten with no event; the projection closes what it shows.
 
 State: a report is taken while the thread is `queued` or `working` (the first one moves a `queued` thread to
@@ -188,7 +232,9 @@ The orchestrator emits the same event for work that does not come from the agent
 for the agent ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)) is a `tool` step whose icon may
 name the MCP server (`mcp-server:<id>`; an agent cannot claim that icon), and an agent it asked
 ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)) is a `subagent` step the asked agent's own
-steps nest under. They go through the same rules (`Input::Step`, `App::record_step`).
+steps nest under. They go through the same rules (`Input::Step`, `App::record_step`), **including input and output**: the relay fills
+them from the call it relays, under the same bounds and redaction ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)
+overrides the earlier plan that relayed calls' arguments and results are not logged).
 
 ## Verified and unverified (2026-10-01)
 

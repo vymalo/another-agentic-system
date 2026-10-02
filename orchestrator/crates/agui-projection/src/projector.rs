@@ -1388,9 +1388,18 @@ impl Projector {
         let continues = d.phase != StepPhase::Start && self.steps.contains_key(&d.id);
         if continues {
             if let Some(step) = self.steps.get_mut(&d.id) {
-                // The icon is what the step first said when a later report leaves it out.
+                // The icon is what the step first said when a later report leaves it out, and
+                // so is the input: it is logged once, with the start, and the end says the step
+                // again with it and with the output.
                 let icon = d.icon.clone().or_else(|| step.data.icon.clone());
-                step.data = AgentStepData { icon, ..d.clone() };
+                let input = d.input.clone().or_else(|| step.data.input.clone());
+                let io_dropped = d.io_dropped || step.data.io_dropped;
+                step.data = AgentStepData {
+                    icon,
+                    input,
+                    io_dropped,
+                    ..d.clone()
+                };
                 step.actor = ev.actor.clone();
             }
         } else {
@@ -1486,6 +1495,17 @@ impl Projector {
         }
         if let Some(detail) = &d.detail {
             content.insert("detail".to_owned(), Value::from(detail.clone()));
+        }
+        if let Some(input) = &d.input {
+            content.insert("input".to_owned(), Value::Object(input.clone()));
+        }
+        if let Some(output) = &d.output
+            && let Ok(output) = serde_json::to_value(output)
+        {
+            content.insert("output".to_owned(), output);
+        }
+        if d.io_dropped {
+            content.insert("ioDropped".to_owned(), Value::Bool(true));
         }
         content.insert("startedAt".to_owned(), Value::from(step.started_at.clone()));
         content.insert(AT_KEY.to_owned(), Value::from(self.now.clone()));

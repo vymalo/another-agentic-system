@@ -19,6 +19,8 @@ fn report(id: &str, parent: Option<&str>, state: StepState) -> StepReport {
         state,
         icon: None,
         detail: None,
+        input: None,
+        output: None,
     }
 }
 

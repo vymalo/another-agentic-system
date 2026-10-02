@@ -17,7 +17,9 @@
 //! | `fail` | `working`, `failed("scripted failure")` |
 //! | `talk` | `working`, `working("Reading the repository")`, an agent `Message` "Plan: add a test", artifact `echo: <text>`, `completed` |
 //! | `messages` | `working`, two agent `Message` frames (`message one`, `message two`, ids `<task>-msg-<n>`), artifact `echo: <text>`, `completed`; when the text also contains the word `gate`, it waits for [`FakeAgent::release_gate`] after the messages |
-//! | `steps` | `working`, then the work as nested steps (`steps/v1`, ADR 0025, reported the way a card that lists the extension asks for): a sub-agent step `OpenCode` (`tool:c2`), a command `npm test` under it (`acp:c2:1`) that fails with the detail `1 failed`, the sub-agent's end, the agent `Message` "Done.", `completed("Done.")`. The fake reports them whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_steps`] says whether it was asked) |
+//! | `steps` | `working`, then the work as nested steps (`steps/v1`, ADR 0025, reported the way a card that lists the extension asks for): a sub-agent step `OpenCode` (`tool:c2`), a command `npm test` under it (`acp:c2:1`, called with `{command, cwd, env}`, whose `NPM_TOKEN` the core redacts, and that fails with the detail `1 failed` and the error text as its `output`), the sub-agent's end, the agent `Message` "Done.", `completed("Done.")`. The fake reports them whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_steps`] says whether it was asked) |
+//! | `steps-io-bad` | `working`, one tool step whose `input` is a string and whose `output` has no text: the step is kept, the members are dropped (ADR 0030), `completed("Done.")` |
+//! | `steps-io-big` | `working`, one tool step with a 5000-character argument and a 20 000-character result: both are cut by the core (ADR 0030), `completed("Done.")` |
 //! | `steps-ask` | `working`, the sub-agent step and a command `rm -rf build` under it that is `waiting`, then `input-required("Allow rm -rf build?")`; the follow-up on the same task: `working`, the command and the sub-agent end, `completed("Done.")` |
 //! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
 //! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
@@ -832,6 +834,12 @@ impl TaskCtx {
         if let Some(detail) = step.detail {
             entry["detail"] = json!(detail);
         }
+        if let Some(input) = &step.input {
+            entry["input"] = input.clone();
+        }
+        if let Some(output) = &step.output {
+            entry["output"] = output.clone();
+        }
         let mut m = Message::new(Role::Agent, vec![Part::text(step.label)]);
         m.task_id = Some(self.task_id.clone());
         m.context_id = Some(self.context_id.clone());
@@ -979,6 +987,10 @@ struct StepSay<'a> {
     state: &'a str,
     icon: Option<&'a str>,
     detail: Option<&'a str>,
+    /// What the tool was called with (`input` of the report), as the agent sends it.
+    input: Option<Value>,
+    /// What the tool returned (`output` of the report), as the agent sends it.
+    output: Option<Value>,
 }
 
 fn is_a2ui(part: &Part) -> bool {
@@ -1549,6 +1561,8 @@ async fn script(
                     state: "running",
                     icon: Some("agent"),
                     detail: None,
+                    input: None,
+                    output: None,
                 },
                 StepSay {
                     id: "acp:c2:1",
@@ -1558,6 +1572,13 @@ async fn script(
                     state: "running",
                     icon: Some("execute"),
                     detail: None,
+                    // the token under `NPM_TOKEN` is the core's to redact (ADR 0030)
+                    input: Some(json!({
+                        "command": "npm test",
+                        "cwd": "web",
+                        "env": {"CI": "1", "NPM_TOKEN": "npm_0123456789abcdef"},
+                    })),
+                    output: None,
                 },
                 StepSay {
                     id: "acp:c2:1",
@@ -1567,6 +1588,11 @@ async fn script(
                     state: "failed",
                     icon: Some("execute"),
                     detail: Some("1 failed"),
+                    input: None,
+                    output: Some(json!({
+                        "text": "FAIL src/sum.test.ts\n  adds two numbers\n1 failed, 12 passed",
+                        "error": true,
+                    })),
                 },
                 StepSay {
                     id: "tool:c2",
@@ -1576,12 +1602,66 @@ async fn script(
                     state: "completed",
                     icon: Some("agent"),
                     detail: None,
+                    input: None,
+                    output: None,
                 },
             ] {
                 emit(&tx, ctx.step(&report)).await?;
             }
             // named by the task's script, not by the task: the golden holds the text, not the id
             emit(&tx, ctx.message_named("steps-said", "Done.")).await?;
+            emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
+        }
+        // an agent that sends `input` and `output` badly: the steps are kept, the members dropped
+        "steps-io-bad" => {
+            for (state, input, output) in [
+                ("running", Some(json!("npm test")), None),
+                ("completed", None, Some(json!({"text": 5}))),
+            ] {
+                emit(
+                    &tx,
+                    ctx.step(&StepSay {
+                        id: "tool:bad",
+                        parent: None,
+                        kind: "tool",
+                        label: "badly said",
+                        state,
+                        icon: None,
+                        detail: None,
+                        input,
+                        output,
+                    }),
+                )
+                .await?;
+            }
+            emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
+        }
+        // an agent that sends more than the log keeps: a long argument and a long result
+        "steps-io-big" => {
+            for (state, input, output) in [
+                ("running", Some(json!({"query": "q".repeat(5000)})), None),
+                (
+                    "completed",
+                    None,
+                    Some(json!({"text": format!("{}{}", "a".repeat(20_000), "the end")})),
+                ),
+            ] {
+                emit(
+                    &tx,
+                    ctx.step(&StepSay {
+                        id: "tool:big",
+                        parent: None,
+                        kind: "tool",
+                        label: "big",
+                        state,
+                        icon: None,
+                        detail: None,
+                        input,
+                        output,
+                    }),
+                )
+                .await?;
+            }
             emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
         }
         "steps-ask" => {
@@ -1596,6 +1676,8 @@ async fn script(
                     state: "running",
                     icon: Some("agent"),
                     detail: None,
+                    input: None,
+                    output: None,
                 },
                 StepSay {
                     id: "acp:c2:1",
@@ -1605,6 +1687,8 @@ async fn script(
                     state: "waiting",
                     icon: Some("execute"),
                     detail: None,
+                    input: None,
+                    output: None,
                 },
             ] {
                 emit(&tx, ctx.step(&report)).await?;
@@ -1625,6 +1709,8 @@ async fn script(
                     state: "completed",
                     icon: Some("execute"),
                     detail: None,
+                    input: None,
+                    output: None,
                 },
                 StepSay {
                     id: "tool:c2",
@@ -1634,6 +1720,8 @@ async fn script(
                     state: "completed",
                     icon: Some("agent"),
                     detail: None,
+                    input: None,
+                    output: None,
                 },
             ] {
                 emit(&tx, ctx.step(&report)).await?;
@@ -1693,6 +1781,8 @@ async fn script(
                     state: "completed",
                     icon: Some("execute"),
                     detail: None,
+                    input: None,
+                    output: None,
                 }),
             )
             .await?;
@@ -1728,6 +1818,8 @@ async fn script(
                 state,
                 icon: Some("execute"),
                 detail: None,
+                input: None,
+                output: None,
             };
             for _ in 0..21 {
                 emit(&tx, ctx.step(&step("running"))).await?;

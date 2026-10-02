@@ -613,7 +613,9 @@ export class Projector {
     this.ensureInvocation(e, out);
     const known = this.steps.get(id);
     if (known && phase !== "start") {
-      // the icon is what the step first said when a later report leaves it out
+      // the icon is what the step first said when a later report leaves it out, and so is the input
+      // (ADR 0030: logged once, with the start; the end says it again with the output)
+      const input = d.input !== undefined ? d.input : known.data.input;
       known.data = {
         id,
         path,
@@ -626,6 +628,9 @@ export class Projector {
             ? { icon: known.data.icon }
             : {}),
         ...(d.detail !== undefined ? { detail: d.detail } : {}),
+        ...(input !== undefined ? { input } : {}),
+        ...(d.output !== undefined ? { output: d.output } : {}),
+        ...(d.ioDropped || known.data.ioDropped ? { ioDropped: true } : {}),
       };
       known.actor = e.actor;
     } else {
@@ -642,6 +647,9 @@ export class Projector {
           state,
           ...(d.icon !== undefined ? { icon: d.icon } : {}),
           ...(d.detail !== undefined ? { detail: d.detail } : {}),
+          ...(d.input !== undefined ? { input: d.input } : {}),
+          ...(d.output !== undefined ? { output: d.output } : {}),
+          ...(d.ioDropped ? { ioDropped: true } : {}),
         },
         startedAt: e.at,
         actor: e.actor,

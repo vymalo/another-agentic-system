@@ -115,6 +115,14 @@
         "at": "<timestamp>",
         "icon": "execute",
         "id": "T/acp:c2:1",
+        "input": {
+          "command": "npm test",
+          "cwd": "web",
+          "env": {
+            "CI": "1",
+            "NPM_TOKEN": "[redacted]"
+          }
+        },
         "kind": "command",
         "label": "npm test",
         "path": [
@@ -144,8 +152,20 @@
         "detail": "1 failed",
         "icon": "execute",
         "id": "T/acp:c2:1",
+        "input": {
+          "command": "npm test",
+          "cwd": "web",
+          "env": {
+            "CI": "1",
+            "NPM_TOKEN": "[redacted]"
+          }
+        },
         "kind": "command",
         "label": "npm test",
+        "output": {
+          "error": true,
+          "text": "FAIL src/sum.test.ts\n  adds two numbers\n1 failed, 12 passed"
+        },
         "path": [
           "T/tool:c2"
         ],

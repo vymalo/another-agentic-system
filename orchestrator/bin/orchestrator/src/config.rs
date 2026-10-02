@@ -785,6 +785,13 @@ pub struct Args {
     #[arg(long, env = "ORCH_VERIFIER_WATCH_SECS", value_name = "SECS")]
     pub verifier_watch_secs: Option<String>,
 
+    /// Whether a step's input and output (what a tool was called with and what it returned) are
+    /// recorded in the log, redacted and capped (ADR 0030): `true` (the default) or `false`
+    /// (also `1`/`0`, `yes`/`no`, `on`/`off`). Off, a step is its label and detail only, as
+    /// before ADR 0030, and nothing the tools received or returned is kept.
+    #[arg(long, env = "ORCH_STEPS_RECORD_IO", value_name = "BOOL")]
+    pub steps_record_io: Option<String>,
+
     /// The model that writes thread titles (the orchestrator's own first model call: after the
     /// agent's first reply it is asked for a 3 to 6 word title, which replaces the first words of
     /// the first message unless a person renamed the thread). Unset (the default) turns titles
@@ -973,6 +980,8 @@ pub struct Config {
     pub outbox_lease: Duration,
     /// `ORCH_VERIFIER_WATCH_SECS`: how often a verification looks at its thread while it waits.
     pub verifier_watch: Duration,
+    /// `ORCH_STEPS_RECORD_IO`: whether a step's input and output are recorded (ADR 0030).
+    pub steps_record_io: bool,
     /// `ORCH_TITLE_MODEL`, `ORCH_MODEL_BASE_URL`, `ORCH_MODEL_API_KEY` and
     /// `ORCH_MODEL_TIMEOUT_SECS`: the model that writes thread titles; `None` turns titles off.
     /// Its `Debug` never shows the key.
@@ -1004,6 +1013,7 @@ impl fmt::Debug for Config {
             .field("dispatcher_concurrency", &self.dispatcher_concurrency)
             .field("outbox_lease", &self.outbox_lease)
             .field("verifier_watch", &self.verifier_watch)
+            .field("steps_record_io", &self.steps_record_io)
             .field("model", &self.model)
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
@@ -1239,6 +1249,7 @@ impl Config {
             DEFAULT_VERIFIER_WATCH_SECS,
             1,
         )?;
+        let steps_record_io = flag(clean(args.steps_record_io), "ORCH_STEPS_RECORD_IO", true)?;
         let model = model_settings(
             clean(args.title_model),
             clean(args.model_base_url),
@@ -1311,6 +1322,7 @@ impl Config {
             agent_local_concurrency,
             outbox_lease: Duration::from_secs(outbox_lease_secs),
             verifier_watch: Duration::from_secs(verifier_watch_secs),
+            steps_record_io,
             model,
             inbox,
             instance_id,
@@ -1346,6 +1358,7 @@ impl Config {
             gate: self.gate.clone(),
             target_gates: self.target_gates.clone(),
             gate_rules: self.gate_rules.clone(),
+            record_step_io: self.steps_record_io,
             title_model: self.model.as_ref().map(|m| m.title_model.clone()),
             title_timeout: self
                 .model
@@ -2106,6 +2119,20 @@ where
     Ok(value)
 }
 
+/// Parses an optional boolean variable with a default: `true`/`false`, `1`/`0`, `yes`/`no`,
+/// `on`/`off`, in any case. Anything else is refused, never read as a default.
+fn flag(raw: Option<String>, var: &'static str, default: bool) -> Result<bool, ConfigError> {
+    let Some(raw) = raw else { return Ok(default) };
+    match raw.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(ConfigError::Invalid {
+            var,
+            reason: format!("{raw:?} is not true or false"),
+        }),
+    }
+}
+
 fn invalid(id: &str, reason: impl Into<String>) -> ConfigError {
     ConfigError::InvalidAgent {
         id: id.to_owned(),
@@ -2340,6 +2367,7 @@ mod tests {
                 "THREAD_TOOLS_ALLOWED_HOSTS" => &mut args.thread_tools_allowed_hosts,
                 "ORCH_VERIFIER_TIMEOUT_SECS" => &mut args.verifier_timeout_secs,
                 "ORCH_VERIFIER_WATCH_SECS" => &mut args.verifier_watch_secs,
+                "ORCH_STEPS_RECORD_IO" => &mut args.steps_record_io,
                 "ORCH_TITLE_MODEL" => &mut args.title_model,
                 "ORCH_MODEL_BASE_URL" => &mut args.model_base_url,
                 "ORCH_MODEL_API_KEY" => &mut args.model_api_key,
@@ -2414,6 +2442,35 @@ mod tests {
         assert_eq!(cfg.shutdown_grace, Duration::from_secs(15));
         assert!(cfg.auth_dev_user.is_none());
         assert!(cfg.instance_id.starts_with("orchestrator-"));
+    }
+
+    #[test]
+    fn a_steps_input_and_output_are_recorded_unless_the_switch_says_otherwise() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(cfg.steps_record_io, "the owner's default of 2026-10-02: on");
+        assert!(cfg.app_config().record_step_io);
+        for off in ["false", "0", "no", "off", "FALSE", "Off"] {
+            let mut env = base();
+            env.push(("ORCH_STEPS_RECORD_IO", off));
+            let cfg = load(&env, AGENTS).unwrap();
+            assert!(!cfg.steps_record_io, "{off}");
+            assert!(!cfg.app_config().record_step_io, "{off}");
+        }
+        for on in ["true", "1", "yes", "on"] {
+            let mut env = base();
+            env.push(("ORCH_STEPS_RECORD_IO", on));
+            assert!(load(&env, AGENTS).unwrap().steps_record_io, "{on}");
+        }
+        // a value that is neither is refused, not read as the default
+        let mut env = base();
+        env.push(("ORCH_STEPS_RECORD_IO", "maybe"));
+        assert!(matches!(
+            load(&env, AGENTS),
+            Err(ConfigError::Invalid {
+                var: "ORCH_STEPS_RECORD_IO",
+                ..
+            })
+        ));
     }
 
     #[test]
