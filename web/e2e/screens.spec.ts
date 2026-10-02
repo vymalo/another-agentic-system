@@ -490,5 +490,41 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(page.getByRole("heading", { level: 1, name: "No access" })).toBeVisible();
       await shot(page, "no-access");
     });
+
+    // last: the threads they make are one more row in the list of the screens after them (none are)
+    test("steer: the menu of the running composer, then the message sent while the agent worked", async ({
+      page,
+    }) => {
+      // `gate …` holds the run until released: the agent works while the person writes
+      await startThread(page, "gate refactor the parser");
+      await expect(badge(page)).toHaveText("Working…");
+      await expect(conversation(page).getByText("gate refactor the parser")).toBeVisible();
+      await page.getByLabel("Message").fill("echo you were wrong since line 1");
+      await page.getByRole("button", { name: "Delivery options" }).click();
+      await expect(page.getByRole("menu")).toBeVisible();
+      await shot(page, "steer-menu");
+      await page.getByRole("menuitem", { name: /^Send/ }).click();
+      await expect(page.locator('[data-slot="delivery-note"]')).toHaveText(
+        "Sent while Coder was working · read at its next step",
+      );
+      await shot(page, "steer-sent");
+      const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1];
+      await fetch(`${MOCK_URL}/__mock/release?thread=${id}`, { method: "POST" });
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+    });
+
+    test("steer: Stop and send", async ({ page }) => {
+      await startThread(page, "slow refactor the parser");
+      await expect(badge(page)).toHaveText("Working…");
+      await expect(conversation(page).getByText("slow refactor the parser")).toBeVisible();
+      await page.getByLabel("Message").fill("echo do X instead");
+      await page.getByLabel("Message").press("ControlOrMeta+Shift+Enter");
+      await expect(page.locator('[data-slot="delivery-note"]')).toHaveText(
+        "Stopped Coder · it starts again from here",
+      );
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await expect(conversation(page).getByText("echo: echo do X instead")).toBeVisible();
+      await shot(page, "steer-stopped");
+    });
   });
 }
