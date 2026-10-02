@@ -44,6 +44,10 @@ Running it, the container image, configuration and shutdown are documented in
 
 Each is also a flag (`--database-url`, `--listen-addr`, `--surfaces`, and so on; `orchestrator --help`), and a flag wins over its variable.
 
+Planned ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md), plan 10 S9): one YAML
+file (`ORCH_CONFIG_FILE`) replaces these variables, secrets by reference; each variable below keeps working, over the
+file, for one release. The key each one becomes is in [`docs/api/config.md`](../../../docs/api/config.md#every-key).
+
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string, never logged |

@@ -81,6 +81,12 @@ then Image and Web view after question 38, Notification opt-in after question 37
 steps 4 (planner and parallel agents) and 5 (reviewers), which the coordination choice of slice 10
 reshapes; OIDC for MCP (first plan, slice 14).
 
+**From the owner's feedback of 2026-10-02:** "a custom model for title, description … using a yaml". One YAML
+configuration file for the orchestrator, secrets by reference, the environment variables kept for one release
+([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in
+[`api/config.md`](api/config.md)), then the title and a new thread description as utility model tasks, each with its
+endpoint, model, prompt and language rule ([ADR 0035](decisions/0035-utility-model-tasks.md)). Neither is built.
+
 ## Out of scope for the MVP
 
 - Hosting agents, sandboxes or runtimes (another-agentic-platform's job).
