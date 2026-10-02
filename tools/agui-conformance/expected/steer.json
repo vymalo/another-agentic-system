@@ -7,10 +7,6 @@
     {
       "runId": "run-2",
       "outcome": "success"
-    },
-    {
-      "runId": "run-7",
-      "outcome": "success"
     }
   ],
   "subagents": [
@@ -23,18 +19,13 @@
       "id": "sub-2",
       "name": "plain",
       "end": "success"
-    },
-    {
-      "id": "sub-8",
-      "name": "plain",
-      "end": "success"
     }
   ],
   "messages": [
     {
       "id": "evt-1",
       "role": "user",
-      "text": "gate refactor the parser"
+      "text": "steerable refactor the parser"
     },
     {
       "id": "evt-2",
@@ -49,82 +40,46 @@
     {
       "id": "msg-2",
       "role": "user",
-      "text": "echo you were wrong since line 1"
+      "text": "you were wrong since line 1"
     },
     {
-      "id": "evt-4",
-      "role": "activity",
+      "id": "msg-4",
+      "role": "assistant",
+      "name": "plain",
       "subagentRunId": "sub-2",
-      "activityType": "vymalo.artifact",
-      "content": {
-        "at": "2027-01-15T08:00:04Z",
-        "kind": "file",
-        "name": "result",
-        "text": "echo: gate refactor the parser",
-        "uri": "https://github.com/acme/demo/pull/1"
-      }
+      "text": "steered: you were wrong since line 1"
     },
     {
       "id": "evt-5",
       "role": "activity",
       "subagentRunId": "sub-2",
-      "activityType": "vymalo.status",
-      "content": {
-        "at": "2027-01-15T08:00:05Z",
-        "status": "completed"
-      }
-    },
-    {
-      "id": "job-2",
-      "role": "activity",
-      "activityType": "vymalo.job",
-      "content": {
-        "at": "2027-01-15T08:00:07Z",
-        "job": 2
-      }
-    },
-    {
-      "id": "evt-8",
-      "role": "activity",
-      "subagentRunId": "sub-8",
-      "activityType": "vymalo.status",
-      "content": {
-        "at": "2027-01-15T08:00:08Z",
-        "status": "working"
-      }
-    },
-    {
-      "id": "evt-9",
-      "role": "activity",
-      "subagentRunId": "sub-8",
       "activityType": "vymalo.artifact",
       "content": {
-        "at": "2027-01-15T08:00:09Z",
+        "at": "2027-01-15T08:00:05Z",
         "kind": "file",
         "name": "result",
-        "text": "echo: echo you were wrong since line 1",
+        "text": "echo: steerable refactor the parser",
         "uri": "https://github.com/acme/demo/pull/1"
       }
     },
     {
-      "id": "evt-10",
+      "id": "evt-6",
       "role": "activity",
-      "subagentRunId": "sub-8",
+      "subagentRunId": "sub-2",
       "activityType": "vymalo.status",
       "content": {
-        "at": "2027-01-15T08:00:10Z",
+        "at": "2027-01-15T08:00:06Z",
         "status": "completed"
       }
     }
   ],
   "state": {
     "thread": {
-      "jobNumber": 2,
       "state": "done",
       "target": {
         "agentId": "plain"
       },
-      "title": "gate refactor the parser"
+      "title": "steerable refactor the parser"
     }
   },
   "pendingInterrupts": []

@@ -83,6 +83,10 @@ pub enum OutboxKind {
     Title,
     /// Ask the model for a description of the thread (ADR 0035).
     Description,
+    /// Send a message into the agent's **running task** (`steer/v1`, ADR 0036). Claimed beside the
+    /// thread's delegation in flight and in order among the thread's other steer rows; a row the
+    /// agent cannot take becomes a `delegate` ([`ThreadStore::requeue_as_delegate`]).
+    Steer,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -162,6 +166,20 @@ pub enum OutboxPayload {
         /// The job whose end asks.
         job: u32,
     },
+    /// Send `text` to the agent's running task (`orch_core::Command::Steer`, ADR 0036). It holds
+    /// what the delegation it may become holds, so that the fallback is that delegation byte for
+    /// byte; the message itself carries no catalog (`steer/v1` has none).
+    Steer {
+        /// User text.
+        text: String,
+        /// Selected release channel or revision, for the delegation it may become: a steer goes to
+        /// a task that runs, so it is never sent with one.
+        release: Option<String>,
+        /// What to tell the agent of the person's UI catalog, as for
+        /// [`OutboxPayload::Delegate`]: used only when the row becomes a delegation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ui_catalog: Option<UiDelivery>,
+    },
 }
 
 impl OutboxPayload {
@@ -173,6 +191,32 @@ impl OutboxPayload {
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
             OutboxPayload::Title { .. } => OutboxKind::Title,
             OutboxPayload::Description { .. } => OutboxKind::Description,
+            OutboxPayload::Steer { .. } => OutboxKind::Steer,
+        }
+    }
+
+    /// The delegation a steer stands for when it is not sent into the task: the same text, release
+    /// and catalog, a message of the job it was written in (`new_job` false). `None` for any other
+    /// payload. The stores' [`requeue_as_delegate`](ThreadStore::requeue_as_delegate) rewrites the
+    /// row with it.
+    pub fn steer_as_delegate(&self) -> Option<OutboxPayload> {
+        match self {
+            OutboxPayload::Steer {
+                text,
+                release,
+                ui_catalog,
+            } => Some(OutboxPayload::Delegate {
+                text: text.clone(),
+                release: release.clone(),
+                new_job: false,
+                ui_catalog: ui_catalog.clone(),
+            }),
+            OutboxPayload::Delegate { .. }
+            | OutboxPayload::Action { .. }
+            | OutboxPayload::Cancel { .. }
+            | OutboxPayload::Verify { .. }
+            | OutboxPayload::Title { .. }
+            | OutboxPayload::Description { .. } => None,
         }
     }
 }
@@ -262,8 +306,8 @@ pub struct Commit {
     /// `None` leaves it as it is, and `Some("")` clears it. Ignored by
     /// [`ThreadStore::create_thread`], which takes the description from the new thread.
     pub description: Option<String>,
-    /// Finish the thread's unsent `delegate` rows as `skipped`, in this transaction and before
-    /// this commit's own rows are inserted (the rows
+    /// Finish the thread's unsent `delegate` and `steer` rows as `skipped`, in this transaction and
+    /// before this commit's own rows are inserted (the rows
     /// [`skip_unsent_delegates`](ThreadStore::skip_unsent_delegates) finishes: `pending`, or
     /// `inflight` with an expired lease, and never sent). It is how the commit that starts the
     /// next job after a Stop & send (ADR 0036) supersedes the abandoned job's delegations: done
@@ -673,9 +717,11 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Claims up to `limit` rows (oldest first): `pending` and due, or `inflight` with an
     /// expired lease (`lease_until <= now`). A delegate row is claimable only if no older
     /// `pending`/`inflight` delegate row exists for the same thread (per-thread ordering,
-    /// including rows claimed earlier in the same call); cancel and verify rows are
-    /// unrestricted (a verification runs while the delegation that caused it is still being
-    /// finished, and never waits for a later delegation).
+    /// including rows claimed earlier in the same call); a steer row likewise waits for an older
+    /// open **steer** row of its thread and for nothing else (the delegation in flight stays open
+    /// until the agent's turn ends, and a steer is for that very turn: ADR 0036); cancel, verify,
+    /// title and description rows are unrestricted (a verification runs while the delegation that
+    /// caused it is still being finished, and never waits for a later delegation).
     /// Sets `inflight`, owner, `lease_until = now + lease`, `attempts += 1`. Concurrent
     /// claimers never get the same row.
     fn claim_outbox(
@@ -728,8 +774,21 @@ pub trait ThreadStore: Send + Sync + 'static {
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// Marks the thread's not-yet-sent delegate rows (`sent_at` is null) as `skipped`: those
-    /// `pending`, and those `inflight` whose lease expired before `now`. Returns the count.
+    /// Rewrites a `steer` row the agent did not take into the delegation it stands for
+    /// ([`OutboxPayload::steer_as_delegate`]): kind `delegate`, `pending` and due at `now`, the lease
+    /// released. The row keeps its place in the thread's order (its position among the outbox rows
+    /// and its creation time), so the delegation waits behind the one in flight and goes out in
+    /// the order the person wrote; `attempts`, which fences the leases, is not reset. `false` if
+    /// `lease` is no longer the row's current claim, or the row is not a `steer` row.
+    fn requeue_as_delegate(
+        &self,
+        lease: &Lease,
+        now: Timestamp,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Marks the thread's not-yet-sent `delegate` and `steer` rows (`sent_at` is null) as
+    /// `skipped`: those `pending`, and those `inflight` whose lease expired before `now`. Returns
+    /// the count.
     fn skip_unsent_delegates(
         &self,
         thread: ThreadId,

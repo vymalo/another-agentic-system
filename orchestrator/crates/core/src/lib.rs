@@ -42,7 +42,7 @@ pub use event::{
     Origin, Preview, ThreadStateData, UserMessageData,
 };
 pub use extension::{
-    KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
+    KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
     THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
 };
 pub use fork::{

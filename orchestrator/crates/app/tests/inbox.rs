@@ -1070,6 +1070,7 @@ impl ThreadStore for RacyStore {
             -> Result<bool, StoreError>;
         complete_outbox(lease: &orch_ports::Lease, outcome: orch_ports::OutboxFinal, now: Timestamp)
             -> Result<bool, StoreError>;
+        requeue_as_delegate(lease: &orch_ports::Lease, now: Timestamp) -> Result<bool, StoreError>;
         skip_unsent_delegates(thread: ThreadId, now: Timestamp) -> Result<u32, StoreError>;
         release_leases(owner: &str, now: Timestamp) -> Result<u32, StoreError>;
         outbox_stats(now: Timestamp) -> Result<orch_ports::OutboxStats, StoreError>;

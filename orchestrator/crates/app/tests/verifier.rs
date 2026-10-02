@@ -869,6 +869,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             ui_catalog: None,
             thread_tools: None,
             history: None,
+            steer: false,
         },
     )
     .await
@@ -969,6 +970,7 @@ async fn sent_and_forgotten(w: &World, t: &ThreadRecord, row: &OutboxItem) {
             ui_catalog: None,
             thread_tools: None,
             history: None,
+            steer: false,
         },
     )
     .await

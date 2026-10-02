@@ -2773,6 +2773,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
         },
         &[Input::Redeliver {
             text: "second".into(),
+            sent: false,
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));

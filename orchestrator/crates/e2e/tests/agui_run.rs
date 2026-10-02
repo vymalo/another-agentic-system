@@ -801,8 +801,8 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
         }
         // A message sent while the agent works (ADR 0036): the response of the run it was posted
         // in ends at the message (the run is finished, the agent's work is not), and the response
-        // to the message is a run of its own. `steer`: the message is read after the agent's turn
-        // until the dispatcher steers it, so the second run ends with that turn.
+        // to the message is a run of its own. `steer`: the agent lists `steer/v1`, so the message is
+        // read by its running task, and the second run ends with the job, which is one job.
         "steer" => {
             let first = chat
                 .agui_run(
@@ -810,7 +810,7 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
                     &input(
                         thread,
                         "run-1",
-                        &[("msg-1", "gate refactor the parser")],
+                        &[("msg-1", "steerable refactor the parser")],
                         json!({}),
                     ),
                 )
@@ -823,14 +823,23 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
                         thread,
                         "run-2",
                         &[
-                            ("msg-1", "gate refactor the parser"),
-                            ("msg-2", "echo you were wrong since line 1"),
+                            ("msg-1", "steerable refactor the parser"),
+                            ("msg-2", "you were wrong since line 1"),
                         ],
                         json!({"forwardedProps": {"vymalo.send": "steer"}}),
                     ),
                 )
                 .await;
             let first = read(first).await;
+            // the running task reads it at its next step; then the job ends, once
+            eventually("the task to read the message", || async {
+                chat.events(thread)
+                    .await
+                    .iter()
+                    .any(|e| e["kind"] == "agent_message")
+                    .then_some(())
+            })
+            .await;
             world.plain.release_gate();
             vec![first, read(second).await]
         }
@@ -886,6 +895,7 @@ async fn world_for(name: &str) -> World {
             .await
         }
         "steps" | "steps-ask" => world_with_steps().await,
+        "steer" => world_with_steer().await,
         _ => World::start(Backend::Memory).await,
     }
 }

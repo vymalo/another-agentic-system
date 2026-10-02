@@ -19,6 +19,7 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
         ui_catalog: None,
         thread_tools: None,
         history,
+        steer: false,
     }
 }
 

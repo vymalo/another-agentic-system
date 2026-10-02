@@ -56,7 +56,7 @@ fn addr(var: &str, default: &str) -> SocketAddr {
 
 fn call_json(c: &Call) -> Value {
     json!({
-        "kind": match c.kind { CallKind::Execute => "execute", CallKind::Cancel => "cancel" },
+        "kind": match c.kind { CallKind::Execute => "execute", CallKind::Cancel => "cancel", CallKind::Steer => "steer" },
         "taskId": c.task_id,
         "contextId": c.context_id,
         "messageId": c.message_id,
@@ -86,6 +86,7 @@ fn extensions() -> Vec<KnownExtension> {
             "steps" => KnownExtension::Steps,
             "mentions" => KnownExtension::Mentions,
             "text-stream" => KnownExtension::TextStream,
+            "steer" => KnownExtension::Steer,
             other => panic!("FAKE_AGENT_EXTENSIONS: unknown extension '{other}'"),
         })
         .collect()

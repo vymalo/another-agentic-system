@@ -78,6 +78,7 @@ async fn send(client: &A2aAgentClient, fake: &FakeAgent, delivery: Option<UiDeli
         ui_catalog: delivery,
         thread_tools: None,
         history: None,
+        steer: false,
     };
     drain(client.send_stream(request).await.unwrap()).await;
     fake.executions().pop().unwrap()

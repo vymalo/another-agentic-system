@@ -15,7 +15,7 @@
           "target": {
             "agentId": "plain"
           },
-          "title": "gate refactor the parser"
+          "title": "steerable refactor the parser"
         }
       },
       "type": "STATE_SNAPSHOT"
@@ -61,7 +61,7 @@
           "target": {
             "agentId": "plain"
           },
-          "title": "gate refactor the parser"
+          "title": "steerable refactor the parser"
         }
       },
       "type": "STATE_SNAPSHOT"
@@ -85,7 +85,7 @@
           "target": {
             "agentId": "plain"
           },
-          "title": "gate refactor the parser"
+          "title": "steerable refactor the parser"
         }
       },
       "type": "STATE_SNAPSHOT"
@@ -117,7 +117,7 @@
           "target": {
             "agentId": "plain"
           },
-          "title": "gate refactor the parser"
+          "title": "steerable refactor the parser"
         }
       },
       "type": "STATE_SNAPSHOT"
@@ -139,15 +139,46 @@
   },
   {
     "event": {
+      "messageId": "steered-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "steered: you were wrong since line 1",
+      "messageId": "steered-1",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "steered-1",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 4
+  },
+  {
+    "event": {
       "activityType": "vymalo.artifact",
       "content": {
         "at": "<timestamp>",
         "kind": "file",
         "name": "result",
-        "text": "echo: gate refactor the parser",
+        "text": "echo: steerable refactor the parser",
         "uri": "https://github.com/acme/demo/pull/1"
       },
-      "messageId": "evt-4",
+      "messageId": "evt-5",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -157,7 +188,7 @@
       "subagentRunId": "sub-2",
       "type": "ACTIVITY_SNAPSHOT"
     },
-    "id": 4
+    "id": 5
   },
   {
     "event": {
@@ -166,7 +197,7 @@
         "at": "<timestamp>",
         "status": "completed"
       },
-      "messageId": "evt-5",
+      "messageId": "evt-6",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -182,7 +213,7 @@
       "subagentRunId": "sub-2",
       "type": "SUBAGENT_FINISHED"
     },
-    "id": 5
+    "id": 6
   },
   {
     "event": {
@@ -192,7 +223,7 @@
           "target": {
             "agentId": "plain"
           },
-          "title": "gate refactor the parser"
+          "title": "steerable refactor the parser"
         }
       },
       "type": "STATE_SNAPSHOT"
@@ -207,6 +238,6 @@
       "threadId": "<thread-id>",
       "type": "RUN_FINISHED"
     },
-    "id": 6
+    "id": 7
   }
 ]

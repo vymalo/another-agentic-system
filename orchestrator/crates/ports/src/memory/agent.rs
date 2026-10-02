@@ -67,6 +67,8 @@ pub enum Call {
         thread_tools: Option<Box<ToolsGrant>>,
         /// The conversation the request told the agent, for the first task of a fork (ADR 0029).
         history: Option<Box<ForkHistory>>,
+        /// The message was sent into the running task `task_id` as a steer (`steer/v1`, ADR 0036).
+        steer: bool,
     },
     /// `resubscribe`.
     Resubscribe {
@@ -184,6 +186,10 @@ struct Shared {
 /// - `instant`: `completed` with the text as its words and nothing before it, not even
 ///   `submitted`: the task is over before its stream says anything, like a fast agent whose
 ///   stream begins with a snapshot of the finished task;
+/// - a message with [`SendRequest::steer`] goes into the running task when the agent's card lists
+///   `steer/v1` ([`ScriptedAgent::set_extensions`]): the task says `steered: <text>` as a reply, once
+///   per message id, and its first event is the task as it is; an agent that does not list it, a task
+///   that ended and an unknown task refuse it as a real agent does;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
 pub struct ScriptedAgent {
@@ -832,12 +838,34 @@ impl AgentClient for ScriptedAgent {
                 ui_catalog: req.ui_catalog.clone().map(Box::new),
                 thread_tools: req.thread_tools.clone().map(Box::new),
                 history: req.history.clone().map(Box::new),
+                steer: req.steer,
             });
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
             }
             if let Some(err) = st.fail_sends.pop_front() {
                 return Err(err);
+            }
+            if req.steer {
+                let (envelope, fresh) = steer_into(&mut st, &req)?;
+                drop(st);
+                // The task reads it at its next step: here, at once, as a reply of its own, which
+                // the stream that started the task reports (a steer opens no stream of results).
+                if fresh {
+                    self.shared.push(
+                        &envelope.task_id,
+                        None,
+                        None,
+                        IdemKey::Task(format!("a2a:msg:steered-{}", req.message_id)),
+                        Some(AgentUpdate::Message {
+                            message_id: format!("steered-{}", req.message_id),
+                            text: format!("steered: {text}"),
+                            is_final: false,
+                            purpose: None,
+                        }),
+                    );
+                }
+                return Ok(futures::stream::once(async move { Ok(envelope) }).boxed());
             }
             match script.as_str() {
                 "fail" => return Err(AgentError::Rejected("scripted failure".to_owned())),
@@ -1010,6 +1038,56 @@ impl AgentClient for ScriptedAgent {
             })
             .map(|(id, _)| id.clone()))
     }
+}
+
+/// A steer into a running task (`steer/v1`): the first event the agent answers with, and whether
+/// the message is new (a repeat of a `messageId` is answered as the first time and read once).
+/// Refused as the real agent refuses: not listed on the card, an unknown task or another
+/// context, a task that ended.
+fn steer_into(st: &mut State, req: &SendRequest) -> Result<(AgentEnvelope, bool), AgentError> {
+    let listed = st
+        .cards
+        .get(&req.endpoint.id)
+        .is_some_and(|card| card.extensions.contains(&KnownExtension::Steer));
+    if !listed {
+        return Err(AgentError::Unsupported(
+            "the agent does not list steer/v1".to_owned(),
+        ));
+    }
+    let id = req
+        .task_id
+        .clone()
+        .ok_or_else(|| AgentError::Rejected("a steer names its task".to_owned()))?;
+    let rec = st
+        .tasks
+        .get_mut(&id)
+        .filter(|rec| rec.context_id == req.context_id)
+        .ok_or_else(|| AgentError::TaskNotFound(id.clone()))?;
+    if rec.state.is_terminal() {
+        return Err(AgentError::Unsupported(format!(
+            "task {id} is {:?}",
+            rec.state
+        )));
+    }
+    let fresh = !rec.message_ids.contains(&req.message_id);
+    if fresh {
+        rec.message_ids.push(req.message_id.clone());
+    }
+    Ok((
+        AgentEnvelope {
+            task_id: id.clone(),
+            context_id: rec.context_id.clone(),
+            task_state: Some(rec.state),
+            revision: rec.revision.clone(),
+            key: IdemKey::Turn(format!("{id}:steer:{}", req.message_id)),
+            update: Some(AgentUpdate::Status {
+                state: rec.state,
+                detail: None,
+            }),
+            live: None,
+        },
+        fresh,
+    ))
 }
 
 fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {

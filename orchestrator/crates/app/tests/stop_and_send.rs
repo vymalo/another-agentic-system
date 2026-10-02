@@ -10,17 +10,20 @@ use orch_ports::memory::Call;
 use orch_ports::{OutboxStatus, ThreadStore};
 use support::*;
 
+/// The messages that reached the agent as messages (a steer the agent refused did not).
 fn sends(w: &World) -> Vec<(Option<String>, Vec<String>, String)> {
     w.agent
         .sends()
         .into_iter()
-        .map(|call| match call {
+        .filter_map(|call| match call {
             Call::Send {
                 task_id,
                 reference_task_ids,
                 text,
+                steer: false,
                 ..
-            } => (task_id, reference_task_ids, text),
+            } => Some((task_id, reference_task_ids, text)),
+            Call::Send { steer: true, .. } => None,
             other => panic!("{other:?}"),
         })
         .collect()
@@ -100,8 +103,8 @@ async fn a_message_sent_before_the_stop_is_superseded_and_never_runs_ahead_of_th
     let t = create(&app, &alice(), "plain", "slow job").await;
     wait_state(&app, &alice(), t.id, ThreadState::Working).await;
 
-    // a plain Send while the job runs: logged as a steer, delivered as a delegation behind the
-    // one in flight (the dispatcher does not steer yet)
+    // a plain Send while the job runs: logged as a steer; the plain agent does not list `steer/v1`,
+    // so the row falls back to a delegation behind the one in flight
     let steered = app
         .post_message(&alice(), t.id, "echo steered".into())
         .await

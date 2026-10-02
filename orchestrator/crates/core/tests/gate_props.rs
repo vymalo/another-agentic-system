@@ -93,7 +93,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             retryable
         }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text }),
+        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text, sent: false }),
         1 => (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected {
                 agent: AgentId::new("a"),
@@ -257,7 +257,7 @@ proptest! {
                     prop_assert!(next_job);
                     prop_assert_eq!(next.state, ThreadState::Queued);
                     prop_assert_eq!(next.job.number, before.job.number + 1);
-                    let (Input::UserMessage { text, .. } | Input::Redeliver { text }) = input else {
+                    let (Input::UserMessage { text, .. } | Input::Redeliver { text, .. }) = input else {
                         unreachable!()
                     };
                     let mut expected = before.job.next();

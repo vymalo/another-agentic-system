@@ -33,6 +33,9 @@ macro_rules! thread_store_conformance {
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
             skip_unsent_delegates a_commit_can_skip_the_unsent_delegates_it_supersedes
+            steer_rows_claim_beside_an_inflight_delegate
+            a_requeued_steer_waits_behind_the_delegation_in_flight
+            unsent_steers_are_skipped_with_the_unsent_delegates
             release_leases outbox_stats binding_applied_with_commit
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
@@ -140,6 +143,7 @@ macro_rules! agent_client_conformance {
             cancel_running_then_cancel_finished_is_refused failed_task_carries_its_message
             find_task_by_message_never_names_a_wrong_task
             unreachable_send_has_a_clean_public_detail
+            a_steer_is_refused_by_an_agent_that_does_not_list_the_extension
         );
     };
     (@cases $make:path; $($case:ident)*) => {

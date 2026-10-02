@@ -97,9 +97,16 @@ pub enum Input {
     /// message is not lost (ADR 0020): on a `done` or `failed` thread it starts the next job for
     /// `text` (the `user_message` event is in the log, so none is appended); on a `cancelled` one
     /// it changes nothing, because the person asked to stop; on an open thread it delegates.
+    ///
+    /// `sent` is the other half of open question 33 (ADR 0036): the message **was** sent, as a new
+    /// task the agent created while the thread was ending, so the transition is the same but
+    /// writes no `Delegate`: the dispatcher keeps following that task.
     Redeliver {
         /// The message text.
         text: String,
+        /// The message reached the agent already, as a task of its own (the dispatcher saw the
+        /// task, and follows it): no delegation is written.
+        sent: bool,
     },
     /// The user asked to cancel.
     Cancel {
@@ -315,9 +322,9 @@ pub enum Command {
         catalog: Option<UiDelivery>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
-    /// runs, with no stop on its way. The steer row and its extension (`steer/v1`) are built by
-    /// the dispatcher; until then the application writes it as the delegation it always was
-    /// (outbox kind `delegate`), which reaches the agent after its turn.
+    /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
+    /// dispatcher sends it into the task when the agent's live card lists `steer/v1`, else it
+    /// becomes the delegation it always was, which reaches the agent after its turn.
     Steer {
         /// The user's text.
         text: String,
@@ -325,7 +332,7 @@ pub enum Command {
         /// the delegation this stands for carries it.
         catalog: Option<UiDelivery>,
     },
-    /// Finish the thread's **unsent** `delegate` rows (and, once built, `steer` rows) of the jobs
+    /// Finish the thread's **unsent** `delegate` and `steer` rows of the jobs
     /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
     /// that stopped `job` supersedes them. Without it a delegation of the abandoned job that had
     /// not been sent would be claimed before the next job's and Stop & send would stop nothing.
@@ -646,6 +653,17 @@ fn redelegate(job: &mut Job, text: &str) -> Command {
     }
 }
 
+/// What a redelivered message asks of the application: its delegation, or nothing when it was
+/// sent already (the agent has the task, the dispatcher follows it: open question 33).
+fn redelegation(job: &mut Job, text: &str, sent: bool) -> Vec<Command> {
+    if sent {
+        job.answer.reset();
+        Vec::new()
+    } else {
+        vec![redelegate(job, text)]
+    }
+}
+
 fn ui_action(
     job: &mut Job,
     user: &UserId,
@@ -874,11 +892,11 @@ fn decide(
             };
             message(state, job, &said, true)
         }
-        Input::Redeliver { text } => match state {
+        Input::Redeliver { text, sent } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
             // after what that job has been told, so it may reach the agent out of the order it
-            // was written in (open question 33).
+            // was written in (the wrinkle that remains of open question 33).
             ThreadState::Queued | ThreadState::Working => {
                 // A job that is being stopped starts the next one with what the person sent
                 // with the stop: a message of the job it abandons is superseded, as the rows
@@ -886,21 +904,25 @@ fn decide(
                 if job.after_stop.is_some() {
                     return Ok((state, vec![]));
                 }
-                note_task(job, text);
-                Ok((state, vec![redelegate(job, text)]))
+                // sent: the message is in this job's task already, from when it was written
+                if !*sent {
+                    note_task(job, text);
+                }
+                Ok((state, redelegation(job, text, *sent)))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
-                note_task(job, text);
+                if !*sent {
+                    note_task(job, text);
+                }
                 job.hold = None;
-                Ok((ThreadState::Queued, vec![redelegate(job, text)]))
+                Ok((ThreadState::Queued, redelegation(job, text, *sent)))
             }
             ThreadState::Done | ThreadState::Failed => {
                 *job = job.next();
                 note_task(job, text);
-                Ok((
-                    ThreadState::Queued,
-                    vec![job_started(job), redelegate(job, text)],
-                ))
+                let mut cmds = vec![job_started(job)];
+                cmds.extend(redelegation(job, text, *sent));
+                Ok((ThreadState::Queued, cmds))
             }
             // The person asked to stop: a message they wrote before that stays undelivered.
             ThreadState::Cancelled => Ok((state, vec![])),

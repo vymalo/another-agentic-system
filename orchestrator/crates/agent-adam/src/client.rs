@@ -178,6 +178,14 @@ impl AgentClient for LocalAgentClient {
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
         let (entry, _, caller) = self.resolve(&req.endpoint)?;
+        if req.steer {
+            // The card of a local agent lists no extension (`read_card`), so a message for a
+            // running task is never sent: the dispatcher keeps it and delivers it after the turn
+            // (ADR 0036). It becomes a steer when the pinned `adam-host` has the equivalent path.
+            return Err(AgentError::Unsupported(
+                "a local agent does not list steer/v1".to_owned(),
+            ));
+        }
         if req.release.is_some() {
             // Like the A2A adapter towards a card without release channels: running the
             // default release when another was asked for would be worse than refusing.

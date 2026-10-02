@@ -45,6 +45,7 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
         ui_catalog: None,
         thread_tools: None,
         history: None,
+        steer: false,
     }
 }
 

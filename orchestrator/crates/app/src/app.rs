@@ -1497,8 +1497,8 @@ impl<P: Ports> App<P> {
     /// Appends a user message and queues its delegation. Returns the `user_message` event.
     ///
     /// While a job runs the message is **sent** (ADR 0036): logged at once with
-    /// `delivery: steer`, and delivered to the agent after its turn until the dispatcher steers
-    /// it into the running task.
+    /// `delivery: steer`, and written as a `steer` row, which the dispatcher sends into the
+    /// agent's running task when its card lists `steer/v1` and delivers after the turn otherwise.
     pub async fn post_message(
         &self,
         who: &impl Requester,
@@ -1958,19 +1958,27 @@ impl<P: Ports> App<P> {
                         idempotency_key,
                     });
                 }
-                // The steer row (ADR 0036) is the dispatcher's, built with `steer/v1`; until then
-                // a message to a running job is the delegation it has always been, which
-                // reaches the agent after its turn.
-                Command::Delegate { text, catalog } | Command::Steer { text, catalog } => outbox
-                    .push(NewOutbox {
-                        id: orch_ports::OutboxId(self.ports.ids().new_id()),
-                        payload: OutboxPayload::Delegate {
-                            text,
-                            release: target.release.clone(),
-                            new_job,
-                            ui_catalog: catalog,
-                        },
-                    }),
+                Command::Delegate { text, catalog } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Delegate {
+                        text,
+                        release: target.release.clone(),
+                        new_job,
+                        ui_catalog: catalog,
+                    },
+                }),
+                // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
+                // task when the agent's live card lists `steer/v1`, else it becomes the delegation
+                // this row holds the words of, which reaches the agent after its turn. The row
+                // keeps what that delegation would carry, so the fallback is today's delivery.
+                Command::Steer { text, catalog } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Steer {
+                        text,
+                        release: target.release.clone(),
+                        ui_catalog: catalog,
+                    },
+                }),
                 Command::DelegateAction { action, catalog } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Action {
