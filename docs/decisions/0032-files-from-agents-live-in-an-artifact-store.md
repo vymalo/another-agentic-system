@@ -9,8 +9,8 @@
   the ingest, the serving route, the SVG sanitizer, the projection and the contract: see the status note below.
   **Built (2026-10-02, PR S12):** the web: the file card with its preview and download, the Sources panel's files, and the
   catalog's `Image` (UI catalog v4): see the second status note below.
-  **Not built:** `share_file` in adam-rs (adam A4, its ADR 0012, merged on the adam side), the compose stack and its
-  scenario (S13).
+  **Built (2026-10-02, PR S13):** the dev stack's scenario, `dev/artifact-e2e.sh`: see the third status note below.
+  `share_file` is in adam-rs (adam A4, its ADR 0012) and in the image the stack pins since `0e44c14` (the pin is `c0f12dd`).
 
 ## Context
 
@@ -253,3 +253,29 @@ Decisions 8 to 11 are drawn by the web as written. What the text left open, and 
 - **Not done here:** the web's mock keeps one store for every thread, so it cannot play the 404 of another thread's hash in the
   UI (the unit tests and the API's own tests do); the real thing is S13's scenario. A check in a real browser that an SVG in an
   `<img>` runs nothing (decision 9's *unverified*) is still open: the web's e2e draws a PNG.
+
+## Status note (2026-10-02, PR S13): the dev stack and its scenario
+
+The stack already kept files (S11 added the volume `orchestrator-artifacts` and the `artifacts` section of `dev/orchestrator.yaml`, which the
+orchestrator and the `split` workers all mount). S13 adds the scenario that drives the whole chain across both systems, and what it needed:
+
+- **`dev/artifact-e2e.sh`** runs the coder (adam's `share_file`) on its scripted model: it makes an SVG with a script and event handlers in it, a PNG
+  and a JSON report in a scratch project, shares each, and places the SVG and the PNG in a surface with the catalog's `Image`. It asserts that the
+  frames and the log hold only the references (`vymalo.artifact`, `href` and `sha256` equal, the hash the SHA-256 of the file the coder made, no bytes in
+  the log), that every file a surface places is in the thread before the surface, that `GET href` serves the bytes with the kept type, `nosniff` and the
+  sandboxing Content-Security-Policy (the PNG's and the JSON's hash is the file's; an SVG inline is the sanitized one, so its hash is not; `?download=1`
+  is the original), and that another user, another thread of the same person, an unknown hash and a malformed one are each a 404. **This answers the
+  unverified half of decision 8's serving for another user's request and the 404 that the web's mock could not play (second status note).**
+- **The coder is listed twice** in `dev/agents.yaml`: `coder` (gated on its checks and CI) and `coder-share`, the same coder with no gate. A task that
+  asks for a result pushes nothing, and scratch work that shared a file completes without a pull request (adam ADR 0013), so a gate that wants checks of
+  a pushed commit would send the job back. A deployment that gates its coder on CI and asks it for a file will meet that: a gate has to allow a job with no
+  commit (to decide, not decided here).
+- **The script is ours, mounted beside the vendored ones.** `dev/wiremock/coder-share/` (the `[mock:share]` script of `mock-coder`, its SSE twins and the
+  three files it makes) is mounted into `mock-openai` under `/home/wiremock/mappings/coder-share`, next to the vendored mappings, now under
+  `/home/wiremock/mappings/vendored`: `dev/coder/` stays byte for byte adam-rs's. `dev/check-agent-mocks.sh` plays every turn and its twin and compares what the
+  script writes, decodes and names with the files.
+- **Another user's request is made from inside the compose network** (`docker compose exec edge wget`, straight to the orchestrator with another
+  identity header), because the edge replaces that header; the owner's request the same way is the control. CI also runs the scenario on the `split`
+  stack, so a file a worker keeps is served by the control plane, which proves they see the same directory.
+- **Not done:** a stack profile with an S3-compatible server (the plan's S13 line names one; the S3 store has its own container tests, S10), and a check in a
+  real browser that an SVG in an `<img>` runs nothing (decision 9's *unverified* stands).

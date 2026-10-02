@@ -42,6 +42,14 @@
 #                     after yes; each question is a form from the web's catalog, one
 #                     action answers it; the gate, the CI card and the pull request
 #                     are those of the repository the work reached
+#   artifact          the coder makes three files (an SVG with a script in it, a PNG, a   artifact-e2e.sh
+#                     JSON report) and shares them with `share_file`; the orchestrator
+#                     keeps them in its artifact store and the log holds only the
+#                     references (`vymalo.artifact`, href and sha256); the surface that
+#                     places two of them as `Image`s comes after the files; the API
+#                     serves the bytes (right type, nosniff, sandbox CSP, the SVG
+#                     sanitized, a download the original) to the owner and 404s
+#                     another user, another thread and a wrong hash
 #   verify            red once -> rework -> green; red always -> failed; the gate    verify-e2e.sh
 #                     cannot be weakened by a run
 #   verifier          the verifier finds fault -> rework -> the verifier passes      verifier-e2e.sh
@@ -71,7 +79,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards title description fork registry coder coder-no-opencode workspace verify verifier mcp ci folder"
+all="greeting agents choices cards title description fork registry coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -111,6 +119,13 @@ for s in "$@"; do
         *" mock-coder "*) ;;
         *) echo "scenario fork needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
+    artifact)
+      for a in coder-share chat; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario artifact needs the agents coder-share and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     cards)
       case " $agents " in
         *" researcher "*) ;;
@@ -182,6 +197,7 @@ for s in "$@"; do
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;
+    artifact) run artifact sh "$here/artifact-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;
     verifier) run verifier sh "$here/verifier-e2e.sh" ;;
     mcp) run mcp sh "$here/mcp-e2e.sh" ;;

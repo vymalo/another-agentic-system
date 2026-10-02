@@ -39,6 +39,14 @@
   tokenEnv: RESEARCHER_A2A_TOKEN
   # Searches the web through the MCP server of its folder (dev/agents/researcher/agent/mcp.json: the mock web search)
   # and answers with the sources it found. No gate either: a question ends `done` with its answer.
+- id: coder-share
+  name: Coder (hands over files)
+  cardUrl: http://coder:8080/.well-known/agent-card.json
+  tokenEnv: CODER_A2A_TOKEN
+  # The same coder as `coder`, with NO gate, for dev/artifact-e2e.sh (ADR 0032): a task that asks for a result, not for a change to a
+  # repository, ends when the coder says so: it makes the files in a scratch project, shares them (`share_file`) and answers. Under
+  # the gate of `coder` that job would be sent back for "no checks reported" and "no pushed commit", because nothing was pushed
+  # and nothing is waiting for CI. The keyword `[mock:share]` selects the script (dev/wiremock/coder-share).
 - id: mock-coder
   name: Mock coder
   cardUrl: http://mock-agent:8080/.well-known/agent-card.json

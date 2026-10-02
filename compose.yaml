@@ -300,7 +300,10 @@ services:
 
   # OpenAI-compatible model endpoint with two scripts, chosen by the request's model: `mock-coder`
   # (the coder, with an SSE twin of each stub for the streamed calls it makes) and `mock-opencode` (the OpenCode the coder starts).
-  # An off-script request is a 404.
+  # An off-script request is a 404. The mappings come from two folders under one root, which WireMock reads recursively: the
+  # vendored ones (dev/coder/wiremock, byte for byte from adam-rs) and ours (dev/wiremock/coder-share: the `[mock:share]` script,
+  # where the coder makes three files and shares them, dev/artifact-e2e.sh). They are mounted beside each other, not one inside the
+  # other, because a mount point cannot be made inside a read-only mount.
   # Journal: http://127.0.0.1:8091/__admin/requests (and /unmatched).
   mock-openai:
     <<: *wiremock
@@ -308,7 +311,8 @@ services:
     ports:
       - "127.0.0.1:${MOCK_OPENAI_PORT:-8091}:8080"
     volumes:
-      - ./dev/coder/wiremock/mock-openai/mappings:/home/wiremock/mappings:ro
+      - ./dev/coder/wiremock/mock-openai/mappings:/home/wiremock/mappings/vendored:ro
+      - ./dev/wiremock/coder-share/mappings:/home/wiremock/mappings/coder-share:ro
       - ./dev/coder/wiremock/mock-openai/__files:/home/wiremock/__files:ro
 
   # The GitHub REST subset the coder uses: list and open pull requests, create a repository (`POST /orgs/{o}/repos`, `scratch`
