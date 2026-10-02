@@ -152,8 +152,12 @@ Semantics:
   such, again in the core ([`StepReport::sanitize`](../../orchestrator/crates/core/src/step.rs)): ids with control
   characters, an id over 200 bytes once prefixed, or a label that is empty once its whitespace is gone drop the report.
 - A step's text is **untrusted**: a screen draws it as text.
-- An agent SHOULD NOT report a step for a call it makes on the [thread tools](thread-tools-v1.md): the orchestrator
-  reports those itself, with the tool server's icon.
+- An agent SHOULD NOT report a step for a call it makes on a [thread tool](thread-tools-v1.md) that says
+  `reportsStep: true` in its `_meta` (every relayed tool of an attached MCP server, and `ask_agent`): the orchestrator
+  reports those itself, with the tool server's icon, and a second step of the agent's would be drawn beside it
+  ([`reportsStep`](thread-tools-v1.md#attached-servers-and-the-relay-slice-8)). A thread tool that does not say it
+  (`get_ui_catalog`, `turn_output`) is not reported by the orchestrator, and the agent reports it as it likes. The
+  orchestrator does not merge or drop an agent's step: a step is data from the agent, as above.
 
 ### Input and output
 
