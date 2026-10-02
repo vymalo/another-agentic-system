@@ -109,3 +109,7 @@ jobs:
         run: |
           node --check dev/mock-mcp-search/server.mjs
           node --test dev/mock-mcp-search/server.test.mjs
+      - name: The live web-search server (SearXNG, Brave, Tavily and a page reader) parses and passes its tests
+        run: |
+          node --check dev/searxng-mcp/server.mjs
+          node --test dev/searxng-mcp/server.test.mjs

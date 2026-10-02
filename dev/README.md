@@ -270,10 +270,9 @@ with the values of `.env`; stops `mock-openai`, `mock-github`, `mock-github-mcp`
 [`orchestrator.live.yaml`](orchestrator.live.yaml) (the same file as offline, a whole file mounted at the same path, without the title model) and
 [`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. The chat and the researcher
 go live with it: `compose.live.yaml` gives them the same model endpoint (`CHAT_MODEL` and `RESEARCHER_MODEL` name another alias for each, else
-`MODEL`) and a bearer token each (`CHAT_A2A_TOKEN`, `RESEARCHER_A2A_TOKEN`, from `.env`), and drops `mock-model`. The orchestrator's own thread titles go live the same way (`TITLE_MODEL`, else `MODEL`). **The live researcher still
-searches the mock web search**, canned results whatever the question: this stack has no search provider credential. To search for real,
-write the `url` and the token of a search MCP server of your own into a copy of `dev/agents/researcher/agent/mcp.json` and point
-`RESEARCHER_AGENT_DIR` at it ([Add a fourth agent by writing a folder](#add-a-fourth-agent-by-writing-a-folder) says how a folder names its tools). In the chat, name a repository you can push to
+`MODEL`) and a bearer token each (`CHAT_A2A_TOKEN`, `RESEARCHER_A2A_TOKEN`, from `.env`), and drops `mock-model`. The orchestrator's own thread titles go live the same way (`TITLE_MODEL`, else `MODEL`). **The live researcher searches the real web**, through `searxng-mcp` over a SearXNG of the stack, or Brave or Tavily with a key of your own,
+and can read a page ([Web search for real](#web-search-for-real)). The chat and the researcher answer in Markdown, as long as the
+question needs (`max_output_tokens: 8192`). In the chat, name a repository you can push to
 (`In https://github.com/<you>/<repo>.git (base branch main), ...`; the host must be in `ALLOWED_REPO_HOSTS`), or name none and let it build in a scratch project. The coder's GitHub credential is one installation's, **a token (`GITHUB_TOKEN`) or a GitHub App** (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, a PEM on your machine), never both; it also authenticates the real read-only `github-mcp-server` the coder starts (the mock `mcp.json` is not mounted live; a local process, which since adam-rs `d56dd94` an agent starts only when its deployment says `MCP_ALLOW_STDIO=true`: `compose.live.yaml` sets it on the coder and on nobody else, so the chat and the researcher still refuse local processes). `CREATE_REPO_OWNERS=<owner>` lets the coder create a private, empty repository for that owner after the person says yes in the chat (with an App the owner must be an organisation); empty, it never does ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). Check the
 files without starting anything: `docker compose -f compose.yaml -f compose.live.yaml --env-file .env.example config -q`.
 
@@ -350,7 +349,9 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `agents-postgres` | `postgres:16.15-alpine` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
 | `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings), and an SSE twin of the first two (`*-stream.json`: the agents stream their model calls). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
-| `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. |
+| `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. Live: [`agents/researcher/mcp.live.json`](agents/researcher/mcp.live.json) is mounted over that `mcp.json` and names `searxng-mcp`; it waits for that. |
+| `searxng` | `docker.io/searxng/searxng`, pinned by tag and digest in [`compose.live.yaml`](../compose.live.yaml) | not published | `app`, **live only** | A self-hosted metasearch engine, settings in [`searxng/settings.yml`](searxng/settings.yml) (the JSON format on). It asks the public search engines. [Web search for real](#web-search-for-real). |
+| `searxng-mcp` | built from [`searxng-mcp/`](searxng-mcp/Dockerfile) | not published | `app`, **live only** | The researcher's search MCP server, live: `web_search` and `fetch`. [Web search for real](#web-search-for-real). |
 | `mock-github` | `wiremock/wiremock:3.13.2` | `8092` (`MOCK_GITHUB_PORT`) | `app` | The GitHub REST subset the coder uses: open a pull request, create a repository (`POST /orgs/{owner}/repos`; `scratch` is an organisation), and trade a GitHub App's signed JWT for an installation token (`POST /app/installations/67890/access_tokens`, which lasts four minutes). Vendored. |
 | `mock-github-mcp` | `wiremock/wiremock:3.13.2` | `8085` (`MOCK_GITHUB_MCP_PORT`) | `app` | The GitHub MCP server's streamable HTTP endpoint (`/mcp`, bearer `dev-github-mcp-token`) as the coder reads GitHub through it: `initialize`, `tools/list` (the twelve read-only tools of its allow-list) and `tools/call` of `get_me` and `list_branches`. The coder's folder starts the real `github-mcp-server` as a child process; here [`coder/coder-agent/mcp.json`](coder/coder-agent/mcp.json) is mounted over the folder's `mcp.json` and points the coder at this mock instead. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`, `local/library.git` and, since adam-rs `d56dd94`, `local/devbox.git` and `local/devbox-broken.git` (every `seed/<owner>/<name>/`). A repository of an owner in `AUTO_CREATE_OWNERS` (`scratch` here) is made, empty, the first time anything asks for it: what a repository just created on GitHub is like. `/__repos/` lists what it holds, as JSON. No authentication. Vendored. |
@@ -1615,6 +1616,87 @@ with a 400 before it reaches the agent, so the failure is only reachable by call
   invalid JSON, so the answers are fixed sentences.
 - Only the JSON-RPC binding is offered (`supportedInterfaces` lists `JSONRPC`, version `1.0`).
 
+## Web search for real
+
+Offline, the researcher searches [canned results](#mock-web-search-mcp). With [`compose.live.yaml`](../compose.live.yaml) it searches the
+real web and can read what it finds. Two services are added and nothing else changes (`searxng` and `searxng-mcp` are in the `app`
+profile of the override, and publish no port: only the compose network reaches them):
+
+| | |
+|---|---|
+| `searxng` | [SearXNG](https://docs.searxng.org/), a self-hosted metasearch engine, `docker.io/searxng/searxng:2026.9.30-a9d990033` pinned by tag **and** digest. [`searxng/settings.yml`](searxng/settings.yml) adds the `json` format to its defaults (without it SearXNG answers 403 to `format=json`) and turns the limiter off (a bot filter for a public instance). The secret key is `SEARXNG_SECRET` from `.env`, else a development default. It asks Google, DuckDuckGo, Bing and others for each query: **those are third parties that see the queries**, as smee.io sees the webhooks |
+| `searxng-mcp` | [`searxng-mcp/server.mjs`](searxng-mcp/server.mjs), about 650 lines of Node with no dependencies, in the same `node:24-alpine3.23` image as the mock. The pattern of [`mock-mcp-search`](#mock-web-search-mcp) (MCP 2025-11-25 over streamable HTTP without sessions, bearer token `SEARCH_MCP_TOKEN`, else the development default `dev-search-token`; it refuses to start with none unless `SEARCH_MCP_NO_AUTH=true`), with two tools |
+
+The researcher's folder is the offline one, with its instructions; live, [`agents/researcher/mcp.live.json`](agents/researcher/mcp.live.json)
+is mounted over the folder's `mcp.json` (as the offline coder's mock `mcp.json` is mounted over its folder's) and names `searxng-mcp`
+with both tools, which the model is offered as `search__web_search` and `search__fetch`.
+
+| Tool | |
+|---|---|
+| `web_search { query, limit? }` | Titles, links and snippets: `1. <title> — <url>` and the snippet on the next line, at most `limit` entries (default 5, **at most 10**), each title cut at 200 characters and each snippet at 300; links that are not http or https are dropped. Its `title` is `Web search`, which adam uses as the label of the step. A provider that fails, or answers something that is not JSON, is a tool execution error the model reads (`isError`), never a protocol error |
+| `fetch { url }` | The readable text of one page: `URL:`, `Title:`, a blank line and the text, **cut at 64 KiB** (a line says so). Scripts, styles, comments, `noscript`, `svg` and `head` are dropped and the HTML becomes plain text (a line break at the end of a block, `- ` for a list item, entities decoded), with no dependency. Only text types are read (HTML, plain text, JSON, XML; at most 2 MiB of the body is read before the cut). Its `title` is `Read page` |
+
+**What `fetch` refuses**, because the URL is chosen by a model that read pages written by anyone: any scheme but http and https; a URL with a user name or
+password; **every address that is not a public one, after DNS resolution** (loopback, RFC 1918, link-local such as the cloud metadata address
+`169.254.169.254`, carrier-grade NAT, multicast, reserved, and the IPv6 equivalents, including IPv4 written inside IPv6); a name is refused when
+*any* of its addresses is one of these. The check is made by the `lookup` the connection itself uses, so the address checked is the address
+connected to (a name cannot answer a public address to the check and a private one to the connection); a redirect (at most 5) is checked the same way, each hop; the timeout is 15 s for the whole call;
+the body is requested uncompressed. The provider's own address (`SEARXNG_URL`) is configuration, and exempt: only what a model names is checked.
+*Not covered:* a page that is public but hostile still reaches the model as text, which the researcher's instructions say to report and never to obey; the server has no per-host rate limit.
+
+```mermaid
+sequenceDiagram
+  participant R as researcher (adam-agent)
+  participant M as searxng-mcp
+  participant S as searxng
+  participant W as a web page
+  R->>M: tools/call web_search {query, limit?}
+  M->>S: GET /search?q=...&format=json
+  S-->>M: JSON results (SearXNG asked the public engines)
+  M-->>R: numbered titles, links and snippets, at most 10
+  R->>M: tools/call fetch {url}
+  M->>M: resolve the name, refuse a private address
+  M->>W: GET url (the checked address, no compression)
+  W-->>M: HTML, at most 2 MiB read
+  M-->>R: plain text, cut at 64 KiB
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Parse
+  Parse --> Refused: not http(s), credentials in the URL
+  Parse --> Resolve
+  Resolve --> Refused: any address private, loopback, link-local or reserved
+  Resolve --> Request
+  Request --> Resolve: redirect, at most 5 (each hop checked)
+  Request --> Refused: timeout, status 400 or more, not a text type
+  Request --> Convert: text, at most 2 MiB read
+  Convert --> Cut: HTML to plain text
+  Cut --> [*]: at most 64 KiB, a note when it was cut
+  Refused --> [*]: an isError result the model reads
+```
+
+**Choosing the provider.** `WEB_SEARCH_PROVIDER` in `.env` (default `searxng`):
+
+| `WEB_SEARCH_PROVIDER` | Needs | What it calls |
+|---|---|---|
+| `searxng` | nothing (the `searxng` service of the stack) | `GET <SEARXNG_URL>/search?q=<query>&format=json`, the results' `title`, `url` and `content` |
+| `brave` | `BRAVE_API_KEY` ([the Brave Search API](https://brave.com/search/api/)) | `GET https://api.search.brave.com/res/v1/web/search?q=<query>&count=<limit>` with the header `X-Subscription-Token`; `web.results[]`'s `title`, `url` and `description` (`BRAVE_API_URL` overrides the endpoint) |
+| `tavily` | `TAVILY_API_KEY` ([Tavily](https://tavily.com/)) | `POST https://api.tavily.com/search` with `{"query", "max_results"}` and `Authorization: Bearer <key>`; `results[]`'s `title`, `url` and `content` (`TAVILY_API_URL` overrides the endpoint) |
+
+Set the provider and the key in `.env`, then `docker compose -f compose.yaml -f compose.live.yaml --profile app up -d searxng-mcp researcher`
+(the server reads its environment at startup; with a provider that lacks its key it exits at once, status 78, and says which variable in
+`docker compose logs searxng-mcp`). With `brave` or `tavily`, `searxng` still starts, and is not asked; stop it with `docker compose ... stop searxng`
+if you want it off (the MCP server waits for it to be healthy only when it starts). The `fetch` tool is the same for all three.
+
+**Checking it.** `node --test dev/searxng-mcp/server.test.mjs` (30 tests, in process, against a fake SearXNG, fake Brave and Tavily endpoints and a fake page
+server; nothing leaves the machine; CI: workflow Compose, job `scripts`) covers the refusals above (127.0.0.1, 10.x, 169.254.x, `::1`, IPv4 inside IPv6, a name that resolves to a private address, a
+redirect to one), the 64 KiB cut in whole characters, the HTML conversion, the three providers' requests and the protocol. **No scenario script runs it**: the stack's
+scenarios are offline, and a live search has no fixed answer.
+
+**A person's questions to try it with** (live): "What is the latest stable version of Rust, and what changed in it?" (a search, then the release notes read with `fetch`);
+"Write me a short article, with headings and links, on how streaming SQL engines differ" (a written answer: headings, bold, links, a table).
+
 ## Mock web search (MCP)
 
 `mock-mcp-search` is an MCP server that answers canned web-search results, so that an agent that searches the
@@ -2123,3 +2205,35 @@ Step input and output, clearer instructions (plan 10 S4: the pin to adam-rs `d56
 *Unverified where this was written* (the disk was too small to pull the 2.9 GB image or start the stack, so nothing ran in containers): the two scenarios behind the real orchestrator and the coder at `d56dd94`, which is the Coder E2E workflow of the pull request
 that pins it; in particular that the researcher's step is labelled `Web search` (read from adam-rs's `McpTool::step_style` at that commit: not run) and that every step of the replay holds the `input` from its start (the golden says it does); that the vendored
 mappings, which are upstream's and ran there, are matched by this stack's `mock-openai` (WireMock 3.13.2); that the new seeds serve through `git-server` (nothing here clones them); and that the real `github-mcp-server` starts in the live coder with the variable set.
+
+Agents that write Markdown and search the real web (plan 10 S20: the pin to adam-rs `c0f12dd`, [#72](https://github.com/vymalo/another-adam-rs/pull/72), with [#71](https://github.com/vymalo/another-adam-rs/pull/71) and [#70](https://github.com/vymalo/another-adam-rs/pull/70) before it):
+
+*Verified 2026-10-02*:
+
+- **The pin.** `coder:sha-c0f12dd@sha256:7a0768dc...` (the full digest is in `compose.yaml`) is the manifest digest the ghcr API returns for that tag (anonymous token, HTTP 200; a request with no token is a 401; the `Docker-Content-Digest` header and the sha-256 of the
+  body agree): one `linux/amd64` manifest (Docker schema 2) of thirteen layers (2,918,916,354 bytes, 2.92 GB, compressed), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` = `c0f12dd1dd6240acece51c7452e98c6648486276`, and, as at
+  `d56dd94`, no `MCP_ALLOW_STDIO`. The image was not pulled: its config blob was read from the registry. adam-rs's `coder` workflow built it for `main` at that commit (run started 06:39 UTC, finished 06:57 UTC, success). `dev/coder/check-vendored.sh` passes at `c0f12dd`.
+  Of the vendored files only `agent/instructions.md` changed (a `scratch_check_cycles` var, `edit_file`, `run` and `share_file` in its tool list, "Files", `turn_output`, a fourth way of ending a turn); no mapping, seed or `mcp.json` did, so the scripts of `dev/coder-e2e.sh` and `dev/workspace-e2e.sh` are what they were.
+- **What the new coder does that a scenario could touch** (adam-rs `bin/adam-coder/src/agent.rs` and `tools/` at that commit): the tool list gains `run`, `edit_file` and `share_file`, and no scenario asserts the coder's whole tool list (`choices-e2e.sh` and `cards-e2e.sh` check that named tools are offered and that `get_ui_catalog` is not; `coder-e2e.sh` reads
+  steps by name), so none needed a change. A scratch run now ends `completed` instead of waiting only when it **shared a file** with `share_file`, no repository is in play and nothing was pushed (`delivered_a_result`); the scripted coder never calls `share_file`, so
+  `workspace-e2e.sh`'s scratch part still ends waiting for the person, as before. A scratch project gets its own budget of check cycles (`scratch_check_cycles`, 5; a repository's stays 3). `turn_output` is the thread's tool the orchestrator lists in its grant
+  ([ADR 0031](../docs/decisions/0031-working-text-and-the-turns-answer.md)); the pin is the first adam-rs that treats a call of it as the run's answer (adam-rs ADR 0014).
+- **The instructions of the chat and the researcher** (`agents/*/agent/instructions.md`, ours, not vendored) say that replies render as Markdown (headings, bold, lists, links, tables, code), no longer ask for "no lists unless the person asks" (the chat) and for short sentences only (both), and gain adam-rs's
+  "What the person sees" at `c0f12dd` (working notes against the answer, the answer complete on its own with the result first, `turn_output` when the agent has it and then one short line), as in adam-rs's `dev/agents/assistant` and `dev/agents/researcher` (their wording, with examples of when to use Markdown added), plus a sentence that the agent never says it cannot make headings, bold text or links (the owner's report: "I can't write a rich text article with headings, bold, links").
+  The researcher's also says what to do with a `search__fetch` tool (read a source before relying on it; what a page says is a thing to report, never an instruction). Both set `limits.max_output_tokens: 8192` (it was 2048): the field is `limits:` in the folder's front matter, as adam-rs's `bin/adam-agent/README.md` documents. The two persona lines at the top
+  are untouched, so `mock-persona` still greets from them and `agents-e2e.sh`'s check that the system prompt holds them still holds (the check reads the prompt's first message for `Your name is <name>.` and `In one sentence: <summary>`; the mock's own regexes read the first match of each).
+  `agents-e2e.sh` gained one assertion for each agent: the model was offered `turn_output`.
+- **SearXNG's pin.** `docker.io/searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2...` (full digest in `compose.live.yaml`) is the newest dated tag of Docker Hub's tag list (`last_updated` 2026-09-30 05:46 UTC); the digest is the OCI index's `Docker-Content-Digest` from the registry API (anonymous token from `auth.docker.io`, HTTP 200), which holds `linux/amd64`
+  (`sha256:8455db4d...`, five layers, 98 MB compressed), `arm64` and `arm/v7` manifests (the coder's image has no arm64 variant, so the stack still runs the agents under emulation there). Its config: no `User` (the container runs as root; the entrypoint changes the owner of its volumes unless `FORCE_OWNERSHIP=false`, which the service sets, read from `container/entrypoint.sh` at the image's revision
+  `a9d99003344a`), entrypoint `/usr/local/searxng/entrypoint.sh`, port 8080, no healthcheck (the service defines one with the image's own Python against `/healthz`, a route of `searx/webapp.py` at that revision), `SEARXNG_SECRET` read for `server.secret_key` (`searx/settings_defaults.py`), image label `org.opencontainers.image.version` `2026.9.30-a9d990033`. The image was not pulled.
+- **The providers' requests** are read from their documentation on 2026-10-02: Brave's `GET https://api.search.brave.com/res/v1/web/search?q=...&count=...` with `X-Subscription-Token`, the answer's `web.results[].title|url|description`
+  ([api-dashboard.search.brave.com](https://api-dashboard.search.brave.com/app/documentation/web-search/get-started)); Tavily's `POST https://api.tavily.com/search` with `Authorization: Bearer <key>`, `{"query", "max_results"}`, the answer's `results[].title|url|content` ([docs.tavily.com](https://docs.tavily.com/documentation/api-reference/endpoint/search)). They were exercised against fakes only, never against the services.
+- **`node --test dev/searxng-mcp/server.test.mjs`: 30 tests, all pass** (Node 22.22), against a fake SearXNG, fake Brave and Tavily endpoints and a fake page server: the protocol (handshake, versions, tools list with the titles `Web search` and `Read page`, 401, 405, 415, 406, 400, 403 for a foreign Origin, 202), `limit` (default 5, at most 10, anything else an error result), a failing provider and an answer that is not JSON as results the model reads,
+  the refusals of `fetch` (`127.0.0.1`, `10.x`, `192.168.x`, `169.254.169.254`, `::1`, `fd00::1`, `::ffff:10.0.0.1`, `0.0.0.0`, `2130706433` and `0x7f.1`, which the URL parser turns into `127.0.0.1`; a name that resolves to a private address, also as one of several; `localhost` through the real resolver; a redirect to a private address and to a name that resolves to one; a redirect loop; `file:`, `ftp:`,
+  credentials in the URL), the HTML conversion (script, style, comment, `noscript` and an unclosed script dropped, entities decoded, the title apart, list items), the 64 KiB cut in whole characters (200,000 bytes of `é` come back as at most 65,536), the 2 MiB read limit, a non-text type, HTTP 404 and a timeout. The fakes listen on the loopback, which the rule refuses, so the tests
+  carve out `127.0.0.1` alone (`loopbackToo`) and a test shows that without the carve-out the same URL is refused. `node --check` is clean; started by hand, the server exits with status 78 without a token or without `SEARXNG_URL` and answers a tool error when the provider is down.
+- `shellcheck dev/agents-e2e.sh` (and `dev/*.sh dev/coder/*.sh`), `sh -n`, `docker compose --profile '*' config -q` (offline: no `searxng`, no `searxng-mcp`, the researcher still on `mock-mcp-search`) and with `-f compose.live.yaml --env-file .env.example` (live: both services, the researcher waiting for `searxng-mcp` and mounting `mcp.live.json` over the folder's `mcp.json`), and the docs check are clean.
+
+*Unverified where this was written* (no image was pulled and no container was started: the coder's is 2.9 GB, and the instructions here were to use the registry API only): **that the stack runs** (the scenarios, which the Coder E2E workflow of the pull request that pins it runs, in particular the two new `turn_output` assertions of `agents-e2e.sh`, which rest on adam-rs offering the thread's tool to a model under the name `turn_output`);
+that the `searxng` image starts with a read-only settings file mounted over its `/etc/searxng/settings.yml` and `FORCE_OWNERSHIP=false` (read from its entrypoint, not run), that its `/healthz` answers to the Python one-liner of the healthcheck, and that its `json` format is served with the settings file (the `search.formats` key is the documented one); that Docker mounts the `mcp.live.json` file over a file of a read-only bind mount (the offline coder's mock
+`mcp.json` is mounted the same way, and that runs in CI); that `searxng-mcp` builds into its image (`node:24-alpine3.23`, the digest of the mock's; not built here); that SearXNG answers real queries from where it runs (its engines may block a data-centre address, and a result list can be empty or short, which the tool says); the Brave and Tavily adapters against the real services; and what a live model does with the new instructions and `turn_output`.

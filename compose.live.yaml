@@ -25,12 +25,20 @@
 #   * chat, researcher
 #                  the same: the real model of .env (CHAT_MODEL / RESEARCHER_MODEL, else MODEL), a bearer token
 #                  of your own each (CHAT_A2A_TOKEN, RESEARCHER_A2A_TOKEN), and they no longer wait for the model
-#                  mock. The researcher still searches the MOCK web search (canned results, `mock-mcp-search`
-#                  stays up): the stack has no search provider credential. All three keep MCP_ALLOW_INSECURE:
+#                  mock. The researcher searches the REAL web: through `searxng-mcp` (dev/searxng-mcp, a small MCP server
+#                  with the tools `web_search` and `fetch`) over `searxng`, a self-hosted SearXNG that asks the public search
+#                  engines, or over Brave or Tavily with a key of your own (WEB_SEARCH_PROVIDER, below). The mock search
+#                  (`mock-mcp-search`) is no longer its server, and stays up for `mcp-e2e.sh`. All three keep MCP_ALLOW_INSECURE:
 #                  the thread's own tools, the orchestrator's endpoint they are told about in every message, are
 #                  plain http on the compose network (still with the thread's own short-lived bearer token). This
 #                  file is a LOCAL stack with real credentials, not a deployment: a deployment serves the
 #                  orchestrator over https and never sets MCP_ALLOW_INSECURE (adam-rs bin/adam-coder/README.md);
+#   * searxng, searxng-mcp
+#                  new here: the live web search of the researcher (the MCP server's `fetch` reads a page a model names, and
+#                  refuses private, loopback and link-local addresses). Neither publishes a port: only the compose network
+#                  reaches them. SearXNG sends the queries to the public search engines, which see them: a third party,
+#                  like smee.io. Brave or Tavily instead: WEB_SEARCH_PROVIDER=brave plus BRAVE_API_KEY, or =tavily plus
+#                  TAVILY_API_KEY (.env.example); `searxng` then starts but is not asked;
 #   * mock-openai, mock-github, mock-github-mcp, git-server, mock-ci, mock-model
 #                  move to the profile `offline-mocks`, which is never enabled: a real model, a real GitHub and
 #                  a real CI replace them. Do not enable that profile with this file;
@@ -119,7 +127,7 @@ services:
     depends_on: !override
       agents-postgres:
         condition: service_healthy
-      mock-mcp-search:
+      searxng-mcp:
         condition: service_healthy
     environment: !override
       DATABASE_URL: postgres://postgres:postgres@agents-postgres:5432/agents
@@ -129,11 +137,62 @@ services:
       A2A_BEARER_TOKENS: "${RESEARCHER_A2A_TOKEN:?set RESEARCHER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       PUBLIC_URL: http://researcher:8080/
       ADAM_AGENT_DIR: /etc/adam/agent # the folder compose.yaml mounts there
-      # The search server of its mcp.json is the MOCK (plain http on the compose network, bearer dev-search-token).
-      SEARCH_MCP_TOKEN: dev-search-token
-      MCP_ALLOW_INSECURE: "true" # local stacks only: for the mock search and the thread's own tools (plain http). A real search server over https needs neither this nor the mock
+      # The bearer token of searxng-mcp (the folder's mcp.json names the variable, the value is here). It guards a service the
+      # compose network alone reaches; set your own in .env all the same.
+      SEARCH_MCP_TOKEN: "${SEARCH_MCP_TOKEN:-dev-search-token}"
+      MCP_ALLOW_INSECURE: "true" # local stacks only: searxng-mcp and the thread's own tools are plain http on the compose network
+    # The folder is the offline one (its instructions say what to do with a `search__fetch` tool when there is one); live, its
+    # `mcp.json` is replaced by this one, which names searxng-mcp and lets the agent have both its tools. Volumes merge by
+    # target, so this is added beside the folder's mount. A copy of the folder in RESEARCHER_AGENT_DIR needs an `mcp.json`.
+    volumes:
+      - ./dev/agents/researcher/mcp.live.json:/etc/adam/agent/mcp.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # SearXNG, a self-hosted metasearch engine, pinned by tag AND digest (verified 2026-10-02, see dev/README.md, "Web search
+  # for real"). Its settings (dev/searxng/settings.yml) turn the JSON format on; the secret key is SEARXNG_SECRET (.env). The
+  # image's entrypoint changes the owner of /etc/searxng when it runs as root, which on a mounted settings file would be
+  # an error and nothing more: FORCE_OWNERSHIP=false says not to. It publishes no port.
+  searxng:
+    profiles: [app]
+    image: docker.io/searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2da2c63d66e559f9e4d3a3db106cfc6c32fb0ac70abe91cc28bcd7350
+    environment:
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-dev-only-searxng-secret-change-it-in-env}"
+      FORCE_OWNERSHIP: "false"
+    volumes:
+      - ./dev/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # The image's own interpreter (the entrypoint runs granian from this virtualenv): the image is not guaranteed to ship curl or wget.
+      test: ["CMD", "/usr/local/searxng/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+
+  # The web-search MCP server the researcher uses (dev/searxng-mcp): `web_search` (SearXNG, Brave or Tavily) and `fetch` (one
+  # page as plain text). Streamable HTTP at http://searxng-mcp:8080/mcp, bearer SEARCH_MCP_TOKEN. No port is published.
+  searxng-mcp:
+    profiles: [app]
+    build:
+      context: ./dev/searxng-mcp
+    image: another-agentic-system/searxng-mcp:dev
+    depends_on:
+      searxng:
+        condition: service_healthy
+    environment:
+      SEARCH_MCP_TOKEN: "${SEARCH_MCP_TOKEN:-dev-search-token}"
+      WEB_SEARCH_PROVIDER: "${WEB_SEARCH_PROVIDER:-searxng}"
+      SEARXNG_URL: http://searxng:8080
+      BRAVE_API_KEY: "${BRAVE_API_KEY:-}"
+      TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 2s
 
   mock-openai:
     profiles: !override [offline-mocks]

@@ -358,3 +358,22 @@ What the pin brings:
   passes at that commit.
 - *Unverified where this was written* (the machine could not pull the 2.9 GB image or start the stack): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it;
   that the coder's real step labels, inputs and outputs are as the new assertions expect (read from adam-rs's source at that commit, not run); and the real `github-mcp-server` in the live coder with `MCP_ALLOW_STDIO` set.
+
+### Status note, 2026-10-02: files, `run` and `edit_file`, scratch completion, and `turn_output` (adam-rs c0f12dd)
+
+Since adam-rs `c0f12dd` ([#72](https://github.com/vymalo/another-adam-rs/pull/72), with [#71](https://github.com/vymalo/another-adam-rs/pull/71) and [#70](https://github.com/vymalo/another-adam-rs/pull/70) before it) the coder is pinned at that commit.
+Nothing about the decision changes: the coder is a plain A2A agent, the orchestrator reads its card live and fails closed (ADR 0008), the image is pinned by tag and digest at the commit in `dev/coder/UPSTREAM`.
+What the pin brings:
+
+- **Files as A2A artifacts** (#70, adam-rs ADR 0012): `share_file` hands the person a file the coder made (an image is drawn, anything is downloadable); it is not committed or pushed.
+- **A run can make things, and finish scratch work that was asked for** (#71, adam-rs ADR 0013): `run` (a command whose changes are kept, no check cycle, no git), `edit_file` (replace exact text), a budget of check cycles of its own for a scratch project (`scratch_check_cycles`, 5), and a fourth way of ending a turn:
+  a run in scratch work only, with no repository named, created or pushed to, that **shared a file** is complete with no pull request. Anything else still waits for the person, as before.
+- **`turn_output` is the run's answer** (#72, adam-rs ADR 0014): an agent that calls the thread's `turn_output` tool ([ADR 0031](0031-working-text-and-the-turns-answer.md)) with its answer, then ends with one short line, has the tool's text shown as the answer and the rest as working text.
+  The coder's `instructions.md` says so, and so do the stack's chat and researcher (`dev/agents/*/agent/`, ours).
+- **In this repository:** the pin and the vendored files (changed: the agent folder's `instructions.md` alone; nothing else under `dev/coder/`), `dev/agents-e2e.sh` (the chat and the researcher are offered `turn_output`), and the live web search of the same pull request
+  (`searxng` and `searxng-mcp` in `compose.live.yaml`, [`dev/README.md`](../../dev/README.md#web-search-for-real)). No scenario asserts the coder's whole tool list, so none needed a change for `run`, `edit_file` and `share_file`.
+- *Verified 2026-10-02* (anonymous ghcr API, HTTP 200): `coder:sha-c0f12dd` is one `linux/amd64` manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, no `MCP_ALLOW_STDIO`, label
+  `org.opencontainers.image.revision` `c0f12dd1dd6240acece51c7452e98c6648486276`, digest `sha256:7a0768dc...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh`
+  passes at that commit.
+- *Unverified where this was written* (nothing was pulled or started): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it; that the model of an agent is offered `turn_output`
+  under that name (the two new assertions of `dev/agents-e2e.sh`; read from adam-rs's documentation, not run).

@@ -21,11 +21,11 @@
 #   * CHAT, "hi": the thread ends `done` (a chat answers, it does not wait), the run stream ends with RUN_FINISHED,
 #     the words say "I'm <name>" and the one-sentence summary of dev/agents/chat/agent, and do not ask for a
 #     repository (the coder's greeting does); no artifact; `mock-model` saw a `mock-persona` request whose system
-#     prompt is the folder's instructions and that offered no tool of the coder or of the search;
+#     prompt is the folder's instructions and that offered no tool of the coder or of the search, and offered `turn_output`;
 #   * RESEARCHER, "Who won the football world cup in 2014?": the thread ends `done`, the words cite a link of the
 #     mock web search (https://example.org/mock-search/...), `mock-mcp-search` was called exactly once, with
 #     `web_search` and a query that holds the person's words, and the model got the tool `search__web_search`
-#     from the folder's mcp.json and the results back (two requests: the call, then the answer); the call is one step
+#     from the folder's mcp.json (and `turn_output`) and the results back (two requests: the call, then the answer); the call is one step
 #     (`vymalo.step`, kind tool) labelled with the tool's title, `Web search` (adam-rs d56dd94: not `search__web_search`), whose start
 #     carries the call's `input` (the query) and whose end carries its `output` (`{text}`, the mock's list of links), as the replay says it
 #     (docs/api/steps-v1.md, "Input and output");
@@ -221,6 +221,12 @@ case " $offered " in
     bad "chat: the model was offered a tool the chat must not have: $offered" ;;
   *) ok "chat: the model was offered no code tool and no search (tools: ${offered:-none})" ;;
 esac
+# The thread's own tool: the orchestrator lists `turn_output` in the grant of every message and adam-agent offers it to the model, whose
+# instructions say to call it with the complete answer (adam-rs c0f12dd). The mock model does not call it: its reply is the answer.
+case " $offered " in
+  *" turn_output "*) ok "chat: the model was offered turn_output, the thread's tool for the answer" ;;
+  *) bad "chat: the model was not offered turn_output (tools: ${offered:-none}; did the grant of the thread's tools reach the chat?)" ;;
+esac
 
 # --- the researcher -----------------------------------------------------------------------------------
 persona "$researcher_dir"
@@ -270,6 +276,10 @@ offered=$(printf '%s' "$researcher_requests" | jq -r '[.[0].tools // [] | .[].fu
 case " $offered " in
   *" search__web_search "*) ok "researcher: the model was offered search__web_search, the tool of its mcp.json (tools: $offered)" ;;
   *) bad "researcher: the model was offered '${offered:-no tool}', want search__web_search (is mock-mcp-search up, and MCP_ALLOW_INSECURE set?)" ;;
+esac
+case " $offered " in
+  *" turn_output "*) ok "researcher: the model was offered turn_output, the thread's tool for the answer" ;;
+  *) bad "researcher: the model was not offered turn_output (tools: ${offered:-none})" ;;
 esac
 first=$(printf '%s' "$researcher_requests" | jq -r '.[0].messages[0].content // empty')
 case $first in
