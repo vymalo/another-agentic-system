@@ -2136,6 +2136,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-artifacts-fs"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "orch-core",
+ "orch-ports",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "orch-config"
 version = "0.1.0"
 dependencies = [
