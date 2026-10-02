@@ -197,7 +197,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.maxChars` | 40 to 500, `300`; the cleaned answer is cut to it at a word | — | now |
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
-| `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it in S19 |
+| `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
 
 ### `threadTools`, `mcp`, `webhooks`, `auth`, `artifacts`
 
@@ -289,7 +289,7 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 
 ## `GET /api/config`
 
-**Built (PR S18, 2026-10-02); the web reads it in S19.** The public subset of the configuration, for the web.
+**Built (PR S18, 2026-10-02); the web reads it (PR S19, 2026-10-02).** The public subset of the configuration, for the web.
 
 ```http
 GET /api/config

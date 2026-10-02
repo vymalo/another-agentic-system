@@ -70,7 +70,7 @@ tasks:
     recompute: { minNewMessages: 2 }
 
 # What the web is told (GET /api/config): the only part of this file it reads. The description is shown in the sidebar's
-# hover card and under the thread's header (PR S19); `false` hides it there, and the API still returns it.
+# hover card and under the thread's header; `false` hides it there, and the API still returns it.
 ui:
   showDescriptions: true
 

@@ -696,7 +696,7 @@ description has the event in the log. AG-UI says it exactly as it says a [title]
 
 `source` is `model` for a description the orchestrator had a model write (attributed to the orchestrator; at most once per job,
 and only when the conversation has grown by `recompute.minNewMessages` messages since the last one) and `user` for a person's
-(attributed to the person), which is final: the model never writes it again. The web shows it in S19; `ui.showDescriptions`
+(attributed to the person), which is final: the model never writes it again. The web shows it (built 2026-10-02, PR S19: [`web/README.md`](../../web/README.md#a-threads-description)); `ui.showDescriptions`
 (`GET /api/config`) can hide it there. Goldens: `description.events.json` (a model's description after the job's end, then a
 person clearing it), `agui/description.agui.json` (what a live viewer reads for it) and `agui/connect-description.agui.json` (what a
 viewer that connects after a person wrote one reads).
