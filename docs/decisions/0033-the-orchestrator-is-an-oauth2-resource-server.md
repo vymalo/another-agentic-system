@@ -8,9 +8,12 @@
   replaces slice 14 of [`mvp.md`](../mvp.md) (OIDC for MCP). The port `InboundAuth` that
   [ADR 0009](0009-swappable-implementations-at-build-time.md) names is built as `Authenticator`.
   **Built (2026-10-02, PR S14):** the port and its testkit, the JWT and the header authenticators, `auth.mode` and
-  `auth.jwt`, the 401/503 responses and `/readyz`. **Planned:** PR S15 (roles, permissions, enforcement, `GET /api/me`),
-  S16 (the dev stack: a mock issuer and a real oauth2-proxy), S17 (the web reads `/api/me`). Sections 4 to 8 below
-  describe what S15 to S17 build; sections 1 to 3 are what S14 built.
+  `auth.jwt`, the 401/503 responses and `/readyz`. **Built (2026-10-02, PR S15):** the roles and permissions, their
+  enforcement on threads, agents and files, `GET /api/me`, the administrators' listing, the roles of an MCP token and
+  the bound on a stream (sections 4 to 7, with the points where the build differs from what they planned, in
+  [*Status: built in S15*](#status-built-in-s15)). **Planned:** S16 (the dev stack: a mock issuer and a real
+  oauth2-proxy), S17 (the web reads `/api/me`). Section 8 describes what S16 builds; sections 1 to 3 are what S14
+  built.
 
 ## Context
 
@@ -154,7 +157,7 @@ stateDiagram-v2
 4. A mode whose implementation is not compiled in (Cargo features `auth-jwt`, `auth-header`, both on by default) is
    exit 78 naming the feature (as a surface is). A process that serves no routes needs none.
 
-### 4. Roles and permissions (planned, S15)
+### 4. Roles and permissions
 
 `auth.roles` maps a role name to permissions and agents, `auth.defaultRole` is what a valid token with no known role
 gets (`null`: 403). The vocabulary follows the platform's (`another-agentic-platform` `docs/architecture/08-security.md`
@@ -171,7 +174,7 @@ auth:
 
 The default `admin` is owner decision 4: **read any, write own**.
 
-### 5. Enforcement (planned, S15)
+### 5. Enforcement
 
 A pure `orch_app::authz::allows(&Principal, Action, &Resource) -> bool`, unit-tested over a matrix, applied to
 `list_agents` (filtered), `describe_agent` and `validate_target` (403 without `agent.invoke` for that agent); reading a
@@ -180,13 +183,13 @@ leaks); messages, UI actions, cancel, rename and fork (the owner, or `thread.wri
 route; `GET /api/threads?owner=` (admins only). MCP static tokens map to a principal and a role in configuration;
 thread-tools stays HMAC (a machine, [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md)).
 
-### 6. Streams (planned, S15)
+### 6. Streams
 
 The token is validated when a stream connects. A stream is capped at the token's `exp` plus the leeway, and at one hour;
 the client reconnects with `Last-Event-ID` and gets a fresh token from oauth2-proxy's session
 ([ADR 0012](0012-ag-ui-user-facing-protocol.md), the connect stream is resumable).
 
-### 7. `GET /api/me` (planned, S15; the web, S17)
+### 7. `GET /api/me` (the web reads it in S17)
 
 `{user, roles, permissions, agents}`, so the web hides what its person cannot do. It is a convenience, never a check:
 the orchestrator enforces.
@@ -201,6 +204,62 @@ Node stub with discovery, `jwks`, `authorize`, `token` and users with roles) and
 `forward_auth` (`--set-authorization-header`, `copy_headers Authorization`); the scenario scripts get a token from the stub.
 `navikt/mock-oauth2-server` is the alternative if the stub grows.
 
+## Status: built in S15
+
+**Built (2026-10-02, PR S15).** `orch_app::authz` is the pure model (`Policy`, `Access`, `Permission`, `Scope`, `Resource`,
+`Denied`; unit-tested over a matrix), applied by `App` on every read and every act, so that no surface can forget it;
+`auth.roles` and `auth.defaultRole` are keys ([`config.md`](../api/config.md#roles-and-permissions)); `GET /api/me`,
+`GET /api/threads?owner=`, the `role` of an MCP token and the bound on a stream are in; `getMe`, the 403s and
+`Thread.owner` are in [`chat-api.yaml`](../api/chat-api.yaml). Where the build differs from, or settles, what sections 4
+to 7 planned:
+
+1. **403 and 404, by one rule.** A permission no role of the person holds is **403** whatever is asked for, so the
+   answer is the same for a thread that exists and one that does not (`code: forbidden`). A permission the roles hold
+   but not over this resource is **404** for a thread the person may not read, and for a thread they may read and not
+   change (an administrator's view of another's) **403 `read_only`**: the 404 of section 5 for "messages, UI actions,
+   cancel, rename and fork" would hide a thread the person is reading. An agent is **403** either way (agents are not
+   secret: the web lists them). A person whose roles grant nothing at all gets **403 `no_access`** from every route but
+   `GET /api/me`, which still answers (with empty `roles` and `permissions`) so that a client can say why.
+2. **The owner needs the permission.** Section 5 reads "the owner, or `thread.read` with scope `any`". The build reads
+   `thread.read` with scope `own` or `any`: a role without `thread.read` does not read its own threads either. The
+   built-in roles hold it, so nothing changes for them.
+3. **`agents` limits both agent permissions.** `agent.read` (listing, `describe_agent`, the capabilities document,
+   `GET /api/registry`) and `agent.invoke` (`validate_target`, so start and fork) are each judged per role against that
+   role's `agents`. Beyond section 5: a **message to an existing thread** takes `agent.invoke` for the thread's agent
+   too (it starts the agent's work), `describe_agent` takes `agent.read` and not `agent.invoke`, and the default agent
+   (`App::default_agent`, MCP's `start_job` without `agent`) is the first one the person may invoke. An `agents` entry is
+   an id or `"*"`; there is no other pattern.
+4. **`auth.defaultRole` and `null`.** Absent, it is `user` when `auth.roles` is absent (the built-in pair, so the default
+   changes nothing) and **none** when `auth.roles` is given: a deployment that defines its roles names the default or
+   has none. `defaultRole: null` is the one place where the configuration reads `null` as a value (the schema says so,
+   `x-null-is-a-value`). It is a role of `auth.roles` (exit 78 otherwise).
+5. **`auth.roles` replaces the built-ins.** Given, it defines every role; `scope` is `own`, `any` or `{ read, write }`,
+   and `agents` defaults to `["*"]`. A `scope` or `agents` that its role would ignore, a permission listed twice and an
+   empty `agents` are errors.
+6. **The MCP token's role** is one `role` in the entry of `MCP_TOKENS_FILE` (`mcp.tokensFile`), one of `auth.roles`
+   (exit 78 otherwise); none means the default role. A token has no roles claim and no expiry. Thread-tools stays HMAC
+   and machine: it asks the application no permission.
+7. **`GET /api/me`** is `{user, email?, name?, roles, permissions: [{permission, scope?}], agents: {read, invoke}}`.
+   `roles` are the roles that count (the person's roles that `auth.roles` defines, or the default role), `scope` is the
+   widest of the roles that hold a permission over threads, and `agents` is a list of ids or `["*"]` for each agent
+   permission. It is `no-store`.
+8. **The administrators' listing** is `GET /api/threads?owner=<e-mail>` (one person's) and `owner=*` (everyone's, which
+   the ADR did not name; the web's "All threads" of S17 needs it). Both take the `admin` permission **and** a
+   `thread.read` of scope `any`; the caller's own address is the plain list, for anyone. It is
+   `ThreadStore::list_all_threads`, a method beside `list_threads`.
+9. **A thread says its owner.** `Thread.owner` (the e-mail, which is the user key) is serialised in every API answer and
+   in the export's `thread`, so that a client that reads other people's threads can tell its own from the rest. It was
+   in the log already, as the `actor` of the owner's messages.
+10. **Streams** (section 6) end at the token's `exp` plus 60 s, and after an hour at most, for the AG-UI connect and run
+    streams: `Principal.expires_at` carries the `exp`. A stream of a credential with no expiry (the proxy header, an MCP
+    static token) is not bounded here. The MCP `wait_for_job` is bounded by `mcp.waitMaxSecs` as before.
+11. **A fork needs the parent to be the person's own**: it is an act (`thread.write`), and the store copies a thread
+    into its owner's threads, so a role with `thread.write` of scope `any` that forks another's thread is refused by the
+    store (404). No built-in role has that scope.
+
+**Unverified:** the behaviour against a real oauth2-proxy and issuer (S16 runs one); that a role claim whose names differ
+only in case from `auth.roles` is what an operator wants refused (roles are compared exactly, and the docs say so).
+
 ## Consequences
 
 - **A deployment that runs `jwt` trusts only what it can verify.** A client-supplied `X-Auth-Request-Email` is no
@@ -211,8 +270,8 @@ Node stub with discovery, `jwks`, `authorize`, `token` and users with roles) and
 - **The default changes nothing**, and a production process cannot keep it by accident (`server.environment`).
 - **Everything that took `ApiConfig.auth` moved to the port**: tests that needed a development user build
   `HeaderAuth::new().with_dev_user(..)` into their `PortSet`.
-- **No authorization yet.** S14 authenticates: every principal is allowed what everyone was. Roles are read from the
-  token and carried in `Principal`, and nothing reads them until S15.
+- **Authorization (S15).** S14 authenticated: every principal was allowed what everyone was. Roles are read from the
+  token, carried in `Principal`, and mapped to permissions by `auth.roles` ([*Status: built in S15*](#status-built-in-s15)).
 - **Unverified:** the behaviour against a real Keycloak or another issuer (the tests run against a local issuer with RSA,
   P-256 and Ed25519 keys); the `iat` is required but not compared with the clock (a token issued in the future is
   accepted until `exp`).

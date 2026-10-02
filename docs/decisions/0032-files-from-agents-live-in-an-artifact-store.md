@@ -210,7 +210,7 @@ Decisions 5 to 10 are built as written. The details the text left open, and the 
   `application/octet-stream`; a declared type that is not an image is kept as declared (it is an attachment unless it is a
   preview type, and always `nosniff`); a missing or generic one takes the bytes' type, a PDF, or a few plain extensions.
   The file name is reduced to one name (after the last separator, no control or direction character, 255 bytes).
-- **Serving** (`orch-api`): `App::open_artifact` is the single access check (the thread's owner; **the seam for S15**), and a
+- **Serving** (`orch-api`): `App::open_artifact` is the single access check (the permission `artifact.read` over the thread since S15, [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md#status-built-in-s15); the thread's owner until then), and a
   miss of any kind is the same 404, including a deployment with no store. An inline SVG is read whole, up to 2 MiB, and cleaned;
   a larger one, or one that cannot be cleaned, is sent as an attachment instead, never inline as it is. A store that fails midway
   ends the response in an error. `ETag: "<sha256>"` is added to the headers of decision 8.

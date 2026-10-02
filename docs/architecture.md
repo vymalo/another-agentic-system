@@ -132,7 +132,11 @@ flowchart LR
   either against the issuer's JWKS (401 with `WWW-Authenticate: Bearer`; 503 while the keys cannot be fetched, and
   `/readyz` with it). The default `proxy_header` mode still trusts `X-Auth-Request-Email` and answers 401 without it,
   so it must only run behind a proxy that strips client-supplied copies; it is refused when `server.environment` is
-  `production`. Roles and their enforcement are planned (S15). Locally, `edge` is Caddy and replaces the header with
+  `production`. **Roles decide what a person may do**: the roles of the credential map, by `auth.roles`, to the
+  permissions `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read` and `admin`, which the
+  application enforces (a person reads and changes their own threads; an administrator reads every thread and changes
+  only their own; a thread one may not read is a 404, one that is read-only is a 403) and `GET /api/me` reports
+  ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally, `edge` is Caddy and replaces the header with
   `dev@example.com` ([`dev/README.md`](../dev/README.md)); the dev stack moves to tokens in S16.
 - **A process runs the halves its role asks for** (`ORCH_ROLE`, ADR 0015): the HTTP server
   (`orch-api` plus the mounted surfaces) as the **control plane**, the dispatcher as a **worker**, or
