@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import {
+  animationsDone,
   activityTab,
   badge,
   conversation,
@@ -22,6 +23,7 @@ import {
 const DELEGATE = "Delegate the login fix to the coding sub-agent";
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

@@ -1,6 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
-import { badge, conversation, expectNoHorizontalScroll, MOCK_URL, startThread } from "./helpers";
+import {
+  animationsDone,
+  badge,
+  conversation,
+  expectNoHorizontalScroll,
+  MOCK_URL,
+  startThread,
+} from "./helpers";
 
 /*
  * Sending while the agent works (ADR 0036, web/DESIGN.md "Sending while the agent works"), against
@@ -43,16 +50,7 @@ async function working(page: Page, text: string, agent?: string) {
 }
 
 async function axeViolations(page: Page) {
-  // axe reads the colours as they are drawn: a menu that is fading in is not at its colours yet
-  // (its muted text measured 4.49:1 inside the fade on a loaded machine)
-  await page.evaluate(() =>
-    Promise.all(
-      document
-        .getAnimations()
-        .filter((a) => a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
-        .map((a) => a.finished.catch(() => undefined)),
-    ),
-  );
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

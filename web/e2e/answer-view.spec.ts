@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
+  animationsDone,
   activityTab,
   badge,
   conversation,
@@ -39,6 +40,7 @@ const ticker = (page: Page) => conversation(page).locator('[data-slot="turn-tick
 const notes = (turn: Locator) => turn.locator('li[data-kind="note"]');
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

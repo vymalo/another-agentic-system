@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect } from "@playwright/test";
 import {
+  animationsDone,
   agentMenu,
   agentMenuItem,
   agentPicker,
@@ -154,6 +155,7 @@ for (const scheme of ["light", "dark"] as const) {
     test.use({ colorScheme: scheme });
 
     const violations = async (page: import("@playwright/test").Page) => {
+      await animationsDone(page);
       const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
       return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
     };

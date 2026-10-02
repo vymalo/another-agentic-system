@@ -6,6 +6,7 @@ import { chromium, expect, test } from "@playwright/test";
 import lighthouse from "lighthouse";
 import { uuidv7 } from "../src/lib/uuid";
 import {
+  animationsDone,
   agentPicker,
   BASE_URL,
   badge,
@@ -38,6 +39,7 @@ async function finishedThreadUrl(): Promise<string> {
 }
 
 async function axeViolations(page: import("@playwright/test").Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }

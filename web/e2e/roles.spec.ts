@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect, type Page } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
+  animationsDone,
   agentMenu,
   agentPicker,
   badge,
@@ -60,6 +61,7 @@ const readOnly = (page: Page) => page.locator('[data-slot="read-only"]');
 const scope = (page: Page) => page.getByRole("group", { name: "Whose threads" });
 
 async function axeViolations(page: Page) {
+  await animationsDone(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }
