@@ -44,6 +44,9 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > agent's words may be marked by what they are for, `metadata["vymalo.purpose"]` `"working"` or `"answer"` on the
 > `TEXT_MESSAGE_START`, and a live message that turns out to be working text says so on its `END`; see
 > [The agent's words](#the-agents-words).
+> **MCP servers attached to a thread** (2026-10-02, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), MVP
+> slice 8): `forwardedProps["vymalo.tools"]` on the run that creates a thread, the `tools_attached` and `tools_detached`
+> events, a `vymalo.tools` activity and `thread.tools` in the state snapshot; see [Attaching MCP servers](#attaching-mcp-servers).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 ## Endpoints
@@ -151,6 +154,7 @@ gets everything.
 | `thread_titled{title, source}` | A person renamed the thread (`patchThread`), or a model titled it (`source: model`, after the agent's first reply); in any state | The title is part of every `STATE_SNAPSHOT`, so the event is said as one. **Inside a run**: `STATE_SNAPSHOT` with the new `thread.title`. **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → `STATE_SNAPSHOT` (new title) → the run's close by the state the thread is in (`RUN_FINISHED{success}` for `done`, `{cancelled}` for `cancelled`, the thread's interrupt again for a `blocked` one that waits for the user, the thread's `RUN_ERROR` again for `failed`), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. No message, activity or subagent frame: the transcript does not change. See [Titles](#titles) |
 | `thread_described{description, source}` (ADR 0035) | A model described the thread when a job ended or paused (`source: model`), or a person wrote or cleared it (`patchThread`, `source: user`; an empty description is a person clearing it); in any state | Said exactly as `thread_titled` is: the description is part of every `STATE_SNAPSHOT` (`thread.description`, absent when the thread has none), so the event is a `STATE_SNAPSHOT` inside a run, or a producer-initiated run of its own that holds that snapshot when nothing is going on. No message, activity or subagent frame. See [Descriptions](#descriptions) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
+| `tools_attached{servers}`, `tools_detached{servers}` (ADR 0024) | A person attached MCP servers to the thread, or detached some (`putThreadTools`, or the run that created the thread); a fork that cannot keep a server its agent may not use detaches it; in any state | The set of attached servers is part of every `STATE_SNAPSHOT` (`thread.tools`, the ids, sorted, absent when there are none), so the event is said as one **and as a card**. **Inside a run**: `STATE_SNAPSHOT` with the new set, then `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?, detached?, at}}` (the ids that came or went; the creation commit's event comes right after the first message, inside the run it opened). **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → `STATE_SNAPSHOT` → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. Only ids: no name, URL or credential. See [Attaching MCP servers](#attaching-mcp-servers) |
 | `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
 | `thread_forked{from:{threadId, seq}, kind, title, description?, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.description:<the parent's, when it had one>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
@@ -356,6 +360,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `resume` `cancelled`, nothing new | `Input::Cancel` |
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
 | `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
+| `forwardedProps["vymalo.tools"]` (ADR 0024) on a run | The MCP servers to attach to the thread the run **creates**, an array of ids (`["websearch"]`; `[]`, `null` or no member attach none). Read on every run, so one that is not an array of strings is **400** before the stream; applied only when the run creates the thread, in the same commit as the first message, after it. An id that is not a server the deployment offers for the target agent, or more than 16 distinct ones, is **422**, and nothing is created. On a run that continues a thread the member is ignored with a warning (use `PUT /api/threads/{threadId}/tools`). See [Attaching MCP servers](#attaching-mcp-servers) |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The surface must be one the thread has now, and its version is the surface's. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
@@ -701,6 +706,48 @@ and only when the conversation has grown by `recompute.minNewMessages` messages 
 person clearing it), `agui/description.agui.json` (what a live viewer reads for it) and `agui/connect-description.agui.json` (what a
 viewer that connects after a person wrote one reads).
 
+## Attaching MCP servers
+
+*Built 2026-10-02 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), slice 8, first half; the relay is not
+built, [`thread-tools-v1.md`](thread-tools-v1.md#attached-servers-and-the-relay-slice-8)).* A person attaches servers from the
+deployment's list (`toolServers` of [`config.md`](config.md#toolservers), read with `GET /api/tool-servers`) to a conversation and
+detaches them again. Two doors, one event each way:
+
+- **When the thread is created**: `forwardedProps["vymalo.tools"]: ["websearch"]` on the run that creates it. The creation commit
+  holds the `user_message`, then the `tools_attached` event, so the first message sent to the agent already has the set.
+- **Afterwards**, in any state of the thread: `PUT /api/threads/{threadId}/tools` with `{"servers": [ids]}` (`putThreadTools`,
+  the whole set wanted; the same set again writes nothing). What differs from what the thread has is one `tools_attached` and
+  one `tools_detached`.
+
+AG-UI says it as it says a [title](#titles), because the set is a member of `snapshot.thread` (`thread.tools`, the ids, sorted;
+**no member when there are none**), and as a card, because attaching a search to a conversation is a thing that happened in it:
+
+```
+RUN_STARTED run-1
+STATE_SNAPSHOT {thread: {state: "queued", title: "…", target: {…}}}
+TEXT_MESSAGE_START … TEXT_MESSAGE_END                                  # the user_message
+STATE_SNAPSHOT {thread: {…, tools: ["websearch"]}}                     # the tools_attached event (seq 2)
+ACTIVITY_SNAPSHOT {messageId: "evt-2", activityType: "vymalo.tools", content: {attached: ["websearch"], at}}
+SUBAGENT_STARTED …
+```
+
+- **A live viewer** reads the snapshot and the card where the event is in the log (inside the open run), or in a producer-initiated
+  run of its own, `run-<seq>`, that holds both and closes as the thread's state closes a run (the web drops a run that holds
+  nothing else).
+- **A viewer that connects later** reads the *whole replay* with the set as it was at each event: a snapshot before the first
+  attach says no `tools`. The preamble that re-opens an open run at a cursor says the set at the cursor.
+- **The set belongs to the conversation**: a new job keeps it (`job_started` does not clear it), and a fork has the servers its
+  copied log left attached, minus those its agent may not use, which the fork's own log detaches (its first events).
+- **Ids only.** The card, the snapshot and the events hold no name, no URL and no credential: the screen knows each server's name
+  and icon from `GET /api/tool-servers`. What the agent is told is [`attached`](thread-tools-v1.md#the-attached-member) of its
+  message.
+- **An agent whose card does not list `thread-tools/v1`** is told nothing; the set is still the thread's, and the screen says
+  before the person sends that this agent cannot use it (the capabilities document, `custom`).
+
+`activityType: "vymalo.tools"` has `content: {attached?: [id], detached?: [id], at}`: one of the two members, the ids that came or
+went (the schema is in [Activity contents](#activity-contents)). Goldens: `tools-attach.events.json` (a thread created with one
+server, then a `PUT` that adds another and drops the first), `agui/tools-attach.agui.json` (what a live viewer reads for it).
+
 ## Forks
 
 *Built 2026-10-01 ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)).* A fork is a new thread whose log is a
@@ -838,7 +885,7 @@ was streamed and nothing was written.
 
 | Status | When |
 |---|---|
-| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`) |
+| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024) |
 | 401 | No edge identity |
 | 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); the run continues a thread the caller may read and not change (`code: read_only`); their roles grant nothing (`code: no_access`) |
 | 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
@@ -846,7 +893,7 @@ was streamed and nothing was written.
 | 409 | The thread targets another agent; a run is open on it; the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
-| 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel |
+| 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists (503, "the agent registry is unreachable", `Retry-After`: never a 404 while the registry is down, ADR 0022) |
 
 ## Connect binding
@@ -1346,6 +1393,18 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "at": { "$ref": "#/$defs/at" }
       }
     },
+    "vymalo.tools": {
+      "type": "object",
+      "required": ["at"],
+      "minProperties": 2,
+      "additionalProperties": false,
+      "description": "MCP servers were attached to the thread, or detached from it (ADR 0024): the activity's id is evt-<seq> of the tools_attached or tools_detached event. One of attached and detached; ids only",
+      "properties": {
+        "attached": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,30}$" }, "description": "The ids that were attached by this event, sorted" },
+        "detached": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,30}$" }, "description": "The ids that were detached by this event, sorted" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
     "at": { "type": "string", "format": "date-time", "description": "When the activity's log event happened (Event.at)" }
   }
 }
@@ -1364,7 +1423,8 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 | An agent message's `TEXT_MESSAGE_START` | `metadata["vymalo.purpose"]` | `"working"` or `"answer"` (ADR 0031): what the words are for, when the log says. No member when it does not |
 | The same `START`, beside `"answer"` | `metadata["vymalo.via"]` | `"turn_output"`: how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet |
 | Live text: `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | `metadata["vymalo.live"]` | `START`: `{}`. `CONTENT`: `{offset}` (UTF-16 code units said before the delta), and on the log's final message `{offset, final: true}`. `END`: `{final: true}` on the log's final message, with `purpose: "working"` when the log marked that message working text (ADR 0031); `{abandoned: true}` for a live message that was given up. Absent on every frame the projection of the log makes by itself |
-| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, target: {agentId, release?}, jobNumber?, forkedFrom?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
+| `STATE_SNAPSHOT.snapshot` | `thread` | `{state: "queued" \| "working" \| "verifying" \| "blocked" \| "done" \| "failed" \| "cancelled", title, description?, target: {agentId, release?}, tools?, jobNumber?, forkedFrom?, uiCatalog?}`. `jobNumber` is present from job 2 on (ADR 0020); a thread on its first job has none, as before |
+| `STATE_SNAPSHOT.snapshot` | `thread.tools` | Only when MCP servers are attached to the thread (ADR 0024): the ids, sorted (at most 16); the same array is `Thread.tools` of the resource API. A thread with none has no member, as before. [Attaching MCP servers](#attaching-mcp-servers) |
 | `STATE_SNAPSHOT.snapshot` | `thread.forkedFrom` | Only on a thread made by a fork, from its `thread_forked` on (ADR 0029): `{threadId, seq, kind}`, the thread it was cut from, the last event copied and `fork` or `edit`; the same object is `Thread.forkedFrom` of the resource API. A thread that was not forked has no member, as before. [Forks](#forks) |
 | `STATE_SNAPSHOT.snapshot` | `thread.uiCatalog` | Only when the thread has recorded a UI catalog (ADR 0023): `{catalogId, version, digest}` of the current one, the highest version recorded. A screen compares it with its own to decide whether to send its catalog with the next run; a thread without one has no member, as before |
 | `STATE_SNAPSHOT.snapshot` | `job` | Only when the thread's gate requires something: `{number?, attempt, maxAttempts, gate: ["agent_checks", …], sha?}`. `number` is the job of the thread (present from job 2); `attempt` is the one the agent is on in **this job**, from 1; `gate` the sources that must pass; `sha` the commit the agent pushed in this attempt. The same object is `Thread.job` of the resource API |

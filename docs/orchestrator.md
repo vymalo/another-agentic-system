@@ -710,6 +710,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `Described { job, description }` / `DescriptionDeclined { job }` (the description worker's inputs, [below](#thread-descriptions-adr-0035)) | `Described`: if `job` is the ask in flight and no person wrote the description, append `thread_described { description, source: model }` and `SetDescription`, ledger `Model`; else nothing. Both mark the ask answered | Same | Same: valid in every state |
 | `SetDescription { user, description }` (a person writes or clears the description; the caller has checked it, `check_description`) | State kept; append `thread_described { description, source: user }` and `SetDescription(description)`; the ledger's `description.source` becomes `user` (an empty description clears it, and is final too) | Same | Same: valid in every state |
 | *(after any of the rows above)* a transition that **gets** the thread to `done` or `blocked`, when the description's ledger may ask (the person has not written it, and this job has not asked) | `RequestDescription { job }` is appended last; the ledger records that `job` asked | | |
+| `SetTools { user, servers }` (a person sets the MCP servers attached to the thread, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md); the caller has checked the ids against the deployment's list, the core knows ids only) | State kept; the difference with `job.tools` is appended, `tools_attached { servers }` for the ids new to the set and `tools_detached { servers }` for those gone, each sorted and only when not empty; `job.tools` becomes the sorted, unique set. The same set appends nothing | Same (a blocked thread keeps its hold) | Same: the set belongs to the conversation, so it is valid in every state, and a new job keeps it (`Job::next`) |
 | `Rename { user, title }` (a person renames the thread; the caller has checked the title, `check_title`) | State kept; append `thread_titled { title, source: user }` and `SetTitle(title)`; the ledger's `title.source` becomes `user` | Same (a blocked thread keeps its hold) | Same: a title labels the conversation, not a job. Valid in every state |
 
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
@@ -1342,7 +1343,7 @@ pub enum Command {
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
@@ -1635,7 +1636,7 @@ erDiagram
   events {
     uuid thread_id PK
     bigint seq PK
-    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked thread_described"
+    text kind "user_message agent_message agent_status artifact thread_state error ui_surface ui_action ci_result check_result rework job_started ui_catalog agent_step thread_titled thread_forked thread_described tools_attached tools_detached"
     jsonb actor
     jsonb data
     text idempotency_key "unique per thread when set"
@@ -1696,6 +1697,7 @@ so that parallel slices do not collide:
   first message's words), so no column is added.
 - **`0009` (title requests, built):** `outbox.kind` gains `title` ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); the payload is `{"title": {"ask": n}}` inside the existing JSON column. Roll out the build that understands it before one writes a row (an older build dead-letters a row it cannot read).
 - **`0010` (forks, built):** `threads` gains `forked_from uuid REFERENCES threads (id) ON DELETE SET NULL`, `forked_at bigint` and `fork_kind text` (`fork` or `edit`), all `NULL` for a thread that was not forked and checked together (`threads_fork_shape`, added `NOT VALID` and validated, so the table lock is brief), with an index on `forked_from`; `events.kind` gains `thread_forked` ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)). A fork's log is its own copy of the parent's events, so deleting the parent leaves it whole (`forked_from` becomes `NULL`, `forked_at` and `fork_kind` stay).
+- **`0012` (tools, built, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)):** `events.kind` gains `tools_attached` and `tools_detached` (data `{"servers": [ids]}`, ids only: never a URL or a credential), the constraint rebuilt `NOT VALID` and then validated. The set of servers attached to a thread lives inside `threads.job` (`tools`, sorted ids, left out when empty, carried from job to job by `Job::next`), like the title's and the description's ledgers, so no column is added; and no outbox kind, because attaching writes no delegation (the next message carries the set to the agent). Roll out the build that understands the kinds first.
 - **`0011` (thread descriptions, built, [ADR 0035](decisions/0035-utility-model-tasks.md)):** `threads` gains `description text` (`NULL` when the thread has none; at most 500 characters, never empty: `threads_description_len`, added `NOT VALID` and validated), written in the commit of the `thread_described` event that says so (`Commit.description`: `None` leaves it, `Some("")` clears it, which stores `NULL`); `events.kind` gains `thread_described`; `outbox.kind` gains `description` (payload `{"description": {"job": n}}`, claimable whatever the thread's older delegations). Whose description the thread has lives inside `threads.job` (`description`; a ledger without it has none). Roll out the build that understands it before one writes a row (an older build dead-letters a row it cannot read).
 
 ```mermaid
@@ -1709,6 +1711,7 @@ erDiagram
     bigint forked_at "0010: the last event copied"
     text fork_kind "0010: fork or edit"
   }
+  %% 0012 adds no column: job.tools holds the attached servers
   outbox {
     text kind "0003: + verify"
     text task_id "0003"

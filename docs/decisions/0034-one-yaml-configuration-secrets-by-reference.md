@@ -13,6 +13,12 @@
   two S3 credentials are secrets by reference, so the contract has ten (the eight below and these two). `artifacts.store`
   is the key that selects an implementation among the compiled-in ones: a store whose Cargo feature (`artifacts-fs`,
   `artifacts-s3`) is not in the build is exit 78 naming the feature.
+  Status note (2026-10-02, slice 8, [ADR 0024](0024-mcp-tools-attached-per-conversation.md)): the `toolServers` section is built
+  (the servers a person may attach to a conversation). Its `bearer` and its `headers` (a header name to a reference) are two
+  more secrets by reference, so the contract has twelve (the ten above and these two); the section has no variable, so it
+  belongs to the file alone. Its rules (a unique id, a URL with no credential in it, an icon that is a small `data:` image,
+  header names the client may set, an `agents` list that names agents of the agents file) are in `orch-config` and the binary,
+  and every error names the key and never a value.
   Status note (2026-10-02, PR S18): the legacy variables are now the endpoint `default` **beside** the file's other
   endpoints (S9 refused a file that named another one, because the build took one), and `ORCH_TITLE_MODEL` the title
   task on it. A prompt file (`tasks.<task>.system: { file }`) is read in the rules pass through the resolver, like a
