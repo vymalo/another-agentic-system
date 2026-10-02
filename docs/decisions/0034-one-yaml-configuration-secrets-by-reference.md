@@ -4,8 +4,13 @@
   section 3.6) and the owner may revisit them. Amends the environment-only practice of the composition root
   ([ADR 0009](0009-swappable-implementations-at-build-time.md), status note there). **Built (2026-10-02, PR S9):** the
   loader and every key marked *now* in [`docs/api/config.md`](../api/config.md); the keys marked *reserved* come with
-  S10/S11 (ADR 0032, artifacts), S14/S15 (ADR 0033, authentication and roles), each written with its PR, and S18
-  ([ADR 0035](0035-utility-model-tasks.md), utility model tasks).
+  S11 (ADR 0032, `artifacts.maxPerJobBytes` and `fetchHosts`), S14/S15 (ADR 0033, authentication and roles), each written
+  with its PR, and S18 ([ADR 0035](0035-utility-model-tasks.md), utility model tasks).
+  Status note (2026-10-02, PR S10): the `artifacts` section is built
+  ([ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)): `store`, `fs.root`, `s3.*` and `maxFileBytes`, and its
+  two S3 credentials are secrets by reference, so the contract has ten (the eight below and these two). `artifacts.store`
+  is the key that selects an implementation among the compiled-in ones: a store whose Cargo feature (`artifacts-fs`,
+  `artifacts-s3`) is not in the build is exit 78 naming the feature.
   Status note (2026-10-02, PR S9): the three passes each list all of their errors, and a pass runs only when the one
   before it found none (a rule cannot be checked on a value that is not there), so one run lists the shape errors, or,
   when there are none, the rule errors; `docs/api/config.md` says so. A role that serves no routes (`worker`) is not

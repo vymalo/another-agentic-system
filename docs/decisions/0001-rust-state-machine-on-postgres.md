@@ -8,6 +8,11 @@
   "transactional inbox" and timers of this decision concrete (planned, not built): the job ledger is
   a `threads.job` column committed with the state, the inbox carries webhooks and timers only, and MCP
   bypasses it ([ADR 0019](0019-mcp-server-over-streamable-http.md)). The decision stands.
+  Status note (2026-10-02): [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md) amends the wording of "only the
+  job ledger and the event log persist": the files agents hand over are durable outside Postgres, in an artifact store
+  behind a port (a directory or an S3 bucket), by the hash of their content, like git in
+  [ADR 0003](0003-git-as-durable-state-ephemeral-workers.md); the log keeps only the reference and stays the only state the
+  orchestrator reasons on. Processes stay stateless. The decision stands.
 
 ## Context
 
