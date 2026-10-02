@@ -62,7 +62,7 @@
     },
     "Choices": {
       "type": "object",
-      "description": "Ask the person up to 8 questions at once, each with 2 to 8 options (radio buttons, checkboxes when multiple). One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?}]} in question order.",
+      "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). Ask the person up to 8 questions at once, each with 2 to 8 options (radio buttons, checkboxes when multiple). One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?}]} in question order.",
       "properties": {
         "id": {
           "type": "string",
@@ -257,6 +257,38 @@
         }
       },
       "required": ["id", "component", "code"],
+      "additionalProperties": false
+    },
+    "Image": {
+      "type": "object",
+      "description": "A picture from a file of this thread, by its sha256 (the artifact of a file an agent shared); never a URL. alt is required.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "component": {
+          "const": "Image"
+        },
+        "weight": {
+          "type": "number"
+        },
+        "artifact": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "alt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "caption": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "required": ["id", "component", "artifact", "alt"],
       "additionalProperties": false
     }
   }

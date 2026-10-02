@@ -3,6 +3,7 @@ import {
   applyA2uiOperations,
   convertSurfaceToUISpec,
 } from "@assistant-ui/react-generative-ui/a2ui";
+import type { KeptFile } from "@/features/chat/lib/files";
 import { firstBadUrl, readCards } from "./cards";
 import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import { type CompiledCatalog, compiledOf } from "./catalog/validate";
@@ -13,6 +14,7 @@ import {
   CHECK_BOX,
   CHOICES,
   FIELD,
+  IMAGE,
   MAX_BYTES,
   MAX_COMPONENTS,
   MAX_DEPTH,
@@ -61,6 +63,7 @@ export type Rule =
   | "surfaces"
   | "catalog"
   | "schema"
+  | "artifact"
   | "components"
   | "vocabulary"
   | "function"
@@ -292,6 +295,11 @@ export type PrepareOptions = {
   catalog?: OwnCatalog;
   /** The version of the catalog the thread has recorded (`STATE_SNAPSHOT.thread.uiCatalog`), if any. */
   threadVersion?: number | undefined;
+  /**
+   * The files the thread holds (ADR 0032): an `Image` may name only one of these, and only an image.
+   * Absent means none: a surface with an `Image` is then refused.
+   */
+  files?: readonly Pick<KeptFile, "sha256" | "preview">[] | undefined;
 };
 
 export function prepareSurface(operations: unknown, options: PrepareOptions = {}): Prepared {
@@ -338,6 +346,25 @@ function checkCards(id: string, c: Rec) {
       "url",
       `component ${clip(id)} (Cards) names, in card ${bad + 1}, a URL that is not an absolute http(s) URL`,
     );
+  }
+  return undefined;
+}
+
+/**
+ * What JSON Schema cannot say about an Image (ADR 0032, catalog v4): its `artifact` must be the
+ * hash of a file this thread holds, and that file must be an image. Never a URL: the schema has no
+ * member for one, and the renderer fetches only the file's own `href`.
+ */
+function checkImage(id: string, c: Rec, files: PrepareOptions["files"]) {
+  const file = files?.find((f) => f.sha256 === c.artifact);
+  if (!file) {
+    return refuse(
+      "artifact",
+      `component ${clip(id)} (Image) names a file that is not one of this thread's files`,
+    );
+  }
+  if (file.preview !== "image") {
+    return refuse("artifact", `component ${clip(id)} (Image) names a file that is not an image`);
   }
   return undefined;
 }
@@ -458,6 +485,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       }
       if (type === "Choices") checkChoices(id, c);
       else if (type === "Cards") checkCards(id, c);
+      else if (type === "Image") checkImage(id, c, options.files);
     } else if (typeof type !== "string" || !(VOCABULARY as readonly string[]).includes(type)) {
       return refuse(
         catalog.has(String(type)) ? "catalog" : "vocabulary",
@@ -526,6 +554,8 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       next = { ...next, component: CARDS };
     } else if (mode === "own" && c.component === "Mermaid") {
       next = { ...next, component: MERMAID };
+    } else if (mode === "own" && c.component === "Image") {
+      next = { ...next, component: IMAGE };
     }
     if (next !== c) lowered.set(id, next);
   }
