@@ -1,30 +1,54 @@
-# The `edge` service of compose.yaml: a local stand-in for oauth2-proxy.
+# The `edge` service of compose.yaml: one origin in front of the stack, and a real oauth2-proxy beside it (ADR 0033).
 #
-# It puts the chat UI, the resource API, the AG-UI route and the MCP server on ONE origin (as the production ingress does) and
-# injects a fixed identity. It performs no authentication at all: every request is "dev@example.com".
-# The exception is /webhooks/*: machine routes, which get no identity at all.
-# Local development only. Never expose it beyond 127.0.0.1 and never use it in production, where
-# oauth2-proxy authenticates the user and strips client-supplied copies of X-Auth-Request-Email.
+# It puts the chat UI, the resource API, the AG-UI route and the MCP server on ONE origin (as the production ingress does). The web,
+# the API and the AG-UI routes are asked of oauth2-proxy first (`forward_auth`, auth_request mode): `GET /oauth2/auth` answers 202
+# for a request that has a session cookie (a person signed in through /oauth2/start) or a bearer token it can verify (a script's),
+# and 401 otherwise. The 202 carries `Authorization: Bearer <JWT>` (`--set-authorization-header`), which `copy_headers` puts on the
+# request that goes on to the orchestrator, ALWAYS replacing what the client sent (Caddy deletes a listed header first), and the
+# orchestrator validates that token again against the issuer's keys (`auth.mode: jwt`). No identity header is injected any more.
+#   * the API and the AG-UI routes: a 401 from oauth2-proxy is the client's answer (a program must not be redirected);
+#   * the web: a 401 sends the browser to /oauth2/start, which signs it in at the mock issuer (auto-approved) and back;
+#   * /oauth2/*: oauth2-proxy itself (start, callback, sign_out, auth);
+#   * /mcp and /webhooks/*: machine routes, no oauth2-proxy: the orchestrator authenticates them (a bearer token of dev/mcp-tokens.yaml,
+#     a signature);
+#   * /healthz and /readyz: probes, no authentication.
+# Local development only. Never expose it beyond 127.0.0.1 (the issuer approves anybody).
 {
 	admin off
 	auto_https off
 }
 
 :8080 {
-	# `header_up <name> <value>` REPLACES any value the client sent, like oauth2-proxy does.
+	# oauth2-proxy's own routes: the sign-in (`/oauth2/start`, `/oauth2/callback`), `/oauth2/sign_out` and `/oauth2/auth`.
+	handle /oauth2/* {
+		reverse_proxy oauth2-proxy:4180
+	}
+
+	# The resource API. `header_up -X-Auth-Request-Email` drops a client's copy of the old identity header: the orchestrator
+	# (`auth.mode: jwt`) reads no header, and no client value should reach it. Server-sent events must not be buffered.
 	handle /api/* {
+		# The client's Authorization header is dropped and replaced by the one oauth2-proxy answers with, or the request is refused here.
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
 		reverse_proxy orchestrator:8080 {
-			header_up X-Auth-Request-Email dev@example.com
-			# Server-sent events must not be buffered.
+			header_up -X-Auth-Request-Email
 			flush_interval -1
 		}
 	}
 
 	# The AG-UI run route: a streaming POST, so no buffering of the response either. The REQUEST is
-	# buffered (`request_buffers`, here and on /mcp and /webhooks/*): see the note at the end of this file.
+	# buffered (`request_buffers`, here and on /mcp and /webhooks/*): see the note at the end of this file. `forward_auth` sends no
+	# body to oauth2-proxy (its request is a GET), so the body is still there for this proxy.
 	handle /agui/* {
+		# The client's Authorization header is dropped and replaced by the one oauth2-proxy answers with, or the request is refused here.
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
 		reverse_proxy orchestrator:8080 {
-			header_up X-Auth-Request-Email dev@example.com
+			header_up -X-Auth-Request-Email
 			flush_interval -1
 			request_buffers 8MiB
 		}
@@ -53,7 +77,7 @@
 		}
 	}
 
-	# Probes: /readyz is what `docker compose up --wait` waits on (it needs the database).
+	# Probes: /readyz is what `docker compose up --wait` waits on (it needs the database, and the issuer's keys).
 	handle /healthz {
 		reverse_proxy orchestrator:8080
 	}
@@ -61,7 +85,17 @@
 		reverse_proxy orchestrator:8080
 	}
 
+	# The web UI. A browser with no session is sent to sign in (and comes back to the page it asked for); the page's own
+	# requests to /api and /agui then carry the cookie. `/oauth2/start` goes straight to the issuer (`--skip-provider-button`).
 	handle {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+			@unauthenticated status 401
+			handle_response @unauthenticated {
+				redir * /oauth2/start?rd={http.request.uri.path}
+			}
+		}
 		reverse_proxy web:3000
 	}
 }

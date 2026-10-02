@@ -2,8 +2,11 @@
 #
 # `tokenEnv` names the environment variable that holds the token (MCP_TOKEN_DEV=dev-mcp-token-0123456789abcdef0123456789 in
 # compose.yaml, a dummy); the token itself is never in this file. `user` is the e-mail that owns the
-# jobs the token starts. It is the same address the `edge` injects for the chat (dev@example.com), so a
-# job started from an MCP client is in the chat's thread list. A user may have more than one token
-# (a rotation); a token belongs to one user.
+# jobs the token starts. It is the user `dev@example.com` of the mock issuer (dev/mock-oidc/users.json), so a
+# job started from an MCP client is in that person's thread list when they sign in to the chat. A user may have more than one token
+# (a rotation); a token belongs to one user. `role` (ADR 0033, S15) is one of `auth.roles` of dev/orchestrator.yaml: what the token
+# may do (a token has no roles claim). Left out, the token has `auth.defaultRole`, which is `user` too; it is written out here.
+# An MCP token is static and stays so: the tokens of the issuer are for the chat and the API, not for /mcp.
 - user: dev@example.com
   tokenEnv: MCP_TOKEN_DEV
+  role: user

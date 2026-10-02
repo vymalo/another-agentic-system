@@ -10,7 +10,12 @@
 #
 # Needs Docker Compose v2. compose.live.yaml needs v2.24.4 or newer (it uses the `!override` tag). The `app` profile
 # pulls the coder image (about 2.9 GB, linux/amd64 only, run under emulation on an ARM machine) and builds
-# the orchestrator, the web UI, the git server, `mock-ci` and `mock-mcp-search`; the first build takes several minutes.
+# the orchestrator, the web UI, the git server, `mock-ci`, `mock-mcp-search` and `mock-oidc`; the first build takes several minutes.
+#
+# Sign-in is real, and local (ADR 0033): the `edge` (Caddy) asks a real oauth2-proxy about every request to the web, the API and the
+# AG-UI routes, the `mock-oidc` issuer approves everyone (the user of `login_hint`, else the default, `dev@example.com`), and the
+# orchestrator is an OAuth2 resource server (`auth.mode: jwt`, dev/orchestrator.yaml) that validates the token oauth2-proxy forwards.
+# A script gets a token from the mock (dev/auth-header.sh). dev/README.md, "Sign in: a mock issuer and oauth2-proxy".
 #
 # The `app` profile is offline and deterministic: the model, GitHub and CI are scripts. `dev/coder-e2e.sh`
 # turns one chat message into a pull request, and the job ends `done` when the coder's own checks passed on
@@ -85,8 +90,8 @@ x-orchestrator-env: &orchestrator-env
   # The HMAC key of the thread tools' tokens: EVERY role gets it (a worker mints the grant it sends with a message, the control
   # plane serves the endpoint). A real deployment sets its own key (.env.example, `openssl rand -hex 32`).
   THREAD_TOOLS_SECRET: ${THREAD_TOOLS_SECRET:-dev-thread-tools-secret-0123456789abcdef0123456789abcdef} # local development only
-  # No ORCH_SURFACES and no AUTH_DEV_USER: the surfaces are in the file, and the identity comes from the `edge` proxy, as it does
-  # from oauth2-proxy. The legacy chat API surface was removed on 2026-09-30: naming `chat-api` stops the orchestrator at startup
+  # No ORCH_SURFACES and no AUTH_DEV_USER: the surfaces are in the file, and the identity is the token oauth2-proxy forwards (or a
+  # script's own), validated against the keys of `mock-oidc` (`auth.mode: jwt` of dev/orchestrator.yaml). The legacy chat API surface was removed on 2026-09-30: naming `chat-api` stops the orchestrator at startup
   # (see orchestrator/bin/orchestrator/README.md).
 
 # The adam-rs image of every agent that is adam: the coder, and the agents that are only a folder (adam-agent).
@@ -256,8 +261,11 @@ services:
       retries: 12
       start_period: 10s
 
-  # Stands in for oauth2-proxy: one origin, /api/* to the orchestrator, everything else to the web UI,
-  # and a fixed X-Auth-Request-Email. It authenticates nobody: never expose it, never use it in production.
+  # The edge: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered), oauth2-proxy's own
+  # routes (`/oauth2/*`) and the MCP server (`/mcp`, no oauth2-proxy: a bearer token of its own), in front of a REAL oauth2-proxy
+  # (below): Caddy's `forward_auth` asks it about each request to the web, the API and the AG-UI routes, and passes on the
+  # `Authorization: Bearer <JWT>` it answers with (dev/Caddyfile). It authenticates nobody itself, and it is local development
+  # only: never expose it beyond 127.0.0.1.
   edge:
     profiles: [app]
     image: caddy:2.11.4-alpine # verified 2026-09-29 (Docker Hub registry API)
@@ -270,8 +278,82 @@ services:
         condition: service_started
       web:
         condition: service_healthy
+      oauth2-proxy:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  # A mock OpenID Connect issuer (dev/mock-oidc, dev/README.md "Sign in: a mock issuer and oauth2-proxy"): discovery, `jwks`,
+  # `authorize` (approves the user of `login_hint`, else of the `/login-as` cookie, else the default one), `token` (the code, and
+  # `client_credentials` with a `user` for the scripts), `userinfo`; the users and their roles are dev/mock-oidc/users.json.
+  # It is the `iss` of every token (ISSUER: the address the containers reach it at, which the orchestrator and oauth2-proxy are
+  # configured with) and a browser reaches its `authorize` on the published port (PUBLIC_URL, `--login-url` below). Tokens
+  # last an hour: an AG-UI stream is ended at the token's `exp` plus 60 s and after an hour at most, so an hour is the longest stream.
+  mock-oidc:
+    profiles: [app]
+    build:
+      context: ./dev/mock-oidc
+    image: another-agentic-system/mock-oidc:dev
+    environment:
+      ISSUER: http://mock-oidc:8080
+      PUBLIC_URL: http://127.0.0.1:${MOCK_OIDC_PORT:-8099}
+      CLIENT_ID: dev-chat # oauth2-proxy's client id, and the `aud` of the tokens: `auth.jwt.audiences` of dev/orchestrator.yaml
+      CLIENT_SECRET: dev-client-secret # local development only
+      TOKEN_TTL_SECS: "3600"
+    ports:
+      - "127.0.0.1:${MOCK_OIDC_PORT:-8099}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 2s
+
+  # The real oauth2-proxy (ADR 0033), in auth_request mode behind the edge: `/oauth2/auth` answers 202 for a request with a
+  # session cookie or a bearer token it can verify and 401 otherwise, and `--set-authorization-header` makes the 202 carry
+  # `Authorization: Bearer <ID token>`, which Caddy's `forward_auth` copies onto the request (`copy_headers Authorization`) for the
+  # orchestrator to validate again. A person is sent to `/oauth2/start` (`--skip-provider-button`), to the mock's `authorize`
+  # (`--login-url`, the published port: a browser's address) and back to `/oauth2/callback`; the code is redeemed over the compose
+  # network (`--redeem-url`). Discovery is skipped (`--skip-oidc-discovery`) because the issuer has two addresses, one for the
+  # containers (the `iss` of the tokens) and one for the browser. A script's own token is skipped through when it verifies
+  # (`--skip-jwt-bearer-tokens`, the mock's issuer and client id in `--extra-jwt-issuers`; `issuer=audience`).
+  # The cookie secret is a dummy of 32 bytes; the cookie is not `Secure` because the stack is plain http on 127.0.0.1.
+  # v7.15.5, the newest release at 2026-10-02, the `-alpine` variant for a shell and `wget` (the distroless image has neither, so no
+  # healthcheck): pinned by tag AND digest, which is the image index (linux/amd64, arm64 and others), verified 2026-10-02 against
+  # quay.io (registry API: Docker-Content-Digest of the tag, entrypoint /bin/oauth2-proxy).
+  oauth2-proxy:
+    profiles: [app]
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine@sha256:8e4bec4f9fe4de10de63070209204075e4407503170aa19893d6e8d99f083d1b
+    command:
+      - --http-address=0.0.0.0:4180
+      - --upstream=static://202
+      - --provider=oidc
+      - --skip-oidc-discovery=true
+      - --oidc-issuer-url=http://mock-oidc:8080
+      - --oidc-jwks-url=http://mock-oidc:8080/jwks
+      - --redeem-url=http://mock-oidc:8080/token
+      - --login-url=http://127.0.0.1:${MOCK_OIDC_PORT:-8099}/authorize
+      - --client-id=dev-chat
+      - --client-secret=dev-client-secret
+      - --code-challenge-method=S256
+      - --redirect-url=http://127.0.0.1:${EDGE_PORT:-8080}/oauth2/callback
+      - --email-domain=*
+      - --cookie-secret=dev-cookie-secret-0123456789abcd
+      - --cookie-secure=false
+      - --set-authorization-header=true
+      - --skip-jwt-bearer-tokens=true
+      - --extra-jwt-issuers=http://mock-oidc:8080=dev-chat
+      - --skip-provider-button=true
+      - --silence-ping-logging=true
+    depends_on:
+      mock-oidc:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4180/ping"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -581,7 +663,7 @@ services:
   # GitHub cannot reach a laptop, so `--profile smee` forwards its webhooks from smee.io (a public relay,
   # a THIRD PARTY that sees every payload, headers included) to the orchestrator. Start it only with a
   # channel of your own in SMEE_URL (.env, dev/README.md "Going live"); without one the container says so
-  # and exits. It never reaches the `edge`, which injects an identity: `smee-proxy` is a Caddy of its
+  # and exits. It never reaches the `edge`, which fronts the API and the UI with oauth2-proxy: `smee-proxy` is a Caddy of its
   # own that passes `POST /webhooks/github` to the orchestrator, signature-checked there, and nothing else.
 
   smee-proxy:

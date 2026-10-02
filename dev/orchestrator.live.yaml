@@ -16,6 +16,7 @@
 version: 1
 
 server:
+  environment: development # the issuer below is plain http, which `production` refuses
   # The CI webhook that is used live is GitHub's; the generic one has a secret of its own that nothing knows.
   surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]
   publicUrl: http://127.0.0.1:8080 # the edge on EDGE_PORT 8080; another port: set ORCH_PUBLIC_URL in the environment
@@ -51,3 +52,17 @@ webhooks:
     secrets: [{ env: WEBHOOK_GENERIC_SECRETS }] # `.env`: WEBHOOK_GENERIC_SECRETS, else the GitHub secret
   github:
     secrets: [{ env: WEBHOOK_GITHUB_SECRETS }]
+
+# Who is asking (ADR 0033): the same as dev/orchestrator.yaml, which says why. The edge is the same in front of this stack too:
+# oauth2-proxy and the mock issuer `mock-oidc`; only the agents, the model and GitHub are real.
+auth:
+  mode: jwt
+  jwt:
+    issuer: http://mock-oidc:8080
+    audiences: [dev-chat]
+    rolesClaim: roles
+  defaultRole: user
+  roles:
+    user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any, write: own }, agents: ["*"] }
+    chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: [chat] }
