@@ -123,7 +123,8 @@ flowchart LR
 - **The web never talks to the orchestrator server to server.** It serves the UI; the browser calls
   `/api/*` and `/agui/*` on its own origin, and the edge routes those paths to the orchestrator and
   everything else to the web. There are no Next.js API routes, no server-side fetches and no secrets in the web
-  (`web/README.md`). SSE goes browser → edge → orchestrator, unbuffered.
+  (`web/README.md`). Its settings, when it has any, are the public `ui` section of the orchestrator's configuration
+  file, read from `GET /api/config` (planned, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). SSE goes browser → edge → orchestrator, unbuffered.
 - **The edge owns identity.** The orchestrator trusts `X-Auth-Request-Email` and answers 401
   without it (fail closed), so it must only run behind a proxy that strips client-supplied copies.
   Locally, `edge` is Caddy and replaces the header with `dev@example.com`

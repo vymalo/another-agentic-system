@@ -966,6 +966,10 @@ stateDiagram-v2
 
 ### Thread titles (MVP slice 6)
 
+*Planned ([ADR 0035](decisions/0035-utility-model-tasks.md), plan 10 S18): the title becomes one of the utility model
+tasks, with its own endpoint, model and prompt from the configuration file ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)),
+beside a new one, the thread's description (`thread_described`). What follows is what is built.*
+
 **Built** ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md) status note; the contract is `thread_titled`
 and `patchThread` in [`api/chat-api.yaml`](api/chat-api.yaml), the projection is [`agui.md`](api/agui.md#titles)). A thread
 is created with the first words of its first message as its title. Two things change it, and both are one commit of

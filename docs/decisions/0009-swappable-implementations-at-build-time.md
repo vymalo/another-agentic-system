@@ -13,6 +13,11 @@
   Status note (2026-09-30): the interaction surface that selected an implementation by feature,
   `surface-chat-api`, was removed ([ADR 0012](0012-ag-ui-user-facing-protocol.md)); the only such
   feature is now `surface-agui`. The rest of the note stands.
+  Amended (2026-10-02): "configuration picks one of the compiled-in implementations at startup" was environment
+  variables only; [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md) makes it one YAML file read by the
+  composition root, secrets by reference, with the variables over the file for one release. Configuration stays the
+  composition root's input, not a port, and still selects only among compiled-in implementations (no runtime
+  plugins). Not built (plan 10, S9).
 
 ## Context
 
