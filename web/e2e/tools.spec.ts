@@ -76,6 +76,16 @@ const warning = (page: Page) => page.locator('[data-slot="tools-warning"]');
 const send = (page: Page) => page.getByRole("button", { name: "Send" });
 
 async function axeViolations(page: Page) {
+  // axe reads the colours as they are drawn: a menu that is fading in is not at its colours yet
+  // (its muted text measured 4.49:1 inside the fade on a loaded machine)
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
+        .map((a) => a.finished.catch(() => undefined)),
+    ),
+  );
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }
