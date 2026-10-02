@@ -1017,7 +1017,6 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]
         webhook_github: webhook_values(&s.webhook_github, "WEBHOOK_GITHUB_SECRETS"),
-        ..Resolved::default()
     };
     (a, resolved)
 }
