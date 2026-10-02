@@ -636,6 +636,7 @@ async fn the_event_stream_survives_a_missing_wakeup_via_the_safety_poll() {
                 inbox: None,
                 finishes_outbox: None,
                 title: None,
+                description: None,
             },
         )
         .await

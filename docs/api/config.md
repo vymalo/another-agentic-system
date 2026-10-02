@@ -1,6 +1,6 @@
 # The orchestrator's configuration file
 
-> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14).** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; the `models`, `tasks` and `ui` sections by S18).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
 > validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections),
 > [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section) and
@@ -8,7 +8,8 @@
 > The loader builds every key marked **now** (crate [`orch-config`](../../orchestrator/crates/config/README.md), the
 > loader in [`orchestrator/bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-configuration-file));
 > a key marked **reserved** belongs to the PR named beside it and is refused (exit 78, naming that PR and ADR) until it
-> lands. The JSON Schema is [`config.schema.json`](config.schema.json). `GET /api/config` is not served yet (S18).
+> lands. The JSON Schema is [`config.schema.json`](config.schema.json). [`GET /api/config`](#get-apiconfig) serves the
+> `ui` section.
 > The environment variables of
 > [`orchestrator/bin/orchestrator/README.md`](../../orchestrator/bin/orchestrator/README.md#environment) still work in
 > this release, over the file.
@@ -27,6 +28,10 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   or { file: PATH }`. The message never carries a value.
 - **Relative paths** (`agents.file`, `mcp.tokensFile`, a secret's or a prompt's `file`) are relative to the directory
   of the configuration file.
+- **A prompt is read once, at startup.** `tasks.<task>.system` is `{ inline: TEXT }` or `{ file: PATH }`; a file is
+  read through the same door as a secret's (UTF-8), and a change needs a restart. With the space around it cut it is 1
+  to 4096 bytes: empty or longer is exit 78, naming the key and the file, never the text. A prompt is not a secret,
+  and `--print-config` shows it as the reference the file has (`{ file: prompts/title.md }`), never the text.
 - **No value in an error.** A message names the key path, what is wrong and what is allowed, never a value of the
   file, the environment or a secret file.
 - **A key repeated in one mapping is an error**, never "the last one wins".
@@ -51,9 +56,9 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   Each is read with its own parser first (`ORCH_STEPS_RECORD_IO=yes` is `true`, `ORCH_SURFACES` a comma list), and a
   value that does not parse is an error naming the variable. `ORCH_ROLE`, `ORCH_INSTANCE_ID`, `RUST_LOG` and
   `HOSTNAME` are logged at info. A variable that says what the file says, or that the file names as `{ env: NAME }`,
-  overrides nothing. The `ORCH_MODEL_*` variables are the endpoint `default`, `ORCH_TITLE_MODEL` is `tasks.title.model`
-  (with `tasks.title.endpoint: default` when the file has none); a file that names another endpoint beside them is an
-  error naming both. A variable of a group whose first key is not set (a registry timeout with no registry URL, the
+  overrides nothing. The `ORCH_MODEL_*` variables are the endpoint `default` (they add it to the file's other
+  endpoints, or override its keys when the file has one of that name), `ORCH_TITLE_MODEL` is `tasks.title.model`
+  (with `tasks.title.endpoint: default` when the file has none). A variable of a group whose first key is not set (a registry timeout with no registry URL, the
   model key or timeout with no base URL, a webhook age with no secrets) is read, and left out, as it always was.
 - **A process that serves no routes** (`server.role: worker`) is not asked for the secrets of the routes it would not
   mount (`webhooks.*`), so one file serves a control plane and its workers; the secrets every role uses
@@ -84,8 +89,19 @@ models:
     default:
       baseUrl: https://models.example.com/v1
       apiKey: { env: ORCH_MODEL_API_KEY }
+    small:
+      baseUrl: https://small.example.com/v1
+      timeoutSecs: 10
 tasks:
-  title: { endpoint: default, model: small-model }
+  title: { endpoint: small, model: small-model }
+  description:
+    endpoint: default
+    model: small-model
+    system: { inline: "Say in one or two sentences what the person wants and where it stands." }
+    maxTokens: 160
+    recompute: { minNewMessages: 4 }
+ui:
+  showDescriptions: true
 artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
@@ -109,7 +125,7 @@ value does for a check elsewhere); the notes about variables that override the f
 
 ## Every key
 
-**Now** is built by S9 (the `artifacts` keys by S10); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
+**Now** is built (S9; the `artifacts` keys by S10, the `auth` keys by S14, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
 (and flag) of today; during the transition release it still works and wins over the file, with a warning naming the
 variable and the key ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md#migration)). A
 secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` set means
@@ -169,15 +185,19 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | Key | Type, default | Replaces | When |
 |---|---|---|---|
 | `steps.recordToolIo` | boolean, `true` | `ORCH_STEPS_RECORD_IO` (which also takes `1`/`0`, `yes`/`no`, `on`/`off`; the file takes YAML's `true`/`false` only) | now. The bounds (4 KiB, 8 KiB, 2 MiB per job) stay the core's constants ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)); they are not keys |
-| `models.endpoints.<name>.baseUrl` | `http(s)` URL up to `/chat/completions` | `ORCH_MODEL_BASE_URL` (endpoint `default`) | now, **one** endpoint; several: S18 |
+| `models.endpoints.<name>.baseUrl` | `http(s)` URL up to `/chat/completions`; a name is a slug (`a-z`, `0-9`, `-`, 1 to 32 characters) | `ORCH_MODEL_BASE_URL` (endpoint `default`) | now: **several endpoints** |
 | `models.endpoints.<name>.apiKey` | **secret**, none | `ORCH_MODEL_API_KEY` (endpoint `default`) | now |
-| `models.endpoints.<name>.timeoutSecs` | ≥ 1, `20` | `ORCH_MODEL_TIMEOUT_SECS` (endpoint `default`) | now |
-| `tasks.title.endpoint` | an endpoint name (required with `tasks.title`) | — (`default` when `ORCH_TITLE_MODEL` is used) | now |
+| `models.endpoints.<name>.timeoutSecs` | ≥ 1, `20`; the longest one try of a task at this endpoint may take | `ORCH_MODEL_TIMEOUT_SECS` (endpoint `default`) | now |
+| `tasks.title.endpoint` | an endpoint name (required with `tasks.title`) | — (`default` when `ORCH_TITLE_MODEL` is used) | now. A name that is not in `models.endpoints` is exit 78 |
 | `tasks.title.model` | the model's name at the endpoint (required with `tasks.title`) | `ORCH_TITLE_MODEL` | now. **No `tasks.title`, no title model: titles are off**, as with `ORCH_TITLE_MODEL` unset |
-| `tasks.title.system`, `.maxTokens`, `.language` | see [ADR 0035](../decisions/0035-utility-model-tasks.md#per-task-settings) | — | reserved: S18, ADR 0035 |
-| `tasks.description.*` | see ADR 0035 | — | reserved: S18, ADR 0035 |
+| `tasks.title.system` | `{ inline: TEXT }` or `{ file: PATH }`, 1 to 4096 bytes; default: the core's guidance ("Reply with a 3 to 6 word title for the conversation, in plain text.") | — | now. Replaces the **guidance** only: the core always adds the form of the answer, the data clause, the fence and the language line ([ADR 0035](../decisions/0035-utility-model-tasks.md#4-what-the-core-always-adds)) |
+| `tasks.title.maxTokens` | 1 to 256, `32` | — | now |
+| `tasks.title.language` | `conversation` (default) or `english`, `french`, `german`, `spanish`, `portuguese`, `italian`, `chinese`, `japanese`, `korean`, `cyrillic`, `arabic`, `hebrew`, `greek`, `devanagari`, `thai` | — | now. `conversation`: the language of the **person's** messages, found by the core and checked on the answer; a fixed language is named last and the answer is checked against **its** script |
+| `tasks.description.endpoint`, `.model`, `.system`, `.maxTokens`, `.language` | as the title's; `maxTokens` 1 to 1024, `160`; default guidance: "Describe in one or two sentences what the conversation is about now: what the person wants and where it stands." | — | now. **No `tasks.description`, no descriptions**: no row, no model call |
+| `tasks.description.maxChars` | 40 to 500, `300`; the cleaned answer is cut to it at a word | — | now |
+| `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
-| `ui.showDescriptions` | boolean, `true` | — | reserved: S18 (served), S19 (read by the web) |
+| `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it in S19 |
 
 ### `threadTools`, `mcp`, `webhooks`, `auth`, `artifacts`
 
@@ -268,7 +288,7 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 
 ## `GET /api/config`
 
-**Reserved: S18** (served) **and S19** (read by the web). The public subset of the configuration, for the web.
+**Built (PR S18, 2026-10-02); the web reads it in S19.** The public subset of the configuration, for the web.
 
 ```http
 GET /api/config
@@ -283,5 +303,8 @@ GET /api/config
   after the edge has let the browser in, and nothing in it is needed before that.
 - It changes only when the process restarts. The web treats a missing key as its default and ignores a key it does not
   know, so the section grows additively; a key is never renamed or retyped in `version: 1`.
+- It is `getConfig` in [`chat-api.yaml`](chat-api.yaml), served by the resource API of every role that serves routes, and
+  the contract test of the API checks it (200 with exactly `{ "ui": … }`, 401 without an identity). A deployment with no
+  `ui` section serves the defaults.
 </content>
 </invoke>

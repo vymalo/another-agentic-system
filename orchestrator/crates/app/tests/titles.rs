@@ -5,12 +5,13 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use orch_app::{AppConfig, AppError};
+use orch_app::{AppConfig, AppError, TaskSettings};
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, EventBody, EventKind, Input, ThreadState, TitleSource,
-    TitledBy,
+    AgentId, AgentTaskState, AgentUpdate, EventBody, EventKind, Input, TaskKind, ThreadState,
+    TitleSource, TitledBy,
 };
 use orch_ports::memory::ModelStep;
 use orch_ports::{OutboxKind, ThreadStore};
@@ -252,8 +253,11 @@ async fn renames_racing_the_agent_are_all_applied_and_the_log_stays_contiguous()
 fn titling(w: &World) -> std::sync::Arc<TestApp> {
     w.app_with(AppConfig {
         stream_poll: Duration::from_millis(100),
-        title_model: Some("mock-title".to_owned()),
-        title_timeout: Duration::from_millis(300),
+        tasks: BTreeMap::from([(
+            TaskKind::Title,
+            TaskSettings::new(TaskKind::Title, "default", "mock-title")
+                .with_timeout(Duration::from_millis(300)),
+        )]),
         ..AppConfig::default()
     })
 }
@@ -316,6 +320,7 @@ async fn the_agents_first_words_get_the_thread_a_title_from_the_model() {
     // the model was asked once, about the conversation, as data
     let calls = w.model.calls();
     assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].endpoint, "default");
     assert_eq!(calls[0].model, "mock-title");
     assert!(
         calls[0].system.contains("3 to 6 word title"),

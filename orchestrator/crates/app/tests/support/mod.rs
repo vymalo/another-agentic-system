@@ -49,7 +49,8 @@ pub struct World {
     pub wakeup: MemoryWakeup,
     pub agent: ScriptedAgent,
     pub ids: SeqIds,
-    /// The title model: scripted by a test, asked only when `AppConfig::title_model` is set.
+    /// The model of the utility tasks: scripted by a test, asked only for a task that
+    /// `AppConfig::tasks` has, at the endpoint `default` (the only one it holds).
     pub model: ScriptedModel,
 }
 
@@ -60,7 +61,7 @@ impl World {
             wakeup: MemoryWakeup::new(),
             agent: ScriptedAgent::new().with_releases("coder", sample_releases()),
             ids: SeqIds::default(),
-            model: ScriptedModel::default(),
+            model: ScriptedModel::default().with_endpoints(["default"]),
         }
     }
 

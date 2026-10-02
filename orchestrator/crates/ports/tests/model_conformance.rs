@@ -19,6 +19,10 @@ impl ModelFixture for Scripted {
         "sk-scripted-secret"
     }
 
+    fn endpoint(&self) -> &str {
+        "default"
+    }
+
     fn will_answer(&self, text: &str) {
         self.0.then_answer(text);
     }
@@ -49,7 +53,9 @@ impl ModelFixture for Scripted {
 }
 
 async fn make() -> Option<Scripted> {
-    Some(Scripted(ScriptedModel::default()))
+    Some(Scripted(
+        ScriptedModel::default().with_endpoints(["default"]),
+    ))
 }
 
 orch_ports::chat_model_conformance!(make);
@@ -60,6 +66,7 @@ async fn a_scripted_model_says_none_when_it_has_no_script_and_remembers_its_ques
     let model = ScriptedModel::default();
     model.then_answer("A title");
     let ask = |user: &str| ChatRequest {
+        endpoint: "default".into(),
         model: "m".into(),
         system: "s".into(),
         user: user.into(),
@@ -82,6 +89,7 @@ async fn no_model_has_nothing_to_answer() {
     use orch_ports::ChatModel;
     let err = NoModel
         .complete(&ChatRequest {
+            endpoint: "default".into(),
             model: "m".into(),
             system: "s".into(),
             user: "u".into(),

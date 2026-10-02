@@ -17,8 +17,8 @@ use crate::error::store_err;
 /// Column list of `threads`, in the order [`thread_from_row`] reads them by name.
 macro_rules! thread_cols {
     () => {
-        "id, owner, title, agent_id, release, state, job, version, last_seq, created_at, updated_at, \
-         forked_from, forked_at, fork_kind"
+        "id, owner, title, description, agent_id, release, state, job, version, last_seq, \
+         created_at, updated_at, forked_from, forked_at, fork_kind"
     };
 }
 
@@ -108,6 +108,7 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         id: ThreadId(get(row, "id")?),
         owner: UserId::new(&get::<String>(row, "owner")?),
         title: get(row, "title")?,
+        description: get::<Option<String>>(row, "description")?.filter(|d| !d.is_empty()),
         target: AgentTarget {
             agent_id: AgentId::new(get::<String>(row, "agent_id")?),
             release: get(row, "release")?,

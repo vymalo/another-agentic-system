@@ -260,6 +260,7 @@ fn a_fork_is_a_finished_job_whose_number_follows_the_copied_boundaries() {
             copied(&log, cut),
             GatePolicy::default(),
             TitleLedger::default(),
+            DescriptionLedger::default(),
         );
         assert_eq!(snapshot.state, Done, "cut {cut}");
         assert_eq!(snapshot.job.number, number, "cut {cut}");
@@ -268,7 +269,12 @@ fn a_fork_is_a_finished_job_whose_number_follows_the_copied_boundaries() {
     let mut longer = log.clone();
     longer.push(person(10, "again"));
     longer.push(job_started(11, 3));
-    let snapshot = forked_snapshot(&longer, GatePolicy::default(), TitleLedger::default());
+    let snapshot = forked_snapshot(
+        &longer,
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+    );
     assert_eq!(snapshot.job.number, 3);
 }
 
@@ -279,6 +285,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
         copied(&log, 9),
         GatePolicy::default(),
         TitleLedger::default(),
+        DescriptionLedger::default(),
     );
     let (after, commands) = transition(
         &snapshot,
@@ -320,11 +327,21 @@ fn a_gate_is_the_forks_own_and_counts_the_verifications_that_were_copied() {
         job_started(4, 2),
         status(5, AgentStatus::Completed, Some("done again")),
     ];
-    let none = forked_snapshot(&log, GatePolicy::default(), TitleLedger::default());
+    let none = forked_snapshot(
+        &log,
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+    );
     assert_eq!(none.job.verification, 0, "no gate, nothing was verified");
     let mut gate = GatePolicy::default();
     gate.require.insert(CheckSource::AgentChecks);
-    let gated = forked_snapshot(&log, gate.clone(), TitleLedger::default());
+    let gated = forked_snapshot(
+        &log,
+        gate.clone(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+    );
     assert_eq!(gated.job.verification, 2);
     assert_eq!(gated.job.gate, gate);
     assert_eq!(gated.job.attempt, 1);
@@ -335,14 +352,24 @@ fn a_gate_is_the_forks_own_and_counts_the_verifications_that_were_copied() {
 fn a_fork_has_the_parents_title_and_nothing_asks_for_another() {
     // the parent's model title, with nothing in flight
     let model = TitleLedger::of(TitleSource::Model);
-    let snapshot = forked_snapshot(&[], GatePolicy::default(), model);
+    let snapshot = forked_snapshot(
+        &[],
+        GatePolicy::default(),
+        model,
+        DescriptionLedger::default(),
+    );
     assert_eq!(snapshot.job.title.source(), TitleSource::Model);
     assert!(!snapshot.job.title.may_ask());
     // the parent's ask was in flight (asked, not answered): the fork's is not
     let mut asked = TitleLedger::default();
     let ask = asked_once(&mut asked);
     assert_eq!(ask, 1);
-    let snapshot = forked_snapshot(&[], GatePolicy::default(), asked);
+    let snapshot = forked_snapshot(
+        &[],
+        GatePolicy::default(),
+        asked,
+        DescriptionLedger::default(),
+    );
     assert_eq!(snapshot.job.title.asks(), 1);
     assert!(
         snapshot.job.title.may_ask(),
@@ -353,6 +380,7 @@ fn a_fork_has_the_parents_title_and_nothing_asks_for_another() {
         &[],
         GatePolicy::default(),
         TitleLedger::of(TitleSource::User),
+        DescriptionLedger::default(),
     );
     assert_eq!(renamed.job.title.source(), TitleSource::User);
 }
@@ -408,7 +436,12 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
         ev(1, Actor::user(&user()), EventBody::UiCatalog(data.clone())),
         person(2, "hi"),
     ];
-    let snapshot = forked_snapshot(&log, GatePolicy::default(), TitleLedger::default());
+    let snapshot = forked_snapshot(
+        &log,
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+    );
     assert!(snapshot.job.catalog.is_empty());
     // so the first message that carries it sends it in full, and records it again
     let (_, commands) = transition(
@@ -440,6 +473,7 @@ fn data(kind: ForkKind, cut: i64) -> ThreadForkedData {
         },
         kind,
         title: "Fix the redirect loop".into(),
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new("coder"),
             release: None,
@@ -469,6 +503,7 @@ fn a_fork_commits_its_event_and_nothing_else_and_waits_for_a_message() {
         copied(&log, 4),
         GatePolicy::default(),
         TitleLedger::default(),
+        DescriptionLedger::default(),
         None,
     )
     .unwrap();
@@ -489,6 +524,7 @@ fn an_edit_commits_the_event_then_the_message_as_the_next_job() {
         copied(&log, 4),
         GatePolicy::default(),
         TitleLedger::default(),
+        DescriptionLedger::default(),
         Some(Replacement {
             text: "and the docs?".into(),
             message_id: Some("m-edit".into()),
@@ -524,6 +560,7 @@ fn an_edit_of_the_first_message_copies_nothing() {
         &[],
         GatePolicy::default(),
         TitleLedger::default(),
+        DescriptionLedger::default(),
         Some(Replacement {
             text: "start differently".into(),
             message_id: None,

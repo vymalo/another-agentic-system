@@ -38,16 +38,19 @@ mod types;
 
 pub use error::{ConfigError, ErrorKind, render};
 pub use reserved::{RESERVED, Reserved, reserved};
-pub use rules::{DEFAULT_MAX_ATTEMPTS, MIN_SECRET_BYTES, Secrets, Validated};
+pub use rules::{
+    DEFAULT_MAX_ATTEMPTS, MAX_PROMPT_BYTES, MIN_SECRET_BYTES, Prompts, Secrets, Validated,
+};
 pub use secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 pub use shape::{check, schema, schema_text};
 pub use tree::parse_yaml;
 pub use types::{
     Agents, ArtifactStoreKind, Artifacts, ArtifactsFs, ArtifactsS3, Auth, AuthMode, Config,
-    DEFAULT_LISTEN, DEFAULT_MAX_FILE_BYTES, DEFAULT_S3_REGION, Database, Dispatcher, Endpoint,
-    Environment, Gate, GateCi, GateSource, Inbox, Jwt, Log, LogFormat, MAX_FILE_BYTES_LIMIT, Mcp,
-    Models, Registry, Role, SecretRef, Server, Steps, Surface, Tasks, ThreadTools, TitleTask,
-    WebhookGeneric, WebhookGithub, Webhooks,
+    DEFAULT_LISTEN, DEFAULT_MAX_FILE_BYTES, DEFAULT_S3_REGION, Database, DescriptionTask,
+    Dispatcher, Endpoint, Environment, Gate, GateCi, GateSource, Inbox, Jwt, Language, Log,
+    LogFormat, MAX_FILE_BYTES_LIMIT, Mcp, Models, Prompt, Recompute, Registry, Role, SecretRef,
+    Server, Steps, Surface, Tasks, ThreadTools, TitleTask, Ui, WebhookGeneric, WebhookGithub,
+    Webhooks,
 };
 
 /// The version of the file's format this build reads.

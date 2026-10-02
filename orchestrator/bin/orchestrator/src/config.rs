@@ -28,11 +28,11 @@ use adam_host::Role;
 use clap::Parser;
 use orch_app::{
     AgentDirectory, AgentEntry, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer, GateRules,
-    InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, known_sources,
+    InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, PublicConfig, TaskSettings, known_sources,
 };
 use orch_core::{
     AgentId, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
-    DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, UserId,
+    DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, TaskKind, UserId,
 };
 use orch_ports::AgentEndpoint;
 #[cfg(feature = "surface-webhook")]
@@ -1080,10 +1080,13 @@ pub struct Config {
     pub verifier_watch: Duration,
     /// `ORCH_STEPS_RECORD_IO`: whether a step's input and output are recorded (ADR 0030).
     pub steps_record_io: bool,
+    /// `models.endpoints` and `tasks` of the configuration file, or, from the environment alone,
     /// `ORCH_TITLE_MODEL`, `ORCH_MODEL_BASE_URL`, `ORCH_MODEL_API_KEY` and
-    /// `ORCH_MODEL_TIMEOUT_SECS`: the model that writes thread titles; `None` turns titles off.
-    /// Its `Debug` never shows the key.
-    pub model: Option<ModelSettings>,
+    /// `ORCH_MODEL_TIMEOUT_SECS` (the endpoint `default` and the title task): the models the
+    /// orchestrator asks itself. No task turns that task off. Its `Debug` never shows a key.
+    pub models: ModelsSettings,
+    /// `ui` of the configuration file: what `GET /api/config` says to the web.
+    pub public: PublicConfig,
     /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the
     /// inbox worker (timers and reports).
     pub inbox: InboxConfig,
@@ -1120,7 +1123,8 @@ impl fmt::Debug for Config {
             .field("outbox_lease", &self.outbox_lease)
             .field("verifier_watch", &self.verifier_watch)
             .field("steps_record_io", &self.steps_record_io)
-            .field("model", &self.model)
+            .field("models", &self.models)
+            .field("public", &self.public)
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace)
@@ -1387,12 +1391,16 @@ impl Config {
             1,
         )?;
         let steps_record_io = flag(clean(args.steps_record_io), "ORCH_STEPS_RECORD_IO", true)?;
-        let model = model_settings(
+        // The variables are read (and checked) whichever way the models are given, as they always
+        // were; the file's own, when there is one, replace what they make.
+        let from_variables = model_settings(
             clean(args.title_model),
             clean(args.model_base_url),
             clean(args.model_api_key),
             clean(args.model_timeout_secs),
         )?;
+        let models = resolved.models.unwrap_or(from_variables);
+        let public = resolved.public.unwrap_or_default();
         let inbox = InboxConfig {
             lease: Duration::from_secs(number(
                 clean(args.inbox_lease_secs),
@@ -1461,7 +1469,8 @@ impl Config {
             outbox_lease: Duration::from_secs(outbox_lease_secs),
             verifier_watch: Duration::from_secs(verifier_watch_secs),
             steps_record_io,
-            model,
+            models,
+            public,
             inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
@@ -1499,33 +1508,48 @@ impl Config {
             target_gates: self.target_gates.clone(),
             gate_rules: self.gate_rules.clone(),
             record_step_io: self.steps_record_io,
-            title_model: self.model.as_ref().map(|m| m.title_model.clone()),
-            title_timeout: self
-                .model
-                .as_ref()
-                .map_or(defaults.title_timeout, |m| m.timeout),
+            tasks: self.models.tasks.clone(),
+            public: self.public.clone(),
             ..defaults
         }
     }
 }
 
-/// The model that writes thread titles (`ORCH_TITLE_MODEL` and the variables that go with it).
+/// The models the orchestrator asks itself (ADR 0035): the endpoints it can reach, by name, and
+/// the utility tasks that use them. Both are empty when no task is configured, which turns the
+/// tasks off.
+#[derive(Clone, Default)]
+pub struct ModelsSettings {
+    /// `models.endpoints`: name to endpoint.
+    pub endpoints: BTreeMap<String, EndpointSettings>,
+    /// `tasks`: how each task that is on asks its model. Every endpoint it names is in
+    /// `endpoints` (the file's rules check it; the legacy variables make the one `default`).
+    pub tasks: BTreeMap<TaskKind, TaskSettings>,
+}
+
+impl fmt::Debug for ModelsSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelsSettings")
+            .field("endpoints", &self.endpoints)
+            .field("tasks", &self.tasks)
+            .finish()
+    }
+}
+
+/// An OpenAI-compatible endpoint.
 #[derive(Clone)]
-pub struct ModelSettings {
-    /// The name of the model at the endpoint (`ORCH_TITLE_MODEL`).
-    pub title_model: String,
-    /// The endpoint's base URL (`ORCH_MODEL_BASE_URL`), `http` or `https`.
+pub struct EndpointSettings {
+    /// The endpoint's base URL, `http` or `https`, without a trailing slash.
     pub base_url: String,
-    /// The bearer token (`ORCH_MODEL_API_KEY`), when the endpoint wants one.
+    /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
-    /// How long one question may take (`ORCH_MODEL_TIMEOUT_SECS`).
+    /// How long one question may take.
     pub timeout: Duration,
 }
 
-impl fmt::Debug for ModelSettings {
+impl fmt::Debug for EndpointSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ModelSettings")
-            .field("title_model", &self.title_model)
+        f.debug_struct("EndpointSettings")
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
@@ -1533,15 +1557,15 @@ impl fmt::Debug for ModelSettings {
     }
 }
 
-/// The title model's settings: none when `ORCH_TITLE_MODEL` is unset (titles are off, and the
-/// endpoint variables are not read, but a bad timeout is still refused), else the endpoint it is
-/// asked at, which is then required.
+/// The models of the legacy variables: none when `ORCH_TITLE_MODEL` is unset (titles are off, and
+/// the endpoint variables are not read, but a bad timeout is still refused), else the endpoint
+/// named `default` that they make, which is then required, and the title task on it.
 fn model_settings(
     title_model: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
     timeout_secs: Option<String>,
-) -> Result<Option<ModelSettings>, ConfigError> {
+) -> Result<ModelsSettings, ConfigError> {
     let timeout = number(
         timeout_secs,
         "ORCH_MODEL_TIMEOUT_SECS",
@@ -1549,7 +1573,7 @@ fn model_settings(
         1,
     )?;
     let Some(title_model) = title_model else {
-        return Ok(None);
+        return Ok(ModelsSettings::default());
     };
     let base_url = base_url.ok_or(ConfigError::Missing("ORCH_MODEL_BASE_URL"))?;
     let base_url = base_url.trim_end_matches('/').to_owned();
@@ -1564,13 +1588,25 @@ fn model_settings(
                 .to_owned(),
         });
     }
-    Ok(Some(ModelSettings {
-        title_model,
-        base_url,
-        api_key: api_key.map(SecretString::from),
-        timeout: Duration::from_secs(timeout),
-    }))
+    let timeout = Duration::from_secs(timeout);
+    Ok(ModelsSettings {
+        endpoints: BTreeMap::from([(
+            LEGACY_ENDPOINT.to_owned(),
+            EndpointSettings {
+                base_url,
+                api_key: api_key.map(SecretString::from),
+                timeout,
+            },
+        )]),
+        tasks: BTreeMap::from([(
+            TaskKind::Title,
+            TaskSettings::new(TaskKind::Title, LEGACY_ENDPOINT, title_model).with_timeout(timeout),
+        )]),
+    })
 }
+
+/// The endpoint the legacy `ORCH_MODEL_*` variables make, and that `ORCH_TITLE_MODEL` asks.
+const LEGACY_ENDPOINT: &str = "default";
 
 /// The raw values of the registry's environment variables (blank already counted as unset).
 struct RegistryVars {
@@ -2195,6 +2231,10 @@ struct Resolved {
     artifacts: Option<ArtifactSettings>,
     /// `auth.mode` and `auth.jwt`: keys that have no variable, so no string to go through.
     auth: AuthSettings,
+    /// `models.endpoints` and `tasks`, read: they replace what the legacy variables make.
+    models: Option<ModelsSettings>,
+    /// `ui`, for `GET /api/config`.
+    public: Option<PublicConfig>,
     /// `webhooks.generic.secrets`, separated.
     #[cfg(feature = "surface-webhook")]
     webhook_generic: Option<Vec<String>>,
@@ -2655,16 +2695,17 @@ mod tests {
     #[test]
     fn titles_are_off_unless_a_model_is_named() {
         let cfg = load(&base(), AGENTS).unwrap();
-        assert!(cfg.model.is_none());
         let app = cfg.app_config();
-        assert_eq!(app.title_model, None);
+        assert!(app.tasks.is_empty());
+        assert!(cfg.models.tasks.is_empty() && cfg.models.endpoints.is_empty());
+        assert!(app.public.ui.show_descriptions);
         // the endpoint variables alone turn nothing on
         let mut env = base();
         env.extend([
             ("ORCH_MODEL_BASE_URL", "https://api.example.com/v1"),
             ("ORCH_MODEL_API_KEY", "sk-secret"),
         ]);
-        assert!(load(&env, AGENTS).unwrap().model.is_none());
+        assert!(load(&env, AGENTS).unwrap().models.tasks.is_empty());
     }
 
     #[test]
@@ -2679,16 +2720,24 @@ mod tests {
         env.push(("ORCH_MODEL_BASE_URL", "https://api.example.com/v1/"));
         env.push(("ORCH_MODEL_API_KEY", "sk-secret"));
         let cfg = load(&env, AGENTS).unwrap();
-        let model = cfg.model.as_ref().unwrap();
-        assert_eq!(model.title_model, "gpt-4o-mini");
+        // the endpoint `default` and the title task on it
+        let endpoint = &cfg.models.endpoints["default"];
         assert_eq!(
-            model.base_url, "https://api.example.com/v1",
+            endpoint.base_url, "https://api.example.com/v1",
             "no trailing slash"
         );
-        assert_eq!(model.timeout, Duration::from_secs(20));
+        assert_eq!(endpoint.timeout, Duration::from_secs(20));
+        assert_eq!(cfg.models.endpoints.len(), 1);
         let app = cfg.app_config();
-        assert_eq!(app.title_model.as_deref(), Some("gpt-4o-mini"));
-        assert_eq!(app.title_timeout, Duration::from_secs(20));
+        assert_eq!(app.tasks.len(), 1, "descriptions are off");
+        let title = &app.tasks[&TaskKind::Title];
+        assert_eq!(
+            (title.endpoint.as_str(), title.model.as_str()),
+            ("default", "gpt-4o-mini")
+        );
+        assert_eq!(title.timeout, Duration::from_secs(20));
+        assert_eq!(title.max_tokens, 32);
+        assert_eq!(title.guidance, None);
 
         // the key is in no debug text
         assert!(!format!("{cfg:?}").contains("sk-secret"));
@@ -2740,8 +2789,11 @@ mod tests {
             ("ORCH_MODEL_TIMEOUT_SECS", "7"),
         ])
         .unwrap();
-        assert_eq!(cfg.app_config().title_timeout, Duration::from_secs(7));
-        assert!(cfg.model.unwrap().api_key.is_none());
+        assert_eq!(
+            cfg.app_config().tasks[&TaskKind::Title].timeout,
+            Duration::from_secs(7)
+        );
+        assert!(cfg.models.endpoints["default"].api_key.is_none());
     }
 
     /// An environment with a registry URL and no `AGENTS_FILE`.

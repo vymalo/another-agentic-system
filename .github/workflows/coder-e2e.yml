@@ -127,7 +127,7 @@ jobs:
         # catalog is recorded too, and the coder's thread tools, plain http to the orchestrator, are offered to its model), the researcher
         # searches the mock web search and answers with one surface of a Text, three cards and a Mermaid graph (dev/cards-e2e.sh; a screen
         # without Cards gets words only), the orchestrator's own model call (dev/title-e2e.sh: a thread is titled by `mock-title` after the agent's
-        # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), a thread forked through the API
+        # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), the thread's description (dev/description-e2e.sh: when a job ends `mock-description` writes one at its own endpoint, with the guidance of the configuration and the core's form, data clause and language line around it; a person's description or clearing it is final and a fork has it), a thread forked through the API
         # (dev/fork-e2e.sh: the first message of the fork reaches the mock agent with the conversation it continues, read from the mock's request journal),
         # chat -> coder ->
         # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone; the coder's work as a tree of steps with OpenCode a

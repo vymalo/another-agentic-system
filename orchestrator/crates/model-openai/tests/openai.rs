@@ -134,11 +134,15 @@ fn model(base: &str, key: Option<&str>, timeout: Duration) -> OpenAiChat {
     if let Some(key) = key {
         cfg = cfg.with_api_key(SecretString::from(key.to_owned()));
     }
-    OpenAiChat::new(cfg).unwrap()
+    OpenAiChat::new([(ENDPOINT.to_owned(), cfg)]).unwrap()
 }
+
+/// The name the one endpoint of most tests has.
+const ENDPOINT: &str = "default";
 
 fn question() -> ChatRequest {
     ChatRequest {
+        endpoint: ENDPOINT.into(),
         model: "mock-title".into(),
         system: "Reply with a short title.".into(),
         user: "Title this: how do I fix the build?".into(),
@@ -168,6 +172,10 @@ impl ModelFixture for Fixture {
 
     fn secret(&self) -> &str {
         SECRET
+    }
+
+    fn endpoint(&self) -> &str {
+        ENDPOINT
     }
 
     fn will_answer(&self, text: &str) {
@@ -205,6 +213,7 @@ impl ModelFixture for Fixture {
                 .map(str::to_owned)
         };
         Some(ChatRequest {
+            endpoint: ENDPOINT.to_owned(),
             model: body["model"].as_str()?.to_owned(),
             system: content("system")?,
             user: content("user")?,
@@ -389,15 +398,24 @@ fn a_base_url_that_is_not_http_is_refused_when_the_adapter_is_built() {
         "http://",
         "example.com",
     ] {
-        let err = OpenAiChat::new(OpenAiConfig::new(bad)).unwrap_err();
-        assert!(matches!(err, BuildError::BadBaseUrl), "{bad:?}: {err:?}");
+        let err = OpenAiChat::new([("small".to_owned(), OpenAiConfig::new(bad))]).unwrap_err();
+        assert!(
+            matches!(&err, BuildError::BadBaseUrl { endpoint } if endpoint == "small"),
+            "{bad:?}: {err:?}"
+        );
+        assert!(err.to_string().contains("`small`"), "{err}");
     }
-    let err = OpenAiChat::new(
+    let err = OpenAiChat::new([(
+        "small".to_owned(),
         OpenAiConfig::new("http://example.com/v1")
             .with_api_key(SecretString::from("bad\nkey".to_owned())),
-    )
+    )])
     .unwrap_err();
-    assert!(matches!(err, BuildError::BadApiKey), "{err:?}");
+    assert!(
+        matches!(&err, BuildError::BadApiKey { endpoint } if endpoint == "small"),
+        "{err:?}"
+    );
+    assert!(!err.to_string().contains("bad"), "{err}");
 }
 
 #[test]
@@ -407,8 +425,98 @@ fn nothing_the_adapter_prints_has_the_key_in_it() {
     let shown = format!("{cfg:?}");
     assert!(!shown.contains(SECRET), "{shown}");
     assert!(shown.contains("<redacted>"), "{shown}");
-    let m = OpenAiChat::new(cfg).unwrap();
+    let m = OpenAiChat::new([("default".to_owned(), cfg)]).unwrap();
     let shown = format!("{m:?}");
     assert!(!shown.contains(SECRET), "{shown}");
     assert!(shown.contains("/chat/completions"), "{shown}");
+}
+
+// ---- several endpoints ------------------------------------------------------------------------
+
+#[tokio::test]
+async fn each_request_goes_to_the_endpoint_it_names_with_that_endpoints_key_and_timeout() {
+    let (default_stub, default_base) = serve("/v1", Some("key-default")).await;
+    let (small_stub, small_base) = serve("/small/v1", Some("key-small")).await;
+    *small_stub.mode.lock().unwrap() = Mode::Answer("From the small endpoint".to_owned());
+    let chat = OpenAiChat::new([
+        (
+            "default".to_owned(),
+            OpenAiConfig::new(&default_base)
+                .with_api_key(SecretString::from("key-default".to_owned())),
+        ),
+        (
+            "small".to_owned(),
+            OpenAiConfig::new(&small_base)
+                .with_api_key(SecretString::from("key-small".to_owned()))
+                .with_timeout(Duration::from_millis(300)),
+        ),
+    ])
+    .unwrap();
+    assert_eq!(
+        chat.endpoint_names().collect::<Vec<_>>(),
+        ["default", "small"]
+    );
+
+    let ask = |endpoint: &str, model: &str| ChatRequest {
+        endpoint: endpoint.to_owned(),
+        model: model.to_owned(),
+        ..question()
+    };
+    assert_eq!(
+        chat.complete(&ask("small", "small-model")).await.unwrap(),
+        "From the small endpoint"
+    );
+    assert_eq!(small_stub.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        default_stub.hits.load(Ordering::SeqCst),
+        0,
+        "only the one named is asked"
+    );
+    assert_eq!(
+        small_stub.body.lock().unwrap().as_ref().unwrap()["model"],
+        "small-model"
+    );
+    assert_eq!(
+        small_stub.authorization.lock().unwrap().as_deref(),
+        Some("Bearer key-small")
+    );
+    assert_eq!(
+        chat.complete(&ask("default", "big-model")).await.unwrap(),
+        "A title"
+    );
+    assert_eq!(default_stub.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        default_stub.authorization.lock().unwrap().as_deref(),
+        Some("Bearer key-default"),
+        "the key of one endpoint never goes to another"
+    );
+
+    // each endpoint has its own timeout
+    *small_stub.mode.lock().unwrap() = Mode::Hang;
+    let err = chat.complete(&ask("small", "m")).await.unwrap_err();
+    assert!(matches!(err, ModelError::Unreachable { .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_name_the_model_does_not_hold_is_not_configured_and_nothing_is_sent() {
+    let (stub, base) = serve("/v1", None).await;
+    let chat = OpenAiChat::new([("default".to_owned(), OpenAiConfig::new(&base))]).unwrap();
+    for name in ["small", "", "Default", "default "] {
+        let err = chat
+            .complete(&ChatRequest {
+                endpoint: name.to_owned(),
+                ..question()
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ModelError::NotConfigured),
+            "{name:?}: {err:?}"
+        );
+    }
+    assert_eq!(stub.hits.load(Ordering::SeqCst), 0);
+    // a model that holds none is not configured for any name
+    let none = OpenAiChat::new(std::iter::empty()).unwrap();
+    let err = none.complete(&question()).await.unwrap_err();
+    assert!(matches!(err, ModelError::NotConfigured), "{err:?}");
 }

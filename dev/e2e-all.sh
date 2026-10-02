@@ -20,6 +20,11 @@
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
+#   description       a finished job gets the thread a description from its own       description-e2e.sh
+#                     model at its own endpoint (guidance from the configuration, the
+#                     core's form, data clause and language line around it); NONE or a
+#                     failing model leaves none; a person's description (or clearing it)
+#                     is final and a fork has it; GET /api/config
 #   fork              a finished thread is forked through the API; the first message  fork-e2e.sh
 #                     of the fork reaches the agent with the conversation it continues
 #                     in front of it (read from the mock agent's request journal),
@@ -66,7 +71,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards title fork registry coder coder-no-opencode workspace verify verifier mcp ci folder"
+all="greeting agents choices cards title description fork registry coder coder-no-opencode workspace verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -171,6 +176,7 @@ for s in "$@"; do
     choices) run choices sh "$here/choices-e2e.sh" ;;
     cards) run cards sh "$here/cards-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
+    description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;

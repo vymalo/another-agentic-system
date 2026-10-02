@@ -1,0 +1,128 @@
+{
+  "mappings": [
+    {
+      "name": "description: the conversation asks for a failing model, so the thread keeps the description it has (none)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-description"
+            }
+          },
+          {
+            "contains": "[mock:description-error]"
+          }
+        ]
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "error": {
+            "message": "the mock description model is down on request",
+            "type": "server_error"
+          }
+        }
+      }
+    },
+    {
+      "name": "description: there is nothing to describe yet, so the model says NONE",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-description"
+            }
+          },
+          {
+            "contains": "[mock:undescribed]"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-description-none",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-description",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "NONE"
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 1,
+            "total_tokens": 121
+          }
+        }
+      }
+    },
+    {
+      "name": "description: any other conversation is described as \"Mock thread description.\"",
+      "priority": 2,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-description"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-description",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-description",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Mock thread description."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 6,
+            "total_tokens": 126
+          }
+        }
+      }
+    }
+  ]
+}

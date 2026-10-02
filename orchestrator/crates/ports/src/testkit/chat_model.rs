@@ -30,6 +30,10 @@ pub trait ModelFixture: Send + Sync + 'static {
     /// The credential the adapter was built with. No error and no debug text may show it.
     fn secret(&self) -> &str;
 
+    /// The name of the one endpoint the adapter holds, which is what a request names. The adapter
+    /// holds no other.
+    fn endpoint(&self) -> &str;
+
     /// The next question is answered with `text`.
     fn will_answer(&self, text: &str);
 
@@ -52,9 +56,10 @@ pub trait ModelFixture: Send + Sync + 'static {
     fn last_request(&self) -> Option<ChatRequest>;
 }
 
-/// The question every case asks.
-fn question() -> ChatRequest {
+/// The question every case asks, of the endpoint the fixture holds.
+fn question(f: &impl ModelFixture) -> ChatRequest {
     ChatRequest {
+        endpoint: f.endpoint().to_owned(),
         model: "mock-title".to_owned(),
         system: "Reply with a short title.".to_owned(),
         user: "Title this: how do I fix the build?".to_owned(),
@@ -69,7 +74,7 @@ async fn within<T>(case: impl Future<Output = T>) -> T {
 }
 
 async fn failure<F: ModelFixture>(f: &F) -> ModelError {
-    within(f.model().complete(&question()))
+    within(f.model().complete(&question(f)))
         .await
         .expect_err("the question should fail")
 }
@@ -77,7 +82,7 @@ async fn failure<F: ModelFixture>(f: &F) -> ModelError {
 /// The answer is the model's text, and the endpoint was asked the question as it was put.
 pub async fn the_answer_is_the_models_text<F: ModelFixture>(f: F) {
     f.will_answer("Fix the build");
-    let text = within(f.model().complete(&question()))
+    let text = within(f.model().complete(&question(&f)))
         .await
         .expect("an answer");
     assert_eq!(text.trim(), "Fix the build");
@@ -145,4 +150,30 @@ pub async fn the_credential_is_never_in_an_error<F: ModelFixture>(f: F) {
         let shown = format!("{err} | {err:?} | {}", orch_core::report(&err));
         assert!(!shown.contains(&secret), "arm {arm}: {shown}");
     }
+}
+
+/// A request that names an endpoint the model does not hold is not configured, for good: the
+/// configuration decides which names exist, and asking again never helps. Nothing reaches the
+/// endpoint it does hold.
+pub async fn an_unknown_endpoint_is_not_configured<F: ModelFixture>(f: F) {
+    f.will_answer("Fix the build");
+    let unknown = ChatRequest {
+        endpoint: "no-such-endpoint".to_owned(),
+        ..question(&f)
+    };
+    let err = within(f.model().complete(&unknown))
+        .await
+        .expect_err("an endpoint that is not held");
+    assert!(matches!(err, ModelError::NotConfigured), "{err}");
+    assert_eq!(err.class(), ErrorClass::Unsupported, "{err}");
+    assert!(!err.is_retryable());
+    assert!(
+        f.last_request().is_none(),
+        "the question went to an endpoint it did not name"
+    );
+    // and the endpoint that is held still answers
+    let text = within(f.model().complete(&question(&f)))
+        .await
+        .expect("an answer");
+    assert_eq!(text.trim(), "Fix the build");
 }

@@ -94,6 +94,24 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Registry" }
+  /api/config:
+    get:
+      operationId: getConfig
+      summary: The public subset of the orchestrator's configuration, for the web
+      description: |
+        The `ui` section of the configuration file ([`config.md`](config.md#get-apiconfig),
+        [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md)): every key
+        with its effective value, defaults filled in, and nothing else of the file. Behind the
+        identity layer like every `/api/*` route (401 without an identity). It changes only when
+        the process restarts. A client treats a missing key as its default and ignores a key it
+        does not know, so the section grows additively.
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The public configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicConfig" }
   /api/threads:
     get:
       operationId: listThreads
@@ -131,14 +149,25 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
     patch:
       operationId: patchThread
-      summary: Rename a thread
+      summary: Rename a thread, or write its description
       description: |
-        Gives the thread a new title, in any state of the thread, finished ones included (the title
-        labels the conversation, not a job). The title is trimmed, then must be one line of 1 to
-        200 characters with no control character. A rename is logged as a `thread_titled` event
-        (`source: user`) and is final: nothing else replaces a title a person wrote. Renaming to
-        the title the thread has from the person already writes nothing. A member other than
-        `title` is a 400, so that a client that thinks it can change more learns it cannot. The
+        Changes what a person writes about the thread, in any state of the thread, finished ones
+        included (a title and a description label the conversation, not a job). At least one of two
+        members is given:
+
+        * `title`: the thread's new title. Trimmed, then one line of 1 to 200 characters with no
+          control character. A rename is logged as a `thread_titled` event (`source: user`) and is
+          final: nothing else replaces a title a person wrote. Renaming to the title the thread has
+          from the person already writes nothing.
+        * `description`: the thread's description ([ADR 0035](../decisions/0035-utility-model-tasks.md)):
+          what the conversation is about now, in a sentence or two. Trimmed, then one line of 0 to
+          500 characters with no control character; **an empty one clears it**. It is logged as a
+          `thread_described` event (`source: user`) and is final, an empty one included: the model is
+          never asked for this thread's description again, and one it had in flight is dropped.
+          Writing the description the thread has from the person already writes nothing.
+
+        Both are checked before either is written, so a 400 changes nothing. A member other than
+        these two is a 400, so that a client that thinks it can change more learns it cannot. The
         caller's own threads only: someone else's is a 404 indistinguishable from one that does not
         exist. Everything else about the thread is as `getThread` says.
       requestBody:
@@ -149,7 +178,7 @@ paths:
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
-          description: The thread, with its new title
+          description: The thread, with what was changed
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
@@ -430,6 +459,19 @@ components:
             defaultChannel: { type: string }
             channels: { type: object, additionalProperties: { type: string } }
             revisions: { type: array, items: { type: string } }
+    PublicConfig:
+      type: object
+      required: [ui]
+      description: "Exactly `{ui}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it)."
+      properties:
+        ui:
+          type: object
+          description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know."
+          properties:
+            showDescriptions:
+              type: boolean
+              default: true
+              description: "Whether the web shows a thread's description ([ADR 0035](../decisions/0035-utility-model-tasks.md)). The API returns it either way."
     Registry:
       type: object
       required: [sources]
@@ -465,6 +507,15 @@ components:
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
+        description:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: |
+            What the conversation is about now, in a sentence or two, plain text, one line
+            ([ADR 0035](../decisions/0035-utility-model-tasks.md)). Absent until the model or a person
+            writes one, and again when a person clears it. Present in `GET /api/threads` items, in
+            `getThread`, in the export's `thread` and in AG-UI's `STATE_SNAPSHOT.thread`. Additive.
         target: { $ref: "#/components/schemas/AgentTarget" }
         state: { $ref: "#/components/schemas/ThreadState" }
         job:
@@ -545,11 +596,13 @@ components:
             and the newest ones are kept, and a line `[… earlier messages omitted …]` stands for
             the ones left out), `branchProblem` (why the agent's last `branch` artifact could not
             be used, when it could not), `summary`, `pushed` (`repository`, `branch`, `commit`),
-            `results` (what each source said in the current attempt), `hold` and `title` (whose title
+            `results` (what each source said in the current attempt), `hold`, `title` (whose title
             the thread has: `{"source": "user"}` once a person renamed it, absent while it has the
-            first message's words). The members
-            of the job itself that are empty (`task`, `branchProblem`, `summary`, `pushed`,
-            `results`, `hold`, `title`) are absent; `gate` is always whole, and its `verifier` is `null`
+            first message's words) and `description` (whose description the thread has and which job
+            asked the model for it last: `{"source": "model", "askedJob": 2}`, `{"source": "user"}`
+            once a person wrote or cleared it, absent while the thread has none and none was asked).
+            The members of the job itself that are empty (`task`, `branchProblem`, `summary`,
+            `pushed`, `results`, `hold`, `title`, `description`) are absent; `gate` is always whole, and its `verifier` is `null`
             when there is none.
         binding:
           type: [object, "null"]
@@ -611,7 +664,7 @@ components:
         `verifier`.
     ThreadPatch:
       type: object
-      required: [title]
+      minProperties: 1
       additionalProperties: false
       properties:
         title:
@@ -619,6 +672,10 @@ components:
           minLength: 1
           maxLength: 200
           description: "The new title: one line, no control character. Spaces around it are cut before the length is checked."
+        description:
+          type: string
+          maxLength: 500
+          description: "The new description: one line, no control character; empty clears it. Spaces around it are cut before the length is checked."
     Event:
       type: object
       required: [seq, threadId, at, kind, actor, data]
@@ -649,7 +706,8 @@ components:
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
         - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail?, input?, output?, ioDropped? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. `input` (with the start) and `output` (with the end) say what the tool was called with and what it returned, cut, redacted and budgeted (ADR 0030). Additive.
         - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`, attributed to the person) or the orchestrator had a model write one after the agent's first reply (`source: model`, attributed to the orchestrator, [ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): the model is asked at most twice per thread, and never once a person has renamed it). `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
-        - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
+        - thread_described    # data: { description, source: model|user }  the thread has a new description ([ADR 0035](../decisions/0035-utility-model-tasks.md)): the orchestrator had a model write one when a job ended or paused for the person (`source: model`, attributed to the orchestrator; at most once per job, and only when the conversation grew by `minNewMessages` since the last one) or a person wrote it (`patchThread`, `source: user`, attributed to the person; an empty `description` is the person clearing it). `threads.description` and this event are one commit. Once a person has written or cleared it, the model never writes it again. Additive.
+        - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, description?, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's; `description` is the parent's description then (absent when it had none), and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
     Actor:
       type: object
       required: [type, name]
@@ -728,7 +786,7 @@ components:
           additionalProperties: true
           description: "ui_catalog only: the catalog, `{catalogId, components: {<Name>: <JSON Schema of the component>}}`: an A2UI inline catalog, at most 64 KiB and 64 components, with no `$ref`, `$id`, `$anchor` or `$schema` and only integer numbers. Stored, relayed to agents, never interpreted by the orchestrator."
         source:
-          description: "check_result: the source that answered. thread_titled: who wrote the title (a person, or the model)."
+          description: "check_result: the source that answered. thread_titled: who wrote the title (a person, or the model). thread_described: who wrote the description (a person, or the model)."
           anyOf:
             - { $ref: "#/components/schemas/CheckSource" }
             - { type: string, enum: [model, user] }
@@ -737,6 +795,10 @@ components:
           minLength: 1
           maxLength: 200
           description: "thread_titled: the thread's new title. thread_forked: the parent's title when the fork was made, which is the fork's."
+        description:
+          type: string
+          maxLength: 500
+          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none."
         from:
           type: object
           required: [threadId, seq]

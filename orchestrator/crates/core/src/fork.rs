@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::description::DescriptionLedger;
 use crate::error::{Classify, ErrorClass};
 use crate::event::{Actor, AgentStatus, Event, EventBody, EventKind, Origin};
 use crate::gate::{GatePolicy, Job, Snapshot};
@@ -85,6 +86,10 @@ pub struct ThreadForkedData {
     /// The parent's title when the fork was made, which is the fork's (it keeps the parent's
     /// title ledger too: a title is never written again unless a person renames the fork).
     pub title: String,
+    /// The parent's description when the fork was made, which is the fork's (ADR 0035); absent
+    /// when the parent had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// The agent the fork talks to: the parent's, unless the person chose another.
     pub target: AgentTarget,
 }
@@ -187,6 +192,7 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::UiCatalog
                 | EventKind::AgentStep
                 | EventKind::ThreadTitled
+                | EventKind::ThreadDescribed
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -204,9 +210,17 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
 ///   counts them, so a verification of the fork never has the id of a copied one.
 /// * `title`: the parent's ledger ([`TitleLedger`]) with no ask in flight: the fork has the
 ///   parent's title and nothing writes it again but a person.
+/// * `description`: the parent's ledger ([`DescriptionLedger`]) with nothing in flight and no job
+///   asked: the fork has the parent's description, a person's stays final, and the fork's first job
+///   to end asks as any job does (ADR 0035).
 /// * the UI catalog ledger is **empty**: a fork is a new A2A context and its agent has been sent
 ///   no catalog, so the first message that carries one sends it in full.
-pub fn forked_snapshot(copied: &[Event], gate: GatePolicy, title: TitleLedger) -> Snapshot {
+pub fn forked_snapshot(
+    copied: &[Event],
+    gate: GatePolicy,
+    title: TitleLedger,
+    description: DescriptionLedger,
+) -> Snapshot {
     let number = copied
         .iter()
         .filter_map(|e| match &e.body {
@@ -237,6 +251,7 @@ pub fn forked_snapshot(copied: &[Event], gate: GatePolicy, title: TitleLedger) -
             gate,
             verification,
             title: title.inherited(),
+            description: description.inherited(),
             ..Job::default()
         },
     }
@@ -267,9 +282,10 @@ pub fn fork_commit(
     copied: &[Event],
     gate: GatePolicy,
     title: TitleLedger,
+    description: DescriptionLedger,
     replacement: Option<Replacement>,
 ) -> Result<(Snapshot, Vec<Command>), TransitionError> {
-    let snapshot = forked_snapshot(copied, gate, title);
+    let snapshot = forked_snapshot(copied, gate, title, description);
     let mut commands = vec![append(Actor::user(user), EventBody::ThreadForked(data))];
     let Some(replacement) = replacement else {
         return Ok((snapshot, commands));
@@ -419,6 +435,7 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::UiCatalog(_)
             | EventBody::AgentStep(_)
             | EventBody::ThreadTitled(_)
+            | EventBody::ThreadDescribed(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

@@ -112,6 +112,10 @@ pub struct ThreadRecord {
     pub owner: UserId,
     /// Title.
     pub title: String,
+    /// What the thread is about now, in a sentence or two (ADR 0035); absent until the model or
+    /// a person writes one, and again when a person clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Target agent and release.
     pub target: AgentTarget,
     /// Current state.

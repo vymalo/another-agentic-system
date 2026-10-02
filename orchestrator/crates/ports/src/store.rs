@@ -34,6 +34,8 @@ pub struct NewThreadRecord {
     pub owner: UserId,
     /// Title.
     pub title: String,
+    /// Description: a fork starts with its parent's (ADR 0035); `None` for every other thread.
+    pub description: Option<String>,
     /// Target agent and release.
     pub target: AgentTarget,
     /// The A2A context id every task of this thread shares.
@@ -79,6 +81,8 @@ pub enum OutboxKind {
     Verify,
     /// Ask the model for a title of the thread (an orchestrator's own request, not an agent's).
     Title,
+    /// Ask the model for a description of the thread (ADR 0035).
+    Description,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -151,6 +155,13 @@ pub enum OutboxPayload {
         /// Which request.
         ask: u8,
     },
+    /// Ask the model for a description of the thread (`orch_core::Command::RequestDescription`,
+    /// ADR 0035): `job` is the job whose end asks. The conversation is read from the log when the
+    /// row is worked, so the row holds nothing of it.
+    Description {
+        /// The job whose end asks.
+        job: u32,
+    },
 }
 
 impl OutboxPayload {
@@ -161,6 +172,7 @@ impl OutboxPayload {
             OutboxPayload::Cancel { .. } => OutboxKind::Cancel,
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
             OutboxPayload::Title { .. } => OutboxKind::Title,
+            OutboxPayload::Description { .. } => OutboxKind::Description,
         }
     }
 }
@@ -245,11 +257,16 @@ pub struct Commit {
     /// leaves the title as it is. Ignored by [`ThreadStore::create_thread`], which takes the
     /// title from the new thread.
     pub title: Option<String>,
+    /// The thread's new description ([`Command::SetDescription`](orch_core::Command::SetDescription)),
+    /// written to the thread in the same transaction as the `thread_described` event that says so;
+    /// `None` leaves it as it is, and `Some("")` clears it. Ignored by
+    /// [`ThreadStore::create_thread`], which takes the description from the new thread.
+    pub description: Option<String>,
 }
 
 impl Commit {
     /// Whether this commit writes nothing to the thread but the completion of its inbox row:
-    /// an `inbox` claim and no events, outbox rows, binding update, job, title, watches or timers.
+    /// an `inbox` claim and no events, outbox rows, binding update, job, title, description, watches or timers.
     /// (A store also requires `new_state` to be the thread's current state before it leaves the
     /// thread untouched.)
     pub fn only_finishes_inbox(&self) -> bool {
@@ -259,6 +276,7 @@ impl Commit {
             && self.binding.is_none()
             && self.job.is_none()
             && self.title.is_none()
+            && self.description.is_none()
             && self.watches.is_empty()
             && self.timers.is_empty()
     }

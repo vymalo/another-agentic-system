@@ -49,9 +49,9 @@ use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
     AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event,
     EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
-    Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadForkedData, ThreadId,
-    ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
-    UserMessageData, inspect, recognise_artifact, serialized_len,
+    Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData,
+    ThreadId, ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger, UiSurfaceData,
+    UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -76,6 +76,9 @@ pub struct ThreadMeta {
     pub thread_id: ThreadId,
     /// The title, as stored.
     pub title: String,
+    /// The description, as stored (ADR 0035); `None` when the thread has none. It is part of the
+    /// thread in every `STATE_SNAPSHOT` that has one.
+    pub description: Option<String>,
     /// The agent (and release) the thread targets.
     pub target: AgentTarget,
     /// The gate the thread's job runs under (`Job.gate`, fixed when the thread was created). A
@@ -503,6 +506,11 @@ impl Projector {
                 self.on_thread_titled(event, d, &mut out);
                 self.pending_error = pending_error;
             }
+            // The same for the description (ADR 0035): the thread's, in every snapshot.
+            EventBody::ThreadDescribed(d) => {
+                self.on_thread_described(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
             EventBody::ThreadForked(d) => self.on_thread_forked(event, d, &mut out),
         }
         let resumable = self.open_text.is_none();
@@ -895,6 +903,28 @@ impl Projector {
         }
     }
 
+    /// The thread has a new description (the model wrote it, or a person wrote or cleared it,
+    /// ADR 0035). Said exactly as a rename is ([`on_thread_titled`](Self::on_thread_titled)): the
+    /// description is part of the thread in every `STATE_SNAPSHOT`, so the event is said as one,
+    /// inside a run, or as a run of its own that holds that snapshot when nothing is going on.
+    fn on_thread_described(
+        &mut self,
+        ev: &Event,
+        d: &ThreadDescribedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        self.meta.description = Some(d.description.clone()).filter(|text| !text.is_empty());
+        if self.run.is_some() {
+            out.push(self.state_snapshot());
+        } else if is_active(self.state) {
+            self.open_run(format!("run-{}", ev.seq), true, out);
+        } else {
+            self.open_run(format!("run-{}", ev.seq), false, out);
+            // the closing snapshot says the new description
+            self.settle(ev, out);
+        }
+    }
+
     /// The thread began as a copy of another (ADR 0029): the copied events came first, and this is
     /// where the copy ends. A fork is a finished job with its own context, so:
     ///
@@ -905,7 +935,8 @@ impl Projector {
     ///   catalog: the fork's agent has been sent none (the next message that carries one sends
     ///   it in full);
     /// * the title is the parent's as it was when the fork was made, and the fork's origin joins
-    ///   every `STATE_SNAPSHOT` from here on (`thread.forkedFrom`);
+    ///   every `STATE_SNAPSHOT` from here on (`thread.forkedFrom`); so is the description, which
+    ///   the fork keeps as it was (ADR 0035);
     /// * a producer-initiated run of its own says it: `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>",
     ///   activityType:"vymalo.fork"}`, then the closing `STATE_SNAPSHOT{done}` and `RUN_FINISHED`.
     ///
@@ -914,6 +945,7 @@ impl Projector {
     fn on_thread_forked(&mut self, ev: &Event, d: &ThreadForkedData, out: &mut Vec<agui::Event>) {
         self.state = ThreadState::Done;
         self.meta.title.clone_from(&d.title);
+        self.meta.description = d.description.clone().filter(|text| !text.is_empty());
         self.forked_from = Some(ForkedFrom {
             thread_id: Some(d.from.thread_id),
             seq: d.from.seq,
@@ -1835,6 +1867,10 @@ impl Projector {
                 "target": target,
             }
         });
+        // A thread with a description says it; one without says nothing more than before.
+        if let Some(description) = &self.meta.description {
+            snapshot["thread"]["description"] = Value::from(description.clone());
+        }
         // The first job says nothing more than before; a later one says which it is.
         if self.job_number > 1 {
             snapshot["thread"]["jobNumber"] = Value::from(self.job_number);

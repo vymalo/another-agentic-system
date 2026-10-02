@@ -9,6 +9,7 @@ mod dispatcher;
 mod error;
 mod gate_config;
 mod inbox;
+mod tasks;
 
 pub use app::{
     AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView, Branches, Creation,
@@ -27,3 +28,4 @@ pub use inbox::{
     DEFAULT_LEASE_SECS, DEFAULT_MAX_ATTEMPTS, DEFAULT_PARKED_TTL_SECS, DEFAULT_POLL_SECS,
     InboxConfig, InboxWorker,
 };
+pub use tasks::{PublicConfig, TaskSettings, UiSettings};

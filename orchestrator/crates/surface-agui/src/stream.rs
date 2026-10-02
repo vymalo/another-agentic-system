@@ -183,6 +183,7 @@ mod tests {
         ThreadMeta {
             thread_id: THREAD.parse::<ThreadId>().unwrap(),
             title: "t".to_owned(),
+            description: None,
             target: AgentTarget {
                 agent_id: AgentId::new("plain"),
                 release: None,

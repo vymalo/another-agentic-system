@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 503cd473f478fe82ca61fb0b25a255f6bf69dd5bd3b40659168b71345ce768f5 # shrinks to inputs = [DeliveryFailed { reason: "a", retryable: true }]

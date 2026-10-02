@@ -96,6 +96,9 @@ pub struct Config {
     /// and a file an agent hands over is refused with "no artifact store configured".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<Artifacts>,
+    /// What the web is told (`GET /api/config`).
+    #[serde(default)]
+    pub ui: Ui,
     /// The thread tools: the endpoint agents call back, and the key of its tokens.
     #[serde(default)]
     pub thread_tools: ThreadTools,
@@ -579,8 +582,8 @@ impl Default for Steps {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Models {
-    /// Endpoints by name (a slug: `a-z`, `0-9` and `-`, up to 32 characters). This build takes
-    /// one endpoint; the legacy `ORCH_MODEL_*` variables are the endpoint named `default`.
+    /// Endpoints by name (a slug: `a-z`, `0-9` and `-`, up to 32 characters). The legacy
+    /// `ORCH_MODEL_*` variables are the endpoint named `default`.
     #[serde(default)]
     pub endpoints: BTreeMap<String, Endpoint>,
 }
@@ -606,13 +609,18 @@ fn default_model_timeout_secs() -> u64 {
     20
 }
 
-/// The utility tasks.
+/// The utility tasks: what the orchestrator asks a model for on its own account, each with the
+/// endpoint, model, prompt and language rule it runs with (ADR 0035). A task that is absent is
+/// off.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Tasks {
     /// The thread title. Absent: titles are off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<TitleTask>,
+    /// The thread description. Absent: threads have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<DescriptionTask>,
 }
 
 /// The title task: after the agent's first reply, the model is asked for a 3 to 6 word title.
@@ -625,6 +633,210 @@ pub struct TitleTask {
     /// The model's name at the endpoint. Replaces `ORCH_TITLE_MODEL`.
     #[schemars(length(min = 1))]
     pub model: String,
+    /// The guidance that says what to write and in what style, in place of the core's own; read
+    /// once at startup. The core always adds the form of the answer, the data clause, the fence
+    /// around the conversation and the language line, last, whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<Prompt>,
+    /// Most tokens of answer, 1 to 256 (default 32).
+    #[serde(default = "default_title_max_tokens")]
+    #[schemars(range(min = 1, max = 256))]
+    pub max_tokens: u32,
+    /// The language of the title: the person's (`conversation`, the default) or a fixed one.
+    #[serde(default)]
+    pub language: Language,
+}
+
+fn default_title_max_tokens() -> u32 {
+    32
+}
+
+/// The description task: when a job ends or pauses for the person, the model is asked for a
+/// sentence or two on what the thread is about now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DescriptionTask {
+    /// The name of an endpoint in `models.endpoints`.
+    #[schemars(length(min = 1))]
+    pub endpoint: String,
+    /// The model's name at the endpoint.
+    #[schemars(length(min = 1))]
+    pub model: String,
+    /// The guidance that says what to write and in what style, in place of the core's own; read
+    /// once at startup. The core always adds the form of the answer, the data clause, the fence
+    /// around the conversation and the language line, last, whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<Prompt>,
+    /// Most tokens of answer, 1 to 1024 (default 160).
+    #[serde(default = "default_description_max_tokens")]
+    #[schemars(range(min = 1, max = 1024))]
+    pub max_tokens: u32,
+    /// The language of the description: the person's (`conversation`, the default) or a fixed one.
+    #[serde(default)]
+    pub language: Language,
+    /// Where a description is cut, at a word: 40 to 500 characters (default 300).
+    #[serde(default = "default_description_max_chars")]
+    #[schemars(range(min = 40, max = 500))]
+    pub max_chars: u32,
+    /// When a new description is asked for.
+    #[serde(default)]
+    pub recompute: Recompute,
+}
+
+fn default_description_max_tokens() -> u32 {
+    160
+}
+
+fn default_description_max_chars() -> u32 {
+    300
+}
+
+/// When a new description is asked for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Recompute {
+    /// How many messages (of the person, and the agent's final words) the conversation has to have
+    /// grown by since the last description before a new one is asked for, at least 1 (default 4).
+    /// Fewer is no model call.
+    #[serde(default = "default_min_new_messages")]
+    #[schemars(range(min = 1))]
+    pub min_new_messages: u32,
+}
+
+fn default_min_new_messages() -> u32 {
+    4
+}
+
+impl Default for Recompute {
+    fn default() -> Self {
+        Recompute {
+            min_new_messages: default_min_new_messages(),
+        }
+    }
+}
+
+/// A prompt, given inline or by file: `{ inline: TEXT }` or `{ file: PATH }` (a relative path is
+/// relative to the directory of the configuration file). UTF-8, 1 to 4096 bytes once the space
+/// around it is cut. A file is read once, at startup.
+#[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Prompt {
+    /// The text itself.
+    Inline(String),
+    /// The path of a file that holds the text.
+    File(String),
+}
+
+impl Serialize for Prompt {
+    /// As the one-entry mapping it is written as in the file, `{ inline: TEXT }` or
+    /// `{ file: PATH }`, in JSON and in YAML alike (the derived form would be a YAML tag, which the
+    /// loader refuses).
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            Prompt::Inline(text) => map.serialize_entry("inline", text)?,
+            Prompt::File(path) => map.serialize_entry("file", path)?,
+        }
+        map.end()
+    }
+}
+
+impl std::fmt::Debug for Prompt {
+    /// The reference is printed as written in the file; the text of an inline prompt is not a
+    /// secret, but it is long, so it is cut.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Prompt::Inline(text) => write!(f, "{{ inline: {} bytes }}", text.len()),
+            Prompt::File(path) => write!(f, "{{ file: {path} }}"),
+        }
+    }
+}
+
+/// The language a task writes in: `conversation` is the language the person writes in, found in
+/// their messages and checked on the answer; any other is fixed, named in the request and checked
+/// against its own script. The set is the core's, closed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    /// The language of the person's messages.
+    #[default]
+    Conversation,
+    /// English.
+    English,
+    /// French.
+    French,
+    /// German.
+    German,
+    /// Spanish.
+    Spanish,
+    /// Portuguese.
+    Portuguese,
+    /// Italian.
+    Italian,
+    /// Chinese.
+    Chinese,
+    /// Japanese.
+    Japanese,
+    /// Korean.
+    Korean,
+    /// A language written in Cyrillic.
+    Cyrillic,
+    /// A language written in Arabic script.
+    Arabic,
+    /// Hebrew.
+    Hebrew,
+    /// Greek.
+    Greek,
+    /// A language written in Devanagari.
+    Devanagari,
+    /// Thai.
+    Thai,
+}
+
+impl Language {
+    /// The name used in the file, which is the name `orch_core` reads
+    /// (`LanguageRule::from_config_name`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Language::Conversation => "conversation",
+            Language::English => "english",
+            Language::French => "french",
+            Language::German => "german",
+            Language::Spanish => "spanish",
+            Language::Portuguese => "portuguese",
+            Language::Italian => "italian",
+            Language::Chinese => "chinese",
+            Language::Japanese => "japanese",
+            Language::Korean => "korean",
+            Language::Cyrillic => "cyrillic",
+            Language::Arabic => "arabic",
+            Language::Hebrew => "hebrew",
+            Language::Greek => "greek",
+            Language::Devanagari => "devanagari",
+            Language::Thai => "thai",
+        }
+    }
+}
+
+/// What the web is told about how to show things: the one part of the file it can read, served as
+/// `GET /api/config` (ADR 0034). **It has no secret and never will**: a test asserts that its
+/// schema holds no secret reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Ui {
+    /// Whether the web shows a thread's description (default true). The API returns it either
+    /// way.
+    #[serde(default = "default_true")]
+    pub show_descriptions: bool,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Ui {
+            show_descriptions: true,
+        }
+    }
 }
 
 /// The most `artifacts.maxFileBytes` may be, 256 MiB: a file is written whole (it is held in memory

@@ -23,17 +23,20 @@
 //! [ADR 0034]: ../../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md
 //! [`docs/api/config.md`]: ../../../../docs/api/config.md
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use orch_app::{PublicConfig, TaskSettings, UiSettings};
 use orch_config::{Resolve, SecretRef, Validated};
+use orch_core::{LanguageRule, TaskKind};
 use secrecy::SecretString;
 use serde_json::{Map, Value};
 
 use super::{
-    Args, Config, ConfigError, LogFormat, Resolved, Surface, flag, number, parse_surfaces,
+    Args, Config, ConfigError, EndpointSettings, LogFormat, ModelsSettings, Resolved, Surface,
+    flag, number, parse_surfaces,
 };
 use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings};
 
@@ -733,15 +736,10 @@ fn convert(setting: &Setting, raw: &str) -> Result<Value, ConfigError> {
 fn overlay(tree: &mut Value, args: &Args) -> (Vec<Note>, Vec<String>) {
     let mut notes = Vec::new();
     let mut errors = Vec::new();
-    let mut model_var: Option<&'static str> = None;
     if !tree.is_object() {
         // The shape pass says so; there is nothing to lay a variable over.
         return (notes, errors);
     }
-    let file_endpoints: Vec<String> = get(tree, &["models", "endpoints"])
-        .and_then(Value::as_object)
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
     for setting in SETTINGS {
         let Some(raw) = clean((setting.get)(args).as_deref()) else {
             continue;
@@ -771,9 +769,6 @@ fn overlay(tree: &mut Value, args: &Args) -> (Vec<Note>, Vec<String>) {
         if !set(tree, setting.key, value) {
             continue;
         }
-        if setting.var.starts_with("ORCH_MODEL_") {
-            model_var.get_or_insert(setting.var);
-        }
         if setting.var == "ORCH_TITLE_MODEL" && get(tree, &["tasks", "title", "endpoint"]).is_none()
         {
             set(
@@ -797,16 +792,6 @@ fn overlay(tree: &mut Value, args: &Args) -> (Vec<Note>, Vec<String>) {
                 overrides,
             }
         });
-    }
-    // This build takes one endpoint: the legacy variables are the one named `default`, so a file
-    // that names another one beside them has two. Both are named.
-    if let Some(var) = model_var
-        && let Some(name) = file_endpoints.iter().find(|n| n.as_str() != "default")
-    {
-        errors.push(format!(
-            "models.endpoints: the file names the endpoint `{name}` and {var} sets the endpoint \
-             `default`; this build takes one endpoint (several: PR S18, ADR 0035)"
-        ));
     }
     (notes, errors)
 }
@@ -1013,19 +998,6 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
     {
         a.agent_local_concurrency = c.agents.local_concurrency.map(|n| n.to_string());
     }
-    // The title task, with the one endpoint it names (this build reads the first one of the
-    // file; the rule pass checked that it exists).
-    if let Some(title) = &c.tasks.title
-        && let Some(endpoint) = c.models.endpoints.get(&title.endpoint)
-    {
-        a.title_model = some(title.model.clone());
-        a.model_base_url = some(endpoint.base_url.clone());
-        a.model_api_key = s
-            .model_api_keys
-            .get(&title.endpoint)
-            .map(|x| x.expose().to_owned());
-        a.model_timeout_secs = some(endpoint.timeout_secs.to_string());
-    }
     if let Some(generic) = &c.webhooks.generic {
         a.webhook_generic_max_skew_secs = some(generic.max_skew_secs.to_string());
     }
@@ -1035,6 +1007,12 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
     let resolved = Resolved {
         artifacts: artifact_settings(valid),
         auth: super::AuthSettings::from_file(&c.auth),
+        models: Some(models_of(valid)),
+        public: Some(PublicConfig {
+            ui: UiSettings {
+                show_descriptions: c.ui.show_descriptions,
+            },
+        }),
         #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]
@@ -1071,6 +1049,70 @@ fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
         store,
         max_file_bytes: artifacts.max_file_bytes,
     })
+}
+
+/// The models of a valid file: its endpoints with their keys read, and the tasks that are on, each
+/// with its prompt read and the timeout of its endpoint as the bound of a try (ADR 0035).
+fn models_of(valid: &Validated) -> ModelsSettings {
+    let c = &valid.config;
+    let endpoints: BTreeMap<String, EndpointSettings> = c
+        .models
+        .endpoints
+        .iter()
+        .map(|(name, e)| {
+            (
+                name.clone(),
+                EndpointSettings {
+                    base_url: e.base_url.trim().trim_end_matches('/').to_owned(),
+                    api_key: valid
+                        .secrets
+                        .model_api_keys
+                        .get(name)
+                        .map(|key| SecretString::from(key.expose().to_owned())),
+                    timeout: Duration::from_secs(e.timeout_secs),
+                },
+            )
+        })
+        .collect();
+    // The rules pass checked that a task names an endpoint of the file; a name that is not there
+    // would be a task that is off, which no file can say.
+    let timeout_of = |endpoint: &str| endpoints.get(endpoint).map(|e| e.timeout);
+    let mut tasks = BTreeMap::new();
+    if let Some(t) = &c.tasks.title
+        && let Some(timeout) = timeout_of(&t.endpoint)
+    {
+        tasks.insert(
+            TaskKind::Title,
+            TaskSettings {
+                guidance: valid.prompts.title.clone(),
+                max_tokens: t.max_tokens,
+                language: language_rule(t.language),
+                ..TaskSettings::new(TaskKind::Title, &t.endpoint, &t.model).with_timeout(timeout)
+            },
+        );
+    }
+    if let Some(t) = &c.tasks.description
+        && let Some(timeout) = timeout_of(&t.endpoint)
+    {
+        tasks.insert(
+            TaskKind::Description,
+            TaskSettings {
+                guidance: valid.prompts.description.clone(),
+                max_tokens: t.max_tokens,
+                language: language_rule(t.language),
+                max_chars: usize::try_from(t.max_chars).unwrap_or(usize::MAX),
+                min_new_messages: t.recompute.min_new_messages,
+                ..TaskSettings::new(TaskKind::Description, &t.endpoint, &t.model)
+                    .with_timeout(timeout)
+            },
+        );
+    }
+    ModelsSettings { endpoints, tasks }
+}
+
+/// The core's rule for a language the file names (the same names: a test asserts they agree).
+fn language_rule(language: orch_config::Language) -> LanguageRule {
+    LanguageRule::from_config_name(language.as_str()).unwrap_or_default()
 }
 
 /// The values of a webhook's secrets, separated. A secret that is read through the legacy
@@ -1254,6 +1296,10 @@ threadTools:
             ("/etc/orch/config.yaml", file.to_owned()),
             ("/etc/orch/agents.yaml", AGENTS.to_owned()),
             ("/run/secrets/key", format!("{KEY}\n")),
+            (
+                "/etc/orch/prompts/description.md",
+                "Say what the person wants.\n".to_owned(),
+            ),
         ]);
         Loaded::load(args_of(pairs), flags, env_of(pairs), move |path| {
             files
@@ -1454,7 +1500,7 @@ auth:
         assert_eq!(loaded.config.listen_addr.port(), 9100);
         assert_eq!(loaded.config.database_max_connections, 12);
         assert_eq!(
-            loaded.config.model.as_ref().unwrap().title_model,
+            loaded.config.models.tasks[&TaskKind::Title].model,
             "other-model-hunter2"
         );
         let deprecated: Vec<(&str, &str, bool)> = loaded
@@ -1681,7 +1727,7 @@ auth:
             ("WEBHOOK_GITHUB_MAX_AGE_SECS", "5"),
         ]);
         let loaded = load_file_only(&pairs, &file).unwrap();
-        assert!(loaded.config.model.is_none());
+        assert!(loaded.config.models.tasks.is_empty());
         assert!(
             loaded
                 .notes
@@ -1712,10 +1758,11 @@ agents: { file: agents.yaml }
             ("ORCH_TITLE_MODEL", "small-model"),
         ];
         let loaded = load_file_only(&pairs, file).unwrap();
-        let model = loaded.config.model.as_ref().unwrap();
-        assert_eq!(model.title_model, "small-model");
+        let models = &loaded.config.models;
+        assert_eq!(models.tasks[&TaskKind::Title].model, "small-model");
+        assert_eq!(models.tasks[&TaskKind::Title].endpoint, "default");
         assert_eq!(
-            model.base_url, "http://mock-model:8080/v1",
+            models.endpoints["default"].base_url, "http://mock-model:8080/v1",
             "a trailing slash is cut"
         );
         let merged = loaded.merged.unwrap();
@@ -1732,26 +1779,127 @@ agents: { file: agents.yaml }
             load_file_only(&no_title, file)
                 .unwrap()
                 .config
-                .model
-                .is_none()
+                .models
+                .tasks
+                .is_empty()
         );
     }
 
     #[test]
-    fn a_file_that_names_another_endpoint_beside_the_model_variables_is_an_error_naming_both() {
+    fn the_model_variables_set_the_endpoint_default_and_leave_the_files_other_endpoints_be() {
         let file = FILE
             .replace("default: {", "main: {")
             .replace("endpoint: default", "endpoint: main");
         let mut pairs = base();
-        pairs.retain(|(k, _)| *k != "ORCH_MODEL_API_KEY");
         pairs.push(("ORCH_MODEL_BASE_URL", "http://other:8080/v1"));
-        let errors = lines(load_file_only(&pairs, &file));
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(
-            errors[0].contains("the file names the endpoint `main`")
-                && errors[0].contains("ORCH_MODEL_BASE_URL sets the endpoint `default`"),
-            "{errors:?}"
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        let models = &loaded.config.models;
+        assert_eq!(
+            models.endpoints.keys().collect::<Vec<_>>(),
+            ["default", "main"]
         );
+        assert_eq!(models.endpoints["default"].base_url, "http://other:8080/v1");
+        assert_eq!(
+            models.endpoints["main"].base_url, "http://mock-model:8080/v1",
+            "the file's endpoint is as it was"
+        );
+        assert_eq!(
+            models.tasks[&TaskKind::Title].endpoint,
+            "main",
+            "the title task is the file's, on the file's endpoint"
+        );
+    }
+
+    /// A file with several endpoints and both tasks, each with its own prompt (one inline, one a
+    /// file), reaches the application as the settings it runs with.
+    #[test]
+    fn a_files_endpoints_and_tasks_reach_the_application_with_their_prompts_and_limits() {
+        let file = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+models:
+  endpoints:
+    default: { baseUrl: 'http://mock-model:8080/v1', apiKey: { env: ORCH_MODEL_API_KEY }, timeoutSecs: 9 }
+    small: { baseUrl: 'http://small:8080/v1/', timeoutSecs: 4 }
+tasks:
+  title: { endpoint: small, model: small-model, system: { inline: 'Be brief.' }, maxTokens: 16, language: english }
+  description:
+    endpoint: default
+    model: big-model
+    system: { file: prompts/description.md }
+    maxChars: 200
+    recompute: { minNewMessages: 6 }
+ui: { showDescriptions: false }
+";
+        let mut pairs = base();
+        pairs.retain(|(k, _)| *k != "THREAD_TOOLS_SECRET");
+        let loaded = load_file_only(&pairs, file).unwrap();
+        let app = loaded.config.app_config();
+        let title = &app.tasks[&TaskKind::Title];
+        assert_eq!(
+            (title.endpoint.as_str(), title.model.as_str()),
+            ("small", "small-model")
+        );
+        assert_eq!(title.guidance.as_deref(), Some("Be brief."));
+        assert_eq!(title.max_tokens, 16);
+        assert_eq!(
+            title.language,
+            LanguageRule::Fixed(orch_core::Lang::English)
+        );
+        assert_eq!(title.timeout, Duration::from_secs(4), "its endpoint's");
+        let description = &app.tasks[&TaskKind::Description];
+        assert_eq!(description.endpoint, "default");
+        assert_eq!(
+            description.guidance.as_deref(),
+            Some("Say what the person wants.")
+        );
+        assert_eq!(
+            (description.max_chars, description.min_new_messages),
+            (200, 6)
+        );
+        assert_eq!(description.max_tokens, 160);
+        assert_eq!(description.timeout, Duration::from_secs(9));
+        assert!(!app.public.ui.show_descriptions);
+        let endpoints = &loaded.config.models.endpoints;
+        assert_eq!(endpoints["small"].base_url, "http://small:8080/v1");
+        assert!(endpoints["small"].api_key.is_none());
+        assert!(endpoints["default"].api_key.is_some());
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("showDescriptions: false"), "{merged}");
+        assert!(merged.contains("maxChars: 200"), "{merged}");
+    }
+
+    /// The names the file spells a language with are the core's: none falls back to the person's
+    /// language by accident.
+    #[test]
+    fn every_language_of_the_file_is_a_rule_of_the_core() {
+        use orch_config::Language;
+        for language in [
+            Language::Conversation,
+            Language::English,
+            Language::French,
+            Language::German,
+            Language::Spanish,
+            Language::Portuguese,
+            Language::Italian,
+            Language::Chinese,
+            Language::Japanese,
+            Language::Korean,
+            Language::Cyrillic,
+            Language::Arabic,
+            Language::Hebrew,
+            Language::Greek,
+            Language::Devanagari,
+            Language::Thai,
+        ] {
+            let rule = LanguageRule::from_config_name(language.as_str());
+            assert!(rule.is_some(), "{language:?}");
+            assert_eq!(
+                rule == Some(LanguageRule::Conversation),
+                language == Language::Conversation
+            );
+        }
     }
 
     /// A file that mounts everything, for the webhook secrets.

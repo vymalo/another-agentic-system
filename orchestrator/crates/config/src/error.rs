@@ -108,6 +108,9 @@ pub enum ErrorKind {
     /// A plain string (or anything else) where a secret goes.
     #[error("a secret is a reference: `{{ env: NAME }}` or `{{ file: PATH }}`")]
     NotASecretRef,
+    /// Anything but `{ inline: TEXT }` or `{ file: PATH }` where a prompt goes.
+    #[error("a prompt is `{{ inline: TEXT }}` or `{{ file: PATH }}`")]
+    NotAPrompt,
     /// A number below its minimum.
     #[error("must be at least {min}")]
     TooSmall {

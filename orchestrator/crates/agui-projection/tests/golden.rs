@@ -33,7 +33,7 @@ use support::{lines, verify};
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 /// The thread a fork scenario was cut from.
 const PARENT: &str = "00000000-0000-7000-8000-000000000002";
-const SCENARIOS: [&str; 22] = [
+const SCENARIOS: [&str; 23] = [
     "echo",
     "ask",
     "cancel",
@@ -54,6 +54,7 @@ const SCENARIOS: [&str; 22] = [
     "working",
     "turn-output",
     "title",
+    "description",
     "fork",
     "fork-blocked",
 ];
@@ -95,6 +96,7 @@ fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
     ThreadMeta {
         thread_id: THREAD.parse().unwrap(),
         title,
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new(agent),
             release,

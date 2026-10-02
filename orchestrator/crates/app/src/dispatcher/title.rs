@@ -25,30 +25,26 @@
 //! * **A person's title wins.** A row whose thread has been renamed meanwhile is dropped, and the
 //!   core would ignore the model's title anyway.
 //! * **A model that stumbles is asked again, a little.** A transient failure (a timeout, a 5xx, a
-//!   rate limit) is tried up to [`TITLE_ATTEMPTS`] times with the dispatcher's backoff, then
-//!   declined; a refusal for good is declined at once. Each try is bounded by
-//!   [`AppConfig::title_timeout`](crate::AppConfig::title_timeout), whatever the adapter does.
+//!   rate limit) is tried up to three times with the dispatcher's backoff, then declined; a refusal
+//!   for good is declined at once. Each try is bounded by the task's timeout
+//!   ([`TaskSettings::timeout`](crate::TaskSettings::timeout)), whatever the adapter does
+//!   ([`ask_model`](Dispatcher::ask_model)).
+//! * **The task says how.** The endpoint, the model, the guidance, the tokens and the language rule
+//!   are the title task's ([`TaskSettings`](crate::TaskSettings)); the form of the answer, the data
+//!   clause, the fence and the language line, last, are the core's and always there
+//!   ([`task_prompt`]).
 //! * **Every write is fenced** with the row's claim: a worker that lost it writes nothing.
 
-use std::time::Duration;
-
 use orch_core::{
-    Classify, ErrorClass, Event, Input, TitleSource, check_title_language, clean_title, report,
-    title_prompt, title_retry_prompt,
+    Event, Input, TaskKind, TaskPrompt, TitleSource, check_task_language, clean_title, task_prompt,
 };
-use orch_ports::{
-    ChatModel, ChatRequest, ModelError, OutboxFinal, OutboxItem, OutboxPayload, Ports, ThreadStore,
-};
+use orch_ports::{ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, ThreadStore};
 
 use super::{DispatchError, Dispatcher, Done};
-use crate::{AppError, ApplyOutcome};
+use crate::{AppError, ApplyOutcome, TaskSettings};
 
 /// How many events of the head of the log the conversation is read from.
 const TITLE_EVENTS: u32 = 128;
-/// How many times a model that stumbles is asked before the request is declined.
-const TITLE_ATTEMPTS: u32 = 3;
-/// Most tokens of answer: a title is a few words.
-const TITLE_TOKENS: u32 = 32;
 
 impl<P: Ports> Dispatcher<P> {
     /// Processes one `title` row. See the module documentation.
@@ -70,15 +66,15 @@ impl<P: Ports> Dispatcher<P> {
         if thread.job.title.source() != TitleSource::FirstMessage {
             return self.finish(&row, OutboxFinal::Skipped).await;
         }
-        let input = match self.app.title_model() {
+        let input = match self.app.task(TaskKind::Title) {
             // titles were switched off since the row was written
             None => Input::TitleDeclined { ask },
-            Some(model) => {
+            Some(task) => {
                 let events = self
                     .store()
                     .list_events(row.thread_id, 0, TITLE_EVENTS)
                     .await?;
-                match self.title_in_language(&row, model, &events).await {
+                match self.title_in_language(&row, task, &events).await {
                     Some(title) => Input::Titled { ask, title },
                     None => Input::TitleDeclined { ask },
                 }
@@ -105,27 +101,37 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
-    /// The title the model writes for the conversation `events`, in the person's language, or
-    /// `None`: it has no topic yet, it cannot be had, or it was in the wrong script twice.
+    /// The title the model writes for the conversation `events`, in the language the task's rule
+    /// asks for, or `None`: it has no topic yet, it cannot be had, or it was in the wrong script
+    /// twice.
     async fn title_in_language(
         &self,
         row: &OutboxItem,
-        model: &str,
+        task: &TaskSettings,
         events: &[Event],
     ) -> Option<String> {
-        let (system, user) = title_prompt(events);
-        let title = self.title_from(row, model, system, user).await?;
-        let Err(wrong) = check_title_language(events, &title) else {
+        let spec = |retry| TaskPrompt {
+            kind: TaskKind::Title,
+            guidance: task.guidance.as_deref(),
+            language: task.language,
+            previous: None,
+            retry,
+        };
+        let title = self
+            .title_from(row, task, task_prompt(&spec(false), events))
+            .await?;
+        let Err(wrong) = check_task_language(task.language, events, &title) else {
             return Some(title);
         };
         tracing::debug!(
             id = %row.id,
             script = ?wrong.script,
-            "the title is in a script the person did not write in; asking once more"
+            "the title is in a script the language rule does not allow; asking once more"
         );
-        let (system, user) = title_retry_prompt(events);
-        let title = self.title_from(row, model, system, user).await?;
-        if let Err(wrong) = check_title_language(events, &title) {
+        let title = self
+            .title_from(row, task, task_prompt(&spec(true), events))
+            .await?;
+        if let Err(wrong) = check_task_language(task.language, events, &title) {
             tracing::debug!(
                 id = %row.id,
                 script = ?wrong.script,
@@ -141,55 +147,23 @@ impl<P: Ports> Dispatcher<P> {
     async fn title_from(
         &self,
         row: &OutboxItem,
-        model: &str,
-        system: String,
-        user: String,
+        task: &TaskSettings,
+        (system, user): (String, String),
     ) -> Option<String> {
         let request = ChatRequest {
-            model: model.to_owned(),
+            endpoint: task.endpoint.clone(),
+            model: task.model.clone(),
             system,
             user,
-            max_tokens: TITLE_TOKENS,
+            max_tokens: task.max_tokens,
         };
-        let text = self.ask_model(row, &request).await?;
+        let text = self
+            .ask_model(row, task, &request, "the model could not title the thread")
+            .await?;
         let title = clean_title(&text);
         if title.is_none() {
             tracing::debug!(id = %row.id, "the model had no title for the conversation yet");
         }
         title
-    }
-
-    /// The model's answer, or `None` when it cannot be had (said in the log of the process, never
-    /// in the thread).
-    async fn ask_model(&self, row: &OutboxItem, request: &ChatRequest) -> Option<String> {
-        let timeout = self.app.title_timeout();
-        for attempt in 1..=TITLE_ATTEMPTS {
-            let outcome = tokio::time::timeout(timeout, self.app.ports().model().complete(request))
-                .await
-                .unwrap_or_else(|_| {
-                    Err(ModelError::unreachable("the model did not answer in time"))
-                });
-            let err = match outcome {
-                Ok(text) => return Some(text),
-                Err(err) => err,
-            };
-            let retry = matches!(err.class(), ErrorClass::Transient | ErrorClass::RateLimited);
-            if !retry || attempt == TITLE_ATTEMPTS {
-                tracing::warn!(
-                    id = %row.id,
-                    attempt,
-                    error = %report(&err),
-                    "the model could not title the thread; it keeps the first message's words"
-                );
-                return None;
-            }
-            let wait = err
-                .retry_after()
-                .unwrap_or_else(|| self.backoff(attempt))
-                .min(self.cfg.backoff_max);
-            tracing::debug!(id = %row.id, attempt, error = %report(&err), "asking the model again");
-            tokio::time::sleep(wait.max(Duration::from_millis(1))).await;
-        }
-        None
     }
 }

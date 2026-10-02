@@ -175,6 +175,59 @@
       ],
       "type": "object"
     },
+    "DescriptionTask": {
+      "additionalProperties": false,
+      "description": "The description task: when a job ends or pauses for the person, the model is asked for a sentence or two on what the thread is about now.",
+      "properties": {
+        "endpoint": {
+          "description": "The name of an endpoint in `models.endpoints`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "language": {
+          "$ref": "#/$defs/Language",
+          "default": "conversation",
+          "description": "The language of the description: the person's (`conversation`, the default) or a fixed one."
+        },
+        "maxChars": {
+          "default": 300,
+          "description": "Where a description is cut, at a word: 40 to 500 characters (default 300).",
+          "format": "uint32",
+          "maximum": 500,
+          "minimum": 40,
+          "type": "integer"
+        },
+        "maxTokens": {
+          "default": 160,
+          "description": "Most tokens of answer, 1 to 1024 (default 160).",
+          "format": "uint32",
+          "maximum": 1024,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "model": {
+          "description": "The model's name at the endpoint.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "recompute": {
+          "$ref": "#/$defs/Recompute",
+          "default": {
+            "minNewMessages": 4
+          },
+          "description": "When a new description is asked for."
+        },
+        "system": {
+          "$ref": "#/$defs/Prompt",
+          "description": "The guidance that says what to write and in what style, in place of the core's own; read once at startup. The core always adds the form of the answer, the data clause, the fence around the conversation and the language line, last, whatever this says."
+        }
+      },
+      "required": [
+        "endpoint",
+        "model"
+      ],
+      "type": "object"
+    },
     "Dispatcher": {
       "additionalProperties": false,
       "description": "The dispatcher.",
@@ -389,6 +442,28 @@
       ],
       "type": "object"
     },
+    "Language": {
+      "description": "The language a task writes in: `conversation` is the language the person writes in, found in their messages and checked on the answer; any other is fixed, named in the request and checked against its own script. The set is the core's, closed.",
+      "enum": [
+        "conversation",
+        "english",
+        "french",
+        "german",
+        "spanish",
+        "portuguese",
+        "italian",
+        "chinese",
+        "japanese",
+        "korean",
+        "cyrillic",
+        "arabic",
+        "hebrew",
+        "greek",
+        "devanagari",
+        "thai"
+      ],
+      "type": "string"
+    },
     "Log": {
       "additionalProperties": false,
       "description": "Logging. The filter is `RUST_LOG`, read before anything else (default `info,rmcp=warn`).",
@@ -468,8 +543,53 @@
             "$ref": "#/$defs/Endpoint"
           },
           "default": {},
-          "description": "Endpoints by name (a slug: `a-z`, `0-9` and `-`, up to 32 characters). This build takes one endpoint; the legacy `ORCH_MODEL_*` variables are the endpoint named `default`.",
+          "description": "Endpoints by name (a slug: `a-z`, `0-9` and `-`, up to 32 characters). The legacy `ORCH_MODEL_*` variables are the endpoint named `default`.",
           "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "Prompt": {
+      "description": "A prompt, given inline or by file: `{ inline: TEXT }` or `{ file: PATH }` (a relative path is relative to the directory of the configuration file). UTF-8, 1 to 4096 bytes once the space around it is cut. A file is read once, at startup.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The text itself.",
+          "properties": {
+            "inline": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "inline"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The path of a file that holds the text.",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Recompute": {
+      "additionalProperties": false,
+      "description": "When a new description is asked for.",
+      "properties": {
+        "minNewMessages": {
+          "default": 4,
+          "description": "How many messages (of the person, and the agent's final words) the conversation has to have grown by since the last description before a new one is asked for, at least 1 (default 4). Fewer is no model call.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -623,8 +743,12 @@
     },
     "Tasks": {
       "additionalProperties": false,
-      "description": "The utility tasks.",
+      "description": "The utility tasks: what the orchestrator asks a model for on its own account, each with the endpoint, model, prompt and language rule it runs with (ADR 0035). A task that is absent is off.",
       "properties": {
+        "description": {
+          "$ref": "#/$defs/DescriptionTask",
+          "description": "The thread description. Absent: threads have none."
+        },
         "title": {
           "$ref": "#/$defs/TitleTask",
           "description": "The thread title. Absent: titles are off."
@@ -676,16 +800,45 @@
           "minLength": 1,
           "type": "string"
         },
+        "language": {
+          "$ref": "#/$defs/Language",
+          "default": "conversation",
+          "description": "The language of the title: the person's (`conversation`, the default) or a fixed one."
+        },
+        "maxTokens": {
+          "default": 32,
+          "description": "Most tokens of answer, 1 to 256 (default 32).",
+          "format": "uint32",
+          "maximum": 256,
+          "minimum": 1,
+          "type": "integer"
+        },
         "model": {
           "description": "The model's name at the endpoint. Replaces `ORCH_TITLE_MODEL`.",
           "minLength": 1,
           "type": "string"
+        },
+        "system": {
+          "$ref": "#/$defs/Prompt",
+          "description": "The guidance that says what to write and in what style, in place of the core's own; read once at startup. The core always adds the form of the answer, the data clause, the fence around the conversation and the language line, last, whatever this says."
         }
       },
       "required": [
         "endpoint",
         "model"
       ],
+      "type": "object"
+    },
+    "Ui": {
+      "additionalProperties": false,
+      "description": "What the web is told about how to show things: the one part of the file it can read, served as `GET /api/config` (ADR 0034). **It has no secret and never will**: a test asserts that its schema holds no secret reference.",
+      "properties": {
+        "showDescriptions": {
+          "default": true,
+          "description": "Whether the web shows a thread's description (default true). The API returns it either way.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "WebhookGeneric": {
@@ -864,6 +1017,13 @@
         "tokenTtlSecs": 7200
       },
       "description": "The thread tools: the endpoint agents call back, and the key of its tokens."
+    },
+    "ui": {
+      "$ref": "#/$defs/Ui",
+      "default": {
+        "showDescriptions": true
+      },
+      "description": "What the web is told (`GET /api/config`)."
     },
     "version": {
       "description": "The version of this file's format. This build reads `1`.",

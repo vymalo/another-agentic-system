@@ -154,7 +154,7 @@ pub fn describe(event: &Event) -> Option<String> {
         // bookkeeping about the person's screen, not progress of the job
         EventBody::UiCatalog(_) => return None,
         // a label of the conversation, not progress of the job
-        EventBody::ThreadTitled(_) => return None,
+        EventBody::ThreadTitled(_) | EventBody::ThreadDescribed(_) => return None,
         EventBody::ThreadForked(f) => {
             format!("forked from thread {} at #{}", f.from.thread_id, f.from.seq)
         }
@@ -412,6 +412,7 @@ mod tests {
                     },
                     kind: orch_core::ForkKind::Fork,
                     title: "Fix it".to_owned(),
+                    description: None,
                     target: orch_core::AgentTarget {
                         agent_id: orch_core::AgentId::new("coder"),
                         release: None,

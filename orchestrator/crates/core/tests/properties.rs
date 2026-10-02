@@ -98,6 +98,13 @@ fn arb_input() -> impl Strategy<Value = Input> {
             user: UserId::new("u@x.io"),
             title
         }),
+        "[a-z ]{0,8}".prop_map(|description| Input::SetDescription {
+            user: UserId::new("u@x.io"),
+            description
+        }),
+        (1..4_u32, "[a-z ]{0,8}")
+            .prop_map(|(job, description)| Input::Described { job, description }),
+        (1..4_u32).prop_map(|job| Input::DescriptionDeclined { job }),
     ]
 }
 
@@ -173,15 +180,26 @@ proptest! {
                             prop_assert_eq!(delegations, 1);
                         } else {
                             prop_assert_eq!(next, state);
-                            // a rename is the one input that changes a finished thread's job
+                            // a rename and the description's inputs are the ones that change a
+                            // finished thread's job: its ledgers
                             let ledger = if matches!(input, Input::Rename { .. }) {
                                 next_snap.job.title
                             } else {
                                 snap.job.title
                             };
+                            let described = if matches!(
+                                input,
+                                Input::SetDescription { .. }
+                                    | Input::Described { .. }
+                                    | Input::DescriptionDeclined { .. }
+                            ) {
+                                next_snap.job.description
+                            } else {
+                                snap.job.description
+                            };
                             prop_assert_eq!(
                                 &next_snap.job,
-                                &Job { title: ledger, ..snap.job.clone() }
+                                &Job { title: ledger, description: described, ..snap.job.clone() }
                             );
                         }
                     } else {
@@ -192,6 +210,25 @@ proptest! {
                     let started = cmds.iter().filter(|c| matches!(c,
                         Command::Append(d) if matches!(d.body, EventBody::JobStarted(_)))).count();
                     prop_assert_eq!(started, usize::from(next_snap.job.number != snap.job.number));
+                    // (c) the description is asked for only when a job stops (done, blocked) by a
+                    // transition that gets there, at most once per job, and never after a
+                    // person's description.
+                    let asks = cmds.iter().filter(|c| matches!(c, Command::RequestDescription { .. })).count();
+                    prop_assert!(asks <= 1);
+                    if asks == 1 {
+                        prop_assert!(next != state);
+                        prop_assert!(matches!(next, ThreadState::Done | ThreadState::Blocked));
+                        prop_assert!(snap.job.description.may_ask(snap.job.number));
+                        prop_assert!(snap.job.description.source() != DescriptionSource::User);
+                        prop_assert!(!next_snap.job.description.may_ask(next_snap.job.number));
+                    }
+                    // a person's description is final: nothing but a person changes it
+                    if snap.job.description.source() == DescriptionSource::User
+                        && !matches!(input, Input::SetDescription { .. })
+                    {
+                        prop_assert_eq!(next_snap.job.description.source(), DescriptionSource::User);
+                        prop_assert!(!cmds.iter().any(|c| matches!(c, Command::SetDescription(_))));
+                    }
                     // (b) thread_state events name the resulting state and only mark entry.
                     for cmd in &cmds {
                         if let Command::Append(d) = cmd

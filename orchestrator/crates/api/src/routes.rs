@@ -3,7 +3,9 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use orch_core::{AgentInfo, AgentTarget, ThreadId, ThreadRecord, UserId};
+use orch_core::{
+    AgentInfo, AgentTarget, ThreadId, ThreadRecord, UserId, check_description, check_title,
+};
 use orch_ports::{Authenticator, Ports};
 use serde::{Deserialize, Serialize};
 
@@ -158,12 +160,15 @@ pub(crate) async fn get_thread<P: Ports>(
     ))
 }
 
-/// Renames the thread (see [`orch_app::App::rename_thread`]): 200 with the thread, 400 for a title
-/// that cannot be used, 404 for a thread that is not the caller's.
+/// Changes what a person writes about the thread (see [`orch_app::App::rename_thread`] and
+/// [`orch_app::App::describe_thread`]): 200 with the thread, 400 for a title or a description that
+/// cannot be used, 404 for a thread that is not the caller's.
 ///
-/// The body is an object with a `title` string and nothing else: a member this API does not know
-/// is refused, so that a client that thinks it can change more learns it cannot. (It is read as a
-/// map, not as a struct, because a struct also reads from a JSON array.)
+/// The body is an object with a `title` string and/or a `description` string (empty clears it) and
+/// nothing else, and at least one: a member this API does not know is refused, so that a client
+/// that thinks it can change more learns it cannot. Both are checked before either is written, so
+/// a 400 changes nothing. (It is read as a map, not as a struct, because a struct also reads from
+/// a JSON array.)
 pub(crate) async fn patch_thread<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(user): Extension<UserId>,
@@ -171,20 +176,50 @@ pub(crate) async fn patch_thread<P: Ports>(
     ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
 ) -> ApiResult<Json<ThreadRecord>> {
     let id = parse_thread_id(&id)?;
-    let mut title = None;
+    let (mut title, mut description) = (None, None);
     for (member, value) in body {
         match (member.as_str(), value) {
             ("title", serde_json::Value::String(text)) => title = Some(text),
             ("title", _) => return Err(Problem::bad_request("`title` must be a string").into()),
+            ("description", serde_json::Value::String(text)) => description = Some(text),
+            ("description", _) => {
+                return Err(Problem::bad_request("`description` must be a string").into());
+            }
             (other, _) => {
                 return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
             }
         }
     }
-    let Some(title) = title else {
-        return Err(Problem::bad_request("`title` is required").into());
-    };
-    Ok(Json(state.app.rename_thread(&user, id, &title).await?))
+    if title.is_none() && description.is_none() {
+        return Err(Problem::bad_request("`title` or `description` is required").into());
+    }
+    // Both are checked before either is written (the application checks again).
+    if let Some(title) = &title {
+        check_title(title).map_err(|e| Problem::bad_request(e.to_string()))?;
+    }
+    if let Some(description) = &description {
+        check_description(description).map_err(|e| Problem::bad_request(e.to_string()))?;
+    }
+    let mut thread = None;
+    if let Some(title) = title {
+        thread = Some(state.app.rename_thread(&user, id, &title).await?);
+    }
+    if let Some(description) = description {
+        thread = Some(state.app.describe_thread(&user, id, &description).await?);
+    }
+    match thread {
+        Some(thread) => Ok(Json(thread)),
+        None => Err(Problem::bad_request("`title` or `description` is required").into()),
+    }
+}
+
+/// `GET /api/config`: the public subset of the configuration, exactly `{"ui": {...}}`
+/// ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)).
+/// Behind the identity layer like every `/api` route. It changes only when the process restarts.
+pub(crate) async fn public_config<P: Ports>(
+    State(state): State<ApiState<P>>,
+) -> Json<orch_app::PublicConfig> {
+    Json(state.app.public_config().clone())
 }
 
 pub(crate) async fn cancel_thread<P: Ports>(

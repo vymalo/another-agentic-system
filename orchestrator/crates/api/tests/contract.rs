@@ -542,9 +542,10 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 8] = [
+    let auth_ops: [(&str, reqwest::Method, String); 9] = [
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
+        ("getConfig", reqwest::Method::GET, "/api/config".into()),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
             "getThread",
@@ -620,6 +621,13 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         json!({"sources": [{"name": "static", "status": "ok"}]})
     );
     assert_eq!(r.cache_control, "no-store");
+
+    // getConfig: exactly `{ui}` with every key at its effective value, behind the identity layer
+    // like every /api route (the 401 is checked with the others above)
+    let r = h.get("/api/config", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    c.check("getConfig", &r);
+    assert_eq!(r.json(), json!({"ui": {"showDescriptions": true}}));
 
     // getThread
     let id = h
@@ -894,6 +902,122 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         "A better name",
         "someone else's rename changes nothing"
     );
+
+    // patchThread with a description (ADR 0035): 200 with the thread, which says it; the event is
+    // the person's; empty clears it; the same again writes nothing; 400 changes nothing, even
+    // when the other member is good; a title and a description go together.
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+            Some(r#"{"description":"  Moving the build to Rust.  "}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("patchThread", &r);
+    assert_eq!(r.json()["description"], "Moving the build to Rust.");
+    assert_eq!(r.json()["title"], "A better name", "the title is untouched");
+    let r = h.get(&format!("/api/threads/{id}"), Some(ALICE)).await;
+    c.check("getThread", &r);
+    assert_eq!(r.json()["description"], "Moving the build to Rust.");
+    let listed = h.get("/api/threads", Some(ALICE)).await;
+    c.check("listThreads", &listed);
+    assert!(
+        listed
+            .json()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["description"] == "Moving the build to Rust."),
+        "the listing says it"
+    );
+    let events = h.events(ALICE, &id).await;
+    let last = events.last().unwrap();
+    assert_eq!(last["kind"], "thread_described");
+    assert_eq!(
+        last["data"],
+        json!({"description": "Moving the build to Rust.", "source": "user"})
+    );
+    assert_eq!(last["actor"], json!({"type": "user", "name": ALICE}));
+    c.contract.validate_component("Event", last);
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+            Some(r#"{"description":"Moving the build to Rust."}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    assert_eq!(
+        h.events(ALICE, &id).await.len(),
+        events.len(),
+        "the same again writes nothing"
+    );
+    let long = format!(r#"{{"description":"{}"}}"#, "x".repeat(501));
+    for bad in [
+        r#"{"description":"two\nlines"}"#,
+        r#"{"description":3}"#,
+        r#"{"description":null}"#,
+        r#"{"description":"x","state":"done"}"#,
+        // one bad member refuses both: nothing is written
+        r#"{"title":"Fine","description":"two\nlines"}"#,
+        r#"{"title":"","description":"Fine"}"#,
+        long.as_str(),
+    ] {
+        let r = h
+            .patch(&format!("/api/threads/{id}"), Some(ALICE), Some(bad))
+            .await;
+        assert_eq!(r.status, 400, "{bad}");
+        c.check("patchThread", &r);
+    }
+    let after = h
+        .get(&format!("/api/threads/{id}"), Some(ALICE))
+        .await
+        .json();
+    assert_eq!(after["title"], "A better name");
+    assert_eq!(after["description"], "Moving the build to Rust.");
+    assert_eq!(
+        h.events(ALICE, &id).await.len(),
+        events.len(),
+        "a refused patch writes nothing"
+    );
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+            Some(r#"{"title":"Both","description":"And this."}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("patchThread", &r);
+    assert_eq!(
+        (r.json()["title"].as_str(), r.json()["description"].as_str()),
+        (Some("Both"), Some("And this."))
+    );
+    // empty clears it: the thread has none, and the response has no member for it
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(ALICE),
+            Some(r#"{"description":""}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("patchThread", &r);
+    assert!(r.json().get("description").is_none(), "{}", r.json());
+    let last = h.events(ALICE, &id).await.pop().unwrap();
+    assert_eq!(last["data"], json!({"description": "", "source": "user"}));
+    c.contract.validate_component("Event", &last);
+    // someone else's thread is not found
+    let r = h
+        .patch(
+            &format!("/api/threads/{id}"),
+            Some(BOB),
+            Some(r#"{"description":"Mine"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("patchThread", &r);
 
     // forkThread and listBranches ([ADR 0029]).
     let parent = h

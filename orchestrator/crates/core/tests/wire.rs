@@ -116,6 +116,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             },
             kind: ForkKind::Fork,
             title: "Fix the build".into(),
+            description: None,
             target: AgentTarget {
                 agent_id: AgentId::new("coder"),
                 release: None,
@@ -413,6 +414,7 @@ fn thread_wire_hides_owner_and_version() {
         id: tid(),
         owner: UserId::new("a@b.c"),
         title: "T".into(),
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new("coder"),
             release: None,
@@ -447,6 +449,7 @@ fn a_forked_thread_says_where_it_came_from() {
         id: tid(),
         owner: UserId::new("a@b.c"),
         title: "T".into(),
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new("coder"),
             release: None,
@@ -494,6 +497,7 @@ fn a_thread_under_a_gate_carries_its_job_and_one_without_carries_none() {
         id: tid(),
         owner: UserId::new("a@b.c"),
         title: "T".into(),
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new("coder"),
             release: None,
@@ -842,6 +846,7 @@ fn a_thread_forked_is_the_persons_event_with_where_it_came_from() {
             },
             kind: ForkKind::Edit,
             title: "Fix the redirect loop".into(),
+            description: Some("Fixing a redirect loop on the login page.".into()),
             target: AgentTarget {
                 agent_id: AgentId::new("coder"),
                 release: Some("stable".into()),
@@ -864,6 +869,7 @@ fn a_thread_forked_is_the_persons_event_with_where_it_came_from() {
                 "from": {"threadId": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000", "seq": 41},
                 "kind": "edit",
                 "title": "Fix the redirect loop",
+                "description": "Fixing a redirect loop on the login page.",
                 "target": {"agentId": "coder", "release": "stable"}
             }
         })
@@ -874,4 +880,77 @@ fn a_thread_forked_is_the_persons_event_with_where_it_came_from() {
         v["data"][member] = bad;
         assert!(serde_json::from_value::<Event>(v).is_err(), "{member}");
     }
+}
+
+/// ADR 0035: a description is the model's or the person's event; its data is the description and who
+/// wrote it, an empty one is the person clearing it, and a source this build does not know does not
+/// read.
+#[test]
+fn a_thread_described_is_an_event_with_the_description_and_its_writer() {
+    for (description, source, actor) in [
+        (
+            "Moving the build to Rust; the tests pass.",
+            "model",
+            Actor::system(),
+        ),
+        ("", "user", Actor::user(&UserId::new("me@example.com"))),
+    ] {
+        let by = if source == "model" {
+            DescribedBy::Model
+        } else {
+            DescribedBy::User
+        };
+        let e = event(
+            EventBody::ThreadDescribed(ThreadDescribedData {
+                description: description.into(),
+                source: by,
+            }),
+            actor.clone(),
+        );
+        assert_eq!(e.kind(), EventKind::ThreadDescribed);
+        assert_eq!(e.kind().as_str(), "thread_described");
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["kind"], "thread_described");
+        assert_eq!(
+            v["data"],
+            json!({"description": description, "source": source})
+        );
+        assert_eq!(serde_json::from_value::<Event>(v.clone()).unwrap(), e);
+        let mut bad = v.clone();
+        bad["data"]["source"] = json!("robot");
+        assert!(serde_json::from_value::<Event>(bad).is_err());
+    }
+}
+
+/// The thread resource says its description when it has one, and says nothing when it has none.
+#[test]
+fn a_thread_says_its_description_only_when_it_has_one() {
+    let mut t = ThreadRecord {
+        id: tid(),
+        owner: UserId::new("a@b.c"),
+        title: "T".into(),
+        description: Some("A sentence.".into()),
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: ThreadState::Done,
+        job: Job::default(),
+        version: 3,
+        forked_from: None,
+        last_seq: 2,
+        created_at: Timestamp::from_second(1_790_000_000).unwrap(),
+        updated_at: Timestamp::from_second(1_790_000_001).unwrap(),
+    };
+    assert_eq!(
+        serde_json::to_value(&t).unwrap()["description"],
+        "A sentence."
+    );
+    t.description = None;
+    assert!(
+        serde_json::to_value(&t)
+            .unwrap()
+            .get("description")
+            .is_none()
+    );
 }

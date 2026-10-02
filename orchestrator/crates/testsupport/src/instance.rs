@@ -354,6 +354,16 @@ impl Chat {
         .await
     }
 
+    /// `PATCH /api/threads/{id}` with `{"description": description}`: writes (or, when empty,
+    /// clears) the thread's description, as `(status, body)`.
+    pub async fn describe(&self, id: &str, description: &str) -> (u16, Value) {
+        Self::finish(
+            self.request(reqwest::Method::PATCH, &format!("/api/threads/{id}"))
+                .json(&serde_json::json!({ "description": description })),
+        )
+        .await
+    }
+
     async fn finish(req: reqwest::RequestBuilder) -> (u16, Value) {
         let resp = req.send().await.unwrap();
         let status = resp.status().as_u16();

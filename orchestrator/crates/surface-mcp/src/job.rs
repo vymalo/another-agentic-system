@@ -238,6 +238,7 @@ mod tests {
             id: ThreadId("00000000-0000-7000-8000-000000000001".parse().unwrap()),
             owner: UserId::new("alice@example.com"),
             title: "fix it".to_owned(),
+            description: None,
             target: AgentTarget {
                 agent_id: AgentId::new("coder"),
                 release: None,

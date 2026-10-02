@@ -6,11 +6,12 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command, Event, EventKind,
-    ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job, LiveText, MAX_FORK_FAMILY, Origin,
-    Replacement, Snapshot, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp,
-    TitleSource, UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_title, copied,
-    family_root, fork_commit, fork_cut, is_commit_hash, repo_key, report, transition,
+    AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command,
+    DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
+    LiveText, MAX_FORK_FAMILY, Origin, Replacement, Snapshot, TaskKind, ThreadForkedData, ThreadId,
+    ThreadRecord, ThreadState, Timestamp, TitleSource, UiCatalogData, UserId, WatchKey,
+    branch_points, check_answer, check_description, check_title, copied, family_root, fork_commit,
+    fork_cut, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -23,7 +24,8 @@ use orch_ports::{
 use tokio::time::Instant;
 
 use crate::{
-    AgentDirectory, AppError, GateError, GateLayer, GateRules, Layer, check_catalog_schemas,
+    AgentDirectory, AppError, GateError, GateLayer, GateRules, Layer, PublicConfig, TaskSettings,
+    check_catalog_schemas,
 };
 
 /// Most events an export reads unless [`AppConfig::max_export_events`] says otherwise; a longer
@@ -95,11 +97,13 @@ pub struct AppConfig {
     /// core. `false` drops both before the core sees them (the core is pure and has no
     /// configuration), so a step is its label and detail only.
     pub record_step_io: bool,
-    /// The model that writes thread titles (ADR 0005). `None` (the default) turns titles off: a
-    /// thread keeps the first words of its first message, and no model is ever asked.
-    pub title_model: Option<String>,
-    /// How long one question to the title model may take, whatever the adapter does.
-    pub title_timeout: Duration,
+    /// The utility tasks that use a model (ADR 0005, ADR 0035), each with the endpoint, model,
+    /// guidance and limits it runs with. A task that is absent is **off**: no outbox row is
+    /// written for it and no model is ever asked. The default has none: a thread keeps the first
+    /// words of its first message and has no description.
+    pub tasks: BTreeMap<TaskKind, TaskSettings>,
+    /// What `GET /api/config` says: the `ui` section of the configuration file, for the web.
+    pub public: PublicConfig,
 }
 
 impl Default for AppConfig {
@@ -114,8 +118,8 @@ impl Default for AppConfig {
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
             record_step_io: true,
-            title_model: None,
-            title_timeout: Duration::from_secs(20),
+            tasks: BTreeMap::new(),
+            public: PublicConfig::default(),
         }
     }
 }
@@ -415,14 +419,14 @@ impl<P: Ports> App<P> {
         &self.agents
     }
 
-    /// The model that writes thread titles, when titles are on.
-    pub fn title_model(&self) -> Option<&str> {
-        self.cfg.title_model.as_deref()
+    /// The public subset of the configuration (`GET /api/config`).
+    pub fn public_config(&self) -> &PublicConfig {
+        &self.cfg.public
     }
 
-    /// How long one question to the title model may take.
-    pub fn title_timeout(&self) -> Duration {
-        self.cfg.title_timeout
+    /// How `kind` asks its model, when the task is on.
+    pub fn task(&self, kind: TaskKind) -> Option<&TaskSettings> {
+        self.cfg.tasks.get(&kind)
     }
 
     /// Marks the service (not) ready for `/readyz`.
@@ -675,6 +679,7 @@ impl<P: Ports> App<P> {
             id,
             owner: user.clone(),
             title,
+            description: None,
             target: req.target,
             context_id: id.to_string(),
             now,
@@ -856,6 +861,7 @@ impl<P: Ports> App<P> {
             },
             kind,
             title: parent.title.clone(),
+            description: parent.description.clone(),
             target: target.clone(),
         };
         let (next, cmds) = fork_commit(
@@ -864,6 +870,7 @@ impl<P: Ports> App<P> {
             copied(&events, cut),
             gate,
             parent.job.title,
+            parent.job.description,
             replacement,
         )?;
         let now = self.ports.clock().now();
@@ -876,6 +883,7 @@ impl<P: Ports> App<P> {
             id,
             owner: user.clone(),
             title: parent.title.clone(),
+            description: parent.description.clone(),
             target,
             context_id: id.to_string(),
             now,
@@ -1188,6 +1196,8 @@ impl<P: Ports> App<P> {
             | Input::Answer { .. }
             | Input::Titled { .. }
             | Input::TitleDeclined { .. }
+            | Input::Described { .. }
+            | Input::DescriptionDeclined { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -1197,6 +1207,12 @@ impl<P: Ports> App<P> {
             Input::Rename { title, .. } => {
                 if check_title(title).as_deref() != Ok(title.as_str()) {
                     return Err(AppError::Invalid("invalid title".to_owned()));
+                }
+            }
+            // Likewise the description, which may be empty (the person clearing it).
+            Input::SetDescription { description, .. } => {
+                if check_description(description).as_deref() != Ok(description.as_str()) {
+                    return Err(AppError::Invalid("invalid description".to_owned()));
                 }
             }
             Input::Cancel { .. }
@@ -1238,6 +1254,45 @@ impl<P: Ports> App<P> {
             ApplyOutcome::Applied { thread, .. } => Ok(thread),
             ApplyOutcome::Duplicate => Err(AppError::internal(
                 "a rename without an idempotency key was reported as a duplicate",
+            )),
+            ApplyOutcome::Fenced => Err(AppError::internal(
+                "a commit without a lease was reported as fenced",
+            )),
+        }
+    }
+
+    /// Writes, or clears, the description of one of the user's threads, whatever state it is in
+    /// (ADR 0035). From then on the description is the person's, an empty one included, and the
+    /// model is never asked for this thread again. `description` is trimmed and must be one line
+    /// of 0 to [`MAX_DESCRIPTION_CHARS`](orch_core::MAX_DESCRIPTION_CHARS) characters, else
+    /// [`AppError::Invalid`]; an empty one clears it. A thread that has this description from the
+    /// person already is left as it is, with no event. Returns the thread as it is afterwards.
+    ///
+    /// # Errors
+    /// [`AppError::Invalid`] for a description that cannot be used, [`AppError::NotFound`] for a
+    /// thread that is not the user's.
+    pub async fn describe_thread(
+        &self,
+        user: &UserId,
+        id: ThreadId,
+        description: &str,
+    ) -> Result<ThreadRecord, AppError> {
+        let description =
+            check_description(description).map_err(|e| AppError::Invalid(e.to_string()))?;
+        let record = self.get_thread(user, id).await?;
+        if record.description.as_deref().unwrap_or_default() == description
+            && record.job.description.source() == DescriptionSource::User
+        {
+            return Ok(record);
+        }
+        let input = Input::SetDescription {
+            user: user.clone(),
+            description,
+        };
+        match self.apply(id, input, None, None, None).await? {
+            ApplyOutcome::Applied { thread, .. } => Ok(thread),
+            ApplyOutcome::Duplicate => Err(AppError::internal(
+                "a description without an idempotency key was reported as a duplicate",
             )),
             ApplyOutcome::Fenced => Err(AppError::internal(
                 "a commit without a lease was reported as fenced",
@@ -1339,6 +1394,7 @@ impl<P: Ports> App<P> {
         let mut watches = Vec::new();
         let mut timers = Vec::new();
         let mut title = None;
+        let mut description = None;
         for cmd in cmds {
             match cmd {
                 Command::Append(draft) => {
@@ -1403,10 +1459,23 @@ impl<P: Ports> App<P> {
                 // model configured nothing is asked: the ledger has counted the ask, and the
                 // thread keeps the first message's words.
                 Command::RequestTitle { ask } => {
-                    if self.cfg.title_model.is_some() {
+                    if self.cfg.tasks.contains_key(&TaskKind::Title) {
                         outbox.push(NewOutbox {
                             id: orch_ports::OutboxId(self.ports.ids().new_id()),
                             payload: OutboxPayload::Title { ask },
+                        });
+                    }
+                }
+                // Stored with the `thread_described` event that says so, in this commit; empty
+                // clears it.
+                Command::SetDescription(new) => description = Some(new),
+                // As the title's request: an outbox row in this commit, only when the description
+                // task is configured (the ledger has counted the ask either way).
+                Command::RequestDescription { job } => {
+                    if self.cfg.tasks.contains_key(&TaskKind::Description) {
+                        outbox.push(NewOutbox {
+                            id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                            payload: OutboxPayload::Description { job },
                         });
                     }
                 }
@@ -1443,6 +1512,7 @@ impl<P: Ports> App<P> {
             inbox: None,
             finishes_outbox: None,
             title,
+            description,
         }
     }
 
@@ -1554,6 +1624,7 @@ impl<P: Ports> App<P> {
                 && commit.binding.is_none()
                 && commit.job.is_none()
                 && commit.title.is_none()
+                && commit.description.is_none()
                 && commit.watches.is_empty()
                 && commit.timers.is_empty()
                 && next == record.state
@@ -1759,6 +1830,7 @@ impl<P: Ports> App<P> {
                 inbox: None,
                 finishes_outbox: None,
                 title: None,
+                description: None,
             };
             match self
                 .ports

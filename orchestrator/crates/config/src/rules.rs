@@ -18,7 +18,7 @@ use url::Url;
 use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::types::{
-    ArtifactStoreKind, Artifacts, AuthMode, Config, Environment, SecretRef, Surface,
+    ArtifactStoreKind, Artifacts, AuthMode, Config, Environment, Prompt, SecretRef, Surface,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -26,6 +26,9 @@ pub const DEFAULT_MAX_ATTEMPTS: u64 = 3;
 
 /// The shortest HMAC key or webhook secret: 32 bytes, what `openssl rand -hex 32` gives.
 pub const MIN_SECRET_BYTES: usize = 32;
+
+/// The longest a task's prompt may be, 4 KiB: the guidance of a model call that costs a few tokens.
+pub const MAX_PROMPT_BYTES: usize = 4 * 1024;
 
 /// The secrets of a valid configuration, resolved. `Debug` shows references, never values.
 #[derive(Debug, Clone)]
@@ -53,14 +56,27 @@ pub struct Secrets {
     pub webhook_github: Vec<Secret>,
 }
 
-/// A configuration that passed the three passes: the keys (defaults filled in) and the secrets,
-/// resolved.
+/// The prompts of the tasks (`tasks.<task>.system`), read: the text itself, whether it was written
+/// inline or in a file. A task with no `system` has none here and runs on the core's guidance.
+/// Not secrets: they are shown by `--print-config` as the reference the file has.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Prompts {
+    /// `tasks.title.system`.
+    pub title: Option<String>,
+    /// `tasks.description.system`.
+    pub description: Option<String>,
+}
+
+/// A configuration that passed the three passes: the keys (defaults filled in), the secrets and
+/// the prompts, resolved.
 #[derive(Debug, Clone)]
 pub struct Validated {
     /// The keys.
     pub config: Config,
     /// The secrets.
     pub secrets: Secrets,
+    /// The prompts of the tasks.
+    pub prompts: Prompts,
     /// The directory the relative paths of the file are relative to.
     pub base_dir: PathBuf,
 }
@@ -151,11 +167,13 @@ impl Config {
         };
         checker.rules(&self);
         let secrets = checker.secrets(&self);
+        let prompts = checker.prompts(&self);
         let mut errors = checker.errors;
         match secrets {
             Some(secrets) if errors.is_empty() => Ok(Validated {
                 config: self,
                 secrets,
+                prompts,
                 base_dir: base_dir.to_owned(),
             }),
             _ => {
@@ -233,12 +251,6 @@ impl Checker<'_> {
         }
 
         // models and tasks
-        if cfg.models.endpoints.len() > 1 {
-            self.invalid(
-                "models.endpoints",
-                "this build takes one endpoint (several: PR S18, ADR 0035)",
-            );
-        }
         for (name, endpoint) in &cfg.models.endpoints {
             let at = format!("models.endpoints.{}", crate::tree::display_key(name));
             if !is_slug(name) {
@@ -254,13 +266,24 @@ impl Checker<'_> {
                 );
             }
         }
-        if let Some(title) = &cfg.tasks.title
-            && !cfg.models.endpoints.contains_key(&title.endpoint)
-        {
-            self.invalid(
-                "tasks.title.endpoint",
-                "names no endpoint of models.endpoints",
-            );
+        // a task names an endpoint that exists: the model port answers `NotConfigured` for any
+        // other, so this check is what makes that a bug and never a configuration outcome
+        let tasks = [
+            ("tasks.title", cfg.tasks.title.as_ref().map(|t| &t.endpoint)),
+            (
+                "tasks.description",
+                cfg.tasks.description.as_ref().map(|t| &t.endpoint),
+            ),
+        ];
+        for (path, endpoint) in tasks {
+            if let Some(endpoint) = endpoint
+                && !cfg.models.endpoints.contains_key(endpoint)
+            {
+                self.invalid(
+                    format!("{path}.endpoint"),
+                    "names no endpoint of models.endpoints",
+                );
+            }
         }
 
         // artifacts
@@ -622,6 +645,51 @@ impl Checker<'_> {
                 ),
             );
         }
+    }
+
+    /// Reads the prompts of the tasks: inline text as it is, a file through the resolver. Each is
+    /// UTF-8 and, with the space around it cut, 1 to [`MAX_PROMPT_BYTES`] bytes. An error names
+    /// the key and, for a file, its path; never the text.
+    fn prompts(&mut self, cfg: &Config) -> Prompts {
+        let title = cfg.tasks.title.as_ref().and_then(|t| t.system.as_ref());
+        let description = cfg
+            .tasks
+            .description
+            .as_ref()
+            .and_then(|t| t.system.as_ref());
+        Prompts {
+            title: title.and_then(|p| self.prompt(p, "tasks.title.system")),
+            description: description.and_then(|p| self.prompt(p, "tasks.description.system")),
+        }
+    }
+
+    fn prompt(&mut self, prompt: &Prompt, path: &str) -> Option<String> {
+        let (text, from) = match prompt {
+            Prompt::Inline(text) => (text.clone(), "the prompt".to_owned()),
+            Prompt::File(file) => {
+                if file.trim().is_empty() {
+                    self.invalid(path, "`file` must name a file");
+                    return None;
+                }
+                match self.resolver.read_file(&join(self.base_dir, file)) {
+                    Ok(text) => (text, format!("the file {file}")),
+                    Err(_) => {
+                        self.invalid(path, format!("the file {file} cannot be read"));
+                        return None;
+                    }
+                }
+            }
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            self.invalid(path, format!("{from} is empty"));
+            return None;
+        }
+        if text.len() > MAX_PROMPT_BYTES {
+            self.invalid(path, format!("{from} is larger than 4 KiB"));
+            return None;
+        }
+        Some(text.to_owned())
     }
 
     /// Reads one reference. Whatever is wrong is an error naming the key and the variable or

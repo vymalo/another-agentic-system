@@ -4,9 +4,10 @@
 
 use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion,
-    CiProvider, CiReport, Command, Event, EventBody, ForkKind, ForkPoint, ForkSource, GatePolicy,
-    Input, StepKind, StepReport, StepState, ThreadForkedData, ThreadId, ThreadState, Timestamp,
-    TitleLedger, UiActionData, UiCatalogData, UiVersion, UserId, fork_cut, forked_snapshot,
+    CiProvider, CiReport, Command, DescriptionLedger, Event, EventBody, ForkKind, ForkPoint,
+    ForkSource, GatePolicy, Input, StepKind, StepReport, StepState, ThreadForkedData, ThreadId,
+    ThreadState, Timestamp, TitleLedger, UiActionData, UiCatalogData, UiVersion, UserId, fork_cut,
+    forked_snapshot,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -26,6 +27,7 @@ pub fn meta_under(gate: GatePolicy) -> orch_agui_projection::ThreadMeta {
     orch_agui_projection::ThreadMeta {
         thread_id: thread_id(),
         title: "a thread".to_owned(),
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new("plain"),
             release: None,
@@ -160,6 +162,10 @@ pub enum Action {
     Rename {
         n: u8,
     },
+    /// The user writes the description `description <n>` (cleared when `n` is 0), in any state.
+    Describe {
+        n: u8,
+    },
     /// The log so far is a **parent**: what follows is a fork of it, cut after the turn that holds
     /// event number `at` (modulo the log's length) as `fork_cut` allows, so the log becomes the
     /// copy up to the cut, a `thread_forked` and the fork's own life (ADR 0029). A cut that is
@@ -275,6 +281,7 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
             }
         ),
         2 => (0u8..4).prop_map(|n| Action::Rename { n }),
+        2 => (0u8..3).prop_map(|n| Action::Describe { n }),
         2 => (any::<u8>(), any::<bool>()).prop_map(|(at, edit)| Action::Fork { at, edit }),
         10 => (0u8..5, proptest::option::of(0u8..5), 0u8..4, 0u8..5, any::<bool>()).prop_map(
             |(id, parent, kind, state, by_orchestrator)| Action::Step {
@@ -351,7 +358,12 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 continue;
             };
             events.truncate(usize::try_from(cut).unwrap());
-            state = forked_snapshot(&events, gate.clone(), TitleLedger::default());
+            state = forked_snapshot(
+                &events,
+                gate.clone(),
+                TitleLedger::default(),
+                DescriptionLedger::default(),
+            );
             slots = [Slot::default(), Slot::default()];
             events.push(Event {
                 seq: cut + 1,
@@ -369,6 +381,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                         ForkKind::Fork
                     },
                     title: "a parent".to_owned(),
+                    description: None,
                     target: AgentTarget {
                         agent_id: agent.clone(),
                         release: None,
@@ -536,6 +549,14 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::Rename { n } => Input::Rename {
                 user: user.clone(),
                 title: format!("title {n}"),
+            },
+            Action::Describe { n } => Input::SetDescription {
+                user: user.clone(),
+                description: if *n == 0 {
+                    String::new()
+                } else {
+                    format!("description {n}")
+                },
             },
             Action::UiAct { ids } => {
                 users += 1;

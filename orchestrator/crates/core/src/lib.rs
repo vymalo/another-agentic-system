@@ -7,6 +7,7 @@
 
 mod agent;
 mod answer;
+mod description;
 mod error;
 mod event;
 mod extension;
@@ -17,6 +18,7 @@ mod language;
 mod live;
 mod redact;
 mod step;
+mod task;
 mod thread;
 mod thread_tools;
 mod title;
@@ -27,6 +29,11 @@ mod verify;
 
 pub use agent::{AgentTaskState, AgentUpdate};
 pub use answer::{AnswerError, AnswerLedger, MAX_ANSWER_BYTES, check_answer};
+pub use description::{
+    DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,
+    DescriptionLedger, DescriptionSource, MAX_DESCRIPTION_CHARS, ThreadDescribedData,
+    check_description, clean_description, messages_since_description,
+};
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
@@ -54,7 +61,8 @@ pub use gate::{
 };
 pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};
 pub use language::{
-    INSTRUCTION_UNKNOWN, Lang, Script, ScriptMismatch, detect, script_mismatch, scripts_of,
+    INSTRUCTION_UNKNOWN, Lang, Script, ScriptMismatch, detect, instruction_unknown_for,
+    script_mismatch, script_mismatch_fixed, scripts_of,
 };
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
@@ -65,12 +73,16 @@ pub use step::{
     STEP_OUTPUT_MAX_BYTES, StepKind, StepLedger, StepOutput, StepPhase, StepReport, StepSource,
     StepState, record_step,
 };
+pub use task::{
+    DESCRIPTION_MESSAGES, LanguageRule, MAX_GUIDANCE_BYTES, TaskKind, TaskLanguageError,
+    TaskPrompt, check_task_language, conversation_language, task_prompt,
+};
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
 pub use title::{
     MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
     TitleLanguageError, TitleLedger, TitleSource, TitledBy, check_title, check_title_language,
-    clean_title, conversation_language, title_prompt, title_retry_prompt,
+    clean_title, title_prompt, title_retry_prompt,
 };
 pub use transition::{Command, EventDraft, Input, TransitionError, transition};
 pub use ui::{

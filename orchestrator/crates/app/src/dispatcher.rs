@@ -28,8 +28,10 @@ use tracing::Instrument as _;
 
 use crate::{App, AppError, ApplyOutcome};
 
+mod description;
 mod live;
 mod title;
+mod utility;
 mod verify;
 
 /// Events read at a time when a fork's history is built.
@@ -300,6 +302,7 @@ impl<P: Ports> Dispatcher<P> {
             OutboxKind::Cancel => self.cancel(row).await,
             OutboxKind::Verify => self.verify(row).await,
             OutboxKind::Title => self.title(row).await,
+            OutboxKind::Description => self.description(row).await,
         }
     }
 
@@ -456,7 +459,8 @@ impl<P: Ports> Dispatcher<P> {
             ),
             OutboxPayload::Cancel { .. }
             | OutboxPayload::Verify { .. }
-            | OutboxPayload::Title { .. } => {
+            | OutboxPayload::Title { .. }
+            | OutboxPayload::Description { .. } => {
                 return self
                     .finish(
                         &row,
