@@ -484,13 +484,69 @@ produced from the log, and why no replica remembers a connection, is
 | The web | `@assistant-ui/react-ag-ui` (pinned, one patch) over a `ThreadAgent`: the connect stream with `Last-Event-ID`, runs by `POST /agui/agents/{agentId}`, interrupts by `resume`, Cancel by the resource API ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) |
 | Generative UI | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) on the orchestrator side: `ui_surface` and `ui_action` events, the A2A adapter's `application/a2ui+json` parts (envelope check, size caps), capability detection of both extension URIs, `a2ui-surface` snapshots of the whole surface, `forwardedProps.a2uiAction` validated and delivered to the same A2A task, the capabilities document ([`api/agui.md`](api/agui.md#a2ui-generative-ui)); in the web, the validator, the shadcn vocabulary and actions on a user gesture only ([`web/README.md`](../web/README.md#a2ui-surfaces)) |
 | MCP server | `orch-surface-mcp` ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)): `list_agents`, `start_job`, `get_job`, `answer` and `cancel_job` at `/mcp` over streamable HTTP, stateless (any replica serves any call), a machine route behind static bearer tokens that map to users; straight to `App`, not through the inbox; `mcp` as an `ORCH_SURFACES` value and a `surface-mcp` feature (default). `wait_for_job` follows a job through the event log with `notifications/progress` (one per event, a heartbeat every 60 s), returns when the job is finished or blocked or on a timeout with `resume_after_seq`, and continues on any replica with `after_seq` |
-| Thread tools | `orch-surface-thread-tools` and `orch-thread-token` ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)): a second MCP endpoint, per thread, for the agents the orchestrator sends work to, at `/thread-tools/{threadId}/mcp` over streamable HTTP, stateless, a machine route behind a short-lived HS256 token scoped to one thread and one caller (minted by the A2A adapter at send time and put in the message metadata of an agent whose live card lists `thread-tools/v1`, verified by any replica, never in the log or the outbox); the built-in `get_ui_catalog` (the refetch seam) and a `ThreadToolProvider` seam for the tools of later slices; `thread-tools` as an `ORCH_SURFACES` value and a `surface-thread-tools` feature (default) |
+| Thread tools | `orch-surface-thread-tools` and `orch-thread-token` ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)): a second MCP endpoint, per thread, for the agents the orchestrator sends work to, at `/thread-tools/{threadId}/mcp` over streamable HTTP, stateless, a machine route behind a short-lived HS256 token scoped to one thread and one caller (minted by the A2A adapter at send time and put in the message metadata of an agent whose live card lists `thread-tools/v1`, verified by any replica, never in the log or the outbox); the built-in `get_ui_catalog` (the refetch seam) and a `ThreadToolProvider` seam for the tools of later slices, of which the **relay** is the first ([below](#the-relay-of-an-attached-mcp-servers-tools)); `thread-tools` as an `ORCH_SURFACES` value and a `surface-thread-tools` feature (default) |
 | The legacy chat API | Removed (2026-09-30, [ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag), step 3): the crate `orch-surface-chat-api`, its feature `surface-chat-api`, the four interaction operations of `chat-api.yaml` and their goldens. The resource API stayed |
 
 `ORCH_SURFACES` accepts `agui` and defaults to it. The removed `chat-api` fails closed: naming it is a
 startup error (exit 78) that says it was removed and points to AG-UI. The resource API and health are
 mounted whatever it says. A name whose Cargo feature is not compiled in is also a startup error
 (exit 78).
+
+### The relay of an attached MCP server's tools
+
+*Built 2026-10-02 ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md), slice 8; contract in
+[`api/thread-tools-v1.md`](api/thread-tools-v1.md#attached-servers-and-the-relay-slice-8)).* A person attaches MCP servers
+the deployment lists (`toolServers`) to a conversation. The agent never gets a server's URL or credential: it lists the
+tools of its own per-thread endpoint, finds `websearch__search` among them, and calls it there. The endpoint's **relay**
+(`RelayTools`, a `ThreadToolProvider`, composed by the binary behind the feature `tool-relay`) holds the credentials,
+calls the server through the `ToolServerClient` port (`orch-tools-mcp` in the binary), and reports each call as one **step**
+with the server's icon, so the person sees it and the agent does not report it twice (`_meta.reportsStep`).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent (any A2A agent that lists thread-tools/v1)
+  participant R as Thread tools endpoint (relay)
+  participant L as Event log (steps)
+  participant S as MCP server (credentials held by the relay)
+
+  A->>R: tools/list (bearer: the thread's token)
+  R->>S: tools/list (the server's bearer and headers)
+  S-->>R: search
+  R-->>A: websearch__search with _meta {reportsStep: true, timeoutSecs}
+  A->>R: tools/call websearch__search {query}, _meta {callId, parentStepId}
+  R->>L: Input::Step running (tool-<callId>, icon mcp-server:websearch, input)
+  R->>S: tools/call search {query} (the server's bearer)
+  alt the server answers
+    S-->>R: result (at most 256 KiB, or cut with a note)
+    R->>L: Input::Step completed or failed (output, at most 8 KiB)
+    R-->>A: the whole result, isError passed through
+  else unreachable, no answer in time, 401 or 403, a JSON-RPC error
+    R->>L: Input::Step failed (detail: the public error)
+    R-->>A: isError with a message that names no credential
+  else the agent cancels or its connection closes
+    R->>S: the request is dropped
+    R->>L: Input::Step canceled
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Running: tools/call accepted, the step starts
+  Running --> Completed: the server answered (isError false)
+  Running --> Failed: unreachable, timeout, 401 or 403, a JSON-RPC error, or isError
+  Running --> Canceled: the agent cancelled or dropped the call
+  Completed --> [*]
+  Failed --> [*]
+  Canceled --> [*]
+```
+
+A name that is not on the endpoint (an unknown or detached server, a tool the allow-list or the agent filter leaves out) is
+`-32602` and has no step; a call after the thread's task is over is a result with `isError` and has no step. Nothing is
+cached (each `tools/list` lists again) and the relay keeps nothing between calls, so any replica serves any call; what it
+writes is steps, in the thread's event log. The relay is an outbound surface: the servers come only from the deployment, a
+result is cut at 256 KiB and is untrusted text for the agent's model, and no credential reaches a log line, an event or a
+table (the end-to-end tests search for them).
 
 ## How a job flows
 

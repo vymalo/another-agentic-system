@@ -708,8 +708,9 @@ viewer that connects after a person wrote one reads).
 
 ## Attaching MCP servers
 
-*Built 2026-10-02 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), slice 8, first half; the relay is not
-built, [`thread-tools-v1.md`](thread-tools-v1.md#attached-servers-and-the-relay-slice-8)).* A person attaches servers from the
+*Built 2026-10-02 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), slice 8; the relay of the attached
+servers' tools is built too, [`thread-tools-v1.md`](thread-tools-v1.md#attached-servers-and-the-relay-slice-8), and its calls are
+[tool steps](#a-relayed-call-is-a-step) below).* A person attaches servers from the
 deployment's list (`toolServers` of [`config.md`](config.md#toolservers), read with `GET /api/tool-servers`) to a conversation and
 detaches them again. Two doors, one event each way:
 
@@ -747,6 +748,31 @@ SUBAGENT_STARTED …
 `activityType: "vymalo.tools"` has `content: {attached?: [id], detached?: [id], at}`: one of the two members, the ids that came or
 went (the schema is in [Activity contents](#activity-contents)). Goldens: `tools-attach.events.json` (a thread created with one
 server, then a `PUT` that adds another and drops the first), `agui/tools-attach.agui.json` (what a live viewer reads for it).
+
+### A relayed call is a step
+
+A call of a relayed tool (`<server>__<tool>` on the thread's endpoint) is reported by the orchestrator as **one step**
+([`steps-v1.md`](steps-v1.md#6-steps-the-orchestrator-reports-itself)), so it is the same two `agent_step` events and the same
+`vymalo.step` activities as any tool step ([Nested steps](#nested-steps)), with what makes it recognisable:
+
+| Member | Value |
+|---|---|
+| `icon` | `mcp-server:<id>`: the id of the server, which the screen resolves with the `icon` of `GET /api/tool-servers` (a `data:` URI the deployment configured, or a generic icon). Only the orchestrator may name it |
+| `kind`, `label` | `tool`, `<server name> · <tool>` |
+| `input` | the call's arguments, at most 4096 bytes serialized, credentials redacted ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)) |
+| `output` | the result's text, at most 8 KiB (`truncated` and `bytes` say when it was cut), or the error the server gave (`error: true`) |
+| `state` | `running` on the start, then `completed`, `failed` (`detail` the public error, no credential) or `canceled` |
+| `id`, `path` | `tool-<the agent's call id>` (one id for the retries of one call), nested under the agent's own step when the agent named it (`parentStepId`), else at the top; attributed to the subagent of the agent whose call it is |
+
+```
+SUBAGENT_STARTED …                                                      # the agent that made the call
+ACTIVITY_SNAPSHOT {messageId: "evt-4", activityType: "vymalo.step", content: {id: "tool-<call id>", kind: "tool", label: "Web search · echo", state: "running", icon: "mcp-server:websearch", input: {…}, path: [], at, startedAt}}
+ACTIVITY_SNAPSHOT {messageId: "evt-5", activityType: "vymalo.step", content: {…, state: "completed", output: {text: "…"}}}
+```
+
+An agent does not report a step of its own for such a call (the tool says `reportsStep: true`), so the screen draws it once.
+Goldens: `tools-relay.events.json` (a thread created with a server attached, the agent's call of its tool, one step
+`running` → `completed`), `agui/tools-relay.agui.json` (what a live viewer reads for it).
 
 ## Forks
 
