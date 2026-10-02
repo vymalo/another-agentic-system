@@ -1114,6 +1114,22 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       },
     });
     expect(second.status).toBe(409);
+    // and so is one that says how it is delivered: only a message is sent while the agent works
+    // (ADR 0036; the orchestrator's `finish` answers RunInProgress)
+    for (const send of ["steer", "interrupt"]) {
+      const sent = await postRun(base, "reviewer", {
+        threadId,
+        runId: newId(),
+        messages: [],
+        forwardedProps: {
+          "vymalo.send": send,
+          a2uiAction: {
+            userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+          },
+        },
+      });
+      expect(sent.status, send).toBe(409);
+    }
     await first.text();
   });
 
