@@ -283,8 +283,9 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// The Latin-script language of `text`, when one wins the vote: the language with the most
-/// distinct stop words, at least one, and strictly more than the next. Words that two languages
-/// share count for both, so a tie says `None`.
+/// distinct stop words, at least two, and strictly more than the next. Words that two languages
+/// share count for both, so a tie says `None`; one word alone is not a vote (the Dutch `de` is
+/// German's too), so a language the lists do not know says `None` rather than a neighbour.
 fn latin_language(text: &str) -> Option<Lang> {
     let seen: BTreeSet<String> = words(text).collect();
     let mut scores: Vec<(Lang, usize)> = STOP_WORDS
@@ -294,7 +295,7 @@ fn latin_language(text: &str) -> Option<Lang> {
     scores.sort_by(|a, b| b.1.cmp(&a.1));
     let (best, top) = scores.first().copied()?;
     let second = scores.get(1).map_or(0, |s| s.1);
-    (top >= 1 && top > second).then_some(best)
+    (top >= 2 && top > second).then_some(best)
 }
 
 /// The language of one message, when it can be told.
@@ -473,6 +474,9 @@ mod tests {
         }
         // a tie between two languages that share the words
         assert_eq!(language_of("para que"), None);
+        // one stop word is not a vote: Dutch shares `de` with German, and the lists know no Dutch
+        assert_eq!(language_of("Hoe kan ik de database exporteren?"), None);
+        assert_eq!(language_of("the"), None);
     }
 
     #[test]
