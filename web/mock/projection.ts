@@ -25,6 +25,8 @@ export type GateInfo = {
 export type ThreadInfo = {
   threadId: string;
   title: string;
+  /** The description the thread has (ADR 0035); absent when it has none. Part of every snapshot that has one. */
+  description?: string;
   target: { agentId: string; release?: string };
   /** Absent: no gate, so no `job` and a run that ends at the agent's `completed`. */
   gate?: GateInfo;
@@ -419,10 +421,12 @@ export class Projector {
       from: { threadId: string; seq: number };
       kind: string;
       title: string;
+      description?: string;
       target: { agentId: string; release?: string };
     };
     this.state = "done";
-    this.info = { ...this.info, title: d.title };
+    // the fork has its parent's title and description as they were when it was made
+    this.info = { ...this.info, title: d.title, description: d.description || undefined };
     this.forkedFrom = { threadId: d.from.threadId, seq: d.from.seq, kind: d.kind };
     const threadId = this.info.threadId;
     if (this.run) {
@@ -480,6 +484,7 @@ export class Projector {
           ...(this.forkedFrom ? { forkedFrom: this.forkedFrom } : {}),
           state: this.state,
           title: this.info.title,
+          ...(this.info.description ? { description: this.info.description } : {}),
           target: {
             agentId: this.info.target.agentId,
             ...(this.info.target.release ? { release: this.info.target.release } : {}),
@@ -733,8 +738,8 @@ export class Projector {
   private openRun(e: Event, out: Ev[]) {
     const runId = str(e.data.runId) ?? `run-${e.seq}`;
     this.run = { runId };
-    // a rename says what the thread is in and changes none of it
-    if (e.kind !== "thread_titled") {
+    // a rename (or a description) says what the thread is in and changes none of it
+    if (e.kind !== "thread_titled" && e.kind !== "thread_described") {
       this.interrupt = null;
       this.failure = null;
       this.state =
@@ -888,6 +893,9 @@ export class Projector {
     // the title is part of every snapshot: a rename's own say it
     if (e.kind === "thread_titled")
       this.info = { ...this.info, title: str(e.data.title) ?? this.info.title };
+    // and so is the description (ADR 0035); an empty one is a person clearing it
+    if (e.kind === "thread_described")
+      this.info = { ...this.info, description: str(e.data.description) || undefined };
     // a message on a finished thread starts the next job; so does a bare `job_started` (a
     // message redelivered to the agent), whose run it opens
     const finished = this.state === "done" || this.state === "failed" || this.state === "cancelled";
@@ -1237,10 +1245,12 @@ export class Projector {
         this.lastWasError = true;
         break;
       }
-      // A person renamed the thread (the real projection's `on_thread_titled`): inside a run a
-      // snapshot with the new title; outside any, a run of its own that holds the snapshot (said by
-      // `openRun`) and ends as the thread's state ends a run, which the web drops as material-less
-      case "thread_titled": {
+      // A person renamed the thread (the real projection's `on_thread_titled`), or the thread was
+      // described (`on_thread_described`, ADR 0035): inside a run a snapshot with the new title or
+      // description; outside any, a run of its own that holds the snapshot (said by `openRun`) and
+      // ends as the thread's state ends a run, which the web drops as material-less
+      case "thread_titled":
+      case "thread_described": {
         if (wasOpen) out.push(this.snapshot());
         else if (
           this.state !== "queued" &&

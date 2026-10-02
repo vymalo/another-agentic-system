@@ -3,8 +3,41 @@
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,
   section 3.6) and the owner may revisit them. Extends [ADR 0005](0005-openai-compatible-model-endpoint.md) and its
   two status notes (titles; the title's language). Configured through the file of
-  [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md). **Not built:** PR S18 of plan 10 builds it (after
-  S9, the configuration loader, and S2, the language rule, which is built); S19 shows the description in the web.
+  [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md). **Built (2026-10-02, PR S18 of plan 10)**, as the
+  decision says; the status note below lists what was decided while building it. S19 shows the description in the web.
+
+  Status note (2026-10-02, PR S18). What is built is everything decided here: named endpoints
+  (`ChatRequest.endpoint`; `OpenAiChat` over a map of endpoints, each with its own client, key and timeout; an unknown
+  name is `ModelError::NotConfigured`, with a case in the port's conformance testkit), the closed `TaskKind`
+  (`Title`, `Description`; `TurnSummary` and `StepLabel` stay reserved, refused by the loader), `task_prompt` and the
+  parts of it that no configuration can remove, `thread_described`, `DescriptionLedger`, the `description` outbox kind
+  and worker, the `threads.description` column (migration `0011_thread_description.sql`), `PATCH /api/threads/{id}`
+  with `description`, the projection and export, and `GET /api/config`. What was decided in the building:
+  - **The core's default guidance** is "Reply with a 3 to 6 word title for the conversation, in plain text." for a
+    title and "Describe in one or two sentences what the conversation is about now: what the person wants and where it
+    stands." for a description. The request is the guidance, the form of the answer, the data clause, each as its own
+    paragraph of `system`; the conversation fence and the language line are `user`. The title's request with no
+    `system` therefore says what it always said, in the same order, with the form of the answer worded as the
+    decision words it, so `dev/title-e2e.sh` passes unchanged.
+  - **The description's ledger asks only on a transition that gets to `done` or `blocked`** (the state changed), not on
+    every input that finds the thread there: a rename of a finished thread, a late `Titled` or a repeated pause asks
+    nothing. A fork inherits the parent's source (a person's stays final) and **forgets the job that asked**, because the
+    fork's jobs are numbered from the newest job its copy holds, which may be one the parent asked in.
+  - **An answer is accepted only for the ask in flight** (`Described { job }` or `DescriptionDeclined { job }`
+    matches the job that asked, once): a stale or repeated one changes nothing, as `Titled { ask }` does.
+  - **The worker reads two bounded windows of the log** (the first 16 events, for the person's first message, and the
+    last 512, for the latest messages and the last `thread_described`), never the whole log. A conversation whose last
+    description is further back than 512 events counts the messages of the window only.
+  - **`ThreadForkedData.description`** (absent when the parent had none) carries the parent's description, so the
+    projection of a fork's log says it as it says the title; `NewThreadRecord.description` and `Commit.description`
+    carry it to the store (`Some("")` clears; the column is `NULL` when there is none).
+  - **The time of one try is the endpoint's `timeoutSecs`**, which the application holds as the task's `timeout` and
+    applies around the call, whatever the adapter does. The tries (3) and the backoff stay the dispatcher's.
+  - **`GET /api/config`** is built here because ADR 0034 assigns it to this PR with its first key,
+    `ui.showDescriptions`. The application serves a typed `PublicConfig` the binary fills from the `ui` section, so the
+    API crate knows nothing of the file.
+  - **A prompt file is read through the same door as a secret's file** (the loader's resolver), at most 4 KiB, UTF-8,
+    trimmed, and is not a secret: `--print-config` prints the reference, never the text.
 
 ## Context
 

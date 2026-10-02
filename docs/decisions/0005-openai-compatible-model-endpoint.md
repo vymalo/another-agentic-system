@@ -1,6 +1,6 @@
 # ADR 0005 — Model access through any OpenAI-compatible endpoint
 
-- **Status:** accepted (2026-09-28). Amends the earlier "AISIX as the single LLM gateway". Amended (2026-10-01): the orchestrator makes its first model call, thread titles, through the `ChatModel` port (status note below). Amended (2026-10-02): the title is in the person's language, named in the prompt and checked (second status note). Extended (2026-10-02) by [ADR 0035](0035-utility-model-tasks.md): named endpoints (`ChatRequest.endpoint`), and the title and a new description as utility tasks, each with its endpoint, model, prompt and language rule (not built: plan 10, S18).
+- **Status:** accepted (2026-09-28). Amends the earlier "AISIX as the single LLM gateway". Amended (2026-10-01): the orchestrator makes its first model call, thread titles, through the `ChatModel` port (status note below). Amended (2026-10-02): the title is in the person's language, named in the prompt and checked (second status note). Extended (2026-10-02) by [ADR 0035](0035-utility-model-tasks.md): named endpoints (`ChatRequest.endpoint`), and the title and a new description as utility tasks, each with its endpoint, model, prompt and language rule (built: plan 10, S18, 2026-10-02).
 
 ## Context
 

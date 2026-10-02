@@ -425,12 +425,13 @@ function normalise(list: Frame[], threadId: string): Frame[] {
 }
 
 /**
- * The scenarios that fork a thread (ADR 0029). The mock has no route to fork one yet, so these are
- * not driven through its server: its projection reads the golden event log, which holds the copy
- * of the parent's events, the `thread_forked` event and the fork's own life, and must produce
+ * The scenarios that fork a thread (ADR 0029) or describe one (ADR 0035). The mock has no route to
+ * fork one or to write a description yet, so these are not driven through its server: its
+ * projection reads the golden event log, which holds the copy of the parent's events, the
+ * `thread_forked` event and the fork's own life, or the `thread_described` events, and must produce
  * the golden stream.
  */
-const FORKS = ["fork", "fork-blocked"];
+const FORKS = ["fork", "fork-blocked", "description"];
 
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {

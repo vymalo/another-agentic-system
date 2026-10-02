@@ -5,12 +5,20 @@
   ([ADR 0009](0009-swappable-implementations-at-build-time.md), status note there). **Built (2026-10-02, PR S9):** the
   loader and every key marked *now* in [`docs/api/config.md`](../api/config.md); the keys marked *reserved* come with
   S11 (ADR 0032, `artifacts.maxPerJobBytes` and `fetchHosts`), S14/S15 (ADR 0033, authentication and roles), each written
-  with its PR, and S18 ([ADR 0035](0035-utility-model-tasks.md), utility model tasks).
+  with its PR. **Built (2026-10-02, PR S18, [ADR 0035](0035-utility-model-tasks.md)):** `models.endpoints` with several
+  endpoints, `tasks.title` and `tasks.description` with their `system`, `maxTokens`, `language`, `maxChars` and
+  `recompute`, the `ui` section and `GET /api/config`; `tasks.turnSummary` and `tasks.stepLabel` stay reserved.
   Status note (2026-10-02, PR S10): the `artifacts` section is built
   ([ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)): `store`, `fs.root`, `s3.*` and `maxFileBytes`, and its
   two S3 credentials are secrets by reference, so the contract has ten (the eight below and these two). `artifacts.store`
   is the key that selects an implementation among the compiled-in ones: a store whose Cargo feature (`artifacts-fs`,
   `artifacts-s3`) is not in the build is exit 78 naming the feature.
+  Status note (2026-10-02, PR S18): the legacy variables are now the endpoint `default` **beside** the file's other
+  endpoints (S9 refused a file that named another one, because the build took one), and `ORCH_TITLE_MODEL` the title
+  task on it. A prompt file (`tasks.<task>.system: { file }`) is read in the rules pass through the resolver, like a
+  secret's file, and its errors name the key and the path, never the text. `Validated` carries the prompts beside the
+  secrets. `GET /api/config` is behind the identity layer as decided in section 6, served as `{"ui": {...}}` from a
+  typed `PublicConfig` the composition root fills.
   Status note (2026-10-02, PR S9): the three passes each list all of their errors, and a pass runs only when the one
   before it found none (a rule cannot be checked on a value that is not there), so one run lists the shape errors, or,
   when there are none, the rule errors; `docs/api/config.md` says so. A role that serves no routes (`worker`) is not

@@ -3,7 +3,7 @@
 # rot unnoticed (check-mocks.sh does the WireMock stand-in agents):
 #   * the mock web-search MCP server, `mock-mcp-search` (dev/mock-mcp-search, dev/README.md "Mock web search (MCP)");
 #   * the scripted models of the agents that are only a folder, on the WireMock `mock-model` (dev/wiremock/model,
-#     dev/README.md "Several agents"; and `mock-title`, the title model of the orchestrator): `mock-persona` greets from the persona lines, `mock-researcher` calls
+#     dev/README.md "Several agents"; `mock-title` and `mock-description`, the models of the orchestrator's own title and description tasks): `mock-persona` greets from the persona lines, `mock-researcher` calls
 #     `search__web_search` and then names the first link of the results, and for a question that carries
 #     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers. Since adam-rs
 #     cf6ddbb the agents stream their model calls, so each of those scripts also has an SSE twin (`*-stream.json`, the same
@@ -138,7 +138,7 @@ check "journal: DELETE empties it" \
   "$(curl -fsS -X DELETE "$SEARCH/__journal" -o /dev/null && curl -fsS "$SEARCH/__journal" | jq -c .calls)" "[]"
 
 # --- the scripted models of the agents that are only a folder (WireMock, dev/wiremock/model) ---------
-echo "== $MODEL (the model mock: mock-persona, mock-researcher, mock-title)"
+echo "== $MODEL (the model mock: mock-persona, mock-researcher, mock-title, mock-description)"
 check "model mock: health" "$(curl -sS -o /dev/null -w '%{http_code}' "$MODEL/__admin/health")" "200"
 curl -sS -X DELETE "$MODEL/__admin/requests" -o /dev/null
 
@@ -296,6 +296,25 @@ check "mock-title: [mock:title-zh] in the conversation is always titled in Chine
 curl -sS -X POST "$MODEL/__admin/scenarios/reset" -o /dev/null
 check "mock-title: the base path may be /chat/completions as well as /v1/chat/completions" \
   "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "hello"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
+  "Mock thread title"
+
+# `mock-description`: the orchestrator's second utility task (the description of a thread, ADR 0035): a description, "nothing to
+# describe yet" and a failing model, chosen by the markers in the conversation it is shown. The orchestrator reaches it at the
+# endpoint `small` (`http://mock-model:8080`, no `/v1`), so the path without `/v1` is the one that matters here.
+description_body=$(jq -cn '{model: "mock-description", messages: [{role: "system", content: "Say in one sentence what the person wants and where it stands."}, {role: "user", content: "Describe this conversation.\n```conversation\nuser: hello\nagent: hi there\n```\nWrite the description in English."}]}')
+check "mock-description: any conversation is described as \"Mock thread description.\" (at /chat/completions, the endpoint small)" \
+  "$(printf '%s' "$description_body" | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '[.choices[0].finish_reason, .choices[0].message.content] | join(" | ")')" \
+  "stop | Mock thread description."
+check "mock-description: and at /v1/chat/completions too" \
+  "$(printf '%s' "$description_body" | curl -sS -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
+  "Mock thread description."
+check "mock-description: [mock:undescribed] in the conversation says NONE (nothing to describe yet)" \
+  "$(jq -cn '{model: "mock-description", messages: [{role: "user", content: "```conversation\nuser: [mock:undescribed] hello\n```"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
+  "NONE"
+check "mock-description: [mock:description-error] in the conversation is a 500" \
+  "$(jq -cn '{model: "mock-description", messages: [{role: "user", content: "```conversation\nuser: [mock:description-error] hello\n```"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @-)" "500"
+check "mock-description: the title model does not answer for it, nor it for the title (the model name decides)" \
+  "$(jq -cn '{model: "mock-title", messages: [{role: "user", content: "```conversation\nuser: [mock:undescribed] hello\n```"}]}' | curl -sS -X POST "$MODEL/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -r '.choices[0].message.content')" \
   "Mock thread title"
 
 check "an unknown model is a 404, not an invented answer" \
