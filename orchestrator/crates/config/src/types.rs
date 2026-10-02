@@ -92,6 +92,10 @@ pub struct Config {
     /// The utility tasks that use a model: a task that is absent is off (ADR 0035).
     #[serde(default)]
     pub tasks: Tasks,
+    /// The artifact store: where the files agents hand over are kept (ADR 0032). Absent: no store,
+    /// and a file an agent hands over is refused with "no artifact store configured".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<Artifacts>,
     /// The thread tools: the endpoint agents call back, and the key of its tokens.
     #[serde(default)]
     pub thread_tools: ThreadTools,
@@ -603,6 +607,123 @@ pub struct TitleTask {
     /// The model's name at the endpoint. Replaces `ORCH_TITLE_MODEL`.
     #[schemars(length(min = 1))]
     pub model: String,
+}
+
+/// The most `artifacts.maxFileBytes` may be, 256 MiB: a file is written whole (it is held in memory
+/// once), so the cap is a memory bound as much as a policy.
+pub const MAX_FILE_BYTES_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// The default of `artifacts.maxFileBytes`, 10 MiB.
+pub const DEFAULT_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The default of `artifacts.s3.region`.
+pub const DEFAULT_S3_REGION: &str = "us-east-1";
+
+/// Which store keeps the files, one of the implementations of the `ArtifactStore` port. A build
+/// that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactStoreKind {
+    /// A directory (`artifacts.fs.root`), for development and a single node. Needs the Cargo
+    /// feature `artifacts-fs`. Every role of the deployment must see the same directory.
+    Fs,
+    /// An S3 bucket (`artifacts.s3`), AWS or any S3-compatible server. Needs the Cargo feature
+    /// `artifacts-s3`.
+    S3,
+}
+
+impl ArtifactStoreKind {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ArtifactStoreKind::Fs => "fs",
+            ArtifactStoreKind::S3 => "s3",
+        }
+    }
+
+    /// The Cargo feature of the `orchestrator` package that compiles the store in.
+    pub const fn feature(self) -> &'static str {
+        match self {
+            ArtifactStoreKind::Fs => "artifacts-fs",
+            ArtifactStoreKind::S3 => "artifacts-s3",
+        }
+    }
+}
+
+/// The artifact store (ADR 0032): the files an agent hands over, kept by the hash of their
+/// content. The event log keeps only the reference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Artifacts {
+    /// Which store: `fs` (a directory, for development and one node) or `s3` (a bucket). The
+    /// section of the store chosen is required, and the other one is an error.
+    pub store: ArtifactStoreKind,
+    /// The directory store. Required with `store: fs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs: Option<ArtifactsFs>,
+    /// The S3 store. Required with `store: s3`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s3: Option<ArtifactsS3>,
+    /// The largest file kept, in bytes: 1 to 268435456 (256 MiB), default 10485760 (10 MiB). A
+    /// larger file is not kept: the agent's artifact is shown without it, with an error.
+    #[serde(default = "default_max_file_bytes")]
+    #[schemars(range(min = 1, max = 268_435_456))]
+    pub max_file_bytes: u64,
+}
+
+fn default_max_file_bytes() -> u64 {
+    DEFAULT_MAX_FILE_BYTES
+}
+
+/// The directory store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArtifactsFs {
+    /// The directory the files are kept in; relative to this file's directory. It is made (mode
+    /// 0700) when it is not there. The worker that keeps a file and the control plane that serves
+    /// it must see the same directory: one machine, or a shared volume.
+    #[schemars(length(min = 1))]
+    pub root: String,
+}
+
+/// The S3 store. The bucket is addressed in the path of the endpoint when there is one, and as a
+/// host name of AWS otherwise. The credentials are static: this build does not read `AWS_*`
+/// variables or an instance profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArtifactsS3 {
+    /// The bucket, which must exist: 3 to 63 characters, lower case letters, digits, `-` and `.`,
+    /// starting and ending with a letter or a digit.
+    pub bucket: String,
+    /// The region (default `us-east-1`, which S3-compatible servers that have none expect).
+    #[serde(default = "default_s3_region")]
+    #[schemars(length(min = 1, max = 32))]
+    pub region: String,
+    /// The server's URL, `http` or `https`, for a server other than AWS (`https://minio.example.com`).
+    /// Absent: AWS S3 in `region`. An `http` endpoint sends the files in the clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// A prefix every key is put under (`orchestrator/prod`: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-`
+    /// and `/`, no `..`, at most 128 characters), so one bucket serves several deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 128))]
+    pub prefix: Option<String>,
+    /// The access key id, a secret.
+    pub access_key_id: SecretRef,
+    /// The secret access key, a secret.
+    pub secret_access_key: SecretRef,
+    /// Seconds one request may take, 1 to 3600 (default 60).
+    #[serde(default = "default_s3_timeout_secs")]
+    #[schemars(range(min = 1, max = 3600))]
+    pub timeout_secs: u64,
+}
+
+fn default_s3_region() -> String {
+    DEFAULT_S3_REGION.to_owned()
+}
+
+fn default_s3_timeout_secs() -> u64 {
+    60
 }
 
 /// The thread tools (`thread-tools/v1`).

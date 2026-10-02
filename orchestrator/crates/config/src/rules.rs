@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::error::{ConfigError, ErrorKind};
 use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
-use crate::types::{Config, SecretRef, Surface};
+use crate::types::{ArtifactStoreKind, Artifacts, Config, SecretRef, Surface};
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
 pub const DEFAULT_MAX_ATTEMPTS: u64 = 3;
@@ -38,6 +38,10 @@ pub struct Secrets {
     pub thread_tools_secret: Option<Secret>,
     /// `threadTools.previousSecret`.
     pub thread_tools_previous_secret: Option<Secret>,
+    /// `artifacts.s3.accessKeyId`; `None` unless `artifacts.store` is `s3`.
+    pub s3_access_key_id: Option<Secret>,
+    /// `artifacts.s3.secretAccessKey`; `None` unless `artifacts.store` is `s3`.
+    pub s3_secret_access_key: Option<Secret>,
     /// `models.endpoints.<name>.apiKey`, by endpoint name.
     pub model_api_keys: BTreeMap<String, Secret>,
     /// `webhooks.generic.secrets`; empty when the section is absent or this process serves no
@@ -76,6 +80,21 @@ impl Validated {
             .tokens_file
             .as_deref()
             .map(|p| join(&self.base_dir, p))
+    }
+}
+
+impl Validated {
+    /// `artifacts.fs.root`, resolved against the directory of the configuration file; `None`
+    /// unless `artifacts.store` is `fs`.
+    pub fn artifacts_fs_root(&self) -> Option<PathBuf> {
+        let artifacts = self.config.artifacts.as_ref()?;
+        match artifacts.store {
+            ArtifactStoreKind::Fs => artifacts
+                .fs
+                .as_ref()
+                .map(|fs| join(&self.base_dir, &fs.root)),
+            ArtifactStoreKind::S3 => None,
+        }
     }
 }
 
@@ -242,6 +261,11 @@ impl Checker<'_> {
             );
         }
 
+        // artifacts
+        if let Some(artifacts) = &cfg.artifacts {
+            self.artifacts(artifacts);
+        }
+
         // threadTools
         let tools = &cfg.thread_tools;
         match (&tools.url, &tools.secret) {
@@ -324,6 +348,66 @@ impl Checker<'_> {
         }
     }
 
+    /// The store `artifacts.store` names has its section, the other one has none, and what the
+    /// section holds can be used.
+    fn artifacts(&mut self, artifacts: &Artifacts) {
+        let (wanted, other, other_name) = match artifacts.store {
+            ArtifactStoreKind::Fs => (artifacts.fs.is_some(), artifacts.s3.is_some(), "s3"),
+            ArtifactStoreKind::S3 => (artifacts.s3.is_some(), artifacts.fs.is_some(), "fs"),
+        };
+        let store = artifacts.store.as_str();
+        if !wanted {
+            self.invalid(
+                format!("artifacts.{store}"),
+                format!("required when artifacts.store is {store}"),
+            );
+        }
+        if other {
+            self.invalid(
+                format!("artifacts.{other_name}"),
+                format!("only with artifacts.store: {other_name}; this file's store is {store}"),
+            );
+        }
+        if let Some(fs) = &artifacts.fs
+            && fs.root.trim().is_empty()
+        {
+            self.invalid("artifacts.fs.root", "must name a directory");
+        }
+        if let Some(s3) = &artifacts.s3 {
+            if !is_bucket_name(&s3.bucket) {
+                self.invalid(
+                    "artifacts.s3.bucket",
+                    "a bucket name is 3 to 63 characters: lower case letters, digits, - and ., \
+                     starting and ending with a letter or a digit",
+                );
+            }
+            if !is_slug(&s3.region) {
+                self.invalid(
+                    "artifacts.s3.region",
+                    "a region is a slug: a to z, 0 to 9 and -, 1 to 32 characters (us-east-1)",
+                );
+            }
+            if let Some(endpoint) = &s3.endpoint
+                && !is_base_url(endpoint)
+            {
+                self.invalid(
+                    "artifacts.s3.endpoint",
+                    "expected an http:// or https:// URL with a host, without credentials, query \
+                     or fragment, like https://minio.example.com:9000",
+                );
+            }
+            if let Some(prefix) = &s3.prefix
+                && !is_key_prefix(prefix)
+            {
+                self.invalid(
+                    "artifacts.s3.prefix",
+                    "a prefix is made of a to z, A to Z, 0 to 9, ., _, - and /, has no .. part and \
+                     is at most 128 characters",
+                );
+            }
+        }
+    }
+
     fn hosts(&mut self, path: &str, hosts: Option<&[String]>) {
         for (i, host) in hosts.unwrap_or_default().iter().enumerate() {
             if !is_authority(host) {
@@ -373,6 +457,17 @@ impl Checker<'_> {
                 "is the same as threadTools.secret",
             );
         }
+        // the credentials of the S3 store; the section of another store is already an error
+        let (s3_access_key_id, s3_secret_access_key) = match &cfg.artifacts {
+            Some(artifacts) if artifacts.store == ArtifactStoreKind::S3 => match &artifacts.s3 {
+                Some(s3) => (
+                    self.resolve(&s3.access_key_id, "artifacts.s3.accessKeyId", true),
+                    self.resolve(&s3.secret_access_key, "artifacts.s3.secretAccessKey", true),
+                ),
+                None => (None, None),
+            },
+            _ => (None, None),
+        };
         let mut model_api_keys = BTreeMap::new();
         for (name, endpoint) in &cfg.models.endpoints {
             let path = format!("models.endpoints.{}.apiKey", crate::tree::display_key(name));
@@ -400,6 +495,8 @@ impl Checker<'_> {
             registry_agent_token,
             thread_tools_secret,
             thread_tools_previous_secret,
+            s3_access_key_id,
+            s3_secret_access_key,
             model_api_keys,
             webhook_generic,
             webhook_github,
@@ -492,6 +589,29 @@ fn is_slug(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// An S3 bucket name as the services take it: 3 to 63 characters of `a-z`, `0-9`, `-` and `.`,
+/// starting and ending with a letter or a digit.
+fn is_bucket_name(name: &str) -> bool {
+    let edge = |b: Option<&u8>| b.is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    (3..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+        && edge(name.as_bytes().first())
+        && edge(name.as_bytes().last())
+}
+
+/// A key prefix: letters, digits, `.`, `_`, `-` and `/`, something besides `/`, no `..` part, at
+/// most 128 characters.
+fn is_key_prefix(prefix: &str) -> bool {
+    prefix.bytes().any(|b| b != b'/')
+        && prefix.len() <= 128
+        && prefix
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+        && !prefix.split('/').any(|part| part == "..")
 }
 
 /// `http` or `https` with a host.

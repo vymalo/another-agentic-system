@@ -705,7 +705,7 @@ fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_
     let config = write_config(
         &scratch,
         "version: 1\nnonsense: 1\nserver: { role: hunter2-s3cr3t, listen: 5 }\n\
-         database: hunter2-s3cr3t\nartifacts: { store: fs }\ndispatcher: { concurrency: 0 }\n",
+         database: hunter2-s3cr3t\nartifacts: { store: fs, fs: { root: x }, maxPerJobBytes: 1 }\ndispatcher: { concurrency: 0 }\n",
     );
     let out = run_to_end(&[], &[("ORCH_CONFIG_FILE", path_str(&config))]);
     assert_eq!(out.status.code(), Some(78), "EX_CONFIG: {}", out.stderr);
@@ -714,7 +714,7 @@ fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_
         "server.role: not an allowed value",
         "server.listen: expected string",
         "database: ",
-        "artifacts: reserved for PR S10 and S11 (ADR 0032, artifacts)",
+        "artifacts.maxPerJobBytes: reserved for PR S11 (ADR 0032, ingesting files)",
         "dispatcher.concurrency: must be at least 1",
     ] {
         assert!(

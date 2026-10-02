@@ -43,9 +43,11 @@ pub use secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 pub use shape::{check, schema, schema_text};
 pub use tree::parse_yaml;
 pub use types::{
-    Agents, Auth, Config, DEFAULT_LISTEN, Database, Dispatcher, Endpoint, Gate, GateCi, GateSource,
-    Inbox, Log, LogFormat, Mcp, Models, Registry, Role, SecretRef, Server, Steps, Surface, Tasks,
-    ThreadTools, TitleTask, WebhookGeneric, WebhookGithub, Webhooks,
+    Agents, ArtifactStoreKind, Artifacts, ArtifactsFs, ArtifactsS3, Auth, Config, DEFAULT_LISTEN,
+    DEFAULT_MAX_FILE_BYTES, DEFAULT_S3_REGION, Database, Dispatcher, Endpoint, Gate, GateCi,
+    GateSource, Inbox, Log, LogFormat, MAX_FILE_BYTES_LIMIT, Mcp, Models, Registry, Role,
+    SecretRef, Server, Steps, Surface, Tasks, ThreadTools, TitleTask, WebhookGeneric,
+    WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.
