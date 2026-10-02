@@ -846,6 +846,12 @@ pub const MAX_FILE_BYTES_LIMIT: u64 = 256 * 1024 * 1024;
 /// The default of `artifacts.maxFileBytes`, 10 MiB.
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// The most `artifacts.maxPerJobBytes` may be, 4 GiB.
+pub const MAX_PER_JOB_BYTES_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The default of `artifacts.maxPerJobBytes`, 100 MiB.
+pub const DEFAULT_MAX_PER_JOB_BYTES: u64 = 100 * 1024 * 1024;
+
 /// The default of `artifacts.s3.region`.
 pub const DEFAULT_S3_REGION: &str = "us-east-1";
 
@@ -899,10 +905,27 @@ pub struct Artifacts {
     #[serde(default = "default_max_file_bytes")]
     #[schemars(range(min = 1, max = 268_435_456))]
     pub max_file_bytes: u64,
+    /// The most bytes of files one job keeps (a job is one run of an agent): 1 to 4294967296
+    /// (4 GiB), default 104857600 (100 MiB). A job also keeps at most 50 files. A file that would go
+    /// over either is not kept, like one over `maxFileBytes`.
+    #[serde(default = "default_max_per_job_bytes")]
+    #[schemars(range(min = 1, max = 4_294_967_296u64))]
+    pub max_per_job_bytes: u64,
+    /// The hosts a `url` part of an agent's artifact may be fetched from (`files.example.com`,
+    /// `10.0.0.5:8080`: a host name or address, with or without a port, no scheme, path, wildcard
+    /// or credentials). Default none: a `url` part stays a link. A host here is **trusted**: the
+    /// orchestrator reads a file from it on an agent's say-so, over `http` or `https`, with no
+    /// redirect followed, no credential sent, within `maxFileBytes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fetch_hosts: Vec<String>,
 }
 
 fn default_max_file_bytes() -> u64 {
     DEFAULT_MAX_FILE_BYTES
+}
+
+fn default_max_per_job_bytes() -> u64 {
+    DEFAULT_MAX_PER_JOB_BYTES
 }
 
 /// The directory store.

@@ -338,7 +338,6 @@ tasks:
   turnSummary: {}
   stepLabel: {}
 auth: { defaultRole: user, roles: {} }
-artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
 ";
     let errors = lines(load(text, &minimal_env()));
     let find = |key: &str| {
@@ -353,8 +352,6 @@ artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
         ("tasks.stepLabel", "no PR yet"),
         ("auth.defaultRole", "PR S15 (ADR 0033"),
         ("auth.roles", "PR S15 (ADR 0033"),
-        ("artifacts.maxPerJobBytes", "PR S11 (ADR 0032"),
-        ("artifacts.fetchHosts", "PR S11 (ADR 0032"),
     ] {
         let line = find(key);
         assert!(
@@ -362,7 +359,7 @@ artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
             "{line}"
         );
     }
-    // `artifacts` itself is built (ADR 0032): only the two keys of the ingest are reserved
+    // `artifacts` is built (ADR 0032, S10 and S11): none of its keys is reserved
     assert!(
         !errors.iter().any(|l| l.starts_with("artifacts: ")
             || l.starts_with("artifacts.store")
@@ -396,7 +393,9 @@ fn s3_env() -> Fake {
 
 /// The artifact store (ADR 0032).
 mod artifacts {
-    use orch_config::{ArtifactStoreKind, DEFAULT_MAX_FILE_BYTES, DEFAULT_S3_REGION};
+    use orch_config::{
+        ArtifactStoreKind, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PER_JOB_BYTES, DEFAULT_S3_REGION,
+    };
 
     use super::*;
 
@@ -444,6 +443,63 @@ artifacts:
         );
         assert_eq!(valid.config.artifacts.unwrap().max_file_bytes, 1);
         assert!(valid.secrets.s3_access_key_id.is_none());
+    }
+
+    #[test]
+    fn the_job_limit_and_the_fetch_hosts_default_to_100_mib_and_none() {
+        let text = format!("{MINIMAL}artifacts:\n  store: fs\n  fs: {{ root: files }}\n");
+        let artifacts = load(&text, &minimal_env())
+            .unwrap()
+            .config
+            .artifacts
+            .unwrap();
+        assert_eq!(artifacts.max_per_job_bytes, DEFAULT_MAX_PER_JOB_BYTES);
+        assert_eq!(DEFAULT_MAX_PER_JOB_BYTES, 100 * 1024 * 1024);
+        assert!(artifacts.fetch_hosts.is_empty());
+        let set = format!(
+            "{MINIMAL}artifacts: {{ store: fs, fs: {{ root: files }}, maxPerJobBytes: 5, \
+             fetchHosts: [files.example.com, \"10.0.0.5:8080\"] }}\n"
+        );
+        let artifacts = load(&set, &minimal_env())
+            .unwrap()
+            .config
+            .artifacts
+            .unwrap();
+        assert_eq!(artifacts.max_per_job_bytes, 5);
+        assert_eq!(
+            artifacts.fetch_hosts,
+            ["files.example.com", "10.0.0.5:8080"]
+        );
+    }
+
+    #[test]
+    fn fetch_hosts_are_hosts_and_the_job_limit_has_a_range() {
+        let bad = format!(
+            "{MINIMAL}artifacts: {{ store: fs, fs: {{ root: files }}, \
+             fetchHosts: [\"https://files.example.com\", \"*.example.com\", ok.example.com] }}\n"
+        );
+        let errors = lines(load(&bad, &minimal_env()));
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(
+            errors[0].starts_with("artifacts.fetchHosts[0]: not a host name"),
+            "{errors:?}"
+        );
+        assert!(
+            errors[1].starts_with("artifacts.fetchHosts[1]: not a host name"),
+            "{errors:?}"
+        );
+        for value in ["0", "4294967297"] {
+            let text = format!(
+                "{MINIMAL}artifacts: {{ store: fs, fs: {{ root: files }}, maxPerJobBytes: {value} }}\n"
+            );
+            let errors = lines(load(&text, &minimal_env()));
+            assert!(
+                errors
+                    .iter()
+                    .any(|l| l.starts_with("artifacts.maxPerJobBytes: ")),
+                "{value}: {errors:?}"
+            );
+        }
     }
 
     #[test]
