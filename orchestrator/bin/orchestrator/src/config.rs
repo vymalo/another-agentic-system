@@ -4319,6 +4319,7 @@ mod tests {
         let directory = AgentDirectory::new(cfg.agents.clone());
         let app = App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),
                 agents: ScriptedAgent::new(),

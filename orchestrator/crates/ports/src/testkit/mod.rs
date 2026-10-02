@@ -9,6 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 pub mod agent_client;
+pub mod artifact_store;
 pub mod chat_model;
 pub mod registry;
 pub mod thread_store;
@@ -167,6 +168,36 @@ macro_rules! chat_model_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::chat_model::$case(fixture).await,
                     None => eprintln!("skipped: no model available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `ArtifactStore` conformance case. `$make` is an
+/// `async fn() -> Option<S>` returning a fresh store (`None` skips the suite, for a bucket nobody
+/// gave the test). Each case gives up after 60 s and uses thread ids of its own. The calling crate
+/// needs `tokio` (with `macros` and `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! artifact_store_conformance {
+    ($make:path) => {
+        $crate::artifact_store_conformance!(@cases $make;
+            put_then_get_round_trips an_empty_file_round_trips the_meta_is_kept_whole
+            putting_twice_is_the_same_as_once the_same_content_under_another_name_is_one_file
+            a_missing_key_is_none a_large_file_streams
+            concurrent_puts_of_one_key_leave_one_whole_file
+            concurrent_puts_of_different_files_keep_each
+            delete_removes_the_file_and_only_that_file threads_do_not_share_a_file
+            bytes_that_are_not_the_key_are_refused
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::artifact_store::$case(store).await,
+                    None => eprintln!("skipped: no artifact store available"),
                 }
             }
         )*

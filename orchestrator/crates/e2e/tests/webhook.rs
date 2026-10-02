@@ -122,6 +122,7 @@ async fn rig<S: ThreadStore, W: Wakeup>(
     let app = Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store,
                 wakeup,
                 agents: ScriptedAgent::new(),

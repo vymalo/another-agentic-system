@@ -170,6 +170,7 @@ fn app<S: ThreadStore, W: Wakeup>(
     Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store,
                 wakeup,
                 agents,

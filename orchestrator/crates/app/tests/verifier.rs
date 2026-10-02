@@ -52,6 +52,7 @@ fn app_with(w: &World, attempts: u32) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
                 agents: w.agent.clone(),
@@ -608,6 +609,7 @@ async fn a_verifier_that_is_not_configured_any_more_holds_the_thread() {
     let lean = Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
                 agents: w.agent.clone(),

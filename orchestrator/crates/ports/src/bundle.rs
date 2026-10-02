@@ -1,5 +1,6 @@
 use crate::{
-    AgentClient, AgentRegistry, ChatModel, Clock, FixedRegistry, IdGen, ThreadStore, Wakeup,
+    AgentClient, AgentRegistry, ArtifactStore, ChatModel, Clock, FixedRegistry, IdGen, NoArtifacts,
+    ThreadStore, Wakeup,
 };
 
 /// A static-dispatch bundle of every port (ADR 0009: composition happens at build time).
@@ -18,6 +19,8 @@ pub trait Ports: Send + Sync + 'static {
     type Model: ChatModel;
     /// The agents that exist right now (ADR 0022).
     type Registry: AgentRegistry;
+    /// The files agents hand over (`NoArtifacts` in a deployment without a store, ADR 0032).
+    type Artifacts: ArtifactStore;
 
     /// The store.
     fn store(&self) -> &Self::Store;
@@ -33,12 +36,15 @@ pub trait Ports: Send + Sync + 'static {
     fn model(&self) -> &Self::Model;
     /// The agent registry.
     fn registry(&self) -> &Self::Registry;
+    /// The artifact store.
+    fn artifacts(&self) -> &Self::Artifacts;
 }
 
-/// The plain struct implementation of [`Ports`]. The registry type defaults to the static list,
-/// so a `PortSet<S, W, A, C, I, M>` that never heard of registries still names a complete bundle.
+/// The plain struct implementation of [`Ports`]. The registry type defaults to the static list and
+/// the artifact store to none, so a `PortSet<S, W, A, C, I, M>` that never heard of registries or
+/// files still names a complete bundle.
 #[derive(Debug, Clone)]
-pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry> {
+pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry, X = NoArtifacts> {
     /// The store.
     pub store: S,
     /// The wakeup channel.
@@ -53,9 +59,11 @@ pub struct PortSet<S, W, A, C, I, M, R = FixedRegistry> {
     pub model: M,
     /// The agent registry.
     pub registry: R,
+    /// The artifact store.
+    pub artifacts: X,
 }
 
-impl<S, W, A, C, I, M, R> Ports for PortSet<S, W, A, C, I, M, R>
+impl<S, W, A, C, I, M, R, X> Ports for PortSet<S, W, A, C, I, M, R, X>
 where
     S: ThreadStore,
     W: Wakeup,
@@ -64,6 +72,7 @@ where
     I: IdGen,
     M: ChatModel,
     R: AgentRegistry,
+    X: ArtifactStore,
 {
     type Store = S;
     type Wakeup = W;
@@ -72,6 +81,7 @@ where
     type Ids = I;
     type Model = M;
     type Registry = R;
+    type Artifacts = X;
 
     fn store(&self) -> &S {
         &self.store
@@ -93,5 +103,8 @@ where
     }
     fn registry(&self) -> &R {
         &self.registry
+    }
+    fn artifacts(&self) -> &X {
+        &self.artifacts
     }
 }

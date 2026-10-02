@@ -274,6 +274,7 @@ impl Harness {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    artifacts: orch_ports::NoArtifacts,
                     store: store.clone(),
                     wakeup: MemoryWakeup::new(),
                     agents: agent.clone(),

@@ -751,6 +751,7 @@ async fn a_thread_may_require_the_verifier_only_where_there_is_one_to_ask() {
 fn try_app(w: &World, cfg: AppConfig) -> Result<TestApp, GateError> {
     App::new(
         PortSet {
+            artifacts: orch_ports::NoArtifacts,
             store: w.store.clone(),
             wakeup: w.wakeup.clone(),
             agents: w.agent.clone(),
