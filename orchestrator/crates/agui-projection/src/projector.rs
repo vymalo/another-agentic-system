@@ -631,7 +631,7 @@ impl Projector {
             return;
         }
         let mut start = TextMessageStartEvent::new(message_id.clone(), TextMessageRole::User);
-        start.base.metadata = Some(user_message_metadata(&ev.actor, d.delivery));
+        start.base.metadata = Some(user_message_metadata(&ev.actor, d));
         out.push(start.into());
         out.push(TextMessageContentEvent::new(message_id.clone(), d.text.clone()).into());
         out.push(TextMessageEndEvent::new(message_id).into());

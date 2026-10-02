@@ -1,7 +1,7 @@
 //! The `vymalo.*` vocabulary of `docs/api/agui.md`: activity types, metadata keys, error codes.
 
 use orch_agui_proto::Metadata;
-use orch_core::{Actor, AgentStatus, AnswerVia, Delivery, MessagePurpose};
+use orch_core::{Actor, AgentStatus, AnswerVia, MessagePurpose, UserMessageData};
 use serde_json::{Value, json};
 
 /// The member of every `vymalo.*` activity's content that says when its event happened (the
@@ -84,6 +84,13 @@ pub const SEND_KEY: &str = "vymalo.send";
 /// `delivery`. Absent on every other message (and on every log written before the field existed).
 pub const DELIVERY_KEY: &str = "vymalo.delivery";
 
+/// Metadata key of the agents a person mentioned in a message (ADR 0026, `mentions/v1`): the
+/// references as the `user_message` stores them, `[{agentId, label, start, end, cardUrl?}]`
+/// (offsets are UTF-16 code units into the message text), on the `TEXT_MESSAGE_START` of a user
+/// message that has any. Absent when it has none, and in every log written before the field
+/// existed.
+pub const MENTIONS_KEY: &str = "vymalo.mentions";
+
 /// `SUBAGENT_ERROR.code` of a sub-agent step that ended `failed`.
 pub const CODE_STEP_FAILED: &str = "step_failed";
 
@@ -113,12 +120,20 @@ pub(crate) fn actor_metadata(actor: &Actor) -> Metadata {
     metadata
 }
 
-/// The metadata of a user message's `TEXT_MESSAGE_START`: who wrote it, and how it reached the
-/// agent when the log says (`vymalo.delivery`: no member when it does not).
-pub(crate) fn user_message_metadata(actor: &Actor, delivery: Option<Delivery>) -> Metadata {
+/// The metadata of a user message's `TEXT_MESSAGE_START`: who sent it, how it reached the agent
+/// when the log says (`vymalo.delivery`), and the agents it mentions (`vymalo.mentions`) when it
+/// does: no member when it does not.
+pub(crate) fn user_message_metadata(actor: &Actor, message: &UserMessageData) -> Metadata {
     let mut metadata = actor_metadata(actor);
-    if let Some(delivery) = delivery {
+    if let Some(delivery) = message.delivery {
         metadata.insert(DELIVERY_KEY.to_owned(), Value::from(delivery.as_str()));
+    }
+    if !message.mentions.is_empty() {
+        metadata.insert(
+            MENTIONS_KEY.to_owned(),
+            // plain strings and numbers: it always serialises
+            serde_json::to_value(&message.mentions).unwrap_or(Value::Null),
+        );
     }
     metadata
 }

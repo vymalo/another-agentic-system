@@ -81,6 +81,7 @@ fn delegate() -> NewOutbox {
             release: None,
             new_job: false,
             ui_catalog: None,
+            mentions: Vec::new(),
         },
     }
 }
@@ -2435,6 +2436,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             text: "you were wrong".to_owned(),
             release: None,
             ui_catalog: None,
+            mentions: Vec::new(),
         }
     );
     assert!(
@@ -2452,6 +2454,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             release: None,
             new_job: false,
             ui_catalog: None,
+            mentions: Vec::new(),
         }
     );
 }

@@ -16,10 +16,11 @@ use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
-    THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY, check_catalog_schemas,
+    THREAD_MENTIONS_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY, check_catalog_schemas, mentions,
 };
 use orch_core::{
-    AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UiCatalogData, report,
+    AgentId, AgentTarget, Event, Input, Mention, Origin, ThreadId, ThreadRecord, UiCatalogData,
+    report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -59,6 +60,7 @@ pub(crate) async fn run<P: Ports>(
     let gate = gate_request(&input)?;
     let catalog = catalog_request(&input)?;
     let tools = tools_request(&input)?;
+    let mentioned = mentions_request(&input)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     let agent = AgentId::new(agent_id);
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
@@ -77,6 +79,7 @@ pub(crate) async fn run<P: Ports>(
                 gate: gate.as_ref(),
                 catalog: catalog.as_ref(),
                 tools: &tools,
+                mentions: &mentioned,
             },
         )
         .await?
@@ -164,6 +167,66 @@ fn tools_request(input: &RunAgentInput) -> Result<Vec<String>, Problem> {
         .collect()
 }
 
+/// The agents the run's message mentions, `forwardedProps["vymalo.mentions"]` (ADR 0026,
+/// [`mentions-v1`](../../../../docs/api/mentions-v1.md)): an array of at most 16 references
+/// `{agentId, label, start, end, cardUrl?}`, `null` or absent for none. Like the gate it is read on
+/// every run, so one that is not an array of references of that shape is a **400** every time,
+/// before anything is written. Whether the references hold against the message, the registry and
+/// the person's roles (**422**, **503**) is decided by [`App`] when the message is applied
+/// ([`mentions::check`] and [`App::create_thread_as`] or [`App::submit`]), before it is written.
+fn mentions_request(input: &RunAgentInput) -> Result<Vec<Mention>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_MENTIONS_KEY))
+    else {
+        return Ok(Vec::new());
+    };
+    mentions::parse(value).map_err(|e| Problem::bad_request(e.to_string()))
+}
+
+/// Gives the mentions of the run to the first input that is a message (a stop included), once:
+/// they are the message's own, and offsets index its text. Every other input is left as it is.
+fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
+    match input {
+        Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions: _,
+        } => Input::UserMessage {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions: std::mem::take(mentions),
+        },
+        Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions: _,
+        } => Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog,
+            mentions: std::mem::take(mentions),
+        },
+        other => other,
+    }
+}
+
 /// Gives the first input that is a message or an action the catalog the run carried, once.
 fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
     match input {
@@ -174,6 +237,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             run_id,
             origin,
             catalog: _,
+            mentions,
         } => Input::UserMessage {
             user,
             text,
@@ -181,6 +245,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             run_id,
             origin,
             catalog: catalog.take(),
+            mentions,
         },
         Input::StopAndSend {
             user,
@@ -189,6 +254,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             run_id,
             origin,
             catalog: _,
+            mentions,
         } => Input::StopAndSend {
             user,
             text,
@@ -196,6 +262,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             run_id,
             origin,
             catalog: catalog.take(),
+            mentions,
         },
         Input::UiAction {
             user,
@@ -317,11 +384,13 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
 }
 
 /// What a run asks for beside its messages, read from its `forwardedProps` before anything is
-/// written: the gate, the UI catalog and the MCP servers to attach.
+/// written: the gate, the UI catalog, the MCP servers to attach and the agents the message
+/// mentions.
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
     tools: &'a [String],
+    mentions: &'a [Mention],
 }
 
 /// One look at the thread and one try at doing what the request asks. `None` means "look
@@ -339,6 +408,7 @@ async fn attempt<P: Ports>(
         gate,
         catalog,
         tools,
+        mentions,
     } = *requested;
     let user = &principal.user;
     // The thread as the log holds it now, if there is one, and the person may act on it: a run
@@ -448,6 +518,7 @@ async fn attempt<P: Ports>(
                 origin: Origin::Agui,
                 ui_catalog: catalog.cloned(),
                 tools: tools.to_vec(),
+                mentions: mentions.to_vec(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -482,9 +553,12 @@ async fn attempt<P: Ports>(
                 .any(|i| matches!(i, Input::UserMessage { .. } | Input::StopAndSend { .. }));
             // the catalog goes with the first message or action, which is the input it came with
             let mut carried = catalog.cloned();
+            // and the mentions with the first message, whose text they index
+            let mut mentioned = mentions.to_vec();
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
+                let next = mentioning(next, &mut mentioned);
                 match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -496,6 +570,9 @@ async fn attempt<P: Ports>(
                         );
                     }
                 }
+            }
+            if !mentioned.is_empty() {
+                tracing::warn!(%thread, "{THREAD_MENTIONS_KEY} on a run with no message to carry them was ignored");
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
             let start = if opens_run {
@@ -541,6 +618,7 @@ mod tests {
             run_id: None,
             origin: Origin::Agui,
             catalog: None,
+            mentions: Vec::new(),
         }
     }
 

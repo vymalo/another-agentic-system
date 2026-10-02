@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey,
-    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
+    MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 
 /// The URL the scripted agent reports as a produced artifact.
@@ -69,6 +69,9 @@ pub enum Call {
         history: Option<Box<ForkHistory>>,
         /// The message was sent into the running task `task_id` as a steer (`steer/v1`, ADR 0036).
         steer: bool,
+        /// The agents the message mentions, as the dispatcher resolved them (ADR 0026): what an
+        /// adapter would tell an agent whose card lists `mentions/v1`.
+        mentions: Box<[MentionInfo]>,
     },
     /// `resubscribe`.
     Resubscribe {
@@ -839,6 +842,7 @@ impl AgentClient for ScriptedAgent {
                 thread_tools: req.thread_tools.clone().map(Box::new),
                 history: req.history.clone().map(Box::new),
                 steer: req.steer,
+                mentions: req.mentions.clone().into_boxed_slice(),
             });
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));

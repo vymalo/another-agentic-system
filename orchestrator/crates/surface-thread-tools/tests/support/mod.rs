@@ -268,6 +268,7 @@ impl Harness {
                     run_id: None,
                     origin: Origin::Agui,
                     catalog: Some(catalog.clone()),
+                    mentions: Vec::new(),
                 },
                 None,
             )

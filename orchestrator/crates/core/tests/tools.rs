@@ -123,6 +123,7 @@ fn the_set_is_carried_to_the_next_job() {
             run_id: None,
             origin: orch_core::Origin::Agui,
             catalog: None,
+            mentions: Vec::new(),
         },
     )
     .unwrap();

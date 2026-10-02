@@ -50,6 +50,7 @@ fn user_ids(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             run_id: Some(run_id.to_owned()),
             origin: orch_core::Origin::Agui,
             delivery: None,
+            mentions: Vec::new(),
         }),
     )
 }
@@ -125,6 +126,136 @@ fn project(events: &[Event]) -> Vec<Vec<Frame>> {
 
 fn all_lines(events: &[Event]) -> Vec<String> {
     lines(&support::flatten(&project(events)))
+}
+
+/// ADR 0026: the agents a person mentioned are on the `TEXT_MESSAGE_START` of their message, as
+/// `metadata["vymalo.mentions"]`, the references as the log stores them. A message without any has
+/// no such member, and the text frames are the ones it always had.
+#[test]
+fn a_user_message_that_mentions_agents_shows_them_in_its_start_metadata() {
+    use orch_core::Mention;
+    let mentions = vec![
+        Mention {
+            agent_id: AgentId::new("mock-researcher"),
+            label: "@researcher".to_owned(),
+            start: 3,
+            end: 14,
+            card_url: Some("http://mock-researcher:8080/.well-known/agent-card.json".to_owned()),
+        },
+        Mention {
+            agent_id: AgentId::new("mock-coder"),
+            label: "@coder".to_owned(),
+            start: 20,
+            end: 26,
+            card_url: None,
+        },
+    ];
+    let text = "\u{1F604} @researcher then @coder";
+    let with = ev(
+        1,
+        alice(),
+        EventBody::UserMessage(UserMessageData {
+            mentions: mentions.clone(),
+            ..UserMessageData::new(text)
+        }),
+    );
+    let start_of = |event: &Event| {
+        let frames = support::flatten(&project(std::slice::from_ref(event)));
+        let start = frames
+            .iter()
+            .find(|f| matches!(f.event, orch_agui_proto::Event::TextMessageStart(_)))
+            .expect("a message start");
+        serde_json::to_value(&start.event).unwrap()
+    };
+    let start = start_of(&with);
+    assert_eq!(start["role"], "user");
+    assert_eq!(
+        start["metadata"]["vymalo.mentions"],
+        serde_json::json!([
+            {"agentId": "mock-researcher", "label": "@researcher", "start": 3, "end": 14,
+             "cardUrl": "http://mock-researcher:8080/.well-known/agent-card.json"},
+            {"agentId": "mock-coder", "label": "@coder", "start": 20, "end": 26}
+        ])
+    );
+    // the actor is still there beside it
+    assert_eq!(
+        start["metadata"]["vymalo.actor"]["name"],
+        "alice@example.com"
+    );
+    // and the text is the text, untouched
+    let got = all_lines(&[with]);
+    assert!(got.iter().any(|l| l.contains(text)), "{got:?}");
+
+    // none: no member
+    let start = start_of(&user(1, "plain words"));
+    assert!(
+        start["metadata"].get("vymalo.mentions").is_none(),
+        "{start}"
+    );
+}
+
+/// ADR 0036 and ADR 0026 together: a message that was sent while the agent worked **and** mentions
+/// agents says both on its `TEXT_MESSAGE_START`: `vymalo.delivery` (how it reached the agent) and
+/// `vymalo.mentions` (the references as the log stores them), beside the actor. Each is absent
+/// when the log has nothing to say of it.
+#[test]
+fn a_steered_message_that_mentions_agents_has_both_delivery_and_mentions_in_its_start_metadata() {
+    use orch_core::{Delivery, Mention};
+    let mention = Mention {
+        agent_id: AgentId::new("mock-coder"),
+        label: "@coder".to_owned(),
+        start: 5,
+        end: 11,
+        card_url: None,
+    };
+    let message = |seq: i64, delivery: Option<Delivery>, mentions: Vec<Mention>| {
+        ev(
+            seq,
+            alice(),
+            EventBody::UserMessage(UserMessageData {
+                delivery,
+                mentions,
+                ..UserMessageData::new("also @coder go")
+            }),
+        )
+    };
+    let start_metadata = |event: Event| {
+        let events = vec![user(1, "go"), status(2, AgentStatus::Working, None), event];
+        let frames = support::flatten(&project(&events));
+        let start = frames
+            .iter()
+            .filter_map(|f| match &f.event {
+                orch_agui_proto::Event::TextMessageStart(s) if s.message_id == "evt-3".into() => {
+                    Some(s)
+                }
+                _ => None,
+            })
+            .next()
+            .expect("the message start");
+        serde_json::to_value(start.base.metadata.as_ref().unwrap()).unwrap()
+    };
+    for delivery in [Delivery::Steer, Delivery::Interrupt] {
+        let meta = start_metadata(message(3, Some(delivery), vec![mention.clone()]));
+        assert_eq!(meta["vymalo.delivery"], delivery.as_str(), "{meta}");
+        assert_eq!(
+            meta["vymalo.mentions"],
+            serde_json::json!([
+                {"agentId": "mock-coder", "label": "@coder", "start": 5, "end": 11}
+            ]),
+            "{meta}"
+        );
+        assert_eq!(meta["vymalo.actor"]["name"], "alice@example.com", "{meta}");
+    }
+    // each member only when the log has it
+    let steer_only = start_metadata(message(3, Some(Delivery::Steer), Vec::new()));
+    assert_eq!(steer_only["vymalo.delivery"], "steer");
+    assert!(steer_only.get("vymalo.mentions").is_none(), "{steer_only}");
+    let mentions_only = start_metadata(message(3, None, vec![mention]));
+    assert!(
+        mentions_only.get("vymalo.delivery").is_none(),
+        "{mentions_only}"
+    );
+    assert!(mentions_only.get("vymalo.mentions").is_some());
 }
 
 /// A log that reaches `blocked` through an agent asking a question.

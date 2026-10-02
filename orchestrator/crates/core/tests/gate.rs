@@ -64,6 +64,7 @@ fn message(text: &str) -> Input {
         run_id: None,
         origin: orch_core::Origin::Agui,
         catalog: None,
+        mentions: Vec::new(),
     }
 }
 fn ci_report(name: &str, sha: &str, conclusion: CiConclusion) -> CiReport {
@@ -2774,6 +2775,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
         &[Input::Redeliver {
             text: "second".into(),
             sent: false,
+            mentions: Vec::new(),
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));

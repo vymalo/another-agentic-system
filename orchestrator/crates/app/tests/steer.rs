@@ -346,6 +346,211 @@ async fn a_thread_that_is_not_working_is_not_steered() {
     run.shutdown().await;
 }
 
+// ---------------------------------------------------------------- mentions (ADR 0026)
+
+/// What the person's message `echo @coder later` mentions: `@coder` at 5..11.
+fn coder_mention() -> orch_core::Mention {
+    orch_core::Mention {
+        agent_id: AgentId::new("coder"),
+        label: "@coder".to_owned(),
+        start: 5,
+        end: 11,
+        card_url: None,
+    }
+}
+
+/// The same, as the dispatcher resolves it from the directory when it sends.
+fn coder_info() -> orch_ports::MentionInfo {
+    orch_ports::MentionInfo {
+        agent_id: AgentId::new("coder"),
+        name: Some("Coder".to_owned()),
+        label: "@coder".to_owned(),
+        start: 5,
+        end: 11,
+        card_url: Some("https://coder.example.com/.well-known/agent-card.json".to_owned()),
+    }
+}
+
+/// A message that mentions `coder`, sent through the door that checks mentions.
+async fn mention_coder(app: &TestApp, id: ThreadId) {
+    let outcome = app
+        .submit(
+            &alice(),
+            id,
+            Input::UserMessage {
+                user: alice(),
+                text: "echo @coder later".to_owned(),
+                message_id: Some("m-2".to_owned()),
+                run_id: Some("r-2".to_owned()),
+                origin: orch_core::Origin::Agui,
+                catalog: None,
+                mentions: vec![coder_mention()],
+            },
+            Some("k:m-2".to_owned()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, orch_app::ApplyOutcome::Applied { .. }));
+}
+
+/// The mentions each request carried, by whether it was a steer, for the texts that were sent.
+fn mentions_sent(w: &World, steer: bool) -> Vec<(String, Vec<orch_ports::MentionInfo>)> {
+    w.agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Send {
+                text,
+                steer: s,
+                mentions,
+                ..
+            } if s == steer => Some((text, mentions.into_vec())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_steer_is_told_the_mentions_of_the_message_as_a_delegation_is() {
+    let w = steerable();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "gate refactor the parser").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    mention_coder(&app, t.id).await;
+    eventually("the task read the message", || async {
+        said(&app, t.id)
+            .await
+            .contains(&"steered: echo @coder later".to_owned())
+            .then_some(())
+    })
+    .await;
+    // into the running task, with the agent named as the directory gives it now
+    assert_eq!(
+        mentions_sent(&w, true),
+        [("echo @coder later".to_owned(), vec![coder_info()])]
+    );
+    assert_eq!(
+        mentions_sent(&w, false),
+        [("gate refactor the parser".to_owned(), vec![])],
+        "the first message mentions nobody"
+    );
+    // the log holds the references as sent, and the message is a steer
+    let logged = events(&app, &alice(), t.id)
+        .await
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::UserMessage(m) if m.delivery.is_some() => Some(m),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].mentions, [coder_mention()]);
+    assert_eq!(logged[0].delivery, Some(orch_core::Delivery::Steer));
+    w.agent.release_gate();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_steer_that_falls_back_is_the_delegation_with_the_same_mentions() {
+    let w = World::new(); // `plain` lists nothing: the steer is refused
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "gate refactor the parser").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    mention_coder(&app, t.id).await;
+
+    // the row was a steer; it is now a delegation behind the one in flight, holding the references
+    let rows = eventually("the steer fell back to a delegation", || async {
+        let open = w.store.list_open_outbox(t.id).await.unwrap();
+        (open.len() == 2 && open.iter().all(|r| r.kind == OutboxKind::Delegate)).then_some(open)
+    })
+    .await;
+    let mentioning: Vec<_> = rows
+        .iter()
+        .filter_map(|r| match &r.payload {
+            orch_ports::OutboxPayload::Delegate {
+                text,
+                mentions,
+                new_job,
+                ..
+            } => Some((text.clone(), mentions.clone(), *new_job)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        mentioning.contains(&("echo @coder later".to_owned(), vec![coder_mention()], false)),
+        "{mentioning:?}"
+    );
+    assert!(mentions_sent(&w, false).iter().all(|(_, m)| m.is_empty()));
+
+    // after the turn it reaches the agent as a message, told the same references
+    w.agent.release_gate();
+    eventually("the second delegation was sent", || async {
+        (mentions_sent(&w, false).len() == 2).then_some(())
+    })
+    .await;
+    assert_eq!(
+        mentions_sent(&w, false)[1],
+        ("echo @coder later".to_owned(), vec![coder_info()])
+    );
+    // the attempt into the task was refused (the card lists no `steer/v1`): nothing steered was read
+    assert!(
+        said(&app, t.id)
+            .await
+            .iter()
+            .all(|m| !m.starts_with("steered:")),
+        "{:?}",
+        said(&app, t.id).await
+    );
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_steered_message_that_becomes_the_next_job_keeps_its_mentions() {
+    let w = steerable();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "gate refactor the parser").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    // the task ended at the instant of the steer: the row is requeued and redelivered as job 2
+    w.agent.fail_next_sends(1, || {
+        AgentError::Unsupported("task task-1 is in a terminal state".to_owned())
+    });
+    mention_coder(&app, t.id).await;
+    eventually("the steer was refused and requeued", || async {
+        let open = w.store.list_open_outbox(t.id).await.unwrap();
+        (steers(&w).len() == 1
+            && open
+                .iter()
+                .filter(|r| r.kind == OutboxKind::Delegate)
+                .count()
+                == 2)
+            .then_some(())
+    })
+    .await;
+    w.agent.release_gate();
+    eventually("job 2 ran", || async {
+        let ev = events(&app, &alice(), t.id).await;
+        (shape(&ev)
+            .iter()
+            .filter(|k| *k == "thread_state:done")
+            .count()
+            == 2)
+            .then_some(())
+    })
+    .await;
+    assert_eq!(
+        mentions_sent(&w, false).last(),
+        Some(&("echo @coder later".to_owned(), vec![coder_info()]))
+    );
+    // the job the message landed in may ask the agent it named
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert!(thread.job.mentioned.contains(&AgentId::new("coder")));
+    run.shutdown().await;
+}
+
 // ---------------------------------------------------------------- open question 33
 
 fn directory_with_reviewer() -> AgentDirectory {

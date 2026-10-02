@@ -301,6 +301,8 @@ pub(crate) fn conclude(
                 text: rework_prompt(job.attempt, max, job.task.as_deref(), &failed),
                 // the author still works on the same screen
                 catalog: job.catalog.redelivery(),
+                // the rework is the core's own words: nobody is mentioned in it
+                mentions: Vec::new(),
             });
             job.attempt = next;
             // the agent goes again: a new turn

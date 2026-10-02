@@ -765,6 +765,7 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
             run_id: Some("run-1".into()),
             origin: orch_core::Origin::Agui,
             delivery: None,
+            mentions: Vec::new(),
         }),
         Actor::system(),
     );
@@ -879,6 +880,115 @@ fn a_job_ledger_without_after_stop_is_not_stopping_and_does_not_write_one() {
     assert_eq!(serde_json::from_value::<Job>(v).unwrap(), stopping);
     // the next job is what the text was held for
     assert_eq!(stopping.next().after_stop, None);
+}
+
+/// ADR 0026: `mentions` is the references as the person sent them, camelCase, absent when there
+/// are none. A log written before the field existed reads as a message that mentions nobody and
+/// writes the same bytes back; a job ledger stored before `mentioned` existed has none either.
+#[test]
+fn a_message_that_mentions_agents_stores_them_as_sent_and_an_old_one_mentions_nobody() {
+    let message = UserMessageData {
+        mentions: vec![
+            Mention {
+                agent_id: AgentId::new("mock-researcher"),
+                label: "@researcher".into(),
+                start: 3,
+                end: 14,
+                card_url: Some("http://mock-researcher:8080/.well-known/agent-card.json".into()),
+            },
+            Mention {
+                agent_id: AgentId::new("mock-coder"),
+                label: "@coder".into(),
+                start: 20,
+                end: 26,
+                card_url: None,
+            },
+        ],
+        ..UserMessageData::new("so @researcher check it, then @coder plot it")
+    };
+    let v = serde_json::to_value(&message).unwrap();
+    assert_eq!(
+        v,
+        json!({
+            "text": "so @researcher check it, then @coder plot it",
+            "mentions": [
+                {"agentId": "mock-researcher", "label": "@researcher", "start": 3, "end": 14,
+                 "cardUrl": "http://mock-researcher:8080/.well-known/agent-card.json"},
+                {"agentId": "mock-coder", "label": "@coder", "start": 20, "end": 26}
+            ]
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<UserMessageData>(v).unwrap(),
+        message
+    );
+
+    // the whole event, as the log stores it
+    let logged = event(
+        EventBody::UserMessage(message.clone()),
+        Actor::user(&UserId::new("a@b.c")),
+    );
+    let back: Event = serde_json::from_value(serde_json::to_value(&logged).unwrap()).unwrap();
+    assert_eq!(back, logged);
+
+    // a log written before the field: no member, none read, none written
+    let old: UserMessageData =
+        serde_json::from_value(json!({"text": "hi", "messageId": "m", "delivery": "steer"}))
+            .unwrap();
+    assert!(old.mentions.is_empty());
+    assert_eq!(
+        serde_json::to_value(&old).unwrap(),
+        json!({"text": "hi", "messageId": "m", "delivery": "steer"}),
+        "an empty list is not spelled, not even as []"
+    );
+    assert!(UserMessageData::new("hi").mentions.is_empty());
+    let old_event: Event = serde_json::from_value(json!({
+        "threadId": "00000000-0000-0000-0000-000000000001", "seq": 1,
+        "at": "2026-01-01T00:00:00Z", "actor": {"type": "user", "name": "a@b.c"},
+        "kind": "user_message", "data": {"text": "hi"}
+    }))
+    .unwrap();
+    let EventBody::UserMessage(old_message) = old_event.body else {
+        panic!("a user message");
+    };
+    assert!(old_message.mentions.is_empty());
+
+    // a reference is a closed shape: a member this build does not know is not dropped silently
+    // by the stored type (it is checked at the door, `orch_app::mentions`), but a reference
+    // without its members is refused here
+    assert!(
+        serde_json::from_value::<UserMessageData>(
+            json!({"text": "x", "mentions": [{"agentId": "a", "label": "@a", "start": 0}]})
+        )
+        .is_err()
+    );
+
+    // the job ledger
+    let ledger: Job = serde_json::from_value(json!({"number": 2, "attempt": 1})).unwrap();
+    assert!(ledger.mentioned.is_empty() && ledger.after_stop_mentions.is_empty());
+    let v = serde_json::to_value(&ledger).unwrap();
+    assert!(v.get("mentioned").is_none() && v.get("afterStopMentions").is_none());
+    let with = Job {
+        mentioned: [AgentId::new("mock-researcher"), AgentId::new("mock-coder")].into(),
+        after_stop_mentions: vec![Mention {
+            agent_id: AgentId::new("mock-coder"),
+            label: "@coder".into(),
+            start: 0,
+            end: 6,
+            card_url: None,
+        }],
+        ..Job::default()
+    };
+    let v = serde_json::to_value(&with).unwrap();
+    assert_eq!(
+        v["mentioned"],
+        json!(["mock-coder", "mock-researcher"]),
+        "sorted"
+    );
+    assert_eq!(serde_json::from_value::<Job>(v).unwrap(), with);
+    // the next job starts with the mentions of its own message only
+    let next = with.next();
+    assert!(next.mentioned.is_empty() && next.after_stop_mentions.is_empty());
 }
 
 #[test]

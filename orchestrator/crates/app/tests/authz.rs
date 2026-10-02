@@ -263,6 +263,7 @@ async fn an_administrator_reads_every_thread_and_changes_only_their_own() {
                     run_id: None,
                     origin: Origin::default(),
                     catalog: None,
+                    mentions: Vec::new(),
                 },
                 None,
             )
@@ -634,6 +635,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                     run_id: None,
                     origin: Origin::default(),
                     catalog: None,
+                    mentions: Vec::new(),
                 },
                 None,
             )

@@ -199,8 +199,37 @@ pub struct SendRequest {
     /// fails closed (ADR 0008): when the live card read for this call does not list the extension it
     /// sends nothing and answers [`AgentError::Unsupported`], so a message for a running task never
     /// reaches an agent that did not promise to read it. A steer carries `task_id` and the thread's
-    /// context, no `reference_task_ids`, no release and no catalog.
+    /// context, no `reference_task_ids`, no release and no catalog; it carries the message's
+    /// [`mentions`](Self::mentions), as a delegation does.
     pub steer: bool,
+    /// The agents the message mentions (ADR 0026, `mentions/v1`), each with what the dispatcher
+    /// could read of it from the registry when it sent: empty for a message that mentions none
+    /// and for the verifier. An adapter puts them in the message only to an agent whose live card
+    /// lists the `mentions/v1` extension (it names the agents the person addressed; it is
+    /// never a way to run them), and says so in the activation.
+    pub mentions: Vec<MentionInfo>,
+}
+
+/// One mentioned agent as the addressed agent is told of it (`mentions/v1`,
+/// `docs/api/mentions-v1.md` section 4): the reference the person sent, and the agent's display
+/// name and card URL **as the registry gives them at send time**.
+///
+/// A mention the dispatcher could not resolve then (the registry is down, the agent was removed
+/// since) has neither: it goes with its id, label and offsets only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionInfo {
+    /// The mentioned agent.
+    pub agent_id: AgentId,
+    /// Its display name, from the registry; `None` when it could not be read.
+    pub name: Option<String>,
+    /// The label as it stands in the message text.
+    pub label: String,
+    /// Where the label begins in the text, in UTF-16 code units.
+    pub start: u32,
+    /// Where the label ends (exclusive), in UTF-16 code units.
+    pub end: u32,
+    /// The agent's card URL, from the registry; `None` when it could not be read.
+    pub card_url: Option<String>,
 }
 
 /// A task on an agent.

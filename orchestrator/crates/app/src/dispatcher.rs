@@ -14,7 +14,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, ThreadId,
+    AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention, ThreadId,
     ThreadState, ToolsGrant, TransitionError, fork_history, report,
 };
 use orch_ports::{
@@ -156,6 +156,9 @@ struct Loaded {
 struct Adopt {
     /// The words of the message.
     text: String,
+    /// The agents it mentions, as its row holds them: they join the job the message is adopted
+    /// into.
+    mentions: Vec<Mention>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -490,13 +493,20 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job, ui_catalog) = match row.payload.clone() {
+        let (content, release, new_job, ui_catalog, mentions) = match row.payload.clone() {
             OutboxPayload::Delegate {
                 text,
                 release,
                 new_job,
                 ui_catalog,
-            } => (SendContent::Text(text), release, new_job, ui_catalog),
+                mentions,
+            } => (
+                SendContent::Text(text),
+                release,
+                new_job,
+                ui_catalog,
+                mentions,
+            ),
             OutboxPayload::Action {
                 action,
                 at,
@@ -507,6 +517,7 @@ impl<P: Ports> Dispatcher<P> {
                 release,
                 false,
                 ui_catalog,
+                Vec::new(),
             ),
             OutboxPayload::Steer { .. }
             | OutboxPayload::Cancel { .. }
@@ -542,7 +553,7 @@ impl<P: Ports> Dispatcher<P> {
             // A message the person wrote while the job was open, behind a delegation that ended
             // it: the thread is a conversation (ADR 0020), so it is the next job's, not lost. A
             // person who stopped the thread asked for that; an action belongs to a finished job.
-            if let OutboxPayload::Delegate { text, .. } = &row.payload
+            if let OutboxPayload::Delegate { text, mentions, .. } = &row.payload
                 && state != ThreadState::Cancelled
             {
                 // The row ends in the same commit as the job it starts: a crash between the two
@@ -555,6 +566,7 @@ impl<P: Ports> Dispatcher<P> {
                         Input::Redeliver {
                             text: text.clone(),
                             sent: false,
+                            mentions: mentions.clone(),
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -637,6 +649,10 @@ impl<P: Ports> Dispatcher<P> {
             }
             _ => None,
         };
+        // The agents the message mentions, named as the registry gives them now (ADR 0026); the
+        // adapter tells the agent only when its live card lists `mentions/v1`. Read at every
+        // send, so a retry names what the registry says at the retry.
+        let mentions = self.app.mention_infos(&mentions).await;
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             message_id: row.id.to_string(),
@@ -657,12 +673,14 @@ impl<P: Ports> Dispatcher<P> {
             ),
             history,
             steer: false,
+            mentions,
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
         let adopt = match (&row.payload, &continues) {
-            (OutboxPayload::Delegate { text, .. }, None) => Some(Adopt {
+            (OutboxPayload::Delegate { text, mentions, .. }, None) => Some(Adopt {
                 text: text.clone(),
+                mentions: mentions.clone(),
                 previous: binding.task_id.clone(),
             }),
             _ => None,
@@ -716,6 +734,7 @@ impl<P: Ports> Dispatcher<P> {
         let input = Input::Redeliver {
             text: adopt.text.clone(),
             sent: true,
+            mentions: adopt.mentions.clone(),
         };
         match self
             .app
@@ -746,7 +765,7 @@ impl<P: Ports> Dispatcher<P> {
     /// message reaches the agent after the turn, as before (and is redelivered by ADR 0020's rule
     /// if the job has ended by then). An agent that cannot be reached is retried first.
     async fn steer(&self, row: OutboxItem) -> Done {
-        let OutboxPayload::Steer { text, .. } = row.payload.clone() else {
+        let OutboxPayload::Steer { text, mentions, .. } = row.payload.clone() else {
             return self
                 .finish(
                     &row,
@@ -776,6 +795,9 @@ impl<P: Ports> Dispatcher<P> {
         let Some(task_id) = running else {
             return self.steer_falls_back(&row, "no task is running").await;
         };
+        // The agents the message mentions, named as the registry gives them now (ADR 0026), as for
+        // a delegation: the adapter tells the agent only when its live card lists `mentions/v1`.
+        let mentions = self.app.mention_infos(&mentions).await;
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             // the row's id is the message's: a row retried after a lost lease is the same message,
@@ -793,6 +815,7 @@ impl<P: Ports> Dispatcher<P> {
             ),
             history: None,
             steer: true,
+            mentions,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;

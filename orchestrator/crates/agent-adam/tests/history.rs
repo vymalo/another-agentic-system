@@ -20,6 +20,7 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
         thread_tools: None,
         history,
         steer: false,
+        mentions: Vec::new(),
     }
 }
 

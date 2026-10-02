@@ -443,6 +443,7 @@ impl<P: Ports> McpServer<P> {
             run_id: None,
             origin: Origin::Mcp,
             catalog: None,
+            mentions: Vec::new(),
         };
         // No idempotency key: an `answer` is not made safe to retry (ADR 0019).
         match self.app.submit(who, id, input, None).await {

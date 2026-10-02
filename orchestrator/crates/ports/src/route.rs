@@ -114,6 +114,7 @@ mod tests {
             thread_tools: None,
             history: None,
             steer: false,
+            mentions: Vec::new(),
         }
     }
 

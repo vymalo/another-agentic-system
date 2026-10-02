@@ -102,6 +102,7 @@ fn request(
         thread_tools: None,
         history: None,
         steer: false,
+        mentions: Vec::new(),
     }
 }
 
