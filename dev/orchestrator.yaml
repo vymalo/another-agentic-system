@@ -1,0 +1,78 @@
+# The configuration of the compose `orchestrator` service and of the `split` profile's workers (ADR 0034,
+# docs/api/config.md; the schema is docs/api/config.schema.json). compose.yaml mounts it read-only at
+# /etc/orchestrator/config.yaml and sets ORCH_CONFIG_FILE, next to the agents file and the MCP tokens file it names
+# (relative paths are relative to this file's directory).
+#
+# A secret is only a reference, `{ env: NAME }` or `{ file: PATH }`, never a value: compose sets each of these
+# variables to a dummy, beside the service, so a reader sees which values are secrets. Nothing in this file is one.
+#
+# What stays a variable of compose.yaml: the secrets and the `tokenEnv` variables of the agents file and of the
+# MCP tokens file, and the process overrides (ORCH_ROLE: `all` unless the split profile makes the `orchestrator`
+# service a control plane; ORCH_INSTANCE_ID: the name of a worker). The split workers' short lease
+# (OUTBOX_LEASE_SECS) is a variable too, because a profile cannot change one key of a file (ADR 0034, open question 44).
+#
+# Check it without starting anything (the secrets' variables must be set; any dummy will do):
+#   orchestrator --config dev/orchestrator.yaml --print-config
+version: 1
+
+server:
+  # The AG-UI routes the web speaks, the MCP server (ADR 0019) at /mcp, the thread tools, and the two CI webhooks
+  # (ADR 0017). The workers serve no routes: they read the same list and mount none of it.
+  surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]
+  # The chat, for the `web_url` of the MCP tool `start_job`. The edge listens on 8080 unless EDGE_PORT says
+  # otherwise, and then compose.yaml sets ORCH_PUBLIC_URL (over this).
+  publicUrl: http://127.0.0.1:8080
+
+log:
+  format: text
+
+database:
+  url: { env: DATABASE_URL }
+
+agents:
+  file: agents.yaml
+  # The platform's agent registry (agent-registry/v1, ADR 0022), here the WireMock `mock-registry`: its agents are
+  # read live beside the ones of agents.yaml (which come first), so an agent added to the mock shows in the picker
+  # without a restart, and a mock that is down leaves the static agents and says so (dev/README.md, "The agent
+  # registry"). Take `registry` out and only agents.yaml is read.
+  registry:
+    url: http://mock-registry:8080/registry/v1/agents
+    agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN } # sent to every agent the registry lists; the mocks accept any token
+
+# The orchestrator's own model call (ADR 0005, ADR 0035): after the agent's first reply it asks a model for a 3 to 6 word
+# title of the thread. Offline that model is the scripted `mock-model` (dev/wiremock/model/mappings/title.json), which
+# answers "Mock thread title" to `mock-title`. A model that is down costs a thread nothing: it keeps the first words of
+# its first message. Take `tasks.title` out and no model is ever asked (compose.live.yaml asks the real one).
+models:
+  endpoints:
+    default:
+      baseUrl: http://mock-model:8080/v1
+tasks:
+  title: { endpoint: default, model: mock-title }
+
+# The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and verified with,
+# and the address agents reach the orchestrator at (the compose network name: the edge does not route the endpoint).
+# EVERY role gets them: a worker mints the grant it sends with a message, the control plane serves the endpoint. The
+# `Host` values are the service's own address, and the edge's.
+threadTools:
+  url: http://orchestrator:8080
+  secret: { env: THREAD_TOOLS_SECRET }
+  allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
+
+# The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which adds no identity to /mcp. The
+# token is named by mcp-tokens.yaml and belongs to the edge's dev user, so the jobs it starts are in the chat. `Host`
+# values are the edge's own address (127.0.0.1 or localhost, any port).
+mcp:
+  tokensFile: mcp-tokens.yaml
+  allowedHosts: [127.0.0.1, localhost]
+
+# The CI webhooks are machine routes: `POST /webhooks/ci` (the generic signed report) and `POST /webhooks/github`
+# (GitHub's own deliveries), signed with these secrets (docs/api/webhooks.md; dev/ci-webhook.sh plays a CI, `mock-ci`
+# is one). A worker serves no routes and is not asked for them.
+webhooks:
+  generic:
+    secrets: [{ env: WEBHOOK_GENERIC_SECRETS }]
+  github:
+    secrets: [{ env: WEBHOOK_GITHUB_SECRETS }]
+
+# No `auth`: the identity comes from the `edge` proxy, as it does from oauth2-proxy.

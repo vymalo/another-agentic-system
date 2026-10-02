@@ -1,0 +1,1859 @@
+//! The configuration file (`ORCH_CONFIG_FILE`, [ADR 0034], [`docs/api/config.md`]): the loader.
+//!
+//! `orch-config` is pure; this is the part that reads: the file, the environment and the secret
+//! files. Loading goes in the three passes of the ADR, with the legacy variables laid over the
+//! tree between the first and the second:
+//!
+//! 1. **Syntax**: `orch_config::parse_yaml`; an error is reported alone.
+//! 2. **The variables over the file.** Each legacy variable (or flag) that is set is converted
+//!    with *today's parser for it* (`ORCH_STEPS_RECORD_IO=yes` is `true`, `ORCH_SURFACES` a comma
+//!    list) and set on its key, and noted: a flag or its variable wins over the file, which wins
+//!    over the default. A secret variable counts as a reference to itself
+//!    (`ORCH_MODEL_API_KEY` set is `apiKey: { env: ORCH_MODEL_API_KEY }`). A value that does not
+//!    parse is an error naming the variable.
+//! 3. **Shape and rules**: `orch_config::check` (every shape error, with reserved keys named),
+//!    then `validate` (the rules between keys, the secrets resolved).
+//!
+//! The valid file is then projected onto [`Args`] and handed to [`Config::load`], the rules the
+//! binary has always had (the gate against the agents, a surface this build compiled in, the
+//! agents file, the MCP tokens), so the file and the variables cannot disagree on what is valid.
+//! Those errors name the legacy variable; they are put in the file's words (the key) and every
+//! quoted piece of them is scrubbed, because no error may carry a value.
+//!
+//! [ADR 0034]: ../../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md
+//! [`docs/api/config.md`]: ../../../../docs/api/config.md
+
+use std::collections::HashMap;
+use std::io::{self, Read as _};
+use std::path::{Path, PathBuf};
+
+use orch_config::{Resolve, SecretRef, Validated};
+use serde_json::{Map, Value};
+
+use super::{
+    Args, Config, ConfigError, LogFormat, Resolved, Surface, flag, number, parse_surfaces,
+};
+
+/// The most a configuration file or an agents file may be.
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+/// What startup says about where a setting came from, logged once the logging is up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Note {
+    /// A variable or flag that is deprecated is set: it wins over the file (`overrides`) or fills
+    /// a key the file leaves out. A warning, naming the variable and the key, never the value.
+    Deprecated {
+        /// The variable.
+        var: &'static str,
+        /// The key it is for, such as `tasks.title.model`.
+        key: String,
+        /// Whether the file had the key (the variable overrides it) or not.
+        overrides: bool,
+    },
+    /// A process override (`ORCH_ROLE`, `ORCH_INSTANCE_ID`, `RUST_LOG`, `HOSTNAME`): not
+    /// deprecated, logged at info.
+    Process {
+        /// The variable.
+        var: &'static str,
+        /// What it does, in words.
+        what: &'static str,
+    },
+    /// No file: the environment alone configures the process, which is deprecated.
+    EnvironmentOnly,
+}
+
+impl Note {
+    /// The note in words, without a value.
+    pub fn describe(&self) -> String {
+        match self {
+            Note::Deprecated {
+                var,
+                key,
+                overrides: true,
+            } => format!(
+                "{var} overrides {key} of the configuration file; set it in the file, the variable is deprecated"
+            ),
+            Note::Deprecated {
+                var,
+                key,
+                overrides: false,
+            } => format!(
+                "{var} sets {key}, which the configuration file leaves out; set it in the file, the variable is deprecated"
+            ),
+            Note::Process { var, what } => format!("{var} {what}"),
+            Note::EnvironmentOnly => "no configuration file: the settings come from environment \
+                variables alone, which are deprecated; set ORCH_CONFIG_FILE to a YAML file \
+                (docs/api/config.md)"
+                .to_owned(),
+        }
+    }
+
+    /// Logs the note: a warning for what is deprecated, info for what is not.
+    pub fn log(&self) {
+        let message = self.describe();
+        match self {
+            Note::Deprecated { var, key, .. } => {
+                tracing::warn!(variable = *var, key = key.as_str(), "{message}");
+            }
+            Note::Process { var, .. } => tracing::info!(variable = *var, "{message}"),
+            Note::EnvironmentOnly => tracing::warn!("{message}"),
+        }
+    }
+}
+
+/// The secret flags that were given on the command line, by variable name: a flag wins over its
+/// variable, so a `{ env: DATABASE_URL }` reference reads the flag's value when there is one.
+pub type FlagSecrets = HashMap<&'static str, String>;
+
+/// What loading produced.
+#[derive(Debug)]
+pub struct Loaded {
+    /// The configuration to run with.
+    pub config: Config,
+    /// What to say at startup about where settings came from.
+    pub notes: Vec<Note>,
+    /// The merged configuration as YAML, secrets as references: what `--print-config` prints.
+    /// `None` when the process runs from the environment alone and nothing asked to print.
+    pub merged: Option<String>,
+}
+
+impl Loaded {
+    /// Loads the configuration of this process: the file `ORCH_CONFIG_FILE` names when it is set
+    /// (the variables over it), else the environment alone.
+    pub fn from_process(args: Args, flag_secrets: FlagSecrets) -> Result<Loaded, ConfigError> {
+        if clean(args.config.as_deref()).is_none() && !args.print_config {
+            // The environment alone, exactly as before the file existed.
+            return Config::from_args(args).map(|config| Loaded {
+                config,
+                notes: vec![Note::EnvironmentOnly],
+                merged: None,
+            });
+        }
+        Self::load(
+            args,
+            flag_secrets,
+            |name| std::env::var(name).ok(),
+            |path| read_limited(path, MAX_FILE_BYTES),
+        )
+    }
+
+    /// [`from_process`](Self::from_process) with the environment and the file system as
+    /// parameters, so a test reads neither.
+    ///
+    /// Without a file and without `--print-config` this is exactly [`Config::load`]: the
+    /// environment alone, as before the file existed.
+    pub fn load(
+        args: Args,
+        flag_secrets: FlagSecrets,
+        env: impl Fn(&str) -> Option<String>,
+        read: impl Fn(&Path) -> io::Result<String>,
+    ) -> Result<Loaded, ConfigError> {
+        let file = clean(args.config.as_deref());
+        if file.is_none() && !args.print_config {
+            let config = Config::load(args, &env, &read)?;
+            return Ok(Loaded {
+                config,
+                notes: vec![Note::EnvironmentOnly],
+                merged: None,
+            });
+        }
+        let (text, base_dir) = match &file {
+            Some(path) => {
+                let path = PathBuf::from(path);
+                let text = read(&path).map_err(|_| {
+                    document(format!(
+                        "ORCH_CONFIG_FILE: cannot read the configuration file {}",
+                        path.display()
+                    ))
+                })?;
+                let base = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map_or_else(|| PathBuf::from("."), Path::to_owned);
+                (text, base)
+            }
+            // `--print-config` with no file: the environment alone, through the same checks.
+            None => ("version: 1\n".to_owned(), PathBuf::from(".")),
+        };
+        load_file(
+            &text,
+            &base_dir,
+            args,
+            flag_secrets,
+            env,
+            read,
+            file.is_none(),
+        )
+    }
+}
+
+fn document(line: impl Into<String>) -> ConfigError {
+    ConfigError::Document(vec![line.into()])
+}
+
+/// The text of the file at `path`, at most `limit` bytes.
+pub(super) fn read_limited(path: &Path, limit: u64) -> io::Result<String> {
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the file is too large",
+        ));
+    }
+    Ok(text)
+}
+
+/// A value as the legacy loader sees it: trimmed, and blank is unset.
+fn clean(v: Option<&str>) -> Option<String> {
+    v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+// ---- the variables, as keys -------------------------------------------------------------------
+
+/// How the text of a variable becomes the value of its key, with the parser the variable has
+/// always had.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    /// A string as it is.
+    Text,
+    /// A whole number (the range is the key's, checked with its path).
+    Uint,
+    /// `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`.
+    Bool,
+    /// A comma list, at least one name.
+    List,
+    /// `adam-host`'s role names.
+    Role,
+    /// `ORCH_SURFACES`: known, compiled in, no repeats, the removed `chat-api` named.
+    Surfaces,
+    /// `ORCH_GATE`: known sources.
+    Gate,
+    /// `LOG_FORMAT`: `text`, and anything else is JSON.
+    LogFormat,
+    /// The variable is the secret: the key is `{ env: VAR }`.
+    Secret,
+    /// A list of one reference to this variable, which keeps its comma rule.
+    SecretList,
+}
+
+/// One legacy variable and the key it became.
+struct Setting {
+    /// The variable.
+    var: &'static str,
+    /// The key, as the path of its members.
+    key: &'static [&'static str],
+    kind: Kind,
+    /// The flag's value (the variable's value when there is no flag).
+    get: fn(&Args) -> &Option<String>,
+    /// A process override: not deprecated, logged at info.
+    process: bool,
+    /// The key that must be there for this one to mean anything: the rest of a group whose
+    /// first key is not set is read (so a typo is heard of) and left out, as it always was.
+    needs: Option<&'static [&'static str]>,
+}
+
+const fn setting(
+    var: &'static str,
+    key: &'static [&'static str],
+    kind: Kind,
+    get: fn(&Args) -> &Option<String>,
+) -> Setting {
+    Setting {
+        var,
+        key,
+        kind,
+        get,
+        process: false,
+        needs: None,
+    }
+}
+
+const REGISTRY_URL: &[&str] = &["agents", "registry", "url"];
+const MODEL_BASE_URL: &[&str] = &["models", "endpoints", "default", "baseUrl"];
+const GENERIC_SECRETS: &[&str] = &["webhooks", "generic", "secrets"];
+const GITHUB_SECRETS: &[&str] = &["webhooks", "github", "secrets"];
+
+/// Every variable that has a key (51 of the 53 names; `HOSTNAME` and `RUST_LOG` have none), the
+/// first of a group before the rest of it.
+const SETTINGS: &[Setting] = &[
+    setting("DATABASE_URL", &["database", "url"], Kind::Secret, |a| {
+        &a.database_url
+    }),
+    setting("AGENTS_FILE", &["agents", "file"], Kind::Text, |a| {
+        &a.agents_file
+    }),
+    setting("AGENT_REGISTRY_URL", REGISTRY_URL, Kind::Text, |a| {
+        &a.registry_url
+    }),
+    Setting {
+        needs: Some(REGISTRY_URL),
+        ..setting(
+            "AGENT_REGISTRY_TOKEN",
+            &["agents", "registry", "token"],
+            Kind::Secret,
+            |a| &a.registry_token,
+        )
+    },
+    Setting {
+        needs: Some(REGISTRY_URL),
+        ..setting(
+            "AGENT_REGISTRY_AGENT_TOKEN",
+            &["agents", "registry", "agentToken"],
+            Kind::Secret,
+            |a| &a.registry_agent_token,
+        )
+    },
+    Setting {
+        needs: Some(REGISTRY_URL),
+        ..setting(
+            "AGENT_REGISTRY_TIMEOUT_SECS",
+            &["agents", "registry", "timeoutSecs"],
+            Kind::Uint,
+            |a| &a.registry_timeout_secs,
+        )
+    },
+    Setting {
+        needs: Some(REGISTRY_URL),
+        ..setting(
+            "AGENT_REGISTRY_MAX_AGE_SECS",
+            &["agents", "registry", "maxAgeSecs"],
+            Kind::Uint,
+            |a| &a.registry_max_age_secs,
+        )
+    },
+    setting("LISTEN_ADDR", &["server", "listen"], Kind::Text, |a| {
+        &a.listen_addr
+    }),
+    Setting {
+        process: true,
+        ..setting("ORCH_ROLE", &["server", "role"], Kind::Role, |a| &a.role)
+    },
+    setting(
+        "ORCH_SURFACES",
+        &["server", "surfaces"],
+        Kind::Surfaces,
+        |a| &a.surfaces,
+    ),
+    setting("ORCH_GATE", &["gate", "require"], Kind::Gate, |a| &a.gate),
+    setting(
+        "ORCH_MAX_ATTEMPTS",
+        &["gate", "maxAttempts"],
+        Kind::Uint,
+        |a| &a.max_attempts,
+    ),
+    setting(
+        "ORCH_MAX_ATTEMPTS_CAP",
+        &["gate", "maxAttemptsCap"],
+        Kind::Uint,
+        |a| &a.max_attempts_cap,
+    ),
+    setting("ORCH_VERIFIER", &["gate", "verifier"], Kind::Text, |a| {
+        &a.verifier
+    }),
+    setting("MCP_TOKENS_FILE", &["mcp", "tokensFile"], Kind::Text, |a| {
+        &a.mcp_tokens_file
+    }),
+    setting(
+        "MCP_ALLOWED_HOSTS",
+        &["mcp", "allowedHosts"],
+        Kind::List,
+        |a| &a.mcp_allowed_hosts,
+    ),
+    setting(
+        "ORCH_PUBLIC_URL",
+        &["server", "publicUrl"],
+        Kind::Text,
+        |a| &a.public_url,
+    ),
+    setting(
+        "MCP_WAIT_MAX_SECS",
+        &["mcp", "waitMaxSecs"],
+        Kind::Uint,
+        |a| &a.mcp_wait_max_secs,
+    ),
+    setting(
+        "MCP_WAIT_MAX_CONCURRENT",
+        &["mcp", "waitMaxConcurrent"],
+        Kind::Uint,
+        |a| &a.mcp_wait_max_concurrent,
+    ),
+    setting(
+        "MCP_WAIT_MAX_PER_USER",
+        &["mcp", "waitMaxPerUser"],
+        Kind::Uint,
+        |a| &a.mcp_wait_max_per_user,
+    ),
+    setting(
+        "MCP_ALLOWED_ORIGINS",
+        &["mcp", "allowedOrigins"],
+        Kind::List,
+        |a| &a.mcp_allowed_origins,
+    ),
+    setting(
+        "THREAD_TOOLS_SECRET",
+        &["threadTools", "secret"],
+        Kind::Secret,
+        |a| &a.thread_tools_secret,
+    ),
+    setting(
+        "THREAD_TOOLS_SECRET_PREVIOUS",
+        &["threadTools", "previousSecret"],
+        Kind::Secret,
+        |a| &a.thread_tools_secret_previous,
+    ),
+    setting(
+        "THREAD_TOOLS_URL",
+        &["threadTools", "url"],
+        Kind::Text,
+        |a| &a.thread_tools_url,
+    ),
+    setting(
+        "THREAD_TOOLS_TOKEN_TTL_SECS",
+        &["threadTools", "tokenTtlSecs"],
+        Kind::Uint,
+        |a| &a.thread_tools_token_ttl_secs,
+    ),
+    setting(
+        "THREAD_TOOLS_ALLOWED_HOSTS",
+        &["threadTools", "allowedHosts"],
+        Kind::List,
+        |a| &a.thread_tools_allowed_hosts,
+    ),
+    setting(
+        "ORCH_VERIFIER_TIMEOUT_SECS",
+        &["gate", "verifierTimeoutSecs"],
+        Kind::Uint,
+        |a| &a.verifier_timeout_secs,
+    ),
+    setting(
+        "ORCH_VERIFIER_WATCH_SECS",
+        &["gate", "verifierWatchSecs"],
+        Kind::Uint,
+        |a| &a.verifier_watch_secs,
+    ),
+    setting(
+        "ORCH_STEPS_RECORD_IO",
+        &["steps", "recordToolIo"],
+        Kind::Bool,
+        |a| &a.steps_record_io,
+    ),
+    setting(
+        "ORCH_TITLE_MODEL",
+        &["tasks", "title", "model"],
+        Kind::Text,
+        |a| &a.title_model,
+    ),
+    setting("ORCH_MODEL_BASE_URL", MODEL_BASE_URL, Kind::Text, |a| {
+        &a.model_base_url
+    }),
+    Setting {
+        needs: Some(MODEL_BASE_URL),
+        ..setting(
+            "ORCH_MODEL_API_KEY",
+            &["models", "endpoints", "default", "apiKey"],
+            Kind::Secret,
+            |a| &a.model_api_key,
+        )
+    },
+    Setting {
+        needs: Some(MODEL_BASE_URL),
+        ..setting(
+            "ORCH_MODEL_TIMEOUT_SECS",
+            &["models", "endpoints", "default", "timeoutSecs"],
+            Kind::Uint,
+            |a| &a.model_timeout_secs,
+        )
+    },
+    setting(
+        "ORCH_CI_TIMEOUT_SECS",
+        &["gate", "ci", "timeoutSecs"],
+        Kind::Uint,
+        |a| &a.ci_timeout_secs,
+    ),
+    setting(
+        "ORCH_CI_REQUIRED",
+        &["gate", "ci", "required"],
+        Kind::List,
+        |a| &a.ci_required,
+    ),
+    setting(
+        "WEBHOOK_GENERIC_SECRETS",
+        GENERIC_SECRETS,
+        Kind::SecretList,
+        |a| &a.webhook_generic_secrets,
+    ),
+    setting(
+        "WEBHOOK_GITHUB_SECRETS",
+        GITHUB_SECRETS,
+        Kind::SecretList,
+        |a| &a.webhook_github_secrets,
+    ),
+    Setting {
+        needs: Some(GITHUB_SECRETS),
+        ..setting(
+            "WEBHOOK_GITHUB_MAX_AGE_SECS",
+            &["webhooks", "github", "maxAgeSecs"],
+            Kind::Uint,
+            |a| &a.webhook_github_max_age_secs,
+        )
+    },
+    Setting {
+        needs: Some(GENERIC_SECRETS),
+        ..setting(
+            "WEBHOOK_GENERIC_MAX_SKEW_SECS",
+            &["webhooks", "generic", "maxSkewSecs"],
+            Kind::Uint,
+            |a| &a.webhook_generic_max_skew_secs,
+        )
+    },
+    setting("AUTH_DEV_USER", &["auth", "devUser"], Kind::Text, |a| {
+        &a.auth_dev_user
+    }),
+    setting(
+        "DATABASE_MAX_CONNECTIONS",
+        &["database", "maxConnections"],
+        Kind::Uint,
+        |a| &a.database_max_connections,
+    ),
+    setting(
+        "DISPATCHER_CONCURRENCY",
+        &["dispatcher", "concurrency"],
+        Kind::Uint,
+        |a| &a.dispatcher_concurrency,
+    ),
+    #[cfg(feature = "agent-local")]
+    setting(
+        "AGENT_LOCAL_CONCURRENCY",
+        &["agents", "localConcurrency"],
+        Kind::Uint,
+        |a| &a.agent_local_concurrency,
+    ),
+    setting(
+        "OUTBOX_LEASE_SECS",
+        &["dispatcher", "outboxLeaseSecs"],
+        Kind::Uint,
+        |a| &a.outbox_lease_secs,
+    ),
+    setting(
+        "INBOX_LEASE_SECS",
+        &["inbox", "leaseSecs"],
+        Kind::Uint,
+        |a| &a.inbox_lease_secs,
+    ),
+    setting("INBOX_POLL_SECS", &["inbox", "pollSecs"], Kind::Uint, |a| {
+        &a.inbox_poll_secs
+    }),
+    setting(
+        "INBOX_PARKED_TTL_SECS",
+        &["inbox", "parkedTtlSecs"],
+        Kind::Uint,
+        |a| &a.inbox_parked_ttl_secs,
+    ),
+    setting(
+        "INBOX_MAX_ATTEMPTS",
+        &["inbox", "maxAttempts"],
+        Kind::Uint,
+        |a| &a.inbox_max_attempts,
+    ),
+    setting(
+        "SHUTDOWN_GRACE_SECS",
+        &["server", "shutdownGraceSecs"],
+        Kind::Uint,
+        |a| &a.shutdown_grace_secs,
+    ),
+    Setting {
+        process: true,
+        ..setting(
+            "ORCH_INSTANCE_ID",
+            &["server", "instanceId"],
+            Kind::Text,
+            |a| &a.instance_id,
+        )
+    },
+    setting("LOG_FORMAT", &["log", "format"], Kind::LogFormat, |a| {
+        &a.log_format
+    }),
+];
+
+impl Setting {
+    /// The key as written in a message: `database.url`.
+    fn dotted(&self) -> String {
+        self.key.join(".")
+    }
+}
+
+/// The arguments that carry a secret, by the variable: the name clap knows the flag by, and how
+/// to read it. `main` asks clap which of them came from the command line.
+pub fn secret_flags() -> impl Iterator<Item = (&'static str, &'static str)> {
+    [
+        ("DATABASE_URL", "database_url"),
+        ("AGENT_REGISTRY_TOKEN", "registry_token"),
+        ("AGENT_REGISTRY_AGENT_TOKEN", "registry_agent_token"),
+        ("THREAD_TOOLS_SECRET", "thread_tools_secret"),
+        (
+            "THREAD_TOOLS_SECRET_PREVIOUS",
+            "thread_tools_secret_previous",
+        ),
+        ("ORCH_MODEL_API_KEY", "model_api_key"),
+        ("WEBHOOK_GENERIC_SECRETS", "webhook_generic_secrets"),
+        ("WEBHOOK_GITHUB_SECRETS", "webhook_github_secrets"),
+    ]
+    .into_iter()
+}
+
+impl Args {
+    /// The value of the secret variable `var` as this command line holds it (flag or variable).
+    pub fn secret_value(&self, var: &str) -> Option<String> {
+        SETTINGS
+            .iter()
+            .find(|s| s.var == var)
+            .and_then(|s| clean((s.get)(self).as_deref()))
+    }
+}
+
+// ---- the tree ---------------------------------------------------------------------------------
+
+fn get<'a>(tree: &'a Value, key: &[&str]) -> Option<&'a Value> {
+    key.iter().try_fold(tree, |node, name| node.get(*name))
+}
+
+/// Sets `key` to `value`, making the mappings on the way. `false` when something on the way is
+/// there and is not a mapping: the shape pass reports that, and the file's own value stays.
+fn set(tree: &mut Value, key: &[&str], value: Value) -> bool {
+    let Some((last, parents)) = key.split_last() else {
+        return false;
+    };
+    let mut node = tree;
+    for name in parents {
+        let Value::Object(map) = node else {
+            return false;
+        };
+        node = map
+            .entry((*name).to_owned())
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+    match node {
+        Value::Object(map) => {
+            map.insert((*last).to_owned(), value);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Whether the file names the environment variable `var` as a secret anywhere: then the file
+/// reads it itself, and it is not an override of anything.
+fn references_env(node: &Value, var: &str) -> bool {
+    match node {
+        Value::Object(map) => {
+            (map.len() == 1 && map.get("env").and_then(Value::as_str) == Some(var))
+                || map.values().any(|v| references_env(v, var))
+        }
+        Value::Array(items) => items.iter().any(|v| references_env(v, var)),
+        _ => false,
+    }
+}
+
+/// A reference to `var`, as the tree holds one.
+fn env_reference(var: &str) -> Value {
+    serde_json::to_value(SecretRef::Env(var.to_owned())).unwrap_or(Value::Null)
+}
+
+/// `raw` as the value of the key of `setting`, read the way the variable has always been read.
+fn convert(setting: &Setting, raw: &str) -> Result<Value, ConfigError> {
+    let var = setting.var;
+    let invalid = |reason: String| ConfigError::Invalid { var, reason };
+    let names = |raw: &str| -> Vec<String> {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    Ok(match setting.kind {
+        Kind::Text => Value::String(raw.to_owned()),
+        Kind::Uint => Value::from(number::<u64>(Some(raw.to_owned()), var, 0, 0)?),
+        Kind::Bool => Value::Bool(flag(Some(raw.to_owned()), var, true)?),
+        Kind::List => {
+            let list = names(raw);
+            if list.is_empty() {
+                return Err(invalid("the list is empty".to_owned()));
+            }
+            Value::from(list)
+        }
+        Kind::Role => Value::String(
+            adam_host::Role::from_optional(Some(raw))
+                .map_err(|e| invalid(e.to_string()))?
+                .as_str()
+                .to_owned(),
+        ),
+        Kind::Surfaces => Value::from(
+            parse_surfaces(raw)?
+                .into_iter()
+                .map(|s: Surface| s.name().to_owned())
+                .collect::<Vec<_>>(),
+        ),
+        Kind::Gate => {
+            let list = names(raw);
+            if list.is_empty() {
+                return Err(invalid(format!(
+                    "names no source (one of: {})",
+                    orch_app::known_sources()
+                )));
+            }
+            for name in &list {
+                if orch_core::CheckSource::from_config_name(name).is_none() {
+                    return Err(invalid(format!(
+                        "unknown source {name:?} (one of: {})",
+                        orch_app::known_sources()
+                    )));
+                }
+            }
+            Value::from(list)
+        }
+        Kind::LogFormat => Value::String(
+            match LogFormat::parse(Some(raw)) {
+                LogFormat::Json => "json",
+                LogFormat::Text => "text",
+            }
+            .to_owned(),
+        ),
+        Kind::Secret => env_reference(var),
+        Kind::SecretList => Value::Array(vec![env_reference(var)]),
+    })
+}
+
+/// Lays the legacy variables over the tree. Returns what to say about them, and the errors.
+fn overlay(tree: &mut Value, args: &Args) -> (Vec<Note>, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut errors = Vec::new();
+    let mut model_var: Option<&'static str> = None;
+    if !tree.is_object() {
+        // The shape pass says so; there is nothing to lay a variable over.
+        return (notes, errors);
+    }
+    let file_endpoints: Vec<String> = get(tree, &["models", "endpoints"])
+        .and_then(Value::as_object)
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    for setting in SETTINGS {
+        let Some(raw) = clean((setting.get)(args).as_deref()) else {
+            continue;
+        };
+        let value = match convert(setting, &raw) {
+            Ok(value) => value,
+            Err(e) => {
+                errors.push(variable_line(&e));
+                continue;
+            }
+        };
+        if setting
+            .needs
+            .is_some_and(|needs| get(tree, needs).is_none())
+        {
+            continue;
+        }
+        let is_secret = matches!(setting.kind, Kind::Secret | Kind::SecretList);
+        if is_secret && references_env(tree, setting.var) {
+            continue;
+        }
+        let existing = get(tree, setting.key);
+        if existing == Some(&value) {
+            continue;
+        }
+        let overrides = existing.is_some();
+        if !set(tree, setting.key, value) {
+            continue;
+        }
+        if setting.var.starts_with("ORCH_MODEL_") {
+            model_var.get_or_insert(setting.var);
+        }
+        if setting.var == "ORCH_TITLE_MODEL" && get(tree, &["tasks", "title", "endpoint"]).is_none()
+        {
+            set(
+                tree,
+                &["tasks", "title", "endpoint"],
+                Value::String("default".to_owned()),
+            );
+        }
+        notes.push(if setting.process {
+            Note::Process {
+                var: setting.var,
+                what: match setting.var {
+                    "ORCH_ROLE" => "overrides server.role for this process",
+                    _ => "overrides server.instanceId for this process",
+                },
+            }
+        } else {
+            Note::Deprecated {
+                var: setting.var,
+                key: setting.dotted(),
+                overrides,
+            }
+        });
+    }
+    // This build takes one endpoint: the legacy variables are the one named `default`, so a file
+    // that names another one beside them has two. Both are named.
+    if let Some(var) = model_var
+        && let Some(name) = file_endpoints.iter().find(|n| n.as_str() != "default")
+    {
+        errors.push(format!(
+            "models.endpoints: the file names the endpoint `{name}` and {var} sets the endpoint \
+             `default`; this build takes one endpoint (several: PR S18, ADR 0035)"
+        ));
+    }
+    (notes, errors)
+}
+
+// ---- the process notes ------------------------------------------------------------------------
+
+fn process_notes(args: &Args, env: &impl Fn(&str) -> Option<String>) -> Vec<Note> {
+    let mut notes = Vec::new();
+    if env("RUST_LOG").is_some_and(|v| !v.trim().is_empty()) {
+        notes.push(Note::Process {
+            var: "RUST_LOG",
+            what: "sets the log filter (it is not a configuration key)",
+        });
+    }
+    if clean(args.hostname.as_deref()).is_some() {
+        notes.push(Note::Process {
+            var: "HOSTNAME",
+            what: "is the prefix of the default server.instanceId (it is not a configuration key)",
+        });
+    }
+    notes
+}
+
+// ---- the loader -------------------------------------------------------------------------------
+
+/// The resolver `orch-config` is given: the environment (a flag wins over its variable), and the
+/// file system.
+struct ProcessResolver<'a, E, R> {
+    env: &'a E,
+    read: &'a R,
+    flags: &'a FlagSecrets,
+}
+
+impl<E, R> Resolve for ProcessResolver<'_, E, R>
+where
+    E: Fn(&str) -> Option<String>,
+    R: Fn(&Path) -> io::Result<String>,
+{
+    fn env(&self, name: &str) -> Option<String> {
+        self.flags.get(name).cloned().or_else(|| (self.env)(name))
+    }
+
+    fn read_file(&self, path: &Path) -> io::Result<String> {
+        (self.read)(path)
+    }
+}
+
+/// The three passes on the text of the file (or `version: 1`, with no file), the variables over
+/// it, and then the rules the binary has always had.
+fn load_file(
+    text: &str,
+    base_dir: &Path,
+    args: Args,
+    flag_secrets: FlagSecrets,
+    env: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&Path) -> io::Result<String>,
+    environment_only: bool,
+) -> Result<Loaded, ConfigError> {
+    // Pass 1: syntax, alone.
+    let mut tree = orch_config::parse_yaml(text).map_err(file_errors)?;
+    // The variables over the file.
+    let (mut notes, mut errors) = overlay(&mut tree, &args);
+    if environment_only {
+        notes.insert(0, Note::EnvironmentOnly);
+    }
+    if !errors.is_empty() {
+        // The shape of what is left is checked too, so one run lists what it can.
+        if let Err(more) = orch_config::check(&tree) {
+            errors.extend(more.iter().map(ToString::to_string));
+        }
+        return Err(ConfigError::Document(errors));
+    }
+    // Pass 2: the shape, every error.
+    let config = orch_config::check(&tree).map_err(file_errors)?;
+    // Pass 3: the rules, and the secrets.
+    let resolver = ProcessResolver {
+        env: &env,
+        read: &read,
+        flags: &flag_secrets,
+    };
+    let valid = config.validate(base_dir, &resolver).map_err(file_errors)?;
+    // `agents.localConcurrency` is the key of a build that has local agents: refused, never ignored.
+    #[cfg(not(feature = "agent-local"))]
+    if get(&tree, &["agents", "localConcurrency"]).is_some() {
+        return Err(document(
+            "agents.localConcurrency: needs the Cargo feature \"agent-local\", which this build \
+             does not have (ADR 0015)",
+        ));
+    }
+
+    let (file_args, resolved) = project(&valid, &tree, args.hostname.clone());
+    let merged = serde_norway::to_string(&valid.config.effective())
+        .map_err(|_| document("the configuration cannot be written as YAML (a bug)"))?;
+    let loaded = Config::load_with(file_args, resolved, &env, &read)
+        .map_err(|e| ConfigError::Document(vec![legacy_line(&e)]))?;
+    notes.extend(process_notes(&args, &env));
+    Ok(Loaded {
+        config: loaded,
+        notes,
+        merged: Some(merged),
+    })
+}
+
+fn file_errors(errors: Vec<orch_config::ConfigError>) -> ConfigError {
+    ConfigError::Document(errors.iter().map(ToString::to_string).collect())
+}
+
+// ---- the file, as the legacy arguments --------------------------------------------------------
+
+/// The valid file as the [`Args`] [`Config::load`] reads, and the secrets that cannot go through
+/// a string. `tree` says which keys the file (or a variable) *set*, for the defaults that depend
+/// on whether a key is there.
+fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, Resolved) {
+    let c = &valid.config;
+    let s = &valid.secrets;
+    let set_in_tree = |key: &[&str]| get(tree, key).is_some();
+    let some = |v: String| Some(v);
+    let join = |v: &[String]| (!v.is_empty()).then(|| v.join(","));
+    let mut a = Args {
+        hostname,
+        database_url: some(s.database_url.expose().to_owned()),
+        agents_file: valid.agents_file().map(|p| p.display().to_string()),
+        listen_addr: some(c.server.listen.clone()),
+        role: some(c.server.role.as_str().to_owned()),
+        surfaces: set_in_tree(&["server", "surfaces"]).then(|| {
+            c.mounted_surfaces()
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        }),
+        public_url: c.server.public_url.clone(),
+        shutdown_grace_secs: some(c.server.shutdown_grace_secs.to_string()),
+        instance_id: c.server.instance_id.clone(),
+        log_format: some(c.log.format.as_str().to_owned()),
+        database_max_connections: some(c.database.max_connections.to_string()),
+        dispatcher_concurrency: some(c.dispatcher.concurrency.to_string()),
+        outbox_lease_secs: some(c.dispatcher.outbox_lease_secs.to_string()),
+        inbox_lease_secs: some(c.inbox.lease_secs.to_string()),
+        inbox_poll_secs: some(c.inbox.poll_secs.to_string()),
+        inbox_parked_ttl_secs: some(c.inbox.parked_ttl_secs.to_string()),
+        inbox_max_attempts: some(c.inbox.max_attempts.to_string()),
+        gate: join(
+            &c.gate
+                .require
+                .iter()
+                .map(|g| g.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        ),
+        max_attempts: c.gate.max_attempts.map(|n| n.to_string()),
+        max_attempts_cap: some(c.gate.max_attempts_cap.to_string()),
+        verifier: c.gate.verifier.clone(),
+        verifier_timeout_secs: some(c.gate.verifier_timeout_secs.to_string()),
+        verifier_watch_secs: some(c.gate.verifier_watch_secs.to_string()),
+        ci_timeout_secs: some(c.gate.ci.timeout_secs.to_string()),
+        ci_required: join(&c.gate.ci.required),
+        steps_record_io: some(c.steps.record_tool_io.to_string()),
+        mcp_tokens_file: valid.mcp_tokens_file().map(|p| p.display().to_string()),
+        mcp_allowed_hosts: c.mcp.allowed_hosts.as_deref().and_then(join),
+        mcp_allowed_origins: join(&c.mcp.allowed_origins),
+        mcp_wait_max_secs: some(c.mcp.wait_max_secs.to_string()),
+        mcp_wait_max_concurrent: some(c.mcp.wait_max_concurrent.to_string()),
+        mcp_wait_max_per_user: some(c.mcp.wait_max_per_user.to_string()),
+        thread_tools_url: c.thread_tools.url.clone(),
+        thread_tools_secret: s
+            .thread_tools_secret
+            .as_ref()
+            .map(|x| x.expose().to_owned()),
+        thread_tools_secret_previous: s
+            .thread_tools_previous_secret
+            .as_ref()
+            .map(|x| x.expose().to_owned()),
+        thread_tools_token_ttl_secs: some(c.thread_tools.token_ttl_secs.to_string()),
+        thread_tools_allowed_hosts: c.thread_tools.allowed_hosts.as_deref().and_then(join),
+        auth_dev_user: c.auth.dev_user.clone(),
+        ..Args::default()
+    };
+    if let Some(registry) = &c.agents.registry {
+        a.registry_url = some(registry.url.clone());
+        a.registry_token = s.registry_token.as_ref().map(|x| x.expose().to_owned());
+        a.registry_agent_token = s
+            .registry_agent_token
+            .as_ref()
+            .map(|x| x.expose().to_owned());
+        a.registry_timeout_secs = some(registry.timeout_secs.to_string());
+        a.registry_max_age_secs = some(registry.max_age_secs.to_string());
+    }
+    #[cfg(feature = "agent-local")]
+    {
+        a.agent_local_concurrency = c.agents.local_concurrency.map(|n| n.to_string());
+    }
+    // The title task, with the one endpoint it names (this build reads the first one of the
+    // file; the rule pass checked that it exists).
+    if let Some(title) = &c.tasks.title
+        && let Some(endpoint) = c.models.endpoints.get(&title.endpoint)
+    {
+        a.title_model = some(title.model.clone());
+        a.model_base_url = some(endpoint.base_url.clone());
+        a.model_api_key = s
+            .model_api_keys
+            .get(&title.endpoint)
+            .map(|x| x.expose().to_owned());
+        a.model_timeout_secs = some(endpoint.timeout_secs.to_string());
+    }
+    if let Some(generic) = &c.webhooks.generic {
+        a.webhook_generic_max_skew_secs = some(generic.max_skew_secs.to_string());
+    }
+    if let Some(github) = &c.webhooks.github {
+        a.webhook_github_max_age_secs = some(github.max_age_secs.to_string());
+    }
+    #[cfg(feature = "surface-webhook")]
+    let resolved = Resolved {
+        webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
+        webhook_github: webhook_values(&s.webhook_github, "WEBHOOK_GITHUB_SECRETS"),
+    };
+    #[cfg(not(feature = "surface-webhook"))]
+    let resolved = Resolved::default();
+    (a, resolved)
+}
+
+/// The values of a webhook's secrets, separated. A secret that is read through the legacy
+/// variable keeps that variable's comma rule: it may hold one or two secrets.
+#[cfg(feature = "surface-webhook")]
+fn webhook_values(secrets: &[orch_config::Secret], legacy_var: &str) -> Option<Vec<String>> {
+    if secrets.is_empty() {
+        return None;
+    }
+    let mut values = Vec::new();
+    for secret in secrets {
+        if secret.reference() == &SecretRef::Env(legacy_var.to_owned()) {
+            values.extend(
+                secret
+                    .expose()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+            );
+        } else {
+            values.push(secret.expose().to_owned());
+        }
+    }
+    Some(values)
+}
+
+/// A [`ConfigError`] of a variable that does not parse: it names the variable, as it always has,
+/// and nothing it quotes is kept.
+fn variable_line(error: &ConfigError) -> String {
+    match error {
+        ConfigError::Invalid { var, reason } => format!("{var} is invalid: {}", scrub(reason)),
+        // The name that was refused is the value of the variable: not repeated.
+        ConfigError::UnknownSurface { known, .. } => {
+            format!("ORCH_SURFACES is invalid: unknown surface (known: {known})")
+        }
+        other => other.to_string(),
+    }
+}
+
+// ---- the legacy errors, in the file's words ---------------------------------------------------
+
+/// A [`ConfigError`] of the binary as a line for the operator of a file: the variable it names
+/// is the key it became, and nothing quoted from a value is kept.
+fn legacy_line(error: &ConfigError) -> String {
+    let key = |var: &str| {
+        SETTINGS
+            .iter()
+            .find(|s| s.var == var)
+            .map_or_else(|| var.to_owned(), Setting::dotted)
+    };
+    match error {
+        ConfigError::Invalid { var, reason } => format!("{}: {}", key(var), scrub(reason)),
+        ConfigError::Missing(var) => format!("{}: required", key(var)),
+        #[cfg(any(feature = "surface-webhook", feature = "surface-thread-tools"))]
+        ConfigError::MissingForSurface { var, surface } => {
+            format!(
+                "{}: required when server.surfaces mounts {surface:?}",
+                key(var)
+            )
+        }
+        other => in_keys(&other.to_string()),
+    }
+}
+
+/// `message` with each variable name replaced by its key.
+fn in_keys(message: &str) -> String {
+    let mut out = message.to_owned();
+    let mut names: Vec<&Setting> = SETTINGS.iter().collect();
+    // The longest first: `THREAD_TOOLS_SECRET` is the start of `THREAD_TOOLS_SECRET_PREVIOUS`.
+    names.sort_by_key(|s| std::cmp::Reverse(s.var.len()));
+    for setting in names {
+        out = replace_word(&out, setting.var, &setting.dotted());
+    }
+    out
+}
+
+fn replace_word(text: &str, word: &str, with: &str) -> String {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(word) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + word.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        if before.is_some_and(is_word) || after.is_some_and(is_word) {
+            out.push_str(word);
+        } else {
+            out.push_str(with);
+        }
+        rest = &rest[at + word.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` with whatever is between double quotes replaced by an ellipsis: a message of a library
+/// or of today's parsers may quote the value it refused.
+fn scrub(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c == '"' {
+            out.push('…');
+            let mut escaped = false;
+            for q in chars.by_ref() {
+                if escaped {
+                    escaped = false;
+                } else if q == '\\' {
+                    escaped = true;
+                } else if q == '"' {
+                    out.push('"');
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::collections::HashMap;
+    #[cfg(feature = "registry-platform")]
+    use std::time::Duration;
+
+    use super::super::tests::{args_of, env_of};
+    use super::*;
+
+    const AGENTS: &str = "\
+- id: coder
+  name: Coder
+  cardUrl: https://coder.example.com/.well-known/agent-card.json
+  tokenEnv: CODER_A2A_TOKEN
+";
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// A file that configures everything the environment can, beside the secrets.
+    const FILE: &str = "\
+version: 1
+server:
+  listen: 0.0.0.0:9000
+log: { format: text }
+database:
+  url: { env: DATABASE_URL }
+  maxConnections: 7
+agents:
+  file: agents.yaml
+steps: { recordToolIo: false }
+models:
+  endpoints:
+    default: { baseUrl: 'http://mock-model:8080/v1', apiKey: { env: ORCH_MODEL_API_KEY }, timeoutSecs: 9 }
+tasks:
+  title: { endpoint: default, model: small-model }
+threadTools:
+  url: http://orchestrator:8080
+  secret: { env: THREAD_TOOLS_SECRET }
+";
+
+    /// The variables the secrets of [`FILE`] come from, and the agents' own.
+    fn base<'a>() -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("ORCH_CONFIG_FILE", "/etc/orch/config.yaml"),
+            ("DATABASE_URL", "postgres://u:hunter2@db/orch"),
+            ("ORCH_MODEL_API_KEY", "model-key-hunter2"),
+            ("THREAD_TOOLS_SECRET", KEY),
+            ("CODER_A2A_TOKEN", "tok-123"),
+        ]
+    }
+
+    /// Loads `pairs` (the variables) with `file` as the configuration file.
+    fn load_with_file(
+        pairs: &[(&str, &str)],
+        file: &str,
+        flags: FlagSecrets,
+    ) -> Result<Loaded, ConfigError> {
+        let files: HashMap<&str, String> = HashMap::from([
+            ("/etc/orch/config.yaml", file.to_owned()),
+            ("/etc/orch/agents.yaml", AGENTS.to_owned()),
+            ("/run/secrets/key", format!("{KEY}\n")),
+        ]);
+        Loaded::load(args_of(pairs), flags, env_of(pairs), move |path| {
+            files
+                .get(path.to_str().unwrap())
+                .cloned()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        })
+    }
+
+    fn load_file_only(pairs: &[(&str, &str)], file: &str) -> Result<Loaded, ConfigError> {
+        load_with_file(pairs, file, FlagSecrets::new())
+    }
+
+    fn lines(result: Result<Loaded, ConfigError>) -> Vec<String> {
+        match result.unwrap_err() {
+            ConfigError::Document(lines) => lines,
+            other => vec![other.to_string()],
+        }
+    }
+
+    #[test]
+    fn a_file_gives_the_configuration_the_variables_would_have_given() {
+        let from_file = load_file_only(&base(), FILE).unwrap().config;
+        let by_variables = Loaded::load(
+            args_of(&[
+                ("DATABASE_URL", "postgres://u:hunter2@db/orch"),
+                ("AGENTS_FILE", "/etc/orch/agents.yaml"),
+                ("CODER_A2A_TOKEN", "tok-123"),
+                ("LISTEN_ADDR", "0.0.0.0:9000"),
+                ("LOG_FORMAT", "text"),
+                ("DATABASE_MAX_CONNECTIONS", "7"),
+                ("ORCH_STEPS_RECORD_IO", "false"),
+                ("ORCH_MODEL_BASE_URL", "http://mock-model:8080/v1"),
+                ("ORCH_MODEL_API_KEY", "model-key-hunter2"),
+                ("ORCH_MODEL_TIMEOUT_SECS", "9"),
+                ("ORCH_TITLE_MODEL", "small-model"),
+                ("THREAD_TOOLS_URL", "http://orchestrator:8080"),
+                ("THREAD_TOOLS_SECRET", KEY),
+            ]),
+            FlagSecrets::new(),
+            env_of(&[("CODER_A2A_TOKEN", "tok-123")]),
+            |_| Ok(AGENTS.to_owned()),
+        )
+        .unwrap()
+        .config;
+        // The instance id is a fresh uuid each time; everything else is the same.
+        let unlike = |c: &Config| format!("{c:?}").replace(&c.instance_id, "<id>");
+        assert_eq!(unlike(&from_file), unlike(&by_variables));
+        assert_eq!(from_file.listen_addr.port(), 9000);
+        assert!(!from_file.steps_record_io);
+        assert_eq!(from_file.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn without_a_file_the_environment_alone_configures_the_process_as_before() {
+        let pairs = [
+            ("DATABASE_URL", "postgres://u:pw@db/orch"),
+            ("AGENTS_FILE", "/etc/orch/agents.yaml"),
+            ("CODER_A2A_TOKEN", "tok-123"),
+            ("LISTEN_ADDR", "0.0.0.0:9001"),
+        ];
+        let loaded = Loaded::load(args_of(&pairs), FlagSecrets::new(), env_of(&pairs), |_| {
+            Ok(AGENTS.to_owned())
+        })
+        .unwrap();
+        assert_eq!(loaded.config.listen_addr.port(), 9001);
+        assert_eq!(loaded.notes, [Note::EnvironmentOnly]);
+        assert!(loaded.merged.is_none());
+    }
+
+    #[test]
+    fn a_variable_wins_over_the_file_and_the_note_names_the_variable_and_the_key_never_the_value() {
+        let mut pairs = base();
+        pairs.extend([
+            ("ORCH_TITLE_MODEL", "other-model-hunter2"),
+            ("LISTEN_ADDR", "0.0.0.0:9100"),
+            ("DATABASE_MAX_CONNECTIONS", "12"),
+        ]);
+        let loaded = load_file_only(&pairs, FILE).unwrap();
+        assert_eq!(loaded.config.listen_addr.port(), 9100);
+        assert_eq!(loaded.config.database_max_connections, 12);
+        assert_eq!(
+            loaded.config.model.as_ref().unwrap().title_model,
+            "other-model-hunter2"
+        );
+        let deprecated: Vec<(&str, &str, bool)> = loaded
+            .notes
+            .iter()
+            .filter_map(|n| match n {
+                Note::Deprecated {
+                    var,
+                    key,
+                    overrides,
+                } => Some((*var, key.as_str(), *overrides)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            deprecated,
+            [
+                ("LISTEN_ADDR", "server.listen", true),
+                ("ORCH_TITLE_MODEL", "tasks.title.model", true),
+                ("DATABASE_MAX_CONNECTIONS", "database.maxConnections", true),
+            ]
+        );
+        let said: Vec<String> = loaded.notes.iter().map(Note::describe).collect();
+        assert!(
+            said.contains(
+                &"ORCH_TITLE_MODEL overrides tasks.title.model of the configuration file; \
+                  set it in the file, the variable is deprecated"
+                    .to_owned()
+            ),
+            "{said:?}"
+        );
+        assert!(
+            !said.join(" ").contains("hunter2"),
+            "a value is never in a note"
+        );
+    }
+
+    #[test]
+    fn a_variable_that_says_what_the_file_says_is_not_an_override_and_a_secret_variable_the_file_names_is_not_either()
+     {
+        let mut pairs = base();
+        // The variables of the file's own references are set (they hold the secrets), and
+        // LISTEN_ADDR equals the file's value.
+        pairs.push(("LISTEN_ADDR", "0.0.0.0:9000"));
+        let loaded = load_file_only(&pairs, FILE).unwrap();
+        assert!(
+            loaded
+                .notes
+                .iter()
+                .all(|n| !matches!(n, Note::Deprecated { .. })),
+            "{:?}",
+            loaded.notes
+        );
+    }
+
+    #[test]
+    fn a_secret_variable_counts_as_a_reference_to_itself_and_a_file_secret_is_overridden_by_it() {
+        let file = FILE.replace(
+            "secret: { env: THREAD_TOOLS_SECRET }",
+            "secret: { file: /run/secrets/key }",
+        );
+        // The file's secret is a file; the variable overrides it, with a warning.
+        let other = "another-key-0123456789abcdef0123456789abcdef";
+        let mut pairs = base();
+        pairs.push(("THREAD_TOOLS_SECRET", other));
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        assert!(loaded.notes.contains(&Note::Deprecated {
+            var: "THREAD_TOOLS_SECRET",
+            key: "threadTools.secret".to_owned(),
+            overrides: true,
+        }));
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("env: THREAD_TOOLS_SECRET"), "{merged}");
+        assert!(!merged.contains(other) && !merged.contains(KEY), "{merged}");
+        // Without the variable the file's own `{ file }` reference is read.
+        let pairs: Vec<_> = base()
+            .into_iter()
+            .filter(|(k, _)| *k != "THREAD_TOOLS_SECRET")
+            .collect();
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        assert!(loaded.merged.unwrap().contains("file: /run/secrets/key"));
+    }
+
+    #[test]
+    fn a_flag_wins_over_its_variable_for_a_secret_the_file_names_as_a_variable() {
+        let flags = FlagSecrets::from([("DATABASE_URL", "postgres://flag@db/orch".to_owned())]);
+        let loaded = load_with_file(&base(), FILE, flags).unwrap();
+        assert_eq!(loaded.config.database_url, "postgres://flag@db/orch");
+        assert_eq!(
+            load_file_only(&base(), FILE).unwrap().config.database_url,
+            "postgres://u:hunter2@db/orch"
+        );
+    }
+
+    #[test]
+    fn the_process_overrides_are_noted_at_info_and_are_not_deprecated() {
+        let mut pairs = base();
+        pairs.extend([
+            ("ORCH_ROLE", "worker"),
+            ("ORCH_INSTANCE_ID", "w1"),
+            ("HOSTNAME", "host-a"),
+        ]);
+        let loaded = load_file_only(&pairs, FILE).unwrap();
+        assert_eq!(loaded.config.role.as_str(), "worker");
+        assert_eq!(loaded.config.instance_id, "w1");
+        let process: Vec<&str> = loaded
+            .notes
+            .iter()
+            .filter_map(|n| match n {
+                Note::Process { var, .. } => Some(*var),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(process, ["ORCH_ROLE", "ORCH_INSTANCE_ID", "HOSTNAME"]);
+        assert!(
+            loaded
+                .notes
+                .iter()
+                .all(|n| !matches!(n, Note::Deprecated { .. }))
+        );
+        let mut with_rust_log = pairs.clone();
+        with_rust_log.push(("RUST_LOG", "debug"));
+        let loaded = Loaded::load(
+            args_of(&with_rust_log),
+            FlagSecrets::new(),
+            env_of(&with_rust_log),
+            |p| {
+                Ok(if p.ends_with("agents.yaml") {
+                    AGENTS.to_owned()
+                } else {
+                    FILE.to_owned()
+                })
+            },
+        )
+        .unwrap();
+        assert!(loaded.notes.iter().any(|n| matches!(
+            n,
+            Note::Process {
+                var: "RUST_LOG",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn a_variable_is_read_with_its_own_parser_before_the_shape_is_checked() {
+        let surfaces = if cfg!(feature = "surface-thread-tools") {
+            " agui , thread-tools "
+        } else {
+            " agui "
+        };
+        let mut pairs = base();
+        pairs.extend([
+            ("ORCH_STEPS_RECORD_IO", "yes"),
+            ("THREAD_TOOLS_ALLOWED_HOSTS", "orchestrator:8080, localhost"),
+            ("LOG_FORMAT", "anything-but-text"),
+        ]);
+        // A comma list, with blanks, of as many surfaces as this build has.
+        if cfg!(feature = "surface-agui") {
+            pairs.push(("ORCH_SURFACES", surfaces));
+        }
+        let loaded = load_file_only(&pairs, FILE).unwrap();
+        assert!(loaded.config.steps_record_io, "`yes` is true");
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("recordToolIo: true"), "{merged}");
+        assert!(merged.contains("format: json"), "{merged}");
+        if cfg!(feature = "surface-agui") {
+            assert!(merged.contains("- agui"), "{merged}");
+            assert_eq!(
+                merged.contains("- thread-tools"),
+                cfg!(feature = "surface-thread-tools"),
+                "{merged}"
+            );
+        }
+        assert!(
+            merged.contains("- orchestrator:8080") && merged.contains("- localhost"),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn a_variable_that_does_not_parse_is_an_error_naming_the_variable_and_no_value() {
+        let mut pairs = base();
+        pairs.extend([
+            ("ORCH_STEPS_RECORD_IO", "maybe-hunter2"),
+            ("DISPATCHER_CONCURRENCY", "many-hunter2"),
+            ("ORCH_SURFACES", "a2a-hunter2"),
+            ("ORCH_ROLE", "boss-hunter2"),
+            ("ORCH_GATE", "magic-hunter2"),
+            ("MCP_ALLOWED_HOSTS", " , "),
+        ]);
+        let errors = lines(load_file_only(&pairs, FILE));
+        let joined = errors.join("\n");
+        for var in [
+            "ORCH_STEPS_RECORD_IO",
+            "DISPATCHER_CONCURRENCY",
+            "ORCH_SURFACES",
+            "ORCH_ROLE",
+            "ORCH_GATE",
+            "MCP_ALLOWED_HOSTS",
+        ] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|l| l.starts_with(&format!("{var} is invalid"))),
+                "{var}: {joined}"
+            );
+        }
+        assert!(!joined.contains("hunter2"), "{joined}");
+    }
+
+    #[test]
+    fn the_rest_of_a_group_whose_first_key_is_not_set_is_read_and_left_out() {
+        // As ever: a registry timeout without a registry URL, a model key without a base URL and
+        // a webhook age without secrets are heard of if they are not numbers, and mean nothing.
+        let file = FILE.replace(
+            "models:\n  endpoints:\n    default: { baseUrl: 'http://mock-model:8080/v1', apiKey: { env: ORCH_MODEL_API_KEY }, timeoutSecs: 9 }\ntasks:\n  title: { endpoint: default, model: small-model }\n",
+            "",
+        );
+        let mut pairs = base();
+        pairs.extend([
+            ("AGENT_REGISTRY_TIMEOUT_SECS", "5"),
+            ("ORCH_MODEL_TIMEOUT_SECS", "5"),
+            ("WEBHOOK_GITHUB_MAX_AGE_SECS", "5"),
+        ]);
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        assert!(loaded.config.model.is_none());
+        assert!(
+            loaded
+                .notes
+                .iter()
+                .all(|n| !matches!(n, Note::Deprecated { .. }))
+        );
+        pairs.push(("WEBHOOK_GITHUB_MAX_AGE_SECS", "soon"));
+        let errors = lines(load_file_only(&pairs, &file));
+        assert!(
+            errors[0].starts_with("WEBHOOK_GITHUB_MAX_AGE_SECS is invalid"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn the_legacy_model_variables_are_the_endpoint_named_default() {
+        let file = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+";
+        let pairs = [
+            ("ORCH_CONFIG_FILE", "/etc/orch/config.yaml"),
+            ("DATABASE_URL", "postgres://u:pw@db/orch"),
+            ("CODER_A2A_TOKEN", "tok-123"),
+            ("ORCH_MODEL_BASE_URL", "http://mock-model:8080/v1/"),
+            ("ORCH_MODEL_API_KEY", "model-key-hunter2"),
+            ("ORCH_TITLE_MODEL", "small-model"),
+        ];
+        let loaded = load_file_only(&pairs, file).unwrap();
+        let model = loaded.config.model.as_ref().unwrap();
+        assert_eq!(model.title_model, "small-model");
+        assert_eq!(
+            model.base_url, "http://mock-model:8080/v1",
+            "a trailing slash is cut"
+        );
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("endpoint: default"), "{merged}");
+        assert!(merged.contains("env: ORCH_MODEL_API_KEY"), "{merged}");
+        assert!(!merged.contains("hunter2"), "{merged}");
+        // With no ORCH_TITLE_MODEL there is no `tasks.title`: titles are off.
+        let no_title: Vec<_> = pairs
+            .iter()
+            .copied()
+            .filter(|(k, _)| *k != "ORCH_TITLE_MODEL")
+            .collect();
+        assert!(
+            load_file_only(&no_title, file)
+                .unwrap()
+                .config
+                .model
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_file_that_names_another_endpoint_beside_the_model_variables_is_an_error_naming_both() {
+        let file = FILE
+            .replace("default: {", "main: {")
+            .replace("endpoint: default", "endpoint: main");
+        let mut pairs = base();
+        pairs.retain(|(k, _)| *k != "ORCH_MODEL_API_KEY");
+        pairs.push(("ORCH_MODEL_BASE_URL", "http://other:8080/v1"));
+        let errors = lines(load_file_only(&pairs, &file));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("the file names the endpoint `main`")
+                && errors[0].contains("ORCH_MODEL_BASE_URL sets the endpoint `default`"),
+            "{errors:?}"
+        );
+    }
+
+    /// A file that mounts everything, for the webhook secrets.
+    #[cfg(feature = "surface-webhook")]
+    const WEBHOOKS: &str = "\
+version: 1
+server: { surfaces: [agui, webhook-generic, webhook-github] }
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+webhooks:
+  generic: { secrets: [{ env: WEBHOOK_GENERIC_SECRETS }] }
+  github: { secrets: [{ env: GH_ONE }, { file: /run/secrets/key }] }
+";
+
+    #[cfg(feature = "surface-webhook")]
+    #[test]
+    fn webhook_secrets_keep_the_comma_rule_of_their_variable_and_a_file_secret_is_one_secret() {
+        let two = format!("{KEY}-one,{KEY}-two");
+        let pairs = [
+            ("ORCH_CONFIG_FILE", "/etc/orch/config.yaml"),
+            ("DATABASE_URL", "postgres://u:pw@db/orch"),
+            ("CODER_A2A_TOKEN", "tok-123"),
+            ("WEBHOOK_GENERIC_SECRETS", two.as_str()),
+            ("GH_ONE", KEY),
+        ];
+        let loaded = load_file_only(&pairs, WEBHOOKS).unwrap();
+        assert!(loaded.config.webhook_generic.is_some());
+        assert!(loaded.config.webhook_github.is_some());
+        // The variable holds three: the rule of the variable, which refuses it, as before.
+        let three = format!("{KEY}-1,{KEY}-2,{KEY}-3");
+        let mut bad = pairs.to_vec();
+        bad[3] = ("WEBHOOK_GENERIC_SECRETS", three.as_str());
+        let errors = lines(load_file_only(&bad, WEBHOOKS));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("webhooks.generic.secrets")),
+            "{errors:?}"
+        );
+    }
+
+    #[cfg(feature = "surface-webhook")]
+    #[test]
+    fn errors_of_the_rules_the_binary_has_always_had_name_keys_and_carry_no_value() {
+        // A gate that requires `ci` names a check; a verifier is another configured agent.
+        let file = "\
+version: 1
+server: { surfaces: [agui, webhook-generic] }
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+gate: { require: [ci, verifier], verifier: nobody }
+webhooks: { generic: { secrets: [{ env: GH_ONE }] } }
+";
+        let pairs = [
+            ("ORCH_CONFIG_FILE", "/etc/orch/config.yaml"),
+            ("DATABASE_URL", "postgres://u:hunter2@db/orch"),
+            ("CODER_A2A_TOKEN", "tok-123"),
+            ("GH_ONE", KEY),
+        ];
+        let errors = lines(load_file_only(&pairs, file));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("gate"), "{errors:?}");
+        assert!(
+            !errors[0].contains("ORCH_GATE") && !errors[0].contains("hunter2"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_a_syntax_error_and_every_shape_error_are_exit_78_errors() {
+        let pairs = base();
+        let missing = Loaded::load(args_of(&pairs), FlagSecrets::new(), env_of(&pairs), |_| {
+            Err(io::ErrorKind::NotFound.into())
+        });
+        assert_eq!(
+            lines(missing),
+            ["ORCH_CONFIG_FILE: cannot read the configuration file /etc/orch/config.yaml"]
+        );
+        let errors = lines(load_file_only(&pairs, "version: 1\ndatabase: [\n"));
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].starts_with("the YAML cannot be read (line "),
+            "{errors:?}"
+        );
+        let errors = lines(load_file_only(
+            &pairs,
+            "version: 1\nnonsense: 1\nserver: { role: boss }\n",
+        ));
+        assert_eq!(
+            errors,
+            [
+                "nonsense: unknown key",
+                "server.role: not an allowed value (allowed: all, control-plane, worker)"
+            ],
+            "every shape error is listed at once"
+        );
+        assert!(matches!(
+            load_file_only(&pairs, "version: 1\n").unwrap_err(),
+            ConfigError::Document(_)
+        ));
+    }
+
+    #[test]
+    fn print_config_shows_the_merged_configuration_with_references_and_no_value() {
+        let mut args = args_of(&base());
+        args.print_config = true;
+        let pairs = base();
+        let files: HashMap<&str, String> = HashMap::from([
+            ("/etc/orch/config.yaml", FILE.to_owned()),
+            ("/etc/orch/agents.yaml", AGENTS.to_owned()),
+        ]);
+        let loaded = Loaded::load(args, FlagSecrets::new(), env_of(&pairs), move |p| {
+            files
+                .get(p.to_str().unwrap())
+                .cloned()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        })
+        .unwrap();
+        let merged = loaded.merged.unwrap();
+        for reference in [
+            "env: DATABASE_URL",
+            "env: ORCH_MODEL_API_KEY",
+            "env: THREAD_TOOLS_SECRET",
+        ] {
+            assert!(merged.contains(reference), "{reference} in {merged}");
+        }
+        for value in ["hunter2", KEY, "tok-123", "postgres://"] {
+            assert!(!merged.contains(value), "{value} in {merged}");
+        }
+        // Defaults are filled in.
+        assert!(merged.contains("shutdownGraceSecs: 15") && merged.contains("maxAttempts: 3"));
+        // And the merged text is itself a configuration the loader reads back.
+        let again = orch_config::parse_yaml(&merged).unwrap();
+        assert!(orch_config::check(&again).is_ok(), "{merged}");
+    }
+
+    #[test]
+    fn print_config_without_a_file_prints_what_the_environment_alone_says() {
+        let pairs = [
+            ("DATABASE_URL", "postgres://u:hunter2@db/orch"),
+            ("AGENTS_FILE", "/etc/orch/agents.yaml"),
+            ("CODER_A2A_TOKEN", "tok-123"),
+            ("LISTEN_ADDR", "0.0.0.0:9300"),
+        ];
+        let mut args = args_of(&pairs);
+        args.print_config = true;
+        let loaded = Loaded::load(args, FlagSecrets::new(), env_of(&pairs), |_| {
+            Ok(AGENTS.to_owned())
+        })
+        .unwrap();
+        let merged = loaded.merged.unwrap();
+        assert!(
+            merged.contains("listen: 0.0.0.0:9300") && merged.contains("env: DATABASE_URL"),
+            "{merged}"
+        );
+        assert!(!merged.contains("hunter2"));
+        assert_eq!(loaded.notes[0], Note::EnvironmentOnly);
+    }
+
+    #[cfg(feature = "agent-local")]
+    #[test]
+    fn local_concurrency_is_a_key_of_a_build_with_local_agents() {
+        let file = FILE.replace(
+            "agents:\n  file: agents.yaml",
+            "agents:\n  file: agents.yaml\n  localConcurrency: 2",
+        );
+        let loaded = load_file_only(&base(), &file).unwrap();
+        assert_eq!(loaded.config.agent_local_concurrency, 2);
+        let mut pairs = base();
+        pairs.push(("AGENT_LOCAL_CONCURRENCY", "6"));
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        assert_eq!(loaded.config.agent_local_concurrency, 6);
+        assert!(loaded.notes.contains(&Note::Deprecated {
+            var: "AGENT_LOCAL_CONCURRENCY",
+            key: "agents.localConcurrency".to_owned(),
+            overrides: true,
+        }));
+    }
+
+    #[cfg(not(feature = "agent-local"))]
+    #[test]
+    fn local_concurrency_is_refused_in_a_build_without_local_agents() {
+        let file = FILE.replace(
+            "agents:\n  file: agents.yaml",
+            "agents:\n  file: agents.yaml\n  localConcurrency: 2",
+        );
+        let errors = lines(load_file_only(&base(), &file));
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .starts_with("agents.localConcurrency: needs the Cargo feature \"agent-local\""),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_registry_is_read_with_its_secrets_and_a_relative_agents_file_is_next_to_the_file() {
+        let file = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents:
+  file: agents.yaml
+  registry: { url: 'https://r.example.com/agents', agentToken: { file: /run/secrets/key }, timeoutSecs: 5 }
+";
+        let mut pairs = base();
+        pairs.retain(|(k, _)| *k != "THREAD_TOOLS_SECRET");
+        let loaded = load_file_only(&pairs, file);
+        #[cfg(feature = "registry-platform")]
+        {
+            let loaded = loaded.unwrap();
+            let registry = loaded.config.registry.unwrap();
+            assert_eq!(registry.url, "https://r.example.com/agents");
+            assert_eq!(registry.timeout, Duration::from_secs(5));
+            assert!(registry.agent_token.is_some() && registry.token.is_none());
+            assert_eq!(
+                loaded.config.agents.len(),
+                1,
+                "the file beside config.yaml was read"
+            );
+        }
+        #[cfg(not(feature = "registry-platform"))]
+        {
+            let errors = lines(loaded);
+            assert!(errors[0].contains("agents.registry.url"), "{errors:?}");
+        }
+    }
+
+    #[test]
+    fn a_variable_in_a_message_is_replaced_by_its_key_by_whole_words_only() {
+        assert_eq!(
+            in_keys(
+                "THREAD_TOOLS_SECRET_PREVIOUS is not THREAD_TOOLS_SECRET; XTHREAD_TOOLS_SECRET"
+            ),
+            "threadTools.previousSecret is not threadTools.secret; XTHREAD_TOOLS_SECRET"
+        );
+        assert_eq!(
+            scrub(r#"a "secret" and "an \"escaped\" one" end"#),
+            r#"a "…" and "…" end"#
+        );
+    }
+
+    #[test]
+    fn the_table_covers_every_variable_that_has_a_key_and_each_key_is_in_the_contract() {
+        let doc = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/config.md"),
+        )
+        .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for s in SETTINGS {
+            assert!(seen.insert(s.var), "{} twice", s.var);
+            let documented = s.dotted().replace("endpoints.default", "endpoints.<name>");
+            assert!(
+                doc.contains(&format!("| `{documented}` |")),
+                "{} ({documented}) is not a row of docs/api/config.md",
+                s.var,
+            );
+            assert!(
+                doc.contains(s.var),
+                "{} is not in docs/api/config.md",
+                s.var
+            );
+        }
+        // 51 variables have a key; the build without `agent-local` has no flag for one of them.
+        assert_eq!(
+            SETTINGS.len(),
+            if cfg!(feature = "agent-local") {
+                51
+            } else {
+                50
+            }
+        );
+    }
+}

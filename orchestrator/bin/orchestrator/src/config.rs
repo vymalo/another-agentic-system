@@ -10,6 +10,10 @@
 //! carries no secret value, and exits with the configuration code (78) rather than clap's
 //! usage code (2). Startup fails fast and fails closed.
 
+mod file;
+
+pub use file::{FlagSecrets, Loaded, secret_flags};
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
@@ -212,6 +216,10 @@ pub enum ConfigError {
         /// What is wrong, naming the agent.
         reason: String,
     },
+    /// The configuration file (`ORCH_CONFIG_FILE`, ADR 0034) has errors: every one it could find,
+    /// one line each, each naming a key path and never a value.
+    #[error("the configuration has {} error(s): {}", .0.len(), .0.join("; "))]
+    Document(Vec<String>),
     /// The environment variable named by `tokenEnv` is unset or empty. Sending requests
     /// without the credential the operator asked for would be the unsafe reading.
     #[error(
@@ -600,11 +608,26 @@ fn parse_surfaces(raw: &str) -> Result<Vec<Surface>, ConfigError> {
     version,
     about = "The orchestration layer: chat surfaces over a Postgres event log and durable A2A delegation.",
     after_help = "Every option can also be set through the environment variable shown as \
-[env: NAME]. A flag wins over its variable. An empty value counts as unset. The bearer token \
+[env: NAME]. A flag wins over its variable. An empty value counts as unset. The settings are \
+better kept in the configuration file (--config, ORCH_CONFIG_FILE); a flag or variable that is \
+set wins over it, and is deprecated (ORCH_ROLE, ORCH_INSTANCE_ID, RUST_LOG and HOSTNAME stay). The bearer token \
 of an agent is read from the variable its `tokenEnv` names in AGENTS_FILE, never from a flag. \
 Logging is filtered by RUST_LOG (default: info)."
 )]
 pub struct Args {
+    /// The configuration file (YAML, `version: 1`; docs/api/config.md): every setting below as a
+    /// key, secrets by reference, read once at startup. A variable or flag that is set wins over
+    /// the file and is logged as a warning naming the key; the variables are deprecated. Unset:
+    /// the environment alone configures the process, as before.
+    #[arg(long = "config", env = "ORCH_CONFIG_FILE", value_name = "PATH")]
+    pub config: Option<String>,
+
+    /// Print the configuration this process would run with (the file, the variables over it, the
+    /// defaults filled in; secrets as their references, never their values) and exit 0, or list
+    /// the errors and exit 78. Opens no connection.
+    #[arg(long)]
+    pub print_config: bool,
+
     /// Postgres connection string (required). Never logged.
     #[arg(long, env = "DATABASE_URL", value_name = "URL", hide_env_values = true)]
     pub database_url: Option<String>,
@@ -993,6 +1016,8 @@ pub struct Config {
     pub instance_id: String,
     /// `SHUTDOWN_GRACE_SECS`: how long a graceful shutdown may take.
     pub shutdown_grace: Duration,
+    /// `LOG_FORMAT` (`log.format`): how a log line is written.
+    pub log_format: LogFormat,
 }
 
 impl fmt::Debug for Config {
@@ -1017,7 +1042,8 @@ impl fmt::Debug for Config {
             .field("model", &self.model)
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
-            .field("shutdown_grace", &self.shutdown_grace);
+            .field("shutdown_grace", &self.shutdown_grace)
+            .field("log_format", &self.log_format);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
         #[cfg(feature = "registry-platform")]
@@ -1050,8 +1076,21 @@ impl Config {
         env: impl Fn(&str) -> Option<String>,
         read: impl Fn(&Path) -> io::Result<String>,
     ) -> Result<Self, ConfigError> {
+        Self::load_with(args, Resolved::default(), env, read)
+    }
+
+    /// [`load`](Self::load), with the values that cannot be handed over as one string each.
+    fn load_with(
+        args: Args,
+        resolved: Resolved,
+        env: impl Fn(&str) -> Option<String>,
+        read: impl Fn(&Path) -> io::Result<String>,
+    ) -> Result<Self, ConfigError> {
+        #[cfg(not(feature = "surface-webhook"))]
+        let _ = &resolved;
         let clean = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let get_env = |name: &str| clean(env(name));
+        let log_format = LogFormat::parse(args.log_format.as_deref());
 
         let database_url = clean(args.database_url).ok_or(ConfigError::Missing("DATABASE_URL"))?;
         let listen_addr = clean(args.listen_addr).unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
@@ -1195,14 +1234,18 @@ impl Config {
         )?;
         #[cfg(feature = "surface-webhook")]
         let webhook_generic = webhook_generic(
-            clean(args.webhook_generic_secrets),
+            clean(args.webhook_generic_secrets)
+                .map(WebhookSecrets::Joined)
+                .or(resolved.webhook_generic.map(WebhookSecrets::Separate)),
             clean(args.webhook_generic_max_skew_secs),
             surfaces.contains(&Surface::WebhookGeneric) && role.runs_control_plane(),
         )?;
 
         #[cfg(feature = "surface-webhook")]
         let webhook_github = webhook_github(
-            clean(args.webhook_github_secrets),
+            clean(args.webhook_github_secrets)
+                .map(WebhookSecrets::Joined)
+                .or(resolved.webhook_github.map(WebhookSecrets::Separate)),
             clean(args.webhook_github_max_age_secs),
             surfaces.contains(&Surface::WebhookGithub) && role.runs_control_plane(),
         )?;
@@ -1327,6 +1370,7 @@ impl Config {
             inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
+            log_format,
         })
     }
 }
@@ -2028,13 +2072,44 @@ fn parse_host_list(var: &'static str, raw: &str) -> Result<Vec<String>, ConfigEr
     Ok(hosts)
 }
 
+/// The secrets of a webhook route as they arrive: one string of one or two comma-separated
+/// secrets (the variable), or the secrets already separated (the configuration file, where a
+/// secret may contain a comma).
+#[cfg(feature = "surface-webhook")]
+enum WebhookSecrets {
+    Joined(String),
+    Separate(Vec<String>),
+}
+
+#[cfg(feature = "surface-webhook")]
+impl WebhookSecrets {
+    fn parse(self) -> Result<Secrets, orch_surface_webhook::SecretsError> {
+        match self {
+            WebhookSecrets::Joined(raw) => Secrets::parse(&raw),
+            WebhookSecrets::Separate(all) => Secrets::new(all.into_iter().map(SecretString::from)),
+        }
+    }
+}
+
+/// What the typed file path hands to [`Config::load_with`] beside [`Args`]: the values that
+/// cannot go through a string without being read again (a secret that has a comma in it).
+#[derive(Default)]
+struct Resolved {
+    /// `webhooks.generic.secrets`, separated.
+    #[cfg(feature = "surface-webhook")]
+    webhook_generic: Option<Vec<String>>,
+    /// `webhooks.github.secrets`, separated.
+    #[cfg(feature = "surface-webhook")]
+    webhook_github: Option<Vec<String>>,
+}
+
 /// The generic webhook route's settings (`WEBHOOK_GENERIC_*`). The secrets are required exactly
 /// when the route is to be mounted (`mounted`: `webhook-generic` is in `ORCH_SURFACES` and this
 /// role serves HTTP routes), so a worker that shares the environment of a control plane does not
 /// need the secret; a value that is set is checked either way.
 #[cfg(feature = "surface-webhook")]
 fn webhook_generic(
-    secrets: Option<String>,
+    secrets: Option<WebhookSecrets>,
     max_skew_secs: Option<String>,
     mounted: bool,
 ) -> Result<Option<GenericConfig>, ConfigError> {
@@ -2046,7 +2121,7 @@ fn webhook_generic(
         1,
     )?;
     let secrets = match secrets {
-        Some(raw) => Some(Secrets::parse(&raw).map_err(|e| ConfigError::Invalid {
+        Some(raw) => Some(raw.parse().map_err(|e| ConfigError::Invalid {
             var: VAR,
             reason: e.to_string(),
         })?),
@@ -2068,7 +2143,7 @@ fn webhook_generic(
 /// is to be mounted, like [`webhook_generic`].
 #[cfg(feature = "surface-webhook")]
 fn webhook_github(
-    secrets: Option<String>,
+    secrets: Option<WebhookSecrets>,
     max_age_secs: Option<String>,
     mounted: bool,
 ) -> Result<Option<GithubConfig>, ConfigError> {
@@ -2080,7 +2155,8 @@ fn webhook_github(
         1,
     )?;
     match secrets {
-        Some(raw) => Secrets::parse(&raw)
+        Some(raw) => raw
+            .parse()
             .map(|secrets| {
                 Some(GithubConfig {
                     max_age: Duration::from_secs(max_age),
@@ -2324,7 +2400,9 @@ mod tests {
   cardUrl: http://plain.internal:9000/.well-known/agent-card.json
 ";
 
-    fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    pub(super) fn env_of<'a>(
+        pairs: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<String> + 'a {
         let map: HashMap<String, String> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
@@ -2335,10 +2413,11 @@ mod tests {
     /// The `Args` the process environment `pairs` would produce, built by hand so no test
     /// depends on (or changes) the real environment. Variables that are not settings of the
     /// service (the `tokenEnv` ones) stay in `pairs` and are read through `env_of`.
-    fn args_of(pairs: &[(&str, &str)]) -> Args {
+    pub(super) fn args_of(pairs: &[(&str, &str)]) -> Args {
         let mut args = Args::default();
         for (name, value) in pairs {
             let slot = match *name {
+                "ORCH_CONFIG_FILE" => &mut args.config,
                 "DATABASE_URL" => &mut args.database_url,
                 "AGENTS_FILE" => &mut args.agents_file,
                 "AGENT_REGISTRY_URL" => &mut args.registry_url,

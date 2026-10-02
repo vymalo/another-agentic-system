@@ -238,6 +238,7 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
     assert_eq!(status.code(), Some(0), "{}", run.log());
     let help = run.log();
     for (flag, var) in [
+        ("--config", "ORCH_CONFIG_FILE"),
         ("--database-url", "DATABASE_URL"),
         ("--agents-file", "AGENTS_FILE"),
         ("--registry-url", "AGENT_REGISTRY_URL"),
@@ -285,6 +286,10 @@ fn help_lists_every_flag_and_variable_and_exits_zero() {
         assert!(help.contains(flag), "--help lacks {flag}:\n{help}");
         assert!(help.contains(var), "--help lacks {var}:\n{help}");
     }
+    assert!(
+        help.contains("--print-config"),
+        "--help lacks --print-config"
+    );
     for role in ["all", "control-plane", "worker"] {
         assert!(help.contains(role), "--help does not name the role {role}");
     }
@@ -632,6 +637,346 @@ fn an_unknown_flag_is_a_usage_error() {
     let status = run.wait(Duration::from_secs(10));
     assert_eq!(status.code(), Some(2), "clap's usage error: {}", run.log());
     assert!(run.log().contains("--no-such-flag"), "{}", run.log());
+}
+
+// ---- the configuration file (ADR 0034) --------------------------------------------------------
+
+/// What the process wrote to stdout and to stderr, apart, and how it ended.
+struct Printed {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+/// Runs the binary to its end with exactly `env`, for the commands that print and exit.
+fn run_to_end(args: &[&str], env: &[(&str, &str)]) -> Printed {
+    let out = Command::new(BIN)
+        .args(args)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    Printed {
+        status: out.status,
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+const SECRET_URL: &str = "postgres://nobody:hunter2-s3cr3t@127.0.0.1:1/none";
+
+/// Waits until the log of `run` holds `needle` (the process keeps running: it is killed when `run`
+/// is dropped). The notes about where the settings came from are logged before anything connects.
+fn wait_for_log(run: &Running, needle: &str, within: Duration) -> String {
+    let deadline = Instant::now() + within;
+    loop {
+        let log = run.log();
+        if log.contains(needle) {
+            return log;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the log never held {needle:?}:\n{log}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn write_config(scratch: &Scratch, yaml: &str) -> PathBuf {
+    let path = scratch.file("config.yaml");
+    fs::write(&path, yaml).unwrap();
+    path
+}
+
+const CONFIG: &str = "\
+version: 1
+database:
+  url: { env: DATABASE_URL }
+agents:
+  file: agents.yaml
+";
+
+#[test]
+fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_a_value() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        "version: 1\nnonsense: 1\nserver: { role: hunter2-s3cr3t, listen: 5 }\n\
+         database: hunter2-s3cr3t\nartifacts: { store: fs }\ndispatcher: { concurrency: 0 }\n",
+    );
+    let out = run_to_end(&[], &[("ORCH_CONFIG_FILE", path_str(&config))]);
+    assert_eq!(out.status.code(), Some(78), "EX_CONFIG: {}", out.stderr);
+    for line in [
+        "nonsense: unknown key",
+        "server.role: not an allowed value",
+        "server.listen: expected string",
+        "database: ",
+        "artifacts: reserved for PR S10 and S11 (ADR 0032, artifacts)",
+        "dispatcher.concurrency: must be at least 1",
+    ] {
+        assert!(
+            out.stderr.contains(line),
+            "stderr lacks {line:?}:\n{}",
+            out.stderr
+        );
+    }
+    assert!(!out.stderr.contains("hunter2-s3cr3t") && !out.stdout.contains("hunter2-s3cr3t"));
+}
+
+#[test]
+fn a_syntax_error_and_a_missing_file_are_exit_78() {
+    let scratch = Scratch::new();
+    let config = write_config(&scratch, "version: 1\ndatabase: [\n");
+    let out = run_to_end(&[], &[("ORCH_CONFIG_FILE", path_str(&config))]);
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("the YAML cannot be read (line "),
+        "{}",
+        out.stderr
+    );
+    let out = run_to_end(&["--config", "/nonexistent/config.yaml"], &[]);
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("cannot read the configuration file"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn print_config_prints_the_merged_configuration_with_references_and_never_a_value() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!("{CONFIG}server: {{ listen: 0.0.0.0:8080 }}\n"),
+    );
+    let out = run_to_end(
+        &["--print-config"],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", SECRET_URL),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("LISTEN_ADDR", "0.0.0.0:9999"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", out.stderr);
+    // The file, the variable over it, the defaults filled in; the secret as its reference.
+    assert!(out.stdout.starts_with("version: 1\n"), "{}", out.stdout);
+    assert!(
+        out.stdout.contains("listen: 0.0.0.0:9999"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("shutdownGraceSecs: 15"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("env: DATABASE_URL"), "{}", out.stdout);
+    for value in ["hunter2-s3cr3t", TOKEN, "nobody"] {
+        assert!(
+            !out.stdout.contains(value) && !out.stderr.contains(value),
+            "{value} is printed:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+    // The variable that won is said, by name and key, on stderr.
+    assert!(
+        out.stderr.contains("LISTEN_ADDR overrides server.listen"),
+        "{}",
+        out.stderr
+    );
+    // It opened no connection: the database is unreachable and the exit is 0.
+}
+
+#[test]
+fn print_config_with_errors_lists_them_and_exits_78() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(&scratch, CONFIG);
+    // The reference does not resolve: the variable is not set.
+    let out = run_to_end(
+        &["--print-config"],
+        &[("ORCH_CONFIG_FILE", path_str(&config))],
+    );
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("database.url: the environment variable DATABASE_URL is unset or empty"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stdout.is_empty());
+}
+
+/// The files `compose.yaml` mounts, as the orchestrator reads them: `dev/orchestrator.yaml` and
+/// `dev/orchestrator.live.yaml`, each beside its agents file and the MCP tokens file, with the
+/// dummies of the compose environment. CI runs `--print-config` on both (ADR 0034).
+#[test]
+fn the_dev_configuration_files_are_valid_for_every_role_they_are_used_with() {
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../dev");
+    let secrets = [
+        (
+            "DATABASE_URL",
+            "postgres://postgres:postgres@postgres:5432/orch",
+        ),
+        ("AGENT_REGISTRY_AGENT_TOKEN", "dev-registry-agent-token"),
+        ("MOCK_AGENT_TOKEN", "dev-mock-token"),
+        ("CODER_A2A_TOKEN", "dev-coder-token"),
+        ("CHAT_A2A_TOKEN", "dev-chat-token"),
+        ("RESEARCHER_A2A_TOKEN", "dev-researcher-token"),
+        (
+            "THREAD_TOOLS_SECRET",
+            "dev-thread-tools-secret-0123456789abcdef0123456789abcdef",
+        ),
+    ];
+    let routes = [
+        (
+            "WEBHOOK_GENERIC_SECRETS",
+            "dev-webhook-secret-0123456789abcdef0123",
+        ),
+        (
+            "WEBHOOK_GITHUB_SECRETS",
+            "dev-webhook-secret-0123456789abcdef0123",
+        ),
+        ("MCP_TOKEN_DEV", "dev-mcp-token-0123456789abcdef0123456789"),
+    ];
+    for (config, agents) in [
+        ("orchestrator.yaml", "agents.yaml"),
+        ("orchestrator.live.yaml", "agents.live.yaml"),
+    ] {
+        // The three files side by side under the names compose mounts them with.
+        let scratch = Scratch::new();
+        fs::copy(dev.join(config), scratch.file("config.yaml")).unwrap();
+        fs::copy(dev.join(agents), scratch.file("agents.yaml")).unwrap();
+        fs::copy(dev.join("mcp-tokens.yaml"), scratch.file("mcp-tokens.yaml")).unwrap();
+        let file = scratch.file("config.yaml");
+        // The control plane (or both): it needs the secrets of the routes it serves.
+        let mut env = secrets.to_vec();
+        env.extend(routes);
+        env.push(("ORCH_CONFIG_FILE", path_str(&file)));
+        let out = run_to_end(&["--print-config"], &env);
+        assert_eq!(out.status.code(), Some(0), "{config}: {}", out.stderr);
+        assert!(
+            out.stdout.contains("env: DATABASE_URL"),
+            "{config}: {}",
+            out.stdout
+        );
+        assert!(!out.stdout.contains("dev-mcp-token") && !out.stdout.contains("postgres:postgres"));
+        // A worker (the split profile) reads the same file and is not given the routes' secrets.
+        let mut env = secrets.to_vec();
+        env.extend([
+            ("ORCH_CONFIG_FILE", path_str(&file)),
+            ("ORCH_ROLE", "worker"),
+            ("ORCH_INSTANCE_ID", "orchestrator-worker-1"),
+            ("OUTBOX_LEASE_SECS", "5"),
+        ]);
+        let out = run_to_end(&["--print-config"], &env);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{config} as a worker: {}",
+            out.stderr
+        );
+        assert!(out.stdout.contains("role: worker"), "{}", out.stdout);
+        assert!(out.stdout.contains("outboxLeaseSecs: 5"), "{}", out.stdout);
+        // Without the secrets of the routes, a control plane does not start.
+        let mut env = secrets.to_vec();
+        env.push(("ORCH_CONFIG_FILE", path_str(&file)));
+        let out = run_to_end(&["--print-config"], &env);
+        assert_eq!(out.status.code(), Some(78), "{config}: {}", out.stderr);
+        assert!(
+            out.stderr.contains("webhooks.generic.secrets[0]"),
+            "{}",
+            out.stderr
+        );
+    }
+}
+
+#[test]
+fn a_variable_over_the_file_is_a_warning_and_a_process_override_is_info() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!("{CONFIG}server: {{ listen: 127.0.0.1:0 }}\n"),
+    );
+    // The database is unreachable on purpose: the notes are logged before anything connects, and
+    // the test reads them and stops the process.
+    let run = spawn(
+        &scratch,
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", SECRET_URL),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("DISPATCHER_CONCURRENCY", "4"),
+            ("ORCH_ROLE", "all"),
+            ("ORCH_INSTANCE_ID", "smoke-1"),
+        ],
+    );
+    let log = wait_for_log(&run, "ORCH_INSTANCE_ID overrides", Duration::from_secs(20));
+    let lines = json_lines(&log);
+    let note = |var: &str| {
+        lines
+            .iter()
+            .find(|l| l["fields"]["variable"] == var)
+            .unwrap_or_else(|| panic!("no note for {var}:\n{log}"))
+    };
+    // LISTEN_ADDR says what the file says: not an override. DISPATCHER_CONCURRENCY is a variable the file leaves out.
+    assert!(
+        lines
+            .iter()
+            .all(|l| l["fields"]["variable"] != "LISTEN_ADDR"),
+        "{log}"
+    );
+    let concurrency = note("DISPATCHER_CONCURRENCY");
+    assert_eq!(concurrency["level"], "WARN");
+    assert_eq!(concurrency["fields"]["key"], "dispatcher.concurrency");
+    for var in ["ORCH_ROLE", "ORCH_INSTANCE_ID"] {
+        assert_eq!(
+            note(var)["level"],
+            "INFO",
+            "{var} is a process override: {log}"
+        );
+    }
+    // The instance id of the override is on every line.
+    assert_eq!(lines[0]["instance"], "smoke-1", "{log}");
+    assert!(
+        !log.contains("hunter2-s3cr3t"),
+        "a secret reached the log:\n{log}"
+    );
+}
+
+#[test]
+fn without_a_file_the_environment_alone_starts_as_before_with_one_warning() {
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let run = spawn(
+        &scratch,
+        &[
+            ("DATABASE_URL", SECRET_URL),
+            ("AGENTS_FILE", path_str(&agents)),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    let log = wait_for_log(&run, "no configuration file", Duration::from_secs(20));
+    let warnings: Vec<_> = json_lines(&log)
+        .into_iter()
+        .filter(|l| {
+            l["level"] == "WARN"
+                && l["fields"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("no configuration file"))
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1, "{log}");
+    assert!(!log.contains("hunter2-s3cr3t"), "{log}");
 }
 
 /// The legacy `chat-api` surface was removed on 2026-09-30. A deployment that still names it,

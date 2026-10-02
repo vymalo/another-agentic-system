@@ -2418,6 +2418,7 @@ dependencies = [
  "orch-agent-adam",
  "orch-api",
  "orch-app",
+ "orch-config",
  "orch-core",
  "orch-model-openai",
  "orch-ports",
