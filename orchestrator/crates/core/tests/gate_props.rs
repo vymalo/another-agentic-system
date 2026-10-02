@@ -95,7 +95,11 @@ fn arb_input() -> impl Strategy<Value = Input> {
         1 => Just(Input::CancelledBeforeStart),
         1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text }),
         1 => (any::<bool>(), "[a-z]{1,5}")
-            .prop_map(|(retryable, reason)| Input::CancelRejected { reason, retryable }),
+            .prop_map(|(retryable, reason)| Input::CancelRejected {
+                agent: AgentId::new("a"),
+                reason,
+                retryable
+            }),
         8 => (0..NAMES.len(), sha.clone(), 0..REPOS.len(), arb_conclusion()).prop_map(
             |(n, sha, r, conclusion)| Input::CiReported(CiReport {
                 provider: CiProvider::Generic,
@@ -159,6 +163,8 @@ fn appended(cmds: &[Command]) -> impl Iterator<Item = &EventBody> {
         Command::Append(d) => Some(&d.body),
         Command::Delegate { .. }
         | Command::DelegateAction { .. }
+        | Command::Steer { .. }
+        | Command::DropQueued { .. }
         | Command::RequestCancel { .. }
         | Command::Watch { .. }
         | Command::Schedule { .. }

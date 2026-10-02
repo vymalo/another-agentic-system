@@ -138,6 +138,8 @@ impl From<TransitionError> for AppError {
     fn from(e: TransitionError) -> Self {
         match e {
             TransitionError::Finished { .. } => AppError::Finished,
+            // well formed, but what it names cannot be done: 422 (ADR 0036)
+            e @ TransitionError::TextTooLong { .. } => AppError::Unprocessable(e.to_string()),
             other => AppError::Transition(other),
         }
     }

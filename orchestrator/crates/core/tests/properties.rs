@@ -86,8 +86,11 @@ fn arb_input() -> impl Strategy<Value = Input> {
             catalog: None,
         }),
         Just(Input::CancelledBeforeStart),
-        (any::<bool>(), "[a-z]{1,5}")
-            .prop_map(|(retryable, reason)| Input::CancelRejected { reason, retryable }),
+        (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {
+            agent: AgentId::new("a"),
+            reason,
+            retryable
+        }),
         "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text }),
         arb_step().prop_map(|report| Input::Agent {
             agent: AgentId::new("a"),

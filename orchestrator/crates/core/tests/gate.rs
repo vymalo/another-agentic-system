@@ -123,6 +123,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             Command::Append(d) => Some(&d.body),
             Command::Delegate { .. }
             | Command::DelegateAction { .. }
+            | Command::Steer { .. }
+            | Command::DropQueued { .. }
             | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
@@ -143,10 +145,12 @@ fn check_results(cmds: &[Command]) -> Vec<&CheckResult> {
         })
         .collect()
 }
+/// The texts sent to the agent, in order: a message to a running job is steered (ADR 0036), the
+/// rest are delegations.
 fn delegated(cmds: &[Command]) -> Vec<&str> {
     cmds.iter()
         .filter_map(|c| match c {
-            Command::Delegate { text, .. } => Some(text.as_str()),
+            Command::Delegate { text, .. } | Command::Steer { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -1648,6 +1652,7 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
     let (snap, cmds) = step(
         &verifying,
         &Input::CancelRejected {
+            agent: AgentId::new("coder"),
             reason: "no".into(),
             retryable: false,
         },

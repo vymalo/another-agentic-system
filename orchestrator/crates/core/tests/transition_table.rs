@@ -50,6 +50,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             Command::Append(d) => Some(&d.body),
             Command::Delegate { .. }
             | Command::DelegateAction { .. }
+            | Command::Steer { .. }
+            | Command::DropQueued { .. }
             | Command::RequestCancel { .. }
             | Command::Watch { .. }
             | Command::Schedule { .. }
@@ -60,6 +62,14 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestVerification { .. } => None,
         })
         .collect()
+}
+/// The `user_message` data of a message sent to a thread in `state`: while a job runs the core
+/// says it was steered (ADR 0036), otherwise nothing.
+fn heard(state: ThreadState, text: &str) -> UserMessageData {
+    UserMessageData {
+        delivery: matches!(state, Queued | Working).then_some(Delivery::Steer),
+        ..UserMessageData::new(text)
+    }
 }
 fn run(state: ThreadState, input: &Input) -> (ThreadState, Vec<Command>) {
     transition(&state, input).unwrap()
@@ -84,13 +94,13 @@ fn row1_user_message_in_queued_or_working() {
             Command::Append(d) => {
                 assert_eq!(d.actor, Actor::user(&user()));
                 assert_eq!(d.actor.name, "me@example.com");
-                assert_eq!(d.body, EventBody::UserMessage(UserMessageData::new("hi")));
+                assert_eq!(d.body, EventBody::UserMessage(heard(s, "hi")));
             }
             other => panic!("unexpected {other:?}"),
         }
         assert_eq!(
             cmds[1],
-            Command::Delegate {
+            Command::Steer {
                 text: "hi".into(),
                 catalog: None
             }
@@ -118,16 +128,27 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                     message_id: Some("m-1".into()),
                     run_id: Some("r-1".into()),
                     origin: orch_core::Origin::Agui,
+                    // sent while the job runs: the core says how it reaches the agent (ADR 0036)
+                    delivery: matches!(s, Queued | Working).then_some(Delivery::Steer),
                 })
             ),
             other => panic!("unexpected {other:?}"),
         }
-        // The delegation carries the text only: the agent never sees surface ids.
+        // The delivery carries the text only: the agent never sees surface ids. A message to a
+        // running job is a steer; one that answers a blocked job is a delegation.
+        let text = "hi".to_owned();
         assert_eq!(
             cmds[1],
-            Command::Delegate {
-                text: "hi".into(),
-                catalog: None
+            if matches!(s, Queued | Working) {
+                Command::Steer {
+                    text,
+                    catalog: None,
+                }
+            } else {
+                Command::Delegate {
+                    text,
+                    catalog: None,
+                }
             }
         );
     }
@@ -150,7 +171,7 @@ fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
                 d.body,
                 EventBody::UserMessage(UserMessageData {
                     origin: orch_core::Origin::Mcp,
-                    ..UserMessageData::new("hi")
+                    ..heard(s, "hi")
                 })
             ),
             other => panic!("unexpected {other:?}"),
@@ -260,6 +281,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         let before = Snapshot {
             state: s,
             job: Job {
+                after_stop: None,
                 number: 3,
                 gate: gate.clone(),
                 attempt: 2,
@@ -954,6 +976,7 @@ fn row20_cancel_rejected_records_an_error() {
         let (next, cmds) = run(
             s,
             &Input::CancelRejected {
+                agent: AgentId::new("coder"),
                 reason: "not cancelable".into(),
                 retryable: true,
             },
@@ -977,6 +1000,7 @@ fn row21_cancel_outcomes_in_terminal_are_noops() {
             run(
                 s,
                 &Input::CancelRejected {
+                    agent: AgentId::new("coder"),
                     reason: "x".into(),
                     retryable: false
                 }
@@ -1213,10 +1237,11 @@ fn after_catalogs(state: ThreadState, catalogs: &[UiCatalogData]) -> Snapshot {
 /// What the commands tell the agent of the catalog: the delivery of the only delegation.
 fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
     let mut found = cmds.iter().filter_map(|c| match c {
-        Command::Delegate { catalog, .. } | Command::DelegateAction { catalog, .. } => {
-            Some(catalog.as_ref())
-        }
+        Command::Delegate { catalog, .. }
+        | Command::Steer { catalog, .. }
+        | Command::DelegateAction { catalog, .. } => Some(catalog.as_ref()),
         Command::Append(_)
+        | Command::DropQueued { .. }
         | Command::RequestCancel { .. }
         | Command::Watch { .. }
         | Command::Schedule { .. }
@@ -1240,7 +1265,7 @@ fn row_cat1_the_first_message_with_a_catalog_records_it_first_and_delivers_it_in
             bodies(&cmds),
             [
                 &EventBody::UiCatalog(v1.clone()),
-                &EventBody::UserMessage(UserMessageData::new("hi")),
+                &EventBody::UserMessage(heard(s, "hi")),
             ],
             "{s:?}"
         );
@@ -1266,7 +1291,7 @@ fn row_cat2_the_same_digest_again_writes_no_event_and_comes_as_a_reference() {
     let (after, cmds) = orch_core::transition(&before, &um_with("again", &v1)).unwrap();
     assert_eq!(
         bodies(&cmds),
-        [&EventBody::UserMessage(UserMessageData::new("again"))]
+        [&EventBody::UserMessage(heard(Working, "again"))]
     );
     assert_eq!(delivery(&cmds), Some(&UiDelivery::Ref(v1.reference())));
     assert_eq!(after.job.catalog, before.job.catalog);
@@ -1281,7 +1306,7 @@ fn row_cat3_a_newer_version_is_recorded_and_delivered_inline() {
         bodies(&cmds),
         [
             &EventBody::UiCatalog(v2.clone()),
-            &EventBody::UserMessage(UserMessageData::new("newer")),
+            &EventBody::UserMessage(heard(Working, "newer")),
         ]
     );
     assert_eq!(delivery(&cmds), Some(&UiDelivery::Inline(v2.clone())));
@@ -1297,7 +1322,7 @@ fn row_cat4_an_older_version_is_recorded_once_and_the_agent_is_told_the_newest()
         bodies(&cmds),
         [
             &EventBody::UiCatalog(v1.clone()),
-            &EventBody::UserMessage(UserMessageData::new("older")),
+            &EventBody::UserMessage(heard(Working, "older")),
         ]
     );
     assert_eq!(delivery(&cmds), Some(&UiDelivery::Ref(v2.reference())));
@@ -1306,7 +1331,7 @@ fn row_cat4_an_older_version_is_recorded_once_and_the_agent_is_told_the_newest()
     let (_, cmds) = orch_core::transition(&after, &um_with("older again", &v1)).unwrap();
     assert_eq!(
         bodies(&cmds),
-        [&EventBody::UserMessage(UserMessageData::new("older again"))]
+        [&EventBody::UserMessage(heard(Working, "older again"))]
     );
 }
 
@@ -1317,7 +1342,7 @@ fn row_cat5_a_message_without_a_catalog_carries_a_reference_to_the_current_one()
     let (after, cmds) = orch_core::transition(&with, &um("plain")).unwrap();
     assert_eq!(
         bodies(&cmds),
-        [&EventBody::UserMessage(UserMessageData::new("plain"))]
+        [&EventBody::UserMessage(heard(Working, "plain"))]
     );
     assert_eq!(delivery(&cmds), Some(&UiDelivery::Ref(v1.reference())));
     assert_eq!(after.job, with.job, "nothing about the screen changed");

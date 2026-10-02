@@ -38,8 +38,8 @@ pub use description::{
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
-    ErrorData, Event, EventBody, EventKind, FileRef, JobStartedData, MessagePurpose, Origin,
-    Preview, ThreadStateData, UserMessageData,
+    Delivery, ErrorData, Event, EventBody, EventKind, FileRef, JobStartedData, MessagePurpose,
+    Origin, Preview, ThreadStateData, UserMessageData,
 };
 pub use extension::{
     KnownExtension, MENTIONS_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
@@ -54,11 +54,11 @@ pub use fork::{
 pub use gate::{
     CheckResult, CheckSource, CheckStatus, ChecksReport, CiConclusion, CiPolicy, CiProvider,
     CiReport, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS, DEFAULT_VERIFIER_TIMEOUT_SECS,
-    GatePolicy, Hold, Job, JobView, KnownArtifact, MAX_FINDINGS, MAX_FINDINGS_BYTES,
-    MAX_SUMMARY_BYTES, MAX_TASK_BYTES, MAX_URL_BYTES, PullRequestRef, PushedRef, Recognised,
-    ReworkData, Snapshot, SourceFindings, Timer, Verdict, WatchKey, cap_findings, is_branch_name,
-    is_commit_hash, parse_verdict, pull_request_url, recognise_artifact, repo_key,
-    verifier_context,
+    GatePolicy, Hold, Job, JobView, KnownArtifact, MAX_AFTER_STOP_BYTES, MAX_FINDINGS,
+    MAX_FINDINGS_BYTES, MAX_SUMMARY_BYTES, MAX_TASK_BYTES, MAX_URL_BYTES, PullRequestRef,
+    PushedRef, Recognised, ReworkData, Snapshot, SourceFindings, Timer, Verdict, WatchKey,
+    cap_findings, is_branch_name, is_commit_hash, parse_verdict, pull_request_url,
+    recognise_artifact, repo_key, verifier_context,
 };
 pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};
 pub use language::{
@@ -89,7 +89,7 @@ pub use tools::{
     AttachedServer, MAX_ATTACHED_SERVERS, MAX_SERVER_ID_BYTES, ToolsData, ToolsError, attached_by,
     check_servers, is_valid_server_id,
 };
-pub use transition::{Command, EventDraft, Input, TransitionError, transition};
+pub use transition::{Command, EventDraft, Input, TransitionError, start_thread, transition};
 pub use ui::{
     A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES,
     MAX_ID_BYTES, MAX_OPERATIONS, MAX_OPERATIONS_BYTES, MAX_SURFACE_BYTES, OperationError,

@@ -182,6 +182,21 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             origin,
             catalog: catalog.take(),
         },
+        Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog: _,
+        } => Input::StopAndSend {
+            user,
+            text,
+            message_id,
+            run_id,
+            origin,
+            catalog: catalog.take(),
+        },
         Input::UiAction {
             user,
             action,
@@ -261,8 +276,15 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         Input::UserMessage {
             message_id: Some(id),
             ..
+        }
+        | Input::StopAndSend {
+            message_id: Some(id),
+            ..
         } => Some(format!("agui:{thread}:msg:{id}")),
         Input::UserMessage {
+            run_id: Some(id), ..
+        }
+        | Input::StopAndSend {
             run_id: Some(id), ..
         } => Some(format!("agui:{thread}:run:{id}")),
         // An action has no message id: its run id is the key, like an answer's.
@@ -271,6 +293,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
             .as_ref()
             .map(|id| format!("agui:{thread}:run:{id}")),
         Input::UserMessage { .. }
+        | Input::StopAndSend { .. }
         | Input::Redeliver { .. }
         | Input::Cancel { .. }
         | Input::Agent { .. }

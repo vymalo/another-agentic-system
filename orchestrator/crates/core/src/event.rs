@@ -192,11 +192,39 @@ impl Origin {
     }
 }
 
+/// How a person's message reached a job that was running when they sent it (ADR 0036). Closed
+/// (ADR 0004).
+///
+/// The **core** decides it and writes it on the `user_message`; a caller never sets it. It is
+/// absent on every message that was sent to a thread nothing was running on, and in every log
+/// written before the field existed, which therefore reads as it always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// Sent while a job was `queued` or `working`, and no stop was on its way: the message goes
+    /// to the running task when its agent can read it there, and after the turn otherwise.
+    Steer,
+    /// Sent with "Stop & send", or while a stop was on its way (ADR 0036): the running task is
+    /// cancelled and the next job starts with the text.
+    Interrupt,
+}
+
+impl Delivery {
+    /// The wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Delivery::Steer => "steer",
+            Delivery::Interrupt => "interrupt",
+        }
+    }
+}
+
 /// `data` of a `user_message`.
 ///
 /// `message_id` and `run_id` are set when the message came from a surface that names them (an
 /// AG-UI message id and run id); both are absent, never `null`, otherwise. `origin` is absent for
-/// a message from the chat (`agui`) and `mcp` for one an MCP client sent.
+/// a message from the chat (`agui`) and `mcp` for one an MCP client sent. `delivery` is absent
+/// unless the message was sent while a job was running ([`Delivery`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserMessageData {
@@ -211,6 +239,10 @@ pub struct UserMessageData {
     /// The surface the message came in through; absent (the default, `agui`) in older logs.
     #[serde(default, skip_serializing_if = "Origin::is_default")]
     pub origin: Origin,
+    /// How it reached the running job, when one was running ([`Delivery`]); absent otherwise and
+    /// in older logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
 }
 
 impl UserMessageData {
@@ -221,6 +253,7 @@ impl UserMessageData {
             message_id: None,
             run_id: None,
             origin: Origin::default(),
+            delivery: None,
         }
     }
 }
