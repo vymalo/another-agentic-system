@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use common::*;
 use orch_app::GateLayer;
-use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION};
+use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION, TEXT_STREAM_EXTENSION};
 use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript, with_ui_catalog};
 use serde_json::{Value, json};
 
@@ -200,6 +200,13 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(event["kind"], "user_message");
             (id, "done")
         }
+        // Working text and the answer (ADR 0031): `plain` lists `text-stream/v1` and `steps/v1`
+        // (`world_for`). The words before a tool call are stated on a `working` status, the reply
+        // on `completed`: the log marks them `working` and `answer`.
+        "working" => (
+            chat.seed_thread("plain", "stream-words go", None).await,
+            "done",
+        ),
         // A person renames the thread (`patchThread`): once while it works (the title is the
         // person's from then on), once more after it is done. The log says who wrote each.
         "title" => {
@@ -287,7 +294,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 20] = [
+const SCENARIOS: [&str; 21] = [
     "echo",
     "ask",
     "cancel",
@@ -305,6 +312,7 @@ const SCENARIOS: [&str; 20] = [
     "catalog",
     "steps",
     "steps-ask",
+    "working",
     "title",
     "fork",
     "fork-blocked",
@@ -333,6 +341,23 @@ async fn world_for(name: &str) -> World {
                 Setup {
                     plain: FakeAgentOptions {
                         extensions: vec![STEPS_EXTENSION.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` lists `text-stream/v1` and `steps/v1`: it states its words and the reply as streams
+        "working" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    plain: FakeAgentOptions {
+                        extensions: vec![
+                            TEXT_STREAM_EXTENSION.to_owned(),
+                            STEPS_EXTENSION.to_owned(),
+                        ],
                         ..FakeAgentOptions::default()
                     },
                     ..Setup::default()

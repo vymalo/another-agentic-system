@@ -812,6 +812,7 @@ fn agent_input(
             message_id,
             text,
             is_final,
+            purpose,
         } => {
             // What the agent says about its work is what the verifier is shown (as data), until
             // the work is being verified: the ledger is frozen then.
@@ -834,6 +835,8 @@ fn agent_input(
                         text: text.clone(),
                         message_id: message_id.clone(),
                         is_final: *is_final,
+                        purpose: *purpose,
+                        via: None,
                     }),
                 )],
             ))

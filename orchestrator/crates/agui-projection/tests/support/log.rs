@@ -418,6 +418,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     message_id: format!("a{slot}-{}", s.generation),
                     text: s.text.clone(),
                     is_final: *fin,
+                    purpose: None,
                 };
                 if *fin {
                     s.generation += 1;
@@ -432,6 +433,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     message_id: format!("a{slot}-{}", s.generation),
                     text: s.text.clone(),
                     is_final: false,
+                    purpose: None,
                 })
             }
             Action::Delivery { retryable } => Input::DeliveryFailed {

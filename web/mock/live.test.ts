@@ -31,6 +31,8 @@ const user = ev(1, "user_message", { type: "user", name: "u" }, { text: "go" });
 const working = ev(2, "agent_status", AGENT, { status: "working" });
 const message = (seq: number, id: string, text: string) =>
   ev(seq, "agent_message", AGENT, { messageId: id, final: true, text });
+const marked = (seq: number, id: string, text: string, purpose: "working" | "answer") =>
+  ev(seq, "agent_message", AGENT, { messageId: id, final: true, text, purpose });
 const completed = (seq: number, detail?: string) =>
   ev(seq, "agent_status", AGENT, { status: "completed", ...(detail ? { detail } : {}) });
 const done = (seq: number) => ev(seq, "thread_state", SYSTEM, { state: "done" });
@@ -185,5 +187,52 @@ describe("the mock's live overlay", () => {
     c.log(user);
     c.log(working);
     expect(c.live({ ...piece("m", 0, "hi"), agent: "someone-else" })).toEqual([]);
+  });
+
+  // ADR 0031: the live message opens before anyone knows what its words are for; the END that
+  // closes it says they were working text (and an answer's says nothing more than `final`)
+  it("a live message the log marks working ends as working text", () => {
+    const c = connection();
+    c.log(user);
+    c.log(working);
+    c.live(piece("w", 0, "Let me "));
+    c.live(piece("w", 7, "look."));
+    const frames = c.log(marked(3, "w", "Let me look.", "working"));
+    const end = frames.find((f) => f.event.type === "TEXT_MESSAGE_END");
+    expect(end?.event.metadata).toEqual({ "vymalo.live": { final: true, purpose: "working" } });
+    // the log's START was dropped: the live one is open already
+    expect(frames.some((f) => f.event.type === "TEXT_MESSAGE_START")).toBe(false);
+  });
+
+  it("a live message the log marks answer, or does not mark, ends as final and no more", () => {
+    for (const log of [
+      (c: ReturnType<typeof connection>) => c.log(marked(3, "r", "Fibonacci.", "answer")),
+      (c: ReturnType<typeof connection>) => c.log(message(3, "r", "Fibonacci.")),
+    ]) {
+      const c = connection();
+      c.log(user);
+      c.log(working);
+      c.live(piece("r", 0, "Fib"));
+      const end = log(c).find((f) => f.event.type === "TEXT_MESSAGE_END");
+      expect(end?.event.metadata).toEqual({ "vymalo.live": { final: true } });
+    }
+  });
+
+  it("a message says what its words are for on its own START, and says nothing when the log does not", () => {
+    const c = connection();
+    c.log(user);
+    c.log(working);
+    const start = (frames: Frame[]) => frames.find((f) => f.event.type === "TEXT_MESSAGE_START");
+    expect(start(c.log(marked(3, "a", "One.", "working")))?.event.metadata).toMatchObject({
+      "vymalo.purpose": "working",
+    });
+    expect(start(c.log(marked(4, "b", "Two.", "answer")))?.event.metadata).toMatchObject({
+      "vymalo.purpose": "answer",
+    });
+    const plain = start(c.log(message(5, "c", "Three.")))?.event.metadata as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(plain)).toEqual(["vymalo.actor"]);
   });
 });

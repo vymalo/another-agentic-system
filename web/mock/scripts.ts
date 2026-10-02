@@ -1223,6 +1223,47 @@ export function scriptFor(text: string): {
         ],
       };
     }
+    // working text and the answer (ADR 0031, the `working` golden): the words before a tool call
+    // are stated on a `working` status and the reply on `completed`; the log marks them `working`
+    // and `answer`, and the live message of the words ends as working text
+    case "stream-words": {
+      const words = nextMessageId();
+      const reply = nextMessageId();
+      return {
+        start: [
+          working,
+          ...livePieces(words, ["Let me run ", "the tests first."]),
+          {
+            kind: "agent_message",
+            data: {
+              messageId: words,
+              final: true,
+              purpose: "working",
+              text: "Let me run the tests first.",
+            },
+          },
+          agentStep("tool:c1", [], "command", "npm test", "completed", "end", "execute"),
+          ...livePieces(reply, ["Streaming a reply, ", "word by word, ", "as it is written."]),
+          {
+            kind: "agent_message",
+            data: {
+              messageId: reply,
+              final: true,
+              purpose: "answer",
+              text: "Streaming a reply, word by word, as it is written.",
+            },
+          },
+          {
+            kind: "agent_status",
+            data: {
+              status: "completed",
+              detail: "Streaming a reply, word by word, as it is written.",
+            },
+          },
+          done,
+        ],
+      };
+    }
     // mock only: a longer reply in Markdown, written piece by piece
     case "stream-long": {
       const id = nextMessageId();

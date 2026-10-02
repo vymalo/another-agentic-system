@@ -8,7 +8,8 @@ use orch_agui_projection::{Audience, Connect, Follow, Frame, LiveOverlay, Projec
 use orch_agui_proto::Event as Wire;
 use orch_core::{
     Actor, AgentId, AgentMessageData, AgentStatus, AgentStatusData, Event, EventBody, LiveChunk,
-    LiveEnd, LiveText, ThreadState, ThreadStateData, Timestamp, UserId, UserMessageData,
+    LiveEnd, LiveText, MessagePurpose, ThreadState, ThreadStateData, Timestamp, UserId,
+    UserMessageData,
 };
 use support::log::{meta, thread_id};
 use support::{line, verify};
@@ -56,6 +57,20 @@ fn message(seq: i64, id: &str, text: &str) -> Event {
             text: text.to_owned(),
             message_id: id.to_owned(),
             is_final: true,
+            purpose: None,
+            via: None,
+        }),
+    )
+}
+
+/// A final message the log marked (ADR 0031).
+fn message_as(seq: i64, id: &str, text: &str, purpose: MessagePurpose) -> Event {
+    ev(
+        seq,
+        agent(),
+        EventBody::AgentMessage(AgentMessageData {
+            purpose: Some(purpose),
+            ..AgentMessageData::plain(id, text)
         }),
     )
 }
@@ -97,15 +112,24 @@ fn show(frame: &Frame) -> String {
         .resume_id
         .map(|n| format!("  id:{n}"))
         .unwrap_or_default();
+    // what the log said the words are for (ADR 0031), on a START only
+    let purpose = |meta: &Option<orch_agui_proto::Metadata>| {
+        meta.as_ref()
+            .and_then(|m| m.get("vymalo.purpose"))
+            .and_then(|v| v.as_str())
+            .map(|p| format!(" purpose={p}"))
+            .unwrap_or_default()
+    };
     match &frame.event {
         Wire::TextMessageStart(e) => format!(
-            "TEXT_MESSAGE_START {} {}{}{id}",
+            "TEXT_MESSAGE_START {} {}{}{}{id}",
             e.message_id,
             e.subagent_run_id
                 .as_ref()
                 .map(|s| format!("@{s}"))
                 .unwrap_or_default(),
-            live(&e.base.metadata)
+            live(&e.base.metadata),
+            purpose(&e.base.metadata)
         ),
         Wire::TextMessageContent(e) => format!(
             "TEXT_MESSAGE_CONTENT {} {:?}{}{id}",
@@ -539,6 +563,88 @@ fn a_final_that_does_not_start_with_what_was_said_replaces_it() {
         ]
     );
     assert_eq!(c.checker.reading("S"), Some("Lucas numbers"));
+}
+
+// ---- working text (ADR 0031) ---------------------------------------------------------------
+
+#[test]
+fn a_live_stream_the_log_marks_working_ends_as_working() {
+    let mut c = Conn::working();
+    c.live(open("W", 0, "Let me run "));
+    c.live(open("W", 11, "the tests first."));
+    // The live message opened before anyone knew what its words are for; the log's message
+    // continues it, and its END says it was working text. The START the log wrote is dropped.
+    assert_eq!(
+        c.log(message_as(
+            3,
+            "W",
+            "Let me run the tests first.",
+            MessagePurpose::Working
+        )),
+        [
+            "TEXT_MESSAGE_CONTENT W \"\" live{\"final\":true,\"offset\":27}",
+            "TEXT_MESSAGE_END W live{\"final\":true,\"purpose\":\"working\"}  id:3"
+        ]
+    );
+    assert_eq!(c.overlay.open_message(), None);
+    assert_eq!(c.checker.reading("W"), Some("Let me run the tests first."));
+}
+
+#[test]
+fn a_live_stream_the_log_marks_answer_ends_as_final_and_no_more() {
+    let mut c = Conn::working();
+    c.live(open("R", 0, "Fib"));
+    assert_eq!(
+        c.log(message_as(3, "R", "Fibonacci.", MessagePurpose::Answer)),
+        [
+            "TEXT_MESSAGE_CONTENT R \"onacci.\" live{\"final\":true,\"offset\":3}",
+            "TEXT_MESSAGE_END R live{\"final\":true}  id:3"
+        ]
+    );
+}
+
+#[test]
+fn a_live_stream_the_log_leaves_unmarked_ends_as_it_always_did() {
+    let mut c = Conn::working();
+    c.live(open("S", 0, "Fib"));
+    assert_eq!(
+        c.log(message(3, "S", "Fibonacci.")),
+        [
+            "TEXT_MESSAGE_CONTENT S \"onacci.\" live{\"final\":true,\"offset\":3}",
+            "TEXT_MESSAGE_END S live{\"final\":true}  id:3"
+        ]
+    );
+}
+
+#[test]
+fn working_text_with_no_live_message_says_it_on_its_own_start() {
+    // The log's message alone (a replay, a viewer that joined late): the START carries the
+    // purpose, and the overlay has nothing to add.
+    let mut c = Conn::working();
+    assert_eq!(
+        c.log(message_as(3, "W", "Let me look.", MessagePurpose::Working)),
+        [
+            "TEXT_MESSAGE_START W @sub-2 purpose=working",
+            "TEXT_MESSAGE_CONTENT W \"Let me look.\"",
+            "TEXT_MESSAGE_END W  id:3"
+        ]
+    );
+}
+
+#[test]
+fn working_text_for_a_stream_that_was_given_up_is_said_again_with_its_purpose() {
+    let mut c = Conn::working();
+    c.live(open("W", 0, "Let me"));
+    c.live(piece("W", 6, "", LiveEnd::Abandoned));
+    // said under another id (an id is never reused on a stream), still marked
+    assert_eq!(
+        c.log(message_as(3, "W", "Let me look.", MessagePurpose::Working)),
+        [
+            "TEXT_MESSAGE_START W~final @sub-2 purpose=working",
+            "TEXT_MESSAGE_CONTENT W~final \"Let me look.\"",
+            "TEXT_MESSAGE_END W~final  id:3"
+        ]
+    );
 }
 
 #[test]

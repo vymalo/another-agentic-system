@@ -26,7 +26,10 @@
 //!    its `START` is dropped, its `CONTENT` carries only the words not yet said, with the offset
 //!    they continue from and `final: true`, and its `END` closes the same message and keeps the
 //!    resume point. A final that does not start with what was said replaces it (offset 0, the
-//!    whole text).
+//!    whole text). When the log marked that message **working text** (`purpose`, ADR 0031), the
+//!    `END` says it too, `{final: true, purpose: "working"}`: the live message opened before
+//!    anyone knew what its words were for, and this is where the screen learns that they were
+//!    not the answer. An answer's `END` says nothing more than `final`.
 //! 3. Live frames never carry a resume id, and neither do they hold one back: a live message is
 //!    not in the log, so a frame of the log written while one is open is still a resume point.
 //!
@@ -40,12 +43,12 @@ use orch_agui_proto::{
     self as agui, Metadata, SubagentRunId, TextMessageContentEvent, TextMessageEndEvent,
     TextMessageRole, TextMessageStartEvent,
 };
-use orch_core::{LiveEnd, LiveText};
+use orch_core::{LiveEnd, LiveText, MessagePurpose};
 use serde_json::{Value, json};
 
 use crate::frame::Frame;
 use crate::projector::Projector;
-use crate::vocab::{LIVE_KEY, actor_metadata};
+use crate::vocab::{LIVE_KEY, PURPOSE_KEY, actor_metadata};
 
 /// The most text one live message holds, in bytes. A stream that goes on past it stops growing on
 /// the screen (the pieces that would not fit are ignored, and so is anything after them until the
@@ -81,7 +84,12 @@ enum Closed {
 #[derive(Debug, Clone)]
 enum Rewrite {
     /// The log's final message for the open live message: `CONTENT` and `END` continue it.
-    Merge { id: String, sent: String },
+    /// `working` says that the log marked it working text (ADR 0031): its `END` says so too.
+    Merge {
+        id: String,
+        sent: String,
+        working: bool,
+    },
     /// The final message for an id that was given up on the wire: said again under another id.
     Rename { from: String, to: String },
 }
@@ -138,9 +146,19 @@ impl LiveOverlay {
                     if self.open.as_ref().is_some_and(|o| o.id == id) {
                         if let Some(open) = self.open.take() {
                             self.remember(&id, Closed::Merged);
+                            // The START the log wrote carries what the words are for; the live
+                            // one could not know, so the END says it (working text only).
+                            let working = start
+                                .base
+                                .metadata
+                                .as_ref()
+                                .and_then(|m| m.get(PURPOSE_KEY))
+                                .and_then(Value::as_str)
+                                == Some(MessagePurpose::Working.as_str());
                             rewrite = Some(Rewrite::Merge {
                                 id,
                                 sent: open.sent,
+                                working,
                             });
                         }
                         // The live message is already open on the wire: this START is dropped.
@@ -153,7 +171,7 @@ impl LiveOverlay {
                     }
                 }
                 agui::Event::TextMessageContent(content) => match &rewrite {
-                    Some(Rewrite::Merge { id, sent }) if content.message_id.as_str() == id => {
+                    Some(Rewrite::Merge { id, sent, .. }) if content.message_id.as_str() == id => {
                         let rest = content.delta.strip_prefix(sent.as_str()).map(str::to_owned);
                         let (offset, delta) = match rest {
                             Some(rest) => (utf16_len(sent), rest),
@@ -169,8 +187,12 @@ impl LiveOverlay {
                     _ => {}
                 },
                 agui::Event::TextMessageEnd(end) => match &rewrite {
-                    Some(Rewrite::Merge { id, .. }) if end.message_id.as_str() == id => {
-                        end.base.metadata = Some(live_metadata(json!({"final": true})));
+                    Some(Rewrite::Merge { id, working, .. }) if end.message_id.as_str() == id => {
+                        let mut live = json!({"final": true});
+                        if *working {
+                            live["purpose"] = json!(MessagePurpose::Working.as_str());
+                        }
+                        end.base.metadata = Some(live_metadata(live));
                         rewrite = None;
                     }
                     Some(Rewrite::Rename { from, to }) if end.message_id.as_str() == from => {

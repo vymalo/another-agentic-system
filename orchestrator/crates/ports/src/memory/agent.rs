@@ -422,6 +422,7 @@ impl Shared {
                 message_id: id.to_owned(),
                 text: stream_text(),
                 is_final: true,
+                purpose: None,
             }),
         );
         self.push_status(task, AgentTaskState::Completed, Some(&stream_text()));

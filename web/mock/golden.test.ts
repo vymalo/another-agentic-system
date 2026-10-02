@@ -301,6 +301,17 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(answer.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // working text and the answer (ADR 0031): the log marks the words before a tool call `working`
+    // and the reply that ends the turn `answer`; the AG-UI START says it in `vymalo.purpose`
+    working: async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "stream-words go" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     // a person renames the thread while it works, cancels it, and renames it again (`patchThread`)
     title: async (id) => {
       const first = await postRun(base, "reviewer", {

@@ -788,6 +788,8 @@ export class Projector {
     text: string,
     role: "user" | "assistant",
     sub?: string,
+    /** What an agent's words are for, when the log says (ADR 0031): members of the START's metadata. */
+    purpose?: { purpose?: string; via?: string },
   ): Ev[] {
     const attr = sub ? { subagentRunId: sub } : {};
     return [
@@ -797,7 +799,11 @@ export class Projector {
         role,
         ...(role === "assistant" ? { name: e.actor.name } : {}),
         ...attr,
-        metadata: actorMeta(e),
+        metadata: {
+          ...actorMeta(e),
+          ...(purpose?.purpose ? { "vymalo.purpose": purpose.purpose } : {}),
+          ...(purpose?.via ? { "vymalo.via": purpose.via } : {}),
+        },
       },
       { type: "TEXT_MESSAGE_CONTENT", messageId, delta: text, ...attr },
       { type: "TEXT_MESSAGE_END", messageId, ...attr },
@@ -923,6 +929,13 @@ export class Projector {
         const final = e.data.final === true;
         if (final) this.lastFinal = text;
         const attr = { subagentRunId: inv.id };
+        // what the words are for, when the log says; no member when it does not (ADR 0031)
+        const purpose = {
+          ...(e.data.purpose === "working" || e.data.purpose === "answer"
+            ? { purpose: e.data.purpose }
+            : {}),
+          ...(e.data.via === "turn_output" ? { via: e.data.via } : {}),
+        };
         if (this.openText && text.startsWith(this.openText.said) && this.openText.id === id) {
           const suffix = text.slice(this.openText.said.length);
           if (suffix)
@@ -934,10 +947,10 @@ export class Projector {
         }
         if (!this.openText && !(final && this.said.has(`${id}\0${text}`))) {
           if (final) {
-            out.push(...this.textTriad(e, id, text, "assistant", inv.id));
+            out.push(...this.textTriad(e, id, text, "assistant", inv.id, purpose));
             this.said.add(`${id}\0${text}`);
           } else {
-            const [start, content] = this.textTriad(e, id, text, "assistant", inv.id);
+            const [start, content] = this.textTriad(e, id, text, "assistant", inv.id, purpose);
             out.push(start as Ev, content as Ev);
             this.openText = { id, said: text };
           }

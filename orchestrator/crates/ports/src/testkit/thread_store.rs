@@ -299,6 +299,24 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             }),
             ..user_event("unused", None)
         },
+        // ADR 0031: what an agent's words are for comes back as written, and is absent (never
+        // null) when the event does not say.
+        NewEvent {
+            body: EventBody::AgentMessage(orch_core::AgentMessageData {
+                purpose: Some(orch_core::MessagePurpose::Working),
+                ..orch_core::AgentMessageData::plain("w-1", "I will look that up.")
+            }),
+            ..agent_event("unused")
+        },
+        NewEvent {
+            body: EventBody::AgentMessage(orch_core::AgentMessageData {
+                purpose: Some(orch_core::MessagePurpose::Answer),
+                via: Some(orch_core::AnswerVia::TurnOutput),
+                ..orch_core::AgentMessageData::plain("a-1", "Here it is.")
+            }),
+            ..agent_event("unused")
+        },
+        agent_event("unmarked"),
     ];
     let bodies: Vec<EventBody> = wanted.iter().map(|e| e.body.clone()).collect();
     let action_row = NewOutbox {
@@ -319,14 +337,14 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         .await
         .unwrap();
 
-    let read = store.list_events(thread_id(1), 0, 10).await.unwrap();
+    let read = store.list_events(thread_id(1), 0, 20).await.unwrap();
     assert_eq!(
         read.iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
         bodies
     );
     assert_eq!(
         read.iter().map(|e| e.seq).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7, 8]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     );
     // The wire form the API serves is what the store returned: no null, camelCase ids.
     let data: Vec<serde_json::Value> = read.iter().map(|e| e.body.data_value()).collect();
@@ -353,6 +371,20 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(
         data[7],
         serde_json::json!({"text": "from a tool", "origin": "mcp"})
+    );
+    assert_eq!(
+        data[8],
+        serde_json::json!({"text": "I will look that up.", "messageId": "w-1", "final": true,
+                           "purpose": "working"})
+    );
+    assert_eq!(
+        data[9],
+        serde_json::json!({"text": "Here it is.", "messageId": "a-1", "final": true,
+                           "purpose": "answer", "via": "turn_output"})
+    );
+    assert_eq!(
+        data[10],
+        serde_json::json!({"text": "unmarked", "messageId": "m-unmarked", "final": true})
     );
     // The delegation of an action keeps its payload, and is a `delegate` row.
     let open = store.list_open_outbox(thread_id(1)).await.unwrap();
@@ -3420,6 +3452,8 @@ fn agent_event(text: &str) -> NewEvent {
             text: text.to_owned(),
             message_id: format!("m-{text}"),
             is_final: true,
+            purpose: None,
+            via: None,
         }),
         idempotency_key: None,
     }

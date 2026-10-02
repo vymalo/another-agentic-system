@@ -7,8 +7,9 @@ use std::collections::BTreeSet;
 
 use orch_agui_projection::{Audience, Frame, Projector, ThreadMeta};
 use orch_core::{
-    Actor, AgentId, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, Event,
-    EventBody, ThreadState, ThreadStateData, Timestamp, UserId, UserMessageData,
+    Actor, AgentId, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
+    ErrorData, Event, EventBody, MessagePurpose, ThreadState, ThreadStateData, Timestamp, UserId,
+    UserMessageData,
 };
 use support::log::{THREAD, meta, thread_id};
 use support::{lines, verify};
@@ -90,6 +91,8 @@ fn say(seq: i64, id: &str, text: &str, is_final: bool) -> Event {
             text: text.to_owned(),
             message_id: id.to_owned(),
             is_final,
+            purpose: None,
+            via: None,
         }),
     )
 }
@@ -1357,4 +1360,123 @@ fn an_artifact_says_its_kind_and_the_fields_a_card_needs() {
         (Some("file"), Some("not json"))
     );
     assert_eq!(content_of(&frames, "evt-8")["kind"], "file");
+}
+
+// ---- what the words are for (ADR 0031) -----------------------------------------------------
+
+fn say_as(
+    seq: i64,
+    id: &str,
+    text: &str,
+    purpose: Option<MessagePurpose>,
+    via: Option<AnswerVia>,
+) -> Event {
+    ev(
+        seq,
+        plain(),
+        EventBody::AgentMessage(AgentMessageData {
+            purpose,
+            via,
+            ..AgentMessageData::plain(id, text)
+        }),
+    )
+}
+
+/// The metadata of the `START` of the message `id`, in the frames of a projection.
+fn start_metadata(frames: &[Vec<Frame>], id: &str) -> serde_json::Map<String, serde_json::Value> {
+    support::flatten(frames)
+        .iter()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::TextMessageStart(s) if s.message_id.as_str() == id => {
+                Some(s.base.metadata.clone().unwrap_or_default())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no TEXT_MESSAGE_START for {id}"))
+        .into_iter()
+        .collect()
+}
+
+#[test]
+fn a_message_says_what_its_words_are_for_on_its_start() {
+    let frames = project(&[
+        user(1, "go"),
+        say_as(2, "w", "Let me look.", Some(MessagePurpose::Working), None),
+        say_as(3, "a", "Done.", Some(MessagePurpose::Answer), None),
+        status(4, AgentStatus::Completed, Some("Done.")),
+        thread(5, ThreadState::Done),
+    ]);
+    let working = start_metadata(&frames, "w");
+    assert_eq!(working["vymalo.purpose"], "working");
+    assert!(!working.contains_key("vymalo.via"));
+    assert_eq!(working["vymalo.actor"]["name"], "plain");
+    let answer = start_metadata(&frames, "a");
+    assert_eq!(answer["vymalo.purpose"], "answer");
+    assert!(!answer.contains_key("vymalo.via"));
+}
+
+#[test]
+fn an_announced_answer_names_how() {
+    let frames = project(&[
+        user(1, "go"),
+        say_as(
+            2,
+            "a",
+            "Done.",
+            Some(MessagePurpose::Answer),
+            Some(AnswerVia::TurnOutput),
+        ),
+        status(3, AgentStatus::Completed, None),
+        thread(4, ThreadState::Done),
+    ]);
+    let answer = start_metadata(&frames, "a");
+    assert_eq!(answer["vymalo.purpose"], "answer");
+    assert_eq!(answer["vymalo.via"], "turn_output");
+}
+
+#[test]
+fn a_message_with_no_purpose_has_no_member_and_neither_have_the_status_words() {
+    let frames = project(&[
+        user(1, "go"),
+        say(2, "m", "Plan.", true),
+        status(3, AgentStatus::Completed, Some("All done.")),
+        thread(4, ThreadState::Done),
+    ]);
+    for id in ["m", "st-3"] {
+        let meta = start_metadata(&frames, id);
+        assert!(!meta.contains_key("vymalo.purpose"), "{id}: {meta:?}");
+        assert!(!meta.contains_key("vymalo.via"), "{id}: {meta:?}");
+        assert_eq!(meta["vymalo.actor"]["name"], "plain");
+    }
+}
+
+#[test]
+fn a_message_that_is_open_when_a_connection_joins_is_opened_again_with_its_purpose() {
+    // a partial (the legacy shape) is open across the cut; the preamble says it again
+    let events = [
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        ev(
+            3,
+            plain(),
+            EventBody::AgentMessage(AgentMessageData {
+                is_final: false,
+                purpose: Some(MessagePurpose::Working),
+                ..AgentMessageData::plain("w", "Let me")
+            }),
+        ),
+    ];
+    let mut projector = Projector::new(meta());
+    for e in &events {
+        projector.apply(e, Audience::Viewer);
+    }
+    let preamble = projector.resume_preamble();
+    let start = preamble
+        .iter()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::TextMessageStart(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("the open message is opened again");
+    assert_eq!(start.base.metadata.unwrap()["vymalo.purpose"], "working");
 }

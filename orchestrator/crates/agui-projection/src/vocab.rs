@@ -1,7 +1,7 @@
 //! The `vymalo.*` vocabulary of `docs/api/agui.md`: activity types, metadata keys, error codes.
 
 use orch_agui_proto::Metadata;
-use orch_core::{Actor, AgentStatus};
+use orch_core::{Actor, AgentStatus, AnswerVia, MessagePurpose};
 use serde_json::{Value, json};
 
 /// The member of every `vymalo.*` activity's content that says when its event happened (the
@@ -62,6 +62,14 @@ pub const PROBLEM_KEY: &str = "vymalo.problem";
 /// and `{final: true}`), and on the `END` of a live message that was given up (`{abandoned: true}`).
 pub const LIVE_KEY: &str = "vymalo.live";
 
+/// Metadata key of what an agent's words are for (ADR 0031): `"working"` or `"answer"`, on the
+/// `TEXT_MESSAGE_START` of an agent message whose `agent_message` says. Absent when it does not
+/// (a plain A2A `Message`, and every log written before the field existed).
+pub const PURPOSE_KEY: &str = "vymalo.purpose";
+/// Metadata key of how an answer was announced (ADR 0031): `"turn_output"`, on the same `START`,
+/// beside `vymalo.purpose` `"answer"`. Reserved: nothing writes it yet.
+pub const VIA_KEY: &str = "vymalo.via";
+
 /// `SUBAGENT_ERROR.code` of a sub-agent step that ended `failed`.
 pub const CODE_STEP_FAILED: &str = "step_failed";
 
@@ -88,6 +96,23 @@ pub(crate) fn actor_metadata(actor: &Actor) -> Metadata {
         ACTOR_KEY.to_owned(),
         serde_json::to_value(actor).unwrap_or(Value::Null),
     );
+    metadata
+}
+
+/// The metadata of an agent message's `TEXT_MESSAGE_START`: who said it, and what it is for when
+/// the log says (`vymalo.purpose`, `vymalo.via`: no member when it does not).
+pub(crate) fn message_metadata(
+    actor: &Actor,
+    purpose: Option<MessagePurpose>,
+    via: Option<AnswerVia>,
+) -> Metadata {
+    let mut metadata = actor_metadata(actor);
+    if let Some(purpose) = purpose {
+        metadata.insert(PURPOSE_KEY.to_owned(), Value::from(purpose.as_str()));
+    }
+    if let Some(via) = via {
+        metadata.insert(VIA_KEY.to_owned(), Value::from(via.as_str()));
+    }
     metadata
 }
 

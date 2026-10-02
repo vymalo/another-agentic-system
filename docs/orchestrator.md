@@ -674,7 +674,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | Agent status `completed` | → `done`; `agent_status`, `thread_state` | → `done` | `Err(InvalidInState)` |
 | Agent status `failed`, `rejected` | → `failed` (`rejected` prefixes the detail); `agent_status`, `thread_state` | → `failed` | `Err(InvalidInState)` |
 | Agent status `canceled` | → `cancelled`; `agent_status`, `thread_state` | → `cancelled` | `Err(InvalidInState)` |
-| Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message`, `ui_surface` or `error` | Same | `Err(InvalidInState)` |
+| Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message` (with the `purpose` the adapter read off the status it was stated on, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), `ui_surface` or `error` | Same | `Err(InvalidInState)` |
 | Agent step (`AgentUpdate::Step`) and the orchestrator's own (`Input::Step`), [ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md) | `queued` → `working`; append `agent_step`, **coalesced** (below): a start, an end and at most 4 updates per step, the rest dropped with no event | Dropped (the work is not going on; the same in `verifying`) | `Err(InvalidInState)` |
 | User's A2UI action (`UiAction`) | State kept; append `ui_action`, delegate the action | → `queued`; the same | `Err(Finished)` (HTTP 409; the card belongs to a finished request) |
 | `DeliveryFailed`, retryable | → `blocked`; append `error`, and `thread_state` on entering | State kept; append `error` | State kept; append `error` |
@@ -1622,6 +1622,17 @@ update that `consume` **never applies**: the `LiveRelay` publishes it (the first
 most 6 KiB), so a viewer that connects mid-stream, or lost a piece, has it within a second; it stops following a reply when
 its whole text reaches the log, which the agent states once and the adapter maps to an ordinary final `agent_message`
 under the stream's id. A publish that fails is logged at `debug` and never fails a delegation.
+
+**What the words are for** ([ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)). The adapter
+marks the `agent_message` it makes from a stated stream by the status it was stated on: `purpose: working` on a
+`working` status (the sentence before a tool call), `purpose: answer` on `completed`, `input_required` and
+`auth_required` (the words that end the turn); a plain A2A `Message`, and the words of any other status, are not
+marked. `AgentUpdate::Message` carries the field and the core copies it to `AgentMessageData` (`via`, how an
+answer was announced when it was not by that status, is reserved and always absent for now). Both are optional
+members of the event's JSON, so an older log reads as it always did. The projection puts them on the message's
+`START` (`vymalo.purpose`, `vymalo.via`), and the live overlay says on the `END` of a live message that the log
+marked working text, so a screen can take the draft out of the conversation
+([`api/agui.md`](api/agui.md#the-agents-words)).
 
 ```mermaid
 sequenceDiagram

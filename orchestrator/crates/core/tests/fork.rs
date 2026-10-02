@@ -45,6 +45,8 @@ fn agent(seq: i64, text: &str) -> Event {
             text: text.into(),
             message_id: format!("m{seq}"),
             is_final: true,
+            purpose: None,
+            via: None,
         }),
     )
 }
@@ -375,6 +377,7 @@ fn asked_once(ledger: &mut TitleLedger) -> u8 {
                 text: "hello".into(),
                 message_id: "m".into(),
                 is_final: true,
+                purpose: None,
             },
         },
     )
@@ -585,6 +588,8 @@ fn the_words_of_a_status_are_said_once_and_a_partial_never() {
                 text: "typing".into(),
                 message_id: "m2".into(),
                 is_final: false,
+                purpose: None,
+                via: None,
             }),
         ),
         // the answer, then the status that ends the turn with the same words
@@ -748,6 +753,8 @@ fn an_agent_name_cannot_break_the_first_line_of_an_entry() {
             text: "x".into(),
             message_id: "m".into(),
             is_final: true,
+            purpose: None,
+            via: None,
         }),
     )];
     let history = fork_history(&log);
@@ -764,6 +771,8 @@ fn an_agent_name_cannot_break_the_first_line_of_an_entry() {
             text: "x".into(),
             message_id: "m".into(),
             is_final: true,
+            purpose: None,
+            via: None,
         }),
     )];
     assert_eq!(fork_history(&log).entries[0].name, "agent");
