@@ -142,6 +142,11 @@ check "journal: the calls of the tool, in order, with their arguments" \
   "web_search:anything at all|web_search:Who won the football World Cup in 2014?|web_search:async programming|web_search:x [mock:empty]|web_search:[mock:error]|web_search:-"
 check "journal: every call has a time" \
   "$(printf '%s' "$journal" | jq -r '[.calls[] | (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$"))] | unique | join(",")')" "true"
+check "journal: every call says it carried the required token (a call without it is a 401, journaled never)" \
+  "$(printf '%s' "$journal" | jq -r '[.calls[] | .bearer] | unique | join(",")')" "true"
+mcp "$(search 'with a header')" -H 'X-Search-Tenant: probe' -H 'user-agent: probe' -o /dev/null
+check "journal: the X-* headers of a call are kept, lower-cased (dev/tools-e2e.sh reads the header a toolServers entry sends)" \
+  "$(curl -fsS "$SEARCH/__journal" | jq -c '.calls[-1].headers')" '{"x-search-tenant":"probe"}'
 check "journal: DELETE empties it" \
   "$(curl -fsS -X DELETE "$SEARCH/__journal" -o /dev/null && curl -fsS "$SEARCH/__journal" | jq -c .calls)" "[]"
 
@@ -151,13 +156,15 @@ check "model mock: health" "$(curl -sS -o /dev/null -w '%{http_code}' "$MODEL/__
 curl -sS -X DELETE "$MODEL/__admin/requests" -o /dev/null
 
 # completion MODEL_NAME MESSAGES_JSON: the first choice of a chat completion, as JSON.
+# A third argument is the `tools` of the request (the functions the agent offers the model).
 completion() {
-  jq -cn --arg m "$1" --argjson msgs "$2" '{model: $m, messages: $msgs}' |
+  jq -cn --arg m "$1" --argjson msgs "$2" --argjson tools "${3:-null}" '{model: $m, messages: $msgs} + (if $tools == null then {} else {tools: $tools} end)' |
     curl -sS -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- | jq -c '.choices[0]'
 }
 # The system prompt of an agent that follows the persona convention (the body opens with the two lines).
 system() { jq -cn --arg n "$1" --arg s "$2" '{role: "system", content: ("Your name is \($n).\nIn one sentence: \($s).\n\nYou are \($n), a test persona.")}'; }
 user() { jq -cn --arg t "$1" '{role: "user", content: $t}'; }
+assistant() { jq -cn --arg t "$1" '{role: "assistant", content: $t}'; }
 call() { # call ID TOOL: an assistant message that calls a tool
   jq -cn --arg id "$1" --arg tool "$2" '{role: "assistant", content: null, tool_calls: [{id: $id, type: "function", function: {name: $tool, arguments: "{}"}}]}'
 }
@@ -219,13 +226,44 @@ check "mock-researcher [mock:cards]: a refused show (the screen has no Cards) is
   "$(completion mock-researcher "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 x), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'unknown component Cards')]" | jq -r .finish_reason)" \
   "stop"
 
+# `[mock:websearch]`: the chat with a web search attached to the conversation (dev/tools-e2e.sh). The script reads the functions the agent offers
+# the model: with `websearch__web_search` among them (the relayed tool of the thread's endpoint, `<server>__<tool>`) the model calls it, once
+# the result is in it names the first link, and without the function it says that no web search is attached, whatever the history holds.
+ws_system=$(system Chat 'I chat with you and answer your questions in plain words')
+ws_user=$(user '[mock:websearch] Who won the football world cup in 2014?')
+ws_with='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}},{"type":"function","function":{"name":"websearch__web_search","parameters":{"type":"object"}}}]'
+ws_without='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}}]'
+ws_results=$(printf '1. A (mock) — https://example.org/mock-search/world-cup-2014\n   Germany won\n2. B — https://example.org/mock-search/world-cup-winners')
+ws_call=$(completion mock-persona "[$ws_system, $ws_user]" "$ws_with")
+check "mock-persona [mock:websearch]: with the search offered, the first turn calls websearch__web_search (id websearch-call-1)" \
+  "$(printf '%s' "$ws_call" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
+  "tool_calls | websearch-call-1 | websearch__web_search"
+check "mock-persona [mock:websearch]: the query holds the words the mock search knows (world cup)" \
+  "$(printf '%s' "$ws_call" | jq -r '.message.tool_calls[0].function.arguments | fromjson | .query | test("world cup")')" "true"
+check "mock-persona [mock:websearch]: the result is in, it answers with the first link" \
+  "$(completion mock-persona "[$ws_system, $ws_user, $(call websearch-call-1 websearch__web_search), $(result websearch-call-1 "$ws_results")]" "$ws_with" | jq -r '[.finish_reason, .message.content] | join(" | ")')" \
+  "stop | I searched the web with the tool you attached. The best source I found is https://example.org/mock-search/world-cup-2014."
+check "mock-persona [mock:websearch]: without the search offered it says that none is attached" \
+  "$(completion mock-persona "[$ws_system, $ws_user]" "$ws_without" | jq -r '[.finish_reason, (.message.content | startswith("No web search attached"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:websearch]: with no tools at all it says so too" \
+  "$(completion mock-persona "[$ws_system, $ws_user]" | jq -r '.message.content | startswith("No web search attached")')" "true"
+check "mock-persona [mock:websearch]: after a detach (a search in the history, none offered) a new question gets the same answer" \
+  "$(completion mock-persona "[$ws_system, $ws_user, $(call websearch-call-1 websearch__web_search), $(result websearch-call-1 "$ws_results"), $(user '[mock:websearch] And now?')]" "$ws_without" | jq -r '[.finish_reason, (.message.content | startswith("No web search attached"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:websearch]: with the search offered again, the next question searches again" \
+  "$(completion mock-persona "[$ws_system, $ws_user, $(call websearch-call-1 websearch__web_search), $(result websearch-call-1 "$ws_results"), $(assistant 'Done.'), $(user '[mock:websearch] And now?')]" "$ws_with" | jq -r '.message.tool_calls[0].function.name')" \
+  "websearch__web_search"
+check "mock-persona: without the keyword the search is ignored: a greeting, whatever is offered" \
+  "$(completion mock-persona "[$ws_system, $(user hi)]" "$ws_with" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
+
 # The twins. The agents stream their model calls (adam-rs cf6ddbb: `"stream": true`, with the usage chunk asked for), so every script above has
 # an SSE twin, one priority above it. Each probe is played both ways with the same messages, and what a client assembles from the stream (the
 # content deltas joined, the argument deltas of each tool call joined, the finish reason) must equal what the plain script answers, so a twin
 # cannot drift from its original; the stream must also be a text/event-stream that ends with [DONE], and a text must arrive in several deltas.
 # streamed MODEL_NAME MESSAGES_JSON: the request with "stream": true, assembled as a client does, as {finish, content, deltas, calls}.
 streamed() {
-  jq -cn --arg m "$1" --argjson msgs "$2" '{model: $m, messages: $msgs, stream: true, stream_options: {include_usage: true}}' |
+  jq -cn --arg m "$1" --argjson msgs "$2" --argjson tools "${3:-null}" '{model: $m, messages: $msgs, stream: true, stream_options: {include_usage: true}} + (if $tools == null then {} else {tools: $tools} end)' |
     curl -sS -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
     sed -n 's/^data: //p' | grep -v '^\[DONE\]' |
     jq -cs '[.[] | select((.choices | length) > 0) | .choices[0]] as $cs | {
@@ -237,14 +275,14 @@ streamed() {
 }
 # plain_shape MODEL_NAME MESSAGES_JSON: the plain answer, in the shape `streamed` assembles (without `deltas`).
 plain_shape() {
-  completion "$1" "$2" | jq -c '{finish: .finish_reason, content: (.message.content // ""),
+  completion "$1" "$2" "${3:-}" | jq -c '{finish: .finish_reason, content: (.message.content // ""),
     calls: [(.message.tool_calls // [])[] | {id, name: .function.name, args: .function.arguments}]}'
 }
-# twin DESCRIPTION MODEL_NAME MESSAGES_JSON [MIN_DELTAS]: the twin says what the plain script says (and a text arrives in at least MIN_DELTAS pieces).
+# twin DESCRIPTION MODEL_NAME MESSAGES_JSON [MIN_DELTAS [TOOLS_JSON]]: the twin says what the plain script says (and a text arrives in at least MIN_DELTAS pieces).
 twin() {
-  _s=$(streamed "$2" "$3")
+  _s=$(streamed "$2" "$3" "${5:-}")
   check "twin, $1: the stream assembles to the plain answer" \
-    "$(printf '%s' "$_s" | jq -c 'del(.deltas)')" "$(plain_shape "$2" "$3")"
+    "$(printf '%s' "$_s" | jq -c 'del(.deltas)')" "$(plain_shape "$2" "$3" "${5:-}")"
   if [ -n "${4:-}" ]; then
     check "twin, $1: the text arrives in at least $4 deltas" "$(printf '%s' "$_s" | jq -r --argjson n "$4" '.deltas >= $n')" "true"
   fi
@@ -278,6 +316,10 @@ check "twin, mock-researcher [mock:cards], show: the arguments of the call are c
      sed -n 's/^data: //p' | grep -v '^\[DONE\]' | jq -s '[.[] | select((.choices | length) > 0) | .choices[0].delta.tool_calls // [] | .[] | select(.function.arguments != "")] | length > 2')" "true"
 twin "mock-researcher [mock:cards], the words" mock-researcher \
   "[$cards_system, $cards_user, $(call cards-call-1 search__web_search), $(result cards-call-1 "$cards_search_results"), $(call cards-call-2 ui_catalog), $(result cards-call-2 '{}'), $(call cards-call-3 show), $(result cards-call-3 'Shown to the person.')]" 2
+twin "mock-persona [mock:websearch], search" mock-persona "[$ws_system, $ws_user]" "" "$ws_with"
+twin "mock-persona [mock:websearch], the words with the first link" mock-persona \
+  "[$ws_system, $ws_user, $(call websearch-call-1 websearch__web_search), $(result websearch-call-1 "$ws_results")]" 2 "$ws_with"
+twin "mock-persona [mock:websearch], none attached" mock-persona "[$ws_system, $ws_user]" 2 "$ws_without"
 check "twin: a request that does not ask for a stream still gets the plain JSON answer" \
   "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
