@@ -16,4 +16,4 @@
 # The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and dev/wiremock/model/ (each script with its own SSE
 # twin, as upstream's), which follow the same persona convention (adam-rs bin/adam-agent/README.md).
 repo=vymalo/another-adam-rs
-commit=d56dd9418ec1b4e814be8c58966381ed14e664b4
+commit=c0f12dd1dd6240acece51c7452e98c6648486276
