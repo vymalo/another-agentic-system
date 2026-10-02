@@ -2048,7 +2048,10 @@ async fn migration_0012_upgrades_a_database_that_holds_a_log() {
     assert_eq!(set.job.tools, ["websearch"]);
     // the outbox kinds are the ones 0011 left
     let kinds: Vec<(String,)> = sqlx::query_as(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'outbox_kind_check'",
+        // This test's own table: every test has a schema of its own in one database, and
+        // another test may be migrating (or dropping) its copy of the constraint right now.
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE conname = 'outbox_kind_check' AND conrelid = 'outbox'::regclass",
     )
     .fetch_all(store.pool())
     .await
