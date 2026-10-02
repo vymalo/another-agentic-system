@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The thread-tools surface (thread-tools/v1): a per-thread MCP endpoint at /thread-tools/{threadId}/mcp, opened by the HMAC token the A2A adapter mints, with the built-in get_ui_catalog and a seam for the tools later slices add. Mounted by ORCH_SURFACES=thread-tools."
+description = "The thread-tools surface (thread-tools/v1): a per-thread MCP endpoint at /thread-tools/{threadId}/mcp, opened by the HMAC token the A2A adapter mints, with the built-in get_ui_catalog and turn_output and a seam for the tools later slices add. Mounted by ORCH_SURFACES=thread-tools."
 readme = "README.md"
 
 [dependencies]

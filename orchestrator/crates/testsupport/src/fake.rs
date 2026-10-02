@@ -25,11 +25,12 @@
 //! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
 //! | `stream-abandon` | `working`, two chunks of a reply, then the last chunk marked `abandoned` (the generation failed), then `failed("the model failed")`: nothing states the text |
 //! | `stream-words` | `working`, words before a tool call streamed and stated on a `working` status (stream `<task>-words`), a tool step, then the answer streamed (`<task>-reply`) and stated on `completed`: two messages for the log |
+//! | `turn-output` | `working`, words before a tool call stated on a `working` status (stream `<task>-words`), a tool step, the agent announces its answer with the `turn_output` thread tool ([`announce`](crate::announce), with the grant of its message; `turn-output-twice` says a draft first and then the answer, which replaces it) and finishes with a short line stated on `completed` (stream `<task>-reply`): for the log, a `working` message, the announced answer (`purpose: answer`, `via: turn_output`), the closing line as a `working` message (the core's rule once an answer is announced) and the status that keeps it as its `detail`. With no usable grant the task fails and says why |
 //! | `stream-marker` | `working`, then `completed` whose message states the whole text under `<task>-reply` and no chunk was ever sent: an agent that cannot stream, or a client that missed the chunks |
 //! | `auth` | `working`, `auth-required("github")`; the follow-up on the same task behaves like the one of `ask` |
 //! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
 //! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
-//! | `thread-tools` | `working`, then calls back the thread's MCP endpoint with the grant of its message (`thread-tools/v1`: [`call_back`](crate::call_back)), lists the tools and calls `get_ui_catalog` twice (the second time with the digest it was given), and ends with the artifact `thread-tools: tools=get_ui_catalog; catalog=<id> v<version> <digest>; again unchanged=true` (or `no catalog: …`, `no grant`, `refused: …`) |
+//! | `thread-tools` | `working`, then calls back the thread's MCP endpoint with the grant of its message (`thread-tools/v1`: [`call_back`](crate::call_back)), lists the tools and calls `get_ui_catalog` twice (the second time with the digest it was given), and ends with the artifact `thread-tools: tools=get_ui_catalog,turn_output; catalog=<id> v<version> <digest>; again unchanged=true` (or `no catalog: …`, `no grant`, `refused: …`) |
 //! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
@@ -133,6 +134,10 @@ pub fn stream_id(task_id: &str) -> String {
 
 /// How long the `stream` scripts wait between two chunks.
 const STREAM_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// How long the `turn-output` scripts wait before they call the tool: time for the orchestrator to
+/// log what the agent said before, which arrives by another road.
+const ANNOUNCE_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The URL every finished script reports as its artifact.
 pub const PR_URL: &str = "https://github.com/acme/demo/pull/1";
@@ -1797,6 +1802,51 @@ async fn script(
                 offset += piece.len();
             }
             emit(&tx, ctx.stating(TaskState::Completed, &id, &stream_text())).await?;
+        }
+        "turn-output" | "turn-output-twice" => {
+            let words = format!("{}-words", ctx.task_id);
+            let before = "Let me run the tests first.";
+            emit(&tx, ctx.stating(TaskState::Working, &words, before)).await?;
+            emit(
+                &tx,
+                ctx.step(&StepSay {
+                    id: "tool:c1",
+                    parent: None,
+                    kind: "command",
+                    label: "npm test",
+                    state: "completed",
+                    icon: Some("execute"),
+                    detail: None,
+                    input: None,
+                    output: None,
+                }),
+            )
+            .await?;
+            // The tool call travels beside the A2A stream, not in it: the orchestrator logs the
+            // sentence and the step above in the order the stream is read, and an announcement
+            // that overtook them would be logged first. An agent has no way to wait for that, so
+            // the fake gives the orchestrator the time, which keeps the transcript the same on
+            // every run (a sentence logged after the announcement is working text all the same).
+            tokio::time::sleep(ANNOUNCE_PAUSE).await;
+            let answer = "The tests pass: 12 of 12.";
+            let announced: &[&str] = if word == "turn-output-twice" {
+                &["A first try at the answer.", answer]
+            } else {
+                &[answer]
+            };
+            if let Err(line) = crate::announce(grant, announced).await {
+                emit(&tx, ctx.status(TaskState::Failed, Some(&line))).await?;
+                return Some(());
+            }
+            emit(
+                &tx,
+                ctx.stating(
+                    TaskState::Completed,
+                    &stream_id(&ctx.task_id),
+                    "Done; the result is above.",
+                ),
+            )
+            .await?;
         }
         "stream-marker" => {
             emit(

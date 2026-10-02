@@ -21,7 +21,9 @@ use std::path::PathBuf;
 
 use common::*;
 use orch_app::GateLayer;
-use orch_core::{A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION, TEXT_STREAM_EXTENSION};
+use orch_core::{
+    A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
+};
 use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript, with_ui_catalog};
 use serde_json::{Value, json};
 
@@ -69,7 +71,12 @@ fn normalise(events: Vec<Value>) -> Value {
 
 /// One scripted run to its final state; returns the thread's events.
 async fn run(world: &World, name: &str) -> Vec<Value> {
-    let orch = world.instance("orch-1").await;
+    // the agent of `turn-output` calls the orchestrator's thread tools back
+    let orch = if name == "turn-output" {
+        world.instance_with_thread_tools("orch-1", true).await
+    } else {
+        world.instance("orch-1").await
+    };
     let chat = world.chat(&orch);
     let (id, last) = match name {
         "echo" => (chat.seed_thread("plain", "echo hi", None).await, "done"),
@@ -207,6 +214,14 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             chat.seed_thread("plain", "stream-words go", None).await,
             "done",
         ),
+        // The agent announces its answer (ADR 0031, `turn_output`): `plain` lists `thread-tools/v1`,
+        // `text-stream/v1` and `steps/v1` (`world_for`) and the adapter mints it a grant. It says a
+        // sentence before a tool call, calls the tool with the answer and finishes with a short
+        // line, which the core writes as working text.
+        "turn-output" => (
+            chat.seed_thread("plain", "turn-output go", None).await,
+            "done",
+        ),
         // A person renames the thread (`patchThread`): once while it works (the title is the
         // person's from then on), once more after it is done. The log says who wrote each.
         "title" => {
@@ -294,7 +309,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 21] = [
+const SCENARIOS: [&str; 22] = [
     "echo",
     "ask",
     "cancel",
@@ -313,6 +328,7 @@ const SCENARIOS: [&str; 21] = [
     "steps",
     "steps-ask",
     "working",
+    "turn-output",
     "title",
     "fork",
     "fork-blocked",
@@ -355,6 +371,25 @@ async fn world_for(name: &str) -> World {
                 Setup {
                     plain: FakeAgentOptions {
                         extensions: vec![
+                            TEXT_STREAM_EXTENSION.to_owned(),
+                            STEPS_EXTENSION.to_owned(),
+                        ],
+                        ..FakeAgentOptions::default()
+                    },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // `plain` lists `thread-tools/v1` as well, and the adapter has the key to mint its grant
+        "turn-output" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    thread_tools: true,
+                    plain: FakeAgentOptions {
+                        extensions: vec![
+                            THREAD_TOOLS_EXTENSION.to_owned(),
                             TEXT_STREAM_EXTENSION.to_owned(),
                             STEPS_EXTENSION.to_owned(),
                         ],

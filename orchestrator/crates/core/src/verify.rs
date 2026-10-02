@@ -303,6 +303,8 @@ pub(crate) fn conclude(
                 catalog: job.catalog.redelivery(),
             });
             job.attempt = next;
+            // the agent goes again: a new turn
+            job.answer.reset();
             job.results.clear();
             job.summary = None;
             job.pushed = None;

@@ -33,7 +33,7 @@
 //!
 //! # The tools
 //!
-//! `tools/list` is the built-in tools ([`ThreadTool`], a closed enum: today `get_ui_catalog`)
+//! `tools/list` is the built-in tools ([`ThreadTool`], a closed enum: today `get_ui_catalog` and `turn_output`)
 //! and then each provider's ([`ThreadToolProvider`], added with
 //! [`ThreadToolsConfig::with_provider`]), computed per request. `tools/call` offers the name to
 //! the built-ins, then to the providers in order; a name nobody owns is the JSON-RPC error

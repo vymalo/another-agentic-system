@@ -239,6 +239,21 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         StepSource::Agent,
     );
     assert_eq!(steps_job.steps.open_count(), 1);
+    // a turn that announced its answer: the next job does not inherit it
+    let announced = orch_core::transition(
+        &Snapshot::new(Working),
+        &Input::Answer {
+            actor: Actor::agent(&agent(), None),
+            text: "The result.".into(),
+            job: 1,
+            token: "j".into(),
+        },
+    )
+    .unwrap()
+    .0
+    .job
+    .answer;
+    assert!(announced.is_announced());
     for s in TERMINAL {
         let before = Snapshot {
             state: s,
@@ -268,6 +283,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 hold: None,
                 catalog: catalog.clone(),
                 steps: steps_job.steps.clone(),
+                answer: announced.clone(),
                 title: TitleLedger::default(),
             },
         };

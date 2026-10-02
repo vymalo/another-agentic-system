@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use common::*;
 use jiff::Timestamp;
-use orch_core::{AgentId, Caller, THREAD_TOOLS_EXTENSION, ThreadId};
+use orch_core::{
+    AgentId, Caller, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, ThreadId,
+};
 use orch_testsupport::{Chat, FakeAgentOptions, Frame, UI_CATALOG_ID, ui_catalog, with_ui_catalog};
 use orch_thread_token::{Claims, ThreadToolsKeys, mint};
 use reqwest::StatusCode;
@@ -144,7 +146,7 @@ async fn the_endpoint_gives_the_newest_catalog_and_any_replica_serves_it(backend
     let tools = client.list_all_tools().await.unwrap();
     assert_eq!(
         tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(),
-        ["get_ui_catalog"]
+        ["get_ui_catalog", "turn_output"]
     );
     let (is_error, _) = get_ui_catalog(&client, json!({})).await;
     assert!(is_error);
@@ -322,7 +324,7 @@ async fn the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_get
     let (v1, v2) = (ui_catalog(1), ui_catalog(2));
     let said = |version: &Value| {
         format!(
-            "thread-tools: tools=get_ui_catalog; catalog={UI_CATALOG_ID} v{} {}; again unchanged=true",
+            "thread-tools: tools=get_ui_catalog,turn_output; catalog={UI_CATALOG_ID} v{} {}; again unchanged=true",
             version["version"],
             version["digest"].as_str().unwrap()
         )
@@ -516,9 +518,176 @@ async fn an_agent_that_does_not_list_the_extension_or_an_adapter_without_keys_gi
     assert!(world.grants_of_plain().is_empty());
 }
 
+/// What an agent that announces its answer leaves in the log and shows a viewer (ADR 0031,
+/// `turn_output`): the fake agent's `turn-output-twice` says a sentence before a tool call, calls
+/// the tool with a draft and again with the answer (through the endpoint the adapter's grant names,
+/// served by another replica than the one that runs the job), and finishes with a short line.
+async fn an_agent_announces_its_answer_and_everything_else_it_says_is_working_text(
+    backend: Backend,
+) {
+    let world = World::with(
+        backend,
+        Setup {
+            thread_tools: true,
+            plain: FakeAgentOptions {
+                extensions: vec![
+                    THREAD_TOOLS_EXTENSION.to_owned(),
+                    TEXT_STREAM_EXTENSION.to_owned(),
+                    STEPS_EXTENSION.to_owned(),
+                ],
+                ..FakeAgentOptions::default()
+            },
+            ..Setup::default()
+        },
+    )
+    .await;
+    // the first instance that serves the thread tools is on the address the grants name
+    let orch = world.instance_with_thread_tools("orch-1", true).await;
+    let chat = world.chat(&orch);
+    let thread = Uuid::now_v7().to_string();
+    run(&chat, &thread, "run-1", "turn-output-twice go", json!({})).await;
+    wait_for_jobs(&chat, &thread, 1).await;
+    let events = chat.events(&thread).await;
+
+    // the agent's words: what it said before the tool call (working), the draft and the answer
+    // (both announced), and the closing line the core wrote as working text. The tool call comes
+    // by another road than the A2A stream, so a sentence stated just before it may be logged
+    // after it: it is working text either way, and the announcements and the closing line keep
+    // their order (the agent finishes only after the tool has answered).
+    let said: Vec<(String, Option<String>, Option<String>)> = events
+        .iter()
+        .filter(|e| e["kind"] == "agent_message")
+        .map(|e| {
+            let d = &e["data"];
+            (
+                d["text"].as_str().unwrap().to_owned(),
+                d["purpose"].as_str().map(str::to_owned),
+                d["via"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let row = |text: &str, purpose: &str, via: Option<&str>| {
+        (
+            text.to_owned(),
+            Some(purpose.to_owned()),
+            via.map(str::to_owned),
+        )
+    };
+    let at = |text: &str| said.iter().position(|(t, ..)| t == text).unwrap();
+    assert_eq!(said.len(), 4, "{events:#?}");
+    for expected in [
+        row("Let me run the tests first.", "working", None),
+        row("A first try at the answer.", "answer", Some("turn_output")),
+        row("The tests pass: 12 of 12.", "answer", Some("turn_output")),
+        row("Done; the result is above.", "working", None),
+    ] {
+        assert_eq!(said[at(&expected.0)], expected, "{events:#?}");
+    }
+    assert!(at("A first try at the answer.") < at("The tests pass: 12 of 12."));
+    assert_eq!(
+        at("Done; the result is above."),
+        3,
+        "the closing line is last"
+    );
+    // the announced answers are the agent's, under ids made of the token's message and a count
+    let ids: Vec<&str> = events
+        .iter()
+        .filter(|e| e["kind"] == "agent_message" && e["data"]["via"] == "turn_output")
+        .map(|e| e["data"]["messageId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let stem = ids[0].strip_suffix("-1").expect("the first announcement");
+    assert!(stem.starts_with("out-"), "{ids:?}");
+    assert_eq!(ids[1], format!("{stem}-2"));
+    for e in events
+        .iter()
+        .filter(|e| e["kind"] == "agent_message" && e["data"]["via"] == "turn_output")
+    {
+        assert_eq!(e["actor"]["type"], "agent");
+        assert_eq!(e["actor"]["name"], "plain");
+    }
+    // the status that ends the turn keeps its words, and the thread finished
+    let completed = events
+        .iter()
+        .find(|e| e["kind"] == "agent_status" && e["data"]["status"] == "completed")
+        .expect("a completed status");
+    assert_eq!(completed["data"]["detail"], "Done; the result is above.");
+    assert!(
+        events
+            .iter()
+            .any(|e| e["kind"] == "thread_state" && e["data"]["state"] == "done")
+    );
+
+    // a viewer reads each message with what it is for, and the closing line is not said again as
+    // an unmarked message
+    let viewer = chat
+        .agui_connect(&thread, None, true)
+        .await
+        .collect_frames(WAIT)
+        .await;
+    let mut starts: Vec<(String, String)> = viewer
+        .iter()
+        .filter(|f| f.event["type"] == "TEXT_MESSAGE_START" && f.event["role"] == "assistant")
+        .map(|f| {
+            let meta = &f.event["metadata"];
+            (
+                meta["vymalo.purpose"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                meta["vymalo.via"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    starts.sort();
+    let pair = |purpose: &str, via: &str| (purpose.to_owned(), via.to_owned());
+    assert_eq!(
+        starts,
+        [
+            pair("answer", "turn_output"),
+            pair("answer", "turn_output"),
+            pair("working", ""),
+            pair("working", ""),
+        ]
+    );
+
+    // the person writes again: a new turn, so the agent's words are not working text any more
+    // until it announces again (the ledger forgot the announcement)
+    run(&chat, &thread, "run-2", "turn-output again", json!({})).await;
+    wait_for_jobs(&chat, &thread, 2).await;
+    let events = chat.events(&thread).await;
+    let second_turn: Vec<&Value> = events
+        .iter()
+        .skip_while(|e| e["kind"] != "job_started")
+        .filter(|e| e["kind"] == "agent_message")
+        .collect();
+    assert_eq!(second_turn.len(), 3, "{second_turn:#?}");
+    let announced: Vec<&&Value> = second_turn
+        .iter()
+        .filter(|e| e["data"]["via"] == "turn_output")
+        .collect();
+    assert_eq!(announced.len(), 1);
+    assert_eq!(
+        second_turn[2]["data"]["purpose"], "working",
+        "the closing line is working text again once the turn announced: {second_turn:#?}"
+    );
+    assert!(
+        second_turn
+            .iter()
+            .filter(|e| e["data"]["purpose"] == "working")
+            .count()
+            == 2
+    );
+    let second_id = announced[0]["data"]["messageId"].as_str().unwrap();
+    let first_id = &ids[0];
+    assert!(second_id.ends_with("-1"), "{second_id}");
+    assert_ne!(second_id, *first_id, "another message has another token");
+}
+
 backends!(
     the_endpoint_gives_the_newest_catalog_and_any_replica_serves_it,
     a_token_that_is_not_the_threads_is_refused_and_nothing_is_written,
     the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_gets_the_current_catalog,
     an_agent_that_does_not_list_the_extension_or_an_adapter_without_keys_gives_no_grant,
+    an_agent_announces_its_answer_and_everything_else_it_says_is_working_text,
 );

@@ -241,8 +241,9 @@ impl MessagePurpose {
 
 /// How an answer was announced, when it was not by the status that ends the turn (ADR 0031).
 ///
-/// Reserved: nothing produces it yet. The `turn_output` thread tool will (an agent that
-/// announces its answer and goes on working). It is a closed enum, so a new way is a new variant.
+/// Written by the `turn_output` thread tool ([`Input::Answer`](crate::Input::Answer)): an agent
+/// that announces its answer and goes on working. It is a closed enum, so a new way is a new
+/// variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnswerVia {

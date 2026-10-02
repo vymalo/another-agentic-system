@@ -183,6 +183,42 @@ impl Harness {
         id
     }
 
+    /// A thread of Alice's, addressed to `agent`, whose agent is at work (`working`) until the
+    /// thread is cancelled: a turn that is going on.
+    pub async fn working_thread(&self, agent: &str) -> ThreadId {
+        let id = ThreadId(self.ids.new_id());
+        self.app
+            .create_thread_as(
+                &UserId::new(ALICE),
+                id,
+                NewThread {
+                    title: None,
+                    target: AgentTarget {
+                        agent_id: AgentId::new(agent),
+                        release: None,
+                    },
+                    text: "slow work".to_owned(),
+                },
+                Inbound::default(),
+            )
+            .await
+            .unwrap();
+        orch_testsupport::eventually("the agent is working", || async {
+            let thread = self.app.get_thread(&UserId::new(ALICE), id).await.unwrap();
+            (thread.state == ThreadState::Working).then_some(())
+        })
+        .await;
+        id
+    }
+
+    /// The thread's events, oldest first.
+    pub async fn events(&self, id: ThreadId) -> Vec<orch_core::Event> {
+        self.app
+            .list_events(&UserId::new(ALICE), id, 0, 500)
+            .await
+            .unwrap()
+    }
+
     pub async fn wait_done(&self, id: ThreadId) {
         orch_testsupport::eventually("the thread is done", || async {
             let thread = self.app.get_thread(&UserId::new(ALICE), id).await.unwrap();

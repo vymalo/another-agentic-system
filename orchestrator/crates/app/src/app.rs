@@ -9,8 +9,8 @@ use orch_core::{
     AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command, Event, EventKind,
     ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job, LiveText, MAX_FORK_FAMILY, Origin,
     Replacement, Snapshot, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp,
-    TitleSource, UiCatalogData, UserId, WatchKey, branch_points, check_title, copied, family_root,
-    fork_commit, fork_cut, is_commit_hash, repo_key, report, transition,
+    TitleSource, UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_title, copied,
+    family_root, fork_commit, fork_cut, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -1185,6 +1185,7 @@ impl<P: Ports> App<P> {
             | Input::VerifierReported { .. }
             | Input::VerifierFailed { .. }
             | Input::Step { .. }
+            | Input::Answer { .. }
             | Input::Titled { .. }
             | Input::TitleDeclined { .. }
             | Input::TimerFired(_) => {
@@ -1265,6 +1266,45 @@ impl<P: Ports> App<P> {
     ) -> Result<ApplyOutcome, AppError> {
         self.apply(thread, Input::Step { actor, report }, key, None, None)
             .await
+    }
+
+    /// Records the answer an agent announced with the `turn_output` thread tool (ADR 0031): an
+    /// `agent_message` marked `purpose: answer, via: turn_output`, by `agent` (with the revision
+    /// the thread's binding says served the task), under the id `out-<token>-<n>`. From then on
+    /// the turn's other words are working text ([`orch_core::AnswerLedger`]).
+    ///
+    /// `job` and `token` are the token's `job` and `jti` claims. For callers inside the
+    /// orchestrator, not for a user's request: the token the endpoint verified authorised the
+    /// call, so there is no ownership check.
+    ///
+    /// # Errors
+    /// [`AppError::Invalid`] for a text that is empty or longer than
+    /// [`MAX_ANSWER_BYTES`](orch_core::MAX_ANSWER_BYTES), [`AppError::NotFound`] for a thread that
+    /// does not exist, and the transition's refusal when the turn is over
+    /// ([`orch_core::TransitionError::InvalidInState`]: the thread is not `queued` or `working`,
+    /// the job is not the current one, or the token is not the one that announced).
+    pub async fn record_answer(
+        &self,
+        thread: ThreadId,
+        agent: &AgentId,
+        job: u32,
+        token: &str,
+        text: String,
+    ) -> Result<ApplyOutcome, AppError> {
+        check_answer(&text).map_err(|e| AppError::Invalid(e.to_string()))?;
+        let revision = self
+            .ports
+            .store()
+            .get_binding(thread)
+            .await?
+            .and_then(|binding| binding.revision);
+        let input = Input::Answer {
+            actor: orch_core::Actor::agent(agent, revision),
+            text,
+            job,
+            token: token.to_owned(),
+        };
+        self.apply(thread, input, None, None, None).await
     }
 
     /// Requests cancellation of the thread's running work. A finished thread is a no-op.

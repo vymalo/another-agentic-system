@@ -1434,6 +1434,54 @@ export function scriptFor(text: string): {
           done,
         ],
       };
+    // the agent announces its answer with the `turn_output` tool (ADR 0031 amendment, the
+    // `turn-output` golden): a sentence before a tool call (working), a step, the announced answer
+    // (`purpose: answer, via: turn_output`; the real id is `out-<jti>-1`), then the closing line, which the core
+    // writes as working text ahead of the status that keeps it
+    case "turn-output": {
+      const words = nextMessageId();
+      const announced = nextMessageId();
+      const closing = nextMessageId();
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: words,
+              final: true,
+              purpose: "working",
+              text: "Let me run the tests first.",
+            },
+          },
+          agentStep("tool:c1", [], "command", "npm test", "completed", "end", "execute"),
+          {
+            kind: "agent_message",
+            data: {
+              messageId: announced,
+              final: true,
+              purpose: "answer",
+              via: "turn_output",
+              text: "The tests pass: 12 of 12.",
+            },
+          },
+          {
+            kind: "agent_message",
+            data: {
+              messageId: closing,
+              final: true,
+              purpose: "working",
+              text: "Done; the result is above.",
+            },
+          },
+          {
+            kind: "agent_status",
+            data: { status: "completed", detail: "Done; the result is above." },
+          },
+          done,
+        ],
+      };
+    }
     // mock only: a longer reply in Markdown, written piece by piece
     case "stream-long": {
       const id = nextMessageId();

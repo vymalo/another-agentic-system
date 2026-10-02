@@ -838,11 +838,11 @@ What an agent of the stack receives, **only if its card lists** `https://agents.
 |---|---|
 | The key | `THREAD_TOOLS_SECRET`, a dummy in the `x-orchestrator-env` of `compose.yaml` (`dev-thread-tools-secret-…`); a `.env` that sets `THREAD_TOOLS_SECRET` replaces it (it is in [`.env.example`](../.env.example)). **Every orchestrator process has it**: a worker mints the grant it sends with the message, the control plane verifies it |
 | The address agents use | `THREAD_TOOLS_URL=http://orchestrator:8080`, the service name; the `orchestrator` service names `thread-tools` in `ORCH_SURFACES` and accepts the `Host` values `THREAD_TOOLS_ALLOWED_HOSTS=orchestrator:8080,127.0.0.1:8080,localhost:8080` |
-| The tool | `get_ui_catalog`: the newest UI catalog the thread's screen sent, or an error "this thread has no UI catalog; answer in text" |
+| The tools | `get_ui_catalog`: the newest UI catalog the thread's screen sent, or an error "this thread has no UI catalog; answer in text". `turn_output {text}`: the agent announces its answer for the turn ([ADR 0031](../docs/decisions/0031-working-text-and-the-turns-answer.md)); it is the answer on the person's screen, and everything else the agent says in the turn is working text |
 | `split` profile | the control plane serves it, the workers (same variables) mint |
 
 The coder and the agents that are folders (`chat`, `researcher`) list the extension since adam-rs `d411249` (the WireMock agents do not), and
-list the endpoint's tools at every model turn with the grant of the message, so the model is offered what it lists under its listed name, except `get_ui_catalog`, which adam-rs hides since
+list the endpoint's tools at every model turn with the grant of the message, so the model is offered what it lists (`turn_output` today) under its listed name, except `get_ui_catalog`, which adam-rs hides since
 `d56dd94` because the model has `ui_catalog` for the same thing (the catalog is still read through the endpoint); the URL is plain `http` on the compose network, so these services set `MCP_ALLOW_INSECURE` ([Choices](#choices-the-coder-asks-with-a-form)).
 The endpoint answers the checks of
 [`orchestrator/crates/surface-thread-tools`](../orchestrator/crates/surface-thread-tools/README.md) and the whole loop is
@@ -854,7 +854,7 @@ with `FAKE_AGENT_EXTENSIONS=thread-tools`, see [its README](../orchestrator/crat
 `AGENTS_FILE` entry at it (`coder` is on 127.0.0.1:4021, `plain` on 4022), give the
 orchestrator `THREAD_TOOLS_SECRET` (32 bytes or more: `openssl rand -hex 32`) and `THREAD_TOOLS_URL`
 (`http://127.0.0.1:8080`), name `thread-tools` in `ORCH_SURFACES`, and send it `thread-tools hello`: the agent calls the
-endpoint back and its artifact says what it got (`thread-tools: tools=get_ui_catalog; …`); `GET /__control/<agent>/calls`
+endpoint back and its artifact says what it got (`thread-tools: tools=get_ui_catalog,turn_output; …`; the script `turn-output` makes it announce an answer with the `turn_output` tool); `GET /__control/<agent>/calls`
 on the fake agent shows the grant under `threadTools`. A `401` from the endpoint is the same answer for a missing,
 expired, foreign or forged token (nothing else says why, on purpose); a `403` is a `Host` it does not list.
 

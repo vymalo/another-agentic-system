@@ -5,7 +5,8 @@
   delegation; the owner may revisit anything here. Built: `orch-thread-token` (the token, with the known-answer vectors
   below), `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools), the binary's
   `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send
-  time, only for an agent whose live card lists the extension). Slice 8 adds the relayed tools of attached MCP servers
+  time, only for an agent whose live card lists the extension). `turn_output` (an agent announces its answer,
+  [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md) amendment of 2026-10-02) is built, below. Slice 8 adds the relayed tools of attached MCP servers
   and the `attached` member of the message; slice 10 adds `ask_agent` and the `ask:<n>` ledger
   ([`mvp.md`](../mvp.md#the-new-build-order)). "Not yet" is marked where it matters below. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
@@ -130,7 +131,7 @@ The fake agent of the test support (`orch-fake-agent`, `FAKE_AGENT_EXTENSIONS=th
 in a Rust test) lists the extension, records the grant of each message (`threadTools` in its `/__control/<agent>/calls`),
 and its `thread-tools` script is what an agent does with it: it calls the endpoint with rmcp's own client, lists the tools,
 calls `get_ui_catalog` twice (the second time with the digest it was given) and reports one line, for example
-`thread-tools: tools=get_ui_catalog; catalog=<id> v2 <digest>; again unchanged=true`, or `no catalog: this thread has no UI
+`thread-tools: tools=get_ui_catalog,turn_output; catalog=<id> v2 <digest>; again unchanged=true`, or `no catalog: this thread has no UI
 catalog; answer in text`, or `no grant`. In the dev stack ([`dev/README.md`](../../dev/README.md#the-thread-tools)) every
 orchestrator process has `THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL=http://orchestrator:8080`, and `orchestrator` serves
 the endpoint (the edge does not route it); an agent of the stack that lists the extension receives the grant.
@@ -287,6 +288,7 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 | Slice | Tools | Provider | Contract |
 |---|---|---|---|
 | 3 (built) | `get_ui_catalog` | built in | below |
+| built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
 | 8 | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration and environment), sees each call and reports it as a tool step with the server's icon. | relay | written with slice 8 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), status note) |
 | 10 | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | written with slice 10 ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), status note) |
 
@@ -332,6 +334,73 @@ Output, as `structuredContent` and as the same JSON in one text content:
 catalog (the web that opened it sent none) answers `isError: true` with the text "this thread has no UI catalog;
 answer in text". The call times out after 30 seconds. It reads the thread's catalog ledger and the matching
 `ui_catalog` event; the token has already authorised the thread, so there is no further check of a user.
+
+### `turn_output`
+
+An agent says "this is my answer" before it is done ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md),
+the amendment of 2026-10-02). It serves what the rule of that ADR (the words that end the turn are the answer) misses: an
+agent that shows its answer and **keeps working** (it commits, cleans up), and one whose last words are not the answer (the
+answer, then a surface drawn, then "there it is"). An agent whose card does not list the extension is unchanged: its last
+words are its answer.
+
+Input:
+
+```json
+{"type": "object",
+ "properties": {"text": {"type": "string", "minLength": 1,
+   "description": "Your answer for this turn, as Markdown: 1 to 65536 bytes."}},
+ "required": ["text"],
+ "additionalProperties": false}
+```
+
+Output, as `structuredContent` and as the same JSON in one text content: `{"delivered": true}`
+(`{"type": "object", "properties": {"delivered": {"type": "boolean", "const": true}}, "required": ["delivered"],
+"additionalProperties": false}`).
+
+The tool's description tells the model: call it once the answer is ready, with the whole answer as Markdown; the person is
+shown it as your answer and everything else you said in the turn is kept as working notes; it must be complete on its own
+with the result first; then finish with one short line; a later call in the same turn replaces the answer; a call after the
+turn is over is an error. Annotations: not read-only, not destructive, **not idempotent**, closed world.
+
+**What it does.** The orchestrator records one `agent_message` by the token's agent (with the revision its binding says):
+
+```json
+{"kind": "agent_message", "data": {"messageId": "out-<jti>-<n>", "text": "...", "final": true,
+                                    "purpose": "answer", "via": "turn_output"}}
+```
+
+`<jti>` is the token's `jti` (the A2A message id) and `<n>` counts the announcements of that token in the turn, from 1.
+The AG-UI projection puts `purpose` and `via` on the message's `TEXT_MESSAGE_START` as `vymalo.purpose` and `vymalo.via`
+([`agui.md`](agui.md#the-agents-words)).
+
+**When it is accepted.** Only while the thread is `queued` or `working`, for the job the token names (`job` is the
+current job), and, once the turn has an announcement, under the token that made it. Otherwise it is a result with
+`isError: true` and the text **`this turn is over`**, and nothing is written. The other tool errors say what is wrong:
+`text must not be empty` (white space alone is empty), `text must be at most 65536 bytes`, and, for a caller that is not the
+thread's addressed agent (`ask:<n>`, slice 10), that only the addressed agent announces its answer. A missing `text`, one
+that is not a string and any other member are a protocol error (`-32602`) like any invalid argument. Like every built-in
+tool it is cut off after 30 seconds (`temporarily unavailable; try again` when the store is busy: call again).
+
+**A later call replaces the answer.** The log is append-only, so the earlier announcement stays and the rule is the
+reader's: **the answer of a turn is the last message marked `answer` in it, and an earlier one is working text**
+([`agui.md`](agui.md#the-agents-words)).
+
+**What the rest of the turn becomes.** Once a turn has an announced answer nothing else it says is the answer
+(a core rule, ADR 0031): a message of the turn is `purpose: working` whatever the adapter read off its status, and the words
+of a `completed`, `input_required` or `auth_required` status that no message said become a `working` message
+(`out-<jti>-words-<n>`) ahead of the status, which keeps them as its `detail`. Words that repeat the last words said are
+not said again, so an agent whose `completed` carries the answer it announced says it once. A new message, a card's action
+or a rework starts a new turn.
+
+**Order.** The call comes by HTTP, the agent's other words by its A2A stream: a sentence stated just before the call may be
+logged after the announcement (it is working text either way). An agent finishes only after the tool has answered, so the
+announcement is before its closing words.
+
+*Built and tested (2026-10-02):* `crates/surface-thread-tools/tests/turn_output.rs` (accepted, replaced by a second call,
+empty and oversize refused, refused once the thread is done or cancelled, refused for a token of another job and for another
+token once one announced), `crates/core/tests/turn_output.rs` and the property test of `properties.rs` (the rule over any
+sequence), `crates/app/tests/answers.rs`, and the whole loop in `crates/e2e/tests/thread_tools.rs` on both stores with the
+fake agent's `turn-output` scripts (the `turn-output` golden of [`examples/`](examples/README.md)).
 
 ## Security notes
 

@@ -312,6 +312,17 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // the agent announces its answer with the `turn_output` tool (ADR 0031, the amendment): the
+    // log marks the announcement `answer, turn_output` and the closing line `working`
+    "turn-output": async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "turn-output go" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     // a person renames the thread while it works, cancels it, and renames it again (`patchThread`)
     title: async (id) => {
       const first = await postRun(base, "reviewer", {

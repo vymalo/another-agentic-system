@@ -64,6 +64,27 @@ describe("which text is the answer (ADR 0031)", () => {
     ]);
   });
 
+  it("a turn has one answer: a later announced answer replaces an earlier one, which is working text", () => {
+    const parts = [
+      statusPart("working"),
+      ...saidPart("The first try.", "answer"),
+      stepPart("a", "completed"),
+      ...saidPart("The answer, again.", "answer"),
+      ...saidPart("Done.", "working"),
+    ];
+    expect(roles(parts)).toEqual([
+      [2, "working"],
+      [5, "answer"],
+      [7, "working"],
+    ]);
+    // the same while the turn runs
+    expect(roles(parts, true)).toEqual([
+      [2, "working"],
+      [5, "answer"],
+      [7, "working"],
+    ]);
+  });
+
   it("a turn whose every text is working has no answer, and a blank text has no role", () => {
     expect(roles([...saidPart("One.", "working"), ...saidPart("Two.", "working")])).toEqual([
       [1, "working"],

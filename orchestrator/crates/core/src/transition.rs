@@ -17,6 +17,7 @@
 use jiff::SignedDuration;
 
 use crate::agent::{AgentTaskState, AgentUpdate};
+use crate::answer::announce;
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
     Actor, AgentMessageData, AgentStatus, AgentStatusData, ArtifactData, ErrorData, EventBody,
@@ -102,6 +103,22 @@ pub enum Input {
         actor: Actor,
         /// What happened.
         report: StepReport,
+    },
+    /// The agent announces its answer (the `turn_output` thread tool, ADR 0031): recorded as an
+    /// `agent_message` marked `purpose: answer, via: turn_output`, with the id
+    /// `out-<token>-<n>` (`n` counts the announcements of that token in the turn). Valid while
+    /// the thread is `queued` or `working`, for the current job, under the token that announced
+    /// before in this turn, else [`TransitionError::InvalidInState`] ("this turn is over").
+    /// From then on the turn's other words are working text ([`AnswerLedger`](crate::AnswerLedger)).
+    Answer {
+        /// Whose answer it is (the token's agent).
+        actor: Actor,
+        /// The answer, Markdown ([`check_answer`](crate::check_answer) has checked it).
+        text: String,
+        /// The job the token was minted for (`claims.job`).
+        job: u32,
+        /// The `jti` of the token: the A2A message id the call is made under.
+        token: String,
     },
     /// A delegation could not be delivered (dead-lettered outbox row).
     DeliveryFailed {
@@ -190,6 +207,7 @@ impl Input {
             Input::Cancel { .. } => "cancel",
             Input::Agent { .. } => "agent update",
             Input::Step { .. } => "step",
+            Input::Answer { .. } => "answer",
             Input::DeliveryFailed { .. } => "delivery failure",
             Input::CancelledBeforeStart => "cancelled before start",
             Input::CancelRejected { .. } => "cancel rejection",
@@ -383,6 +401,7 @@ fn user_message(
     origin: Origin,
     catalog: &Option<UiCatalogData>,
 ) -> Vec<Command> {
+    job.answer.reset();
     let (record, delivery) = deliver(job, user, catalog.as_ref());
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(append(
@@ -410,7 +429,8 @@ fn job_started(job: &Job) -> Command {
 
 /// The delegation of a message that is in the log already: the screen's catalog is the thread's
 /// current one, since the message carries none of its own.
-fn redelegate(job: &Job, text: &str) -> Command {
+fn redelegate(job: &mut Job, text: &str) -> Command {
+    job.answer.reset();
     Command::Delegate {
         text: text.to_owned(),
         catalog: job.catalog.redelivery(),
@@ -423,6 +443,7 @@ fn ui_action(
     action: &UiActionData,
     catalog: &Option<UiCatalogData>,
 ) -> Vec<Command> {
+    job.answer.reset();
     let (record, delivery) = deliver(job, user, catalog.as_ref());
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(append(
@@ -480,7 +501,7 @@ fn note_task(job: &mut Job, text: &str) {
 
 /// Keeps what the agent said about its work, for the verifier's prompt: only under a gate that
 /// requires the verifier (nothing else reads it), capped, the latest word replacing the earlier.
-fn note_summary(job: &mut Job, text: &str) {
+pub(crate) fn note_summary(job: &mut Job, text: &str) {
     let text = text.trim();
     if job.gate.requires(CheckSource::Verifier) && !text.is_empty() {
         job.summary = Some(truncate_to(text, MAX_SUMMARY_BYTES).to_owned());
@@ -616,6 +637,16 @@ fn decide(
                 StepSource::Orchestrator,
             )),
         },
+        Input::Answer {
+            actor,
+            text,
+            job: claimed_job,
+            token,
+        } => {
+            let mut cmds = announce(state, job, actor, text, *claimed_job, token)?;
+            ask_for_title(job, &mut cmds);
+            Ok((state, cmds))
+        }
         Input::DeliveryFailed { reason, retryable } => match state {
             ThreadState::Queued
             | ThreadState::Working
@@ -814,18 +845,24 @@ fn agent_input(
             is_final,
             purpose,
         } => {
+            // A turn that announced its answer (`turn_output`) has one: whatever else the agent
+            // says is working text, and words that repeat what was said last are not said again.
+            let live = matches!(
+                state,
+                ThreadState::Queued | ThreadState::Working | ThreadState::Blocked
+            );
+            let purpose = if live {
+                let Some(purpose) = job.answer.message(*purpose, *is_final, text) else {
+                    return Ok((state, vec![]));
+                };
+                purpose
+            } else {
+                *purpose
+            };
             // What the agent says about its work is what the verifier is shown (as data), until
             // the work is being verified: the ledger is frozen then.
-            match state {
-                ThreadState::Queued | ThreadState::Working | ThreadState::Blocked => {
-                    if *is_final {
-                        note_summary(job, text);
-                    }
-                }
-                ThreadState::Verifying
-                | ThreadState::Done
-                | ThreadState::Failed
-                | ThreadState::Cancelled => {}
+            if live && *is_final {
+                note_summary(job, text);
             }
             Ok((
                 state,
@@ -835,7 +872,7 @@ fn agent_input(
                         text: text.clone(),
                         message_id: message_id.clone(),
                         is_final: *is_final,
-                        purpose: *purpose,
+                        purpose,
                         via: None,
                     }),
                 )],
@@ -844,7 +881,24 @@ fn agent_input(
         AgentUpdate::Status {
             state: task,
             detail,
-        } => status_input(state, job, actor, *task, detail),
+        } => {
+            // The words that end a turn that announced its answer are not its answer: the core
+            // says them as working text, ahead of the status that carries them.
+            let words = match (state, task) {
+                (
+                    ThreadState::Queued | ThreadState::Working | ThreadState::Blocked,
+                    AgentTaskState::Completed
+                    | AgentTaskState::InputRequired
+                    | AgentTaskState::AuthRequired,
+                ) => job.answer.status_words(&actor, detail.as_deref()),
+                _ => None,
+            };
+            let (next, mut cmds) = status_input(state, job, actor, *task, detail)?;
+            if let Some(words) = words {
+                cmds.insert(0, words);
+            }
+            Ok((next, cmds))
+        }
     }
 }
 

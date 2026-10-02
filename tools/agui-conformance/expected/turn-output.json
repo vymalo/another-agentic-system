@@ -1,0 +1,89 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "turn-output go"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Let me run the tests first."
+    },
+    {
+      "id": "step-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "icon": "execute",
+        "id": "T/tool:c1",
+        "kind": "command",
+        "label": "npm test",
+        "path": [],
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "completed"
+      }
+    },
+    {
+      "id": "msg-5",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "The tests pass: 12 of 12."
+    },
+    {
+      "id": "msg-6",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Done; the result is above."
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "turn-output go"
+    }
+  },
+  "pendingInterrupts": []
+}

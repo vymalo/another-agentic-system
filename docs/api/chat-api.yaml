@@ -620,7 +620,7 @@ components:
       type: string
       enum:
         - user_message        # data: { text, messageId?, runId? }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise)
-        - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: reserved, nothing writes it yet). Additive.
+        - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: the agent called the thread tool, written by the orchestrator with the id `out-<jti>-<n>`; once a turn has such an answer, the core writes everything else the agent says in the turn as `working`, and a later announcement replaces the earlier one by the rule that the answer of a turn is the last message marked `answer` in it). Additive.
         - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to)
         - artifact            # data: { name, mimeType?, uri?, text? }  e.g. a branch, a PR URL, a patch
         - thread_state        # data: { state: ThreadState }
@@ -657,11 +657,11 @@ components:
         purpose:
           type: string
           enum: [working, answer]
-          description: "agent_message only (ADR 0031): what the words are for in the agent's turn. `working`: said while the agent works (the sentence before a tool call), stated on a `working` status. `answer`: the words that end the turn, stated on `completed`, `input_required` or `auth_required`. Absent when the protocol does not say (a plain A2A message, a log written before the field existed): a reader treats the last text of an ended turn as its answer."
+          description: "agent_message only (ADR 0031): what the words are for in the agent's turn. `working`: said while the agent works (the sentence before a tool call), stated on a `working` status. `answer`: the words that end the turn, stated on `completed`, `input_required` or `auth_required`, or an answer the agent announced with the `turn_output` thread tool (`via`). Absent when the protocol does not say (a plain A2A message, a log written before the field existed): a reader treats the last text of an ended turn as its answer, unless the turn has an announced answer. The answer of a turn is the last message marked `answer` in it; an earlier one is working text."
         via:
           type: string
           enum: [turn_output]
-          description: "agent_message only, with `purpose: answer` (ADR 0031): how the answer was announced when it was not by the status that ends the turn. Reserved: nothing writes it yet."
+          description: "agent_message only, with `purpose: answer` (ADR 0031): how the answer was announced when it was not by the status that ends the turn: the agent called the `turn_output` thread tool (`thread-tools/v1`, ADR 0031 amendment). The message id is `out-<jti>-<n>`."
         status:
           type: string
           description: "agent_status: submitted, working, input_required, auth_required, completed, failed or canceled. check_result: pending, passed or failed."

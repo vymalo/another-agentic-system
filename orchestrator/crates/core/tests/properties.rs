@@ -459,3 +459,81 @@ proptest! {
         }
     }
 }
+
+// ---- the turn's announced answer (ADR 0031) ----------------------------------------------------
+
+fn arb_turn_input() -> impl Strategy<Value = Input> {
+    let purpose = prop_oneof![
+        Just(None),
+        Just(Some(orch_core::MessagePurpose::Working)),
+        Just(Some(orch_core::MessagePurpose::Answer)),
+    ];
+    prop_oneof![
+        4 => ("[a-c]{1,2}", 1u32..3, "j[12]").prop_map(|(text, job, token)| Input::Answer {
+            actor: Actor::agent(&AgentId::new("a"), None),
+            text,
+            job,
+            token,
+        }),
+        6 => ("[a-c]{1,2}", "[a-c]{1,2}", purpose).prop_map(|(id, text, purpose)| Input::Agent {
+            agent: AgentId::new("a"),
+            revision: None,
+            update: AgentUpdate::Message { message_id: id, text, is_final: true, purpose },
+        }),
+        4 => (arb_task_state(), proptest::option::of("[a-c]{1,2}")).prop_map(|(state, detail)| {
+            Input::Agent {
+                agent: AgentId::new("a"),
+                revision: None,
+                update: AgentUpdate::Status { state, detail },
+            }
+        }),
+        2 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+            user: UserId::new("u@x.io"),
+            text,
+            message_id: None,
+            run_id: None,
+            origin: orch_core::Origin::Agui,
+            catalog: None,
+        }),
+    ]
+}
+
+proptest! {
+    /// Once a turn has an announced answer, nothing else the agent says in that turn is marked as
+    /// the answer except another announcement; an announcement is only ever written while the
+    /// thread is `queued` or `working` and moves nothing; and the ledger says a turn has an
+    /// announced answer exactly when the turn's log has an announcement in it.
+    #[test]
+    fn after_an_announced_answer_no_other_words_of_the_turn_are_the_answer(
+        inputs in proptest::collection::vec(arb_turn_input(), 0..60)
+    ) {
+        use orch_core::{AnswerVia, MessagePurpose};
+        let mut snap = Snapshot::new(ThreadState::Queued);
+        let mut announced_in_turn = false;
+        for input in inputs {
+            let before = snap.clone();
+            let Ok((next, cmds)) = transition(&snap, &input) else { continue };
+            let new_turn = matches!(input, Input::UserMessage { .. });
+            if new_turn {
+                announced_in_turn = false;
+            }
+            for cmd in &cmds {
+                let Command::Append(draft) = cmd else { continue };
+                let EventBody::AgentMessage(m) = &draft.body else { continue };
+                if m.via == Some(AnswerVia::TurnOutput) {
+                    let by_the_tool = matches!(input, Input::Answer { .. });
+                    prop_assert!(by_the_tool);
+                    let open = matches!(before.state, ThreadState::Queued | ThreadState::Working);
+                    prop_assert!(open);
+                    prop_assert_eq!(next.state, before.state);
+                    prop_assert_eq!(m.purpose, Some(MessagePurpose::Answer));
+                    announced_in_turn = true;
+                } else if announced_in_turn {
+                    prop_assert_eq!(m.purpose, Some(MessagePurpose::Working), "{:?}", m);
+                }
+            }
+            prop_assert_eq!(next.job.answer.is_announced(), announced_in_turn);
+            snap = next;
+        }
+    }
+}

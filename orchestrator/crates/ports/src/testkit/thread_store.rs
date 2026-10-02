@@ -1731,6 +1731,7 @@ fn busy_job() -> Job {
         hold: Some(Hold::CiTimeout),
         catalog,
         steps: orch_core::StepLedger::default(),
+        answer: orch_core::AnswerLedger::default(),
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
@@ -1767,7 +1768,23 @@ fn busy_job() -> Job {
             orch_core::StepSource::Agent,
         );
     }
-    job
+    // The turn announced its answer (`turn_output`, ADR 0031): the ledger has a token, a count
+    // and the digest of what was said last.
+    let (announced, _) = orch_core::transition(
+        &orch_core::Snapshot {
+            state: ThreadState::Working,
+            job,
+        },
+        &orch_core::Input::Answer {
+            actor: Actor::system(),
+            text: "The result.".to_owned(),
+            job: 3,
+            token: "m-3".to_owned(),
+        },
+    )
+    .unwrap();
+    assert!(announced.job.answer.is_announced());
+    announced.job
 }
 
 /// The job is stored with the thread, comes back exactly, and a commit without one leaves it.
