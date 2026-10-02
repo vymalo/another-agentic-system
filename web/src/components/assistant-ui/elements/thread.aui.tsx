@@ -10,6 +10,7 @@ import { ArrowDownIcon, MessageCircleQuestionIcon } from "lucide-react";
 import type { FC, ReactNode } from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { TurnActions } from "@/components/assistant-ui/elements/turn-actions";
 import { AgentAvatar } from "@/components/brand/agent-avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -19,8 +20,17 @@ import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { useThreadView } from "@/features/chat/components/thread-view";
 import { drawnDrafts } from "@/features/chat/lib/agui/live-drafts";
-import { ACTOR_PART, parseActor, parseAnswers } from "@/features/chat/lib/agui/vymalo";
+import {
+  ACTIVITY,
+  ACTOR_PART,
+  activityPartName,
+  parseActor,
+  parseActorRun,
+  parseAnswers,
+  parseFork,
+} from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
+import { ForkDivider } from "@/features/threads/components/fork-divider";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
 
@@ -51,6 +61,13 @@ const useRunActor = (): ApiActor | undefined => {
 /** Every stretch of step parts is one group, which the chat draws as nothing: the panel has them. */
 const byStep = (part: PartState): readonly "group-steps"[] =>
   isStepPart(part as AnyPart) ? ["group-steps"] : [];
+
+/** The `runId` of the run of the log this turn is, from the marker part in front of its output. */
+const useRunId = (): string | undefined =>
+  useAuiState((s) => {
+    const marker = s.message.content.find((p) => p.type === "data" && p.name === ACTOR_PART);
+    return marker && marker.type === "data" ? parseActorRun(marker.data) : undefined;
+  });
 
 const ThreadHistorySkeleton: FC = () => (
   <div role="status" data-slot="aui_thread-history-skeleton" className="flex flex-col gap-4">
@@ -228,6 +245,7 @@ function StartingTurn() {
 
 export const AssistantMessage: FC = () => {
   const actor = useRunActor();
+  const runId = useRunId();
   const createdAt = useCreatedAt();
   const { waiting, agentId } = useThreadView();
   const content = useAuiState((s) => s.message.content) as readonly AnyPart[];
@@ -255,8 +273,19 @@ export const AssistantMessage: FC = () => {
     const data = isAnswerPart(p) ? parseAnswers(p.data) : null;
     return data ? [{ i, data }] : [];
   });
+  // the marker of a fork (ADR 0029) is a run of its own: a divider, not a turn
+  const marker = content.find(
+    (p) => p.type === "data" && p.name === activityPartName(ACTIVITY.fork),
+  );
+  if (marker) {
+    const fork = parseFork(marker.data);
+    return fork ? <ForkDivider fork={fork} /> : null;
+  }
   if (lastDrawn < 0 && !running && answers.length === 0) return null;
   const lastTextValue = lastText >= 0 ? content[lastText]?.text : undefined;
+  const ownWords = content
+    .flatMap((p) => (p.type === "text" && p.text?.trim() ? [p.text] : []))
+    .join("\n\n");
   const writing = newest
     ? drawnDrafts(
         drafts,
@@ -282,7 +311,7 @@ export const AssistantMessage: FC = () => {
     <MessagePrimitive.Root
       data-slot="agent-turn"
       data-turn-id={messageId}
-      className="flex min-w-0 motion-safe:animate-turn-in flex-col gap-3"
+      className="group/turn flex min-w-0 motion-safe:animate-turn-in flex-col gap-3"
     >
       {answers.length > 0 ? <div className="mb-3 flex flex-col gap-3">{answered}</div> : null}
       <TurnHeader actor={actor} at={createdAt} />
@@ -318,6 +347,7 @@ export const AssistantMessage: FC = () => {
           <LiveDraft key={d.id} id={d.id} text={d.text} />
         ))}
         <TurnCards />
+        <TurnActions text={ownWords} runId={runId} last={isLast} />
       </div>
     </MessagePrimitive.Root>
   );

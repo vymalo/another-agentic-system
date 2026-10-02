@@ -30,7 +30,13 @@ const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMes
   role: "user",
   content: [{ type: "text", text: m.text }],
   startRun,
-  metadata: { custom: m.actor ? { actor: m.actor } : {} },
+  // `seq`: where the message is in the log, which a fork or an edit of it names (ADR 0029)
+  metadata: {
+    custom: {
+      ...(m.actor ? { actor: m.actor } : {}),
+      ...(m.seq !== undefined ? { seq: m.seq } : {}),
+    },
+  },
 });
 
 /**

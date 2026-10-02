@@ -9,7 +9,9 @@
   marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](../api/agui.md#forks)) and the transcript
   on the wire (`SendRequest.history`, built by the dispatcher for the first task of a fork and put in
   front of the message by the A2A and the local-agent clients): **the agent of a fork is now told the
-  conversation it continues**. Not built yet: the web.
+  conversation it continues**. The web (2026-10-01): "Fork from here" under a finished turn and
+  "continue with another agent" in the agent menu are built ([`web/DESIGN.md`](../../web/DESIGN.md), "Fork
+  and branch"); editing a message into a branch is not yet.
 
 ## Context
 

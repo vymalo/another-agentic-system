@@ -9,6 +9,7 @@
  * (oauth2-proxy's job in production). The first word of the first message picks a scripted agent
  * behaviour: see scripts.ts and web/README.md.
  */
+import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
@@ -31,6 +32,10 @@ type Event = components["schemas"]["Event"];
 type Actor = components["schemas"]["Actor"];
 type Agent = components["schemas"]["Agent"];
 type ThreadState = components["schemas"]["ThreadState"];
+
+/** A run is open while the thread is queued, working or being verified. */
+const isActiveState = (s: ThreadState): boolean =>
+  s === "queued" || s === "working" || s === "verifying";
 
 const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 const UI_CATALOG_PROP = "vymalo.uiCatalog";
@@ -159,6 +164,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   /** The gate each verified thread's job runs under (from its script); absent: none. */
   const gates = new Map<string, GateInfo>();
   /**
+   * How each fork was made (ADR 0029): the parent, the cut (the last event copied) and, for an
+   * edit, the `seq` of the message that replaces the parent's. The edits of one message are the
+   * versions `listBranches` says.
+   */
+  type Link = { parent: string; cut: number; kind: "fork" | "edit"; replacing?: number };
+  const links = new Map<string, Link>();
+  /**
    * The reply each thread's agent is writing right now (live text): what the relay says again from
    * the start every `refreshMs`, so a viewer that connects mid-stream, or lost a piece, has the text
    * so far within a second (ADR 0027). Gone when the log says the reply, when the stream is given
@@ -208,6 +220,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     viewers.clear();
     runs.clear();
     gates.clear();
+    links.clear();
     cutNextConnectAfter = undefined;
     registries.clear();
   };
@@ -223,11 +236,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store" });
     res.end(JSON.stringify(body));
   };
-  const problem = (res: http.ServerResponse, status: number, title: string, detail?: string) =>
+  const problem = (
+    res: http.ServerResponse,
+    status: number,
+    title: string,
+    detail?: string,
+    code?: string,
+  ) =>
     sendJson(
       res,
       status,
-      { title, status, ...(detail ? { detail } : {}) },
+      { title, status, ...(detail ? { detail } : {}), ...(code ? { code } : {}) },
       "application/problem+json",
     );
 
@@ -552,7 +571,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return connectThread(req, res, url, decodeURIComponent(connect[1] ?? ""));
     }
 
-    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export))?$/.exec(path);
+    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
       const sub = m[2];
@@ -562,6 +581,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (!sub && method === "PATCH") return renameThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
       if (sub === "export" && method === "GET") return exportThread(res, thread);
+      if (sub === "fork" && method === "POST") return forkThread(req, res, thread);
+      if (sub === "branches" && method === "GET") return listBranches(res, thread);
     }
     return problem(res, 404, "Not found");
   }
@@ -636,11 +657,237 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
     const before = url.searchParams.get("before");
     let all = [...threads.values()].reverse(); // newest first
+    // an edit is a branch of a conversation the list already shows (`listBranches` finds it)
+    if (url.searchParams.get("branches") !== "include") {
+      all = all.filter((t) => links.get(t.id)?.kind !== "edit");
+    }
     if (before) {
       const i = all.findIndex((t) => t.id === before);
       all = i >= 0 ? all.slice(i + 1) : [];
     }
     sendJson(res, 200, all.slice(0, limit).map(viewOf));
+  }
+
+  /**
+   * `POST /api/threads/{id}/fork` (`forkThread`, ADR 0029): a new thread that begins as a copy of
+   * this one. `{after}` copies to the end of the turn that holds that event (a finished job, `done`;
+   * a turn that is still going on is a 409 `turn_open`), `{replace, text}` copies to just before a
+   * message of the person and then holds the new message and the job it starts (an edit, a branch).
+   * `target` says another agent; `id` makes a repeat of the request return the fork it made.
+   */
+  async function forkThread(req: http.IncomingMessage, res: http.ServerResponse, parent: Thread) {
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch {
+      return problem(res, 400, "Bad Request", "the body is not JSON");
+    }
+    if (!isRecord(body)) return problem(res, 400, "Bad Request", "the body must be an object");
+    const members = ["after", "replace", "text", "messageId", "target", "id"];
+    const extra = Object.keys(body).find((k) => !members.includes(k));
+    if (extra !== undefined) return problem(res, 400, "Bad Request", `unknown member \`${extra}\``);
+    const { after, replace, text, messageId, target, id } = body;
+    if ((after === undefined) === (replace === undefined)) {
+      return problem(res, 400, "Bad Request", "exactly one of `after` and `replace`");
+    }
+    const point = after ?? replace;
+    if (typeof point !== "number" || !Number.isInteger(point) || point < 1) {
+      return problem(res, 400, "Bad Request", "`after` and `replace` are event numbers, from 1");
+    }
+    if (after !== undefined && (text !== undefined || messageId !== undefined)) {
+      return problem(res, 400, "Bad Request", "`text` and `messageId` go with `replace`");
+    }
+    if (replace !== undefined) {
+      if (typeof text !== "string" || text === "") {
+        return problem(res, 400, "Bad Request", "`replace` needs the new `text`");
+      }
+      if (text.length > 100_000) {
+        return problem(res, 400, "Bad Request", "text must be 1 to 100000 characters");
+      }
+      if (messageId !== undefined && (typeof messageId !== "string" || messageId.length > 256)) {
+        return problem(
+          res,
+          400,
+          "Bad Request",
+          "`messageId` is a string of at most 256 characters",
+        );
+      }
+    }
+    if (id !== undefined && (typeof id !== "string" || !UUID.test(id))) {
+      return problem(res, 400, "Bad Request", "`id` must be a UUID");
+    }
+
+    let to: Thread["target"] = parent.target;
+    if (target !== undefined) {
+      if (!isRecord(target) || typeof target.agentId !== "string") {
+        return problem(res, 400, "Bad Request", "`target` is {agentId, release?}");
+      }
+      const agent = findAgent(req, target.agentId);
+      if (!agent) {
+        if (registryOf(sessionOf(req)).down) {
+          res.setHeader("Retry-After", "5");
+          return problem(res, 503, "Service Unavailable", "the agent registry is unreachable");
+        }
+        return problem(res, 400, "Unknown agent", `No agent "${target.agentId}"`);
+      }
+      const release = target.release;
+      if (release !== undefined) {
+        if (typeof release !== "string" || !agent.releases) {
+          return problem(res, 400, "Bad Request", `${agent.id} does not offer releases`);
+        }
+        const known =
+          release in agent.releases.channels || (agent.releases.revisions ?? []).includes(release);
+        if (!known) return problem(res, 400, "Unknown release", `No release "${release}"`);
+      }
+      to = { agentId: agent.id, ...(typeof release === "string" ? { release } : {}) };
+    }
+
+    const forkId = typeof id === "string" ? id : randomUUID();
+    const made = threads.get(forkId);
+    if (made) {
+      if (links.get(forkId)?.parent !== parent.id) {
+        return problem(res, 409, "Conflict", "`id` is the id of another thread");
+      }
+      res.setHeader("Location", `/api/threads/${forkId}`);
+      return sendJson(res, 200, viewOf(made));
+    }
+
+    const log = events.get(parent.id) ?? [];
+    let cut: number;
+    if (after !== undefined) {
+      if (point > log.length) return problem(res, 422, "Unprocessable", "no such event");
+      const next = log.find(
+        (e) => e.seq > point && (e.kind === "user_message" || e.kind === "ui_action"),
+      );
+      if (next) cut = next.seq - 1;
+      else if (isActiveState(parent.state)) {
+        return problem(
+          res,
+          409,
+          "Conflict",
+          "the turn is still going on; try again when it has ended",
+          "turn_open",
+        );
+      } else cut = log.length;
+    } else {
+      const replaced = log[point - 1];
+      if (!replaced) return problem(res, 422, "Unprocessable", "no such event");
+      if (replaced.kind !== "user_message") {
+        return problem(res, 422, "Unprocessable", "that event is not a message of a person");
+      }
+      cut = point - 1;
+    }
+
+    const kind = after !== undefined ? "fork" : "edit";
+    const now = new Date().toISOString();
+    const created: Thread = {
+      id: forkId,
+      title: parent.title,
+      target: to,
+      state: "done",
+      createdAt: now,
+      updatedAt: now,
+      lastSeq: cut,
+      forkedFrom: { threadId: parent.id, seq: cut, kind },
+    };
+    threads.set(forkId, created);
+    events.set(
+      forkId,
+      log.slice(0, cut).map((e) => ({ ...e, threadId: forkId })),
+    );
+    links.set(forkId, { parent: parent.id, cut, kind });
+    const gate = gates.get(parent.id);
+    if (gate) gates.set(forkId, gate);
+    const person: Actor = { type: "user", name: DEV_USER };
+    append(forkId, "thread_forked", person, {
+      from: { threadId: parent.id, seq: cut },
+      kind,
+      title: parent.title,
+      target: to,
+    });
+    if (kind === "edit" && typeof text === "string") {
+      const message = append(forkId, "user_message", person, {
+        text,
+        messageId: typeof messageId === "string" ? messageId : `m-${randomUUID()}`,
+      });
+      const link = links.get(forkId);
+      if (link) link.replacing = message.seq;
+      const job = (events.get(forkId) ?? []).filter((e) => e.kind === "job_started").length + 2;
+      append(forkId, "job_started", { type: "system", name: "orchestrator" }, { job });
+      setState(created, "queued");
+      const script = scriptFor(text);
+      runs.set(forkId, { timer: undefined, pending: [], resume: script.resume });
+      play(created, script.start);
+    }
+    res.setHeader("Location", `/api/threads/${forkId}`);
+    return sendJson(res, 201, viewOf(created));
+  }
+
+  /**
+   * `GET /api/threads/{id}/branches` (`listBranches`): the messages of this thread that have other
+   * versions. The versions of a message are the thread that has the original and the threads made by
+   * an edit of it, the edits of an edit included; everything of a thread up to its cut is its
+   * parent's, and shows the parent's versions.
+   */
+  function listBranches(res: http.ServerResponse, thread: Thread) {
+    /** The message of `t` at `s`, named by where it came from (the same name: the same message's versions). */
+    const identity = (t: string, s: number): string => {
+      const link = links.get(t);
+      if (link?.kind === "edit") {
+        if (s === link.replacing) return slot(t);
+        if (s <= link.cut) return identity(link.parent, s);
+      }
+      return `${t}#${s}`;
+    };
+    /** The message an edit replaces, named like `identity`. */
+    const slot = (t: string): string => {
+      const link = links.get(t);
+      return link ? identity(link.parent, link.cut + 1) : `${t}#0`;
+    };
+    /** The thread whose own message `s` of `t` is: `t`, or the ancestor it was copied from. */
+    const owner = (t: string, s: number): string => {
+      const link = links.get(t);
+      return link?.kind === "edit" && s !== link.replacing && s <= link.cut
+        ? owner(link.parent, s)
+        : t;
+    };
+    const rootOf = (t: string): string => {
+      const link = links.get(t);
+      return link?.kind === "edit" ? rootOf(link.parent) : t;
+    };
+    const root = rootOf(thread.id);
+    /** Every thread of the family (edits only), the root first, then in the order they were made. */
+    const family = [...threads.keys()].filter((t) => rootOf(t) === root);
+    /** The versions of the message `key` names: the original, then the edits in the order made. */
+    const versions = (key: string) => {
+      const out: { threadId: string; seq: number }[] = [];
+      for (const t of family) {
+        for (const e of events.get(t) ?? []) {
+          if (e.kind === "user_message" && owner(t, e.seq) === t && identity(t, e.seq) === key) {
+            out.push({ threadId: t, seq: e.seq });
+          }
+        }
+      }
+      return out;
+    };
+    const points = (events.get(thread.id) ?? []).flatMap((e) => {
+      if (e.kind !== "user_message") return [];
+      const siblings = versions(identity(thread.id, e.seq));
+      if (siblings.length < 2) return [];
+      const own = owner(thread.id, e.seq);
+      return [
+        {
+          seq: e.seq,
+          index: siblings.findIndex((v) => v.threadId === own),
+          siblings: siblings.map((v) => ({
+            threadId: v.threadId,
+            seq: v.seq,
+            title: threads.get(v.threadId)?.title ?? "",
+          })),
+        },
+      ];
+    });
+    sendJson(res, 200, { root, points });
   }
 
   /** The agent `agentId`, or the answer for one that is not listed: 503 while the registry is down. */

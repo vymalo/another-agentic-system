@@ -308,6 +308,62 @@ describe("the goldens through the runtime", () => {
     });
   }
 
+  // A fork's three runs (the parent's turn, the marker, the next job) are applied one after the
+  // other, and a run that holds only the marker follows the transcript as it is *rendered*, which
+  // inside `act` lags: so these wait for the transcript to become what it must be, outside `act`.
+  const FORKS: Record<string, Summary> = {
+    // a fork (ADR 0029): the parent's turn as it was, the marker as a run of its own (one `fork`
+    // part, which the chat draws as a divider), then the message that goes on in the fork
+    fork: [
+      USER("echo one"),
+      {
+        role: "assistant",
+        status: DONE,
+        parts: [ACTOR, "status:working", "artifact", "status:completed"],
+      },
+      { role: "assistant", status: DONE, parts: ["fork"] },
+      USER("echo three"),
+      {
+        role: "assistant",
+        status: DONE,
+        parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
+      },
+    ],
+    // a thread that waited for an answer, forked as it is: the question of the copy is closed by the
+    // marker (the fork is a finished job), and the message that follows is an ordinary one
+    "fork-blocked": [
+      USER("ask about branches"),
+      {
+        role: "assistant",
+        status: DONE,
+        parts: [ACTOR, "status:working", "text:Which branch?", "status:input_required"],
+      },
+      { role: "assistant", status: DONE, parts: ["fork"] },
+      USER("echo thanks"),
+      {
+        role: "assistant",
+        status: DONE,
+        parts: ["job", ACTOR, "status:working", "artifact", "status:completed"],
+      },
+    ],
+  };
+  for (const [name, expected] of Object.entries(FORKS)) {
+    for (const golden of [name, `connect-${name}`]) {
+      it(`${golden}: the stream of a fork becomes the transcript, the marker one message of its own`, async () => {
+        const stream = new LiveStream();
+        const mounted = mountRuntime(() => sse(stream.body));
+        mounted.agent.start();
+        const frames = loadGolden(golden);
+        await act(async () => {
+          stream.frames(frames);
+        });
+        await waitFor(() => expect(summarize(mounted.messages())).toEqual(expected));
+        expect(mounted.agent.getSnapshot().state).toBe("done");
+        mounted.agent.stop();
+      });
+    }
+  }
+
   it("connect-title: a finished thread that was renamed reads as it did, the rename adds no message and moves the title", async () => {
     const { messages, agent } = await play("connect-title");
     expect(summarize(messages())).toEqual(EXPECTED.echo);

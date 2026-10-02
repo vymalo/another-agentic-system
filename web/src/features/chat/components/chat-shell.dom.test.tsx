@@ -194,7 +194,7 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
   });
 
-  it("a thread's header names its agent and offers the others as a new chat, not as a switch", async () => {
+  it("a thread's header names its agent, and another agent continues the conversation in a fork", async () => {
     const id = await makeThread("Implement the thing");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
@@ -208,12 +208,18 @@ describe("ChatShell over AG-UI", () => {
     );
     const menu = await openAgentMenu();
     expect(radio(menu, /^Coder/).getAttribute("aria-checked")).toBe("true");
-    // the other agents start a new chat with them; nothing here changes the thread's agent
-    expect(within(menu).queryByRole("menuitemradio", { name: /^Reviewer/ })).toBeNull();
-    const link = within(
-      within(menu).getByRole("group", { name: "Start a new chat with" }),
-    ).getByRole("menuitem", { name: /^Reviewer/ });
-    expect(link.getAttribute("href")).toBe("/?agent=reviewer");
+    // the others ask: a thread keeps its agent, a fork continues with another
+    fireEvent.click(radio(menu, /^Reviewer/));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Continue with Reviewer in a new chat?")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Continue in a new chat" }));
+    // the fork is a new thread on the reviewer, and the page goes to it
+    await waitFor(() => expect(push).toHaveBeenCalledTimes(1));
+    const forked = String(push.mock.calls[0]?.[0]).replace("/threads/", "");
+    expect(calls).toContain(`POST /api/threads/${id}/fork 201`);
+    const made = await (await realFetch(`${base}/api/threads/${forked}`)).json();
+    expect(made.target.agentId).toBe("reviewer");
+    expect(made.forkedFrom).toMatchObject({ threadId: id, kind: "fork" });
   });
 
   it("a thread has the panel's toggle in its header, and the new chat has none", async () => {

@@ -83,7 +83,7 @@ test("the agent chosen in the menu is the one the first message goes to", async 
   await expect(agentPicker(page)).toHaveText("Agent: Reviewer");
 });
 
-test("on a thread the menu shows its agent and offers the others as a new chat", async ({
+test("on a thread the menu shows its agent, and another agent is a fork, not a switch", async ({
   page,
 }) => {
   await startThread(page, "Implement the thing");
@@ -95,16 +95,16 @@ test("on a thread the menu shows its agent and offers the others as a new chat",
 
   const menu = await openAgentMenu(page);
   await expect(agentMenuItem(page, "Coder")).toBeChecked();
-  // the others do not change this chat: they are not radio items
-  await expect(menu.getByRole("menuitemradio", { name: /^Reviewer/ })).toHaveCount(0);
-  const start = menu.getByRole("group", { name: "Start a new chat with" });
-  await expect(start.getByRole("menuitem")).toHaveCount(2);
-  await start.getByRole("menuitem", { name: /^Reviewer/ }).click();
+  await expect(agentMenuItem(page, "production")).toBeChecked();
+  await expect(menu).toContainText("A chat keeps its agent.");
+  await agentMenuItem(page, "Reviewer").click();
 
-  // a new chat, with the reviewer already chosen
-  await expect(page).toHaveURL(/\/\?agent=reviewer$/);
-  await expect(agentPicker(page)).toHaveText("Agent: Reviewer");
-  await expect(page.getByRole("heading", { name: "What should we get done?" })).toBeVisible();
+  // a question first: this chat stays as it is, a new one continues it
+  const dialog = page.getByRole("alertdialog", { name: "Continue with Reviewer in a new chat?" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(agentPicker(page)).toHaveText("Agent: Coder · production");
 });
 
 test("the top bar fits: every control of a thread's header is wholly on the screen, on a phone too", async ({

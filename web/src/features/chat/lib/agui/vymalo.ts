@@ -18,6 +18,11 @@ export const ACTIVITY = {
   rework: "vymalo.rework",
   /** A message on a finished thread started the thread's next job (ADR 0020): `{job}`, from 2. */
   job: "vymalo.job",
+  /**
+   * The thread began as a copy of another (ADR 0029): where the copy ends. A run of its own; the
+   * chat draws it as a divider.
+   */
+  fork: "vymalo.fork",
   /** A CI system reported a check on a commit (ADR 0017), whether or not the gate counted it. */
   ci: "vymalo.ci",
   /**
@@ -221,6 +226,44 @@ const readActor = (v: unknown): ApiActor | undefined => {
 };
 
 export const parseActor = readActor;
+
+/**
+ * The `runId` `ThreadAgent` puts in the actor marker part: the run of the log the turn is, which
+ * is how a turn finds where it ends in the log (`ThreadAgent.endOfRun`). Undefined for a marker
+ * of an older build or a part that is not one.
+ */
+export const parseActorRun = (v: unknown): string | undefined =>
+  isRecord(v) ? str(v.runId) : undefined;
+
+/** `vymalo.fork` (docs/api/agui.md, "Forks"): what the thread was made from, and how. */
+export type ForkContent = WithActor<{
+  from: { threadId: string; seq: number };
+  kind: "fork" | "edit";
+  title: string;
+  target: { agentId: string; release?: string };
+}>;
+
+export function parseFork(v: unknown): ForkContent | null {
+  if (!isRecord(v) || !isRecord(v.from) || !isRecord(v.target)) return null;
+  const threadId = str(v.from.threadId);
+  const seq = v.from.seq;
+  const agentId = str(v.target.agentId);
+  const kind = v.kind;
+  if (!threadId || typeof seq !== "number" || !Number.isInteger(seq) || seq < 0 || !agentId) {
+    return null;
+  }
+  if (kind !== "fork" && kind !== "edit") return null;
+  const release = str(v.target.release);
+  const actor = readActor(v.actor);
+  return {
+    from: { threadId, seq },
+    kind,
+    title: str(v.title) ?? "",
+    target: { agentId, ...(release ? { release } : {}) },
+    ...(actor ? { actor } : {}),
+    ...readAt(v),
+  };
+}
 
 /** `{at}` when `v.at` is a time a `Date` can read, else nothing. */
 const readAt = (v: Record<string, unknown>): { at?: string } => {

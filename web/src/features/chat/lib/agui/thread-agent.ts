@@ -70,13 +70,21 @@ import {
  *   made of the draft and the rest. A group that cannot be made whole (it continues a draft this
  *   connection never held) is not delivered and the connection is reopened at the last resume
  *   point, which says the message plainly. A cut connection forgets its drafts.
+ * - Where a message or a turn is in the log (ADR 0029: forking and editing name events by `seq`):
+ *   `seqOfUser(messageId)` is the `seq` of the event a person's message came in, and
+ *   `endOfRun(runId)` the `seq` of the last event delivered for a run, which is "an event of the
+ *   turn" for `POST /api/threads/{id}/fork {after}`. They are read from the groups as they are
+ *   delivered, so they hold for the replay, a live run and a reconnect alike.
  * - A user's action on a surface (`forwardedProps.a2uiAction`, from the runtime's
  *   `sendA2uiAction`, or staged by `stageA2uiAction` when an interrupt is open, which the runtime
  *   refuses to leave unanswered) goes out as a run with no message and no `resume`.
  */
 
-/** A user message the connect stream shows for an external run. */
-export type ExternalUserMessage = { id: string; text: string; actor?: ApiActor };
+/**
+ * A user message the connect stream shows for an external run. `seq` is the log event it was
+ * delivered with (the resume point of its group): what a fork or an edit of the message names.
+ */
+export type ExternalUserMessage = { id: string; text: string; actor?: ApiActor; seq?: number };
 
 /** A run that started without this consumer's `run()`. */
 export class ExternalRun {
@@ -260,6 +268,10 @@ export class ThreadAgent extends AbstractAgent {
   private posting: AbortController | undefined;
   private sendError: SendError | null = null;
   private stagedAction: Record<string, unknown> | undefined;
+  /** The `seq` of the group being delivered, for `userSeqs` and `runEnds`. */
+  private groupSeq = 0;
+  private readonly userSeqs = new Map<string, number>();
+  private readonly runEnds = new Map<string, number>();
 
   constructor(options: ThreadAgentOptions) {
     super({ threadId: options.threadId });
@@ -285,6 +297,19 @@ export class ThreadAgent extends AbstractAgent {
    * the turn draws them after its parts and the log's own message takes over (`live-drafts.ts`).
    */
   getDrafts = (): readonly Draft[] => this.drafts;
+
+  /**
+   * The `seq` of the log event a person's message arrived in (`TEXT_MESSAGE_START` of `messageId`),
+   * once the group has been delivered; undefined before that, and for a message this page did not
+   * see (a thread opened past it).
+   */
+  seqOfUser = (messageId: string): number | undefined => this.userSeqs.get(messageId);
+
+  /**
+   * The `seq` of the last event delivered for the run `runId`: an event of the turn it belongs to,
+   * the one a fork "from here" names (the server finds the end of the turn from it).
+   */
+  endOfRun = (runId: string): number | undefined => this.runEnds.get(runId);
 
   onDraftsChange = (listener: () => void): (() => void) => {
     this.draftListeners.add(listener);
@@ -417,6 +442,7 @@ export class ThreadAgent extends AbstractAgent {
     const resolved = resolveGroup(pending(this.drafts), group.events as LiveEvent[]);
     if (!resolved) return false;
     this.setDrafts(resolved.drafts);
+    this.groupSeq = group.id ?? this.groupSeq;
     for (const event of resolved.events) this.route1(event as Ev);
     if (group.id !== undefined) this.patch({ lastSeq: group.id });
     return true;
@@ -427,6 +453,7 @@ export class ThreadAgent extends AbstractAgent {
       case EventType.RUN_STARTED: {
         this.openUserText.clear();
         const runId = str(event.runId) ?? "";
+        this.runEnds.set(runId, this.groupSeq);
         if (this.route?.runId === runId) return; // the preamble of a resumed run: already open
         if (this.route) this.finish(this.route, false);
         this.startedInvocations.clear();
@@ -476,6 +503,7 @@ export class ThreadAgent extends AbstractAgent {
       return;
     }
     const route = this.route;
+    this.runEnds.set(route.runId, this.groupSeq);
     if (isUserText(event, this.openUserText)) {
       this.userText(route, event);
       return;
@@ -496,7 +524,7 @@ export class ThreadAgent extends AbstractAgent {
     if (route.kind === "external" && event.type !== EventType.STATE_SNAPSHOT) {
       this.material(route.run);
     }
-    for (const out of this.normalize(event)) this.emit(route, out);
+    for (const out of this.normalize(event, route.runId)) this.emit(route, out);
     if (event.type === EventType.RUN_FINISHED || event.type === EventType.RUN_ERROR) {
       this.finish(route, true);
     }
@@ -508,7 +536,13 @@ export class ThreadAgent extends AbstractAgent {
     if (e.type === EventType.TEXT_MESSAGE_START) {
       this.openUserText.add(id);
       const actor = actorOf(e);
-      this.userTexts.set(id, { id, text: "", ...(actor ? { actor } : {}) });
+      this.userSeqs.set(id, this.groupSeq);
+      this.userTexts.set(id, {
+        id,
+        text: "",
+        seq: this.groupSeq,
+        ...(actor ? { actor } : {}),
+      });
     } else if (e.type === EventType.TEXT_MESSAGE_CONTENT) {
       const m = this.userTexts.get(id);
       if (m) m.text += str(e.delta) ?? "";
@@ -559,9 +593,10 @@ export class ThreadAgent extends AbstractAgent {
 
   /**
    * What the runtime gets. It drops an event's `metadata`, so the actor moves into the activity
-   * content, and into a `CUSTOM` marker part in front of an invocation's output.
+   * content, and into a `CUSTOM` marker part in front of an invocation's output (with the `runId`
+   * of the run, which is how a turn finds its end in the log, `endOfRun`).
    */
-  private normalize(event: Ev): BaseEvent[] {
+  private normalize(event: Ev, runId: string): BaseEvent[] {
     if (event.type === EventType.ACTIVITY_SNAPSHOT) {
       const type = str(event.activityType) ?? "";
       const actor = actorOf(event);
@@ -586,7 +621,11 @@ export class ThreadAgent extends AbstractAgent {
     if (event.type === EventType.SUBAGENT_STARTED) {
       const actor = actorOf(event);
       if (actor) {
-        return [event, { type: EventType.CUSTOM, name: ACTOR_PART, value: actor } as BaseEvent];
+        // `runId` ties the turn the runtime builds to the run of the log, for a fork from it
+        return [
+          event,
+          { type: EventType.CUSTOM, name: ACTOR_PART, value: { ...actor, runId } } as BaseEvent,
+        ];
       }
     }
     return [event];

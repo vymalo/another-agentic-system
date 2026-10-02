@@ -1399,3 +1399,355 @@ describe("holds (mock only): a run that waits for the test, and cuts that touch 
       await fetch(`${at}/api/threads/${t}/cancel`, { method: "POST" });
   });
 });
+
+describe("forking a thread (ADR 0029), as the mock does it", () => {
+  type Branches = components["schemas"]["Branches"];
+  type Exported = {
+    events: { seq: number; kind: string; threadId?: string; data: Record<string, unknown> }[];
+  };
+
+  /** A thread of two finished jobs (`echo first`, `echo second`) and its log. */
+  async function twoJobs(agent = "coder") {
+    const { threadId } = await startThread("echo first", agent);
+    await waitForState(threadId, ["done"]);
+    const res = await postRun(base, agent, {
+      threadId,
+      runId: "run-2",
+      messages: [
+        { id: "m-1", role: "user", content: "echo first" },
+        { id: "m-2", role: "user", content: "echo second" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    await frames(res);
+    await waitForState(threadId, ["done"]);
+    return { threadId, log: await logOf(threadId) };
+  }
+
+  async function logOf(threadId: string): Promise<Exported["events"]> {
+    const res = await fetch(`${base}/api/threads/${threadId}/export`);
+    return ((await res.json()) as Exported).events;
+  }
+  /** An event without the thread it is in: a copy is the parent's event in the fork's log. */
+  const bare = (log: Exported["events"]) =>
+    log.map(({ threadId: _thread, ...event }) => event as unknown);
+  const userSeqs = (log: Exported["events"]) =>
+    log.filter((e) => e.kind === "user_message").map((e) => e.seq);
+
+  const fork = (threadId: string, body: unknown) => post(`/api/threads/${threadId}/fork`, body);
+  const forkOk = async (threadId: string, body: unknown, status = 201): Promise<Thread> => {
+    const res = await fork(threadId, body);
+    expect(res.status).toBe(status);
+    expect(res.headers.get("location")).toMatch(/^\/api\/threads\/[0-9a-f-]{36}$/);
+    return (await expectDocumented("/api/threads/{threadId}/fork", "post", res)) as Thread;
+  };
+  const branchesOf = async (threadId: string): Promise<Branches> => {
+    const res = await fetch(`${base}/api/threads/${threadId}/branches`);
+    return (await expectDocumented("/api/threads/{threadId}/branches", "get", res)) as Branches;
+  };
+  const listIds = async (query = ""): Promise<string[]> => {
+    const res = await fetch(`${base}/api/threads?limit=100${query}`);
+    return ((await expectDocumented("/api/threads", "get", res)) as Thread[]).map((t) => t.id);
+  };
+
+  it("fork from here: a finished thread that holds the turns up to the cut and the marker", async () => {
+    const { threadId, log } = await twoJobs();
+    const [first, second] = userSeqs(log);
+    const forked = await forkOk(threadId, { after: first });
+    // the cut is the event before the second message
+    const cut = (second ?? 0) - 1;
+    expect(forked.forkedFrom).toEqual({ threadId, seq: cut, kind: "fork" });
+    expect(forked.state).toBe("done");
+    expect(forked.lastSeq).toBe(cut + 1);
+    expect(forked.title).toBe("echo first");
+    expect(forked.target).toEqual({ agentId: "coder" });
+    // the parent is as it was
+    const parent = await (await fetch(`${base}/api/threads/${threadId}`)).json();
+    expect(parent.lastSeq).toBe(log.length);
+    expect(parent.forkedFrom).toBeUndefined();
+
+    // its log is the parent's events with the same seq, then the event that says what it is
+    const copy = await logOf(forked.id);
+    expect(bare(copy.slice(0, cut))).toEqual(bare(log.slice(0, cut)));
+    expect(copy.at(-1)).toMatchObject({
+      seq: cut + 1,
+      kind: "thread_forked",
+      data: { from: { threadId, seq: cut }, kind: "fork", title: "echo first" },
+    });
+
+    // a viewer reads the copy, then the marker run and the thread's origin
+    const read = await validated(
+      await frames(await connect(base, forked.id, { mode: "run" })),
+      "fork frames",
+    );
+    const marker = read.find(
+      (f) => f.event.type === "ACTIVITY_SNAPSHOT" && f.event.activityType === "vymalo.fork",
+    );
+    expect(marker?.event.messageId).toBe(`fork-${cut + 1}`);
+    expect(marker?.event.content).toMatchObject({
+      from: { threadId, seq: cut },
+      kind: "fork",
+      title: "echo first",
+      target: { agentId: "coder" },
+    });
+    const last = read.at(-1)?.event;
+    expect(last).toMatchObject({ type: "RUN_FINISHED", runId: `run-${cut + 1}` });
+    const snapshots = read.filter((f) => f.event.type === "STATE_SNAPSHOT");
+    expect(snapshots.at(-1)?.event).toMatchObject({
+      snapshot: { thread: { state: "done", forkedFrom: { threadId, seq: cut, kind: "fork" } } },
+    });
+    // the parent's own frames, before the marker, do not say it
+    expect(snapshots[0]?.event).not.toMatchObject({
+      snapshot: { thread: { forkedFrom: expect.anything() } },
+    });
+  });
+
+  it("the end of the log is the cut when no message follows; any event of the turn names it", async () => {
+    const { threadId, log } = await twoJobs();
+    const [first, second] = userSeqs(log);
+    // an event in the middle of the second turn
+    const forked = await forkOk(threadId, { after: (second ?? 0) + 1 });
+    expect(forked.forkedFrom?.seq).toBe(log.length);
+    // an event of the first turn: up to the second message
+    const earlier = await forkOk(threadId, { after: (first ?? 0) + 1 });
+    expect(earlier.forkedFrom?.seq).toBe((second ?? 0) - 1);
+  });
+
+  it("continues with another agent: the target is the fork's, and a message goes to that agent", async () => {
+    const { threadId, log } = await twoJobs();
+    const forked = await forkOk(threadId, {
+      after: log.length,
+      target: { agentId: "reviewer" },
+    });
+    expect(forked.target).toEqual({ agentId: "reviewer" });
+    expect(forked.forkedFrom).toMatchObject({ threadId, kind: "fork" });
+    const refused = await postRun(base, "coder", {
+      threadId: forked.id,
+      runId: "run-x",
+      messages: [{ id: "m-x", role: "user", content: "echo hello" }],
+    });
+    expect(refused.status).toBe(409);
+    await refused.arrayBuffer();
+    const sent = await postRun(base, "reviewer", {
+      threadId: forked.id,
+      runId: "run-y",
+      messages: [{ id: "m-y", role: "user", content: "echo hello" }],
+    });
+    expect(sent.status).toBe(200);
+    await frames(sent);
+    expect((await waitForState(forked.id, ["done"])).forkedFrom?.kind).toBe("fork");
+    // the actor of the new turn is the new agent
+    const turn = (await logOf(forked.id)).filter((e) => e.kind === "agent_status").at(-1);
+    expect(turn).toBeDefined();
+  });
+
+  it("a repeat of a request with the same id answers the fork it made", async () => {
+    const { threadId, log } = await twoJobs();
+    const id = newId();
+    const made = await forkOk(threadId, { after: log.length, id });
+    expect(made.id).toBe(id);
+    const again = await forkOk(threadId, { after: log.length, id }, 200);
+    expect(again.id).toBe(id);
+    expect((await logOf(id)).length).toBe(made.lastSeq);
+    // the id of another thread is not a fork of this one
+    const other = await startThread("echo");
+    await waitForState(other.threadId, ["done"]);
+    const clash = await fork(threadId, { after: log.length, id: other.threadId });
+    expect(clash.status).toBe(409);
+    await expectDocumented("/api/threads/{threadId}/fork", "post", clash);
+  });
+
+  it("refuses a turn that is going on with turn_open, and takes it once it has ended", async () => {
+    const { threadId } = await startThread("slow task");
+    await waitForState(threadId, ["working"]);
+    const res = await fork(threadId, { after: 1 });
+    expect(res.status).toBe(409);
+    const problem = (await expectDocumented("/api/threads/{threadId}/fork", "post", res)) as {
+      code?: string;
+    };
+    expect(problem.code).toBe("turn_open");
+    expect((await post(`/api/threads/${threadId}/cancel`)).status).toBe(202);
+    await waitForState(threadId, ["cancelled"]);
+    const forked = await forkOk(threadId, { after: 1 });
+    expect(forked.forkedFrom?.kind).toBe("fork");
+  });
+
+  it("a thread waiting for an answer forks as it is", async () => {
+    const { threadId } = await startThread("ask which branch");
+    await waitForState(threadId, ["blocked"]);
+    const forked = await forkOk(threadId, { after: 1 });
+    expect(forked.state).toBe("done");
+    expect(forked.forkedFrom?.seq).toBe(forked.lastSeq - 1);
+  });
+
+  it("answers the documented problems", async () => {
+    const { threadId, log } = await twoJobs();
+    const [first] = userSeqs(log);
+    const bad: [string, unknown, number][] = [
+      ["neither after nor replace", {}, 400],
+      ["both", { after: 1, replace: 1, text: "x" }, 400],
+      ["text with after", { after: 1, text: "x" }, 400],
+      ["messageId with after", { after: 1, messageId: "m" }, 400],
+      ["replace without text", { replace: first }, 400],
+      ["an empty text", { replace: first, text: "" }, 400],
+      ["a seq that is not a number", { after: "1" }, 400],
+      ["a seq of 0", { after: 0 }, 400],
+      ["an unknown member", { after: 1, nope: true }, 400],
+      ["an unknown agent", { after: 1, target: { agentId: "nobody" } }, 400],
+      [
+        "a release of an agent without releases",
+        { after: 1, target: { agentId: "reviewer", release: "x" } },
+        400,
+      ],
+      ["an unknown release", { after: 1, target: { agentId: "coder", release: "nope" } }, 400],
+      ["an id that is not a UUID", { after: 1, id: "x" }, 400],
+      ["a seq past the log", { after: log.length + 1 }, 422],
+      ["replace past the log", { replace: log.length + 1, text: "x" }, 422],
+      ["replace of an agent's event", { replace: (first ?? 0) + 1, text: "x" }, 422],
+    ];
+    for (const [label, body, status] of bad) {
+      const res = await fork(threadId, body);
+      expect(res.status, label).toBe(status);
+      await expectDocumented("/api/threads/{threadId}/fork", "post", res);
+    }
+    const missing = await fork(newId(), { after: 1 });
+    expect(missing.status).toBe(404);
+    await expectDocumented("/api/threads/{threadId}/fork", "post", missing);
+    const notJson = await fetch(`${base}/api/threads/${threadId}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    });
+    expect(notJson.status).toBe(400);
+    // nothing was written by any of them
+    expect((await (await fetch(`${base}/api/threads/${threadId}`)).json()).lastSeq).toBe(
+      log.length,
+    );
+  });
+
+  it("an edit: the thread of the parent's turns before the message, the new message and its job", async () => {
+    const { threadId, log } = await twoJobs();
+    const [, second] = userSeqs(log);
+    const edited = await forkOk(threadId, {
+      replace: second,
+      text: "echo changed",
+      messageId: "m-edit",
+    });
+    expect(edited.forkedFrom).toEqual({ threadId, seq: (second ?? 0) - 1, kind: "edit" });
+    expect(edited.state).toBe("queued");
+    const done = await waitForState(edited.id, ["done"]);
+    expect(done.target).toEqual({ agentId: "coder" });
+    const copy = await logOf(edited.id);
+    const cut = (second ?? 0) - 1;
+    expect(bare(copy.slice(0, cut))).toEqual(bare(log.slice(0, cut)));
+    expect(copy[cut]).toMatchObject({ kind: "thread_forked", data: { kind: "edit" } });
+    expect(copy[cut + 1]).toMatchObject({
+      seq: cut + 2,
+      kind: "user_message",
+      data: { text: "echo changed", messageId: "m-edit" },
+    });
+    expect(copy[cut + 2]).toMatchObject({ kind: "job_started", data: { job: 2 } });
+    // the answer is the new message's
+    expect(JSON.stringify(copy.slice(cut + 3))).toContain("echo: echo changed");
+
+    // the list leaves an edit out unless asked: it is a branch of a conversation it shows
+    expect(await listIds()).not.toContain(edited.id);
+    expect(await listIds("&branches=include")).toContain(edited.id);
+    expect(await listIds()).toContain(threadId);
+    // "fork from here" is a conversation of its own, and is listed
+    const own = await forkOk(threadId, { after: log.length });
+    expect(await listIds()).toContain(own.id);
+
+    // the viewer reads the copy, the marker and the new job, in order
+    const read = await validated(
+      await frames(await connect(base, edited.id, { mode: "run" })),
+      "edit frames",
+    );
+    const kinds = read.map((f) =>
+      f.event.type === "ACTIVITY_SNAPSHOT" ? String(f.event.activityType) : f.event.type,
+    );
+    expect(kinds.indexOf("vymalo.fork")).toBeGreaterThan(-1);
+    expect(kinds.indexOf("vymalo.fork")).toBeLessThan(kinds.lastIndexOf("TEXT_MESSAGE_START"));
+    expect(
+      read.some((f) => f.event.type === "TEXT_MESSAGE_CONTENT" && f.event.delta === "echo changed"),
+    ).toBe(true);
+  });
+
+  it("an edit of the first message copies nothing, and starts at job 2", async () => {
+    const { threadId, log } = await twoJobs();
+    const [first] = userSeqs(log);
+    const edited = await forkOk(threadId, { replace: first, text: "echo other" });
+    expect(edited.forkedFrom).toEqual({ threadId, seq: 0, kind: "edit" });
+    await waitForState(edited.id, ["done"]);
+    const copy = await logOf(edited.id);
+    expect(copy[0]).toMatchObject({ seq: 1, kind: "thread_forked", data: { from: { seq: 0 } } });
+    expect(copy[1]).toMatchObject({ kind: "user_message", data: { text: "echo other" } });
+    expect(copy[2]).toMatchObject({ kind: "job_started", data: { job: 2 } });
+  });
+
+  it("branches: the messages that have other versions, the original first and then the edits", async () => {
+    const { threadId, log } = await twoJobs();
+    const [first, second] = userSeqs(log);
+    // a thread nobody edited has no points
+    expect(await branchesOf(threadId)).toEqual({ root: threadId, points: [] });
+
+    const e1 = await forkOk(threadId, { replace: second, text: "echo one" });
+    const e2 = await forkOk(threadId, { replace: second, text: "echo two" });
+    await waitForState(e1.id, ["done"]);
+    await waitForState(e2.id, ["done"]);
+    const versions = (b: Branches, at: number) => b.points.find((p) => p.seq === at);
+    const titleOf = async (id: string) =>
+      (await (await fetch(`${base}/api/threads/${id}`)).json()).title;
+
+    const original = await branchesOf(threadId);
+    expect(original.root).toBe(threadId);
+    expect(original.points).toHaveLength(1);
+    expect(versions(original, second ?? 0)).toEqual({
+      seq: second,
+      index: 0,
+      siblings: [
+        { threadId, seq: second, title: await titleOf(threadId) },
+        { threadId: e1.id, seq: (second ?? 0) + 1, title: await titleOf(e1.id) },
+        { threadId: e2.id, seq: (second ?? 0) + 1, title: await titleOf(e2.id) },
+      ],
+    });
+    const second1 = await branchesOf(e1.id);
+    expect(second1.root).toBe(threadId);
+    // this thread's own message is the edit, at its own seq; the first message is shared, so has no versions
+    expect(second1.points.map((p) => [p.seq, p.index])).toEqual([[(second ?? 0) + 1, 1]]);
+    expect((await branchesOf(e2.id)).points.map((p) => [p.seq, p.index])).toEqual([
+      [(second ?? 0) + 1, 2],
+    ]);
+
+    // an edit of an edit is another version of the same message
+    const e1log = await logOf(e1.id);
+    const e3 = await forkOk(e1.id, {
+      replace: userSeqs(e1log).at(-1),
+      text: "echo three",
+    });
+    await waitForState(e3.id, ["done"]);
+    const third = await branchesOf(e3.id);
+    expect(third.root).toBe(threadId);
+    const point = third.points.at(-1);
+    expect(point?.siblings.map((s) => s.threadId)).toEqual([threadId, e1.id, e2.id, e3.id]);
+    expect(point?.index).toBe(3);
+    expect(point?.seq).toBe(second === undefined ? 0 : userSeqs(await logOf(e3.id)).at(-1));
+    // and the original now lists four versions
+    expect(versions(await branchesOf(threadId), second ?? 0)?.siblings).toHaveLength(4);
+
+    // an edit of the first message is another version of that one, and a point of the first message
+    const e4 = await forkOk(threadId, { replace: first, text: "echo zero" });
+    await waitForState(e4.id, ["done"]);
+    const zero = await branchesOf(e4.id);
+    expect(zero.root).toBe(threadId);
+    expect(zero.points.map((p) => p.seq)).toEqual([2]);
+    expect((await branchesOf(threadId)).points.map((p) => p.seq)).toEqual([first, second]);
+
+    // an edit's fork-from-here is its own conversation
+    const own = await forkOk(e1.id, { after: (await logOf(e1.id)).length });
+    expect(await branchesOf(own.id)).toEqual({ root: own.id, points: [] });
+    const missing = await fetch(`${base}/api/threads/${newId()}/branches`);
+    expect(missing.status).toBe(404);
+    await expectDocumented("/api/threads/{threadId}/branches", "get", missing);
+  });
+});
