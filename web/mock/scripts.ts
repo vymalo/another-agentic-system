@@ -488,6 +488,13 @@ const keptFile = (file: MockFile, name: string): Step => ({
   },
 });
 
+/** What the model says a described thread is about (the `description` golden's words). */
+export const DESCRIPTION = "The person wants a plan for a test.";
+
+/** A description of three sentences: more than a line wide, to be expanded. */
+export const LONG_DESCRIPTION =
+  "The person wants a plan for adding a test to the session expiry check, so that a session idle for thirty minutes is refused with a 401. The agent read the repository and proposed one test beside the existing ones. Nothing was changed yet.";
+
 /** The agent finished, with no artifact: an answer of words and a surface only. */
 const finishQuietly: Step[] = [
   { kind: "agent_status", data: { status: "completed" } },
@@ -969,6 +976,10 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  * - `slow`: works until cancelled.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
+ * - `describe`: the same as `talk`, then, after the thread is done, the description the orchestrator's model
+ *   writes for it (`thread_described`, `source: model`, ADR 0035; the `description` golden). `describe-long`: the
+ *   same with a description of three sentences, longer than a line. A description a person wrote is never
+ *   replaced by one of these.
  * - `file`: one artifact that is a file the artifact store keeps (ADR 0032: a PNG, `chart.png`, the reference in
  *   the event's `file`), then done (the `file` golden). The mock serves it as `getArtifact` does.
  * - anything else (`echo`): working, result artifact (a PR link), done.
@@ -2047,6 +2058,30 @@ export function scriptFor(text: string): {
             data: { messageId: nextMessageId(), final: true, text: "Plan: add a test" },
           },
           ...finish(`echo: ${text}`),
+        ],
+      };
+    case "describe":
+    case "describe-long":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_status",
+            data: { status: "working", detail: "Reading the repository" },
+          },
+          {
+            kind: "agent_message",
+            data: { messageId: nextMessageId(), final: true, text: "Plan: add a test" },
+          },
+          ...finish(`echo: ${text}`),
+          {
+            kind: "thread_described",
+            system: true,
+            data: {
+              description: word === "describe" ? DESCRIPTION : LONG_DESCRIPTION,
+              source: "model",
+            },
+          },
         ],
       };
     case "partial": {
