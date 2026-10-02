@@ -29,6 +29,7 @@ use tracing::Instrument as _;
 use crate::{App, AppError, ApplyOutcome};
 
 mod description;
+mod files;
 mod live;
 mod title;
 mod utility;
@@ -38,6 +39,8 @@ mod verify;
 const FORK_PAGE: u32 = 500;
 
 use live::{LiveRelay, LiveTiming};
+
+pub use files::{FileLimits, MAX_FILES_PER_JOB};
 
 /// Tunables of the dispatcher.
 #[derive(Debug, Clone)]
@@ -150,6 +153,8 @@ struct Ctx {
     agent: AgentId,
     endpoint: AgentEndpoint,
     revision: Option<String>,
+    /// What the delegation has kept of the agent's files so far (ADR 0032).
+    files: files::Budget,
 }
 
 fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
@@ -160,6 +165,9 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::Message { .. }
             | AgentUpdate::Ui { .. }
             | AgentUpdate::UiRejected { .. }
+            | AgentUpdate::File { .. }
+            | AgentUpdate::FileKept { .. }
+            | AgentUpdate::FileRefused { .. }
             | AgentUpdate::Step(_),
         )
         | None => None,
@@ -414,6 +422,7 @@ impl<P: Ports> Dispatcher<P> {
             agent: binding.agent_id.clone(),
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
+            files: files::Budget::default(),
         };
         Ok(Some(Loaded {
             ctx,
@@ -833,10 +842,16 @@ impl<P: Ports> Dispatcher<P> {
         };
         match &env.update {
             Some(update) => {
+                // A file is put in the artifact store before anything is committed (ADR 0032): the
+                // core is given the reference, never the bytes.
+                let update = match self.ingest(ctx, update).await {
+                    Some(ingested) => ingested,
+                    None => update.clone(),
+                };
                 let input = Input::Agent {
                     agent: ctx.agent.clone(),
                     revision: env.revision.clone().or_else(|| ctx.revision.clone()),
-                    update: update.clone(),
+                    update,
                 };
                 match self
                     .app

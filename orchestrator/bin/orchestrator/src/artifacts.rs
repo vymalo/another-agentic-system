@@ -3,9 +3,10 @@
 //! behind a Cargo feature of this binary, and that chooses between them from the configuration
 //! (`artifacts.store`). The application sees only the port.
 //!
-//! Nothing keeps a file yet (the ingest of S11 does); the store is built, checked where it can be
-//! without a request, and handed to the `PortSet`. A configuration that names no store gets
-//! [`NoArtifacts`], which refuses every call with "no artifact store configured".
+//! The store is built, checked where it can be without a request, and handed to the `PortSet`; the
+//! dispatcher keeps the files agents hand over in it (ADR 0032) and the API serves them. A
+//! configuration that names no store gets [`NoArtifacts`], which refuses every call with "no
+//! artifact store configured".
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,6 +30,11 @@ pub struct ArtifactSettings {
     /// `artifacts.maxFileBytes`: the largest file kept. The ingest checks it before it calls the
     /// port; the store enforces no limit.
     pub max_file_bytes: u64,
+    /// `artifacts.maxPerJobBytes`: the most bytes of files one job keeps.
+    pub max_per_job_bytes: u64,
+    /// `artifacts.fetchHosts`: the hosts a `url` part of an artifact is fetched from (none: a
+    /// `url` stays a link).
+    pub fetch_hosts: Vec<String>,
 }
 
 /// The store `artifacts.store` names. (A build reads the fields of the stores it has.)
@@ -217,6 +223,8 @@ mod tests {
         ArtifactSettings {
             store,
             max_file_bytes: 1024,
+            max_per_job_bytes: 4096,
+            fetch_hosts: Vec::new(),
         }
     }
 

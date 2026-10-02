@@ -74,6 +74,17 @@ tasks:
 ui:
   showDescriptions: true
 
+# The files agents hand over (ADR 0032, docs/api/config.md): an A2A artifact whose part is a file (adam's `share_file`) is kept in a
+# directory, by the hash of its content, and the log holds only the reference; the API serves it at
+# GET /api/threads/{id}/artifacts/{sha256}. The directory is the named volume `orchestrator-artifacts`, which the
+# orchestrator and the `split` workers all mount: the worker that keeps a file and the control plane that serves it must see the
+# same one. (The image makes the directory, owned by its user, so a new volume is writable.) Take `artifacts` out and a file is
+# refused, "the file could not be kept", with the rest of the chat working. `fetchHosts` (none here) would name the hosts a
+# `url` part may be fetched from.
+artifacts:
+  store: fs
+  fs: { root: /var/lib/orchestrator/artifacts }
+
 # The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and verified with,
 # and the address agents reach the orchestrator at (the compose network name: the edge does not route the endpoint).
 # EVERY role gets them: a worker mints the grant it sends with a message, the control plane serves the endpoint. The

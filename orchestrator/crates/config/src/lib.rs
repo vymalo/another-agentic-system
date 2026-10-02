@@ -46,11 +46,11 @@ pub use shape::{check, schema, schema_text};
 pub use tree::parse_yaml;
 pub use types::{
     Agents, ArtifactStoreKind, Artifacts, ArtifactsFs, ArtifactsS3, Auth, AuthMode, Config,
-    DEFAULT_LISTEN, DEFAULT_MAX_FILE_BYTES, DEFAULT_S3_REGION, Database, DescriptionTask,
-    Dispatcher, Endpoint, Environment, Gate, GateCi, GateSource, Inbox, Jwt, Language, Log,
-    LogFormat, MAX_FILE_BYTES_LIMIT, Mcp, Models, Prompt, Recompute, Registry, Role, SecretRef,
-    Server, Steps, Surface, Tasks, ThreadTools, TitleTask, Ui, WebhookGeneric, WebhookGithub,
-    Webhooks,
+    DEFAULT_LISTEN, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PER_JOB_BYTES, DEFAULT_S3_REGION, Database,
+    DescriptionTask, Dispatcher, Endpoint, Environment, Gate, GateCi, GateSource, Inbox, Jwt,
+    Language, Log, LogFormat, MAX_FILE_BYTES_LIMIT, MAX_PER_JOB_BYTES_LIMIT, Mcp, Models, Prompt,
+    Recompute, Registry, Role, SecretRef, Server, Steps, Surface, Tasks, ThreadTools, TitleTask,
+    Ui, WebhookGeneric, WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

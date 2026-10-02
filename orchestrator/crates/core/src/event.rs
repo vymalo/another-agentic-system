@@ -325,6 +325,67 @@ pub struct ArtifactData {
     /// Inline text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The file this artifact is, when an agent handed one over and the artifact store kept it
+    /// (ADR 0032). Then `mime_type` is the type the worker sniffed, and the bytes are in the store,
+    /// never in the log. Absent for an artifact of text or a link, and for a file that was refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileRef>,
+}
+
+/// A file kept in the artifact store, as the log refers to it (ADR 0032): the content's hash (the
+/// second half of the store's key `threads/<thread>/<sha256>`, the thread being the event's), its
+/// size and the name the agent gave it. A decision reads this, never the bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRef {
+    /// The SHA-256 of the content, 64 lowercase hexadecimal digits.
+    pub sha256: String,
+    /// The size in bytes.
+    pub size: u64,
+    /// The file's name as the agent gave it, cleaned of path parts and control characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+impl FileRef {
+    /// Where the file is served, relative to the API's origin
+    /// (`GET /api/threads/{threadId}/artifacts/{sha256}`, ADR 0032): the `href` of the projected
+    /// artifact. The thread is the event's.
+    pub fn href(&self, thread: crate::ThreadId) -> String {
+        format!("/api/threads/{thread}/artifacts/{}", self.sha256)
+    }
+}
+
+/// How much of a kept file a person can look at without downloading it (ADR 0032, decision 8 and
+/// 10): the types the API serves inline. Everything else is an attachment only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preview {
+    /// An image: png, jpeg, gif, webp or svg (the API sanitizes an SVG).
+    Image,
+    /// Plain text: `text/plain` or `application/json`.
+    Text,
+}
+
+impl Preview {
+    /// The preview of `media_type` (a lower-case `type/subtype` as the worker kept it), or `None`
+    /// when the file is an attachment only.
+    pub fn of(media_type: &str) -> Option<Preview> {
+        match media_type {
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml" => {
+                Some(Preview::Image)
+            }
+            "text/plain" | "application/json" => Some(Preview::Text),
+            _ => None,
+        }
+    }
+
+    /// The word the projection uses (`vymalo.artifact.preview`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Preview::Image => "image",
+            Preview::Text => "text",
+        }
+    }
 }
 
 /// `data` of a `thread_state`.

@@ -42,6 +42,8 @@ pub use orch_testsupport::{eventually, shape};
 #[path = "../../../store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
+/// The artifact store of every world is a directory store in a temporary directory (ADR 0032), so a
+/// scenario that hands a file over keeps it for real and the API serves it back.
 pub type Stack<S, W> = PortSet<
     S,
     W,
@@ -51,6 +53,7 @@ pub type Stack<S, W> = PortSet<
     ScriptedModel,
     orch_ports::FixedRegistry,
     orch_auth_header::HeaderAuth,
+    orch_artifacts_fs::FsArtifacts,
 >;
 
 /// Which store a scenario runs on.
@@ -150,6 +153,11 @@ pub struct Setup {
     /// Whether the instances have a description task (the scripted model, asked as
     /// `mock-description` after two new messages): without it no thread has a description.
     pub descriptions: bool,
+    /// The limits of the files agents hand over (ADR 0032; the defaults of the configuration).
+    pub files: orch_app::FileLimits,
+    /// The hosts a `url` part of an artifact is fetched from (`artifacts.fetchHosts`); a host is
+    /// `plain`'s own address when the test says so ([`World::plain_host`]).
+    pub fetch_plain: bool,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -193,6 +201,8 @@ impl Default for Setup {
             gate_rules: GateRules::default(),
             titles: false,
             descriptions: false,
+            files: orch_app::FileLimits::default(),
+            fetch_plain: false,
         }
     }
 }
@@ -238,6 +248,11 @@ pub struct World {
     pub model: ScriptedModel,
     titles: bool,
     descriptions: bool,
+    files: orch_app::FileLimits,
+    /// Where the files are kept: a directory store in a temporary directory that lives as long as
+    /// the world, shared by every instance as a shared volume would be.
+    pub artifacts: orch_artifacts_fs::FsArtifacts,
+    artifacts_dir: tempfile::TempDir,
     /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
     /// the first instance with the thread-tools surface serves on it.
     thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
@@ -279,16 +294,30 @@ impl World {
                 .unwrap(),
             )
         });
+        let coder = FakeAgent::spawn(setup.coder).await;
+        let plain = FakeAgent::spawn(setup.plain).await;
+        // `plain`'s own address is on the list of hosts a `url` part may be fetched from
+        let fetch_files = setup.fetch_plain.then(|| {
+            orch_agent_a2a::FileFetch::new(
+                vec![plain.base_url().trim_start_matches("http://").to_owned()],
+                setup.files.max_file_bytes,
+            )
+        });
+        let artifacts_dir = tempfile::tempdir().unwrap();
+        let artifacts = orch_artifacts_fs::FsArtifacts::open(artifacts_dir.path().join("files"))
+            .await
+            .unwrap();
         World {
             db,
             agents: A2aAgentClient::new(A2aConfig {
                 use_system_proxy: false,
                 thread_tools,
+                fetch_files,
                 ..A2aConfig::default()
             })
             .unwrap(),
-            coder: FakeAgent::spawn(setup.coder).await,
-            plain: FakeAgent::spawn(setup.plain).await,
+            coder,
+            plain,
             reviewer: match setup.reviewer {
                 Some(script) => Some(
                     FakeAgent::spawn(FakeAgentOptions {
@@ -307,6 +336,9 @@ impl World {
             model: ScriptedModel::default().with_endpoints(["default"]),
             titles: setup.titles,
             descriptions: setup.descriptions,
+            files: setup.files,
+            artifacts,
+            artifacts_dir,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
@@ -359,7 +391,7 @@ impl World {
         Arc::new(
             App::new(
                 PortSet {
-                    artifacts: orch_ports::NoArtifacts,
+                    artifacts: self.artifacts.clone(),
                     store,
                     wakeup,
                     agents: self.agents.clone(),
@@ -376,11 +408,17 @@ impl World {
                     gate: self.gate.clone(),
                     target_gates: self.target_gates.clone(),
                     gate_rules: self.gate_rules.clone(),
+                    files: self.files,
                     ..AppConfig::default()
                 },
             )
             .expect("a valid gate"),
         )
+    }
+
+    /// The directory the files of this world are kept in.
+    pub fn artifacts_root(&self) -> std::path::PathBuf {
+        self.artifacts_dir.path().join("files")
     }
 
     /// An application instance with no HTTP server and no dispatcher, on the shared database:

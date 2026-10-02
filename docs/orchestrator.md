@@ -97,6 +97,7 @@ flowchart TB
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
     token["<b>orch-thread-token</b><br/>the thread-tools token: HS256 JWS,<br/>claims, keys, issuer, vectors"]
     config["<b>orch-config</b><br/>the configuration file: types, JSON Schema,<br/>three-pass validation, secrets by reference"]
+    svgclean["<b>orch-svg-clean</b><br/>allow-list sanitizer for SVG<br/>quick-xml, served inline"]
   end
   subgraph G_APP["Application: written against the ports"]
     app["<b>orch-app</b><br/>App: transition + commit loop, event_stream, thread_feed, receive<br/>Dispatcher: durable outbox worker, live relay<br/>InboxWorker: timers and stored reports"]
@@ -138,6 +139,7 @@ flowchart TB
   app --> ports
   api --> app
   api --> ports
+  api --> svgclean
   proj --> proto
   proj --> core
   bin --> app
@@ -221,12 +223,13 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-auth-jwt` (`crates/auth-jwt`) | `Authenticator` over OAuth2 bearer tokens ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): RS256, RS384, ES256 and EdDSA only, `iss`, `aud`, `exp`, `iat`, `nbf` and `email_verified` checked, the user and the roles read from configured claims; the issuer's JWKS from `jwksUrl` or its discovery document, held in the process only, refreshed after 10 minutes, fetched again for an unknown `kid` at most once in 30 s, failing closed (`Unavailable`, and `/readyz`); feature `auth-jwt` of the binary; feature `testkit`: `TestIdp`, a token issuer on a local port | **Built** (PR S14) |
 | `orch-auth-header` (`crates/auth-header`) | `Authenticator` over the identity header a proxy sets (`X-Auth-Request-Email`) and the optional development user: the behaviour `orch-api` had before ADR 0033, `auth.mode: proxy_header`; feature `auth-header` of the binary | **Built** (PR S14) |
 | `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | **Built** (MVP slice 9) |
-| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
+| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`); reads a `url` part of an artifact from a host of `artifacts.fetchHosts` as if it had been sent as bytes ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)) | **Built** |
 | `orch-model-openai` (`crates/model-openai`) | `ChatModel` over OpenAI-compatible `POST {base}/chat/completions` endpoints, one client configuration per endpoint name (`ChatRequest.endpoint`): the orchestrator's own model calls, the title and the description of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md), [ADR 0035](decisions/0035-utility-model-tasks.md)); `reqwest` only, no vendor SDK, a key never in an error or a `Debug` | **Built** |
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`; feature `testkit` | **Built** (ADR 0015) |
-| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys; no I/O, no async | **Built** |
-| `orch-app` (`crates/app`) | `App`, `Dispatcher` | **Built** |
-| `orch-api` (`crates/api`) | HTTP edge, resource API, `SurfaceRoutes` (`plain`, `streaming` and `machine` routes) | **Built** |
+| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys (a `raw` part of an artifact is `AgentUpdate::File`, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)); no I/O, no async | **Built** |
+| `orch-svg-clean` (`crates/svg-clean`) | A pure allow-list sanitizer for SVG on `quick-xml` ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the API sends an SVG inline only through it | **Built** (S11) |
+| `orch-app` (`crates/app`) | `App`, `Dispatcher` (and, before it commits an agent's file, the ingest: [Files from agents](#files-from-agents)) | **Built** |
+| `orch-api` (`crates/api`) | HTTP edge, resource API (with `GET /api/threads/{id}/artifacts/{sha256}`, the files agents handed over), `SurfaceRoutes` (`plain`, `streaming` and `machine` routes) | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
 | `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
 | `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
@@ -693,6 +696,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | Agent status `completed` | → `done`; `agent_status`, `thread_state` | → `done` | `Err(InvalidInState)` |
 | Agent status `failed`, `rejected` | → `failed` (`rejected` prefixes the detail); `agent_status`, `thread_state` | → `failed` | `Err(InvalidInState)` |
 | Agent status `canceled` | → `cancelled`; `agent_status`, `thread_state` | → `cancelled` | `Err(InvalidInState)` |
+| A file the worker kept (`FileKept`) or did not (`FileRefused`), [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md) | State kept; append `artifact` with `file` (the reference), or `artifact` without one and then `error{retryable:false}` ("the file is too large to keep", "this job has reached its limit of files, so the file is not kept", "the file could not be kept"). `AgentUpdate::File` (the bytes) never reaches the log: the worker replaces it first, and a core that is handed one logs it as not kept | Same | `Err(InvalidInState)` |
 | Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message` (with the `purpose` the adapter read off the status it was stated on, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), `ui_surface` or `error` | Same | `Err(InvalidInState)` |
 | The agent announces its answer (`Input::Answer`, the `turn_output` thread tool), [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md) amendment | State kept (`queued`, `working` only); append `agent_message` `{id: out-<jti>-<n>, final, purpose: answer, via: turn_output}`, and `Job.answer` says the turn has an announced answer: from then on any other agent message of the turn is written `purpose: working`, one that repeats the last words is dropped, and the words of a `completed`, `input_required` or `auth_required` status that no message said are written as a `working` message ahead of the status | `Err(InvalidInState)` ("this turn is over"; the same for a job that is not the current one and for another token than the one that announced) | `Err(InvalidInState)` |
 | Agent step (`AgentUpdate::Step`) and the orchestrator's own (`Input::Step`), [ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md) | `queued` → `working`; append `agent_step`, **coalesced** (below): a start, an end and at most 4 updates per step, the rest dropped with no event | Dropped (the work is not going on; the same in `verifying`) | `Err(InvalidInState)` |
@@ -1188,6 +1192,61 @@ and `id`; 201 with the new thread and a `Location`, 200 for a repeat, 400, 404, 
 family, 422 for a point that is not in the log or not a person's message), `GET /api/threads/{id}/branches`
 (`{root, points: [{seq, index, siblings: [{threadId, seq, title}]}]}`) and `GET /api/threads?branches=include`. Problems carry an
 optional `code`.
+
+### Files from agents
+
+**Built** (2026-10-02, S10 and S11; [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)). An agent hands a
+person a file as an A2A artifact whose part is a file: `raw` bytes with a `mediaType` and a `filename` (any agent, no extension), or
+a `url` the orchestrator is told it may read. The bytes are durable outside Postgres, in an `ArtifactStore` (a directory, or an S3
+bucket) under `threads/<thread>/<sha256>`; the log holds only the reference, and nothing in the core reads a byte.
+
+```mermaid
+sequenceDiagram
+  participant A as Agent
+  participant M as A2A adapter (orch-agent-a2a, orch-a2a-mapping)
+  participant D as Dispatcher (the ingest)
+  participant S as ArtifactStore
+  participant C as Core + log
+  participant P as API
+  A->>M: artifact, a raw part (or a url on a listed host)
+  M->>D: AgentUpdate::File {name, media_type, filename, bytes}
+  D->>D: size, job limits, sniff the type, hash
+  D->>S: put(threads/T/sha, bytes, meta)
+  S-->>D: ok (durable, idempotent)
+  D->>C: AgentUpdate::FileKept {file: {sha256, size, filename}}
+  C->>C: append artifact{file}
+  P->>C: is T this person's?
+  P->>S: get(threads/T/sha), streamed
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Reported: the adapter reports a file
+  Reported --> Refused: over the file cap, or the job's files or bytes are used up
+  Reported --> NotKept: no store, or the put failed
+  Reported --> Kept: put succeeds, then the commit
+  Refused --> Logged: artifact without a file, error "too large" or "limit of files"
+  NotKept --> Logged: artifact without a file, error "could not be kept"
+  Kept --> Logged: artifact with the reference
+  Logged --> [*]: the turn goes on
+```
+
+The adapter reports a file as `AgentUpdate::File`: the mapper makes one per `raw` part (`a2a:<task>:artifact:<id>:file:<part>`), and
+the adapter turns a `url` part into one when, and only when, its host is on `artifacts.fetchHosts` (no redirect followed, no
+credential sent, stopped at the cap). **The dispatcher keeps the file before anything is committed** (`src/dispatcher/files.rs`):
+it checks `artifacts.maxFileBytes` (before copying or hashing) and the job's limits (`artifacts.maxPerJobBytes` and 50 files, each
+content counted once), **sniffs the type** (an image's declared type must agree with its magic bytes, else
+`application/octet-stream`), cleans the file name, hashes, and `put`s. The core then gets `AgentUpdate::FileKept` and logs
+`artifact{name, mimeType, file: {sha256, size, filename}}`, or `AgentUpdate::FileRefused` and logs the artifact without a file and an
+`error{retryable:false}` that says why; a store that fails and a deployment with none are "the file could not be kept", and the turn
+goes on in every case. A file is stored before its event is committed, so a reference never points at nothing; one stored whose
+commit was lost is put again by the retry, which is the same key.
+
+`GET /api/threads/{threadId}/artifacts/{sha256}` serves it (`orch-api`, [`api/chat-api.yaml`](api/chat-api.yaml), `getArtifact`):
+`App::open_artifact` is the one place that says who may read (the thread's owner today, the role permission `artifact.read` of ADR
+0033 next), every miss is a 404, the body is streamed, only the preview types are inline (an SVG only after `orch-svg-clean`), and
+every response is `nosniff`, sandboxed by its `Content-Security-Policy` and immutable in the cache. The projection says it as
+`vymalo.artifact{kind:"file", href, sha256, size, filename?, preview}` ([`api/agui.md`](api/agui.md#typed-artifacts)).
 
 ### Exporting a thread
 

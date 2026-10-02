@@ -470,6 +470,7 @@ impl Checker<'_> {
             ArtifactStoreKind::S3 => (artifacts.s3.is_some(), artifacts.fs.is_some(), "fs"),
         };
         let store = artifacts.store.as_str();
+        self.hosts("artifacts.fetchHosts", Some(&artifacts.fetch_hosts));
         if !wanted {
             self.invalid(
                 format!("artifacts.{store}"),

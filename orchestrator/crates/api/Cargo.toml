@@ -12,6 +12,8 @@ readme = "README.md"
 orch-core.workspace = true
 orch-app.workspace = true
 orch-ports.workspace = true
+orch-svg-clean.workspace = true
+futures.workspace = true
 axum.workspace = true
 tower.workspace = true
 tower-http.workspace = true
@@ -23,6 +25,11 @@ tracing.workspace = true
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-auth-header.workspace = true
+orch-artifacts-fs.workspace = true
+tempfile = "3"
+bytes.workspace = true
+sha2.workspace = true
+uuid.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

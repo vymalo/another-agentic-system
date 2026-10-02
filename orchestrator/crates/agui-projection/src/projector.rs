@@ -49,9 +49,9 @@ use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
     AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event,
     EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
-    Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData,
-    ThreadId, ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger, UiSurfaceData,
-    UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
+    Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData,
+    ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, UiActionData, UiCatalogLedger,
+    UiSurfaceData, UiVersion, UserId, UserMessageData, inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -279,11 +279,30 @@ fn canceled_subagent(id: SubagentRunId) -> SubagentFinishedEvent {
 
 /// What a `vymalo.artifact` adds to the artifact as sent: its `kind` and the fields a card needs,
 /// from [`recognise_artifact`]. A `branch` or `checks` artifact that cannot be used is a `file`.
-fn typed_artifact(d: &ArtifactData) -> Metadata {
+fn typed_artifact(thread: ThreadId, d: &ArtifactData) -> Metadata {
     let mut out = Metadata::new();
     let mut put = |key: &str, value: Value| {
         out.insert(key.to_owned(), value);
     };
+    // A file the artifact store keeps (ADR 0032): a `file` that can be fetched and, for some types,
+    // looked at. It is the file the worker kept, so the agent's words cannot make it anything else.
+    if let Some(file) = &d.file {
+        put("kind", Value::from("file"));
+        put("href", Value::from(file.href(thread)));
+        put("sha256", Value::from(file.sha256.clone()));
+        put("size", Value::from(file.size));
+        if let Some(filename) = &file.filename {
+            put("filename", Value::from(filename.clone()));
+        }
+        put(
+            "preview",
+            d.mime_type
+                .as_deref()
+                .and_then(Preview::of)
+                .map_or(Value::Null, |p| Value::from(p.as_str())),
+        );
+        return out;
+    }
     match recognise_artifact(&d.name, d.uri.as_deref(), d.text.as_deref()) {
         Recognised::Branch(pushed) => {
             put("kind", Value::from("branch"));
@@ -799,7 +818,7 @@ impl Projector {
         {
             self.sha = Some(pushed.commit);
         }
-        let mut content = typed_artifact(d);
+        let mut content = typed_artifact(ev.thread_id, d);
         content.insert("name".to_owned(), Value::from(d.name.clone()));
         for (key, value) in [
             ("mimeType", &d.mime_type),

@@ -214,6 +214,7 @@ services:
       - ./dev/orchestrator.live.yaml:/etc/orchestrator/config.yaml:ro
       - ./dev/agents.live.yaml:/etc/orchestrator/agents.yaml:ro
       - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
+      - orchestrator-artifacts:/var/lib/orchestrator/artifacts
     environment:
       CODER_A2A_TOKEN: "${CODER_A2A_TOKEN:?set CODER_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"
       CHAT_A2A_TOKEN: "${CHAT_A2A_TOKEN:?set CHAT_A2A_TOKEN in .env (32 random bytes: openssl rand -hex 32)}"

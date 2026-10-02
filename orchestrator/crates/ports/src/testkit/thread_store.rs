@@ -705,6 +705,7 @@ pub async fn latest_events_newest_first<S: ThreadStore>(store: S) {
             mime_type: None,
             uri: None,
             text: None,
+            file: None,
         }),
         idempotency_key: None,
     };

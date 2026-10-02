@@ -542,7 +542,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 9] = [
+    let auth_ops: [(&str, reqwest::Method, String); 10] = [
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("getConfig", reqwest::Method::GET, "/api/config".into()),
@@ -571,6 +571,11 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "listBranches",
             reqwest::Method::GET,
             format!("/api/threads/{RANDOM}/branches"),
+        ),
+        (
+            "getArtifact",
+            reqwest::Method::GET,
+            format!("/api/threads/{RANDOM}/artifacts/{}", "ab".repeat(32)),
         ),
     ];
     for (op, method, path) in auth_ops {
@@ -693,6 +698,29 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     let r = h.get(&format!("/api/threads/{id}/export"), Some(BOB)).await;
     assert_eq!(r.status, 404);
     c.check("exportThread", &r);
+
+    // getArtifact (ADR 0032): this stack has no artifact store, so a file is a 404 whoever asks, and
+    // a `download` that is not 1 is a 400; `tests/artifacts.rs` drives the route against stores
+    // that hold files.
+    let sha = "ab".repeat(32);
+    for (user, path) in [
+        (ALICE, format!("/api/threads/{id}/artifacts/{sha}")),
+        (BOB, format!("/api/threads/{id}/artifacts/{sha}")),
+        (ALICE, format!("/api/threads/{RANDOM}/artifacts/{sha}")),
+        (ALICE, format!("/api/threads/{id}/artifacts/nope")),
+    ] {
+        let r = h.get(&path, Some(user)).await;
+        assert_eq!(r.status, 404, "{user} {path}");
+        c.check("getArtifact", &r);
+    }
+    let r = h
+        .get(
+            &format!("/api/threads/{id}/artifacts/{sha}?download=2"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    c.check("getArtifact", &r);
 
     // listThreads
     for i in 0..3 {

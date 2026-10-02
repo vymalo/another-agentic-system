@@ -106,6 +106,7 @@ fn artifact(seq: i64) -> Event {
             mime_type: None,
             uri: Some("https://example.com/pr/1".to_owned()),
             text: None,
+            file: None,
         }),
     )
 }
@@ -1050,6 +1051,7 @@ fn the_next_job_forgets_the_surfaces_the_attempt_and_the_commit_of_the_last() {
                     })
                     .to_string(),
                 ),
+                file: None,
             }),
         )
     };
@@ -1125,6 +1127,7 @@ fn named_artifact(seq: i64, name: &str, uri: Option<&str>, text: Option<&str>) -
             mime_type: None,
             uri: uri.map(str::to_owned),
             text: text.map(str::to_owned),
+            file: None,
         }),
     )
 }
@@ -1360,6 +1363,70 @@ fn an_artifact_says_its_kind_and_the_fields_a_card_needs() {
         (Some("file"), Some("not json"))
     );
     assert_eq!(content_of(&frames, "evt-8")["kind"], "file");
+}
+
+fn kept_file(seq: i64, name: &str, mime: &str, filename: Option<&str>, size: u64) -> Event {
+    ev(
+        seq,
+        plain(),
+        EventBody::Artifact(ArtifactData {
+            name: name.to_owned(),
+            mime_type: Some(mime.to_owned()),
+            uri: None,
+            text: None,
+            file: Some(orch_core::FileRef {
+                sha256: format!("{seq:064x}"),
+                size,
+                filename: filename.map(str::to_owned),
+            }),
+        }),
+    )
+}
+
+/// ADR 0032: a file the artifact store keeps is a `file` with where to fetch it, how big it is and
+/// whether a person can look at it without downloading it.
+#[test]
+fn a_kept_file_says_where_it_is_how_big_and_what_a_preview_of_it_is() {
+    let events = vec![
+        user(1, "make a chart"),
+        status(2, AgentStatus::Working, None),
+        kept_file(3, "chart", "image/png", Some("chart.png"), 1234),
+        kept_file(4, "notes", "text/plain", Some("notes.txt"), 17),
+        kept_file(5, "report", "application/pdf", None, 90_000),
+        kept_file(6, "drawing", "image/svg+xml", Some("d.svg"), 300),
+        kept_file(7, "data", "application/json", Some("d.json"), 2),
+        // a file that was not kept is an entry without a file and says nothing of one
+        named_artifact(8, "dump", None, None),
+    ];
+    let frames = support::flatten(&project(&events));
+    let strip = |mut v: serde_json::Value| {
+        v.as_object_mut().unwrap().remove("at");
+        v
+    };
+    let href = |seq: i64| format!("/api/threads/{THREAD}/artifacts/{seq:064x}",);
+    assert_eq!(
+        strip(content_of(&frames, "evt-3")),
+        serde_json::json!({"kind": "file", "name": "chart", "mimeType": "image/png",
+            "href": href(3), "sha256": format!("{:064x}", 3), "size": 1234,
+            "filename": "chart.png", "preview": "image"})
+    );
+    let notes = content_of(&frames, "evt-4");
+    assert_eq!(
+        (notes["preview"].as_str(), notes["size"].as_u64()),
+        (Some("text"), Some(17))
+    );
+    let report = content_of(&frames, "evt-5");
+    assert!(report["preview"].is_null(), "{report}");
+    assert!(report.get("filename").is_none(), "no name was given");
+    assert_eq!(report["href"], href(5));
+    assert_eq!(content_of(&frames, "evt-6")["preview"], "image");
+    assert_eq!(content_of(&frames, "evt-7")["preview"], "text");
+    let refused = content_of(&frames, "evt-8");
+    assert_eq!(refused["kind"], "file");
+    assert!(
+        refused.get("href").is_none() && refused.get("size").is_none(),
+        "{refused}"
+    );
 }
 
 // ---- what the words are for (ADR 0031) -----------------------------------------------------

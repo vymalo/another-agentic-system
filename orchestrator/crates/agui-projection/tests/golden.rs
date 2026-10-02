@@ -33,8 +33,9 @@ use support::{lines, verify};
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 /// The thread a fork scenario was cut from.
 const PARENT: &str = "00000000-0000-7000-8000-000000000002";
-const SCENARIOS: [&str; 23] = [
+const SCENARIOS: [&str; 24] = [
     "echo",
+    "file",
     "ask",
     "cancel",
     "fail",
@@ -224,8 +225,9 @@ fn render(frames: &[Frame]) -> String {
     );
     fn placeholder(v: &mut Value) {
         match v {
-            Value::String(s) if s == THREAD => *s = "<thread-id>".to_owned(),
-            Value::String(s) if s == PARENT => *s = "<parent-thread-id>".to_owned(),
+            // also inside a longer text: the `href` of a kept file names its thread
+            Value::String(s) if s.contains(THREAD) => *s = s.replace(THREAD, "<thread-id>"),
+            Value::String(s) if s.contains(PARENT) => *s = s.replace(PARENT, "<parent-thread-id>"),
             Value::Array(items) => items.iter_mut().for_each(placeholder),
             Value::Object(map) => map.values_mut().for_each(placeholder),
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}

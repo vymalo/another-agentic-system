@@ -277,6 +277,7 @@ mod tests {
                 mime_type: None,
                 uri: Some(url.to_owned()),
                 text: None,
+                file: None,
             }),
         }
     }

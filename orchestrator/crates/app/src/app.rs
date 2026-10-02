@@ -16,13 +16,15 @@ use orch_core::{
 pub use orch_ports::Received;
 use orch_ports::{
     AgentBinding, AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentListing,
-    AgentRegistry, AgentTransport, BindingUpdate, Clock, Commit, CommitOutcome, ForkOrigin, IdGen,
-    InboxFinal, InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox,
-    NewThreadRecord, NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry,
-    SourceStatus, StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
+    AgentRegistry, AgentTransport, ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore,
+    BindingUpdate, ByteStream, Clock, Commit, CommitOutcome, ForkOrigin, IdGen, InboxFinal,
+    InboxId, InboxLease, InboxPayload, Lease, NewEvent, NewInbox, NewOutbox, NewThreadRecord,
+    NewTimer, OutboxFinal, OutboxPayload, OutboxStats, Ports, RegistryEntry, SourceStatus,
+    StoreError, TIMER_SOURCE, ThreadStore, Topic, Wakeup,
 };
 use tokio::time::Instant;
 
+use crate::dispatcher::FileLimits;
 use crate::{
     AgentDirectory, AppError, GateError, GateLayer, GateRules, Layer, PublicConfig, TaskSettings,
     check_catalog_schemas,
@@ -104,6 +106,10 @@ pub struct AppConfig {
     pub tasks: BTreeMap<TaskKind, TaskSettings>,
     /// What `GET /api/config` says: the `ui` section of the configuration file, for the web.
     pub public: PublicConfig,
+    /// The limits on the files an agent hands over (ADR 0032: `artifacts.maxFileBytes`,
+    /// `artifacts.maxPerJobBytes`, and 50 files a job), enforced by the dispatcher before it puts a
+    /// file in the artifact store. Without a store every file is refused as "could not be kept".
+    pub files: FileLimits,
 }
 
 impl Default for AppConfig {
@@ -120,6 +126,7 @@ impl Default for AppConfig {
             record_step_io: true,
             tasks: BTreeMap::new(),
             public: PublicConfig::default(),
+            files: FileLimits::default(),
         }
     }
 }
@@ -422,6 +429,11 @@ impl<P: Ports> App<P> {
     /// The public subset of the configuration (`GET /api/config`).
     pub fn public_config(&self) -> &PublicConfig {
         &self.cfg.public
+    }
+
+    /// The limits the dispatcher enforces on the files agents hand over (ADR 0032).
+    pub fn file_limits(&self) -> &FileLimits {
+        &self.cfg.files
     }
 
     /// How `kind` asks its model, when the task is on.
@@ -764,6 +776,33 @@ impl<P: Ports> App<P> {
             Some(thread) if &thread.owner == user => Ok(Some(thread)),
             Some(_) => Err(AppError::NotFound),
             None => Ok(None),
+        }
+    }
+
+    /// A file of a thread, for the person who may read it (`GET /api/threads/{id}/artifacts/{sha256}`,
+    /// ADR 0032): its meta and its content as a stream, never held whole.
+    ///
+    /// **The access rule is this one line** (`get_thread`: the thread's owner, a foreign thread is
+    /// `NotFound`, so is a file that is not there, a hash that is not 64 lowercase hex digits, and a
+    /// deployment with no artifact store). The role permission `artifact.read` of ADR 0033 (S15)
+    /// comes here, beside it: no caller of this method decides who may read.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`]; [`AppError::Artifacts`] when the store fails.
+    pub async fn open_artifact(
+        &self,
+        user: &UserId,
+        thread: ThreadId,
+        sha256: &str,
+    ) -> Result<(ArtifactMeta, ByteStream), AppError> {
+        // The seam for RBAC: who may read the files of this thread.
+        self.get_thread(user, thread).await?;
+        let key = ArtifactKey::parse(&format!("threads/{thread}/{sha256}"))
+            .map_err(|_| AppError::NotFound)?;
+        match self.ports.artifacts().get(&key).await {
+            Ok(Some(found)) => Ok(found),
+            Ok(None) | Err(ArtifactError::NotConfigured) => Err(AppError::NotFound),
+            Err(e) => Err(e.into()),
         }
     }
 

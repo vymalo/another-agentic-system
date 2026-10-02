@@ -32,6 +32,11 @@ agents:
     url: http://mock-registry:8080/registry/v1/agents
     agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN }
 
+# The files agents hand over (ADR 0032), as in dev/orchestrator.yaml: the named volume `orchestrator-artifacts`.
+artifacts:
+  store: fs
+  fs: { root: /var/lib/orchestrator/artifacts }
+
 threadTools:
   url: http://orchestrator:8080
   secret: { env: THREAD_TOOLS_SECRET }

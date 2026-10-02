@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::event::MessagePurpose;
+use crate::event::{FileRef, MessagePurpose};
 use crate::step::StepReport;
 
 /// Protocol-neutral task state reported by an agent (mirrors A2A `TaskState`).
@@ -59,6 +59,31 @@ impl AgentTaskState {
     }
 }
 
+/// Why a file an agent handed over was not kept (ADR 0032).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileRefusal {
+    /// Over `artifacts.maxFileBytes`.
+    TooLarge,
+    /// The job has kept as many files, or as many bytes, as it may.
+    JobLimit,
+    /// Not stored: no store is configured, or the store failed.
+    NotKept,
+}
+
+impl FileRefusal {
+    /// What the people of the thread read in the `error` event.
+    pub const fn message(self) -> &'static str {
+        match self {
+            FileRefusal::TooLarge => "the file is too large to keep",
+            FileRefusal::JobLimit => {
+                "this job has reached its limit of files, so the file is not kept"
+            }
+            FileRefusal::NotKept => "the file could not be kept",
+        }
+    }
+}
+
 /// One thing an agent told us, already stripped of protocol framing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUpdate {
@@ -79,6 +104,41 @@ pub enum AgentUpdate {
         uri: Option<String>,
         /// Inline text content.
         text: Option<String>,
+    },
+    /// A file the agent handed over, with its bytes (an A2A `raw` part, or a `url` part the worker
+    /// fetched: ADR 0032). It is what an adapter reports; **the worker keeps it and replaces it
+    /// with [`AgentUpdate::FileKept`] or [`AgentUpdate::FileRefused`] before the core sees it**, so
+    /// the bytes never reach the log. A core that is handed one anyway has no store to put it in:
+    /// it logs the file as refused ([`FileRefusal::NotKept`]).
+    File {
+        /// The artifact's name.
+        name: String,
+        /// The media type the agent declared, if it did.
+        media_type: Option<String>,
+        /// The file's name, if the agent gave one.
+        filename: Option<String>,
+        /// The content.
+        bytes: Vec<u8>,
+    },
+    /// A file the worker put into the artifact store (ADR 0032): logged as an artifact that holds
+    /// the reference.
+    FileKept {
+        /// The artifact's name.
+        name: String,
+        /// The media type the worker sniffed.
+        mime_type: String,
+        /// Where the file is.
+        file: FileRef,
+    },
+    /// A file the worker did not keep: logged as an artifact without a file, and an error that says
+    /// why. The turn goes on.
+    FileRefused {
+        /// The artifact's name.
+        name: String,
+        /// The media type the agent declared, if it did.
+        mime_type: Option<String>,
+        /// Why.
+        reason: FileRefusal,
     },
     /// A message from the agent.
     Message {

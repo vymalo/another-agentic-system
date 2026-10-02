@@ -297,6 +297,61 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Branches" }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/artifacts/{sha256}:
+    parameters:
+      - { $ref: "#/components/parameters/ThreadId" }
+      - { $ref: "#/components/parameters/Sha256" }
+    get:
+      operationId: getArtifact
+      summary: A file an agent handed over, from the artifact store
+      description: |
+        The content of a file of the thread ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)):
+        the `file` of an `artifact` event, `href` of the projected artifact. `sha256` is the content's hash in 64
+        lowercase hexadecimal digits, and the file belongs to the thread in the path: no thread reaches another's by
+        hash. Authorised like `getThread`: the thread's owner only (the role permission `artifact.read` of ADR 0033 is
+        to come beside it), and someone else's thread, a thread that does not exist, a hash the thread holds no file for,
+        a hash that is not 64 lowercase hex digits and a deployment with no artifact store are all the same 404.
+
+        The body is **streamed** from the store. `Content-Type` is the type the worker kept (it sniffed it: an image
+        whose bytes disagree with its declared type is `application/octet-stream`).
+
+        * **Inline** (no `download`, or `download=0`): only for the preview types, `image/png`, `image/jpeg`,
+          `image/gif`, `image/webp`, `image/svg+xml`, `text/plain` and `application/json` (the last two with
+          `; charset=utf-8`), with `Content-Disposition: inline; filename="…"`. An SVG is **sanitized** first
+          (`orch-svg-clean`: no script, no `foreignObject`, no external reference, no event handler); one that is larger
+          than 2 MiB or cannot be sanitized is sent as an attachment instead. **Every other type is an attachment
+          only.**
+        * **Download** (`download=1`): `Content-Disposition: attachment; filename="…"`, the original bytes. The file
+          name is the agent's, cleaned: one name with no path, no control or direction character, a printable ASCII
+          fallback in `filename` and the real name as `filename*=UTF-8''…` (RFC 6266, RFC 5987); a file without a
+          usable name is `artifact-<8 hex digits of the hash>`.
+
+        Every response, inline or not, carries `X-Content-Type-Options: nosniff`, `Content-Security-Policy:
+        default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox`, `Cache-Control: private,
+        max-age=31536000, immutable` (the URL is the content's hash) and `ETag: "<sha256>"`.
+      parameters:
+        - name: download
+          in: query
+          required: false
+          description: "`1` (or `true`) sends the file as an attachment; `0`, `false` or absent shows a preview type inline. Any other value is a 400."
+          schema: { type: string, enum: ["0", "1", "false", "true"] }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The file
+          headers:
+            Content-Type: { description: "The kept media type", schema: { type: string } }
+            Content-Length: { description: "The size in bytes (the sanitized size for an inline SVG)", schema: { type: integer } }
+            Content-Disposition: { description: "`inline; filename=\"…\"` or `attachment; filename=\"…\"`, with `filename*` for a name that is not ASCII", schema: { type: string } }
+            X-Content-Type-Options: { description: "`nosniff`", schema: { type: string } }
+            Content-Security-Policy: { description: "`default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox`", schema: { type: string } }
+            Cache-Control: { description: "`private, max-age=31536000, immutable`", schema: { type: string } }
+            ETag: { description: "`\"<sha256>\"`", schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
   /agui/agents/{agentId}:
     parameters: [ { $ref: "#/components/parameters/AgentId" } ]
     post:
@@ -404,6 +459,12 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    Sha256:
+      name: sha256
+      in: path
+      required: true
+      description: "The SHA-256 of a file's content, 64 lowercase hexadecimal digits (`ArtifactFile.sha256`)"
+      schema: { type: string, pattern: "^[0-9a-f]{64}$" }
     AgentId:
       name: agentId
       in: path
@@ -694,7 +755,7 @@ components:
         - user_message        # data: { text, messageId?, runId? }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise)
         - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: the agent called the thread tool, written by the orchestrator with the id `out-<jti>-<n>`; once a turn has such an answer, the core writes everything else the agent says in the turn as `working`, and a later announcement replaces the earlier one by the rule that the answer of a turn is the last message marked `answer` in it). Additive.
         - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to)
-        - artifact            # data: { name, mimeType?, uri?, text? }  e.g. a branch, a PR URL, a patch
+        - artifact            # data: { name, mimeType?, uri?, text?, file?: ArtifactFile }  e.g. a branch, a PR URL, a patch, or a file the agent handed over (ADR 0032): then `file` is the reference (`sha256`, `size`, `filename?`) to the bytes kept in the artifact store and served by `getArtifact`, and `mimeType` is the type the worker sniffed. An artifact entry without `file` and `text` and `uri`, followed by an `error` event, is a file that was not kept (too large, over the job's limits, no store, the store failed). Additive.
         - thread_state        # data: { state: ThreadState }
         - error               # data: { message, retryable: bool }
         - ui_surface          # data: { operations: [A2UI message] }  an A2UI payload an agent sent to render (ADR 0013), already through the orchestrator's envelope check; attributed to the agent. Additive.
@@ -708,6 +769,14 @@ components:
         - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`, attributed to the person) or the orchestrator had a model write one after the agent's first reply (`source: model`, attributed to the orchestrator, [ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): the model is asked at most twice per thread, and never once a person has renamed it). `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
         - thread_described    # data: { description, source: model|user }  the thread has a new description ([ADR 0035](../decisions/0035-utility-model-tasks.md)): the orchestrator had a model write one when a job ended or paused for the person (`source: model`, attributed to the orchestrator; at most once per job, and only when the conversation grew by `minNewMessages` since the last one) or a person wrote it (`patchThread`, `source: user`, attributed to the person; an empty `description` is the person clearing it). `threads.description` and this event are one commit. Once a person has written or cleared it, the model never writes it again. Additive.
         - thread_forked       # data: { from: { threadId, seq }, kind: fork|edit, title, description?, target: AgentTarget }  the thread began as a copy of another (ADR 0029): its events `1..=from.seq` are the parent's, copied with the same `seq`, then this event at `from.seq + 1`, then the thread's own. `fork`: a copy to the end of a turn ("fork from here", "continue with another agent"); `edit`: a copy to just before a message of a person, followed by the message edited (a branch). `title` is the parent's title when the fork was made, and the fork's; `description` is the parent's description then (absent when it had none), and the fork's. `target` is the agent the fork talks to. Attributed to the person. Additive; the first event of the thread's own life, so a reader that skips it still reads a coherent log.
+    ArtifactFile:
+      type: object
+      description: "A file kept in the artifact store, as an `artifact` event refers to it (ADR 0032). The bytes are never in the log; `GET /api/threads/{threadId}/artifacts/{sha256}` serves them."
+      required: [sha256, size]
+      properties:
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: "The SHA-256 of the content: with the thread, its key in the store" }
+        size: { type: integer, format: int64, minimum: 0, description: "Bytes" }
+        filename: { type: string, description: "The name the agent gave the file, cleaned of path parts and control characters (untrusted text)" }
     Actor:
       type: object
       required: [type, name]
@@ -744,6 +813,9 @@ components:
         name: { type: string }
         mimeType: { type: string }
         uri: { type: string }
+        file:
+          description: "artifact only (ADR 0032): the file the artifact is, kept in the artifact store. Absent for text and links and for a file that was not kept."
+          $ref: "#/components/schemas/ArtifactFile"
         state:
           description: "thread_state: the ThreadState the thread entered. agent_step: where the step stands (running, waiting, completed, failed or canceled)."
           anyOf:

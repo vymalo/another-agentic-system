@@ -67,7 +67,7 @@ configures the process; `orchestrator --print-config` prints what it would run w
 connection. **In this transition release every variable below still works and wins over the file**, each logging one
 warning that names the variable and the key; unset `ORCH_CONFIG_FILE` and the environment alone configures the process, as
 before, with one warning. The details are in [`bin/orchestrator`](bin/orchestrator/README.md#the-configuration-file).
-The artifact store (`artifacts:`, [ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md): `store: fs` or `s3`, `maxFileBytes`) has no variable, only the file; without the section a file an agent hands over is refused ("no artifact store configured").
+The artifact store (`artifacts:`, [ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md): `store: fs` or `s3`, `maxFileBytes`, `maxPerJobBytes`, `fetchHosts`) has no variable, only the file; without the section a file an agent hands over is refused ("no artifact store configured").
 
 Every setting is a command-line flag with an environment fallback (`orchestrator
 --help` lists both); the variables below are what deployments set, and a flag
@@ -233,6 +233,7 @@ change of the composition root, never a runtime plugin.
 | [`crates/agent-a2a`](crates/agent-a2a/README.md) | `orch-agent-a2a` | `AgentClient` over `a2a-client-lf` (A2A 1.0): live card and release-channels discovery, streaming delegation, resubscribe, polling, cancel. |
 | [`crates/model-openai`](crates/model-openai/README.md) | `orch-model-openai` | `ChatModel` over an OpenAI-compatible `POST {base}/chat/completions` (`reqwest`, no vendor SDK): the orchestrator's first model call, the title of a thread. The key is a sensitive header, never in an error or a `Debug`. |
 | [`crates/artifacts-fs`](crates/artifacts-fs/README.md) | `orch-artifacts-fs` | `ArtifactStore` over a directory ([ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)): temp file, fsync and atomic rename, mode `0600`, the meta in a JSON file beside the bytes; for development and one node. |
+| [`crates/svg-clean`](crates/svg-clean/README.md) | `orch-svg-clean` | Pure: an allow-list sanitizer for SVG on `quick-xml` ([ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)); the API sends an SVG inline only through it |
 | [`crates/artifacts-s3`](crates/artifacts-s3/README.md) | `orch-artifacts-s3` | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through `object_store`'s S3 backend: one object per file, the media type as its `Content-Type`; the production store. |
 | [`crates/agent-adam`](crates/agent-adam/README.md) | `orch-agent-adam` | `AgentClient` over adam-rs agents hosted in this process (`transport: local`), journaled in the orchestrator's Postgres under `orch_agent_`; only with the binary's feature `agent-local` (off by default). |
 | [`crates/a2a-mapping`](crates/a2a-mapping/README.md) | `orch-a2a-mapping` | Pure: the mapping from A2A 1.0 stream items and tasks to `AgentEnvelope`s and idempotency keys (`StreamMapper`, `snapshot`). No I/O, no async, no HTTP client. |

@@ -83,6 +83,10 @@ fn kinds(envs: &[AgentEnvelope]) -> Vec<String> {
             Some(AgentUpdate::Ui { operations }) => format!("ui:{}", operations.len()),
             Some(AgentUpdate::UiRejected { .. }) => "ui-rejected".to_owned(),
             Some(AgentUpdate::Step(step)) => format!("step:{}", step.id),
+            Some(AgentUpdate::File { name, .. }) => format!("file:{name}"),
+            Some(AgentUpdate::FileKept { name, .. } | AgentUpdate::FileRefused { name, .. }) => {
+                format!("file-logged:{name}")
+            }
             None => "-".to_owned(),
         })
         .collect()

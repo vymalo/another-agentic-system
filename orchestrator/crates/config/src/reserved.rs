@@ -31,14 +31,6 @@ pub const RESERVED: &[Reserved] = &[
         path: "auth.roles",
         by: "PR S15 (ADR 0033, roles and permissions)",
     },
-    Reserved {
-        path: "artifacts.maxPerJobBytes",
-        by: "PR S11 (ADR 0032, ingesting files)",
-    },
-    Reserved {
-        path: "artifacts.fetchHosts",
-        by: "PR S11 (ADR 0032, ingesting files)",
-    },
 ];
 
 /// The reservation that covers `path` (dotted, such as `tasks.title.system`), if any.

@@ -2111,6 +2111,7 @@ dependencies = [
  "orch-ports",
  "orch-testsupport",
  "orch-thread-token",
+ "percent-encoding",
  "reqwest",
  "rustls",
  "secrecy",
@@ -2119,6 +2120,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -2182,27 +2184,35 @@ name = "orch-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
+ "futures",
  "jiff",
  "jsonschema",
  "orch-app",
+ "orch-artifacts-fs",
  "orch-auth-header",
  "orch-core",
  "orch-ports",
+ "orch-svg-clean",
  "reqwest",
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "orch-app"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures",
  "jiff",
  "jsonschema",
@@ -2321,6 +2331,7 @@ dependencies = [
  "orch-agui-proto",
  "orch-api",
  "orch-app",
+ "orch-artifacts-fs",
  "orch-auth-header",
  "orch-core",
  "orch-ports",
@@ -2337,6 +2348,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tempfile",
  "tokio",
  "tokio-util",
  "uuid",
@@ -2514,6 +2526,14 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "orch-svg-clean"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "thiserror",
 ]
 
 [[package]]

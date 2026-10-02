@@ -29,7 +29,7 @@ use std::time::Duration;
 use adam_host::Host;
 use anyhow::Context;
 use axum::Router;
-use orch_agent_a2a::{A2aAgentClient, A2aConfig, install_crypto_provider};
+use orch_agent_a2a::{A2aAgentClient, A2aConfig, FileFetch, install_crypto_provider};
 use orch_api::{ApiConfig, SurfaceRoutes};
 use orch_app::{AgentDirectory, App, Dispatcher, DispatcherConfig, InboxWorker};
 use orch_core::BoxError;
@@ -302,6 +302,8 @@ fn platform_registry(_cfg: &Config) -> Result<Option<Platform>, ConfigError> {
 /// The A2A client's configuration: the defaults, and the issuer of the thread-tools grants when the
 /// keys and the URL are set (every role has them: the worker sends, the control plane serves).
 fn a2a_config(cfg: &Config) -> A2aConfig {
+    #[allow(unused_mut)]
+    let mut a2a = A2aConfig::default();
     #[cfg(feature = "surface-thread-tools")]
     if let Some(settings) = &cfg.thread_tools {
         tracing::info!(
@@ -310,13 +312,22 @@ fn a2a_config(cfg: &Config) -> A2aConfig {
             keys = ?settings.issuer.keys(),
             "agents that list thread-tools/v1 are given a grant"
         );
-        return A2aConfig {
-            thread_tools: Some(Arc::clone(&settings.issuer)),
-            ..A2aConfig::default()
-        };
+        a2a.thread_tools = Some(Arc::clone(&settings.issuer));
+    }
+    // A `url` part of an agent's artifact is read only from the hosts the operator listed, and only
+    // where there is a store to keep it in (ADR 0032).
+    if let Some(artifacts) = cfg.artifacts.as_ref().filter(|a| !a.fetch_hosts.is_empty()) {
+        tracing::info!(
+            hosts = ?artifacts.fetch_hosts,
+            "an agent's url parts are fetched from these hosts"
+        );
+        a2a.fetch_files = Some(FileFetch::new(
+            artifacts.fetch_hosts.clone(),
+            artifacts.max_file_bytes,
+        ));
     }
     let _ = cfg;
-    A2aConfig::default()
+    a2a
 }
 
 /// What every role needs, built once by [`setup`].

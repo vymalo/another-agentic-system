@@ -1048,6 +1048,8 @@ fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
     Some(ArtifactSettings {
         store,
         max_file_bytes: artifacts.max_file_bytes,
+        max_per_job_bytes: artifacts.max_per_job_bytes,
+        fetch_hosts: artifacts.fetch_hosts.clone(),
     })
 }
 
@@ -2238,6 +2240,43 @@ artifacts:
             assert!(
                 loaded.merged.unwrap().contains("root: files"),
                 "--print-config shows the key as written"
+            );
+        }
+
+        /// The limits and the fetch hosts of the ingest (ADR 0032) reach the application's
+        /// configuration and the A2A client's.
+        #[cfg(feature = "artifacts-fs")]
+        #[test]
+        fn the_ingest_limits_and_the_fetch_hosts_reach_the_configuration() {
+            let loaded = load_file_only(
+                &base(),
+                &with(
+                    "artifacts: { store: fs, fs: { root: files }, maxFileBytes: 4096, \
+                     maxPerJobBytes: 8192, fetchHosts: [files.example.com, \"10.0.0.5:8080\"] }\n",
+                ),
+            )
+            .unwrap();
+            let artifacts = loaded.config.artifacts.as_ref().unwrap();
+            assert_eq!(artifacts.max_per_job_bytes, 8192);
+            assert_eq!(
+                artifacts.fetch_hosts,
+                ["files.example.com", "10.0.0.5:8080"]
+            );
+            let limits = loaded.config.app_config().files;
+            assert_eq!(
+                (
+                    limits.max_file_bytes,
+                    limits.max_per_job_bytes,
+                    limits.max_files_per_job
+                ),
+                (4096, 8192, 50)
+            );
+            // without the section the defaults stand, and nothing is fetched
+            let none = load_file_only(&base(), &with("")).unwrap();
+            assert!(none.config.artifacts.is_none());
+            assert_eq!(
+                none.config.app_config().files,
+                orch_app::FileLimits::default()
             );
         }
 

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use orch_core::{AgentId, Classify, ErrorClass, ForkError, TransitionError};
-use orch_ports::{AgentError, RegistryError, StoreError};
+use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
 ///
@@ -29,6 +29,9 @@ pub enum AppError {
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// The artifact store failed (ADR 0032). A file that is not there is [`AppError::NotFound`].
+    #[error(transparent)]
+    Artifacts(#[from] ArtifactError),
     /// An input was not valid in the thread's state.
     #[error(transparent)]
     Transition(TransitionError),
@@ -101,6 +104,7 @@ impl Classify for AppError {
             AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
+            AppError::Artifacts(e) => e.class(),
             AppError::Transition(e) => e.class(),
             AppError::Upstream { source, .. } => source.class(),
             AppError::RegistryUnavailable { source } => source.class(),
@@ -119,6 +123,7 @@ impl Classify for AppError {
             | AppError::Finished
             | AppError::Refused(_)
             | AppError::Fork(_)
+            | AppError::Artifacts(_)
             | AppError::Transition(_)
             | AppError::Contended
             | AppError::Internal { .. } => None,
@@ -147,6 +152,8 @@ mod tests {
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
+            AppError::Artifacts(ArtifactError::unavailable("down")),
+            AppError::Artifacts(ArtifactError::Corrupt("meta".into())),
             AppError::Transition(TransitionError::InvalidInState {
                 state: ThreadState::Queued,
                 input: "cancel",
@@ -166,6 +173,7 @@ mod tests {
                 AppError::Finished | AppError::Refused(_) => ErrorClass::Rejected,
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
+                AppError::Artifacts(inner) => inner.class(),
                 AppError::Transition(inner) => inner.class(),
                 AppError::Upstream { source, .. } => source.class(),
                 AppError::RegistryUnavailable { source } => source.class(),

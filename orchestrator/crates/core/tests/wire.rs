@@ -71,6 +71,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             mime_type: None,
             uri: Some("https://x".into()),
             text: None,
+            file: None,
         }),
         EventBody::ThreadState(ThreadStateData {
             state: ThreadState::Cancelled,
@@ -399,12 +400,91 @@ fn artifact_uses_camel_case_mime_type() {
             mime_type: Some("text/x-diff".into()),
             uri: None,
             text: Some("diff".into()),
+            file: None,
         }),
         Actor::system(),
     );
     assert_eq!(
         serde_json::to_value(&e).unwrap()["data"],
         json!({"name": "patch", "mimeType": "text/x-diff", "text": "diff"})
+    );
+}
+
+#[test]
+fn a_file_artifact_holds_a_reference_and_old_events_still_read() {
+    let sha = "0f".repeat(32);
+    let e = event(
+        EventBody::Artifact(ArtifactData {
+            name: "chart".into(),
+            mime_type: Some("image/png".into()),
+            uri: None,
+            text: None,
+            file: Some(FileRef {
+                sha256: sha.clone(),
+                size: 12,
+                filename: Some("chart.png".into()),
+            }),
+        }),
+        Actor::system(),
+    );
+    let wire = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        wire["data"],
+        json!({
+            "name": "chart", "mimeType": "image/png",
+            "file": {"sha256": sha, "size": 12, "filename": "chart.png"}
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), e);
+    // an artifact logged before files existed has no `file`
+    let mut old = serde_json::to_value(event(
+        EventBody::Artifact(ArtifactData {
+            name: "pr".into(),
+            mime_type: None,
+            uri: Some("https://x".into()),
+            text: None,
+            file: None,
+        }),
+        Actor::system(),
+    ))
+    .unwrap();
+    assert!(old["data"].get("file").is_none());
+    old["data"] = json!({"name": "pr", "uri": "https://x"});
+    let EventBody::Artifact(read) = serde_json::from_value::<Event>(old).unwrap().body else {
+        panic!("not an artifact")
+    };
+    assert!(read.file.is_none());
+}
+
+#[test]
+fn only_the_preview_types_have_a_preview_and_a_file_has_an_href() {
+    for (media_type, preview) in [
+        ("image/png", Some(Preview::Image)),
+        ("image/jpeg", Some(Preview::Image)),
+        ("image/gif", Some(Preview::Image)),
+        ("image/webp", Some(Preview::Image)),
+        ("image/svg+xml", Some(Preview::Image)),
+        ("text/plain", Some(Preview::Text)),
+        ("application/json", Some(Preview::Text)),
+        ("text/html", None),
+        ("image/bmp", None),
+        ("application/pdf", None),
+        ("application/octet-stream", None),
+        ("IMAGE/PNG", None),
+        ("", None),
+    ] {
+        assert_eq!(Preview::of(media_type), preview, "{media_type}");
+    }
+    assert_eq!(Preview::Image.as_str(), "image");
+    assert_eq!(Preview::Text.as_str(), "text");
+    let file = FileRef {
+        sha256: "ab".repeat(32),
+        size: 1,
+        filename: None,
+    };
+    assert_eq!(
+        file.href(tid()),
+        format!("/api/threads/{}/artifacts/{}", tid(), "ab".repeat(32))
     );
 }
 

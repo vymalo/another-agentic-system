@@ -125,7 +125,7 @@ value does for a check elsewhere); the notes about variables that override the f
 
 ## Every key
 
-**Now** is built (S9; the `artifacts` keys by S10, the `auth` keys by S14, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
+**Now** is built (S9; the `artifacts` keys by S10 and S11, the `auth` keys by S14, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
 (and flag) of today; during the transition release it still works and wins over the file, with a warning naming the
 variable and the key ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md#migration)). A
 secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` set means
@@ -235,8 +235,9 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `artifacts.s3.prefix` | `a-z A-Z 0-9 . _ - /`, no `..`, at most 128 characters; keys go under it, so one bucket serves several deployments | — | now |
 | `artifacts.s3.accessKeyId`, `artifacts.s3.secretAccessKey` | **secrets**, required with `store: s3`. Static credentials only: this build does not read `AWS_*` variables or an instance profile | — | now |
 | `artifacts.s3.timeoutSecs` | 1 to 3600, `60` (one request) | — | now |
-| `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest of S11: a larger file is not kept | — | now (read: S11) |
-| `artifacts.maxPerJobBytes`, `artifacts.fetchHosts` | plan 10 §3.3: the bytes a job may keep (100 MiB) and the hosts a `url` part may be fetched from (none) | — | reserved: S11, ADR 0032 |
+| `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest (ADR 0032, S11): a larger file is not kept; the agent's artifact is logged without it, with an error "the file is too large to keep" | — | now |
+| `artifacts.maxPerJobBytes` | 1 to 4294967296 (4 GiB), `104857600` (100 MiB). The bytes of files one job (one run of an agent) keeps; a job also keeps at most 50 files (not a key). A file over either is refused like one over `maxFileBytes` | — | now (S11) |
+| `artifacts.fetchHosts` | list of hosts (`files.example.com`, `10.0.0.5:8080`: a host name or address with or without a port, which without one is the scheme's default, 80 or 443; no scheme, path, wildcard or credentials), default none. A `url` part of an agent's artifact on one of them is fetched by the worker and kept like a `raw` part; any other `url` stays a link. The list is the SSRF control: a host on it is trusted; the fetch is `http(s)` only, follows no redirect, sends no credential and stops at `maxFileBytes` | — | now (S11) |
 
 ### Authentication
 
