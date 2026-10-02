@@ -5,9 +5,10 @@
   **Amends the wording of invariant 3 and of [ADR 0001](0001-rust-state-machine-on-postgres.md)** (see decision 1) and
   extends [ADR 0013](0013-a2ui-generative-ui.md) (the catalog's `Image`, decision 11). **Built (2026-10-02, PR S10):**
   the port `ArtifactStore`, its conformance testkit, the directory store and the S3 store, the `artifacts` keys of the
-  configuration file ([`docs/api/config.md`](../api/config.md)) and the binary's wiring. **Not built:** the ingest (S11),
-  the serving route and the SVG sanitizer (S12), `share_file` in adam-rs (adam A4, its ADR 0012), the projection and the
-  web.
+  configuration file ([`docs/api/config.md`](../api/config.md)) and the binary's wiring. **Built (2026-10-02, PR S11):**
+  the ingest, the serving route, the SVG sanitizer, the projection and the contract: see the status note below.
+  **Not built:** `share_file` in adam-rs (adam A4, its ADR 0012, merged on the adam side), the web (S12: the file card, the
+  preview, the catalog's `Image`).
 
 ## Context
 
@@ -178,3 +179,46 @@ stateDiagram-v2
 - **A file size limit in the port.** A store would enforce what the worker has already decided, and a limit is policy
   (a configuration key), not a property of storage.
 - **Object store as a runtime plugin.** Excluded by ADR 0009: build-time features and configuration.
+
+## Status note (2026-10-02, PR S11): what was built, and where it differs
+
+Decisions 5 to 10 are built as written. The details the text left open, and the places the code differs from it:
+
+- **The reference is `file {sha256, size, filename?}`.** Decision 6 wrote `{id, sha256, size, filename}`; the id would
+  have been the hash again, and two names for one value invite a disagreement, so the log holds `sha256` only
+  (`orch_core::FileRef`). `ArtifactData.file` is additive: an artifact logged before it reads as it did.
+- **Three updates for the core, not one** (`orch_core::AgentUpdate`): `File {name, media_type, filename, bytes}` is what an
+  adapter reports; the dispatcher replaces it with `FileKept {name, mime_type, file}` or `FileRefused {name, mime_type,
+  reason}` (`FileRefusal`: too large, job limit, not kept) before the core sees anything. A core that is handed a `File`
+  anyway logs it as not kept: the bytes cannot reach the log by any path. A refusal is one input, so the artifact entry
+  without a file and the `error` are one commit.
+- **The `url` fetch is the A2A adapter's, not the dispatcher's** (`orch-agent-a2a`, `A2aConfig.fetch_files`): it is the I/O
+  side that already holds an HTTP client, and it keeps the mapper pure. There was **no SSRF helper to reuse**: agent card
+  URLs come from the operator's own configuration and are not checked. The rules of the fetch are the allow-list
+  (`artifacts.fetchHosts`: a host, which without a port means the scheme's default port), `http` or `https` with no
+  credentials in the URL, **no redirect followed**, nothing of the agent or the thread sent, the body read in pieces and
+  stopped at `maxFileBytes`, a 30 second limit. A host on the list is trusted; the list is the control. A fetch that fails
+  is "the file could not be kept" (or "too large"), not a silent loss. An artifact with text as well as a link stays a link.
+- **The job's limits are counted per delegation** (the worker's processing of one outbox row), not durably: a worker that
+  dies and is replaced counts again from nothing, and its replays put the same keys, which is idempotent, so the bound can be
+  exceeded at most once per crash. Each content counts once (the same bytes again are one object). The 50 files are not a
+  configuration key. The limits live in `AppConfig.files` (`FileLimits`), beside the other tunables the application reads.
+- **The sniff** (`sniff`, `orch-app`): for `image/*` the declared type must agree with the magic bytes of png, jpeg, gif, webp,
+  bmp, ico, tiff, avif or svg (an SVG by its content: an `<svg` element after a declaration, comments and a DOCTYPE), else
+  `application/octet-stream`; a declared type that is not an image is kept as declared (it is an attachment unless it is a
+  preview type, and always `nosniff`); a missing or generic one takes the bytes' type, a PDF, or a few plain extensions.
+  The file name is reduced to one name (after the last separator, no control or direction character, 255 bytes).
+- **Serving** (`orch-api`): `App::open_artifact` is the single access check (the thread's owner; **the seam for S15**), and a
+  miss of any kind is the same 404, including a deployment with no store. An inline SVG is read whole, up to 2 MiB, and cleaned;
+  a larger one, or one that cannot be cleaned, is sent as an attachment instead, never inline as it is. A store that fails midway
+  ends the response in an error. `ETag: "<sha256>"` is added to the headers of decision 8.
+- **Projection**: `vymalo.artifact{kind:"file", href, sha256, size, filename?, preview}`, with `preview` `"image"`, `"text"` or
+  `null` from `orch_core::Preview::of` (the one list the API and the projection share). `kind: "file"` was already the generic
+  kind of an artifact that is nothing else, so a client tells a kept file by `href`. The golden is `file.events.json` and
+  `agui/file.agui.json`.
+- **`orch-svg-clean`** is an allow-list of elements and attributes (it rewrites, it does not scan): see its README for the
+  lists and the corpus of 48 hostile payloads. Not done: a check in a real browser that an SVG in an `<img>` runs nothing
+  (decision 9's *unverified* stands).
+- **Not built here:** the `dev/artifact-e2e.sh` scenario (S13, with the adam pin); the dev stack keeps files in the named
+  volume `orchestrator-artifacts`, which every role mounts.
+
