@@ -229,6 +229,7 @@ of the web is a 401 until you reload the page, which signs you in again (the web
 | `admin@example.com` | `admin` | every agent; **reads** every thread and file (`GET /api/threads?owner=*`, `?owner=<e-mail>`), **changes only their own** (a message, a rename or a cancel on another's thread is a 403 `read_only`) |
 | `chat-only@example.com` | `chat-only` | the agent `chat` and no other (`GET /api/agents` lists only it; the coder and the researcher answer 403) |
 | `guest@example.com` | none | the default role, `user` (`auth.defaultRole`) |
+| `someone-else@example.com` | `user` | another person, for `artifact-e2e.sh`'s 404 check |
 
 **For a script.** The API wants `Authorization: Bearer <token>`. [`auth-header.sh`](auth-header.sh) asks the issuer for one
 (`client_credentials` with `user=<e-mail>`, an extension of the mock for scripts) and prints the header line; every scenario script takes
@@ -1374,10 +1375,8 @@ and preview, and the log's entry holds no bytes; the surface's `Image`s are the 
 and an immutable private cache, and the PNG's and the JSON's SHA-256 is the hash; the SVG inline has no `<script`, no `on*` attribute and none of the coder's markers (and so is not
 the file's hash) while `?download=1` is the original, an attachment; another user, another thread of the same person, a wrong hash, a hash in capitals and a short one are each a 404, and a bad `download` a 400.
 
-Another user's request cannot go through the edge, which replaces the identity header, so the script makes it from inside the compose
-network: `docker compose exec edge wget --header "X-Auth-Request-Email: ..." http://orchestrator:8080/...`, straight to the orchestrator,
-after a control with the owner's header on the same path (so a 404 means the file is not the other user's, not that the path is wrong). Without a running `edge`
-container visible to `docker compose` that one check is skipped with a line, and the rest runs. CI also runs the script on the `split` stack, where a worker keeps the file and
+Another user's request goes through the edge like the owner's, with a token of the mock issuer for another user of [`mock-oidc/users.json`](mock-oidc/users.json)
+(`someone-else@example.com`), after a control with the owner's token on the same path (so a 404 means the file is not the other user's, not that the path is wrong). CI also runs the script on the `split` stack, where a worker keeps the file and
 the control plane serves it.
 
 ```sh

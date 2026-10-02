@@ -274,8 +274,9 @@ orchestrator and the `split` workers all mount). S13 adds the scenario that driv
   three files it makes) is mounted into `mock-openai` under `/home/wiremock/mappings/coder-share`, next to the vendored mappings, now under
   `/home/wiremock/mappings/vendored`: `dev/coder/` stays byte for byte adam-rs's. `dev/check-agent-mocks.sh` plays every turn and its twin and compares what the
   script writes, decodes and names with the files.
-- **Another user's request is made from inside the compose network** (`docker compose exec edge wget`, straight to the orchestrator with another
-  identity header), because the edge replaces that header; the owner's request the same way is the control. CI also runs the scenario on the `split`
+- **Another user's request is made through the edge with another user's token** (*amended by S16, ADR 0033*: until then it was
+  `docker compose exec edge wget`, straight to the orchestrator with another identity header, because the edge replaced that header; in `jwt` mode
+  the header is no identity); the owner's request the same way is the control. CI also runs the scenario on the `split`
   stack, so a file a worker keeps is served by the control plane, which proves they see the same directory.
 - **Not done:** a stack profile with an S3-compatible server (the plan's S13 line names one; the S3 store has its own container tests, S10), and a check in a
   real browser that an SVG in an `<img>` runs nothing (decision 9's *unverified* stands).
