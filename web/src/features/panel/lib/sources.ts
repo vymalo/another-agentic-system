@@ -10,6 +10,7 @@ import {
 } from "@/features/chat/lib/agui/vymalo";
 import { safeLinkHref } from "@/features/chat/lib/artifact";
 import { conclusionLabel, providerLabel } from "@/features/chat/lib/ci";
+import { downloadHref, fileTitle, formatSize, keptFileOf } from "@/features/chat/lib/files";
 import { truncate } from "@/features/chat/lib/findings";
 import { drawsPart, pullRequestOf, shortRepository } from "@/features/chat/lib/steps";
 
@@ -38,8 +39,13 @@ export type Source = {
   title: string;
   /** A muted second part after the kind: a host, a provider, a type. */
   detail?: string;
-  /** Only an absolute http(s) URL; absent for what cannot be opened (a branch). */
+  /**
+   * Only an absolute http(s) URL, or the API's route of a file the store kept; absent for what
+   * cannot be opened (a branch).
+   */
   href?: string;
+  /** A kept file: the same file as an attachment (`?download=1`). */
+  downloadHref?: string;
   /** CI: how the report counts. */
   passed?: boolean;
   /** Every turn that cited it, in order. */
@@ -196,6 +202,18 @@ function fromArtifact(data: unknown): Candidate | null {
     };
   }
   if (artifact.kind === "file") {
+    // a file the store kept: listed by its hash, opened and downloaded from the API's route
+    const kept = keptFileOf(artifact);
+    if (kept) {
+      return {
+        key: `file:${kept.sha256}`,
+        kind: "file",
+        title: truncate(fileTitle(kept), MAX_TITLE).text,
+        detail: [formatSize(kept.size), kept.mimeType].filter(Boolean).join(" · "),
+        href: kept.href,
+        downloadHref: downloadHref(kept),
+      };
+    }
     const href = safeLinkHref(artifact.uri);
     if (!href) return null;
     return {

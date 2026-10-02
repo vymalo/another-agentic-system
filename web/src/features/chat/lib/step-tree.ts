@@ -23,6 +23,7 @@ import {
   type StepState,
 } from "@/features/chat/lib/agui/vymalo";
 import { conclusionLabel } from "./ci";
+import { fileTitle } from "./files";
 import { truncate } from "./findings";
 import { toolName } from "./step-label";
 import { checkLabel, commandOf, drawsPart, drawsStep, pullRequestOf, reworkLabel } from "./steps";
@@ -200,7 +201,7 @@ function artifactLabel(artifact: ArtifactContent): string {
           ? `Opened pull request #${pr.number}`
           : "Opened a pull request";
       }
-      return `Shared ${artifact.name}`;
+      return `Shared ${fileTitle(artifact)}`;
     }
   }
 }

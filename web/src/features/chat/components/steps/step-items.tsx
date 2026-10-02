@@ -18,6 +18,7 @@ import type {
   ReworkContent,
   StatusContent,
 } from "@/features/chat/lib/agui/vymalo";
+import { fileTitle } from "@/features/chat/lib/files";
 import { pluralFindings, shortCommit } from "@/features/chat/lib/findings";
 import {
   checksPayload,
@@ -152,7 +153,9 @@ export function ArtifactStep({ data, live }: { data: ArtifactContent } & Live) {
           />
         );
       }
-      return <StepRow state={doneOr(live)} icon={FileTextIcon} label={`Shared ${data.name}`} />;
+      return (
+        <StepRow state={doneOr(live)} icon={FileTextIcon} label={`Shared ${fileTitle(data)}`} />
+      );
     }
     default:
       return null;

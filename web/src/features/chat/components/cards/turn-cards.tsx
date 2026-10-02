@@ -10,9 +10,11 @@ import {
   parseArtifact,
 } from "@/features/chat/lib/agui/vymalo";
 import { safeLinkHref } from "@/features/chat/lib/artifact";
+import { keptFileOf } from "@/features/chat/lib/files";
 import { truncate } from "@/features/chat/lib/findings";
 import { type PullRequestView, turnCards } from "@/features/chat/lib/steps";
 import { BranchChip } from "../steps/step-items";
+import { KeptFileCard } from "./kept-file-card";
 
 /** Lines of a file's text shown before "Show all". */
 const FILE_LINES = 8;
@@ -63,7 +65,10 @@ export function PullRequestCard({ pr }: { pr: PullRequestView }) {
   );
 }
 
-/** A file the agent shared: its name and type, its text (folded when long) and its link. */
+/**
+ * A file the agent shared that the store did not keep: its name and type, its text (folded when
+ * long) and its link. A file the store kept is `KeptFileCard`.
+ */
 export function FileCard({ data }: { data: ArtifactContent }) {
   const [open, setOpen] = useState(false);
   const href = safeLinkHref(data.uri);
@@ -144,15 +149,15 @@ export function TurnCards() {
   if (cards.length === 0) return null;
   return (
     <div data-slot="turn-cards" className="flex flex-col gap-2">
-      {cards.map((card, n) =>
-        "pr" in card ? (
+      {cards.map((card, n) => {
+        if ("pr" in card) {
           // biome-ignore lint/suspicious/noArrayIndexKey: the cards only grow; the order is the key
-          <PullRequestCard key={n} pr={card.pr} />
-        ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: the cards only grow; the order is the key
-          <FileCard key={n} data={card.file} />
-        ),
-      )}
+          return <PullRequestCard key={n} pr={card.pr} />;
+        }
+        const kept = keptFileOf(card.file);
+        // biome-ignore lint/suspicious/noArrayIndexKey: the cards only grow; the order is the key
+        return kept ? <KeptFileCard key={n} file={kept} /> : <FileCard key={n} data={card.file} />;
+      })}
     </div>
   );
 }

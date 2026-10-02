@@ -2,6 +2,7 @@ import {
   ArrowUpRightIcon,
   CircleCheckIcon,
   CircleXIcon,
+  DownloadIcon,
   FileTextIcon,
   GitBranchIcon,
   GitPullRequestIcon,
@@ -72,7 +73,18 @@ function SourceRow({
           {source.detail ? ` · ${source.detail}` : ""}
         </p>
       </div>
-      <div className="flex shrink-0 flex-wrap justify-end gap-1">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+        {source.downloadHref ? (
+          <a
+            data-slot="source-download"
+            href={source.downloadHref}
+            download
+            aria-label={`Download ${source.title}`}
+            className="inline-flex size-7 items-center justify-center rounded-full border text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+          >
+            <DownloadIcon aria-hidden="true" className="size-3.5" />
+          </a>
+        ) : null}
         {shownTurns.map((turn) => (
           <button
             key={turn.id}
