@@ -52,6 +52,15 @@ async function waitForState(id: string, state: Thread["state"]) {
   throw new Error(`thread ${id} never reached ${state}`);
 }
 
+/** Waits until the thread's log has `n` events (a job that follows another's end has no state of its own to wait for). */
+async function waitForSeq(id: string, n: number) {
+  for (let i = 0; i < 1000; i++) {
+    if ((await thread(id)).lastSeq >= n) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`thread ${id} never reached event ${n}`);
+}
+
 async function writeDescription(id: string, description: string): Promise<Thread> {
   const res = await fetch(`${base}/api/threads/${id}`, {
     method: "PATCH",
@@ -272,6 +281,49 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
         messages: [{ id: "evt-5", role: "user", content: "echo never mind, do this" }],
       });
       expect(second.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
+    // a message sent while the agent works (ADR 0036): `steer` reaches the agent after its turn
+    // (the mock does not play `steer/v1`), so the first job finishes and the message is job 2
+    steer: async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "gate refactor the parser" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "working");
+      const second = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-2",
+        messages: [{ id: "msg-2", role: "user", content: "echo you were wrong since line 1" }],
+        forwardedProps: { "vymalo.send": "steer" },
+      });
+      expect(second.status).toBe(200);
+      expect((await fetch(`${base}/__mock/release?thread=${id}`, { method: "POST" })).status).toBe(
+        204,
+      );
+      await waitForSeq(id, 11);
+      return { agent: "reviewer", last: "done" };
+    },
+    // `interrupt` cancels the task and starts the next job with the message; the abandoned job is
+    // never `done` or `cancelled`
+    "stop-and-send": async (id) => {
+      const first = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "slow refactor the parser" }],
+      });
+      expect(first.status).toBe(200);
+      await waitForState(id, "working");
+      const second = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-2",
+        messages: [{ id: "msg-2", role: "user", content: "echo do X instead" }],
+        forwardedProps: { "vymalo.send": "interrupt" },
+      });
+      expect(second.status).toBe(200);
+      await waitForSeq(id, 9);
       return { agent: "reviewer", last: "done" };
     },
     // the UI's catalog (ADR 0023): the first run carries version 1, the next job version 2, the

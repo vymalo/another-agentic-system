@@ -1,0 +1,125 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "slow refactor the parser"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "delivery": "interrupt",
+      "messageId": "msg-2",
+      "runId": "run-2",
+      "text": "echo do X instead"
+    },
+    "kind": "user_message",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "detail": "canceled",
+      "status": "canceled"
+    },
+    "kind": "agent_status",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "job": 2
+    },
+    "kind": "job_started",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "name": "result",
+      "text": "echo: echo do X instead",
+      "uri": "https://github.com/acme/demo/pull/1"
+    },
+    "kind": "artifact",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  }
+]

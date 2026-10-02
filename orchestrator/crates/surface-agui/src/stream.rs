@@ -298,6 +298,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_message_that_ended_the_open_run_starts_the_response_at_its_own_run() {
+        // ADR 0036: the message of this request landed inside a run that was open (seq 1 and 2);
+        // that run is finished by it, and the response is the run the message opened, from its
+        // `RUN_STARTED`: nothing of the run it ended, which would end the stream at once.
+        let folded = [user(1, "go", "r-first"), status(2, AgentStatus::Working)];
+        let rest = vec![
+            user(3, "hurry", "r-mine"),
+            status(4, AgentStatus::Completed),
+            state(5, ThreadState::Done),
+        ];
+        let got = written(feed(&folded, rest, Start::Run("r-mine".into()))).await;
+        let kinds: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kinds[0], "RUN_STARTED", "{kinds:?}");
+        assert_eq!(
+            kinds.iter().filter(|k| **k == "RUN_STARTED").count(),
+            1,
+            "{kinds:?}"
+        );
+        assert_eq!(kinds.last(), Some(&"RUN_FINISHED"));
+        assert_eq!(got.last().unwrap().1.as_deref(), Some("5"));
+        // the same read as a position in the log would have ended with the run it finished
+        let by_seq = written(feed(
+            &folded,
+            vec![user(3, "hurry", "r-mine")],
+            Start::Seq(3),
+        ))
+        .await;
+        assert_eq!(by_seq.last().unwrap().0, "RUN_FINISHED");
+    }
+
+    #[tokio::test]
     async fn frames_before_the_start_are_folded_but_not_written() {
         let rest = vec![
             user(1, "echo", "r1"),

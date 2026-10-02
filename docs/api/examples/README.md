@@ -34,6 +34,8 @@ the log itself, which the AG-UI streams below project.)
 | `tools-relay.events.json` | `tool websearch__echo {"text":"rust async"}` on a thread **created with a server attached**, on the fake agent with `thread-tools/v1` in its card and a grant minted by the adapter, with the relay in front of a real MCP server that wants a bearer ([ADR 0024](../../decisions/0024-mcp-tools-attached-per-conversation.md)): `tools_attached` after the `user_message`, then the agent's call of the relayed tool as **one step** (`agent_step` `start` `running` with the `input`, `end` `completed` with the `output`, `icon: mcp-server:websearch`, `label: Web search · echo`, attributed to the agent; the id is `tool-<the agent's call id>`, whose task id is `T` in the file), the artifact with the tool's answer, `completed`. The fake waits half a second before it calls, so the transcript is the same on every run. No credential is in it (the test searches for the bearer) | `done` |
 | `fork.events.json` | the log of a **fork** (ADR 0029): `echo one` finished, `echo two` after it, then the second message edited into a branch (`POST /api/threads/{id}/fork {replace, text}`). The fork's log is the first turn copied (events 1-5, as the parent has them), `thread_forked` (`kind: edit`, `from: {threadId, seq: 5}`, the parent's title), the replacing message, `job_started` 2 and the agent's second turn | `done`, job 2 |
 | `fork-blocked.events.json` | a thread that waits for an answer (`ask about branches`), forked as it is (`{after}`: the copy ends with the question and `thread_state: blocked`, `thread_forked` with `kind: fork`), then a message on the fork (`echo thanks`), which starts job 2: the question is not the fork's to answer | `done`, job 2 |
+| `steer.events.json` | `gate refactor the parser`, then a message **while the agent works**, posted through the AG-UI run route with `forwardedProps["vymalo.send"]: "steer"` ([ADR 0036](../../decisions/0036-sending-while-an-agent-works.md)): `user_message` with `delivery: steer` and the consumer's message and run ids. The dispatcher does not steer into a running task yet (`steer/v1`), so the first task finishes (`thread_state: done`) and the message reaches the agent after it, as the next job (`job_started` 2) | `done`, job 2 |
+| `stop-and-send.events.json` | `slow refactor the parser`, then **Stop & send** (`vymalo.send: "interrupt"`): `user_message` with `delivery: interrupt`, the running task is cancelled (`agent_status: canceled`, **no** `thread_state`: the abandoned job is not judged), and the message starts job 2 (`job_started`) | `done`, job 2 |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
@@ -108,6 +110,16 @@ its own** (`run-<seq of thread_forked>`: `ACTIVITY_SNAPSHOT` `vymalo.fork` with 
 snapshot after the marker does. The copy's snapshots, before the marker, do not. The reference client's `expected/fork.json` shows the
 last state it holds: three runs (the parent's, the marker's, the fork's), the marker among the messages as an activity.
 
+The `steer.agui.json` and `stop-and-send.agui.json` goldens are a message sent while the agent works a viewer reads
+([`../agui.md`](../agui.md#sending-while-an-agent-works), ADR 0036): the message **ends the open run and opens its own** (`run-1`,
+then the message's `run-2`), the agent's invocation is suspended with the first (`SUBAGENT_FINISHED` `suspended`, no interrupt ids) and
+re-opens under the same id in the second, and the user message carries `vymalo.delivery` (`steer`, `interrupt`) in its metadata. In
+`steer` the second run ends with the first job and the message's job is a run of its own (`run-7`, producer-initiated, as for any
+redelivered message); in `stop-and-send` the cancelled task says `canceled` in the run of the message, the `vymalo.job` activity and a
+`STATE_SNAPSHOT` with `jobNumber: 2` mark the boundary, and the next job ends the run (`done` is shown once, for the job that was judged).
+`run-steer.agui.json` and `run-stop-and-send.agui.json` are the two **responses** the consumer reads, in order: the first run's, which ends
+at the message, and the message's.
+
 The `steps.agui.json` and `steps-ask.agui.json` goldens are the nested steps a viewer reads
 ([`../agui.md`](../agui.md#nested-steps), ADR 0025): a sub-agent step is a **subagent** of the run
 (`sub-step-<seq>`, started in the agent's invocation) and every step is a `vymalo.step` activity
@@ -161,6 +173,8 @@ responses in order, one run each. The consumer's thread id is `<thread-id>`; its
 | `run-verify-verifier-red.agui.json` | the same, against a verifier that never passes | `RUN_ERROR` `checks_failed` |
 | `run-ci.agui.json` | `verify-ci fix the login` with `forwardedProps["vymalo.gate"] = {"require": ["ci"]}`; the test reports CI through the inbox while the run is open: **one** response for two attempts | success, `job.attempt` 2 |
 | `run-fork.agui.json` | `echo one` on a thread, a fork of it (`POST /api/threads/{id}/fork {after}`), then one POST on the **fork** with the messages the screen holds (`msg-1`, the copy's) and a new one (`msg-2`, `echo two`): accepted, one response, job 2, every snapshot with `forkedFrom` | success |
+| `run-steer.agui.json` | `gate refactor the parser`, then, while the agent works, a second POST with `msg-2` and `forwardedProps["vymalo.send"] = "steer"` (ADR 0036): **two** responses, the first run's (it ends at the message with `SUBAGENT_FINISHED` suspended and `RUN_FINISHED` success) and the message's (`run-2`, which ends with the first job) | success, success |
+| `run-stop-and-send.agui.json` | `slow refactor the parser`, then `msg-2` with `vymalo.send = "interrupt"`: the first run's response ends at the message; the second shows the cancelled task, the job boundary and the whole of job 2 | success, success |
 
 - **Producer:** `orchestrator/crates/e2e/tests/agui_run.rs` (`run_responses_match_docs_api_examples`);
   `UPDATE_GOLDEN=1 cargo test -p orch-e2e --test agui_run` regenerates them; review the diff.

@@ -244,6 +244,81 @@ async fn from_every_resume_point_the_rest_and_nothing_else(backend: Backend) {
     }
 }
 
+/// A message sent while the agent works ends the run it arrives in and opens its own (ADR 0036):
+/// a client that reconnects with `Last-Event-ID`, from any resume point and on either replica, gets
+/// exactly the rest, whether the message was a steer or a stop.
+async fn from_every_resume_point_of_a_thread_with_a_mid_run_message_the_rest_and_nothing_else(
+    backend: Backend,
+) {
+    let world = World::start(backend).await;
+    let a = world.instance_with("orch-a", false).await;
+    let b = world.instance("orch-b").await;
+    let (chat_a, chat_b) = (world.chat(&a), world.chat(&b));
+    for (n, (first, how, text)) in [
+        ("gate hold", "steer", "echo hurry"),
+        ("slow work", "interrupt", "echo do X instead"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let thread = thread_id(30 + u32::try_from(n).unwrap());
+        let open = chat_b
+            .agui_run(
+                "plain",
+                &input(&thread, "run-1", &[("m1", first)], json!({})),
+            )
+            .await;
+        chat_b.wait_state(&thread, "working").await;
+        let second = chat_b
+            .agui_run(
+                "plain",
+                &input(
+                    &thread,
+                    "run-2",
+                    &[("m1", first), ("m2", text)],
+                    json!({"forwardedProps": {"vymalo.send": how}}),
+                ),
+            )
+            .await;
+        whole(open).await;
+        if how == "steer" {
+            world.plain.release_gate();
+        }
+        whole(second).await;
+        // the job the message started, through to its end
+        eventually("job 2 to be done", || async {
+            let events = chat_b.events(&thread).await;
+            let at = events.iter().position(|e| e["kind"] == "job_started")?;
+            events[at..]
+                .iter()
+                .any(|e| e["kind"] == "thread_state" && e["data"]["state"] == "done")
+                .then_some(())
+        })
+        .await;
+
+        let full = whole(chat_a.agui_connect(&thread, None, true).await).await;
+        let runs: Vec<&str> = full
+            .iter()
+            .filter(|f| kind(f) == "RUN_STARTED")
+            .map(|f| f.event["runId"].as_str().unwrap())
+            .collect();
+        assert_eq!(runs[..2], ["run-1", "run-2"], "{how}: {runs:?}");
+        for (at, frame) in full.iter().enumerate() {
+            let Some(cursor) = frame.id else { continue };
+            let chat = if cursor % 2 == 0 { &chat_a } else { &chat_b };
+            let got = whole(chat.agui_connect(&thread, Some(cursor), true).await).await;
+            let want = &full[at + 1..];
+            let skipped = got.len().checked_sub(want.len()).unwrap();
+            assert!(
+                skipped <= 3,
+                "{how}, cursor {cursor}: preamble of {skipped}"
+            );
+            assert_eq!(&got[skipped..], want, "{how}, cursor {cursor}");
+            assert!(got[..skipped].iter().all(|f| f.id.is_none()));
+        }
+    }
+}
+
 /// Another owner's thread, a thread nobody has, and no identity: refused as problems before the
 /// stream, the same on every replica.
 async fn a_thread_that_is_not_yours_is_a_404_before_the_stream(backend: Backend) {
@@ -291,6 +366,7 @@ backends!(
     a_client_reconnects_to_another_replica_after_its_replica_dies,
     viewers_on_several_replicas_each_get_the_whole_stream,
     from_every_resume_point_the_rest_and_nothing_else,
+    from_every_resume_point_of_a_thread_with_a_mid_run_message_the_rest_and_nothing_else,
     a_thread_that_is_not_yours_is_a_404_before_the_stream,
 );
 

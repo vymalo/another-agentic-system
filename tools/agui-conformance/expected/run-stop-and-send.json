@@ -1,0 +1,108 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-2",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "suspended:"
+    },
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success",
+      "result": {
+        "status": "canceled"
+      }
+    },
+    {
+      "id": "sub-6",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "detail": "canceled",
+        "status": "canceled"
+      }
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "<timestamp>",
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-6",
+      "role": "activity",
+      "subagentRunId": "sub-6",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "subagentRunId": "sub-6",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "<timestamp>",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo do X instead",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-6",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "<timestamp>",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "slow refactor the parser"
+    }
+  },
+  "pendingInterrupts": []
+}

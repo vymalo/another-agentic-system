@@ -1114,6 +1114,22 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       },
     });
     expect(second.status).toBe(409);
+    // and so is one that says how it is delivered: only a message is sent while the agent works
+    // (ADR 0036; the orchestrator's `finish` answers RunInProgress)
+    for (const send of ["steer", "interrupt"]) {
+      const sent = await postRun(base, "reviewer", {
+        threadId,
+        runId: newId(),
+        messages: [],
+        forwardedProps: {
+          "vymalo.send": send,
+          a2uiAction: {
+            userAction: { name: "go", surfaceId: "s1", sourceComponentId: "go", context: {} },
+          },
+        },
+      });
+      expect(sent.status, send).toBe(409);
+    }
     await first.text();
   });
 
@@ -2293,5 +2309,113 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
       await new Promise((r) => setTimeout(r, 10));
     }
     expect((await run("reviewer", reviewed)).status).toBe(200);
+  });
+});
+
+describe("a message sent while the agent works (ADR 0036)", () => {
+  const release = (id: string) => post(`/__mock/release?thread=${id}`);
+  const lastSeq = async (id: string) =>
+    ((await (await fetch(`${base}/api/threads/${id}`)).json()) as Thread).lastSeq;
+  const untilSeq = async (id: string, n: number) => {
+    for (let i = 0; i < 400 && (await lastSeq(id)) < n; i++)
+      await new Promise((r) => setTimeout(r, 10));
+  };
+  /** A thread whose agent is held at a step, the response of its first run still open. */
+  async function working(text: string) {
+    const threadId = newId();
+    const first = await postRun(base, "reviewer", {
+      threadId,
+      runId: "run-1",
+      messages: [{ id: "m-1", role: "user", content: text }],
+    });
+    expect(first.status).toBe(200);
+    await waitForState(threadId, ["working"]);
+    return { threadId, first };
+  }
+  const messagesOf = (threadId: string, text: string, run = "run-2") => ({
+    threadId,
+    runId: run,
+    messages: [{ id: "m-2", role: "user" as const, content: text }],
+  });
+
+  it("serves a steer as a run of its own, and ends the run that was open at the message", async () => {
+    const { threadId, first } = await working("gate hold");
+    const second = await postRun(base, "reviewer", {
+      ...messagesOf(threadId, "echo hurry"),
+      forwardedProps: { "vymalo.send": "steer" },
+    });
+    await expectDocumented("/agui/agents/{agentId}", "post", second);
+    const open = await validated(await frames(first), "first response");
+    expect(open.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      runId: "run-1",
+      outcome: { type: "success" },
+    });
+    expect(
+      open.some(
+        (f) =>
+          f.event.type === "SUBAGENT_FINISHED" &&
+          (f.event.outcome as { type?: string } | undefined)?.type === "suspended",
+      ),
+    ).toBe(true);
+    await release(threadId);
+    const mine = await validated(await frames(second), "second response");
+    expect(mine[0]?.event).toMatchObject({ type: "RUN_STARTED", runId: "run-2" });
+    expect(types(mine).filter((t) => t === "TEXT_MESSAGE_START")).toEqual([]);
+    // the message reaches the agent after its turn: job 2, in a run of its own
+    expect(mine.at(-1)?.event).toMatchObject({ type: "RUN_FINISHED", runId: "run-2" });
+    await untilSeq(threadId, 11);
+    const all = await frames(await connect(base, threadId, { mode: "run" }));
+    const sent = all.find(
+      (f) => f.event.type === "TEXT_MESSAGE_START" && f.event.messageId === "m-2",
+    );
+    expect(sent?.event.metadata).toMatchObject({ "vymalo.delivery": "steer" });
+  });
+
+  it("serves an interrupt in the run of the message: the cancelled task, then the next job", async () => {
+    const { threadId, first } = await working("slow work");
+    const second = await postRun(base, "reviewer", {
+      ...messagesOf(threadId, "echo do X instead"),
+      forwardedProps: { "vymalo.send": "interrupt" },
+    });
+    const open = await frames(first);
+    expect(open.at(-1)?.event).toMatchObject({ type: "RUN_FINISHED", runId: "run-1" });
+    const mine = await validated(await frames(second), "second response");
+    expect(mine[0]?.event).toMatchObject({ type: "RUN_STARTED", runId: "run-2" });
+    expect(mine.at(-1)?.event).toMatchObject({
+      type: "RUN_FINISHED",
+      runId: "run-2",
+      outcome: { type: "success" },
+    });
+    const statuses = mine
+      .filter((f) => f.event.activityType === "vymalo.status")
+      .map((f) => (f.event.content as { status: string }).status);
+    expect(statuses).toEqual(["canceled", "working", "completed"]);
+    expect(
+      mine.some(
+        (f) => (f.event.snapshot as { thread?: { state?: string } })?.thread?.state === "cancelled",
+      ),
+    ).toBe(false);
+  });
+
+  it("is a 409 without the member, and a 400 with another value, before anything is written", async () => {
+    const { threadId, first } = await working("gate hold");
+    const plain = await postRun(base, "reviewer", messagesOf(threadId, "hurry"));
+    expect(plain.status).toBe(409);
+    const body = (await expectDocumented("/agui/agents/{agentId}", "post", plain)) as {
+      detail: string;
+    };
+    expect(body.detail).toContain("vymalo.send");
+    for (const bad of ["stop", true, ["steer"]]) {
+      const res = await postRun(base, "reviewer", {
+        ...messagesOf(threadId, "hurry"),
+        forwardedProps: { "vymalo.send": bad },
+      });
+      expect(res.status).toBe(400);
+      await expectDocumented("/agui/agents/{agentId}", "post", res);
+    }
+    expect(await lastSeq(threadId)).toBe(2);
+    await release(threadId);
+    await frames(first);
   });
 });

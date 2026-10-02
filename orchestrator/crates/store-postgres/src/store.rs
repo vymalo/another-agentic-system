@@ -318,6 +318,27 @@ async fn notify_thread(tx: &mut Tx, thread: ThreadId) -> Result<(), StoreError> 
         .map_err(store_err)
 }
 
+/// Finishes the thread's unsent `delegate` rows as `skipped`: those `pending`, and those
+/// `inflight` whose lease expired before `now`. Returns the count.
+async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    thread: ThreadId,
+    now: Timestamp,
+) -> Result<u32, StoreError> {
+    sqlx::query(
+        "UPDATE outbox SET status = 'skipped', lease_owner = NULL, lease_until = NULL, \
+         updated_at = $2 \
+         WHERE thread_id = $1 AND kind = 'delegate' AND sent_at IS NULL \
+           AND (status = 'pending' OR (status = 'inflight' AND lease_until < $2))",
+    )
+    .bind(thread.0)
+    .bind(to_db(now))
+    .execute(exec)
+    .await
+    .map(|r| u32::try_from(r.rows_affected()).unwrap_or(u32::MAX))
+    .map_err(store_err)
+}
+
 async fn notify_outbox<'e, E: sqlx::PgExecutor<'e>>(exec: E) -> Result<(), StoreError> {
     sqlx::query("SELECT pg_notify($1, '')")
         .bind(CHANNEL_OUTBOX)
@@ -853,6 +874,11 @@ impl ThreadStore for PgStore {
         .await
         .map_err(store_err)?;
         let record = thread_from_row(&row)?;
+        // The abandoned job's unsent delegations are finished before this commit's own rows
+        // exist, in the same transaction (ADR 0036).
+        if commit.skip_unsent_delegates {
+            skip_unsent_rows(&mut *tx, thread, commit.now).await?;
+        }
         insert_outbox(&mut tx, thread, commit.outbox, commit.now).await?;
         if let Some(update) = &commit.binding {
             update_binding(&mut tx, thread, update, commit.now).await?;
@@ -1114,18 +1140,7 @@ impl ThreadStore for PgStore {
         thread: ThreadId,
         now: Timestamp,
     ) -> Result<u32, StoreError> {
-        sqlx::query(
-            "UPDATE outbox SET status = 'skipped', lease_owner = NULL, lease_until = NULL, \
-             updated_at = $2 \
-             WHERE thread_id = $1 AND kind = 'delegate' AND sent_at IS NULL \
-               AND (status = 'pending' OR (status = 'inflight' AND lease_until < $2))",
-        )
-        .bind(thread.0)
-        .bind(to_db(now))
-        .execute(&self.pool)
-        .await
-        .map(|r| u32::try_from(r.rows_affected()).unwrap_or(u32::MAX))
-        .map_err(store_err)
+        skip_unsent_rows(&self.pool, thread, now).await
     }
 
     async fn release_leases(&self, owner: &str, now: Timestamp) -> Result<u32, StoreError> {

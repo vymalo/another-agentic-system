@@ -131,6 +131,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         finishes_outbox: None,
         title: None,
         description: None,
+        skip_unsent_delegates: false,
     }
 }
 
@@ -1588,6 +1589,60 @@ pub async fn skip_unsent_delegates<S: ThreadStore>(store: S) {
             .unwrap(),
         0
     );
+}
+
+/// A commit that says `skip_unsent_delegates` finishes the thread's unsent delegations in its own
+/// transaction, before its rows exist (ADR 0036): the abandoned job's rows are skipped, the one
+/// the commit writes is not, a row already sent is not, and a commit that is refused skips none.
+pub async fn a_commit_can_skip_the_unsent_delegates_it_supersedes<S: ThreadStore>(store: S) {
+    let status = |n: u128| {
+        let store = &store;
+        async move {
+            store
+                .get_outbox(outbox_id(n))
+                .await
+                .unwrap()
+                .map(|row| row.status)
+        }
+    };
+    seed(&store, &alice(), 1).await; // row 1, pending
+    // another thread's unsent row is nobody's to skip
+    seed(&store, &alice(), 2).await; // row 2
+
+    // a commit that is refused (a stale version) skips nothing and writes nothing
+    let mut stale = commit(ThreadState::Queued, vec![], vec![delegate(10)]);
+    stale.skip_unsent_delegates = true;
+    let res = store.commit(thread_id(1), 99, stale).await;
+    assert_eq!(class_of(&res), Some(ErrorClass::Conflict), "{res:?}");
+    assert_eq!(status(1).await, Some(OutboxStatus::Pending));
+    assert_eq!(status(10).await, None);
+
+    // one that is applied finishes row 1 and leaves its own row alone
+    let mut next = commit(ThreadState::Queued, vec![], vec![delegate(11)]);
+    next.skip_unsent_delegates = true;
+    applied(store.commit(thread_id(1), 1, next).await.unwrap());
+    assert_eq!(status(1).await, Some(OutboxStatus::Skipped));
+    assert_eq!(status(11).await, Some(OutboxStatus::Pending));
+    assert_eq!(status(2).await, Some(OutboxStatus::Pending));
+
+    // a row that reached the agent is never skipped: the next commit supersedes only row 11
+    let rows = claim(&store, "a", t0()).await;
+    let mine = rows.iter().find(|r| r.id == outbox_id(11)).unwrap();
+    assert!(
+        store
+            .mark_sent(
+                &lease(11, "a", mine.attempts),
+                BindingUpdate::default(),
+                t0()
+            )
+            .await
+            .unwrap()
+    );
+    let mut again = commit(ThreadState::Queued, vec![], vec![delegate(12)]);
+    again.skip_unsent_delegates = true;
+    applied(store.commit(thread_id(1), 2, again).await.unwrap());
+    assert_ne!(status(11).await, Some(OutboxStatus::Skipped));
+    assert_eq!(status(12).await, Some(OutboxStatus::Pending));
 }
 
 pub async fn release_leases<S: ThreadStore>(store: S) {

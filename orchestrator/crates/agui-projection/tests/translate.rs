@@ -423,6 +423,171 @@ fn a_run_already_open_refuses_new_input() {
     assert_eq!(e.http_status(), 409);
 }
 
+// ---- a message sent while a run is open (ADR 0036) ------------------------------------------
+
+fn running() -> KnownThread {
+    KnownThread {
+        run_open: true,
+        state: ThreadState::Working,
+        ..blocked()
+    }
+}
+
+fn sending(how: Value) -> RunAgentInput {
+    request(json!({
+        "runId": "run-2",
+        "messages": [user_msg("client-7", "you were wrong since line 1")],
+        "forwardedProps": {"vymalo.send": how},
+    }))
+}
+
+fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
+    Input::StopAndSend {
+        user: alice(),
+        text: text.to_owned(),
+        message_id: Some(message_id.to_owned()),
+        run_id: Some(run_id.to_owned()),
+        origin: orch_core::Origin::Agui,
+        catalog: None,
+    }
+}
+
+#[test]
+fn a_message_that_says_steer_is_served_while_a_run_is_open() {
+    assert_eq!(
+        ok(&sending(json!("steer")), running()),
+        [um("you were wrong since line 1", Some("client-7"), "run-2")]
+    );
+}
+
+#[test]
+fn a_message_that_says_interrupt_is_a_stop_and_send_while_a_run_is_open() {
+    assert_eq!(
+        ok(&sending(json!("interrupt")), running()),
+        [stop("you were wrong since line 1", "client-7", "run-2")]
+    );
+}
+
+#[test]
+fn a_message_that_does_not_say_how_is_still_a_409_while_a_run_is_open() {
+    for forwarded in [json!({}), json!({"vymalo.send": null})] {
+        let input = request(json!({
+            "runId": "run-2",
+            "messages": [user_msg("client-7", "hurry")],
+            "forwardedProps": forwarded,
+        }));
+        let e = err(&input, running());
+        assert_eq!(e, InputError::RunInProgress);
+        assert_eq!(e.http_status(), 409);
+        assert!(
+            e.to_string().contains("vymalo.send"),
+            "the problem says what would be served: {e}"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_send_is_a_400_whatever_the_thread_is_doing() {
+    for bad in [
+        json!("stop"),
+        json!("Steer"),
+        json!(""),
+        json!(true),
+        json!(1),
+        json!(["steer"]),
+        json!({"mode": "steer"}),
+    ] {
+        let input = sending(bad.clone());
+        for view in [
+            ThreadView::Known(running()),
+            ThreadView::Known(idle_known()),
+            ThreadView::Known(known(ThreadState::Done)),
+            ThreadView::new_thread(alice()),
+        ] {
+            let e = translate(&input, &view).unwrap_err();
+            assert!(matches!(e, InputError::InvalidSend { .. }), "{bad}: {e}");
+            assert_eq!(e.http_status(), 400);
+        }
+    }
+}
+
+#[test]
+fn only_a_message_is_served_while_a_run_is_open() {
+    // not an action
+    let action = request(json!({
+        "runId": "run-act",
+        "forwardedProps": {"vymalo.send": "steer", "a2uiAction": {"userAction": {
+            "name": "go", "surfaceId": "s1", "sourceComponentId": "go", "context": {}}}},
+    }));
+    let view = KnownThread {
+        surfaces: [("s1".to_owned(), UiVersion::V0_9_1)].into(),
+        ..running()
+    };
+    assert_eq!(err(&action, view), InputError::RunInProgress);
+    // not a stop of the run through `resume`, and nothing at all is not something to serve
+    let nothing = request(json!({
+        "runId": "run-2",
+        "forwardedProps": {"vymalo.send": "steer"},
+    }));
+    assert!(matches!(
+        err(&nothing, running()),
+        InputError::NothingToRun { .. }
+    ));
+    // one message at a time, and a run id is never reused
+    let two = request(json!({
+        "runId": "run-2",
+        "messages": [user_msg("a", "1"), user_msg("b", "2")],
+        "forwardedProps": {"vymalo.send": "steer"},
+    }));
+    assert_eq!(
+        err(&two, running()),
+        InputError::TooManyNewMessages { count: 2 }
+    );
+    let mut reused = running();
+    reused.run_ids.insert("run-2".to_owned());
+    assert_eq!(
+        err(&sending(json!("steer")), reused),
+        InputError::RunIdReused {
+            run_id: "run-2".into()
+        }
+    );
+}
+
+#[test]
+fn a_retried_send_attaches_to_the_run_it_opened() {
+    // the message is in the log under run-2 already: nothing is new, and the run exists
+    let mut view = running();
+    view.message_ids.insert("client-7".to_owned());
+    view.run_ids.insert("run-2".to_owned());
+    for how in ["steer", "interrupt"] {
+        assert!(ok(&sending(json!(how)), view.clone()).is_empty(), "{how}");
+    }
+}
+
+#[test]
+fn send_changes_nothing_where_no_run_is_open() {
+    // a thread that does not exist yet is created by a plain message, whatever it says
+    assert_eq!(
+        translate(
+            &sending(json!("interrupt")),
+            &ThreadView::new_thread(alice())
+        )
+        .unwrap(),
+        [um("you were wrong since line 1", Some("client-7"), "run-2")]
+    );
+    // a finished thread starts its next job; the core treats a stop with nothing to stop as a
+    // plain message (ADR 0036, row 4)
+    let done = known(ThreadState::Done);
+    assert_eq!(
+        ok(&sending(json!("steer")), done.clone()),
+        [um("you were wrong since line 1", Some("client-7"), "run-2")]
+    );
+    assert_eq!(
+        ok(&sending(json!("interrupt")), done),
+        [stop("you were wrong since line 1", "client-7", "run-2")]
+    );
+}
+
 #[test]
 fn a_run_id_is_never_reused_for_new_input() {
     // `r-1` is a run of this thread: a new message (or an answer) cannot start another run
@@ -766,9 +931,15 @@ fn the_held_message_ids_are_the_ids_of_the_requests_messages() {
 
 #[test]
 fn every_refusal_says_which_status_it_is() {
-    let table: [(InputError, u16); 12] = [
+    let table: [(InputError, u16); 13] = [
         (InputError::ThreadIdNotUuid { got: "x".into() }, 400),
         (InputError::ProtocolVersion { got: "2.0".into() }, 400),
+        (
+            InputError::InvalidSend {
+                got: "\"stop\"".into(),
+            },
+            400,
+        ),
         (InputError::NothingToRun { run_id: "r".into() }, 422),
         (InputError::TooManyNewMessages { count: 2 }, 422),
         (

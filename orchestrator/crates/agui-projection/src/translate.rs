@@ -11,10 +11,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{ContentPart, Message, MessageContent, ResumeStatus, RunAgentInput};
-use orch_core::{AgentId, Input, Origin, ThreadId, ThreadState, UiActionData, UiVersion, UserId};
+use orch_core::{
+    AgentId, Delivery, Input, Origin, ThreadId, ThreadState, UiActionData, UiVersion, UserId,
+};
 use serde_json::{Map, Value};
 
-use crate::vocab::RELEASE_CHANNELS_URI;
+use crate::vocab::{RELEASE_CHANNELS_URI, SEND_KEY};
 
 /// What [`translate`] needs to know about the thread the request names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,9 +148,19 @@ pub enum InputError {
         /// The request's `runId`.
         run_id: String,
     },
-    /// A run is already open on the thread (409).
-    #[error("a run is already open on this thread; wait for it to finish")]
+    /// A run is already open on the thread (409), and the request does not say how its message
+    /// is to be delivered (`forwardedProps["vymalo.send"]`, ADR 0036), or it is not a message.
+    #[error(
+        "a run is already open on this thread; wait for it to finish, or send a message with \
+         forwardedProps[\"vymalo.send\"] set to \"steer\" or \"interrupt\""
+    )]
     RunInProgress,
+    /// `forwardedProps["vymalo.send"]` is not `"steer"` or `"interrupt"` (400).
+    #[error("forwardedProps[\"vymalo.send\"] must be \"steer\" or \"interrupt\", got {got}")]
+    InvalidSend {
+        /// What was sent, as JSON, cut to a short excerpt.
+        got: String,
+    },
     /// An action on a finished thread (409): the card belongs to a request that ended. A message
     /// is not refused: it starts the thread's next job (ADR 0020). (A stop has nothing to stop on
     /// a finished thread, which holds no interrupt: that is `NothingToRun`.)
@@ -199,7 +211,9 @@ impl InputError {
     /// The HTTP status of the problem response: 400, 409 or 422.
     pub fn http_status(&self) -> u16 {
         match self {
-            InputError::ThreadIdNotUuid { .. } | InputError::ProtocolVersion { .. } => 400,
+            InputError::ThreadIdNotUuid { .. }
+            | InputError::ProtocolVersion { .. }
+            | InputError::InvalidSend { .. } => 400,
             InputError::RunInProgress
             | InputError::ThreadFinished { .. }
             | InputError::WrongAgent { .. } => 409,
@@ -316,9 +330,11 @@ pub fn translate(input: &RunAgentInput, thread: &ThreadView) -> Result<Vec<Input
 /// | `resume` cancelled, no new message | `[Cancel]` |
 /// | `resume` cancelled and a new user message | `[UserMessage]` |
 /// | nothing new, `runId` recorded | `[]`: attach |
+/// | one new user message and `vymalo.send: "interrupt"`, thread exists | `[StopAndSend]` |
 ///
-/// and the refusals of [`InputError`]. A thread that is finished, or has a run open, takes no new
-/// input.
+/// and the refusals of [`InputError`]. A thread that is finished takes only a message (it starts
+/// the next job), and one that has a run open takes only a message that says how it is delivered,
+/// `forwardedProps["vymalo.send"]` (ADR 0036): `"steer"` is the plain message.
 pub fn translate_with_warnings(
     input: &RunAgentInput,
     thread: &ThreadView,
@@ -336,6 +352,8 @@ pub fn translate_with_warnings(
         });
     }
     let action = user_action(input)?;
+    // Read on every run, so a malformed one is refused every time, whatever the thread is doing.
+    let send = send_mode(input)?;
 
     let known = match thread {
         ThreadView::Known(k) => Some(k),
@@ -439,6 +457,7 @@ pub fn translate_with_warnings(
             }],
             input,
             known,
+            None,
             warnings,
         );
     }
@@ -452,6 +471,18 @@ pub fn translate_with_warnings(
             origin: Origin::Agui,
             catalog: None,
         }],
+        // Stop & send (ADR 0036): on a thread that exists, where the core knows what to stop
+        // (and treats it as a plain message when nothing runs). A new thread has nothing to stop.
+        (None, Some((id, text)), _) if send == Some(Delivery::Interrupt) && known.is_some() => {
+            vec![Input::StopAndSend {
+                user,
+                text,
+                message_id: Some(id),
+                run_id,
+                origin: Origin::Agui,
+                catalog: None,
+            }]
+        }
         (None, Some((id, text)), _) => vec![Input::UserMessage {
             user,
             text,
@@ -474,20 +505,26 @@ pub fn translate_with_warnings(
         }
     };
 
-    finish(inputs, input, known, warnings)
+    finish(inputs, input, known, send, warnings)
 }
 
 /// Something is to be applied: a thread that cannot take it says so before the stream.
+///
+/// A thread with a run open takes a **message** that says how it is delivered (`send`, ADR
+/// 0036); anything else is refused until the run is over.
 fn finish(
     inputs: Vec<Input>,
     input: &RunAgentInput,
     known: Option<&KnownThread>,
+    send: Option<Delivery>,
     warnings: Vec<Warning>,
 ) -> Result<Translation, InputError> {
     if let Some(k) = known {
+        let is_message =
+            |i: &Input| matches!(i, Input::UserMessage { .. } | Input::StopAndSend { .. });
         let starts_a_run = inputs
             .iter()
-            .any(|i| matches!(i, Input::UserMessage { .. } | Input::UiAction { .. }));
+            .any(|i| is_message(i) || matches!(i, Input::UiAction { .. }));
         if starts_a_run && k.run_ids.contains(input.run_id.as_str()) {
             return Err(InputError::RunIdReused {
                 run_id: input.run_id.to_string(),
@@ -495,17 +532,37 @@ fn finish(
         }
         // A message on a finished thread starts its next job (ADR 0020); an action belongs to
         // the finished job.
-        let is_message = inputs
-            .iter()
-            .all(|i| matches!(i, Input::UserMessage { .. }));
-        if k.state.is_terminal() && !is_message {
+        if k.state.is_terminal() && !inputs.iter().all(is_message) {
             return Err(InputError::ThreadFinished { state: k.state });
         }
-        if k.run_open {
+        if k.run_open
+            && !(send.is_some() && matches!(inputs.as_slice(), [only] if is_message(only)))
+        {
             return Err(InputError::RunInProgress);
         }
     }
     Ok(Translation { inputs, warnings })
+}
+
+/// How the run says its message is delivered, `forwardedProps["vymalo.send"]` (ADR 0036):
+/// `"steer"` (Send) or `"interrupt"` (Stop & send). `null` and no member are none; anything
+/// else is a 400, whatever the thread is doing.
+fn send_mode(input: &RunAgentInput) -> Result<Option<Delivery>, InputError> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(SEND_KEY))
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        Some("steer") => Ok(Some(Delivery::Steer)),
+        Some("interrupt") => Ok(Some(Delivery::Interrupt)),
+        _ => Err(InputError::InvalidSend {
+            got: value.to_string().chars().take(64).collect(),
+        }),
+    }
 }
 
 /// The action a request carries, `forwardedProps.a2uiAction.userAction` (the convention of

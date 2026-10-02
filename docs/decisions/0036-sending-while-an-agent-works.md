@@ -3,8 +3,8 @@
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-01 ("while an agent is working, it should also
   be possible for a human to send a message … e.g. 'you were wrong since line #1'"). The details are delegated to the
   planner (plan 11, owner decision 5: **the full `steer/v1`**, with the cut line below) and the owner may revisit
-  them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11));
-  the AG-UI member, the dispatcher's steer path, the web and the adam-rs side are not.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
+  them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11)) and the AG-UI member
+  (PR-12, see [Built in PR-12](#built-in-pr-12)); the dispatcher's steer path, the web and the adam-rs side are not.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
   is, and the race of open question 33), [ADR 0012](0012-ag-ui-user-facing-protocol.md) (a second run while one is open
   is no longer always a 409) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (a job abandoned by a person is
   not verified). Builds on [ADR 0021](0021-context-across-a2a-tasks.md) and
@@ -265,7 +265,7 @@ Where the build is not what the text above says, or the text was silent:
 - **`Command::Steer { text, catalog }`** keeps the catalog so that the delegation it stands for is today's, byte for byte.
   PR-13 may drop it from the steer row (`steer/v1` carries no catalog).
 - **`Command::Delegate` has no `new_job`.** The application derives it from the `job_started` in the commit, as it did before.
-- **`Command::DropQueued` is executed just before the commit, not in it.** `apply` calls `skip_unsent_delegates` when the
+- **`Command::DropQueued` is executed just before the commit, not in it** (*amended by PR-12: it is in it now, see below*). `apply` calls `skip_unsent_delegates` when the
   transition produced the command, so the row the commit writes is made after the rows are finished, and no port or store
   changes in this pull request. It is not atomic with the commit: a crash between the two leaves the abandoned job's unsent
   delegations skipped and the thread still stopping, which the retry of the input that produces it finishes. Nothing is
@@ -282,3 +282,43 @@ Where the build is not what the text above says, or the text was silent:
   and cancel it. The dispatcher drops a terminal status of a task its binding records as over already.
 - A job ended by Stop & send logs the agent's `agent_status` (`completed`, `failed`, `canceled`) and no `thread_state`; the
   AG-UI projection of that boundary is PR-12's.
+
+## Built in PR-12
+
+*2026-10-02.* The AG-UI member: `forwardedProps["vymalo.send"]` and the projection of a message that arrives inside an open run
+([`agui.md`](../api/agui.md#sending-while-an-agent-works)), with the goldens `steer`, `stop-and-send`, `run-steer` and
+`run-stop-and-send`. Not built: the dispatcher's steer path and `steer/v1` (PR-13), the web (PR-15).
+
+Where the build is not what the text above says, or the text was silent:
+
+- **The wire names are `steer` and `interrupt`** (the text of this ADR), not `stop`. Any other value is a 400 that names the two,
+  whatever the thread is doing; `null` is no member. With no run open the member changes nothing, except that `interrupt` on a thread
+  that exists is `Input::StopAndSend`, which the core treats as a plain message when nothing runs (row 4), so a request that raced the
+  end of the run is still served as the person meant it.
+- **The run that ends is finished with `success`.** The ADR said "the run finished" without an outcome. `success` says the run is
+  over; the `STATE_SNAPSHOT` before it says the thread is not (`working`, or `queued` for a message that abandons a verification). The
+  invocation is suspended with no `interruptIds`: nobody is asked, and a `cancelled` outcome would read as the person's Stop.
+- **The response to the POST starts at the message's own `RUN_STARTED`.** A position in the log (`Start::Seq`) cannot say it: the
+  event that carries the message finishes the old run first, and the stream, which ends at a terminal event, would end there. The
+  surface starts a message's response at the run named by the request (`Start::Run`, the mechanism of an attach), so an event between
+  the read and the write cannot move it.
+- **A projection that says "stopping".** The core logs no `thread_state` for an abandoned job, and no verification, but the
+  projection used to start one at the stopped task's `completed` (it counts verifications to name the `vymalo.check` cards, as the
+  core does). The projector keeps one bit, set by a `user_message` with `delivery: interrupt` and cleared by `job_started`, by any
+  `thread_state`, and by an `error` of the orchestrator's that cannot be retried (a stop the agent refused for good, row 7). Not
+  cleared, and so wrong in one corner: a Stop pressed while the stop lands (row 9) followed by a `completed` of that task under a
+  gate, which the core judges and the projection does not count. The corner is rare, the consequence is a card id one lower; a
+  field on the event is the cure if it ever matters.
+- **A task that asks while it is being stopped (row 6)** is shown (its words, its status) with no interrupt and no suspension: a
+  suspended invocation could not re-open in the same run, and nobody waits for the answer. **A job boundary ends the invocation the
+  stopped task left open** (`job_started` closes it as cancelled): a failed delivery of the abandoned job ends no task.
+- **No capability key.** The web and the orchestrator ship together; an older orchestrator answers the 409 it always did, and the
+  agent's own capability (`steer/v1`, in `custom` once PR-13 lists it) is the only thing the web reads to word its menu.
+- **`steer` is delivered after the turn until PR-13**, so the golden shows the second run ending with the first job and the message's
+  job in a producer-initiated run (`run-<seq>`, as for any redelivered message). PR-13 regenerates it.
+- **A defect of PR-11 found here, fixed here.** `DropQueued` was executed by a call before the commit. Two workers deciding the same
+  next job (the delegation's stream and the cancel call both report `canceled`) could interleave so that the second skipped the
+  delegation the first had just written, and the thread stayed `queued` for ever (seen on Postgres under load, about one run in
+  six of the new e2e test). The commit now carries `skip_unsent_delegates` and the store finishes the rows in its own transaction,
+  before inserting the commit's (`Commit.skip_unsent_delegates`, conformance case
+  `a_commit_can_skip_the_unsent_delegates_it_supersedes` on both stores).
