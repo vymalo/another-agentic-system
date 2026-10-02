@@ -836,10 +836,24 @@ fn a_user_who_writes_abandons_the_verification_and_its_subagent() {
         COMPLETED,
         again.clone(),
     ]);
-    assert!(projector.run_open(), "the same run goes on");
+    // The message ends the run it arrived in (ADR 0036) and opens its own; the verification
+    // is abandoned with the first.
+    assert!(projector.run_open(), "the message's own run is open");
+    let story = verifier_story(&all);
+    let from = story
+        .iter()
+        .position(|l| l.starts_with("SUBAGENT_STARTED sub-verify-1"))
+        .unwrap();
     assert_eq!(
-        verifier_story(&all).last().unwrap(),
-        "SUBAGENT_FINISHED sub-verify-1 success result={\"status\":\"canceled\"}"
+        story[from + 2..],
+        [
+            "SUBAGENT_FINISHED sub-verify-1 success result={\"status\":\"canceled\"}",
+            "STATE_SNAPSHOT queued",
+            "RUN_FINISHED r-1 success",
+            "RUN_STARTED r-2",
+            "STATE_SNAPSHOT queued",
+        ],
+        "{story:?}"
     );
     // The verification that follows is a subagent of its own, in the same attempt.
     let (all, _) = verified(&[
@@ -861,7 +875,7 @@ fn a_user_who_writes_abandons_the_verification_and_its_subagent() {
         story.contains(&"ACTIVITY_SNAPSHOT check-1-2-verifier passed".to_owned()),
         "{story:?}"
     );
-    assert_eq!(story.last().unwrap(), "RUN_FINISHED r-1 success");
+    assert_eq!(story.last().unwrap(), "RUN_FINISHED r-2 success");
 }
 
 #[test]

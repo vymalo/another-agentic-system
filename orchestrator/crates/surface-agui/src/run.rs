@@ -474,6 +474,12 @@ async fn attempt<P: Ports>(
                 tracing::warn!(%thread, "{THREAD_TOOLS_KEY} on a run that continues a thread was ignored; use PUT /api/threads/{{id}}/tools");
             }
             let mut start = None;
+            // A message opens a run named by the request, whatever the thread was doing (a run
+            // that was open is finished first, ADR 0036): the response starts at that
+            // `RUN_STARTED`, which an event between the read and the write cannot move.
+            let opens_run = inputs
+                .iter()
+                .any(|i| matches!(i, Input::UserMessage { .. } | Input::StopAndSend { .. }));
             // the catalog goes with the first message or action, which is the input it came with
             let mut carried = catalog.cloned();
             for next in inputs {
@@ -492,12 +498,16 @@ async fn attempt<P: Ports>(
                 }
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
-            let start = start.unwrap_or(last_seq + 1);
+            let start = if opens_run {
+                Start::Run(input.run_id.to_string())
+            } else {
+                Start::Seq(start.unwrap_or(last_seq + 1))
+            };
             Ok(Some(Feed {
                 projector,
                 backlog: std::collections::VecDeque::new(),
                 live: app.thread_feed(principal, thread, last_seq).await?,
-                start: Start::Seq(start),
+                start,
                 held,
             }))
         }

@@ -172,19 +172,22 @@ proptest! {
         for event in &events {
             let v = viewer.apply(event, Audience::Viewer);
             let r = requester.apply(event, Audience::Requester { held_message_ids: &held });
-            let held_here = matches!(&event.body, EventBody::UserMessage(m)
-                if m.message_id.as_ref().is_some_and(|id| held.contains(id)));
-            let kinds = |frames: &[Frame], skip_triad: bool| -> Vec<String> {
+            // The user message the requester holds: its triad is the only thing it is spared.
+            let held_id = match &event.body {
+                EventBody::UserMessage(m) => m.message_id.clone().filter(|id| held.contains(id)),
+                _ => None,
+            };
+            let kinds = |frames: &[Frame], skip: Option<&str>| -> Vec<String> {
                 frames
                     .iter()
                     .filter(|f| {
-                        !(skip_triad
-                            && matches!(
-                                f.event,
-                                orch_agui_proto::Event::TextMessageStart(_)
-                                    | orch_agui_proto::Event::TextMessageContent(_)
-                                    | orch_agui_proto::Event::TextMessageEnd(_)
-                            ))
+                        let id = match &f.event {
+                            orch_agui_proto::Event::TextMessageStart(e) => Some(e.message_id.as_str()),
+                            orch_agui_proto::Event::TextMessageContent(e) => Some(e.message_id.as_str()),
+                            orch_agui_proto::Event::TextMessageEnd(e) => Some(e.message_id.as_str()),
+                            _ => None,
+                        };
+                        !(id.is_some() && id == skip)
                     })
                     .map(|f| {
                         let mut f = f.clone();
@@ -193,7 +196,7 @@ proptest! {
                     })
                     .collect()
             };
-            prop_assert_eq!(kinds(&r, false), kinds(&v, held_here));
+            prop_assert_eq!(kinds(&r, None), kinds(&v, held_id.as_deref()));
         }
     }
 

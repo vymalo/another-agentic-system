@@ -551,7 +551,8 @@ fn an_agent_that_starts_working_again_while_blocked_reopens_a_run_that_stays_ope
 }
 
 #[test]
-fn a_follow_up_during_a_run_is_inside_the_run() {
+fn a_message_during_a_run_ends_that_run_and_opens_its_own() {
+    // (ADR 0036; `tests/send.rs` has the stories on the logs the core writes)
     let events = vec![
         user(1, "go"),
         status(2, AgentStatus::Working, None),
@@ -562,9 +563,27 @@ fn a_follow_up_during_a_run_is_inside_the_run() {
     let got = all_lines(&events);
     assert_eq!(
         got.iter().filter(|l| l.starts_with("RUN_STARTED")).count(),
-        1
+        2,
+        "{got:#?}"
     );
-    assert!(got.contains(&"TEXT_MESSAGE_START evt-3 user".to_owned()));
+    let finished = got.iter().position(|l| l.starts_with("RUN_FINISHED run-1"));
+    let started = got.iter().position(|l| l.starts_with("RUN_STARTED run-3"));
+    assert!(finished < started, "{got:#?}");
+    // the message is said in the run it opened, not in the one it ended
+    let said = got
+        .iter()
+        .position(|l| l.starts_with("TEXT_MESSAGE_START evt-3 user"))
+        .unwrap();
+    assert!(started.unwrap() < said, "{got:#?}");
+    // a message with no `delivery` (nothing was running, or a log that predates the field) says
+    // nothing about one
+    let frames = support::flatten(&project(&events));
+    for frame in &frames {
+        if let orch_agui_proto::Event::TextMessageStart(start) = &frame.event {
+            let meta = start.base.metadata.as_ref().unwrap();
+            assert!(!meta.contains_key("vymalo.delivery"), "{meta:?}");
+        }
+    }
 }
 
 #[test]

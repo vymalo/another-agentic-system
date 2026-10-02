@@ -47,11 +47,11 @@ use orch_agui_proto::{
 };
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AgentStepData, AgentTarget,
-    AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, ErrorData, Event,
-    EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
-    Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp, ThreadDescribedData,
-    ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, ToolsData, UiActionData,
-    UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
+    AnswerVia, ArtifactData, CheckResult, CheckSource, CheckStatus, CiReport, Delivery, ErrorData,
+    Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES,
+    MessagePurpose, Preview, Recognised, ReworkData, StepKind, StepPhase, SurfaceOp,
+    ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData, ToolsData,
+    UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData, inspect,
     recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
@@ -63,7 +63,7 @@ use crate::vocab::{
     ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK, ACTIVITY_STATUS,
     ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED,
     CODE_DELIVERY_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED, actor_metadata, message_metadata,
-    problem_metadata, response_schema, status_content,
+    problem_metadata, response_schema, status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -188,6 +188,10 @@ enum RunClose {
     Cancelled,
     Interrupt,
     Error(Failure),
+    /// A message arrived inside the run (ADR 0036): the run ends and the message opens the next.
+    /// The agent's work goes on, so its invocation is suspended and not ended, and the thread's
+    /// state does not move.
+    Superseded,
 }
 
 /// How the verifier's invocation ends.
@@ -251,6 +255,12 @@ pub struct Projector {
     /// A source of the gate failed and nothing has answered it yet: an `error` that follows is
     /// the gate running out of attempts.
     checks_failed: bool,
+    /// A message stopped the job (`user_message` with `delivery: interrupt`, ADR 0036) and the
+    /// job has not been replaced yet: the core does not judge what its task still says, so
+    /// neither does the projection (no verification starts at its `completed`). Cleared by the
+    /// next job (`job_started`), by any `thread_state`, and by an `error` of the orchestrator's
+    /// that cannot be retried (a stop the agent refused for good).
+    stopping: bool,
     /// The actor of the agent's last event, so that a rework can start the next attempt's
     /// invocation under the same name and revision.
     last_agent: Option<Actor>,
@@ -382,6 +392,7 @@ impl Projector {
             verification: 0,
             sha: None,
             checks_failed: false,
+            stopping: false,
             last_agent: None,
             last_final: None,
             steps: BTreeMap::new(),
@@ -596,19 +607,31 @@ impl Projector {
         self.interrupt = None;
         self.failure = None;
         self.checks_failed = false;
-        if self.run.is_none() {
-            let run_id = d
-                .run_id
-                .clone()
-                .unwrap_or_else(|| format!("run-{}", ev.seq));
-            self.open_run(run_id, true, out);
+        // A message that arrives inside an open run (a person sending while the agent works,
+        // ADR 0036; an MCP client's too) ends that run and opens a run of its own: the response
+        // of the POST that carried it is a run, so it starts with `RUN_STARTED`, and a viewer
+        // reads the same two runs. The agent's invocation is suspended with the first and
+        // reappears, under the same id, with the agent's next event (as after an answered
+        // question).
+        if self.run.is_some() {
+            self.close_run(RunClose::Superseded, ev.seq, out);
         }
+        // The core says a message stops the job (and that it is not judged any more) with
+        // `delivery: interrupt`; the next job, or any `thread_state`, ends that.
+        if d.delivery == Some(Delivery::Interrupt) {
+            self.stopping = true;
+        }
+        let run_id = d
+            .run_id
+            .clone()
+            .unwrap_or_else(|| format!("run-{}", ev.seq));
+        self.open_run(run_id, true, out);
         self.message_ids.insert(message_id.clone());
         if audience.holds(&message_id) {
             return;
         }
         let mut start = TextMessageStartEvent::new(message_id.clone(), TextMessageRole::User);
-        start.base.metadata = Some(actor_metadata(&ev.actor));
+        start.base.metadata = Some(user_message_metadata(&ev.actor, d.delivery));
         out.push(start.into());
         out.push(TextMessageContentEvent::new(message_id.clone(), d.text.clone()).into());
         out.push(TextMessageEndEvent::new(message_id).into());
@@ -761,6 +784,13 @@ impl Projector {
                 }
             }
             AgentStatus::InputRequired | AgentStatus::AuthRequired => {
+                // The job is being stopped (ADR 0036, row 6): the core logs the ask and goes on
+                // with the stop, so nothing waits for the person. No interrupt, and the
+                // invocation stays open (a suspended one could not reappear in this run): the
+                // task's end, or the next job, closes it.
+                if self.stopping {
+                    return;
+                }
                 let reason = if d.status == AgentStatus::AuthRequired {
                     "auth_required"
                 } else {
@@ -785,7 +815,9 @@ impl Projector {
                 self.close_invocation(InvocationClose::Finished, out);
                 // Under a gate the agent finishing is not the end: the thread is verified, the
                 // run stays open, and the `check_result` events that follow say how it went.
-                if self.meta.gate.is_active() {
+                // A job a person is stopping is not judged (ADR 0036, row 5): the core starts
+                // no verification, so the projection does not say one.
+                if self.meta.gate.is_active() && !self.stopping {
                     self.verification += 1;
                     self.state = ThreadState::Verifying;
                     out.push(self.state_snapshot());
@@ -1081,6 +1113,11 @@ impl Projector {
     /// begun it already; a redelivered message has no such event, and the boundary alone opens
     /// the run.
     fn on_job_started(&mut self, ev: &Event, d: &JobStartedData, out: &mut Vec<agui::Event>) {
+        // A job a person stopped (ADR 0036) may leave its invocation open (the task's end was a
+        // failed delivery, or an ask the stop did not wait for): a job boundary ends it.
+        if self.invocation.is_some() {
+            self.close_invocation(InvocationClose::Canceled, out);
+        }
         let begun = self.job_number == d.job;
         if !begun {
             self.begin_job(d.job);
@@ -1106,6 +1143,7 @@ impl Projector {
     /// What a finished job leaves behind and the next one must not inherit (see
     /// [`begin_job`](Self::begin_job)); the job number and the state are the caller's.
     fn forget_job(&mut self) {
+        self.stopping = false;
         self.attempt = 1;
         self.sha = None;
         self.checks_failed = false;
@@ -1403,6 +1441,13 @@ impl Projector {
         if !was_open {
             self.open_run(format!("run-{}", ev.seq), true, out);
         }
+        // The orchestrator's own error that cannot be retried, while a stop is on its way, is the
+        // agent that could not be stopped (ADR 0036, row 7): the job goes on, so it is judged
+        // again. (An error of the agent's, or one that can be retried, changes nothing; a
+        // delivery failure is followed by the next job.)
+        if self.stopping && !d.retryable && ev.actor.r#type == ActorType::System {
+            self.stopping = false;
+        }
         let mut content = Metadata::new();
         content.insert("message".to_owned(), Value::from(d.message.clone()));
         content.insert("retryable".to_owned(), Value::from(d.retryable));
@@ -1450,6 +1495,8 @@ impl Projector {
     ) {
         let was_verifying = self.state == ThreadState::Verifying;
         self.state = new;
+        // The core announces a state when a job is judged, and a job being stopped is not.
+        self.stopping = false;
         if self.run.is_none() {
             self.open_run(format!("run-{}", ev.seq), false, out);
         }
@@ -1829,11 +1876,12 @@ impl Projector {
             }
             InvocationClose::Suspended(ids) => {
                 self.suspended = Some(inv.id.clone());
+                // A suspension that waits for nobody (a message arrived, ADR 0036) names no ids.
                 out.push(
                     SubagentFinishedEvent::new(
                         inv.id,
                         Some(SubagentFinishedOutcome::Suspended {
-                            interrupt_ids: Some(ids),
+                            interrupt_ids: (!ids.is_empty()).then_some(ids),
                         }),
                     )
                     .into(),
@@ -1856,9 +1904,10 @@ impl Projector {
         // held the thread, or another source decided the round.
         let verdictless = match &close {
             RunClose::Success => VerifierClose::Verdict { passed: true },
-            RunClose::Cancelled | RunClose::Interrupt | RunClose::Error(_) => {
-                VerifierClose::Abandoned
-            }
+            RunClose::Cancelled
+            | RunClose::Interrupt
+            | RunClose::Error(_)
+            | RunClose::Superseded => VerifierClose::Abandoned,
         };
         self.close_verifier(verdictless, out);
         match &close {
@@ -1871,6 +1920,8 @@ impl Projector {
             RunClose::Error(failure) => {
                 self.close_invocation(InvocationClose::Error(failure.clone()), out);
             }
+            // No interrupt: nothing is asked of the person, the agent is still at work.
+            RunClose::Superseded => self.close_invocation(InvocationClose::Suspended(vec![]), out),
         }
         out.push(self.state_snapshot());
         let Some(run) = self.run.take() else {
@@ -1878,7 +1929,9 @@ impl Projector {
         };
         let thread = self.meta.thread_id.to_string();
         match close {
-            RunClose::Success => {
+            // The run is over, not the work: `success` says the run completed, and the
+            // `STATE_SNAPSHOT` before it says the thread has not (its `state` is still active).
+            RunClose::Success | RunClose::Superseded => {
                 out.push(RunFinishedEvent::new(thread, run, RunFinishedOutcome::success()).into());
             }
             RunClose::Cancelled => {

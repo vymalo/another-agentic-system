@@ -202,6 +202,20 @@ impl Conn {
     }
 }
 
+fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
+    ev(
+        seq,
+        Actor::user(&UserId::new("alice@example.com")),
+        EventBody::UserMessage(UserMessageData {
+            text: text.to_owned(),
+            message_id: Some(message_id.to_owned()),
+            run_id: Some(run_id.to_owned()),
+            origin: orch_core::Origin::Agui,
+            delivery: Some(orch_core::Delivery::Steer),
+        }),
+    )
+}
+
 fn is_prefix_of_nothing(frames: &[String]) -> bool {
     frames.is_empty()
 }
@@ -327,6 +341,46 @@ fn the_last_piece_changes_nothing_but_its_words() {
     // Still open: the message the log says next closes it.
     assert_eq!(c.overlay.open_message(), Some("S"));
     assert!(c.live(piece("S", 9, "", LiveEnd::Last)).is_empty());
+}
+
+#[test]
+fn a_message_that_arrives_while_a_reply_is_written_ends_the_draft_as_abandoned_with_the_run() {
+    // ADR 0036: the run of the reply ends with the message, so the live message ends with it,
+    // before its invocation is suspended, and what the agent writes next is another message
+    let mut c = Conn::working();
+    c.live(open("S", 0, "Fib"));
+    assert_eq!(
+        c.log(sent(3, "you were wrong", "m-2", "r-2")),
+        [
+            "TEXT_MESSAGE_END S live{\"abandoned\":true}",
+            "SUBAGENT_FINISHED sub-2 suspended[]",
+            "STATE_SNAPSHOT working",
+            "RUN_FINISHED run-1 success",
+            "RUN_STARTED r-2",
+            "STATE_SNAPSHOT working",
+            "TEXT_MESSAGE_START m-2 ",
+            "TEXT_MESSAGE_CONTENT m-2 \"you were wrong\"",
+            "TEXT_MESSAGE_END m-2  id:3",
+        ]
+    );
+    assert_eq!(c.overlay.open_message(), None);
+    // the rest of the abandoned draft is late: it is ignored, not attributed to the new run
+    assert!(c.live(open("S", 3, "onacci")).is_empty());
+    // the agent's next words are said in the new run, under the same invocation
+    assert_eq!(
+        c.log(status(4, AgentStatus::Working, None)),
+        [
+            "SUBAGENT_STARTED sub-2 plain",
+            "ACTIVITY_SNAPSHOT evt-4 vymalo.status {\"status\":\"working\"} @sub-2  id:4",
+        ]
+    );
+    assert_eq!(
+        c.live(open("T", 0, "Sorry")),
+        [
+            "TEXT_MESSAGE_START T @sub-2 live{}",
+            "TEXT_MESSAGE_CONTENT T \"Sorry\" live{\"offset\":0}"
+        ]
+    );
 }
 
 #[test]

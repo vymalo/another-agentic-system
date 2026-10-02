@@ -86,6 +86,12 @@ pub enum Action {
         text: String,
         ids: bool,
     },
+    /// A user message that stops the job (Stop & send, ADR 0036), with the surface's ids when
+    /// `ids`.
+    StopAndSend {
+        text: String,
+        ids: bool,
+    },
     /// A user message that carries UI catalog `which` of [`catalog`] (the screen sends it with
     /// the run).
     Catalog {
@@ -254,6 +260,7 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
     let detail = proptest::option::of("[a-z ]{1,8}");
     prop_oneof![
         5 => ("[a-z]{1,8}", any::<bool>()).prop_map(|(text, ids)| Action::User { text, ids }),
+        3 => ("[a-z]{1,8}", any::<bool>()).prop_map(|(text, ids)| Action::StopAndSend { text, ids }),
         2 => (0u8..4).prop_map(|which| Action::Catalog { which }),
         1 => Just(Action::Cancel),
         8 => (task_state, detail).prop_map(|(s, d)| Action::Status(s, d)),
@@ -394,6 +401,17 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::User { text, ids } => {
                 users += 1;
                 Input::UserMessage {
+                    user: user.clone(),
+                    text: text.clone(),
+                    message_id: ids.then(|| format!("m-{users}")),
+                    run_id: ids.then(|| format!("r-{users}")),
+                    origin: orch_core::Origin::Agui,
+                    catalog: None,
+                }
+            }
+            Action::StopAndSend { text, ids } => {
+                users += 1;
+                Input::StopAndSend {
                     user: user.clone(),
                     text: text.clone(),
                     message_id: ids.then(|| format!("m-{users}")),

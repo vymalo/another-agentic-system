@@ -192,6 +192,16 @@ impl Stream {
         self.next(quiet).await.is_none() && !self.ended
     }
 
+    /// Everything that arrives until the stream is quiet for 400 ms (a connect stream stays open
+    /// and idle between runs).
+    pub async fn until_quiet(mut self) -> Vec<Frame> {
+        let mut out = Vec::new();
+        while let Some(frame) = self.next(Duration::from_millis(400)).await {
+            out.push(frame);
+        }
+        out
+    }
+
     /// Everything up to the end of the stream (a run's response ends after its terminal event).
     pub async fn all(mut self) -> Vec<Frame> {
         let mut out = Vec::new();
