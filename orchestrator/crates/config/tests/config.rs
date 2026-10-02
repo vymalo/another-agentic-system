@@ -1,0 +1,631 @@
+//! Good files, and every kind of error: listed at once, naming the key and never a value.
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
+mod support;
+
+use orch_config::{ErrorKind, Role, SecretRef, Surface, render};
+use support::{Fake, LONG, lines, load};
+
+/// A file with only what is required.
+const MINIMAL: &str = "\
+version: 1
+database:
+  url: { env: DATABASE_URL }
+agents:
+  file: agents.yaml
+";
+
+fn minimal_env() -> Fake {
+    Fake::default().env("DATABASE_URL", "postgres://u:pw@db/orch")
+}
+
+/// The example of `docs/api/config.md`, so the document cannot drift from the types.
+fn documented_example() -> String {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/config.md"),
+    )
+    .unwrap();
+    let after = doc.split("## An example").nth(1).unwrap();
+    let block = after.split("```yaml\n").nth(1).unwrap();
+    block.split("```").next().unwrap().to_owned()
+}
+
+#[test]
+fn a_minimal_file_is_valid_and_every_default_is_filled_in() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    let c = &valid.config;
+    assert_eq!(c.server.listen, "0.0.0.0:8080");
+    assert_eq!(c.server.role, Role::All);
+    assert_eq!(c.server.shutdown_grace_secs, 15);
+    assert_eq!(c.database.max_connections, 10);
+    assert_eq!(c.dispatcher.concurrency, 32);
+    assert_eq!(c.dispatcher.outbox_lease_secs, 30);
+    assert_eq!(c.inbox.lease_secs, 30);
+    assert_eq!(c.inbox.poll_secs, 2);
+    assert_eq!(c.inbox.parked_ttl_secs, 86_400);
+    assert_eq!(c.inbox.max_attempts, 10);
+    assert_eq!(c.gate.max_attempts_cap, 10);
+    assert_eq!(c.gate.verifier_timeout_secs, 1800);
+    assert_eq!(c.gate.verifier_watch_secs, 5);
+    assert_eq!(c.gate.ci.timeout_secs, 3600);
+    assert!(c.steps.record_tool_io);
+    assert_eq!(c.thread_tools.token_ttl_secs, 7200);
+    assert_eq!(c.mcp.wait_max_secs, 3600);
+    assert_eq!(c.mcp.wait_max_concurrent, 256);
+    assert_eq!(c.mcp.wait_max_per_user, 16);
+    assert!(c.tasks.title.is_none(), "no task, titles are off");
+    assert_eq!(
+        valid.secrets.database_url.expose(),
+        "postgres://u:pw@db/orch"
+    );
+    assert_eq!(
+        valid.secrets.database_url.reference(),
+        &SecretRef::Env("DATABASE_URL".to_owned())
+    );
+    assert_eq!(
+        valid.agents_file().unwrap(),
+        std::path::Path::new("/etc/orchestrator/agents.yaml"),
+        "a relative path is relative to the directory of the file"
+    );
+    // The surfaces and the attempts that depend on other keys are shown filled in.
+    let shown = c.effective();
+    assert_eq!(shown.server.surfaces, Some(vec![Surface::Agui]));
+    assert_eq!(shown.gate.max_attempts, Some(3));
+}
+
+#[test]
+fn a_cap_below_the_default_lowers_the_default_attempts() {
+    let text = format!("{MINIMAL}gate:\n  maxAttemptsCap: 2\n");
+    let valid = load(&text, &minimal_env()).unwrap();
+    assert_eq!(valid.config.effective().gate.max_attempts, Some(2));
+}
+
+#[test]
+fn the_example_of_the_contract_is_valid() {
+    let fake = Fake::default()
+        .env("DATABASE_URL", "postgres://u:pw@db/orch")
+        .env("ORCH_MODEL_API_KEY", "model-key")
+        .env("WEBHOOK_GENERIC_SECRET", LONG)
+        .env("WEBHOOK_GITHUB_SECRET", LONG)
+        .file("/run/secrets/registry-agent-token", "agent-token\n")
+        .file("/run/secrets/thread-tools", &format!("{LONG}\n"));
+    let valid = load(&documented_example(), &fake).unwrap_or_else(|e| panic!("{}", render(&e)));
+    let c = &valid.config;
+    assert_eq!(
+        c.server.surfaces.as_ref().unwrap().len(),
+        5,
+        "all five surfaces"
+    );
+    assert_eq!(
+        c.server.public_url.as_deref(),
+        Some("https://chat.example.com")
+    );
+    assert_eq!(c.gate.ci.required, ["build"]);
+    let title = c.tasks.title.as_ref().unwrap();
+    assert_eq!(
+        (title.endpoint.as_str(), title.model.as_str()),
+        ("default", "small-model")
+    );
+    assert_eq!(
+        valid.secrets.model_api_keys["default"].expose(),
+        "model-key"
+    );
+    // A `{ file }` loses one trailing newline.
+    assert_eq!(
+        valid
+            .secrets
+            .registry_agent_token
+            .as_ref()
+            .unwrap()
+            .expose(),
+        "agent-token"
+    );
+    assert_eq!(valid.secrets.webhook_generic.len(), 1);
+    assert_eq!(valid.secrets.webhook_github.len(), 1);
+}
+
+#[test]
+fn anchors_and_merge_keys_are_resolved_before_validation() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+inbox: &timing
+  leaseSecs: 9
+  pollSecs: 4
+dispatcher:
+  <<: { concurrency: 5 }
+  outboxLeaseSecs: 7
+";
+    let valid = load(text, &minimal_env()).unwrap();
+    assert_eq!(valid.config.inbox.lease_secs, 9);
+    assert_eq!(valid.config.dispatcher.concurrency, 5);
+    assert_eq!(valid.config.dispatcher.outbox_lease_secs, 7);
+}
+
+#[test]
+fn a_syntax_error_is_reported_alone_with_its_place() {
+    let errors = lines(load("version: 1\ndatabase: [\n", &minimal_env()));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("the YAML cannot be read (line "),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_repeated_key_is_an_error_never_the_last_one_winning() {
+    let text = format!("{MINIMAL}server:\n  listen: 0.0.0.0:1\n  listen: 0.0.0.0:2\n");
+    let errors = load(&text, &minimal_env()).unwrap_err();
+    assert_eq!(errors.len(), 1);
+    assert!(matches!(errors[0].kind, ErrorKind::DuplicateKey { .. }));
+    assert_eq!(errors[0].path, "server");
+    assert!(errors[0].to_string().contains("`listen`"), "{}", errors[0]);
+    assert!(
+        !errors[0].to_string().contains("0.0.0.0:"),
+        "a value is not repeated back"
+    );
+}
+
+#[test]
+fn a_tag_and_a_key_that_is_not_a_string_are_errors_at_their_path() {
+    let text = "\
+version: 1
+database: { url: !secret DATABASE_URL }
+agents: { file: agents.yaml, 5: x }
+";
+    let errors = load(text, &minimal_env()).unwrap_err();
+    let kinds: Vec<_> = errors.iter().map(|e| (e.path.as_str(), &e.kind)).collect();
+    assert!(
+        kinds.contains(&("database.url", &ErrorKind::Tag)),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&("agents", &ErrorKind::NonStringKey)),
+        "{kinds:?}"
+    );
+}
+
+#[test]
+fn the_document_must_be_a_mapping_with_a_version() {
+    assert_eq!(
+        lines(load("- a\n- b\n", &minimal_env())),
+        ["the configuration must be a mapping, starting with `version: 1`"]
+    );
+    for text in [
+        "database: { url: { env: DATABASE_URL } }\n",
+        "version: 2\ndatabase: { url: { env: DATABASE_URL } }\n",
+        "version: one\ndatabase: { url: { env: DATABASE_URL } }\n",
+    ] {
+        let errors = lines(load(text, &minimal_env()));
+        assert_eq!(
+            errors,
+            ["version: this build reads version 1 (write `version: 1`)"],
+            "{text}"
+        );
+    }
+}
+
+/// Every shape error of a file is listed, each with its key path, in one run.
+#[test]
+fn every_shape_error_is_listed_at_once() {
+    let text = "\
+version: 1
+server:
+  listen: 0.0.0.0:8080
+  role: boss
+  surfaces: [agui, chat-api]
+  nonsense: true
+log: { format: yaml }
+database:
+  maxConnections: 1
+dispatcher: { concurrency: many, outboxLeaseSecs: 2 }
+agents:
+  registry: { timeoutSecs: 61 }
+gate: { require: [ci, magic], maxAttemptsCap: 101 }
+webhooks:
+  generic: { secrets: [] }
+  github: { secrets: [{ env: A }, { env: B }, { env: C }] }
+threadTools: { secret: plain-text }
+auth: { devUser: 5 }
+";
+    let errors = lines(load(text, &minimal_env()));
+    let want = [
+        "agents.registry.timeoutSecs: must be at most 60",
+        "agents.registry.url: required key is missing",
+        "auth.devUser: expected string",
+        "database.maxConnections: must be at least 2",
+        "database.url: required key is missing",
+        "dispatcher.concurrency: expected integer",
+        "dispatcher.outboxLeaseSecs: must be at least 3",
+        "gate.maxAttemptsCap: must be at most 100",
+        "gate.require[1]: not an allowed value (allowed: ci, agent-checks, verifier)",
+        "log.format: not an allowed value (allowed: json, text)",
+        "server.nonsense: unknown key",
+        "server.role: not an allowed value (allowed: all, control-plane, worker)",
+        "server.surfaces[1]: not an allowed value (allowed: agui, mcp, thread-tools, webhook-generic, webhook-github)",
+        "threadTools.secret: a secret is a reference: `{ env: NAME }` or `{ file: PATH }`",
+        "webhooks.generic.secrets: needs at least 1 item(s)",
+        "webhooks.github.secrets: takes at most 2 item(s)",
+    ];
+    assert_eq!(errors, want);
+}
+
+#[test]
+fn a_plain_string_is_refused_wherever_a_secret_goes() {
+    // One file with a string at each of the eight secrets.
+    let text = "\
+version: 1
+database: { url: postgres://u:hunter2@db/orch }
+agents:
+  file: agents.yaml
+  registry: { url: https://r.example.com/agents, token: plain, agentToken: plain }
+models:
+  endpoints: { default: { baseUrl: https://m.example.com/v1, apiKey: plain } }
+threadTools: { url: http://orch:8080, secret: plain, previousSecret: plain }
+webhooks:
+  generic: { secrets: [plain] }
+  github: { secrets: [plain] }
+";
+    let errors = lines(load(text, &minimal_env()));
+    let reference = "a secret is a reference: `{ env: NAME }` or `{ file: PATH }`";
+    let want = [
+        "agents.registry.agentToken",
+        "agents.registry.token",
+        "database.url",
+        "models.endpoints.default.apiKey",
+        "threadTools.previousSecret",
+        "threadTools.secret",
+        "webhooks.generic.secrets[0]",
+        "webhooks.github.secrets[0]",
+    ]
+    .map(|key| format!("{key}: {reference}"));
+    assert_eq!(errors, want);
+    assert!(
+        !render(&load(text, &minimal_env()).unwrap_err()).contains("hunter2"),
+        "the value of a secret is never in the message"
+    );
+}
+
+#[test]
+fn a_reference_with_the_wrong_members_is_refused_as_not_a_reference() {
+    for secret in [
+        "{ vault: x }",
+        "{ env: x, file: y }",
+        "{ env: 5 }",
+        "[ x ]",
+        "5",
+    ] {
+        let text = format!("version: 1\ndatabase: {{ url: {secret} }}\nagents: {{ file: a }}\n");
+        assert_eq!(
+            lines(load(&text, &minimal_env())),
+            ["database.url: a secret is a reference: `{ env: NAME }` or `{ file: PATH }`"],
+            "{secret}"
+        );
+    }
+}
+
+#[test]
+fn unknown_keys_are_errors_and_reserved_keys_name_what_brings_them() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml, nonsense: 1 }
+server: { environment: production }
+tasks:
+  title: { endpoint: default, model: m, system: { inline: x }, maxTokens: 9, language: conversation }
+  description: { endpoint: default, model: m }
+  turnSummary: {}
+ui: { showDescriptions: true }
+auth: { mode: jwt, roles: {} }
+artifacts: { store: fs }
+";
+    let errors = lines(load(text, &minimal_env()));
+    let find = |key: &str| {
+        errors
+            .iter()
+            .find(|l| l.starts_with(&format!("{key}: ")))
+            .unwrap()
+    };
+    assert_eq!(find("agents.nonsense"), "agents.nonsense: unknown key");
+    for (key, by) in [
+        ("server.environment", "PR S14 (ADR 0033"),
+        ("tasks.title.system", "PR S18 (ADR 0035"),
+        ("tasks.title.maxTokens", "PR S18 (ADR 0035"),
+        ("tasks.title.language", "PR S18 (ADR 0035"),
+        ("tasks.description", "PR S18 (ADR 0035"),
+        ("tasks.turnSummary", "no PR yet"),
+        ("ui", "PR S18 and S19"),
+        ("auth.mode", "PR S14 and S15 (ADR 0033"),
+        ("auth.roles", "PR S14 and S15 (ADR 0033"),
+        ("artifacts", "PR S10 and S11 (ADR 0032"),
+    ] {
+        let line = find(key);
+        assert!(
+            line.contains("reserved for") && line.contains(by) && line.contains("not built yet"),
+            "{line}"
+        );
+    }
+    assert!(
+        !errors
+            .iter()
+            .any(|l| l.contains("unknown key") && l.starts_with("ui"))
+    );
+}
+
+/// Every rule between keys, in one run.
+#[test]
+fn every_rule_error_is_listed_at_once() {
+    let text = "\
+version: 1
+server:
+  listen: nowhere
+  surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github, agui]
+  publicUrl: https://chat.example.com/some/path
+database: { url: { env: DATABASE_URL } }
+agents:
+  registry: { url: 'https://user:pw@r.example.com/agents' }
+gate: { maxAttempts: 4, maxAttemptsCap: 3 }
+models:
+  endpoints:
+    default: { baseUrl: ftp://m.example.com }
+    Second_One: { baseUrl: https://m.example.com/v1 }
+tasks: { title: { endpoint: nowhere, model: m } }
+threadTools: { allowedHosts: ['https://x'] }
+mcp: { allowedHosts: ['*'], allowedOrigins: ['https://o.example.com/'] }
+auth: { devUser: nobody }
+";
+    let errors = lines(load(text, &minimal_env()));
+    let want = [
+        "agents.registry.url: expected an absolute http:// or https:// URL with a host and no user name or password, like https://platform.example.com/registry/v1/agents",
+        "auth.devUser: expected an e-mail address",
+        "gate.maxAttempts: is above gate.maxAttemptsCap",
+        "mcp.allowedHosts[0]: not a host name or address, with or without a port (no scheme, path, wildcard or credentials): write orch.example.com or orch.example.com:8443",
+        "mcp.allowedOrigins[0]: not an origin: write https://host or https://host:port, with no path",
+        "mcp.tokensFile: required when server.surfaces mounts mcp",
+        "models.endpoints: this build takes one endpoint (several: PR S18, ADR 0035)",
+        "models.endpoints.Second_One: an endpoint name is a slug: a to z, 0 to 9 and -, 1 to 32 characters",
+        "models.endpoints.default.baseUrl: expected an http:// or https:// URL, like https://api.example.com/v1",
+        "server.listen: not a socket address like 0.0.0.0:8080",
+        "server.publicUrl: must be an origin such as https://chat.example.com: http or https, a host, no credentials, path, query or fragment",
+        "server.surfaces[5]: a surface is listed more than once",
+        "tasks.title.endpoint: names no endpoint of models.endpoints",
+        "threadTools.allowedHosts[0]: not a host name or address, with or without a port (no scheme, path, wildcard or credentials): write orch.example.com or orch.example.com:8443",
+        "threadTools.secret: required when server.surfaces mounts thread-tools (in every role)",
+        "threadTools.url: required when server.surfaces mounts thread-tools (in every role)",
+        "webhooks.generic: required when server.surfaces mounts webhook-generic",
+        "webhooks.github: required when server.surfaces mounts webhook-github",
+    ];
+    assert_eq!(errors, want);
+}
+
+#[test]
+fn the_cross_key_rules_of_the_thread_tools_and_the_agents() {
+    let base = "version: 1\ndatabase: { url: { env: DATABASE_URL } }\n";
+    let fake = minimal_env().env("S", LONG);
+    for (extra, want) in [
+        (
+            "agents: { file: a }\nthreadTools: { url: 'http://o:8080' }\n",
+            "threadTools.secret: required with threadTools.url: set both or neither",
+        ),
+        (
+            "agents: { file: a }\nthreadTools: { secret: { env: S } }\n",
+            "threadTools.url: required with threadTools.secret: set both or neither",
+        ),
+        (
+            "agents: { file: a }\nthreadTools: { previousSecret: { env: S } }\n",
+            "threadTools.previousSecret: needs threadTools.secret: the previous key only verifies",
+        ),
+        (
+            "agents: { file: a }\nthreadTools: { url: 'http://u:p@o:8080', secret: { env: S } }\n",
+            "threadTools.url: expected an http:// or https:// URL with a host, without credentials, query or fragment",
+        ),
+        (
+            "agents: {}\n",
+            "agents.file: required unless agents.registry.url is set (the agents have to come from somewhere)",
+        ),
+        (
+            "agents: { file: a, registry: { url: 'https://r.example.com/agents' } }\nthreadTools: { url: 'http://o:8080', secret: { env: S }, previousSecret: { env: S } }\n",
+            "threadTools.previousSecret: is the same as threadTools.secret",
+        ),
+    ] {
+        let text = format!("{base}{extra}");
+        let errors = lines(load(&text, &fake));
+        assert_eq!(errors, [want], "{extra}");
+    }
+    // A registry is enough to start without an agents file.
+    let ok = format!("{base}agents:\n  registry: {{ url: 'https://r.example.com/agents' }}\n");
+    assert!(load(&ok, &fake).is_ok());
+}
+
+#[test]
+fn a_worker_is_not_asked_for_what_it_would_never_use() {
+    // The control plane's webhook secrets are not in a worker's environment: not an error.
+    let text = "\
+version: 1
+server: { role: worker, surfaces: [agui, webhook-generic, webhook-github, mcp] }
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+webhooks:
+  generic: { secrets: [{ env: WEBHOOK_GENERIC_SECRET }] }
+  github: { secrets: [{ env: WEBHOOK_GITHUB_SECRET }] }
+";
+    let valid = load(text, &minimal_env()).unwrap();
+    assert!(valid.secrets.webhook_generic.is_empty());
+    // The same file for a control plane needs them, and says which variable.
+    let control = text.replace("role: worker", "role: control-plane");
+    let errors = lines(load(&control, &minimal_env()));
+    assert!(
+        errors.contains(
+            &"webhooks.generic.secrets[0]: the environment variable WEBHOOK_GENERIC_SECRET is unset or empty"
+                .to_owned()
+        ),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|l| l.starts_with("mcp.tokensFile: required")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn an_unmounted_webhook_whose_secret_is_unset_is_not_an_error_but_a_short_one_is() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+webhooks: { github: { secrets: [{ env: GH }] } }
+";
+    assert!(load(text, &minimal_env()).is_ok(), "not mounted, unset");
+    let errors = lines(load(text, &minimal_env().env("GH", "short")));
+    assert_eq!(
+        errors,
+        [
+            "webhooks.github.secrets[0]: the secret is shorter than 32 bytes (generate one with `openssl rand -hex 32`)"
+        ]
+    );
+}
+
+#[test]
+fn references_that_do_not_resolve_name_the_key_and_the_variable_or_path() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents:
+  file: agents.yaml
+  registry: { url: 'https://r.example.com/a', token: { file: /run/secrets/none }, agentToken: { file: empty } }
+models: { endpoints: { default: { baseUrl: 'https://m.example.com', apiKey: { env: BLANK } } } }
+threadTools: { url: 'http://o:8080', secret: { file: big } }
+";
+    let fake = Fake::default()
+        .env("BLANK", "   ")
+        .file("/etc/orchestrator/empty", "\n")
+        .file("/etc/orchestrator/big", &"x".repeat(64 * 1024 + 1));
+    let errors = lines(load(text, &fake));
+    assert_eq!(
+        errors,
+        [
+            "agents.registry.agentToken: the file empty is empty",
+            "agents.registry.token: the file /run/secrets/none cannot be read",
+            "database.url: the environment variable DATABASE_URL is unset or empty",
+            "models.endpoints.default.apiKey: the environment variable BLANK is unset or empty",
+            "threadTools.secret: the file big is larger than 64 KiB",
+        ]
+    );
+}
+
+#[test]
+fn a_file_secret_loses_one_trailing_newline_and_an_env_secret_is_trimmed() {
+    let text = "\
+version: 1
+database: { url: { file: db } }
+agents: { file: agents.yaml }
+threadTools: { url: 'http://o:8080', secret: { env: KEY } }
+";
+    let fake = Fake::default()
+        .file("/etc/orchestrator/db", "postgres://x\r\n\n")
+        .env("KEY", &format!("  {LONG}\n"));
+    let valid = load(text, &fake).unwrap();
+    assert_eq!(valid.secrets.database_url.expose(), "postgres://x\r\n");
+    assert_eq!(valid.secrets.thread_tools_secret.unwrap().expose(), LONG);
+}
+
+#[test]
+fn a_thread_tools_key_must_be_long_enough() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+threadTools: { url: 'http://o:8080', secret: { env: KEY } }
+";
+    let errors = lines(load(text, &minimal_env().env("KEY", "short")));
+    assert_eq!(
+        errors,
+        [
+            "threadTools.secret: the secret is shorter than 32 bytes (generate one with `openssl rand -hex 32`)"
+        ]
+    );
+}
+
+/// ADR 0034: "No error carries a value." Every message is built for a file whose values are
+/// recognisable, and none of them may appear in what is printed, in any error kind.
+#[test]
+fn no_error_carries_a_value() {
+    const SECRET: &str = "S3CR3T-VALUE-THAT-MUST-NOT-LEAK";
+    let files = [
+        // Shape errors: a secret pasted where a reference goes, as a number, as an enum value, as
+        // the value of an unknown key, in a list.
+        format!(
+            "version: 1\ndatabase: {{ url: {SECRET}, maxConnections: {SECRET} }}\nagents: {{ file: a }}\n\
+             server: {{ role: {SECRET}, listen: 1, surfaces: [{SECRET}] }}\n\
+             log: {{ format: {SECRET} }}\nunknown: {SECRET}\nthreadTools: {{ secret: {SECRET} }}\n\
+             auth: {{ devUser: [{SECRET}] }}\n"
+        ),
+        // Rule errors: the same text where a URL, a host, an origin, an e-mail or an address goes.
+        format!(
+            "version: 1\ndatabase: {{ url: {{ env: DATABASE_URL }} }}\nagents: {{ file: a, registry: {{ url: '{SECRET}' }} }}\n\
+             server: {{ listen: {SECRET}, publicUrl: 'https://u:{SECRET}@chat.example.com/{SECRET}' }}\n\
+             threadTools: {{ url: 'http://u:{SECRET}@o:8080', allowedHosts: [{SECRET}://x] }}\n\
+             mcp: {{ allowedHosts: ['{SECRET}/x'], allowedOrigins: ['https://o.example.com/{SECRET}'] }}\n\
+             auth: {{ devUser: {SECRET} }}\n\
+             models: {{ endpoints: {{ main: {{ baseUrl: '{SECRET}' }} }} }}\ntasks: {{ title: {{ endpoint: {SECRET}, model: m }} }}\n"
+        ),
+        // The secret as a key that is repeated, a tag, a syntax error.
+        format!("version: 1\nversion: {SECRET}\n"),
+        format!("version: 1\ndatabase: !{SECRET} x\n"),
+        format!("version: 1\ndatabase: [{SECRET}\n"),
+        format!("version: {SECRET}\n"),
+        format!("- {SECRET}\n"),
+        // Rules that name a secret: references to unset variables and files, a short key.
+        "version: 1\ndatabase: { url: { env: DATABASE_URL } }\nagents: { file: a }\n\
+         threadTools: { url: 'http://o:8080', secret: { env: SHORT }, previousSecret: { env: SHORT } }\n"
+            .to_owned(),
+    ];
+    let fake = minimal_env().env("SHORT", SECRET);
+    for text in files {
+        let errors = match load(&text, &fake) {
+            Ok(_) => panic!("expected errors for {text}"),
+            Err(errors) => errors,
+        };
+        assert!(!errors.is_empty());
+        let shown = format!("{} {errors:?}", render(&errors));
+        assert!(
+            !shown.contains(SECRET),
+            "a value reached an error:\n{shown}\nfor:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn debug_prints_references_and_never_a_value() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+threadTools: { url: 'http://o:8080', secret: { env: KEY } }
+";
+    let valid = load(text, &minimal_env().env("KEY", LONG)).unwrap();
+    let shown = format!("{valid:?} {:?}", valid.secrets);
+    assert!(
+        !shown.contains(LONG) && !shown.contains("postgres://u:pw@db/orch"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("{ env: DATABASE_URL }") && shown.contains("{ env: KEY }"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn the_validated_configuration_prints_as_yaml_with_references_only() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(
+        json["database"]["url"],
+        serde_json::json!({ "env": "DATABASE_URL" })
+    );
+    assert_eq!(json["server"]["surfaces"], serde_json::json!(["agui"]));
+    assert!(!json.to_string().contains("postgres://"));
+}

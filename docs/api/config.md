@@ -70,6 +70,8 @@ mcp:
   tokensFile: mcp-tokens.yaml
   allowedHosts: [chat.example.com]
 webhooks:
+  generic:
+    secrets: [{ env: WEBHOOK_GENERIC_SECRET }]
   github:
     secrets: [{ env: WEBHOOK_GITHUB_SECRET }]
 ```

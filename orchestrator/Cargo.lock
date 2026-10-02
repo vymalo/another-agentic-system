@@ -2136,6 +2136,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-config"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "schemars",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "orch-core"
 version = "0.1.0"
 dependencies = [
