@@ -23,6 +23,7 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
+use crate::dispatcher::FileLimits;
 use crate::{
     AgentDirectory, AppError, GateError, GateLayer, GateRules, Layer, PublicConfig, TaskSettings,
     check_catalog_schemas,
@@ -104,6 +105,10 @@ pub struct AppConfig {
     pub tasks: BTreeMap<TaskKind, TaskSettings>,
     /// What `GET /api/config` says: the `ui` section of the configuration file, for the web.
     pub public: PublicConfig,
+    /// The limits on the files an agent hands over (ADR 0032: `artifacts.maxFileBytes`,
+    /// `artifacts.maxPerJobBytes`, and 50 files a job), enforced by the dispatcher before it puts a
+    /// file in the artifact store. Without a store every file is refused as "could not be kept".
+    pub files: FileLimits,
 }
 
 impl Default for AppConfig {
@@ -120,6 +125,7 @@ impl Default for AppConfig {
             record_step_io: true,
             tasks: BTreeMap::new(),
             public: PublicConfig::default(),
+            files: FileLimits::default(),
         }
     }
 }
@@ -422,6 +428,11 @@ impl<P: Ports> App<P> {
     /// The public subset of the configuration (`GET /api/config`).
     pub fn public_config(&self) -> &PublicConfig {
         &self.cfg.public
+    }
+
+    /// The limits the dispatcher enforces on the files agents hand over (ADR 0032).
+    pub fn file_limits(&self) -> &FileLimits {
+        &self.cfg.files
     }
 
     /// How `kind` asks its model, when the task is on.

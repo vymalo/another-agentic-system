@@ -144,6 +144,8 @@ struct State {
     find_failures: usize,
     /// Agents that play the verifier: every message is answered by the script.
     verifiers: HashMap<AgentId, VerdictScript>,
+    /// What the `files` script sends, in order ([`ScriptedAgent::set_files`]).
+    files: Vec<AgentUpdate>,
 }
 
 struct Shared {
@@ -176,6 +178,8 @@ struct Shared {
 ///   under the stream's id ([`stream_id`]) as an agent message, then `completed` with it as its
 ///   words; `stream-gate` stops after three pieces until [`ScriptedAgent::release_gate`];
 ///   `stream-abandon` gives up after two pieces and `failed("the model failed")`s;
+/// - `files`: `working`, then the updates given to [`ScriptedAgent::set_files`] (files an adapter
+///   reports, ADR 0032: `AgentUpdate::File`, or links), each under its own key, `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
@@ -270,6 +274,12 @@ impl ScriptedAgent {
         for _ in 0..n {
             st.fail_sends.push_back(error());
         }
+    }
+
+    /// What the `files` script sends: these updates, in order, between `working` and `completed`
+    /// (each under the key `a2a:<task>:artifact:file:<position>`, so a replay is a duplicate).
+    pub fn set_files(&self, updates: Vec<AgentUpdate>) {
+        self.state().files = updates;
     }
 
     /// Makes `agent` play the verifier: whatever it is sent, it answers as `script` says.
@@ -752,6 +762,19 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_status(&task, Failed, Some("the model failed"));
         }
         "failed" => shared.push_status(&task, Failed, Some("scripted failure")),
+        "files" => {
+            let updates = shared.state().files.clone();
+            for (n, update) in updates.into_iter().enumerate() {
+                shared.push(
+                    &task,
+                    None,
+                    None,
+                    IdemKey::Task(format!("a2a:{task}:artifact:file:{n}")),
+                    Some(update),
+                );
+            }
+            shared.push_status(&task, Completed, None);
+        }
         "gate" | "drop" => {
             shared.gate.notified().await;
             shared.push_artifact(&task, "echo", format!("echo: {text}"));
