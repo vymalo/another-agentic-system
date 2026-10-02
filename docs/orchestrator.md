@@ -690,10 +690,11 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 
 | Input | `queued` / `working` | `blocked` | `done` / `failed` / `cancelled` |
 |---|---|---|---|
-| `UserMessage` | State kept; append `user_message`, `Delegate` | → `queued`; same commands | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
-| `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
+| `UserMessage` | State kept; append `user_message { delivery: steer }`, `Steer { text }` (**steer**, [ADR 0036](decisions/0036-sending-while-an-agent-works.md); the application writes it as a delegation row until the dispatcher steers). With `after_stop` set: joined to it, `delivery: interrupt`, no command ([Stop & send](#stop--send-adr-0036)) | → `queued`; append `user_message`, `Delegate` | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
+| `StopAndSend` (ADR 0036) | Append `user_message { delivery: interrupt }`, `RequestCancel { job }`, `after_stop = text`; state kept. With `after_stop` set: joined, no command | Exactly `UserMessage` (nothing runs, so nothing to stop; `delivery` absent) |
+| `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event; dropped while `after_stop` is set | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
 | `UserMessage` or `UiAction` that **carries a catalog** (`catalog: Some`, [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) | As the row of the input, and `ui_catalog` is appended **first**, before `user_message` / `ui_action`, when the thread has not recorded that digest; the delegation carries the catalog **inline** when this input made it current, else a reference | The same | The same for a message (the catalog goes before `job_started`); an action is `Err(Finished)` and records nothing |
-| `Cancel` | State kept; `RequestCancel { job }` (the current job's number) | State kept; `RequestCancel { job }` | No-op |
+| `Cancel` | State kept; `RequestCancel { job }` (the current job's number); `after_stop` cleared | State kept; `RequestCancel { job }` | No-op |
 | Agent status `submitted` | Nothing | Nothing | `Err(InvalidInState)`, dropped as late |
 | Agent status `working` | `queued` → `working`; append `agent_status`. Repeated in `working`: shown only with a detail | → `working` | `Err(InvalidInState)` |
 | Agent status `input_required`, `auth_required` | → `blocked`; append `agent_status`, `thread_state` | State kept; shown again only with a detail | `Err(InvalidInState)` |
@@ -708,7 +709,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `DeliveryFailed`, retryable | → `blocked`; append `error`, and `thread_state` on entering | State kept; append `error` | State kept; append `error` |
 | `DeliveryFailed`, permanent | → `failed`; `error`, `thread_state` | → `failed` | State kept; append `error` |
 | `CancelledBeforeStart` | → `cancelled`; `thread_state` | → `cancelled` | No-op |
-| `CancelRejected` | State kept; append `error` | Same | No-op |
+| `CancelRejected { agent, reason, retryable }` | State kept; append `error`. With `after_stop` set and the rejection not retryable: the text is steered to the agent instead (see [Stop & send](#stop--send-adr-0036)) | Same | No-op |
 | Agent message (final) or a status that ends or interrupts the turn with words, **while the thread has the first message's words** | As the row of the update, and `RequestTitle { ask }` is appended when the ledger may ask (fewer than 2 asks, none in flight, none yet in this reply): see [Thread titles](#thread-titles-mvp-slice-6) | Same | `Err(InvalidInState)` |
 | `Titled { ask, title }` / `TitleDeclined { ask }` (the title worker's inputs) | `Titled`: if the thread still has the first words, append `thread_titled { title, source: model }` and `SetTitle`, ledger `Model`; else nothing. `TitleDeclined`: nothing. Both mark the ask answered | Same | Same: valid in every state |
 | `Described { job, description }` / `DescriptionDeclined { job }` (the description worker's inputs, [below](#thread-descriptions-adr-0035)) | `Described`: if `job` is the ask in flight and no person wrote the description, append `thread_described { description, source: model }` and `SetDescription`, ledger `Model`; else nothing. Both mark the ask answered | Same | Same: valid in every state |
@@ -720,9 +721,28 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 `thread_state` is appended only when the thread *enters* `blocked`, `done`, `failed` or
 `cancelled`; entering `queued` or `working` is implied by `user_message` and `agent_status`. The
 property test (`tests/properties.rs`) checks that terminal states absorb every input except
-`UserMessage` and `Redeliver`, which start job *n+1* with attempt 1, the same gate and the verification count
+`UserMessage` and `Redeliver` (and `StopAndSend`, which is a `UserMessage` there), which start job *n+1* with attempt 1, the same gate and the verification count
 not reset; that a `thread_state` event names the state the thread entered; and that `completed` reaches
 `done` from every open state.
+
+**Stop & send** ([ADR 0036](decisions/0036-sending-while-an-agent-works.md), core and application built 2026-10-02;
+the sequence and state diagrams are in the ADR). While a job is `queued` or `working`, `StopAndSend` asks the agent to
+cancel the running task and keeps the text in `Job.after_stop`; a thread that has it is **stopping**: it is still
+`queued` or `working` (`ThreadState` is unchanged), and the ledger says so. While it is stopping:
+
+| Input | Result |
+|---|---|
+| `StopAndSend` or `UserMessage` | `user_message { delivery: interrupt }`; the text is joined to `after_stop` after a blank line, no command (a joined text over 64 KiB is `TextTooLong`, 422) |
+| the task ends (`completed`, `failed`, `canceled`, `rejected`) or the delegation is dead-lettered | the agent's event is logged, **the job is not judged** (no gate, no verification, no rework, no attempt, no `thread_state`), then `Job::next()`, `job_started`, `DropQueued { job }`, `Delegate { after_stop }`; state `queued` |
+| `input_required`, `auth_required` | `agent_status` is logged; the thread stays as it is (no `blocked`) |
+| `CancelRejected`, not retryable | an `error` "<agent> could not be stopped; your message was sent to it instead", `Steer { after_stop }`, `after_stop` cleared; a retryable one logs the error and keeps waiting |
+| `CancelledBeforeStart` | the next job starts (without it, the thread would be cancelled) |
+| `Cancel` | `after_stop` cleared, then the cancel as before: the text is never sent |
+| `UiAction` | `InvalidInState`: an answer to a job being abandoned |
+
+`DropQueued` finishes the thread's unsent `delegate` rows as `skipped` so that none of the abandoned job's runs ahead of
+the next job's: the application does it just before the commit that starts the job (`skip_unsent_delegates`). A thread's
+first message goes through `start_thread`, not `transition`, so it carries no `delivery`.
 
 **Jobs on a thread** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md), built 2026-09-30). A thread is
 a conversation; `done`, `failed` and `cancelled` end the *current job*, not the thread. `Job.number` (from 1;
@@ -1329,19 +1349,22 @@ pub enum ThreadState { Queued, Working, Verifying, Blocked, Done, Failed, Cancel
 pub enum Input {
     UserMessage { user: UserId, text: String, message_id: Option<String>, run_id: Option<String>,
                   catalog: Option<UiCatalogData> },   // the screen's catalog, when it sent one (ADR 0023)
+    StopAndSend { /* the same fields */ },            // ADR 0036: stops the running job, starts the next with the text
     Redeliver { text: String },   // a user message already in the log whose delegation never reached the agent
     Cancel { user: UserId },
     Agent { agent: AgentId, revision: Option<String>, update: AgentUpdate },
     Step { actor: Actor, report: StepReport },   // a step the orchestrator reports itself (ADR 0025)
     DeliveryFailed { reason: String, retryable: bool },
     CancelledBeforeStart,
-    CancelRejected { reason: String, retryable: bool },
+    CancelRejected { agent: AgentId, reason: String, retryable: bool },
 }
 
 /// What the application must do. The application turns these into ONE store commit.
 pub enum Command {
     Append(EventDraft),          // → an event in the thread's log
     Delegate { text: String, catalog: Option<UiDelivery> },   // → an outbox row, kind `delegate`
+    Steer { text: String, catalog: Option<UiDelivery> },      // ADR 0036: to the running task; a `delegate` row until the dispatcher steers
+    DropQueued { job: u32 },     // ADR 0036: skip the thread's unsent delegations of the abandoned job, before the commit
     RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
 }
 
@@ -1352,6 +1375,7 @@ pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
     InvalidInState { state: ThreadState, input: &'static str }, // a late agent update
+    TextTooLong { max: usize },                             // Stop & send: the text held for the next job is over 64 KiB (ADR 0036)
 }
 
 pub fn transition(snapshot: &Snapshot, input: &Input)

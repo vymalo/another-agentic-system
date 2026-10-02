@@ -3,7 +3,8 @@
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-01 ("while an agent is working, it should also
   be possible for a human to send a message … e.g. 'you were wrong since line #1'"). The details are delegated to the
   planner (plan 11, owner decision 5: **the full `steer/v1`**, with the cut line below) and the owner may revisit
-  them. **Not built.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
+  them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11));
+  the AG-UI member, the dispatcher's steer path, the web and the adam-rs side are not.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
   is, and the race of open question 33), [ADR 0012](0012-ag-ui-user-facing-protocol.md) (a second run while one is open
   is no longer always a 409) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (a job abandoned by a person is
   not verified). Builds on [ADR 0021](0021-context-across-a2a-tasks.md) and
@@ -244,3 +245,40 @@ The `delivery` member of `user_message` and the outbox kind `steer` in stored da
   append (`abortActiveRun()`, then a new run). The web's first test checks it again; the fallback is a small `POST`
   message route whose message arrives by the connect stream.
 - *Unverified:* the adam-rs behaviours of the Context, and how an older replica reads a new `user_message` member.
+
+## Built in PR-11
+
+*2026-10-02.* The core and the application: `UserMessageData.delivery`, `Input::StopAndSend`, `Job.after_stop`,
+`Command::Steer` and `Command::DropQueued`, the nine rows of the table (`orchestrator/crates/core/tests/stop_and_send.rs`
+has one test or more for each, and for the gate), and `App::stop_and_send`. No migration (the `delivery` member and
+`after_stop` are serde defaults). Not built: `forwardedProps["vymalo.send"]` and the projection (PR-12), the `steer` outbox
+row, `steer/v1` and the fallback (PR-13), the web. Until the dispatcher steers, a steered message is written as the
+delegation it always was, so **Send is delivered after the turn** and the log already says `delivery: steer`.
+
+Where the build is not what the text above says, or the text was silent:
+
+- **The first message of a thread is not a steer.** `transition` of a `queued` thread says `steer`, and a new thread is
+  `queued`; `start_thread(gate, input)` is the transition of the first message (no `delivery`, a delegation).
+- **`Input::StopAndSend` carries `catalog`**, as `UserMessage` does (the screen sends it with every message, ADR 0023, and
+  row 4 is "exactly `UserMessage`"). The `ui_catalog` event is written first. The delegation that starts the next job carries
+  a reference to the current catalog, never the catalog inline, because the text is delegated later.
+- **`Command::Steer { text, catalog }`** keeps the catalog so that the delegation it stands for is today's, byte for byte.
+  PR-13 may drop it from the steer row (`steer/v1` carries no catalog).
+- **`Command::Delegate` has no `new_job`.** The application derives it from the `job_started` in the commit, as it did before.
+- **`Command::DropQueued` is executed just before the commit, not in it.** `apply` calls `skip_unsent_delegates` when the
+  transition produced the command, so the row the commit writes is made after the rows are finished, and no port or store
+  changes in this pull request. It is not atomic with the commit: a crash between the two leaves the abandoned job's unsent
+  delegations skipped and the thread still stopping, which the retry of the input that produces it finishes. Nothing is
+  inserted for a stopping thread meanwhile (a message joins `after_stop`, and a redelivery is dropped), so no row of the next
+  job can be skipped by mistake. PR-13 adds the `steer` kind to the skip (and may move it into the commit).
+- **`Input::CancelRejected` gained `agent`**, so that row 7 can say "<agent> could not be stopped; your message was sent to
+  it instead".
+- **The text held is bounded for the first stop too** (64 KiB, `MAX_AFTER_STOP_BYTES`), not only when joined: the ledger is
+  written with every commit of the thread. `TransitionError::TextTooLong` is `AppError::Unprocessable`, 422 on the surfaces.
+- **While a job is stopping**, an A2UI action is refused (`InvalidInState`: an answer to a job being abandoned, as row 6), and
+  a redelivered message is dropped (the stop supersedes it, as `DropQueued` does the rows).
+- **A late end of the stopped task must not end the next job.** The stream of the delegation and the cancel that read the
+  task back both report `canceled`, under different keys; the second would otherwise reach the thread after the next job began
+  and cancel it. The dispatcher drops a terminal status of a task its binding records as over already.
+- A job ended by Stop & send logs the agent's `agent_status` (`completed`, `failed`, `canceled`) and no `thread_state`; the
+  AG-UI projection of that boundary is PR-12's.

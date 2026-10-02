@@ -20,8 +20,9 @@ pub const VERSION: u32 = 1;
 ///   knows the API knows this member.
 /// * `job`: the whole job ledger, which `Thread.job` only summarises (and omits without a
 ///   gate): `number` (which job of the thread this is, ADR 0020), the gate policy, the attempt,
-///   the verification counter, the pushed commit, every result of the current attempt and any
-///   hold. A job without a gate is `{}` apart from the defaults, exactly as the store keeps it.
+///   the verification counter, the pushed commit, every result of the current attempt, any
+///   hold, and `afterStop` (the text the next job starts with while a Stop & send is landing,
+///   ADR 0036; absent unless the thread is stopping). A job without a gate is `{}` apart from the defaults, exactly as the store keeps it.
 /// * `binding`: the A2A agent, context and task the thread is bound to.
 /// * `events`: the append-only log in order, each exactly as the contract `Event` and the store
 ///   serialise it. Every card and line of the chat is derived from it.

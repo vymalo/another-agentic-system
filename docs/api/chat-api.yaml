@@ -851,9 +851,11 @@ components:
             the thread has: `{"source": "user"}` once a person renamed it, absent while it has the
             first message's words) and `description` (whose description the thread has and which job
             asked the model for it last: `{"source": "model", "askedJob": 2}`, `{"source": "user"}`
-            once a person wrote or cleared it, absent while the thread has none and none was asked).
+            once a person wrote or cleared it, absent while the thread has none and none was asked) and `afterStop` (the text the
+            next job starts with while a Stop & send is landing, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md): the
+            person's words, as in `task`; absent unless the thread is stopping).
             The members of the job itself that are empty (`task`, `branchProblem`, `summary`,
-            `pushed`, `results`, `hold`, `title`, `description`) are absent; `gate` is always whole, and its `verifier` is `null`
+            `pushed`, `results`, `hold`, `title`, `description`, `afterStop`) are absent; `gate` is always whole, and its `verifier` is `null`
             when there is none.
         binding:
           type: [object, "null"]
@@ -942,7 +944,7 @@ components:
     EventKind:
       type: string
       enum:
-        - user_message        # data: { text, messageId?, runId? }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise)
+        - user_message        # data: { text, messageId?, runId?, delivery?: steer|interrupt }  (the ids are set when the message came from a surface that names them, e.g. AG-UI; absent otherwise). `delivery` says how a message sent while a job was `queued` or `working` reaches it ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)): `steer` (a plain Send: the agent reads it in its running task when its card lists `steer/v1`, else after its turn) or `interrupt` (Stop & send, or sent while a stop was landing: the running task is cancelled and the next job starts with the text). Written by the orchestrator, never by a client; absent when nothing was running and in every log written before it existed. Additive.
         - agent_message       # data: { text, final: bool, purpose?: working|answer, via?: turn_output }  (final=false: streamed partial, replaced by the next agent_message with the same messageId). `purpose` says what the words are for in the turn (ADR 0031): `working` for words stated on a `working` status, `answer` for words stated on a status that ends the turn (`completed`, `input_required`, `auth_required`); absent for a plain A2A message and in every log written before it existed. `via` says how an answer was announced when it was not by that status (`turn_output`: the agent called the thread tool, written by the orchestrator with the id `out-<jti>-<n>`; once a turn has such an answer, the core writes everything else the agent says in the turn as `working`, and a later announcement replaces the earlier one by the rule that the answer of a turn is the last message marked `answer` in it). Additive.
         - agent_status        # data: { status: submitted|working|input_required|auth_required|completed|failed|canceled, detail? }  (mirrors A2A TaskState; auth_required blocks the thread like input_required, detail names what to authenticate to)
         - artifact            # data: { name, mimeType?, uri?, text?, file?: ArtifactFile }  e.g. a branch, a PR URL, a patch, or a file the agent handed over (ADR 0032): then `file` is the reference (`sha256`, `size`, `filename?`) to the bytes kept in the artifact store and served by `getArtifact`, and `mimeType` is the type the worker sniffed. An artifact entry without `file` and `text` and `uri`, followed by an `error` event, is a file that was not kept (too large, over the job's limits, no store, the store failed). Additive.
@@ -984,6 +986,10 @@ components:
         messageId:
           type: string
           description: "agent_message: the agent's stable message id. user_message: the id the surface gave the message, when it did (optional, absent otherwise)."
+        delivery:
+          type: string
+          enum: [steer, interrupt]
+          description: "user_message only (ADR 0036): how a message sent while a job was `queued` or `working` reaches it. `steer`: a plain Send; the agent reads it in its running task when its card lists `steer/v1`, else after its turn (today every agent: the extension is not built yet). `interrupt`: Stop & send, or a message sent while a stop was landing; the running task is cancelled and the next job starts with the text (joined with any other message sent meanwhile). Absent (never `null`) when nothing was running, and in older logs. A thread that is stopping is still `working`."
         runId:
           type: string
           description: "user_message, ui_action: the id of the run the message or action started or continued, when the surface names runs (optional, absent otherwise)."
