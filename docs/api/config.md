@@ -279,6 +279,9 @@ auth:
   for the key cache (10 minutes; an unknown `kid` at most once in 30 seconds; an hour of grace) and what is bounded.
 - **Responses:** 401 with `WWW-Authenticate: Bearer` for no token or a refused one; **503** with `Retry-After` while the
   issuer's keys cannot be fetched; `/readyz` is 503 until they have been fetched.
+- **A worked example** is the dev stack (S16): [`dev/orchestrator.yaml`](../../dev/orchestrator.yaml) runs `jwt` against a mock issuer
+  (`issuer: http://mock-oidc:8080`, `audiences: [dev-chat]`, `rolesClaim: roles`, `server.environment: development` because the issuer is plain http) behind a
+  real oauth2-proxy, with the roles `user`, `admin` and `chat-only` ([`dev/README.md`](../../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
 
 ### Roles and permissions
 

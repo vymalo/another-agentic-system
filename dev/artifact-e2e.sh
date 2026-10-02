@@ -45,17 +45,17 @@
 #     hash; the PNG's and the JSON's bytes hash to `sha256`; the SVG inline is SANITIZED (no `<script`, no `on*` attribute, none of the
 #     coder's markers, its shapes kept, so its hash is not the file's) and with `?download=1` the ORIGINAL bytes (the hash is the
 #     file's, an attachment named after the file, the script still in it); a download of the others equals the file too;
-#   * NOT SERVED: another user's request for the same href is a 404 (played from inside the compose network, through the `edge`
-#     container, because the edge replaces the identity header; skipped, with a line, without `docker compose`), and so is the
+#   * NOT SERVED: another user's request for the same href is a 404 (through the
+#     edge with a token of the mock issuer for that user, a control request of the owner's beside it), and so is the
 #     same hash under a thread that is the same person's but holds no such file, a thread that does not exist, a hash the thread
 #     holds no file for, and a hash that is not 64 lowercase hex digits; a bad `download` value is a 400;
 #   * the coder's model mock answered every request (no error, none unmatched).
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
-#   BASE_URL         http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`, which injects the identity
-#   AUTH_EMAIL       dev@example.com, sent as X-Auth-Request-Email (the edge replaces it)
-#   OTHER_EMAIL      someone-else@example.com, the other user of the 404 check
+#   BASE_URL         http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
+#   AUTH_EMAIL       dev@example.com, the user: a token of the mock issuer (dev/auth-header.sh)
+#   OTHER_EMAIL      someone-else@example.com, the other user of the 404 check (a user of dev/mock-oidc/users.json)
 #   MOCK_OPENAI_URL  http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}, the coder's model
 #   CATALOG_FILE     web/src/features/chat/lib/a2ui/catalog/catalog.json        the screen's catalog
 #   CATALOG_LOCK     web/src/features/chat/lib/a2ui/catalog/catalog.lock.json   its {version, digest}
@@ -63,8 +63,7 @@
 #   TIMEOUT          120    seconds to wait for a run to end
 #
 # It EMPTIES the request journal of `mock-openai` first, so run it on a stack you are not in the middle of another scenario on. Needs
-# curl, jq and sha256sum (or shasum), /proc or uuidgen for a UUID, and, for the other user's request only, `docker compose` on the
-# machine that runs the stack. It runs against the `split` profile too (a worker keeps the file, the control plane serves it: the two
+# curl, jq and sha256sum (or shasum), and /proc or uuidgen for a UUID. It runs against the `split` profile too (a worker keeps the file, the control plane serves it: the two
 # must see the same directory). Verified by CI only, in .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -72,6 +71,9 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
 other_email=${OTHER_EMAIL:-someone-else@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
+other_header=$(sh "$(dirname "$0")/auth-header.sh" "$other_email")
 openai=${MOCK_OPENAI_URL:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
 openai=${openai%/}
 timeout=${TIMEOUT:-120}
@@ -99,7 +101,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
-  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
+  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
@@ -163,7 +165,7 @@ n=0
 stream() {
   _deadline=$(( $(date +%s) + timeout ))
   _code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$base/agui/agents/$3" -H "X-Auth-Request-Email: $email" \
+    "$base/agui/agents/$3" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' --data-binary "@$1" 2>"$tmp/err" || true)
   if [ "$_code" != 200 ]; then
     bad "$2: POST /agui/agents/$3 answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
@@ -187,7 +189,7 @@ stream() {
     sleep 2
   done
   events=$tmp/events.json
-  curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' \
     "$base/agui/threads/$thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$events" 2>/dev/null ||
     echo '[]' > "$events"
   echo "$2: the agent said: ${said:-<nothing>}"
@@ -392,7 +394,7 @@ header() {
 
 # get PATH_AND_QUERY: GET through the edge as the dev user. Sets $status, and leaves the head in $tmp/head and the body in $tmp/body.
 get() {
-  status=$(curl -sS --max-time 60 -D "$tmp/head" -o "$tmp/body" -w '%{http_code}' -H "X-Auth-Request-Email: $email" "$base$1" 2>"$tmp/err" || true)
+  status=$(curl -sS --max-time 60 -D "$tmp/head" -o "$tmp/body" -w '%{http_code}' -H "$id_header" "$base$1" 2>"$tmp/err" || true)
 }
 
 # serving_headers LABEL SHA TYPE_PREFIX: what every inline response of a file carries, read from the head saved by `get`.
@@ -499,32 +501,25 @@ expect_status 404 "a hash in capital letters" "/api/threads/$thread/artifacts/$(
 expect_status 404 "a hash that is not 64 digits" "/api/threads/$thread/artifacts/$(printf '%s' "$png_sha" | cut -c 1-63)"
 expect_status 400 "a download value that is not 0, 1, true or false" "/api/threads/$thread/artifacts/$png_sha?download=maybe"
 
-# Another user: the edge replaces the identity header, so the request is made from inside the compose network, with the header of
-# someone else, straight to the orchestrator, from the `edge` container (busybox wget). The same call as the owner is the control.
-compose="docker compose -f $root/compose.yaml --profile app"
-# shellcheck disable=SC2086 # $compose is a command and its flags on purpose
-if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && [ -n "$($compose ps -q edge 2>/dev/null)" ]; then
-  # shellcheck disable=SC2086 # $compose is a command and its flags on purpose
-  owner_sha=$($compose exec -T edge wget -qO- --header "X-Auth-Request-Email: $email" "http://orchestrator:8080/api/threads/$thread/artifacts/$png_sha" 2>"$tmp/err" | sha256_hex || true)
-  if [ "$owner_sha" = "$png_sha" ]; then
-    ok "from inside the network, the owner's request for square.png (straight to the orchestrator) is served"
-    # shellcheck disable=SC2086
-    other=$($compose exec -T edge wget -S -O /dev/null --header "X-Auth-Request-Email: $other_email" "http://orchestrator:8080/api/threads/$thread/artifacts/$png_sha" 2>&1 || true)
-    case $other in
-      *"404"*) ok "another user ($other_email) asking for the same href gets a 404" ;;
-      *) bad "another user ($other_email) asking for the same href did not get a 404: $(printf '%s' "$other" | head -c 300)" ;;
-    esac
-    # shellcheck disable=SC2086
-    other_dl=$($compose exec -T edge wget -S -O /dev/null --header "X-Auth-Request-Email: $other_email" "http://orchestrator:8080/api/threads/$thread/artifacts/$svg_sha?download=1" 2>&1 || true)
-    case $other_dl in
-      *"404"*) ok "another user asking for the download of chart.svg gets a 404 too" ;;
-      *) bad "another user asking for the download of chart.svg did not get a 404: $(printf '%s' "$other_dl" | head -c 300)" ;;
-    esac
+# Another user: a token of the mock issuer for another user of dev/mock-oidc/users.json, through the edge like the owner's. The owner's own
+# request for the same href is the control, so that a failure points at the method and not at the 404.
+owner_sha=$(curl -sS --max-time 60 -H "$id_header" "$base/api/threads/$thread/artifacts/$png_sha" 2>"$tmp/err" | sha256_hex || true)
+if [ "$owner_sha" = "$png_sha" ]; then
+  ok "the owner's request for square.png (the control) is served"
+  code=$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' -H "$other_header" "$base/api/threads/$thread/artifacts/$png_sha" 2>"$tmp/err" || true)
+  if [ "$code" = 404 ]; then
+    ok "another user ($other_email) asking for the same href gets a 404"
   else
-    bad "the control failed: the owner's request from the edge container (docker compose exec edge wget, straight to http://orchestrator:8080) got SHA-256 '$owner_sha', want $png_sha; so the other user's 404 proves nothing ($(head -c 300 "$tmp/err"))"
+    bad "another user ($other_email) asking for the same href got HTTP ${code:-none}, want 404 ($(head -c 300 "$tmp/err"))"
+  fi
+  code=$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' -H "$other_header" "$base/api/threads/$thread/artifacts/$svg_sha?download=1" 2>"$tmp/err" || true)
+  if [ "$code" = 404 ]; then
+    ok "another user asking for the download of chart.svg gets a 404 too"
+  else
+    bad "another user asking for the download of chart.svg got HTTP ${code:-none}, want 404"
   fi
 else
-  echo "skip another user's request: docker compose cannot see the running \`edge\` container here (it is needed to reach the orchestrator without the edge, which sets the identity)"
+  bad "the control failed: the owner's request got SHA-256 '$owner_sha', want $png_sha; so the other user's 404 proves nothing ($(head -c 300 "$tmp/err"))"
 fi
 
 # The same person's other thread: a hash is no capability, the file belongs to the thread in the path.

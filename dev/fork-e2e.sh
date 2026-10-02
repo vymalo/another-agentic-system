@@ -33,8 +33,8 @@
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
-#   BASE_URL        http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`, which injects the identity
-#   AUTH_EMAIL      dev@example.com, sent as X-Auth-Request-Email (the edge replaces it)
+#   BASE_URL        http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
+#   AUTH_EMAIL      dev@example.com, the user: a token of the mock issuer (dev/auth-header.sh)
 #   AGENT_ID        mock-coder, the agent the threads talk to
 #   MOCK_AGENT_URL  http://127.0.0.1:${MOCK_AGENT_PORT:-8081}, where WireMock's admin API is
 #   TIMEOUT         90    seconds to wait for a thread to stop
@@ -46,6 +46,8 @@ set -eu
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 agent=${AGENT_ID:-mock-coder}
 mock=${MOCK_AGENT_URL:-http://127.0.0.1:${MOCK_AGENT_PORT:-8081}}
 mock=${mock%/}
@@ -69,10 +71,10 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
 
 api() { # api METHOD PATH [BODY]: the body on stdout, non-zero when the status is not 2xx (the resource API)
   if [ $# -ge 3 ]; then
-    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email" \
+    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header" \
       -H 'content-type: application/json' -d "$3"
   else
-    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
+    curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
   fi
 }
 
@@ -81,7 +83,7 @@ say() { # say THREAD TEXT: one run (a message), to its end; prints the HTTP stat
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
   curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$base/agui/agents/$agent" -H "X-Auth-Request-Email: $email" \
+    "$base/agui/agents/$agent" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true
 }
 
@@ -126,7 +128,7 @@ if wait_state "$parent" "done"; then ok "the parent ends done"; else bad "the pa
 
 echo "== fork it from the end of the turn"
 code=$(curl -sS --max-time 60 -o "$tmp/fork.json" -w '%{http_code}' -X POST "$base/api/threads/$parent/fork" \
-  -H "X-Auth-Request-Email: $email" -H 'content-type: application/json' \
+  -H "$id_header" -H 'content-type: application/json' \
   -d "$(jq -n --arg id "$fork" '{after: 1, id: $id}')")
 expect "the fork is created" "$code" "201"
 expect "it is a new thread, a finished job" "$(jq -r '[(.id == $id), .state] | join(" ")' --arg id "$fork" "$tmp/fork.json")" "true done"

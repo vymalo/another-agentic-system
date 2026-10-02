@@ -1,0 +1,33 @@
+{
+  "defaultUser": "dev@example.com",
+  "users": {
+    "dev@example.com": {
+      "name": "Dev User",
+      "roles": [
+        "user"
+      ]
+    },
+    "admin@example.com": {
+      "name": "Admin User",
+      "roles": [
+        "admin"
+      ]
+    },
+    "chat-only@example.com": {
+      "name": "Chat Only",
+      "roles": [
+        "chat-only"
+      ]
+    },
+    "guest@example.com": {
+      "name": "Guest (no role)",
+      "roles": []
+    },
+    "someone-else@example.com": {
+      "name": "Someone Else",
+      "roles": [
+        "user"
+      ]
+    }
+  }
+}

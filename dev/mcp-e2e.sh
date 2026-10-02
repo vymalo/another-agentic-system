@@ -25,9 +25,9 @@
 #     there reports the rest: together the two calls name every event of the job exactly once.
 #
 # Environment (defaults match compose.yaml on one machine):
-#   BASE_URL     http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge` (which adds no identity to /mcp)
+#   BASE_URL     http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge` (which leaves /mcp to its own bearer token)
 #   MCP_TOKEN    dev-mcp-token-0123456789abcdef0123456789, the dummy bearer token of dev/mcp-tokens.yaml
-#   AUTH_EMAIL   dev@example.com, the user of that token, sent as X-Auth-Request-Email to the chat API
+#   AUTH_EMAIL   dev@example.com, the user of that token: a token of the mock issuer (dev/auth-header.sh) for the chat API
 #   AGENT_ID     mock-coder, the mock A2A agent that finishes with a pull request
 #   TIMEOUT      120    seconds to wait for the job
 #
@@ -39,6 +39,8 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 token=${MCP_TOKEN:-dev-mcp-token-0123456789abcdef0123456789}
 email=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 agent_id=${AGENT_ID:-mock-coder}
 timeout=${TIMEOUT:-120}
 
@@ -187,7 +189,7 @@ case $pr in
 esac
 
 # --- the same job in the chat ------------------------------------------------------------------
-chat_state=$(curl -sS --max-time 30 -H "X-Auth-Request-Email: $email" "$base/api/threads/$job" 2>/dev/null | jq -r '.state // empty' || true)
+chat_state=$(curl -sS --max-time 30 -H "$id_header" "$base/api/threads/$job" 2>/dev/null | jq -r '.state // empty' || true)
 if [ "$chat_state" = "done" ]; then
   ok "the chat's resource API shows the job done for $email"
 else
@@ -241,7 +243,7 @@ seqs_of() { # seqs_of FILE: the seq of each event a response reported, one per l
 job_seqs() { # job_seqs THREAD UPTO: the seqs up to UPTO of the events a wait reports, one per line. The thread's
   # title and description (ADR 0035) are written by the orchestrator's model, often after the job has ended; they count
   # in last_seq, but a wait never reports them, so they are left out here.
-  curl -sS --max-time 30 -H "X-Auth-Request-Email: $email" "$base/api/threads/$1/export" 2>/dev/null |
+  curl -sS --max-time 30 -H "$id_header" "$base/api/threads/$1/export" 2>/dev/null |
     jq -r --argjson upto "$2" '.events[] | select(.seq <= $upto and .kind != "thread_titled" and .kind != "thread_described") | .seq'
 }
 call start_job "$(jq -cn --arg agent "$agent_id" '{text: "slow: add a health endpoint", agent: $agent}')"

@@ -33,6 +33,12 @@
 #                     listed after dev/agents.yaml's with the releases of its own card,
 #                     an agent added to it shows up with no restart, a registry that
 #                     is down leaves the static agents and says so (503 for its agents)
+#   rbac              who may do what: the mock issuer signs four users in behind     rbac-e2e.sh
+#                     oauth2-proxy, /api/me says what each one's roles grant, a user
+#                     sees only their own threads and an administrator sees all
+#                     (?owner=*) and reads without acting (403 read_only), a token for
+#                     another audience is 401, `chat-only` is refused the coder (403)
+#                     and is listed only the chat
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
 #   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
@@ -66,7 +72,8 @@
 #
 # Each script's output goes to a file, and only the tail of a failing one is printed; the file is kept in
 # $LOG_DIR (default: a fresh directory under ${TMPDIR:-/tmp}) and named in the summary. Environment that the
-# scripts read (BASE_URL, EDGE_PORT, AUTH_EMAIL, TIMEOUT, GITHUB_AUTH, ...) is passed through unchanged. (GITHUB_AUTH=app
+# scripts read (BASE_URL, EDGE_PORT, AUTH_EMAIL, MOCK_OIDC_PORT, TIMEOUT, GITHUB_AUTH, ...) is passed through unchanged. Every script gets
+# its identity from the mock issuer (dev/auth-header.sh). (GITHUB_AUTH=app
 # says the stack runs the coder as a GitHub App, `-f dev/compose.github-app.yaml`; `folder` restarts the coder WITHOUT that override, so
 # run `folder` on the default stack.)
 #
@@ -79,7 +86,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards title description fork registry coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards title description fork registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -105,7 +112,11 @@ or point BASE_URL (or EDGE_PORT) at the edge you started. See dev/README.md, "Te
 EOF
   exit 2
 fi
-agents=$(curl -fsS --max-time 30 -H "X-Auth-Request-Email: ${AUTH_EMAIL:-dev@example.com}" "$base/api/agents" 2>/dev/null | jq -r '[.[].id] | join(" ")' 2>/dev/null || true)
+if ! id_header=$(sh "$here/auth-header.sh" "${AUTH_EMAIL:-dev@example.com}"); then
+  echo "no token from the mock issuer: is the stack up with the mock-oidc service (docker compose --profile app up -d --build --wait)? See dev/README.md, \"Sign in\"." >&2
+  exit 2
+fi
+agents=$(curl -fsS --max-time 30 -H "$id_header" "$base/api/agents" 2>/dev/null | jq -r '[.[].id] | join(" ")' 2>/dev/null || true)
 echo "stack: $base, agents: ${agents:-none}"
 for s in "$@"; do
   case $s in
@@ -114,6 +125,13 @@ for s in "$@"; do
         *" coder "*) ;;
         *) echo "scenario $s needs the agent 'coder', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
+    rbac)
+      for a in coder chat researcher; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario rbac needs the agents coder, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml, and the roles of dev/orchestrator.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     fork)
       case " $agents " in
         *" mock-coder "*) ;;
@@ -194,6 +212,7 @@ for s in "$@"; do
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
+    rbac) run rbac sh "$here/rbac-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;

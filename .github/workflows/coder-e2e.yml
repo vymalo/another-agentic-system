@@ -16,6 +16,10 @@ name: Coder E2E
 # a JSON report, shares them with `share_file`, and the orchestrator keeps them in the volume `orchestrator-artifacts`; the thread's log holds
 # the references, a surface places two as Images after the files, and the API serves the bytes to the owner (the SVG sanitized) and to nobody
 # else. It runs a second time on the split stack, where a worker keeps the file and the control plane serves it.
+# The stack signs people in: a real oauth2-proxy (pinned by tag and digest in compose.yaml) behind the edge, a mock OIDC issuer
+# (dev/mock-oidc) that approves everybody, and the orchestrator as an OAuth2 resource server (`auth.mode: jwt`, ADR 0033); every script
+# gets a token of the mock (dev/auth-header.sh), and dev/rbac-e2e.sh asserts the roles (a user sees only their threads, an administrator
+# reads all and acts on none of another's, a wrong audience is 401, `chat-only` is refused the coder).
 # The coder needs no repository to start (dev/workspace-e2e.sh): it builds in a scratch project, creates a repository only after the person
 # says yes to a form, and adds a second repository to its workspace only after a yes; GitHub is read over MCP (the mock `mock-github-mcp`),
 # and the coder pass is run twice, once with the coder's GitHub credential a token and once as a GitHub App installation
@@ -23,7 +27,7 @@ name: Coder E2E
 #
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB; the chat and the researcher use the same image),
-#              run dev/e2e-all.sh (every scenario: the coder's greeting, the three agents each answering in its role,
+#              run dev/e2e-all.sh (every scenario: the roles of the sign-in (dev/rbac-e2e.sh), the coder's greeting, the three agents each answering in its role,
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), the files the coder
@@ -116,13 +120,15 @@ jobs:
           load: true
           push: false
           tags: another-agentic-system/web:dev
+          # as `build.args` of the `web` service in compose.yaml: a 401 sends the page to oauth2-proxy's sign-in
+          build-args: NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
           cache-from: type=gha,scope=web
-      - name: Pull the coder and build the git server, the mock CI and the mock web search
+      - name: Pull the coder and build the git server, the mock CI, the mock web search and the mock OIDC issuer
         # One adam-rs image is the coder and, with another entrypoint, the chat and the researcher (compose.yaml,
         # `x-adam-image`): pulling `coder` pulls all three. The model mock of the two is WireMock, pulled by `up`.
         run: |
           docker compose pull coder
-          docker compose build git-server mock-ci mock-mcp-search
+          docker compose build git-server mock-ci mock-mcp-search mock-oidc
       - name: Start the stack
         run: docker compose up -d --no-build --wait --wait-timeout 600
       - name: Every scenario of the local stack (dev/e2e-all.sh)

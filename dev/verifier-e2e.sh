@@ -29,7 +29,7 @@
 #   BASE_URL      where the API is served          (default http://127.0.0.1:8080, the compose `edge`)
 #   AGENT_ID      the verified agent               (default mock-coder-verified)
 #   VERIFIER_URL  the mock verifier's own port     (default http://127.0.0.1:8083; its journal is read there)
-#   AUTH_EMAIL    X-Auth-Request-Email to send     (default dev@example.com; the compose `edge` sets it anyway)
+#   AUTH_EMAIL    the user (default dev@example.com): a token of the mock issuer (dev/auth-header.sh)
 #   TIMEOUT       seconds a run may take           (default 90)
 #
 # Exit status: 0 when every assertion holds, 1 otherwise. Needs: curl, jq (and /proc or uuidgen).
@@ -39,6 +39,8 @@ BASE_URL=${BASE_URL:-http://127.0.0.1:8080}
 AGENT_ID=${AGENT_ID:-mock-coder-verified}
 VERIFIER_URL=${VERIFIER_URL:-http://127.0.0.1:8083}
 AUTH_EMAIL=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$AUTH_EMAIL")
 TIMEOUT=${TIMEOUT:-90}
 fail=0
 
@@ -57,7 +59,7 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
 }
 
 api() { # api PATH: GET on the resource API
-  curl -fsS -H "X-Auth-Request-Email: $AUTH_EMAIL" "$BASE_URL$1"
+  curl -fsS -H "$id_header" "$BASE_URL$1"
 }
 
 # run_input THREAD TEXT [GATE_JSON]: a RunAgentInput, with the gate request in forwardedProps when given.
@@ -74,7 +76,7 @@ run_input() {
 run() {
   THREAD=$(uuid)
   code=$(curl -sS -N --max-time "$TIMEOUT" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$BASE_URL/agui/agents/$AGENT_ID" -H "X-Auth-Request-Email: $AUTH_EMAIL" \
+    "$BASE_URL/agui/agents/$AGENT_ID" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' \
     -d "$(run_input "$THREAD" "$1" "${2:-}")" || true)
   if [ "$code" != 200 ]; then
@@ -171,13 +173,13 @@ echo "== a run may not choose or drop the verifier"
 refused() { # refused DESCRIPTION GATE_JSON EXPECTED_DETAIL_FRAGMENT
   thread=$(uuid)
   code=$(curl -sS -o "$tmp/problem.json" -w '%{http_code}' -X POST "$BASE_URL/agui/agents/$AGENT_ID" \
-    -H "X-Auth-Request-Email: $AUTH_EMAIL" -H 'content-type: application/json' -H 'accept: text/event-stream' \
+    -H "$id_header" -H 'content-type: application/json' -H 'accept: text/event-stream' \
     -d "$(run_input "$thread" 'push-clean please' "$2")")
   expect "$1: 400" "$code" "400"
   expect "$1: the problem says why" \
     "$(jq -r --arg f "$3" '.detail | contains($f)' "$tmp/problem.json" 2>/dev/null || echo unreadable)" "true"
   expect "$1: no thread was created" \
-    "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Request-Email: $AUTH_EMAIL" "$BASE_URL/api/threads/$thread")" "404"
+    "$(curl -s -o /dev/null -w '%{http_code}' -H "$id_header" "$BASE_URL/api/threads/$thread")" "404"
 }
 refused "choosing another verifier" '{"verifier": "mock-coder"}' "cannot be set per thread"
 refused "dropping the verifier" '{"require": []}' "may add sources"

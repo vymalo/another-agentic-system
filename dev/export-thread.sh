@@ -20,10 +20,10 @@
 #
 # Environment (all optional):
 #   BASE_URL    where the API is served     (default http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`,
-#               which injects the identity)
-#   AUTH_EMAIL  X-Auth-Request-Email to send (default dev@example.com). The compose `edge` replaces it with
-#               its own; it matters only when BASE_URL is an orchestrator without the edge. Another
-#               identity than the thread's owner is a 404, exactly as in the web.
+#               oauth2-proxy in front of the API)
+#   AUTH_EMAIL  the user (default dev@example.com): a token of the mock issuer, dev/auth-header.sh (AUTH_MODE=proxy-header
+#               sends X-Auth-Request-Email to an orchestrator without the edge). Another user than the thread's
+#               owner is a 404, exactly as in the web (an administrator reads every thread, and exports it too).
 #
 # Exit status: 0 when the file was written and checks out; 1 otherwise (the server's problem is printed
 # when it refused). Needs: curl, jq.
@@ -43,11 +43,14 @@ case $id in
   *[!0-9a-fA-F-]* | '') echo "FAIL '$id' is not a thread id (a UUID)" >&2; exit 2 ;;
 esac
 
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 code=$(curl -sS --max-time 60 -o "$tmp/export.json" -w '%{http_code}' \
-  -H "X-Auth-Request-Email: $email" "$base/api/threads/$id/export" || true)
+  -H "$id_header" "$base/api/threads/$id/export" || true)
 if [ "$code" != 200 ]; then
   echo "FAIL GET /api/threads/$id/export answered HTTP ${code:-none}: $(head -c 400 "$tmp/export.json" 2>/dev/null)" >&2
   exit 1

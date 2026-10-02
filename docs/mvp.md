@@ -90,7 +90,7 @@ endpoint, model, prompt and language rule ([ADR 0035](decisions/0035-utility-mod
 And: "We need RBAC. We'll keep an OAuth2 proxy on top of the web and ensure the backend is an OAuth2 resource server."
 [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md): an `Authenticator` port, JWT validation against the
 issuer's JWKS (`auth.mode`, built in S14, default `proxy_header` so nothing changes), then roles, permissions and their
-enforcement (built in S15), the web's `/api/me` (built in S17) and the dev stack with a mock issuer and oauth2-proxy (S16).
+enforcement (built in S15), the web's `/api/me` (built in S17) and the dev stack with a mock issuer and oauth2-proxy (built in S16).
 
 ## Out of scope for the MVP
 

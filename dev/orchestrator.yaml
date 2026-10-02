@@ -16,6 +16,9 @@
 version: 1
 
 server:
+  # `development` is the default, written out because the issuer below is plain http, which `production` refuses (and `production`
+  # refuses `auth.mode: proxy_header` too).
+  environment: development
   # The AG-UI routes the web speaks, the MCP server (ADR 0019) at /mcp, the thread tools, and the two CI webhooks
   # (ADR 0017). The workers serve no routes: they read the same list and mount none of it.
   surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]
@@ -94,9 +97,10 @@ threadTools:
   secret: { env: THREAD_TOOLS_SECRET }
   allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
 
-# The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which adds no identity to /mcp. The
-# token is named by mcp-tokens.yaml and belongs to the edge's dev user, so the jobs it starts are in the chat. `Host`
-# values are the edge's own address (127.0.0.1 or localhost, any port).
+# The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which does not put it behind oauth2-proxy: the
+# server authenticates a static bearer token itself. The token is named by mcp-tokens.yaml and belongs to dev@example.com with the
+# role `user` (one of `auth.roles` below), so the jobs it starts are in that user's chat. `Host` values are the edge's own address
+# (127.0.0.1 or localhost, any port).
 mcp:
   tokensFile: mcp-tokens.yaml
   allowedHosts: [127.0.0.1, localhost]
@@ -110,4 +114,25 @@ webhooks:
   github:
     secrets: [{ env: WEBHOOK_GITHUB_SECRETS }]
 
-# No `auth`: the identity comes from the `edge` proxy, as it does from oauth2-proxy.
+# Who is asking, and what they may do (ADR 0033, docs/api/config.md "Authentication" and "Roles and permissions"). The orchestrator is an
+# OAuth2 resource server: it reads no identity header, only `Authorization: Bearer <JWT>`, validated against the keys of the
+# issuer, here `mock-oidc` (dev/mock-oidc, whose users and roles are dev/mock-oidc/users.json). oauth2-proxy forwards the ID
+# token of a person signed in (its `aud` is its client id, `dev-chat`), or a script's own token of the same issuer (dev/auth-header.sh);
+# the orchestrator checks the token again. The issuer is plain http on the compose network, which the orchestrator accepts only while
+# `server.environment` is `development` (the default, set above); a production process refuses it.
+# `GET /api/me` says what a token's roles grant. With `roles` given they replace the built-in `user` and `admin`:
+#   user       what everybody is: the agents, and their own threads and files
+#   admin      reads every thread and changes only their own (owner decision 4 of plan 10); can list other people's threads
+#   chat-only  a user limited to the agent `chat`: the coder and the researcher answer it 403
+# The roles are the `roles` claim of the token. A valid token with none of them (`guest@example.com`) gets `defaultRole`.
+auth:
+  mode: jwt
+  jwt:
+    issuer: http://mock-oidc:8080
+    audiences: [dev-chat]
+    rolesClaim: roles
+  defaultRole: user
+  roles:
+    user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any, write: own }, agents: ["*"] }
+    chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: [chat] }

@@ -31,8 +31,8 @@
 # The registry is left as it was found (reset). Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
-#   BASE_URL              http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`, which injects the identity
-#   AUTH_EMAIL            dev@example.com, sent as X-Auth-Request-Email (the edge replaces it)
+#   BASE_URL              http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
+#   AUTH_EMAIL            dev@example.com, the user: the token of dev/auth-header.sh is theirs
 #   MOCK_REGISTRY_URL     http://127.0.0.1:${MOCK_REGISTRY_PORT:-8084}, the registry's WireMock (its admin API)
 #   MOCK_RELEASES_URL     http://127.0.0.1:${MOCK_AGENT_RELEASES_PORT:-8082}, the WireMock that is `platform-coder`
 #   TIMEOUT               60     seconds to wait for a thread to stop
@@ -46,6 +46,8 @@ set -eu
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 registry=${MOCK_REGISTRY_URL:-http://127.0.0.1:${MOCK_REGISTRY_PORT:-8084}}
 registry=${registry%/}
 releases=${MOCK_RELEASES_URL:-http://127.0.0.1:${MOCK_AGENT_RELEASES_PORT:-8082}}
@@ -74,7 +76,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx
-  curl --fail-with-body -sS --max-time 30 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
+  curl --fail-with-body -sS --max-time 30 -X "$1" "$base$2" -H "$id_header"
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
@@ -177,7 +179,7 @@ input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" '{
   messages: [{id: $msg, role: "user", content: "hi from the registry"}], forwardedProps: {}}')
 echo "thread $thread (platform-coder): hi from the registry"
 code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST "$base/agui/agents/platform-coder" \
-  -H "X-Auth-Request-Email: $email" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" 2>"$tmp/err" || true)
+  -H "$id_header" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" 2>"$tmp/err" || true)
 if [ "$code" != 200 ]; then
   bad "POST /agui/agents/platform-coder answered HTTP ${code:-none}: $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse")"
   finish
@@ -222,7 +224,7 @@ input=$(jq -n --arg thread "$(uuid)" --arg run "$(uuid)" --arg msg "$(uuid)" '{
   threadId: $thread, runId: $run, state: {}, tools: [], context: [],
   messages: [{id: $msg, role: "user", content: "hi"}], forwardedProps: {}}')
 curl -sS --max-time 30 -D "$tmp/headers" -o "$tmp/refused.json" -w '%{http_code}' -X POST "$base/agui/agents/platform-coder" \
-  -H "X-Auth-Request-Email: $email" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" >"$tmp/status" 2>/dev/null || true
+  -H "$id_header" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" >"$tmp/status" 2>/dev/null || true
 check "a run on platform-coder is a 503, not a 404: the registry cannot say" "$(cat "$tmp/status")" "503"
 if grep -qi '^retry-after:' "$tmp/headers"; then ok "the 503 says when to try again (Retry-After)"; else bad "the 503 has no Retry-After"; fi
 check "the problem says the registry is unreachable" "$(jq -r '.detail // empty' "$tmp/refused.json" 2>/dev/null || true)" "the agent registry is unreachable"
@@ -232,7 +234,7 @@ input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" '{
   threadId: $thread, runId: $run, state: {}, tools: [], context: [],
   messages: [{id: $msg, role: "user", content: "hi while the registry is down"}], forwardedProps: {}}')
 code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run2.sse" -w '%{http_code}' -X POST "$base/agui/agents/mock-coder" \
-  -H "X-Auth-Request-Email: $email" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" 2>"$tmp/err" || true)
+  -H "$id_header" -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" 2>"$tmp/err" || true)
 if [ "$code" != 200 ]; then
   bad "POST /agui/agents/mock-coder answered HTTP ${code:-none} while the registry was down"
 else

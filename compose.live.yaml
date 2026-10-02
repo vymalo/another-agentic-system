@@ -46,9 +46,9 @@
 #                  .env, see the variables below) and its agents file dev/agents.live.yaml (the coder is gated on its own
 #                  checks; CI is opt-in there, because `mock-ci/build` is not the name of a real check), and the
 #                  secrets come from .env instead of the dummies of compose.yaml;
-#   * edge, web, postgres, the WireMock agents: unchanged. The edge still authenticates NOBODY and puts
-#                  dev@example.com on every /api and /agui request: it is for 127.0.0.1 only. Do not publish
-#                  it on a network you do not trust, live or not.
+#   * edge, oauth2-proxy, mock-oidc, web, postgres, the WireMock agents: unchanged. The sign-in is still the mock issuer's,
+#                  which approves anybody (dev@example.com unless you say otherwise): the stack is for 127.0.0.1 only. Do not
+#                  publish it on a network you do not trust, live or not.
 #
 # The `:?` forms stop `docker compose` with the message after them when a variable is missing or empty.
 

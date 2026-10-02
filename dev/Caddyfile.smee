@@ -1,7 +1,6 @@
 # The `smee-proxy` service of compose.yaml (profile `smee`): the ONLY door smee-client has to the
-# orchestrator. It is deliberately not the `edge` (dev/Caddyfile), which injects an identity
-# (X-Auth-Request-Email) into /api/* and /agui/* and authenticates nobody: what arrives from the
-# internet through smee.io must reach the webhook route and nothing else.
+# orchestrator. It is deliberately not the `edge` (dev/Caddyfile), which routes the API, the UI and the
+# MCP server too: what arrives from the internet through smee.io must reach the webhook route and nothing else.
 #
 #   * POST /webhooks/github  ->  the orchestrator, which verifies X-Hub-Signature-256 over the body
 #                                with WEBHOOK_GITHUB_SECRETS (a bad or missing one is 401);

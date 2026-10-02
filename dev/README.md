@@ -4,7 +4,8 @@
 
 One command starts the whole system on your machine, **offline and deterministic**: the chat UI, the
 orchestrator, Postgres, the default agent (adam-coder) and a scripted model, GitHub, git remote and CI for it, and two more
-agents beside it, a chat and a researcher ([Several agents](#several-agents)). No
+agents beside it, a chat and a researcher ([Several agents](#several-agents)), behind a real sign-in against a mock issuer
+([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)). No
 account, no API key, no network after the images are built. Every credential in it is a dummy and every port is
 bound to `127.0.0.1`.
 
@@ -16,7 +17,7 @@ bound to `127.0.0.1`.
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
 | Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack). |
-| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher. Each has a variable (`EDGE_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
+| Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher, 8099 the mock issuer. Each has a variable (`EDGE_PORT`, `MOCK_OIDC_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
 
@@ -35,9 +36,10 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 
 | What | URL | Notes |
 |---|---|---|
-| The chat UI | http://127.0.0.1:8080 | The coder is preselected. Every request carries the fixed identity `dev@example.com`: the edge stands in for oauth2-proxy and authenticates nobody |
-| The API | http://127.0.0.1:8080/api/agents, `/api/threads` | The resource API. The AG-UI run route is `POST /agui/agents/{agentId}` (what the web and the scripts speak) |
-| MCP | http://127.0.0.1:8080/mcp | Bearer token `dev-mcp-token-0123456789abcdef0123456789`; see [Connect Claude Code](#connect-claude-code-over-mcp) |
+| The chat UI | http://127.0.0.1:8080 | The coder is preselected. You are signed in as `dev@example.com` without typing anything: a real oauth2-proxy sends the browser to a mock issuer that approves it ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy); as an administrator: `http://127.0.0.1:8099/login-as?user=admin@example.com` first) |
+| The API | http://127.0.0.1:8080/api/agents, `/api/threads`, `/api/me` | The resource API; it wants `Authorization: Bearer <token>` (`dev/auth-header.sh` prints a header line with one). The AG-UI run route is `POST /agui/agents/{agentId}` (what the web and the scripts speak) |
+| The mock issuer | http://127.0.0.1:8099 | `/.well-known/openid-configuration`, `/authorize`, `/token`, `/jwks`, `/login-as?user=`; the users and their roles are [`mock-oidc/users.json`](mock-oidc/users.json) |
+| MCP | http://127.0.0.1:8080/mcp | Bearer token `dev-mcp-token-0123456789abcdef0123456789` (static, not a token of the issuer: it does not go through oauth2-proxy); see [Connect Claude Code](#connect-claude-code-over-mcp) |
 | Webhooks | `POST http://127.0.0.1:8080/webhooks/github` and `/webhooks/ci` | Signed with the dummy secret `dev-webhook-secret-0123456789abcdef0123`, no identity. `mock-ci` posts here on its own; [`ci-webhook.sh`](ci-webhook.sh) plays a CI by hand |
 | Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
 | The mocks' journals | http://127.0.0.1:8091/__admin/requests (the coder's model), :8094 (the model of the chat and the researcher), :8092 (GitHub), :8085 (the GitHub MCP server), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
@@ -58,6 +60,7 @@ read the same file.
 |---|---|
 | the surfaces, the hosts they accept, the agents file, the platform's registry, the title and description models, the thread tools' address, the log format | the keys of [`orchestrator.yaml`](orchestrator.yaml), then `docker compose up -d orchestrator` (the file is read once, at startup) |
 | a secret (the database, the registry's agent token, the thread tools' key, the webhook secrets) | the **variable** the file names (`database.url: { env: DATABASE_URL }`, ...), in `x-orchestrator-env` or the `orchestrator` service of [`compose.yaml`](../compose.yaml). A secret is only a reference in the file, never a value; the values in `compose.yaml` are dummies |
+| who the roles are, what they may do, which issuer the orchestrator trusts | the `auth` section of [`orchestrator.yaml`](orchestrator.yaml) (and of `orchestrator.live.yaml`): `mode: jwt`, the issuer, the audiences, the `roles` claim, `roles` and `defaultRole` ([`config.md`](../docs/api/config.md#authentication)); the users of the issuer and the roles each one carries are [`mock-oidc/users.json`](mock-oidc/users.json) |
 | the agents | [`agents.yaml`](agents.yaml), as ever; its `tokenEnv` variables are in the same `environment` |
 | the role of the control plane, the name of a worker | `ORCHESTRATOR_ROLE` and the workers' `ORCH_INSTANCE_ID`: process overrides, which win over `server.role` and `server.instanceId` and log at info |
 
@@ -173,6 +176,95 @@ CI step per report (`vymalo.ci`: the conclusion, the check name, the short commi
 each is an AG-UI activity, which is what the scripts assert. It does not draw the verifier as a subagent of its own: its verdicts are checks. The pill and the steps
 come back after a reload: the page replays the log. There is no attempt counter: the attempts are in the steps.
 
+### Sign in: a mock issuer and oauth2-proxy
+
+Since [ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) (PR S16) the stack signs people in the way a
+deployment does, with nothing to type: **the edge no longer injects `dev@example.com`**.
+
+```mermaid
+sequenceDiagram
+  actor B as Browser
+  participant E as edge (Caddy)
+  participant P as oauth2-proxy
+  participant I as mock-oidc
+  participant O as orchestrator
+  B->>E: GET / (no session)
+  E->>P: GET /oauth2/auth (forward_auth)
+  P-->>E: 401
+  E-->>B: 302 /oauth2/start?rd=/
+  B->>E: GET /oauth2/start
+  E->>P: start
+  P-->>B: 302 http://127.0.0.1:8099/authorize?client_id=dev-chat&code_challenge=...
+  B->>I: GET /authorize (login_hint, else the /login-as cookie, else dev@example.com)
+  I-->>B: 302 /oauth2/callback?code=...
+  B->>E: GET /oauth2/callback
+  E->>P: callback
+  P->>I: POST /token (the code, over the compose network)
+  I-->>P: ID token (iss, aud dev-chat, email, roles)
+  P-->>B: 302 / and the session cookie
+  B->>E: GET /api/me (cookie)
+  E->>P: GET /oauth2/auth
+  P-->>E: 202 and Authorization: Bearer ID token
+  E->>O: GET /api/me with that Authorization (the client's own is dropped)
+  O->>I: keys (GET /.well-known/openid-configuration, /jwks), once and then cached
+  O-->>B: 200 {user, roles, permissions, agents}
+```
+
+**For a person.** Open http://127.0.0.1:8080: you land at the mock issuer for an instant and come back signed in as
+`dev@example.com`, a **user**. To be somebody else, tell the issuer before you sign in, then sign out and in again:
+
+```sh
+open http://127.0.0.1:8099/login-as?user=admin@example.com     # any user of the table below; sets a cookie for the next sign-in
+open http://127.0.0.1:8080/oauth2/sign_out                      # forget the session; the next page asks the issuer again
+open "http://127.0.0.1:8099/login-as?user="                     # back to dev@example.com
+```
+
+(`login_hint` on `/authorize` does the same for one request, which is what a script of your own would send; oauth2-proxy sends none, so the
+browser's way is the cookie. The cookie belongs to the host `127.0.0.1`, not to a port.) A session lasts an hour, the life of the token; after that a request
+of the web is a 401, and the web (built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start`, `build.args` of the `web` service) sends the page to
+`/oauth2/start?rd=<the page>`, which signs you in again at the issuer and brings you back to it (S17). *Verified 2026-10-02* with the real oauth2-proxy v7.15.5: `rd` with a relative path,
+query included, lands on that page after the sign-in, on `/oauth2/start` and on `/oauth2/sign_in` alike; an absolute or `//host` `rd` is refused
+and lands on `/`.
+
+| User | Roles (the `roles` claim) | What the orchestrator lets them do ([`orchestrator.yaml`](orchestrator.yaml), `auth.roles`) |
+|---|---|---|
+| `dev@example.com` | `user` | every agent; their own threads and files |
+| `admin@example.com` | `admin` | every agent; **reads** every thread and file (`GET /api/threads?owner=*`, `?owner=<e-mail>`), **changes only their own** (a message, a rename or a cancel on another's thread is a 403 `read_only`) |
+| `chat-only@example.com` | `chat-only` | the agent `chat` and no other (`GET /api/agents` lists only it; the coder and the researcher answer 403) |
+| `guest@example.com` | none | the default role, `user` (`auth.defaultRole`) |
+| `someone-else@example.com` | `user` | another person, for `artifact-e2e.sh`'s 404 check |
+
+**For a script.** The API wants `Authorization: Bearer <token>`. [`auth-header.sh`](auth-header.sh) asks the issuer for one
+(`client_credentials` with `user=<e-mail>`, an extension of the mock for scripts) and prints the header line; every scenario script takes
+its header from it, as `dev/auth-header.sh` documents (`AUTH_EMAIL` picks the user, `OIDC_URL` the issuer, `AUTH_BEARER` a token you already
+have):
+
+```sh
+H=$(dev/auth-header.sh admin@example.com)
+curl -s -H "$H" http://127.0.0.1:8080/api/me | jq .                  # who the token says, and what its roles grant
+curl -s -H "$H" 'http://127.0.0.1:8080/api/threads?owner=*' | jq 'map({id, owner, title})'
+```
+
+oauth2-proxy lets a token of the issuer through (`--skip-jwt-bearer-tokens`, the issuer and the client id `dev-chat` in
+`--extra-jwt-issuers`) and the orchestrator validates it again: signature, issuer, audience `dev-chat`, expiry, `email_verified`. A token for
+another audience (`OIDC_AUDIENCE=x dev/auth-header.sh`) is a 401. **`/mcp` and `/webhooks/*` are not behind oauth2-proxy**: the MCP server keeps its static
+bearer tokens ([`mcp-tokens.yaml`](mcp-tokens.yaml), now with a `role` each) and the webhooks their signatures. The probes `/healthz` and `/readyz` need no token.
+`dev/rbac-e2e.sh` asserts all of this ([Run the scenarios](#run-the-scenarios)).
+
+What is where:
+
+| | |
+|---|---|
+| [`mock-oidc/`](mock-oidc/server.mjs) | the issuer: a dependency-free Node stub (an RSA 2048 key made at startup, so a restart signs with a new one and the others fetch it when they meet its `kid`), tests in `server.test.mjs` (run in the Compose workflow) |
+| `oauth2-proxy` | the real one, v7.15.5 pinned by tag and digest in [`compose.yaml`](../compose.yaml), in auth_request mode (`--set-authorization-header`), discovery skipped: the issuer has two addresses, the compose network's `http://mock-oidc:8080` (the `iss` of the tokens, what the orchestrator is configured with) and the browser's `http://127.0.0.1:8099` (`--login-url`) |
+| [`Caddyfile`](Caddyfile) | `forward_auth` to oauth2-proxy for the web, `/api/*` and `/agui/*`, with `copy_headers Authorization`; `/oauth2/*` goes to oauth2-proxy; the request buffering of the AG-UI route is as it was |
+| `server.environment: development` | the issuer is plain http, which a production process refuses (as it refuses `auth.mode: proxy_header`) |
+
+*Not staged here:* an issuer that is down while the orchestrator starts (the API is then a 503 with `Retry-After` and `/readyz` is 503, as the Rust smoke test
+`in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the_keys` proves); it would mean stopping `mock-oidc` and restarting the
+orchestrator inside a scenario. By hand: `docker compose stop mock-oidc && docker compose restart orchestrator`, then `curl -i http://127.0.0.1:8080/readyz`, then
+`docker compose start mock-oidc`.
+
 ### Share a chat with a developer
 
 When something goes wrong in a thread (a step or a card that looks wrong, a job that ended where you did not expect), send the developer
@@ -195,7 +287,7 @@ person can paste anything into a chat. Only the owner of a thread can export it 
 
 ### Run the scenarios
 
-Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary:
+Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary. Every script signs in the way the stack does: it gets a token of the mock issuer for `AUTH_EMAIL` (default `dev@example.com`) from [`auth-header.sh`](auth-header.sh) and sends it as `Authorization: Bearer`; `MOCK_OIDC_PORT` or `OIDC_URL` say where the issuer is:
 
 ```sh
 dev/e2e-all.sh                 # every scenario below, one after the other, then a summary
@@ -213,6 +305,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `description` | `dev/description-e2e.sh` | when a job ends the thread is given a description by a model of its own at an endpoint of its own ([ADR 0035](../docs/decisions/0035-utility-model-tasks.md); `mock-description` on `mock-model`, reached through the endpoint `small`, so its request goes to `/chat/completions` and not the title's `/v1/chat/completions`): one `thread_described` of the orchestrator with `source: model`, the sidebar's list and the last `STATE_SNAPSHOT` say it, the request holds the guidance of `tasks.description.system`, then the core's form of the answer and data clause, the conversation fenced as data and the language line last, with the task's `max_tokens`; a model that says `NONE` leaves no description and one that fails (a 500, asked three times) leaves the thread `done` with none and no `error` event; the next job asks again with the description so far in a fence of its own; a person's description (`PATCH /api/threads/{id}`) is the thread's, one with a line break is a 400, a fork has it from the start (the `thread_forked` event says so), and the model is not asked again, nor after a person clears it; `GET /api/config` says `{"ui": {"showDescriptions": true}}` |
 | `fork` | `dev/fork-e2e.sh` | a finished thread on `mock-coder` is forked through the API (`POST /api/threads/{id}/fork`, 201, a new thread that is `done` and says `forkedFrom`); the first message of the fork reaches the mock agent with the conversation it continues in front of it (the parent's first message as `person: …` between `<<<conversation` and `>>>conversation`, then the message in the same text part), read from WireMock's request journal; the next message of the fork and the parent's own message reach it as they are ([Forking a thread](#forking-a-thread)) |
 | `registry` | `dev/registry-e2e.sh` | the platform's agent registry ([`mock-registry`](#the-agent-registry), `agent-registry/v1`): its agent `platform-coder` is listed after the agents of `dev/agents.yaml` (`source: registry`, its title and tags) with the releases of **its own card**, and a thread on it ends `done` with the deployment-wide agent token; an agent added to the registry through WireMock's admin API shows up in `GET /api/agents` within 10 s, no restart; a registry that answers 503 leaves exactly the static agents, `GET /api/registry` says `unavailable` (no URL in it), a run on a registry agent is a 503 with `Retry-After` (never a 404), and a static agent still answers; after a reset it is read again |
+| `rbac` | `dev/rbac-e2e.sh` | who may do what ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)): `GET /api/me` for `dev`, `admin`, `chat-only` and `guest` (the user, the roles that count, the permissions with their scope, the agents), a token for another audience, no token, a bad one and only the old `X-Auth-Request-Email` are all 401; a user sees only their own threads and is refused `?owner=` (403 `forbidden`); the administrator sees every thread with `?owner=*` (and one person's with `?owner=<e-mail>`), reads another's thread and its export (200) and is refused a message, a rename and a cancel on it (403 `read_only`); `chat-only` reads nobody else's (404), is refused `POST /agui/agents/coder` and the researcher (403 `forbidden`) and is listed only `chat`. Needs only `chat`; leaves two threads behind |
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once; the coder's work reads as a tree of steps (OpenCode a sub-agent step with its own steps under it, the log bounded per step; each tool step's start carries its `input` and its end its `output`, adam-rs `d56dd94`) and its answer is shown as it is written, then completed by the log's message ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change (no OpenCode step) |
 | `workspace` | `dev/workspace-e2e.sh` | the coder needs no repository to start ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)): a task that names none is built in a scratch project and the thread waits (`blocked`) with nothing pushed; the person asks for `scratch/fib-<id>` and the coder asks for consent as one form (`Choices`, question `consent`, options `yes` and `no`), which one action answers: `yes` makes exactly one `POST /orgs/scratch/repos` (after the answer, private, empty), the work reaches that repository under the gate `ci+agent_checks` with `mock-ci`'s card for it and one pull request, and no credential is in the thread's log; `no` creates nothing and the thread waits again. A second thread names `local/sandbox` and needs the greeting of `local/library`: the coder asks before adding it (a form again); after `yes` the library is read and the pull request is opened, after `no` git-server's log shows it was never asked for. `GITHUB_AUTH=app dev/workspace-e2e.sh` on a stack started with `-f dev/compose.github-app.yaml` asserts the same with the coder as a GitHub App |
@@ -280,7 +373,7 @@ files without starting anything: `docker compose -f compose.yaml -f compose.live
 
 Notes on going live:
 
-- **The edge still authenticates nobody** and still says `dev@example.com` for every request. Live means a real model and a real
+- **The sign-in is still the mock issuer's**, which approves anybody as `dev@example.com` (or whoever `/login-as` says). Live means a real model and a real
   GitHub, not a stack you may expose. The MCP token and the webhook secret are the only credentials that mean anything.
 - A variable exported in your shell **wins over `.env`**: an exported `GITHUB_TOKEN` (common when you use `gh`) is the one the coder gets. `docker compose ... config` shows the result.
 - **The agents stream their model calls** since adam-rs `cf6ddbb`: the coder and the agents that are folders ask the endpoint for `"stream": true` (with the usage chunk), so a
@@ -289,12 +382,12 @@ Notes on going live:
 - **The CI gate is opt-in live**, because the check name `mock-ci/build` means nothing on GitHub: edit `agents.live.yaml` as its comments say
   (the exact name of the check run, and the webhook below).
 - **GitHub webhooks need a public URL.** GitHub cannot reach `127.0.0.1`. Either expose port 8080's `/webhooks/github` yourself
-  (a tunnel of your choosing: point it at a route that carries **only** that path, never at the edge, which injects an identity), or
+  (a tunnel of your choosing: point it at a route that carries **only** that path, never at the edge, which fronts a sign-in that approves anybody), or
   use `smee` below.
 - **smee (optional, opt-in).** Set `SMEE_URL` in `.env` to a channel from https://smee.io/new and add `--profile smee` (or
   `COMPOSE_PROFILES=app,smee` in `.env`). `smee-client` (pinned, [`dev/smee/Dockerfile`](smee/Dockerfile)) then forwards the deliveries to
   `smee-proxy`, a Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and answers
-  404 to everything else; nothing reaches the identity-injecting edge. In the repository's Settings, Webhooks: Payload URL = your smee URL,
+  404 to everything else; nothing reaches the edge. In the repository's Settings, Webhooks: Payload URL = your smee URL,
   Content type `application/json`, Secret = `WEBHOOK_GITHUB_SECRETS`, events "Check runs" and "Workflow runs" (not "Check suites"), and give the
   orchestrator the check's name in `agents.live.yaml`. **smee.io is a third party: it sees every payload** (repository names, commit
   messages, check results) and anyone who learns the channel URL can read and post to it; the orchestrator still verifies the
@@ -308,6 +401,9 @@ Notes on going live:
 |---|---|---|
 | `port is already allocated` or `address already in use` | one of the ports above is taken (a local Postgres on 5432 is the usual one) | stop it, or set the variable of that port (`POSTGRES_PORT=5433 docker compose ...`, or in `.env`); the scripts read `EDGE_PORT` too, or take `BASE_URL` |
 | `docker compose` rejects `compose.live.yaml` at an `!override` tag | Compose older than v2.24.4 | update Docker Compose |
+| the API answers `401` (a script) or the page loops through the issuer (a browser) | no token, an expired one (an hour), or one for another audience; or `mock-oidc` was recreated and signs with a new key your session predates | `dev/auth-header.sh` for a fresh token; in the browser reload, or `/oauth2/sign_out` and in again; `docker compose --profile app logs oauth2-proxy mock-oidc orchestrator` |
+| the API answers `503` with `Retry-After`, and `/readyz` is 503 | the orchestrator cannot read the issuer's keys (`mock-oidc` is not up or not healthy) | `docker compose --profile app up -d --wait mock-oidc`; the keys are fetched again within seconds |
+| the API answers `403` with `code: forbidden`, `read_only` or `no_access` | the roles of the token do not allow it (`GET /api/me` says which they are) | sign in as another user ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)); `read_only` is an administrator acting on another's thread |
 | MCP answers `403` | **Host validation**: the server accepts `Host` 127.0.0.1 and localhost only (`MCP_ALLOWED_HOSTS`), and you reached the edge by another name (a LAN address, `host.docker.internal`, a tunnel) | use `http://127.0.0.1:8080/mcp`, or add the name to `MCP_ALLOWED_HOSTS` in `compose.yaml` |
 | MCP answers `401` with `WWW-Authenticate: Bearer` | the token is missing or wrong (nothing says which, on purpose) | send `Authorization: Bearer <MCP_TOKEN_DEV>`; the token is the value in the orchestrator's environment, and `dev/mcp-tokens.yaml` names the variable |
 | a webhook delivery gets `401` | **a secret mismatch** (or, for the generic route only, a timestamp more than `WEBHOOK_GENERIC_MAX_SKEW_SECS`, 300 s, from the clock): the signature matches none of `WEBHOOK_GITHUB_SECRETS` / `WEBHOOK_GENERIC_SECRETS` | the same secret on both sides (`docker compose logs orchestrator` says `webhook delivery refused ... status=401`); GitHub's "Recent Deliveries" shows the response; via smee see the note above |
@@ -343,7 +439,9 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-registry` | `wiremock/wiremock:3.13.2` | `8084` (`MOCK_REGISTRY_PORT`) | default | The platform's agent registry ([`agent-registry/v1`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md), [ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md)) as a stub: a linkset that lists `platform-coder`. The orchestrator reads it (`AGENT_REGISTRY_URL`); see [The agent registry](#the-agent-registry). |
 | `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then `coder-share` (the same coder with no gate, for [`artifact-e2e.sh`](artifact-e2e.sh)), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). Configured by [`orchestrator.yaml`](orchestrator.yaml) ([how](#how-the-orchestrator-is-configured)). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `server.surfaces` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`server.surfaces` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
-| `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
+| `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | One origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered), `/oauth2/*` and the MCP server (`/mcp`, unbuffered, **not behind oauth2-proxy**: it authenticates a bearer token itself). The web, the API and the AG-UI routes are asked of `oauth2-proxy` first (`forward_auth`). It injects no identity any more ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)). |
+| `oauth2-proxy` | `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine`, pinned by tag and digest | not published | `app` | The real oauth2-proxy in auth_request mode: signs a browser in at `mock-oidc`, and lets a script's own token of that issuer through; answers the edge with `Authorization: Bearer <JWT>` for the orchestrator to validate. |
+| `mock-oidc` | built from [`mock-oidc/`](mock-oidc/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies) | `8099` (`MOCK_OIDC_PORT`) | `app` | The mock OpenID Connect issuer: discovery, `jwks`, `authorize` (approves the user of `login_hint`, the `/login-as` cookie or `dev@example.com`), `token` (the code; `client_credentials` with a `user`), `userinfo`. Users and roles: [`mock-oidc/users.json`](mock-oidc/users.json). [Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. They read the same `orchestrator.yaml`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s (`OUTBOX_LEASE_SECS`, a variable over the file). See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
@@ -364,21 +462,23 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `orchestrator-local`, `local-postgres` | the orchestrator built with `--build-arg ORCH_FEATURES=agent-local` (long: it links the adam-rs runtime); `postgres:16.15-alpine` | `8095` (`ORCH_LOCAL_PORT`) | `local-agent` | A second orchestrator that hosts an `echo` agent in its own process ([`agents.local-echo.yaml`](agents.local-echo.yaml)), with a database of its own and `AUTH_DEV_USER` for the identity; no web UI. See [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
-(the Rust build takes a few minutes the first time), the git server, `mock-ci` and `mock-mcp-search`, and pulls the coder image (which
-`chat` and `researcher` use too). `--profile smee` and
+(the Rust build takes a few minutes the first time), the git server, `mock-ci`, `mock-mcp-search` and `mock-oidc`, and pulls the coder image (which
+`chat` and `researcher` use too) and oauth2-proxy. `--profile smee` and
 `--profile local-agent` are opt-in and belong to no other profile. [`compose.live.yaml`](../compose.live.yaml) is an override, not a profile.
 
 ```mermaid
 sequenceDiagram
   actor U as Browser or curl
   participant E as edge (Caddy)
+  participant A as oauth2-proxy
   participant W as web
   participant O as orchestrator
   participant P as postgres
   participant M as mock-agent (WireMock)
-  U->>E: GET / , /api/* and /agui/* on 127.0.0.1:8080
-  E->>W: everything except /api/* and /agui/*
-  E->>O: /api/* and /agui/* with X-Auth-Request-Email: dev@example.com (any client value replaced)
+  U->>E: GET / , /api/* and /agui/* on 127.0.0.1:8080 (a session cookie, or Authorization: Bearer)
+  E->>A: GET /oauth2/auth (forward_auth): 202 and Authorization: Bearer JWT (401: not signed in, see Sign in)
+  E->>W: everything except /api/*, /agui/*, /oauth2/*, /mcp and /webhooks/*
+  E->>O: /api/* and /agui/* with that Authorization (any the client sent is replaced), the orchestrator validates the JWT
   O->>P: append the event, enqueue the delegation
   O->>M: GET /.well-known/agent-card.json
   M-->>O: card (streaming, bearer scheme, interface URL from the Host header)
@@ -390,18 +490,18 @@ sequenceDiagram
   O-->>U: the AG-UI frames, live
 ```
 
-### The edge is not oauth2-proxy
+### The edge and oauth2-proxy
 
-`edge` puts the chat UI, the resource API and the AG-UI routes on one origin, as the production ingress does, and sets
-`X-Auth-Request-Email: dev@example.com` on every API and AG-UI request, replacing whatever the client sent. `/webhooks/*` is the one
-exception: it reaches the orchestrator with **no** identity header at all (a webhook is authenticated by its signature).
-It authenticates nobody. It exists so the UI works locally without an identity provider; it must
-never be exposed beyond `127.0.0.1` (the compose file binds it there) and never used in production,
-where oauth2-proxy authenticates the user and the orchestrator trusts the header only because the
-proxy owns it (see the identity notes in [`orchestrator/README.md`](../orchestrator/README.md)).
+`edge` puts the chat UI, the resource API and the AG-UI routes on one origin, as the production ingress does, in front of a real
+oauth2-proxy and beside a mock issuer ([Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy)). It injects no identity: for the web,
+`/api/*` and `/agui/*` Caddy's `forward_auth` asks oauth2-proxy (`/oauth2/auth`), and passes on the `Authorization: Bearer <JWT>` it answers with,
+always replacing what the client sent. `/mcp` (a static bearer token of its own) and `/webhooks/*` (a signature) are machine routes that never
+meet oauth2-proxy and never carry an identity header; a client's own `X-Auth-Request-Email` is dropped everywhere. The mock issuer approves
+anybody, so the stack must never be exposed beyond `127.0.0.1` (the compose file binds it there) and its edge is never a production
+ingress (see the identity notes in [`orchestrator/README.md`](../orchestrator/README.md)).
 
-Without `--profile app`, talk to a host-run orchestrator with `AUTH_DEV_USER` or send the header
-yourself, as [`try-thread.sh`](try-thread.sh) does.
+Without `--profile app`, talk to a host-run orchestrator started with `AUTH_DEV_USER` (or `auth.mode: proxy_header`, which is for one user on a
+local machine and is refused in production) and send the header, with `AUTH_MODE=proxy-header`, as [`try-thread.sh`](try-thread.sh) does.
 
 ## The default agent
 
@@ -460,7 +560,7 @@ sequenceDiagram
   participant G as git-server
   participant H as mock-github
   U->>E: GET /api/agents, POST /agui/agents/coder (the first agent)
-  E->>O: with X-Auth-Request-Email
+  E->>O: with the Authorization of oauth2-proxy
   O->>C: SendStreamingMessage, bearer CODER_A2A_TOKEN
   C->>M: chat completions, model mock-coder (tool calls, one per turn)
   C->>G: clone local/sandbox.git, push agent/run-prefix
@@ -794,7 +894,7 @@ what the model mock gives any folder; to script more, add a model name to `wirem
          A2A_BEARER_TOKENS: dev-poet-token    # the orchestrator sends it as POET_A2A_TOKEN
          PUBLIC_URL: http://poet:8080/        # the compose name: what the card advertises and the orchestrator posts to
        ports:
-         - "127.0.0.1:${POET_PORT:-8099}:8080"   # optional: only to reach it from the host
+         - "127.0.0.1:${POET_PORT:-8100}:8080"   # optional: only to reach it from the host
        volumes:
          - ./dev/agents/poet/agent:/etc/adam/agent:ro
    ```
@@ -809,7 +909,7 @@ what the model mock gives any folder; to script more, add a model name to `wirem
    ```
 4. **Start it.** The orchestrator reads `AGENTS_FILE` and its environment at startup, so recreate both:
    `docker compose --profile app up -d poet orchestrator`.
-5. **Check it.** `curl -s -H 'X-Auth-Request-Email: dev@example.com' http://127.0.0.1:8080/api/agents | jq -r '.[].id'` lists `poet`; say `hi`
+5. **Check it.** `curl -s -H "$(dev/auth-header.sh)" http://127.0.0.1:8080/api/agents | jq -r '.[].id'` lists `poet`; say `hi`
    to it in the chat, or `AGENT_ID=poet dev/try-thread.sh hi`: on the mocks it answers `Hi! I'm Poet. I answer in four lines that rhyme.`
 
 Going live with it takes the same three edits as `chat`'s in [`compose.live.yaml`](../compose.live.yaml) (a real model and a token from `.env`),
@@ -1278,10 +1378,8 @@ and preview, and the log's entry holds no bytes; the surface's `Image`s are the 
 and an immutable private cache, and the PNG's and the JSON's SHA-256 is the hash; the SVG inline has no `<script`, no `on*` attribute and none of the coder's markers (and so is not
 the file's hash) while `?download=1` is the original, an attachment; another user, another thread of the same person, a wrong hash, a hash in capitals and a short one are each a 404, and a bad `download` a 400.
 
-Another user's request cannot go through the edge, which replaces the identity header, so the script makes it from inside the compose
-network: `docker compose exec edge wget --header "X-Auth-Request-Email: ..." http://orchestrator:8080/...`, straight to the orchestrator,
-after a control with the owner's header on the same path (so a 404 means the file is not the other user's, not that the path is wrong). Without a running `edge`
-container visible to `docker compose` that one check is skipped with a line, and the rest runs. CI also runs the script on the `split` stack, where a worker keeps the file and
+Another user's request goes through the edge like the owner's, with a token of the mock issuer for another user of [`mock-oidc/users.json`](mock-oidc/users.json)
+(`someone-else@example.com`), after a control with the owner's token on the same path (so a 404 means the file is not the other user's, not that the path is wrong). CI also runs the script on the `split` stack, where a worker keeps the file and
 the control plane serves it.
 
 ```sh
@@ -1329,7 +1427,7 @@ sequenceDiagram
   participant B as orchestrator-worker-2
   participant M as mock-agent
   U->>E: POST /agui/agents/mock-coder (text with slow)
-  E->>C: with X-Auth-Request-Email
+  E->>C: with the Authorization of oauth2-proxy
   C->>P: thread, events, outbox row (pending)
   A->>P: claim the row (lease 5 s, attempts 1)
   A->>M: SendStreamingMessage, an 8 s answer
@@ -1595,7 +1693,7 @@ an agent that says `completed` is not done until a **signed CI report about the 
 report of any other name is shown and decides nothing (there is no "first report decides": it let a red commit pass on
 a `skipped` report of another check). The orchestrator serves that route because `orchestrator.yaml` names
 `server.surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]` and `webhooks.generic.secrets: [{ env: WEBHOOK_GENERIC_SECRETS }]`, and compose sets
-`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123` on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**
+`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123` on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**, and outside oauth2-proxy
 (`header_up -X-Auth-Request-Email` in the [Caddyfile](Caddyfile): a webhook is a machine route, authenticated by its
 signature and nothing else). The mock pushes a `branch` artifact and completes; the job then waits for CI, at most
 `ORCH_CI_TIMEOUT_SECS` (3600), after which the thread is blocked with `ci_timeout` and no attempt is used.
@@ -1673,7 +1771,7 @@ sequenceDiagram
   participant O as orchestrator
   participant M as mock-agent (red-once)
   U->>E: POST /agui/agents/mock-coder-ci "red-once fix the login"
-  E->>O: with X-Auth-Request-Email
+  E->>O: with the Authorization of oauth2-proxy
   O->>M: SendStreamingMessage
   M-->>O: branch 1111111, checks, completed
   O-->>U: thread verifying (the gate is ci), the run stays open
@@ -1891,7 +1989,7 @@ The script runs the thread with `POST /agui/agents/{agentId}` (a UUID it mints a
 sends a follow-up run to an existing thread) and prints one line per AG-UI frame of the thread (number,
 event type, detail; `[coder-r51]` marks the revision that answered), read from
 `GET /agui/threads/{id}/connect?mode=run`. It exits 0 for `done` and `blocked`.
-`BASE_URL` (default `http://127.0.0.1:8080`, the edge) and `AUTH_EMAIL` point it elsewhere. Its default
+`BASE_URL` (default `http://127.0.0.1:8080`, the edge) and `AUTH_EMAIL` point it elsewhere; against an orchestrator without the edge (the ones below) add `AUTH_MODE=proxy-header`, which sends `X-Auth-Request-Email` instead of a token of the mock issuer. Its default
 target is `mock-coder`, not the default agent: the real coder is driven by
 [`coder-e2e.sh`](#the-default-agent).
 
@@ -1907,7 +2005,7 @@ AUTH_DEV_USER=dev@example.com \
 LOG_FORMAT=text \
 LISTEN_ADDR=127.0.0.1:8090 \
   cargo run -p orchestrator
-BASE_URL=http://127.0.0.1:8090 ../dev/try-thread.sh "add a health endpoint"
+BASE_URL=http://127.0.0.1:8090 AUTH_MODE=proxy-header ../dev/try-thread.sh "add a health endpoint"
 ```
 
 These are variables alone, which still work (the orchestrator logs one warning that they are deprecated, and a file would replace them: [How the orchestrator is configured](#how-the-orchestrator-is-configured)).
@@ -1932,7 +2030,7 @@ AUTH_DEV_USER=dev@example.com \
 LOG_FORMAT=text \
 LISTEN_ADDR=127.0.0.1:8090 \
   cargo run -p orchestrator --features agent-local
-BASE_URL=http://127.0.0.1:8090 AGENT_ID=echo ../dev/try-thread.sh "hello"
+BASE_URL=http://127.0.0.1:8090 AUTH_MODE=proxy-header AGENT_ID=echo ../dev/try-thread.sh "hello"
 psql postgres://postgres:postgres@localhost:5432/orch -c 'select id, agent, status from orch_agent_runs'
 ```
 
@@ -1942,7 +2040,7 @@ http://127.0.0.1:8095 with `AUTH_DEV_USER=dev@example.com` and no web UI:
 
 ```sh
 docker compose --profile local-agent up -d --build --wait
-BASE_URL=http://127.0.0.1:8095 AGENT_ID=echo dev/try-thread.sh "hello"
+BASE_URL=http://127.0.0.1:8095 AUTH_MODE=proxy-header AGENT_ID=echo dev/try-thread.sh "hello"
 ```
 
 (*unverified*: no Docker daemon was available when this was written; the same binary was run on the host as above.) It is not part of `app`: it shares nothing with the `orchestrator` service.
@@ -2054,6 +2152,23 @@ as long as and longer than a SHA-256 block, under dash and bash (`sh` of Alpine 
 registry API. *Unverified*: the image build, `mock-ci` running in the compose network, **the coder's `branch` artifact naming the repository the way
 `mock-ci` reports it** (read in `adam-coder`'s `publish.rs` at `882e239`: `repository` is `wt.repo().url`), and the coder job ending `done` through it: the first
 run of all of it is the `Coder E2E` workflow.
+
+The sign-in (`mock-oidc`, `oauth2-proxy`, the `forward_auth` of the Caddyfile, `dev/auth-header.sh`, `dev/rbac-e2e.sh`):
+
+*Verified 2026-10-02* on the machine that wrote this, which has no Docker daemon: `node --test dev/mock-oidc/server.test.mjs` (15 tests: discovery, the JWKS, the
+RS256 signature of every token verified against it, the code flow with PKCE, `client_credentials` with a user and an audience, `/login-as`, `userinfo`);
+oauth2-proxy v7.15.5 and Caddy 2.11.4 **built from source and run as processes** beside the mock issuer and two stand-in upstreams, with the flags and the
+Caddyfile of this stack and only the host names and ports changed: no token and a wrong audience are 401 on `/api/*` and `/agui/*`; a token of
+`dev/auth-header.sh` reaches the upstream as `Authorization: Bearer <the same token>` and a client's `X-Auth-Request-Email` does not; a POST body survives
+`forward_auth` to `/agui/*`; `/mcp` passes with its own bearer; a browser (a cookie jar) with no session is redirected `/` to `/oauth2/start` to the issuer to
+`/oauth2/callback` and back, and the upstream then gets an ID token whose `iss`, `aud` (`dev-chat`), `email` and `roles` are the mock's, with the issuer's `iss`
+(`http://localhost:19001`) different from the browser's login address (`http://127.0.0.1:19001`) as in the compose stack; `/login-as?user=admin@example.com` before the
+sign-in makes the token the administrator's; `/oauth2/sign_out` ends the session (401 after). The flags are those of the 7.15.x page
+<https://oauth2-proxy.github.io/oauth2-proxy/configuration/overview> (read 2026-10-02) and the behaviour of `copy_headers` (it deletes the client's header first) and of
+`forward_auth` (a GET, no body) is read in Caddy's source at v2.11.4. The orchestrator side (the JWT validation, the roles, the 403s) is tested in Rust by S14 and S15. The oauth2-proxy
+tag and digest were read from quay.io's registry API (the digest of the `v7.15.5-alpine` index; entrypoint `/bin/oauth2-proxy`). `shellcheck dev/*.sh` is clean;
+`docker compose config` accepts every profile and the live override; the YAML of `orchestrator.yaml` and `orchestrator.live.yaml` validates against `docs/api/config.schema.json`.
+*Verified 2026-10-02, later the same day, on real containers* (the Docker daemon came back; disk did not allow the coder image or the Rust image build): the real `oauth2-proxy` image by its pinned digest, `mock-oidc` built from its Dockerfile, `edge` with this Caddyfile, `postgres`, the WireMock agents, and the **real orchestrator binary** (a debug build of the S15 tree, mounted into a debian container) on `dev/orchestrator.yaml`, with a node stand-in for the web and the WireMock `mock-agent` standing in for `coder`, `chat` and `researcher`: both healthchecks pass, `/readyz` through the edge is 200, `dev/rbac-e2e.sh`, `mcp-e2e.sh`, `verify-e2e.sh`, `verifier-e2e.sh`, `ci-e2e.sh`, `fork-e2e.sh` and `registry-e2e.sh` pass, a browser walk (cookie jar) signs in as `dev` and, after `/login-as`, as `admin`, and with the issuer stopped while the orchestrator restarts `/readyz` is 503 until it is back. *Unverified*: the Rust image build and the `web` image, the adam image's agents (`coder`, `chat`, `researcher`, `coder-share`) and every scenario that needs them (`greeting`, `agents`, `choices`, `cards`, `title`, `description`, `workspace`, `artifact`, `coder`, `folder`), `split`, and a browser session past the token's hour: the first run of those is the `Coder E2E` workflow.
 
 The default agent (the `coder` service, its mocks and `dev/coder-e2e.sh`):
 
