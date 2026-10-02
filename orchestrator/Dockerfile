@@ -28,12 +28,16 @@ RUN cargo chef cook --release --locked --recipe-path recipe.json --package orche
     --features "$ORCH_FEATURES"
 COPY . .
 RUN cargo build --release --locked --package orchestrator --features "$ORCH_FEATURES"
+# The directory of the directory artifact store (ADR 0032), made here because the final image has no shell: copied
+# with its owner, so a volume mounted on it is writable by the runtime user the first time it is used.
+RUN mkdir -p /out/var/lib/orchestrator/artifacts
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 LABEL org.opencontainers.image.source="https://github.com/vymalo/another-agentic-system" \
       org.opencontainers.image.description="Orchestration layer: chat API and durable A2A delegation" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 COPY --from=build /src/target/release/orchestrator /orchestrator
+COPY --from=build --chown=65532:65532 /out/var/lib/orchestrator /var/lib/orchestrator
 # Numeric, so Kubernetes can verify `runAsNonRoot` (this is distroless's `nonroot` user).
 USER 65532:65532
 ENV LISTEN_ADDR=0.0.0.0:8080 \

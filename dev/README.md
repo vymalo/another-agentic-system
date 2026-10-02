@@ -1200,6 +1200,24 @@ the previous task in its context), a UI action and the verifier of a gate are se
 the fork's own log each time the message is sent, so a retry says the same words, and it is not stored anywhere else. A coder that is
 forked starts with the conversation, not the workspace ([open question 40](../docs/open-questions.md)).
 
+## Files from agents: the artifact store
+
+An agent that hands a person a file (a chart, an export, a report: adam's `share_file`, [adam ADR 0012]) sends it as an A2A artifact whose
+part is a file, `raw` bytes with a `mediaType` and a `filename`. The orchestrator keeps the bytes in an **artifact store** and the log
+only a reference ([ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)); the stack's store is a directory,
+the named volume `orchestrator-artifacts` (`artifacts` of [`orchestrator.yaml`](orchestrator.yaml) and of
+[`orchestrator.live.yaml`](orchestrator.live.yaml)), which the orchestrator and the `split` workers all mount, because the worker that
+keeps a file and the control plane that serves it must see the same directory. The image makes the directory, owned by its user, so a
+new volume is writable. Take the `artifacts` section out and a file is refused ("the file could not be kept") with the chat working.
+
+| What | Where |
+|---|---|
+| The file | `GET /api/threads/{id}/artifacts/{sha256}` (the `href` of the artifact the chat shows): inline for a PNG, JPEG, GIF, WebP, SVG (sanitized), text or JSON, an attachment for everything else and for `?download=1`; `nosniff`, a sandboxing `Content-Security-Policy`, immutable. Only the thread's owner: another person gets a 404 |
+| The limits | `artifacts.maxFileBytes` (10 MiB), `artifacts.maxPerJobBytes` (100 MiB), 50 files a job; a file over one is an artifact entry without a file and an error in the chat |
+| A `url` instead of bytes | stays a link unless its host is in `artifacts.fetchHosts` (empty here); then the orchestrator reads it, without following a redirect |
+| What the mocks send | none of them sends a file: the mock A2A agents (WireMock) answer in text, and adam's `share_file` arrives with the adam pin of slice S13, whose scenario `dev/artifact-e2e.sh` will drive it. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
+| Look inside | `docker compose exec` has no shell in the distroless image; `docker run --rm -v <project>_orchestrator-artifacts:/files busybox find /files` lists `threads/<thread>/<sha256>` and its `.meta.json` |
+
 ## The split profile: a control plane and two workers
 
 The `split` profile runs what [ADR 0015](../docs/decisions/0015-control-plane-and-workers-on-adam-rs.md)

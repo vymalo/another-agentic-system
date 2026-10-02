@@ -98,6 +98,12 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             "failed",
         ),
         "talk" => (chat.seed_thread("plain", "talk to me", None).await, "done"),
+        // A file the agent hands over (ADR 0032): an artifact whose part is a PNG. The worker keeps
+        // the bytes in the artifact store and the log holds the reference.
+        "file" => (
+            chat.seed_thread("plain", "file make a chart", None).await,
+            "done",
+        ),
         "release" => (
             chat.seed_thread("coder", "echo ship it", Some("staging"))
                 .await,
@@ -333,6 +339,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
 
 const SCENARIOS: [&str; 23] = [
     "echo",
+    "file",
     "ask",
     "cancel",
     "fail",

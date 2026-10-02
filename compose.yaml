@@ -56,6 +56,8 @@ x-orchestrator: &orchestrator
   volumes:
     - ./dev/orchestrator.yaml:/etc/orchestrator/config.yaml:ro
     - ./dev/agents.yaml:/etc/orchestrator/agents.yaml:ro
+    # The files agents hand over (`artifacts` of dev/orchestrator.yaml, ADR 0032): one volume for every role.
+    - orchestrator-artifacts:/var/lib/orchestrator/artifacts
   depends_on:
     postgres:
       condition: service_healthy
@@ -197,6 +199,7 @@ services:
       - ./dev/orchestrator.yaml:/etc/orchestrator/config.yaml:ro
       - ./dev/agents.yaml:/etc/orchestrator/agents.yaml:ro
       - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
+      - orchestrator-artifacts:/var/lib/orchestrator/artifacts
     environment:
       <<: *orchestrator-env
       # `all` (control plane and dispatcher in one process) unless the split profile is in use, where
@@ -652,6 +655,8 @@ services:
 
 volumes:
   postgres-data:
+  # The files agents hand over, kept by the orchestrator and its workers (ADR 0032).
+  orchestrator-artifacts:
   coder-postgres-data:
   agents-postgres-data:
   git-data:
