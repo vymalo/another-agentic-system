@@ -1071,7 +1071,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
                         agents: role
                             .agents
                             .as_ref()
-                            .map_or(AgentScope::All, |ids| AgentScope::from_patterns(ids)),
+                            .map_or(AgentScope::All, AgentScope::from_patterns),
                     };
                     (orch_ports::Role::new(name.as_str()), grant)
                 })
