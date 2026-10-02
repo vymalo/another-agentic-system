@@ -6,9 +6,11 @@
   below), `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools), the binary's
   `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send
   time, only for an agent whose live card lists the extension). `turn_output` (an agent announces its answer,
-  [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md) amendment of 2026-10-02) is built, below. Slice 8 adds the relayed tools of attached MCP servers
-  and the `attached` member of the message; slice 10 adds `ask_agent` and the `ask:<n>` ledger
-  ([`mvp.md`](../mvp.md#the-new-build-order)). "Not yet" is marked where it matters below. The adam-rs side (an agent
+  [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md) amendment of 2026-10-02) is built, below.
+  **Written 2026-10-02 (contract accepted on the owner's delegation, not built):** the `attached` member of the message,
+  the relayed tools of attached MCP servers (slice 8: their `_meta`, the step the orchestrator reports for each call,
+  the error table) and `ask_agent` with the `ask:<n>` ledger (slice 10), all [below](#attached-servers-and-the-relay-slice-8).
+  "Not yet" is marked where it matters. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
   support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
@@ -108,8 +110,7 @@ to a thread (a request to the verifier agent does not), and the orchestrator has
 `url` is `THREAD_TOOLS_URL` plus `/thread-tools/<threadId>/mcp`. `expiresAt` is the token's `exp` as RFC 3339. The URI
 is also added to the `A2A-Extensions` header and to `message.extensions`. **Every message gets its own token**, a
 follow-up included; an agent keeps using the newest one it was given, and a task that outlives its token is why the
-lifetime is long (below). Slice 8 adds a member that names the attached servers (their ids and display names; never a
-URL or a credential); its shape is written with that slice.
+lifetime is long (below). When servers are attached to the thread the metadata also has [`attached`](#the-attached-member).
 
 The orchestrator never writes the token to the event log, to the outbox payload or to any log or trace field. What
 travels inside the orchestrator is a non-secret grant (the thread, the job, the agent, the caller and the depth) on the
@@ -124,6 +125,38 @@ everything the system keeps or says: the adapter's tests capture every log line 
 find neither the token, nor a segment of it, nor the key; the end-to-end test reads the event log, the thread, its
 export, every AG-UI frame of the runs and, on Postgres, **every row of every table of the schema**, and finds none; a
 test that makes the adapter log the metadata fails.
+
+### The `attached` member
+
+*Written 2026-10-02; not built (slice 8).* When MCP servers are attached to the thread
+([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)), the metadata above also has `attached`:
+
+```json
+{"https://agents.vymalo.com/a2a/extensions/thread-tools/v1": {
+  "url": "https://orchestrator.example/thread-tools/1b4e28ba-2fa1-11d2-883f-0016d3cca427/mcp",
+  "token": "<the JWT>",
+  "expiresAt": "2026-10-02T14:00:00Z",
+  "attached": [
+    {"server": "websearch", "name": "Web search", "description": "Search the web."}
+  ]
+}}
+```
+
+| Member | Meaning |
+|---|---|
+| `server` | The server's id, as the deployment lists it: `^[a-z0-9][a-z0-9-]{0,30}$`. It is the prefix of the server's tools on the endpoint (`websearch__search`). |
+| `name` | The display name, 1 to 80 characters. |
+| `description` | Optional, at most 500 characters. |
+
+- It is a **hint for the model's instructions** ("a web search is attached"), **not the list of tools**: `tools/list` is the
+  truth, computed for each request, so a server attached after the message was sent is listed from the next request on and
+  one detached is gone.
+- It is the servers attached to the thread **at the moment of the send** that the thread's agent may use (a server whose
+  `agents` list leaves the agent out is never attached to its threads, and is left out here too), at most 16, in the order
+  of their ids, and **omitted when there are none**. A thread with servers attached and an agent whose card lacks the
+  extension gets nothing, and the screen says so before the person sends (ADR 0024).
+- It carries **never a URL, a header or a credential**: the agent reaches a server only through the endpoint.
+- An asked agent ([`ask_agent`](#ask_agent)) gets `attached` for the servers allowed for **it**.
 
 ### Trying it
 
@@ -289,8 +322,8 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 |---|---|---|---|
 | 3 (built) | `get_ui_catalog` | built in | below |
 | built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
-| 8 | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration and environment), sees each call and reports it as a tool step with the server's icon. | relay | written with slice 8 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), status note) |
-| 10 | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | written with slice 10 ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), status note) |
+| 8 (written, not built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
+| 10 (written, not built) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
 each model turn: it is not hard-wired to `get_ui_catalog`.
@@ -402,6 +435,296 @@ token once one announced), `crates/core/tests/turn_output.rs` and the property t
 sequence), `crates/app/tests/answers.rs`, and the whole loop in `crates/e2e/tests/thread_tools.rs` on both stores with the
 fake agent's `turn-output` scripts (the `turn-output` golden of [`examples/`](examples/README.md)).
 
+## Attached servers and the relay (slice 8)
+
+*Written 2026-10-02 on the owner's decisions of plan 11 (the servers come from the YAML configuration, who may attach, the
+icons, no doubled steps); contract accepted on the owner's delegation; **not built**. It amends the plan of
+[ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) as that ADR's status note of 2026-10-02 says.*
+
+### What is attached, and by whom
+
+- **The deployment lists the servers a person may attach**, in the `toolServers` section of the orchestrator's YAML
+  ([`config.md`](config.md), [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md)): per server
+  `id`, `name`, `description`, `url` (`http(s)`, no credentials in it), `icon` (a `data:` URI of at most 8 KiB),
+  `bearer` (a **secret reference**), `headers` (header name to a **secret reference**; `Authorization`, `Accept`,
+  `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused), `tools` (an allow-list
+  of upstream tool names, default all), `agents` (the agent ids it may be attached for, default every agent) and
+  `timeoutSecs` (1 to 600, default 120). The keys are written into `config.md` and its schema by the pull request that
+  builds them. A person cannot enter a URL: the list is the deployment's.
+- **Who may attach:** anyone with `thread.write` on the thread, for the servers whose `agents` list includes the thread's
+  agent. There is no per-role filter yet. The set is at most 16 servers; the thread records `tools_attached` and
+  `tools_detached` ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)) and carries the set from job to job.
+  An unknown server, one not allowed for the agent, or more than 16 is a **422**.
+- **Icons are `data:` URIs from the configuration only.** The relay never fetches an icon from a URL and drops the icons an
+  upstream server offers (open question 38); the screen draws a `data:` icon and a generic one otherwise.
+- **Credentials** live in the orchestrator's configuration and environment, by reference, and appear in no A2A message, no
+  event, no outbox row and no log line. The upstream sees `Authorization: Bearer …` only on the orchestrator's own request.
+
+### The tools on the endpoint
+
+The relay is a **provider** of the endpoint (`ThreadToolProvider`). For a request from a caller, it serves the attached
+servers allowed for that caller's agent.
+
+- **`tools/list`.** For each such server, the upstream `tools/list` (no cache: each request lists again), the allow-list
+  intersected with what the upstream says. A tool is named **`<server>__<tool>`** and left out (with a warning) when that
+  name does not fit `^[A-Za-z0-9_-]{1,64}$` (the longest name a model API takes; *unverified* here, the limit of the
+  providers the orchestrator's agents use) or the tool's own name starts with `_`. The id has no `_`, so the first `__` is
+  the split. `title` is the upstream's, else `"<server name>: <tool>"`; `description` is the upstream's, cut at 8 KiB;
+  `inputSchema` is the upstream's (with `"type": "object"` when missing); `outputSchema` and `annotations` are passed on
+  (the deployment trusts the servers it lists); `icons` is the configured icon as `[{"src": "data:…"}]`, or none. A server
+  that cannot be listed is left out of the answer and logged; it never fails the whole list.
+- **Each tool's `_meta`** says what the orchestrator does with a call:
+
+  ```json
+  {"_meta": {"thread-tools/v1": {"reportsStep": true, "timeoutSecs": 125}}}
+  ```
+
+  | Member | Meaning |
+  |---|---|
+  | `reportsStep` | `true`: **the orchestrator reports each call of this tool as a step**, with the server's icon ([`steps-v1.md`](steps-v1.md#6-steps-the-orchestrator-reports-itself)). The agent SHOULD NOT report a step of its own for the call: it would be drawn twice. Absent or `false`: the orchestrator reports nothing for this tool, and the agent reports as it likes. Every relayed tool and `ask_agent` say `true`; `get_ui_catalog` and `turn_output` say nothing |
+  | `timeoutSecs` | The longest the orchestrator lets a call of this tool run: the server's `timeoutSecs` plus 5 for a relayed tool, the ask's timeout plus 30 for `ask_agent`. The agent SHOULD use it as the time it waits for the call, in place of a fixed default, **capped by its own limit** (adam-rs: `THREAD_TOOLS_MAX_CALL_SECS`, default 3600; 60 seconds today for every call). Absent: the agent's default |
+
+  **The key.** MCP reserves `_meta` for protocol metadata and gives its keys a format: an optional prefix of dot-separated
+  labels followed by a slash, then a name (*verified 2026-10-02*, [below](#verified-and-unverified-2026-10-02)). The full URI
+  of this extension is not a key of that format, so the key here is **`thread-tools/v1`** (prefix `thread-tools`, name `v1`,
+  not a reserved prefix). The A2A message's metadata, which A2A leaves to extensions, keeps the full URI.
+- **`tools/call`.** The request's `_meta["thread-tools/v1"]` may carry, both optional and at most 256 bytes each:
+
+  | Member | Meaning |
+  |---|---|
+  | `callId` | The agent's own id for this call, **stable across a retry of the same call** (adam-rs journals it, so a step retried after its lease expired sends the same one). The step the orchestrator reports takes its id from it, so a retry reports the same step again, not a second one. For `ask_agent` it is the [dedupe key](#dedupe-by-call-key) |
+  | `parentStepId` | The [`steps/v1`](steps-v1.md) id (the agent's own, as it reported it) of the step this call runs under. The orchestrator's step nests under it. Absent: under the caller's top, the agent's invocation (or the ask's step, for an asked agent) |
+
+  A relayed call is **at least once** on a retry: the orchestrator does not hold a result, so a retried call of a tool with
+  side effects is made again upstream. Whether that is safe is the tool's, as for any MCP client that retries.
+
+### The step of a call
+
+For a tool that says `reportsStep`, the orchestrator records a step for each call through the same input an agent's step
+takes (`Input::Step`, [steps-v1 section 6](steps-v1.md#6-steps-the-orchestrator-reports-itself)), attributed to the calling
+agent: `kind: tool`, `label` `"<server name> · <tool>"`, `icon: "mcp-server:<id>"` (an agent cannot claim that icon),
+`state: running` when the call starts, and the same id again with `completed`, `failed` or `canceled` when it ends, with
+`detail` the public error (at most 200 characters) when it failed. **The step carries its `input` and `output`**
+([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md), which overrides the earlier
+plan that a relayed call's arguments and results are not logged): the `input` is the call's arguments and the `output` the
+result's text, under the same bounds and redaction, and **no credential is ever in either**. The agent receives the
+**whole** result (up to 256 KiB); the step keeps its 8 KiB. A step that cannot be committed (a busy store) is logged and does
+not fail the call. Exactly one step is reported per call.
+
+This is what makes the existing rule of [`steps-v1.md`](steps-v1.md#3-the-report) enforceable: an agent that sees
+`reportsStep: true` knows the orchestrator reports the call, and one that sees nothing knows it does not. The orchestrator
+does not merge or drop a step an agent reports (steps are data from the agent, steps-v1 section 3): an agent that reports
+one anyway has two lines on screen.
+
+### Errors of a call
+
+| Situation | The agent gets | Step |
+|---|---|---|
+| The name is not on the endpoint: unknown, detached, left out by the allow-list or the agent filter | JSON-RPC `-32602` (unknown tool) | none |
+| The caller's task is over (the thread is terminal, the job is not the token's, the ask finished) | a result with `isError: true`, "this task is over" | none |
+| The server cannot be reached, or the connection times out | `isError`: "the MCP server '<name>' could not be reached; the call did not run" | `failed` |
+| No answer within the server's timeout | `isError`: "no answer within N s; it may still be running on the server" | `failed` |
+| The server answers 401 or 403 | `isError`: "the MCP server refused the orchestrator's credentials" (and the operator's log has a warning) | `failed` |
+| The server answers with a JSON-RPC error | `isError` with its message, at most 1 KiB | `failed` |
+| The server's result has `isError: true` | passed through as it is | `failed`, `detail` its first line |
+| The result is over 256 KiB | the content cut, with a note appended | `completed` |
+| The agent cancels the call or drops the connection | the upstream call is dropped | `canceled` |
+
+A server that the deployment no longer lists, or whose credentials were rotated, fails like the rows above: the thread keeps
+the attachment, and the failure names the server, never a credential.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent
+  participant E as Thread tools endpoint (relay)
+  participant L as Event log
+  participant S as MCP server (credentials held here)
+
+  A->>E: tools/list
+  E->>S: tools/list (the server's bearer)
+  S-->>E: search
+  E-->>A: websearch__search, _meta {reportsStep: true, timeoutSecs: 125}
+  A->>E: tools/call websearch__search {query}, _meta {callId, parentStepId}
+  E->>L: step running {icon: mcp-server:websearch, input: {query}} (agent_step start)
+  E->>S: tools/call search {query}
+  S-->>E: result
+  E->>L: step completed {output: the result's text, cut to 8 KiB} (agent_step end)
+  E-->>A: the whole result (up to 256 KiB)
+  Note over A,E: the agent reports no step of its own for this call
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Running: tools/call accepted, the step starts
+  Running --> Completed: the server answered
+  Running --> Failed: unreachable, timeout, 401/403, a JSON-RPC error or isError
+  Running --> Canceled: the agent cancelled or dropped the call
+  Completed --> [*]
+  Failed --> [*]
+  Canceled --> [*]
+```
+
+(An unknown name or a task that is over gets no step: the first is `-32602`, the second a result with `isError`.)
+
+## `ask_agent`
+
+*Slice 10. Written 2026-10-02; contract accepted on the owner's delegation; **not built**. Decided in the status note of
+[ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) (option A: the addressed agent coordinates); the
+references it works from are [`mentions-v1.md`](mentions-v1.md).*
+
+The addressed agent asks an agent the person **mentioned** to do part of the work and waits for its answer. The orchestrator
+runs the asked agent as a **child task of the same thread**, in a context of its own, with its steps nested under the step of
+the agent that asked, and returns its result to the tool call with progress notifications.
+
+The provider owns the name `ask_agent` for every caller. `tools/list` includes it only when the job has mentioned agents
+and the caller may still ask (its depth is below the limit); a call that arrives when it is not offered (a list that went
+stale during a turn) is a **result with `isError`** that says why, not `-32602`, so the model reads the reason.
+
+### Input
+
+```json
+{"name": "ask_agent",
+ "title": "Ask a mentioned agent",
+ "description": "Ask one of the agents the person mentioned to do part of the work and wait for its answer. The agent does not see this conversation: put everything it needs in message. Asking the same agent again continues its conversation, and answers its question if it asked one.",
+ "inputSchema": {"type": "object", "additionalProperties": false, "required": ["agent", "message"], "properties": {
+   "agent": {"type": "string", "description": "the agentId of a mention"},
+   "message": {"type": "string", "minLength": 1, "maxLength": 16000},
+   "timeout_secs": {"type": "integer", "minimum": 10, "maximum": 7200,
+                    "description": "Lowers the ask's timeout; it never raises the deployment's"}}},
+ "_meta": {"thread-tools/v1": {"reportsStep": true, "timeoutSecs": 1830}}}
+```
+
+Annotations: not read-only, not destructive, **not idempotent** (the same call key is, below), open world. A missing or
+mistyped argument or an unknown member is `-32602` like any invalid argument.
+
+### Result
+
+As `structuredContent` and as the same JSON in one text content:
+
+```json
+{"ask": 2, "agent": "mock-browser", "state": "completed",
+ "text": "Pictures: …", "artifacts": [{"name": "pitch.png", "uri": "…", "mimeType": "image/png"}]}
+```
+
+| Member | Meaning |
+|---|---|
+| `ask` | The number of the ask in the job, from 1 |
+| `agent` | The `agentId` asked |
+| `state` | `completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled` or `timed_out` |
+| `text` | The asked agent's last words, at most 64 KiB, **untrusted text** in the asker's model |
+| `artifacts` | At most 20 `{name, uri?, mimeType?}`; a file is a reference to the thread's artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)), never its bytes |
+| `question` | With `input_required` or `auth_required`: what the asked agent asks. Asking the same agent again **continues that task** with the answer |
+| `error` | With a failure: the public reason |
+
+`isError` is true unless the state is `completed`, `input_required` or `auth_required`.
+
+### Refusals
+
+A refusal is a result with `isError: true`, **nothing written**:
+
+| Situation | Text |
+|---|---|
+| The agent is not mentioned in this job | "you can ask only the agents the person mentioned: a, b" |
+| The agent is the asker or one of its own ask chain | "an agent cannot ask itself or an agent already in its chain" |
+| The depth limit is reached | "asks are nested at most N deep" |
+| The job's limit of asks is reached | "this job has used its N asks" |
+| The thread's limit of running asks is reached | "N asks are already running; wait for one to finish" |
+| The agent is no longer listed | "agent '<id>' is no longer listed" |
+| The person may not invoke the agent (`agent.invoke`, checked again here) | "the person may not use '<id>'" |
+| The registry cannot answer | "the agent list is unavailable; try again" |
+| The caller's task is over | "this task is over" |
+| The call key was used for another ask | "this callId was used for another ask" |
+
+### Limits
+
+| Limit | Default | Range | Configuration |
+|---|---|---|---|
+| Depth: the asked agent's depth is its asker's plus 1; the addressed agent is 0 | **2** | 1 to 4 | `asks.maxDepth` |
+| Asks per job | **16** | 1 to 64 | `asks.maxPerJob` |
+| Asks running at once per thread | **4** | 1 to 16 | `asks.maxRunning` |
+| Timeout of an ask | **1800 s** | 10 to 7200 | `asks.timeoutSecs` |
+| `message` | 16,000 characters | fixed | |
+
+An ask whose depth would pass `asks.maxDepth` is refused: with the default, the addressed agent asks A (depth 1), A may ask B
+(depth 2), and B cannot ask. The keys belong to the `asks` section of the orchestrator's YAML; `config.md` and its schema
+are written by the pull request that builds them. The core never reads a configuration: the limits are passed in the input
+that records the ask ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)).
+
+### Dedupe by call key
+
+The **call key** is `ask:<thread>:<caller>:<callId>`, from the request's `_meta["thread-tools/v1"].callId`. A second call with
+the same key **re-attaches to the ask** instead of starting another: a running ask is waited for again, a finished one is
+answered at once with its recorded result. This is why adam-rs sends a stable `callId`: a step retried after its lease
+expired calls again, and a **dropped connection does not cancel the ask**, so the agent re-attaches by calling again. A call
+with no `callId` has no key and is a new ask every time; an agent SHOULD send one. A second call with the same key and a
+different `agent` or `message` is refused (the last row above).
+
+### The child task
+
+- **Ledger.** The job keeps `asks`, one entry per ask: its number, the agent, who asked (`main` or `ask:<m>`), its depth, its
+  context `<thread>-ask-<agent>`, its A2A task id once it has one, its state, and the call key. It is reset when the next job
+  starts. What the asked agent said lives in events, not in the ledger.
+- **Events.** `ask_started {ask, agent, by, depth, text (at most 16 KiB, untrusted), stepId: "ask-<n>", parentStepId?}`,
+  attributed to the asking agent; `ask_finished {ask, state, text?, question?, artifacts?, error?}`, attributed to the
+  asked agent (the system for `timed_out`, a cancel or a delivery failure). Their schemas are added to
+  [`chat-api.yaml`](chat-api.yaml) by the pull request that builds them. The asked agent's progress is `agent_step`
+  events with ids `ask-<n>/<its id>` under the top step `ask-<n>`; partial messages are not logged.
+- **The asked agent's token** has `caller = ask:<n>` and a `depth`. It gets the attached servers allowed for **it**, and
+  `ask_agent` only while its depth is below the limit; it gets **no** `get_ui_catalog`, no `turn_output` (only the addressed
+  agent announces the turn's answer) and no mentions metadata.
+- **Continuation.** Asking again is a new ask (a new number). An ask to an agent whose last ask in this job ended `input_required` or `auth_required` continues that
+  task. Otherwise it is a new task in the same context with `referenceTaskIds` naming the earlier ask tasks to that agent in
+  this job ([ADR 0021](../decisions/0021-context-across-a2a-tasks.md)).
+- **The gate never sees an asked agent.** Its `branch`, `checks` and pushed commits do not reach the job's gate
+  ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)): the addressed agent's work is what is verified. An
+  asked agent cannot show a surface: an A2UI part from it is refused with an `error` step.
+- **Nesting.** The ask is a **subagent** step `ask-<n>` under the step of the agent that asked (`parentStepId` when given), and
+  its own steps nest under it ([ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)). In AG-UI it is
+  a `SUBAGENT_STARTED` named `sub-ask-<n>` whose parent is the asker's invocation, with a `vymalo.ask` activity; the rows
+  are written into [`agui.md`](agui.md) by the pull request that builds them.
+- **Waiting.** After the ask is recorded (or found, for a duplicate), the call follows the thread's events until
+  `ask_finished` for this ask. With a `progressToken` it sends a progress notification for each step of the ask, and a
+  heartbeat every 30 seconds in any case; the HTTP wait is bounded by the ask's deadline plus 30 seconds.
+- **Ending.** At the deadline a running ask ends `timed_out` and the asked agent's task is cancelled. **The person's Cancel and
+  a Stop & send** ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) cancel every running ask, which ends
+  `canceled` ("the person stopped the job"); the addressed agent's task reaching a terminal state does the same ("the asking
+  task ended"). An update from an asked agent after its `ask_finished` is dropped like any late input.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Addressed agent
+  participant E as Thread tools endpoint (asks provider)
+  participant C as Core and event log
+  participant D as Dispatcher (ask row)
+  participant B as Asked agent
+
+  A->>E: tools/call ask_agent {agent, message}, _meta {callId, parentStepId}
+  E->>E: checks: mentioned, depth, limits, may invoke, call key
+  E->>C: Input::Ask: ask_started {ask 1, by main, depth 1}, an outbox row of kind ask
+  Note over E,A: the call waits and sends progress and a heartbeat
+  D->>B: new task in context <thread>-ask-<agent>, token caller ask:1
+  B-->>D: working, steps nested under ask-1
+  D->>C: agent_step events (ask-1/...)
+  B-->>D: completed, "Pictures: ..."
+  D->>C: ask_finished {ask 1, completed, text}
+  E-->>A: result {ask 1, state completed, text, artifacts}
+  A->>E: the same callId again (a retry)
+  E-->>A: the recorded result at once, no second ask
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Running: ask_started (the checks passed)
+  Running --> Running: the asked agent works: steps, progress to the call
+  Running --> Finished: the asked agent's task completed, failed, was rejected or asked
+  Running --> Finished: the deadline passed: timed_out, the task is cancelled
+  Running --> Finished: the person stopped the job, or the asking task ended: canceled
+  Running --> Finished: the delegation could not be delivered: failed
+  Finished --> [*]: ask_finished, written once
+```
+
 ## Security notes
 
 - A token is a **capability for one thread** until it expires: whoever holds it can call that thread's tools. With the
@@ -412,6 +735,11 @@ fake agent's `turn-output` scripts (the `turn-output` golden of [`examples/`](ex
   it out of images, logs and `Debug` output; rotate it as above.
 - What a tool returns goes back into an agent's model: a relayed result or an asked agent's answer is untrusted text
   there, as any tool result is (prompt injection). The orchestrator does not interpret it.
+- **The relay is an outbound surface.** The servers come only from the deployment's configuration, never from a person or
+  an agent; a response is cut at 256 KiB; a credential is never logged (the relay's tests search every table and log for
+  the bearer); a server's result and an asked agent's answer are untrusted text in the agent's model.
+- **An ask runs another agent** on the person's behalf, so each ask is checked against what the person may invoke
+  (`agent.invoke`) when it is made, not only when the agent was mentioned, and an asked agent never reaches the gate.
 - The endpoint has no browser use, so it needs no cookie and no CORS; it must not be routed from the public edge.
 
 ## Verified and unverified (2026-10-01)
@@ -439,3 +767,26 @@ it is called at; the guard reads the thread from it); its Host check refuses a h
 the list of allowed origins empty, a request that carries an `Origin` header is refused with `403` (so the library's
 check does cover `Origin`, as configured here); a request with no `Authorization` header, a bad token and a good token
 for another thread are the two `401` answers above, through the library's own middleware order (the guard runs first).
+
+## Verified and unverified (2026-10-02)
+
+*Verified 2026-10-02* (MCP specification 2025-11-25, <https://modelcontextprotocol.io/specification/2025-11-25/basic>,
+"General fields"):
+
+- `_meta` "is reserved by MCP to allow clients and servers to attach additional metadata to their interactions". A key has
+  an optional **prefix**, "a series of labels separated by dots (`.`), followed by a slash (`/`)", and a **name** that
+  begins and ends with an alphanumeric character and may hold hyphens, underscores and dots. A prefix whose second label is
+  `modelcontextprotocol` or `mcp` is reserved. So `thread-tools/v1` is a valid key and the URI of the extension is not.
+- A tool definition may carry `icons` whose `src` is an HTTP(S) URL or a base64 `data:` URI, and consumers "MUST" treat
+  icon bytes as untrusted, fetch without credentials and keep a strict allow-list of image types; a client that renders
+  icons must support PNG and JPEG and should support SVG and WebP (MCP specification 2025-11-25, "icons"). The relay uses
+  only a configured `data:` icon.
+- Tool names "SHOULD" be 1 to 128 characters of letters, digits, `_`, `-` and `.`
+  (<https://modelcontextprotocol.io/specification/2025-11-25/server/tools>); the relay's names are stricter (64
+  characters, no dot).
+- An unknown tool is a protocol error (`-32602`) and a tool's own failure is a result with `isError: true`; clients
+  "SHOULD" give tool execution errors to the model, and "MAY" give protocol errors (same page).
+
+*Unverified:* that 64 characters is the limit of every model API an agent here uses; that an `ask_agent` call of half an
+hour survives every proxy between an agent and the endpoint (the heartbeat every 30 seconds is the mitigation, and the
+agent re-attaches by its `callId`).

@@ -160,3 +160,16 @@ ledgers. Rolling back the code leaves events an older reader rejects; reading th
   an unsent row on a terminal thread as `Skipped` with "message not delivered: thread already finished".
 - *Unverified:* how assistant-ui renders a second run on a thread whose previous run finished with
   `RUN_FINISHED`; the web's Playwright test (`e2e/follow-up-after-done.spec.ts`) is the check.
+
+## Status note, 2026-10-02: a message sent while a job is open
+
+[ADR 0036](0036-sending-while-an-agent-works.md) amends two sentences of this ADR; nothing is built yet.
+
+- "Two messages sent while a job is open are two delegations" becomes: each is a **steer** (`user_message.delivery:
+  steer`), delivered to the running task when the agent's card lists `steer/v1` and otherwise queued behind the turn as
+  here. The redelivery of this ADR stays the fallback for a steer whose task ended.
+- **Open question 33 is decided**: a delegation whose first event names a new task on a thread that has become terminal is
+  applied as `Input::Redeliver { text, sent: true }` (the next job starts, no second `Delegate`), and its task is followed.
+  The question moves to Closed when that is built.
+- A person can also **stop and send**: one input cancels the running task and starts the next job with the text, with no
+  gate for the abandoned job.
