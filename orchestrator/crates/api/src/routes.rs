@@ -476,9 +476,9 @@ struct AgentsView {
 pub(crate) async fn me<P: Ports>(
     State(state): State<ApiState<P>>,
     Extension(principal): Extension<Principal>,
-) -> Json<Me> {
+) -> Response {
     let access = state.app.access(&principal);
-    Json(Me {
+    let me = Me {
         user: principal.user.to_string(),
         email: principal.email.clone(),
         name: principal.name.clone(),
@@ -495,5 +495,11 @@ pub(crate) async fn me<P: Ports>(
             read: access.agents(Permission::AgentRead).patterns(),
             invoke: access.agents(Permission::AgentInvoke).patterns(),
         },
-    })
+    };
+    let mut response = Json(me).into_response();
+    // Who a person is and what they may do changes with their token: never kept.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }

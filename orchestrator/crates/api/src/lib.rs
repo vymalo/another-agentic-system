@@ -237,7 +237,7 @@ pub fn router_with_surfaces<P: Ports>(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         cfg.request_timeout,
     );
-    let plain = plain.layer(timeout.clone());
+    let plain = plain.layer(timeout);
     // A person whose roles grant nothing is refused by every route but `/api/me` (ADR 0033), which
     // tells them so. The guard wraps what the resource API and the surfaces route, not `/api/me`.
     let guarded = plain.merge(streaming).layer(from_fn_with_state(
