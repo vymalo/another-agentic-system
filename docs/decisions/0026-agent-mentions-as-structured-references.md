@@ -74,3 +74,18 @@ decided on that delegation as follows; the owner may revisit them.
   be added beside it later; C and D are not taken.
 - **The extension's URI** is `https://agents.vymalo.com/a2a/extensions/mentions/v1`; its contract is a page under
   [`docs/api/`](../api/README.md), written with the slice that builds it (MVP slice 10).
+
+## Status note, 2026-10-02: the contracts written
+
+The extension is written in [`api/mentions-v1.md`](../api/mentions-v1.md) and `ask_agent` in
+[`api/thread-tools-v1.md`](../api/thread-tools-v1.md#ask_agent); neither is built. Decided on the owner's delegation:
+
+- **Offsets are UTF-16 code units** (what a JavaScript string indexes; the web is the producer), in place of the Unicode
+  scalar values the first plan counted. An offset inside a surrogate pair is a 422.
+- **Checked before anything is written:** shape (400), labels, offsets, overlaps, an unknown or moved agent, **an agent
+  the person's role may not invoke (`agent.invoke`)** and the thread's own agent (422), the registry down (503). The
+  `agent.invoke` check is repeated when the agent is asked.
+- **Ask limits:** depth 2, 16 asks per job, 4 running at once, 1800 seconds (configuration keys under `asks`); asked agents'
+  `branch` and `checks` never reach the gate; an ask is deduplicated by its call key, and a dropped call does not cancel it.
+- **A message sent while a job runs** ([ADR 0036](0036-sending-while-an-agent-works.md)) adds its mentions to the job's set;
+  a Stop & send carries them to the next job.

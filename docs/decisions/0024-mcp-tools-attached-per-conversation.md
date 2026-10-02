@@ -82,3 +82,22 @@ decided on that delegation as follows; the owner may revisit them.
 - **Refusals (decision 4).** A server the deployment does not offer to the thread's agent is refused when it is
   attached; a call that a server refuses is a failed step and an error result for the agent.
 - Still open: authentication to the servers beyond static credentials (question 11; OIDC for MCP after the MVP).
+
+## Status note, 2026-10-02: the contract written, on the owner's decisions of plan 11
+
+The contract is written in [`api/thread-tools-v1.md`](../api/thread-tools-v1.md#attached-servers-and-the-relay-slice-8); it
+is not built. It settles what this ADR and its note of 2026-10-01 left to the slice, on the owner's delegation:
+
+- **Where the attachable servers are configured:** the `toolServers` section of the YAML configuration
+  ([ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md)), credentials by reference, in place of a file named by
+  an environment variable.
+- **Who may attach:** anyone with `thread.write` on the thread, for the servers whose `agents` list includes the thread's
+  agent; no per-role filter yet.
+- **Icons (decision 5, narrowed):** `data:` URIs from the configuration only; an icon at an http(s) URL is never fetched
+  (open question 38), and the icons an upstream server offers are dropped.
+- **Steps (decision 3 of the note):** the relayed tool's `_meta["thread-tools/v1"]` says `reportsStep: true`, so an agent
+  knows the orchestrator reports the call and does not report its own; the step carries the call's input and output under
+  [ADR 0030](0030-a-step-carries-its-input-and-output-bounded-and-redacted.md), which overrides the earlier plan that they
+  are not logged.
+- **Timeouts:** `_meta` `timeoutSecs` tells the agent how long a call may run, in place of a fixed 60 seconds.
+- **The message:** `attached` names the servers (id, name, description), never a URL or credential.
