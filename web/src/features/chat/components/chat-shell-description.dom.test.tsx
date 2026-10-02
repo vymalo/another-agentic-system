@@ -150,9 +150,16 @@ describe("a thread's description in the app", () => {
     await waitFor(() => expect(document.getElementById(described)?.textContent).toBe(MODEL));
   });
 
-  it("a description that arrives after the thread is open is drawn with no reload", async () => {
+  it("a description that arrives after the page watched the thread finish is drawn with no reload", async () => {
     const id = await makeThread("talk to me");
     shell(id);
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    // a thread opened already finished lets its stream go; a follow-up makes the page watch a job end,
+    // and a thread it watched finish keeps its stream for a while (FINISHED_GRACE_MS)
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "talk again" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getAllByText("talk again").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Plan: add a test")).toHaveLength(2));
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     expect(line()).toBeNull();
     // the orchestrator's model describes it later (a producer-initiated run on the stream)

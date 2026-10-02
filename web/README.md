@@ -565,9 +565,11 @@ model says in a sentence or two what the conversation is about now, and the web 
 - **Live.** The open thread follows the stream: a description the model writes after the job's end (a producer-initiated run
   that holds only a snapshot, which never reaches the transcript) bumps the thread's `lastSeq`, the resource is fetched again
   (debounced, as for a rename), and the line appears or changes, in the header and in the sidebar's row, with no reload.
-  The model writes it after the thread is `done`, so **a finished thread keeps its stream for 45 s** (`FINISHED_GRACE_MS` in
-  `use-chat-runtime.ts`, counted by `use-elapsed.ts`) before the page lets go of it; it used to let go the moment the thread
-  was finished and caught up, which would have left a description that arrives a second later for the next reload.
+  The model writes it after the thread is `done`, so **a thread the page watched finish keeps its stream for 45 s**
+  (`FINISHED_GRACE_MS` in `use-chat-runtime.ts`, counted by `use-elapsed.ts`) before the page lets go of it; it used to let
+  go the moment the thread was finished and caught up, which would have left a description that arrives a second later for
+  the next reload. A thread that was already finished when it was opened still lets go at once (the system e2e
+  `history.spec.ts` holds that), so its late description shows on the next visit.
 - **Writing it.** **Add description** (or **Edit description**) in the thread's `…` menu turns the line into a field,
   as Rename does the title: the focus goes to it, Enter or leaving it saves, Escape gives it up, a refused save
   says why ("Could not save the description: …") and keeps the field and the words. Unlike a title, **an empty

@@ -89,11 +89,16 @@ export function useChatRuntime({
   const caughtUp = threadLastSeq !== null && snapshot.lastSeq >= threadLastSeq;
   // A finished thread that is fully loaded needs no stream for long, and neither does one that is not
   // there. "For long": what the orchestrator writes after a job ends, its title and the thread's
-  // description (ADR 0035), arrives on the stream after the thread is `done`, so a finished thread
-  // keeps its stream for a while (`FINISHED_GRACE_MS`) before it lets go.
+  // description (ADR 0035), arrives on the stream after the thread is `done`, so a thread this page
+  // watched finish keeps its stream for a while (`FINISHED_GRACE_MS`) before it lets go. One that was
+  // already finished when it was opened lets go at once: its job ended before, and so did what follows it.
   const finished = isTerminal(snapshot.state) && caughtUp && !snapshot.openRun;
-  const lingered = useElapsed(finished, FINISHED_GRACE_MS);
-  const paused = notFound || snapshot.notFound || (finished && lingered);
+  const watched = useRef<{ agent: ThreadAgent; unfinished: boolean }>({ agent, unfinished: false });
+  if (watched.current.agent !== agent) watched.current = { agent, unfinished: false };
+  if (caughtUp && !finished) watched.current.unfinished = true;
+  const lingered = useElapsed(finished && watched.current.unfinished, FINISHED_GRACE_MS);
+  const paused =
+    notFound || snapshot.notFound || (finished && (!watched.current.unfinished || lingered));
   useEffect(() => {
     if (threadId === null || paused) return;
     agent.start();

@@ -48,8 +48,9 @@
     the list with no reload; the snapshot's own `thread.description` is not a second source that could disagree with
     the answer to a person's `PATCH`.
     A finished thread used to let go of its stream as soon as it was caught up; the model writes the description
-    after the thread is `done`, so it now keeps the stream for 45 seconds first (a model call is bounded by the
-    endpoint's timeout, 30 s by default), which also lets a late title arrive.
+    after the thread is `done`, so a thread the page watched finish now keeps the stream for 45 seconds first (a
+    model call is bounded by the endpoint's timeout, 30 s by default), which also lets a late title arrive. A thread
+    opened already finished still lets go at once.
   - **The config is read once and awaited.** `GET /api/config` is read once per page load; until it answers nothing it
     can hide is drawn (a description that is then switched off never flashes), and a configuration that cannot be
     read leaves the defaults (`showDescriptions: true`), as the contract says of a missing key. With the setting off the
