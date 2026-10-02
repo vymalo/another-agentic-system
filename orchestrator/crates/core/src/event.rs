@@ -347,6 +347,47 @@ pub struct FileRef {
     pub filename: Option<String>,
 }
 
+impl FileRef {
+    /// Where the file is served, relative to the API's origin
+    /// (`GET /api/threads/{threadId}/artifacts/{sha256}`, ADR 0032): the `href` of the projected
+    /// artifact. The thread is the event's.
+    pub fn href(&self, thread: crate::ThreadId) -> String {
+        format!("/api/threads/{thread}/artifacts/{}", self.sha256)
+    }
+}
+
+/// How much of a kept file a person can look at without downloading it (ADR 0032, decision 8 and
+/// 10): the types the API serves inline. Everything else is an attachment only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preview {
+    /// An image: png, jpeg, gif, webp or svg (the API sanitizes an SVG).
+    Image,
+    /// Plain text: `text/plain` or `application/json`.
+    Text,
+}
+
+impl Preview {
+    /// The preview of `media_type` (a lower-case `type/subtype` as the worker kept it), or `None`
+    /// when the file is an attachment only.
+    pub fn of(media_type: &str) -> Option<Preview> {
+        match media_type {
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml" => {
+                Some(Preview::Image)
+            }
+            "text/plain" | "application/json" => Some(Preview::Text),
+            _ => None,
+        }
+    }
+
+    /// The word the projection uses (`vymalo.artifact.preview`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Preview::Image => "image",
+            Preview::Text => "text",
+        }
+    }
+}
+
 /// `data` of a `thread_state`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadStateData {

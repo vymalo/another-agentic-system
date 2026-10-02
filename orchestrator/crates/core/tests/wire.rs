@@ -457,6 +457,38 @@ fn a_file_artifact_holds_a_reference_and_old_events_still_read() {
 }
 
 #[test]
+fn only_the_preview_types_have_a_preview_and_a_file_has_an_href() {
+    for (media_type, preview) in [
+        ("image/png", Some(Preview::Image)),
+        ("image/jpeg", Some(Preview::Image)),
+        ("image/gif", Some(Preview::Image)),
+        ("image/webp", Some(Preview::Image)),
+        ("image/svg+xml", Some(Preview::Image)),
+        ("text/plain", Some(Preview::Text)),
+        ("application/json", Some(Preview::Text)),
+        ("text/html", None),
+        ("image/bmp", None),
+        ("application/pdf", None),
+        ("application/octet-stream", None),
+        ("IMAGE/PNG", None),
+        ("", None),
+    ] {
+        assert_eq!(Preview::of(media_type), preview, "{media_type}");
+    }
+    assert_eq!(Preview::Image.as_str(), "image");
+    assert_eq!(Preview::Text.as_str(), "text");
+    let file = FileRef {
+        sha256: "ab".repeat(32),
+        size: 1,
+        filename: None,
+    };
+    assert_eq!(
+        file.href(tid()),
+        format!("/api/threads/{}/artifacts/{}", tid(), "ab".repeat(32))
+    );
+}
+
+#[test]
 fn thread_wire_hides_owner_and_version() {
     let t = ThreadRecord {
         id: tid(),

@@ -18,6 +18,7 @@
 //!
 //! [ADR 0033]: ../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md
 
+mod artifacts;
 mod auth;
 mod export;
 mod extract;
@@ -45,6 +46,10 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+pub use artifacts::{
+    CACHE_CONTROL as ARTIFACT_CACHE_CONTROL,
+    CONTENT_SECURITY_POLICY as ARTIFACT_CONTENT_SECURITY_POLICY, MAX_SVG_INLINE_BYTES,
+};
 pub use auth::IDENTITY_HEADER;
 pub use export::{FORMAT as EXPORT_FORMAT, VERSION as EXPORT_VERSION};
 pub use extract::{ApiJson, ApiQuery};
@@ -212,6 +217,10 @@ pub fn router_with_surfaces<P: Ports>(
         .route(
             "/api/threads/{thread_id}/branches",
             get(routes::list_branches::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/artifacts/{sha256}",
+            get(artifacts::get_artifact::<P>),
         )
         .with_state(state);
     let mut plain = resource;

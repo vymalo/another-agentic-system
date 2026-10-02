@@ -88,6 +88,25 @@ whole ledger (which `Thread.job` only summarises), with its `number` (which job 
 `AgentTransport::A2a` only); the file does hold what people and agents wrote, and the owner's e-mail as the actor of their
 messages. Built in `src/export.rs`; unit-free (a `Serialize` struct that borrows the `ThreadExport` the application returns and is written straight to the body, with no `serde_json::Value` copy of the log).
 
+### `GET /api/threads/{threadId}/artifacts/{sha256}`
+
+A file an agent handed over, from the artifact store ([ADR 0032](../../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md),
+operation `getArtifact`). Behind the identity layer; `App::open_artifact` decides who may read (the thread's owner
+today: `get_thread`, one line, where the role permission `artifact.read` of ADR 0033 will come), and **every miss is the same 404**:
+another person's thread, a thread that does not exist, a hash the thread holds no file for (the file of another thread is not reachable by
+hash), a hash that is not 64 lowercase hex digits, and a deployment with no artifact store. `src/artifacts.rs` says how the file is sent:
+
+* **streamed** from the store, never held whole (an inline SVG is the one exception, read to be sanitized, up to `MAX_SVG_INLINE_BYTES`, 2 MiB);
+  a store that fails midway ends the response in an error so that a prefix is never taken for the file, and nothing of the error is sent;
+* **inline** (no `download`, or `download=0`) only for `orch_core::Preview` types (png, jpeg, gif, webp, svg, `text/plain` and `application/json`, the
+  last two with `; charset=utf-8`); every other type is an `attachment`, and so is every `?download=1`, with the original bytes;
+* an inline **SVG is the sanitized one** (`orch-svg-clean`); one that is too large or cannot be sanitized is sent as an attachment instead;
+* always `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox`
+  (`ARTIFACT_CONTENT_SECURITY_POLICY`), `Cache-Control: private, max-age=31536000, immutable` (`ARTIFACT_CACHE_CONTROL`) and `ETag: "<sha256>"`;
+* `Content-Disposition` carries the file name cleaned (one name, no path, no control or direction character, 255 bytes), as a printable ASCII
+  `filename="…"` fallback (`"`, `\`, `%` and `;` replaced) and, when the name is not that, `filename*=UTF-8''…` (RFC 6266, RFC 5987); no usable name is
+  `artifact-<8 hex digits>`; a `download` that is not `0`, `1`, `true` or `false` is a 400.
+
 ### `GET /metrics`
 
 The outbox queue as Prometheus text (`text/plain; version=0.0.4`), written by hand (four
@@ -115,6 +134,8 @@ read by the binary and passed in as `AuthConfig`.
 Offline: the in-memory stack from `orch-ports` (feature `testkit`), over real
 HTTP. No environment variables.
 
+* `tests/artifacts.rs` (ADR 0032): the owner's PNG inline with every safety header, an attachment for `download=1` (the original SVG, script and all) and a 400 for any other value, an SVG sanitized inline (the length is the cleaned body's), an SVG that is malformed or over 2 MiB an attachment, only the preview types inline and every other type (html, pdf, zip, markdown, bmp, javascript, xml, octet-stream) an attachment, file names (non-ASCII in both forms, a hostile name unable to end the header or add a parameter, no name named by its hash), the 404s (another person's thread, another thread of the same person, an unknown, short, long, upper-case or non-hex hash, a path trick, a thread that is missing or not an id, with the body of a foreign thread equal to a missing one's) and a 401 without identity, no store (`NoArtifacts`), 24 MiB from the directory store whole and in many pieces, the first bytes arriving while the store still holds the rest, and a store that fails midway (the client gets an error, not a prefix, and nothing of the store's message).
+* `src/artifacts.rs` unit tests: the `Content-Disposition` forms and hostile names. `tests/contract.rs` also drives `getArtifact` (401, the 404s of a stack with no store, the 400).
 * `src/problem.rs` unit tests: the status and `Retry-After` for every error class (a cut a thread does not allow is 422, or 409 with `code: turn_open`).
 * `tests/contract.rs` also drives `getConfig` (200 with exactly `{"ui": {"showDescriptions": true}}`, 401 without an identity) and `patchThread` with a `description` (the thread, the listing and the log say it, the event is the person's and valid against `Event`, the same again writes nothing, empty clears it, every refusal writes nothing even beside a good title, a title and a description together, someone else's thread is a 404), and `forkThread` and `listBranches`: a fork from here (201, `Location`, `forkedFrom`, the events validated against `Event`), a repeat with the same `id` (200), another agent as `target`, an edit (queued, answered by the dispatcher, hidden from the list and found by the branches), every refused body (400), a point that is not there (422), an id that is taken and a turn that is going on (409, `turn_open`), and someone else's thread (404).
 * `src/metrics.rs` unit tests: the exposition text against a golden, an empty outbox, whole

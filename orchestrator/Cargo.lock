@@ -2184,21 +2184,28 @@ name = "orch-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
+ "futures",
  "jiff",
  "jsonschema",
  "orch-app",
+ "orch-artifacts-fs",
  "orch-auth-header",
  "orch-core",
  "orch-ports",
+ "orch-svg-clean",
  "reqwest",
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
