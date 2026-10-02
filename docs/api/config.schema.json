@@ -22,17 +22,137 @@
       },
       "type": "object"
     },
-    "Auth": {
+    "ArtifactStoreKind": {
+      "description": "Which store keeps the files, one of the implementations of the `ArtifactStore` port. A build that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.",
+      "enum": [
+        "fs",
+        "s3"
+      ],
+      "type": "string"
+    },
+    "Artifacts": {
       "additionalProperties": false,
-      "description": "Authentication.",
+      "description": "The artifact store (ADR 0032): the files an agent hands over, kept by the hash of their content. The event log keeps only the reference.",
       "properties": {
-        "devUser": {
-          "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning. Replaces `AUTH_DEV_USER`.",
+        "fs": {
+          "$ref": "#/$defs/ArtifactsFs",
+          "description": "The directory store. Required with `store: fs`."
+        },
+        "maxFileBytes": {
+          "default": 10485760,
+          "description": "The largest file kept, in bytes: 1 to 268435456 (256 MiB), default 10485760 (10 MiB). A larger file is not kept: the agent's artifact is shown without it, with an error.",
+          "format": "uint64",
+          "maximum": 268435456,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "s3": {
+          "$ref": "#/$defs/ArtifactsS3",
+          "description": "The S3 store. Required with `store: s3`."
+        },
+        "store": {
+          "$ref": "#/$defs/ArtifactStoreKind",
+          "description": "Which store: `fs` (a directory, for development and one node) or `s3` (a bucket). The section of the store chosen is required, and the other one is an error."
+        }
+      },
+      "required": [
+        "store"
+      ],
+      "type": "object"
+    },
+    "ArtifactsFs": {
+      "additionalProperties": false,
+      "description": "The directory store.",
+      "properties": {
+        "root": {
+          "description": "The directory the files are kept in; relative to this file's directory. It is made (mode 0700) when it is not there. The worker that keeps a file and the control plane that serves it must see the same directory: one machine, or a shared volume.",
           "minLength": 1,
           "type": "string"
         }
       },
+      "required": [
+        "root"
+      ],
       "type": "object"
+    },
+    "ArtifactsS3": {
+      "additionalProperties": false,
+      "description": "The S3 store. The bucket is addressed in the path of the endpoint when there is one, and as a host name of AWS otherwise. The credentials are static: this build does not read `AWS_*` variables or an instance profile.",
+      "properties": {
+        "accessKeyId": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The access key id, a secret."
+        },
+        "bucket": {
+          "description": "The bucket, which must exist: 3 to 63 characters, lower case letters, digits, `-` and `.`, starting and ending with a letter or a digit.",
+          "type": "string"
+        },
+        "endpoint": {
+          "description": "The server's URL, `http` or `https`, for a server other than AWS (`https://minio.example.com`). Absent: AWS S3 in `region`. An `http` endpoint sends the files in the clear.",
+          "type": "string"
+        },
+        "prefix": {
+          "description": "A prefix every key is put under (`orchestrator/prod`: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-` and `/`, no `..`, at most 128 characters), so one bucket serves several deployments.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "region": {
+          "default": "us-east-1",
+          "description": "The region (default `us-east-1`, which S3-compatible servers that have none expect).",
+          "maxLength": 32,
+          "minLength": 1,
+          "type": "string"
+        },
+        "secretAccessKey": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The secret access key, a secret."
+        },
+        "timeoutSecs": {
+          "default": 60,
+          "description": "Seconds one request may take, 1 to 3600 (default 60).",
+          "format": "uint64",
+          "maximum": 3600,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bucket",
+        "accessKeyId",
+        "secretAccessKey"
+      ],
+      "type": "object"
+    },
+    "Auth": {
+      "additionalProperties": false,
+      "description": "Authentication (ADR 0033). `auth.defaultRole` and `auth.roles` are reserved for PR S15.",
+      "properties": {
+        "devUser": {
+          "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning, and only `auth.mode: proxy_header` takes it. Replaces `AUTH_DEV_USER`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "jwt": {
+          "$ref": "#/$defs/Jwt",
+          "description": "The token issuer and what is read from its tokens. Required by the modes that read tokens, refused by `proxy_header`."
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthMode",
+          "default": "proxy_header",
+          "description": "How a request says who it is from (default `proxy_header`, which changes nothing): `proxy_header` trusts the identity header oauth2-proxy sets (and `devUser`), `jwt` is an OAuth2 resource server that validates the bearer token against the issuer's keys (it needs `jwt`), `jwt_or_proxy_header` takes the token when there is one and the header when there is not (the migration, for one release). A mode whose Cargo feature (`auth-jwt`, `auth-header`) is not in the build is refused."
+        }
+      },
+      "type": "object"
+    },
+    "AuthMode": {
+      "description": "How a request says who it is from.",
+      "enum": [
+        "proxy_header",
+        "jwt",
+        "jwt_or_proxy_header"
+      ],
+      "type": "string"
     },
     "Database": {
       "additionalProperties": false,
@@ -154,6 +274,14 @@
       ],
       "type": "object"
     },
+    "Environment": {
+      "description": "Where this process runs. `production` makes the configuration refuse what is only for a single user on a local machine.",
+      "enum": [
+        "development",
+        "production"
+      ],
+      "type": "string"
+    },
     "Gate": {
       "additionalProperties": false,
       "description": "The deployment's layer of the verification gate. The members have the names of an agent entry's `gate` in the agents file.",
@@ -274,6 +402,44 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "Jwt": {
+      "additionalProperties": false,
+      "description": "The token issuer, and what is read from its tokens.",
+      "properties": {
+        "audiences": {
+          "description": "The audiences this API accepts: one of them must be among the token's `aud`. With oauth2-proxy passing the ID token this is oauth2-proxy's client id.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "issuer": {
+          "description": "The issuer: a token's `iss` must equal it exactly, and unless `jwksUrl` is set its keys are found from `<issuer>/.well-known/openid-configuration`. An `http(s)` URL with no credentials, query or fragment, for example `https://idp.example/realms/main`.",
+          "type": "string"
+        },
+        "jwksUrl": {
+          "description": "Where the issuer's keys (a JWKS) are, when not in its discovery document.",
+          "type": "string"
+        },
+        "rolesClaim": {
+          "description": "The path of the claim that holds the person's roles, with dots for the objects on the way: `realm_access.roles` (Keycloak), `groups`. None: no roles. A claim whose own name has dots (`https://example.com/roles`) is found by that name first.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "userClaim": {
+          "default": "email",
+          "description": "The claim whose value is the user, and so the owner of what the person creates (default `email`, which keeps the threads that exist). Trimmed and lower-cased.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "issuer",
+        "audiences"
+      ],
       "type": "object"
     },
     "Language": {
@@ -510,6 +676,11 @@
       "additionalProperties": false,
       "description": "The process: where it listens, what it runs, what it mounts.",
       "properties": {
+        "environment": {
+          "$ref": "#/$defs/Environment",
+          "default": "development",
+          "description": "`development` (default) or `production`. A `production` process refuses `auth.mode: proxy_header` (and so `auth.devUser`): the identity header is only as good as the proxy that strips it (ADR 0033)."
+        },
         "instanceId": {
           "description": "Names this replica in outbox leases (default `$HOSTNAME-<uuid>`). `ORCH_INSTANCE_ID` and `--instance-id` stay as a process override.",
           "minLength": 1,
@@ -747,9 +918,15 @@
       "default": {},
       "description": "The agents: a file, in-process agents, the platform's registry."
     },
+    "artifacts": {
+      "$ref": "#/$defs/Artifacts",
+      "description": "The artifact store: where the files agents hand over are kept (ADR 0032). Absent: no store, and a file an agent hands over is refused with \"no artifact store configured\"."
+    },
     "auth": {
       "$ref": "#/$defs/Auth",
-      "default": {},
+      "default": {
+        "mode": "proxy_header"
+      },
       "description": "Authentication."
     },
     "database": {
@@ -815,6 +992,7 @@
     "server": {
       "$ref": "#/$defs/Server",
       "default": {
+        "environment": "development",
         "listen": "0.0.0.0:8080",
         "role": "all",
         "shutdownGraceSecs": 15
