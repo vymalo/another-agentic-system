@@ -574,6 +574,33 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     await expectDocumented("/api/threads/{threadId}/artifacts/{sha256}", "get", bad);
   });
 
+  it("artifact: the three kinds of kept file of the `files` scenario, each served as its preview says", async () => {
+    const { threadId } = await startThread("files make some", "reviewer");
+    await waitForState(threadId, ["done"]);
+    const doc = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      events: { kind: string; data: { file?: { sha256: string; filename: string } } }[];
+    };
+    const files = doc.events.flatMap((e) =>
+      e.kind === "artifact" && e.data.file ? [e.data.file] : [],
+    );
+    expect(files.map((f) => f.filename)).toEqual(["results.png", "notes.txt", "export.zip"]);
+    const served = await Promise.all(
+      files.map((f) => fetch(`${base}/api/threads/${threadId}/artifacts/${f.sha256}`)),
+    );
+    expect(served.map((r) => r.headers.get("content-type"))).toEqual([
+      "image/png",
+      "text/plain; charset=utf-8",
+      "application/zip",
+    ]);
+    // a preview type is inline, an archive is an attachment even without ?download=1
+    expect(served.map((r) => r.headers.get("content-disposition")?.split(";")[0])).toEqual([
+      "inline",
+      "inline",
+      "attachment",
+    ]);
+    expect(await served[1]?.text()).toContain("Results of the run");
+  });
+
   it("connect route rejects a bad cursor and a bad mode with 400", async () => {
     const { threadId } = await startThread("echo");
     for (const res of [

@@ -158,3 +158,9 @@ at its strict security level and without HTML labels, and shown as an image, so 
 breaks either component's schema is refused visibly, as for any component. **Not built yet:** the agent's side (adam-rs
 `show` with Cards and Mermaid, slice 4's researcher) and the stack's pin of it.
 
+## Status note, 2026-10-02: Image is built in the web (UI catalog version 4, [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md))
+
+The web's catalog is at version 4: `Image` joins Text, Column, Choices, Cards and Mermaid
+([`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-4-adr-0032-version-3-plus-image)). It names a file of the thread by its
+SHA-256, never a URL, and the validator refuses a hash the thread does not hold. The description of `Choices` now begins "ask_user
+only" (a form shown with `show` has nothing waiting for its answer). Both are part of version 4's digest.

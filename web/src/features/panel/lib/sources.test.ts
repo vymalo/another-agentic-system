@@ -212,6 +212,45 @@ describe("collectSources: what each kind of source is", () => {
     ).toEqual([]);
   });
 
+  it("a file the store kept (ADR 0032): listed by its hash, opened and downloaded from the API's route", () => {
+    const sha = "9".repeat(64);
+    const href = `/api/threads/t-1/artifacts/${sha}`;
+    const file = (over: Record<string, unknown> = {}) =>
+      artifact({
+        kind: "file",
+        name: "chart",
+        mimeType: "image/png",
+        href,
+        sha256: sha,
+        size: 2048,
+        filename: "chart.png",
+        preview: "image",
+        ...over,
+      });
+    const found = items([agent("a1", file()), agent("a2", file({ filename: "again.png" }))]);
+    // one file, cited by two turns
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      key: `file:${sha}`,
+      kind: "file",
+      title: "chart.png",
+      detail: "2.0 KB · image/png",
+      href,
+      downloadHref: `${href}?download=1`,
+    });
+    expect(found[0]?.turns.map((t) => t.number)).toEqual([1, 2]);
+    // an attachment-only file is a source too
+    expect(items([agent("a1", file({ preview: null, mimeType: "application/zip" }))])).toHaveLength(
+      1,
+    );
+    // a reference that is not the API's route is no file at all (and its uri is not followed)
+    expect(
+      items([
+        agent("a1", file({ href: "https://evil.example/x.png", uri: "javascript:alert(1)" })),
+      ]),
+    ).toEqual([]);
+  });
+
   it("a file with an http(s) link: its name and type; any other link is no source", () => {
     const [file] = items([
       agent(

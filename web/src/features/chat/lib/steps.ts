@@ -259,13 +259,15 @@ export type TurnCard = { pr: PullRequestView } | { file: ArtifactContent };
 /**
  * The cards of a turn from its artifacts, in order. A pull request (or a linked file) reported
  * again, as a rework attempt does, is one card: the last report of its link stands, where it
- * came. Files without a link are all kept.
+ * came. A file the store kept is one card per hash. Files without a link are all kept.
  */
 export function turnCards(artifacts: readonly ArtifactContent[]): TurnCard[] {
   const cards = artifacts.filter(isCardArtifact).map((a): { card: TurnCard; href?: string } => {
     const pr = pullRequestOf(a);
     if (pr) return { card: { pr }, href: pr.href };
-    return { card: { file: a }, ...(a.uri ? { href: a.uri } : {}) };
+    // a kept file is told by its hash, a linked one by its link
+    const key = a.href ?? a.uri;
+    return { card: { file: a }, ...(key ? { href: key } : {}) };
   });
   return cards
     .filter((c, i) => c.href === undefined || !cards.slice(i + 1).some((d) => d.href === c.href))

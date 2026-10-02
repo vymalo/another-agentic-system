@@ -3,8 +3,8 @@
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`
 - **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
-  the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, and Cards and
-  Mermaid (versions 1 to 3) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
+  the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, Cards and
+  Mermaid, and Image (versions 1 to 4) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
   catalog into model tools and refetches) is that repository's slice; see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
@@ -137,7 +137,7 @@ Choices asks the person up to 8 questions at once, each with 2 to 8 options (rad
 {
   "Choices": {
     "type": "object",
-    "description": "Ask the person up to 8 questions at once, each with 2 to 8 options (radio buttons, checkboxes when multiple). One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?}]} in question order.",
+    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). Ask the person up to 8 questions at once, each with 2 to 8 options (radio buttons, checkboxes when multiple). One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?}]} in question order.",
     "properties": {
       "id": {"type": "string", "minLength": 1, "maxLength": 256},
       "component": {"const": "Choices"},
@@ -254,8 +254,45 @@ A card's `url` is also checked by the web as an http(s) URL before it is drawn a
 schema's pattern only says how a URL starts (`https://` or `http://`, in lower case), so a URL with user information, a
 control character or a backslash passes the schema and is refused by the web (rule `url`). A graph's own `%%{init}%%`
 directive or front matter cannot change how it is drawn: the web fixes mermaid's security level, its labels, its theme and
-its look, and a directive that names one is ignored. The later components (List, Stepper, Agent suggestion, Skill request, then Image and Web view, Notification opt-in) are
-added by raising the version; each is its own change to this page.
+its look, and a directive that names one is ignored.
+
+### Version 4 (ADR 0032): version 3 plus Image
+
+`Image` draws **a picture from a file of this thread**, named by the file's `sha256` (the `sha256` of the
+[`vymalo.artifact`](agui.md#typed-artifacts) of a file an agent shared, which the artifact store kept:
+[ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md), decision 11). It is **never a URL**: the
+schema has no property that could carry one, and the web fetches nothing but its own route for the thread's files
+(`GET /api/threads/{threadId}/artifacts/{sha256}`, [`getArtifact`](chat-api.yaml)). `alt` is required, because the
+person who cannot see the picture hears it. This replaces, for this catalog, the rule of
+[ADR 0013](../decisions/0013-a2ui-generative-ui.md) that an image is a placeholder that is never fetched (the basic
+catalog's `Image`, which names a URL, stays a placeholder).
+
+```json
+{
+  "Image": {
+    "type": "object",
+    "description": "A picture from a file of this thread, by its sha256 (the artifact of a file an agent shared); never a URL. alt is required.",
+    "properties": {
+      "id": {"type": "string", "minLength": 1, "maxLength": 256},
+      "component": {"const": "Image"},
+      "weight": {"type": "number"},
+      "artifact": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "alt": {"type": "string", "minLength": 1, "maxLength": 300},
+      "caption": {"type": "string", "maxLength": 500}
+    },
+    "required": ["id", "component", "artifact", "alt"],
+    "additionalProperties": false
+  }
+}
+```
+
+Two rules JSON Schema cannot say, both the web's: the surface's `artifact` must be the `sha256` of a **kept file of this
+thread** that has `preview: "image"`, else the whole surface is refused (rule `artifact`, never half drawn: a hash of
+another thread's file, or of a file that was not kept, is the agent's mistake and is said out loud); and the picture is
+drawn as an `<img src>` of the file's own `href` (never inline markup, so an SVG runs nothing and loads nothing), with
+its `alt`, and its `caption` under it as text. The file's own `artifact` event comes before the surface in the log, so a thread that replays
+has it by then; a surface that names a file the thread does not hold (yet) is refused until it does. The later components (List, Stepper, Agent suggestion, Skill request, then
+Web view, Notification opt-in) are added by raising the version; each is its own change to this page.
 
 When the web builds the catalog (`catalog.json`), the file and this page change together; until then this page is the
 contract.
@@ -412,12 +449,14 @@ the capabilities) and `chat-api.yaml` (the `ui_catalog` event kind and its field
 
 ## 8. What the web does with a surface
 
-`prepareSurface` (the validator of ADR 0013) is given the web's own catalog and, when known, the thread's version:
+`prepareSurface` (the validator of ADR 0013) is given the web's own catalog and, when known, the thread's version and the
+files the thread holds:
 
 1. The surface's catalog is the first `createSurface.catalogId` (absent: the basic catalog, as today).
 2. **Ours.** Every component must be a key of the web's catalog; each instance is validated against its schema, the
-   uniqueness rules and the URL rule. Custom components are lowered to `vymalo.Choices`, `vymalo.Cards` and
-   `vymalo.Mermaid` so the converter keeps them.
+   uniqueness rules and the URL rule; an `Image` must name an image file of this thread, else the surface is refused with
+   the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image)). Custom components are lowered to
+   `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid` and `vymalo.Image` so the converter keeps them.
 3. **Ours, but the component is not known here.** When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.
    It is refused visibly, rule 4 of ADR 0013, not dropped. Otherwise the surface is refused with the rule `catalog`.

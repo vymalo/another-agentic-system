@@ -16,6 +16,7 @@ import {
   CARDS,
   CHECK_BOX,
   CHOICES,
+  IMAGE,
   MAX_CONTEXT_BYTES,
   MERMAID,
   OPEN_URL,
@@ -29,6 +30,7 @@ import { isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 import { CardsList } from "./cards";
 import { ChoicesInput } from "./choices";
+import { ImageFile } from "./image";
 import { MermaidDiagram } from "./mermaid";
 import { useSurfaceHost } from "./surface-host";
 import { useView, ViewCtx, type ViewState } from "./view-context";
@@ -40,11 +42,12 @@ import { useView, ViewCtx, type ViewState } from "./view-context";
  * What reaches this file has passed `prepareSurface` (lib/a2ui/prepare.ts): a component outside the
  * vocabulary, an oversize or too deep surface and a bad URL never get here. What is still decided
  * here is what a component DOES, and the rules are ADR 0013's:
- *  - text is React text (no markdown, no HTML), and an image is never fetched (its alt text shows);
+ *  - text is React text (no markdown, no HTML), and an image is never fetched (its alt text shows),
+ *    except the catalog's `Image`, which draws a file of this thread from the API's own route (ADR 0032);
  *  - a control acts only in its own click handler: nothing sends on render, on an update or on a
  *    timer;
  *  - the components of the UI catalog (`vymalo.Choices`, choices.tsx; `vymalo.Cards`, cards.tsx;
- *    `vymalo.Mermaid`, mermaid.tsx) are lowered by the validator and drawn here too; their strings
+ *    `vymalo.Mermaid`, mermaid.tsx; `vymalo.Image`, image.tsx) are lowered by the validator and drawn here too; their strings
  *    are the agent's, drawn as text, and a graph is an image that mermaid, loaded on demand,
  *    draws;
  *  - `openUrl` is a plain link (`target="_blank" rel="noopener noreferrer"`) to a URL checked
@@ -299,6 +302,7 @@ export const surfaceLibrary: GenerativeUILibrary = {
   [CHOICES]: entry(ChoicesInput as (props: never) => ReactNode),
   [CARDS]: entry(CardsList as (props: never) => ReactNode),
   [MERMAID]: entry(MermaidDiagram as (props: never) => ReactNode),
+  [IMAGE]: entry(ImageFile as (props: never) => ReactNode),
 };
 
 /**

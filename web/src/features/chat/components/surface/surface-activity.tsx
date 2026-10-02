@@ -8,9 +8,11 @@ import { Button } from "@/components/ui/button";
 import { prepareSurface } from "@/features/chat/lib/a2ui/prepare";
 import { latestSurface } from "@/features/chat/lib/a2ui/surfaces";
 import { parseSurface, type SurfaceContent } from "@/features/chat/lib/agui/vymalo";
+import { useThreadFilesList } from "../../hooks/use-thread-files";
 import { ActorLabel } from "../actor-label";
 import { useThreadView } from "../thread-view";
 import { SurfaceView } from "./surface-view";
+import { ThreadFilesContext } from "./thread-files";
 
 /** How much of the raw operations a refusal shows: they are the agent's, and can be large. */
 const RAW_SHOWN = 4000;
@@ -118,7 +120,12 @@ export function SurfaceActivity({ data }: { data: unknown }) {
   const operations = content?.a2ui_operations;
   // the newest catalog the thread has seen: a component this build lacks may be one of a newer one
   const { catalogVersion } = useThreadView();
-  const options = useMemo(() => ({ threadVersion: catalogVersion }), [catalogVersion]);
+  // the files the thread holds: an Image may name one of them and nothing else (ADR 0032)
+  const files = useThreadFilesList();
+  const options = useMemo(
+    () => ({ threadVersion: catalogVersion, files }),
+    [catalogVersion, files],
+  );
   const prepared = useMemo(() => prepareSurface(operations, options), [operations, options]);
   const key = content?.surface ?? "";
   const messageId = useAuiState((s) => s.message.id);
@@ -156,18 +163,20 @@ export function SurfaceActivity({ data }: { data: unknown }) {
     body = <p className="text-xs text-muted-foreground">The interface is not complete yet.</p>;
   } else {
     body = (
-      <SurfaceView
-        prepared={prepared}
-        live={live}
-        fallback={
-          <SurfaceRefused
-            rule="render"
-            reason="the interface failed to draw"
-            operations={operations}
-            actor={content.actor}
-          />
-        }
-      />
+      <ThreadFilesContext.Provider value={files}>
+        <SurfaceView
+          prepared={prepared}
+          live={live}
+          fallback={
+            <SurfaceRefused
+              rule="render"
+              reason="the interface failed to draw"
+              operations={operations}
+              actor={content.actor}
+            />
+          }
+        />
+      </ThreadFilesContext.Provider>
     );
   }
   if (body === null) return null;

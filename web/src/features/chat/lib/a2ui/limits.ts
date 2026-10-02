@@ -72,6 +72,7 @@ export const CHECK_BOX = "vymalo.CheckBox";
 export const CHOICES = "vymalo.Choices";
 export const CARDS = "vymalo.Cards";
 export const MERMAID = "vymalo.Mermaid";
+export const IMAGE = "vymalo.Image";
 
 /** The marker that stands for "the current value of this input" in an action's context. */
 export const FIELD = "$field";

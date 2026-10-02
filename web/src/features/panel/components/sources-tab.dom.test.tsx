@@ -47,6 +47,28 @@ describe("SourcesView", () => {
     expect(screen.getByRole("region", { name: "Checks" })).toBeTruthy();
   });
 
+  it("a kept file: a link that opens it and a button that downloads it", () => {
+    const file: Source = {
+      key: `file:${"9".repeat(64)}`,
+      kind: "file",
+      title: "chart.png",
+      detail: "2.0 KB · image/png",
+      href: `/api/threads/t-1/artifacts/${"9".repeat(64)}`,
+      downloadHref: `/api/threads/t-1/artifacts/${"9".repeat(64)}?download=1`,
+      turns: [turn(1)],
+    };
+    render(<SourcesView groups={[group("files", "Files", file)]} onShowTurn={() => {}} />);
+    const row = screen.getByText("File · 2.0 KB · image/png").closest("li") as HTMLElement;
+    expect(
+      within(row)
+        .getByRole("link", { name: /^chart\.png/ })
+        .getAttribute("href"),
+    ).toBe(file.href);
+    const download = within(row).getByRole("link", { name: "Download chart.png" });
+    expect(download.getAttribute("href")).toBe(file.downloadHref);
+    expect(download.hasAttribute("download")).toBe(true);
+  });
+
   it("what has nowhere to go is text, not a link: a branch", () => {
     render(
       <SourcesView

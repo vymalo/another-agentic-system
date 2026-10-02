@@ -23,6 +23,7 @@ const RELEASED: Record<number, string> = {
   1: "sha256:38baa8cc271178fd944f7ade5ae1578ba4186f444077d2bd10ed6ef9aa98fdbd",
   2: "sha256:4ed91bcc9db52d5e2262aef2091d2b3eeccbf5bfe51519d7326fdc6641fb7856",
   3: "sha256:9f65f9e6ddd424688b1cf61c47634eafee321a3b6736fb7fea8c0f7db1fc7579",
+  4: "sha256:20f14ce343579fd7b1f26e15986a05142d037d29ffbd3453e23fbfa07e11fe6f",
 };
 
 describe("the digest", () => {
@@ -190,6 +191,83 @@ describe("the contract (docs/api/ui-catalog-v1.md)", () => {
       expect(written.length, `${name} is in one JSON block of the contract`).toBe(1);
       expect(written[0]?.[name], name).toEqual(schema);
     }
+  });
+});
+
+describe("version 4: Image (ADR 0032)", () => {
+  const check = (component: string, instance: unknown) =>
+    compileCatalog(OWN_CATALOG.catalog).check(component, instance);
+  const SHA = "a1".repeat(32);
+  const image = (over: Record<string, unknown> = {}) => ({
+    id: "pic",
+    component: "Image",
+    artifact: SHA,
+    alt: "A bar chart of the results",
+    ...over,
+  });
+
+  it("is in the catalog, which is at least version 4", () => {
+    expect(lock.version).toBeGreaterThanOrEqual(4);
+    expect(componentNames(OWN_CATALOG.catalog)).toContain("Image");
+  });
+
+  it("accepts the smallest instance and one with every property", () => {
+    expect(check("Image", image())).toBeUndefined();
+    expect(check("Image", image({ caption: "Figure 1", weight: 2 }))).toBeUndefined();
+  });
+
+  it("names a file by its sha256 (64 lower-case hex digits) and nothing else", () => {
+    for (const bad of [
+      "",
+      "a1".repeat(31),
+      `${"a1".repeat(32)}0`,
+      "A1".repeat(32),
+      "g".repeat(64),
+      `sha256:${SHA}`,
+      "https://example.com/a.png",
+      "/api/threads/t/artifacts/x",
+      "data:image/png;base64,AAAA",
+      ` ${SHA}`,
+      `${SHA}\n`,
+    ]) {
+      expect(check("Image", image({ artifact: bad })), JSON.stringify(bad)).toMatch(/^artifact: /);
+    }
+    expect(check("Image", image({ artifact: { path: "/pic" } }))).toMatch(/^artifact: /);
+  });
+
+  it("has no member that could carry a URL: url, src, href and uri are refused", () => {
+    for (const key of ["url", "src", "href", "uri", "imageUrl"]) {
+      expect(check("Image", image({ [key]: "https://example.com/a.png" })), key).toMatch(
+        new RegExp(key),
+      );
+    }
+  });
+
+  it("needs its alt text: 1 to 300 characters; a caption is at most 500", () => {
+    const { alt: _alt, ...noAlt } = image();
+    expect(check("Image", noAlt)).toMatch(/required property "alt"/);
+    expect(check("Image", image({ alt: "" }))).toMatch(/^alt: /);
+    expect(check("Image", image({ alt: "a".repeat(300) }))).toBeUndefined();
+    expect(check("Image", image({ alt: "a".repeat(301) }))).toMatch(/^alt: /);
+    expect(check("Image", image({ caption: "c".repeat(500) }))).toBeUndefined();
+    expect(check("Image", image({ caption: "c".repeat(501) }))).toMatch(/^caption: /);
+    const { artifact: _artifact, ...noArtifact } = image();
+    expect(check("Image", noArtifact)).toMatch(/required property "artifact"/);
+  });
+});
+
+describe("what the descriptions tell an agent", () => {
+  const description = (name: string) =>
+    (OWN_CATALOG.catalog.components[name] as { description: string }).description;
+
+  it("Choices is for ask_user only: a surface the agent shows is not answered", () => {
+    expect(description("Choices")).toMatch(/^ask_user only/);
+  });
+
+  it("Image is for the thread's own files, never a URL, and needs alt", () => {
+    expect(description("Image")).toMatch(/file of this thread/);
+    expect(description("Image")).toMatch(/never a URL/);
+    expect(description("Image")).toMatch(/alt is required/);
   });
 });
 

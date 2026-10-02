@@ -342,5 +342,42 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(edited).toBeFocused();
       await shot(page, "branches");
     });
+
+    test("files the agent made, and the picture placed in its answer", async ({ page }) => {
+      // an image, a text file and an archive: a card each (the picture and the text shown, a download beside every name)
+      await startThread(page, "files make some", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator('[data-slot="file-text"]')).toContainText("Results of the run");
+      const picture = page.locator('[data-slot="file-card"] [data-slot="file-image"]');
+      await expect
+        .poll(() => picture.evaluate((el) => (el as HTMLImageElement).naturalWidth))
+        .toBeGreaterThan(0);
+      // the answer's words at the top of the column, the three cards under them
+      await page
+        .getByText("I made three files")
+        .evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await shot(page, "files");
+      // the Sources panel lists the same files, each with a download
+      if ((await panelToggle(page).getAttribute("aria-expanded")) !== "true") {
+        await panelToggle(page).click();
+      }
+      await expect(panel(page)).toBeVisible();
+      await panelTab(page, "Sources").click();
+      await expect(panel(page).getByRole("region", { name: "Files" })).toBeVisible();
+      await shot(page, "panel-files");
+      // the catalog's Image: the same file, placed in the answer by its hash with its caption
+      await startThread(page, "file-image make a chart", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      const placed = page
+        .getByRole("region", { name: "Interface from reviewer" })
+        .getByRole("img", { name: "A chart of the results of the run" });
+      await expect
+        .poll(() => placed.evaluate((el) => (el as HTMLImageElement).naturalWidth))
+        .toBeGreaterThan(0);
+      await page
+        .getByText("I drew the chart of the results")
+        .evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await shot(page, "file-image");
+    });
   });
 }

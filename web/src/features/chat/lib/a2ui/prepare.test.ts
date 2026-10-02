@@ -1407,3 +1407,125 @@ describe("Cards and Mermaid (catalog version 3)", () => {
     });
   });
 });
+
+describe("Image (catalog version 4, ADR 0032)", () => {
+  const SHA = "ab".repeat(32);
+  const OTHER = "cd".repeat(32);
+  const files = [
+    { sha256: SHA, preview: "image" as const },
+    { sha256: "ee".repeat(32), preview: "text" as const },
+    { sha256: "ff".repeat(32), preview: null },
+  ];
+  const image = (over: Rec = {}): Rec => ({
+    id: "pic",
+    component: "Image",
+    artifact: SHA,
+    alt: "A bar chart",
+    ...over,
+  });
+  const surfaceOf = (...parts: Rec[]) =>
+    ours([
+      { id: "root", component: "Column", children: ["intro", ...parts.map((p) => p.id as string)] },
+      text("intro", "Here it is"),
+      ...parts,
+    ]);
+
+  it("is drawn under our catalog, kept by the converter as vymalo.Image, with the hash and the alt", () => {
+    const p = drawn(prepareSurface(surfaceOf(image({ caption: "Figure 1" })), { files }));
+    expect(find(p.spec, "vymalo.Image")).toMatchObject({
+      artifact: SHA,
+      alt: "A bar chart",
+      caption: "Figure 1",
+    });
+    // output only: nothing to send
+    expect(p.eventActions).toBe(0);
+  });
+
+  it("names a file of this thread that is an image, and no other", () => {
+    const r = (artifact: string) =>
+      refused(prepareSurface(surfaceOf(image({ artifact })), { files }));
+    // another thread's file, or one that was never kept
+    const foreign = r(OTHER);
+    expect(foreign.rule).toBe("artifact");
+    expect(foreign.reason).toContain("(Image)");
+    expect(foreign.reason).toContain("not one of this thread's files");
+    // a file of this thread that is not a picture
+    expect(r("ee".repeat(32)).reason).toContain("not an image");
+    expect(r("ff".repeat(32)).rule).toBe("artifact");
+  });
+
+  it("a thread with no files, or a caller that gave none, draws no Image: the whole surface is refused", () => {
+    expect(refused(prepareSurface(surfaceOf(image()), { files: [] })).rule).toBe("artifact");
+    expect(refused(prepareSurface(surfaceOf(image()))).rule).toBe("artifact");
+  });
+
+  it("is never a URL: the schema refuses the hash that is one, and every member that could carry one", () => {
+    for (const bad of [
+      image({ artifact: "https://evil.example/a.png" }),
+      image({ artifact: "/api/threads/t/artifacts/x" }),
+      image({ url: "https://evil.example/a.png" }),
+      image({ src: "https://evil.example/a.png" }),
+    ]) {
+      const r = refused(prepareSurface(surfaceOf(bad), { files }));
+      expect(r.rule).toBe("schema");
+      expect(r.reason).toContain("(Image)");
+    }
+  });
+
+  it("needs its alt text", () => {
+    const { alt: _alt, ...noAlt } = image();
+    for (const bad of [noAlt, image({ alt: "" }), image({ alt: "a".repeat(301) })]) {
+      expect(refused(prepareSurface(surfaceOf(bad), { files })).rule).toBe("schema");
+    }
+  });
+
+  it("under the basic catalog the Image is the placeholder that never fetches, and ours is refused", () => {
+    // the basic catalog's Image names a URL and is not fetched: unchanged
+    const basic = prepareSurface(
+      surface([
+        column("root", ["pic"]),
+        { id: "pic", component: "Image", url: "https://example.com/a.png" },
+      ]),
+    );
+    expect(basic.kind).toBe("surface");
+    // an Image with an `artifact` is not the basic catalog's: its component has no such member, and the
+    // surface did not ask for ours, so it is not drawn from a thread's file either
+    const mixed = prepareSurface(
+      surface([column("root", ["pic"]), { id: "pic", component: "Image", artifact: SHA }]),
+      { files },
+    );
+    expect(find((mixed as { spec?: unknown }).spec, "vymalo.Image")).toBeUndefined();
+  });
+
+  it("an older build, with the thread at version 4, says it needs a newer app; at its own version, refuses", () => {
+    const v3: OwnCatalog = {
+      ...OWN_CATALOG,
+      version: 3,
+      catalog: {
+        ...OWN_CATALOG.catalog,
+        components: Object.fromEntries(
+          Object.entries(OWN_CATALOG.catalog.components).filter(([name]) => name !== "Image"),
+        ),
+      },
+    };
+    const ops = surfaceOf(image());
+    expect(prepareSurface(ops, { catalog: v3, threadVersion: 4, files })).toEqual({
+      kind: "newer",
+      component: "Image",
+    });
+    expect(prepareSurface(ops, { catalog: v3, threadVersion: 3, files })).toMatchObject({
+      kind: "refused",
+      rule: "catalog",
+    });
+  });
+
+  it("the agent's words in a refusal are cut and have no control characters", () => {
+    const r = refused(
+      prepareSurface(surfaceOf(image({ id: `pic\u0007${"x".repeat(300)}`, artifact: OTHER })), {
+        files,
+      }),
+    );
+    expect(r.reason.length).toBeLessThan(400);
+    expect(r.reason).not.toContain("\u0007");
+  });
+});

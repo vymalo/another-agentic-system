@@ -288,4 +288,22 @@ describe("the cards of a turn", () => {
       2,
     );
   });
+
+  it("a file the store kept is one card per hash, whatever it was called", () => {
+    const sha = (c: string) => c.repeat(64);
+    const kept = (c: string, filename: string) => ({
+      kind: "file" as const,
+      name: "chart",
+      href: `/api/threads/t-1/artifacts/${sha(c)}`,
+      sha256: sha(c),
+      size: 70,
+      filename,
+      preview: "image" as const,
+    });
+    const cards = turnCards([kept("a", "one.png"), kept("a", "again.png"), kept("b", "two.png")]);
+    expect(cards.map((c) => ("file" in c ? c.file.filename : "pr"))).toEqual([
+      "again.png",
+      "two.png",
+    ]);
+  });
 });

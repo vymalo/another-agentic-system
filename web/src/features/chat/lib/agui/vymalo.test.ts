@@ -67,6 +67,56 @@ describe("reading an activity's content", () => {
     expect(parseError({ message: "down" })).toEqual({ message: "down", retryable: false });
   });
 
+  it("a kept file: where it is served, its hash, size, name and preview (ADR 0032)", () => {
+    const sha = "c".repeat(64);
+    const href = `/api/threads/0198a1b2-0000-7000-8000-000000000001/artifacts/${sha}`;
+    expect(
+      parseArtifact({
+        kind: "file",
+        name: "chart",
+        mimeType: "image/png",
+        href,
+        sha256: sha,
+        size: 70,
+        filename: "chart.png",
+        preview: "image",
+      }),
+    ).toEqual({
+      kind: "file",
+      name: "chart",
+      mimeType: "image/png",
+      href,
+      sha256: sha,
+      size: 70,
+      filename: "chart.png",
+      preview: "image",
+    });
+    // an attachment only: the preview is null, and says so
+    expect(
+      parseArtifact({ kind: "file", name: "r", href, sha256: sha, size: 1, preview: null }),
+    ).toMatchObject({ href, preview: null });
+    // a file that was not kept has no href, and none of the rest is read
+    expect(parseArtifact({ kind: "file", name: "r", sha256: sha, size: 1 })).toEqual({
+      kind: "file",
+      name: "r",
+    });
+    // an href that is not the API's route for this hash is dropped with the rest of the reference
+    for (const bad of [
+      `https://evil.example${href}`,
+      `${href}?x`,
+      href.replace(sha, "d".repeat(64)),
+    ]) {
+      expect(parseArtifact({ kind: "file", name: "r", href: bad, sha256: sha, size: 1 })).toEqual({
+        kind: "file",
+        name: "r",
+      });
+    }
+    // only a file is one: a pull request that carries the fields is still a pull request
+    expect(
+      parseArtifact({ kind: "pull_request", name: "pr", href, sha256: sha, size: 1 }),
+    ).not.toHaveProperty("href");
+  });
+
   it("typed artifacts (docs/api/agui.md, Typed artifacts): the kind and the fields of its card", () => {
     expect(
       parseArtifact({
