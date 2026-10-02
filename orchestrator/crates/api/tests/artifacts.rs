@@ -33,6 +33,7 @@ type Stack<X> = PortSet<
     SeqIds,
     NoModel,
     FixedRegistry,
+    orch_auth_header::HeaderAuth,
     X,
 >;
 
@@ -70,6 +71,7 @@ impl<X: ArtifactStore + Clone> Harness<X> {
                     clock: SystemClock,
                     ids: SeqIds::default(),
                     model: NoModel,
+                    auth: orch_auth_header::HeaderAuth::new(),
                     registry: directory.fixed_registry(),
                 },
                 directory,

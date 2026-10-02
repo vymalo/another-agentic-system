@@ -29,6 +29,7 @@ type FilePorts<X> = PortSet<
     SeqIds,
     ScriptedModel,
     FixedRegistry,
+    orch_ports::RefuseAll,
     X,
 >;
 
@@ -45,6 +46,7 @@ fn app_with<X: ArtifactStore>(w: &World, store: X, files: FileLimits) -> Arc<App
                 clock: SystemClock,
                 ids: w.ids.clone(),
                 model: w.model.clone(),
+                auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
             },
             directory(),

@@ -542,7 +542,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 9] = [
+    let auth_ops: [(&str, reqwest::Method, String); 10] = [
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("getConfig", reqwest::Method::GET, "/api/config".into()),

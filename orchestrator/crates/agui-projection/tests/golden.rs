@@ -33,7 +33,7 @@ use support::{lines, verify};
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 /// The thread a fork scenario was cut from.
 const PARENT: &str = "00000000-0000-7000-8000-000000000002";
-const SCENARIOS: [&str; 23] = [
+const SCENARIOS: [&str; 24] = [
     "echo",
     "file",
     "ask",

@@ -337,7 +337,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 23] = [
+const SCENARIOS: [&str; 24] = [
     "echo",
     "file",
     "ask",
