@@ -1,0 +1,106 @@
+# The coder's work environments: a repository's own devcontainer, on a rootless Podman service (compose override).
+#
+#   docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile app up -d --build --wait
+#   dev/devcontainer-e2e.sh        # the four scenarios, and what the service is given
+#
+# Without this file the coder runs with DEVCONTAINER_RUNTIME=off (the image's default): its commands, its checks and OpenCode
+# run in its own container, as they always did. With it a run's commands, checks and OpenCode run in the devcontainer of the
+# run's first repository (`.devcontainer/devcontainer.json`, built by the devcontainer CLI), or in a default image for a
+# repository without one, and a file the coder cannot use (a privileged container, a build that fails) is a failed step and a
+# question to the person, never a silent fallback. If the service does not answer, the coder goes on in its own container with a
+# step that says so. ADR 0028 decides it; adam-rs ADR 0010 is how adam-coder does it; dev/README.md, "Devcontainers", is the guide.
+#
+# The service is built from dev/coder/podman (vendored byte for byte from adam-rs dev/podman, dev/coder/UPSTREAM) and is given NO
+# `privileged`, NO `cap_add` and NO `devices`, and no Docker socket (dev/devcontainer-e2e.sh asserts it from `docker compose config` and
+# from the running container). Its three `security_opt` entries, and why each one is needed, are in dev/coder/podman/README.md.
+#
+# The service hosts every run's devcontainers, so it must see the coder's workspace volume at the SAME path (a bind source is resolved
+# by the service): one service serves one workspace volume.
+#
+# On an Ubuntu 24.04 host (a CI runner, a desktop) unprivileged user namespaces are restricted by AppArmor, which a rootless Podman
+# needs: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` first (dev/README.md, "Devcontainers"). Without it the coder
+# falls back to its own container, with a step that says so: it degrades, it does not break.
+#
+# It combines with the other overrides if it comes LAST on the command line: compose.live.yaml replaces the coder's `environment`,
+# `depends_on` and `volumes` with `!override`, and this file only adds to them (dev/compose.github-app.yaml only adds as well).
+#   docker compose -f compose.yaml -f compose.live.yaml -f dev/compose.devcontainer.yaml --profile app up -d --build --wait
+
+services:
+  podman:
+    profiles: ["app"]
+    build:
+      context: ./dev/coder/podman
+      # Compose reads `Dockerfile` unless told otherwise.
+      dockerfile: Containerfile
+    image: another-agentic-system/podman:dev
+    restart: unless-stopped
+    user: "10001:10001"
+    command: ["podman", "system", "service", "--time=0", "unix:///run/podman/podman.sock"]
+    environment:
+      # The service runs on a cgroup v1 host in some CI images; the warning is noise.
+      PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+    security_opt:
+      # containers/container-libs's profile, pinned: unshare, clone(CLONE_NEWUSER), mount. Compose reads the file (relative to the
+      # project directory, which is the directory of compose.yaml); PODMAN_SECCOMP gives an absolute path where yours does not.
+      - seccomp=${PODMAN_SECCOMP:-./dev/coder/podman/seccomp.json}
+      # Nested containers mount a fresh /proc; Docker's masked paths forbid it.
+      - systempaths=unconfined
+      # `docker-default` has `deny mount,`; this does nothing where AppArmor is off.
+      - apparmor=unconfined
+    # NO privileged, NO cap_add, NO devices: native overlay on the volume (no /dev/fuse) and the
+    # service's network namespace shared by the containers (no /dev/net/tun).
+    cpus: 2
+    mem_limit: 6g
+    # Bounds every devcontainer together: their own cgroups are off.
+    pids_limit: 4096
+    volumes:
+      # The only way in: a socket of mode 0600, owned by uid 10001, which is the coder's.
+      - podman-socket:/run/podman
+      # Pulled images and build layers, kept across runs.
+      - podman-storage:/home/agent/.local/share/containers
+      # The coder's workspace volume, at the same path as in the coder.
+      - coder-work:/work
+    # What a devcontainer can reach: the model (mock-openai, for OpenCode) and the internet (pulls). Not
+    # postgres, and not the orchestrator.
+    networks: [devcontainers]
+    healthcheck:
+      test: ["CMD", "podman", "--remote", "--url", "unix:///run/podman/podman.sock", "info"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 5s
+
+  coder:
+    depends_on:
+      # The service makes the socket volume, owned by uid 10001.
+      podman:
+        condition: service_healthy
+    environment:
+      DEVCONTAINER_RUNTIME: podman
+      CONTAINER_HOST: unix:///run/podman/podman.sock
+      # The small base image of the devcontainers.dev project, 2.2.1-trixie (367 MiB), pinned by digest only: the devcontainer
+      # CLI cannot parse a reference with both a tag and a digest. It is the default environment of a repository without a
+      # devcontainer, and the base of the devbox fixture's own (one pull serves both). A deployment uses the `workspace` image of
+      # another-agentic-images instead (DEVCONTAINER_DEFAULT_IMAGE, dev/README.md "Devcontainers").
+      DEVCONTAINER_DEFAULT_IMAGE: ${DEVCONTAINER_DEFAULT_IMAGE:-mcr.microsoft.com/devcontainers/base@sha256:1f851004adcd3dff3776b4a1da86727cf52280b0fdc9d5b0568c9c7d74274286}
+      # The janitor releases a finished run's container and image within seconds, so a scenario need not wait for minutes.
+      WORKSPACE_SWEEP_SECS: "10"
+    volumes:
+      - podman-socket:/run/podman
+
+  # OpenCode, inside a devcontainer, reaches its model here.
+  mock-openai:
+    networks: [default, devcontainers]
+
+  # The coder's gate waits for CI on the pushed commit, and `local/devbox` is the repository whose devcontainer the work is done in
+  # (dev/devcontainer-e2e.sh): mock-ci must watch it too. `local/library` stays unwatched on purpose (compose.yaml).
+  mock-ci:
+    environment:
+      MOCK_CI_REPOS: "local/sandbox local/devbox scratch/*"
+
+networks:
+  devcontainers: {}
+
+volumes:
+  podman-socket:
+  podman-storage:
