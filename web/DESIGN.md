@@ -412,6 +412,23 @@ with the title and never competes with the conversation: muted, small, one line.
 - **Plain text.** Never Markdown, never markup: the model wrote it. Where it is hidden (`ui.showDescriptions: false`), nothing of it
   is drawn and the two menu items are gone.
 
+## Read only, all threads and no access
+
+*Added 2026-10-02 (S17; ADR 0033).* What a person's roles do not let them do is not offered, and a state that is a fact about the
+person (not an error) is said in words.
+
+- **Read only** replaces the message box with one line in the box's place and shape (a soft `muted` pill, `rounded-3xl`, an eye
+  and the sentence: `Read only: this is alice@example.com’s thread.`), and the top bar gets a chip with the eye and the words
+  *Read only* beside the state pill. It is a `status`, not an `alert`: nothing failed. The meaning is the words; the muted
+  surface only backs them, so it survives a colour-blind reading, a forced-colours mode and a screen reader. The actions that
+  go away (Fork from here, Edit, rename, a card's buttons) are not drawn, or are disabled with the same sentence as their
+  reason, and nothing is greyed with no reason given.
+- **Mine / All threads** is a two-button switch at the top of the thread list for an administrator, the chosen one filled and
+  `aria-pressed`. In All threads a row has a second line, the owner's e-mail in `text-xs` muted (`you` for their own), and the
+  row grows to two lines; the touch target stays 44 px on a phone.
+- **No access** is a page of its own, centred, on the panda: the heading, who the person is signed in as, one line on what to
+  do. No sidebar, no composer, no error lines.
+
 ## Steps panel
 
 The Activity tab of the panel is the agents' work, for the person who wants to see it

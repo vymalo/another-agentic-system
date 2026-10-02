@@ -11,9 +11,9 @@
   `auth.jwt`, the 401/503 responses and `/readyz`. **Built (2026-10-02, PR S15):** the roles and permissions, their
   enforcement on threads, agents and files, `GET /api/me`, the administrators' listing, the roles of an MCP token and
   the bound on a stream (sections 4 to 7, with the points where the build differs from what they planned, in
-  [*Status: built in S15*](#status-built-in-s15)). **Planned:** S16 (the dev stack: a mock issuer and a real
-  oauth2-proxy), S17 (the web reads `/api/me`). Section 8 describes what S16 builds; sections 1 to 3 are what S14
-  built.
+  [*Status: built in S15*](#status-built-in-s15)). **Built (2026-10-02, PR S17):** the web reads `/api/me` and follows it
+  ([*Status: built in S17*](#status-built-in-s17)). **Planned:** S16 (the dev stack: a mock issuer and a real
+  oauth2-proxy). Section 8 describes what S16 builds; sections 1 to 3 are what S14 built.
 
 ## Context
 
@@ -189,7 +189,7 @@ The token is validated when a stream connects. A stream is capped at the token's
 the client reconnects with `Last-Event-ID` and gets a fresh token from oauth2-proxy's session
 ([ADR 0012](0012-ag-ui-user-facing-protocol.md), the connect stream is resumable).
 
-### 7. `GET /api/me` (the web reads it in S17)
+### 7. `GET /api/me` (the web reads it, built in S17)
 
 `{user, roles, permissions, agents}`, so the web hides what its person cannot do. It is a convenience, never a check:
 the orchestrator enforces.
@@ -259,6 +259,30 @@ to 7 planned:
 
 **Unverified:** the behaviour against a real oauth2-proxy and issuer (S16 runs one); that a role claim whose names differ
 only in case from `auth.roles` is what an operator wants refused (roles are compared exactly, and the docs say so).
+
+## Status: built in S17
+
+**Built (2026-10-02, PR S17), the web only** ([`web/README.md`](../../web/README.md#who-you-are-and-what-you-may-do)).
+The web reads `GET /api/me` once per page load and follows it; it is never a check, and an identity that cannot be read hides
+nothing. Where the build settles what section 7 left open:
+
+1. **Read-only is a rule of the person's permissions and the thread's `owner`**: no `thread.write`, or its scope `own` on
+   another's thread, or an agent `agent.invoke` does not cover. The message box becomes a line ("Read only: this is
+   alice@example.com's thread."), with a chip in the top bar; rename, describe, fork, edit and the actions of a card are
+   off. The web's reading of the permissions is the orchestrator's (S15 note 3: a message to an existing thread takes
+   `agent.invoke` for its agent).
+2. **The agent picker lists the agents `agents.invoke` covers**; `GET /api/agents` is already filtered by `agent.read`.
+3. **An administrator** (`admin` and `thread.read` of scope `any`) has Mine / All threads in the sidebar
+   (`GET /api/threads?owner=*`, each thread with its owner).
+4. **No access** is a screen, not a list of 403s, decided by `permissions` being empty in `GET /api/me`.
+5. **A 401 redirects to the edge's sign-in** (`<path>?rd=<this page>`) only when the web is built with
+   `NEXT_PUBLIC_SIGN_IN_PATH`, at most once in 30 seconds; without it a 401 is the error line it was, which the system
+   e2e behind a proxy header expects. The variable is build-time (Next inlines `NEXT_PUBLIC_*`).
+6. **The web's mock plays the roles** (`POST /__mock/config?me=`), so the web's tests run against the 403s and 404s of S15.
+
+**Unverified:** that oauth2-proxy's `/oauth2/sign_in` (or `/oauth2/start`) honours `rd` with a relative path (its documentation
+names `rd` for `/oauth2/sign_out`; S16's real oauth2-proxy is where it is checked); the web against a real orchestrator with
+roles (the system e2e still runs as one person with the built-in `user` role).
 
 ## Consequences
 

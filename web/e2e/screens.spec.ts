@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
   badge,
@@ -406,6 +407,58 @@ for (const scheme of ["light", "dark"] as const) {
         .hover();
       await expect(page.locator('[data-slot="thread-description-card"]')).toBeVisible();
       await shot(page, "description-card", { hovering: true });
+    });
+
+    // after the description: the thread it makes belongs to the person nobody else is, and an administrator's
+    // list shows it with the others
+    test("roles: a thread of another's, read only, in the administrator's list of all threads, and no access", async ({
+      page,
+      context,
+    }) => {
+      const session = `screens-${uuidv7()}`;
+      const mockAs = async (profile: string) => {
+        await fetch(`${MOCK_URL}/__mock/config?me=${profile}&session=${session}`, {
+          method: "POST",
+        });
+        await context.addCookies([
+          { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+        ]);
+      };
+      // a thread of the default person (dev@example.com), with a pull request
+      const id = uuidv7();
+      const made = await fetch(`${MOCK_URL}/agui/agents/coder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({
+          threadId: id,
+          runId: "run-1",
+          messages: [
+            { id: "m-1", role: "user", content: "Fix the redirect loop after signing in" },
+          ],
+        }),
+      });
+      await made.text();
+
+      await mockAs("admin");
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await openThreadList(page);
+      await page.getByRole("button", { name: "All threads" }).click();
+      const row = page
+        .getByRole("navigation", { name: "Threads" })
+        .locator(`a[href="/threads/${id}"]`);
+      await expect(row).toContainText("dev@example.com");
+      await shot(page, "all-threads");
+      await row.click();
+      await expect(page).toHaveURL(new RegExp(`/threads/${id}$`));
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await expect(page.locator('[data-slot="read-only"]')).toBeVisible();
+      await shot(page, "read-only");
+
+      await mockAs("no-access");
+      await page.goto("/");
+      await expect(page.getByRole("heading", { level: 1, name: "No access" })).toBeVisible();
+      await shot(page, "no-access");
     });
   });
 }
