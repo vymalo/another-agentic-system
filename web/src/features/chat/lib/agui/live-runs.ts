@@ -35,6 +35,8 @@ const userMessage = (m: ExternalUserMessage, startRun: boolean): CreateAppendMes
     custom: {
       ...(m.actor ? { actor: m.actor } : {}),
       ...(m.seq !== undefined ? { seq: m.seq } : {}),
+      // sent while the agent worked (ADR 0036): the bubble says so
+      ...(m.delivery ? { delivery: m.delivery } : {}),
     },
   },
 });
@@ -88,6 +90,31 @@ export function untilShown(
 }
 
 /**
+ * Waits until the transcript shows `atLeast` messages, running or not (`untilShown` waits for the
+ * end of the run too, which a run that is still open does not have). Resolves when it does, or
+ * after `timeoutMs` (a count that is not what the replay expected must not hold a send back for
+ * ever).
+ */
+export function untilHeld(
+  thread: Watched,
+  atLeast: number,
+  timeoutMs = SHOWN_TIMEOUT_MS,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    const unsubscribe = thread.subscribe(() => {
+      if (thread.getState().messages.length >= atLeast) finish();
+    });
+    if (thread.getState().messages.length >= atLeast) finish();
+  });
+}
+
+/**
  * What the replay knows of the transcript the runtime holds, whether or not it is shown yet: how
  * many messages the runs applied so far leave in it (`applyExternalRun` raises it).
  */
@@ -110,13 +137,18 @@ export async function applyExternalRun(
 ): Promise<void> {
   await run.leadIn;
   const thread = runtime.thread;
-  // The first run has no transcript to hang off: its parent is the start.
-  const after = held.messages > 0;
+  // The first run has no transcript to hang off: its parent is the start. One after a run the runtime
+  // made itself (this page sent it: its message is in the transcript, and the run may not have ended
+  // there yet, which the stream said first) has one, whatever the replay has counted.
+  const after = held.messages > 0 || thread.getState().messages.length > 0;
   if (after) await untilShown(thread, held.messages);
   const users = [...run.userMessages];
   const pending = runtime.unstable_getPendingInterrupts();
   let shown = thread.getState().messages.length;
   held.messages = shown + users.length + 1;
+  // once the runtime shows what the run leaves, it is the head a new message hangs off: a send is
+  // held back until then (`ThreadSnapshot.replaying`), or it would replace the turns before it
+  void untilHeld(thread, held.messages).then(() => agent.applied(run));
   agent.adopt(run);
   if (pending.length > 0) {
     const last = users.pop();
@@ -158,6 +190,8 @@ export async function driveExternalRuns(
     } catch (e) {
       // A run that ended in RUN_ERROR rejects the runtime's run: its transcript is complete.
       if (!isRunFailure(e)) console.warn("Could not apply a run to the transcript", e);
+    } finally {
+      agent.applied(run);
     }
   }
 }

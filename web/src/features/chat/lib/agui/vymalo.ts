@@ -55,6 +55,26 @@ export const ACTOR_KEY = "vymalo.actor";
  */
 export const TOOLS_PROP = "vymalo.tools";
 
+/**
+ * ADR 0036: `forwardedProps["vymalo.send"]` on a run that carries a message while a run is open:
+ * how the message is delivered. `steer` is Send (the agent reads it at its next step, or after its
+ * turn), `interrupt` is Stop and send (the running task is cancelled and the message starts the
+ * next job). Without it a second run on an open thread is a 409.
+ */
+export const SEND_PROP = "vymalo.send";
+
+export type SendMode = "steer" | "interrupt";
+
+/**
+ * `metadata["vymalo.delivery"]` of a user message's `START`: `steer` or `interrupt` when the core
+ * logged the message that way (it was sent while the agent worked). Absent otherwise, and in every
+ * log written before ADR 0036; anything else is no delivery.
+ */
+export const DELIVERY_KEY = "vymalo.delivery";
+
+export const parseDelivery = (value: unknown): SendMode | undefined =>
+  value === "steer" || value === "interrupt" ? value : undefined;
+
 /** ADR 0008: the release travels in `forwardedProps` under the extension URI. */
 export const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
 
