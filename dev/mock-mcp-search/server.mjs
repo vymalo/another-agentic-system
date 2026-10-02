@@ -20,7 +20,10 @@
 //   - `[mock:empty]` in the query answers "No results.", `[mock:error]` a tool execution error (isError);
 //   - an empty or missing `query` is also a tool execution error (the spec's way to let a model self-correct).
 // Other routes (no authentication, like WireMock's admin): GET /healthz; GET /__journal lists the calls of
-// the tool, `{"calls": [{"tool", "arguments", "at"}]}`, and DELETE /__journal empties it.
+// the tool, `{"calls": [{"tool", "arguments", "at", "bearer", "headers"}]}`, and DELETE /__journal empties it. `bearer` is
+// true when the call carried the token the server requires (a call without it is a 401 and is not journaled; false when no
+// token is required), and `headers` holds the request headers named `X-*` (lower-cased), the way an orchestrator's
+// `toolServers[].headers` reach a server (dev/tools-e2e.sh reads them to prove the configured header was sent).
 //
 // Environment: PORT (8080), MOCK_MCP_TOKEN (when set, `Authorization: Bearer <it>` is required on /mcp, else
 // 401), MOCK_MCP_RESULTS (a path; default results.json beside this file).
@@ -137,11 +140,12 @@ export function createMockServer({ token = "", results, log = () => {} }) {
     return list.map((r, i) => `${i + 1}. ${r.title} — ${r.url}\n   ${r.snippet}`).join("\n");
   }
 
-  function callTool(params) {
+  function callTool(params, req) {
     if (params === null || typeof params !== "object" || Array.isArray(params)) return [-32602, "Invalid params"];
     if (params.name !== TOOL.name) return [-32602, `Unknown tool: ${String(params.name)}`];
     const args = params.arguments ?? {};
-    journal.push({ tool: TOOL.name, arguments: args, at: new Date().toISOString() });
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.startsWith("x-")));
+    journal.push({ tool: TOOL.name, arguments: args, at: new Date().toISOString(), bearer: expected !== null, headers });
     if (journal.length > MAX_JOURNAL) journal.shift();
     const query = args !== null && typeof args === "object" ? args.query : undefined;
     if (typeof query !== "string" || query.trim() === "" || query.length > MAX_QUERY_CHARS) {
@@ -153,7 +157,7 @@ export function createMockServer({ token = "", results, log = () => {} }) {
   }
 
   /** The JSON-RPC answer to one request, `id` included. */
-  function dispatch({ id, method, params }) {
+  function dispatch({ id, method, params }, req) {
     const outcome = (value) =>
       Array.isArray(value) ? rpcError(id, value[0], value[1]) : rpcResult(id, value);
     switch (method) {
@@ -172,7 +176,7 @@ export function createMockServer({ token = "", results, log = () => {} }) {
       case "tools/list":
         return rpcResult(id, { tools: [TOOL] });
       case "tools/call":
-        return outcome(callTool(params));
+        return outcome(callTool(params, req));
       default: // `server/discover` of the 2026 revision too: a modern client then falls back to `initialize`
         return rpcError(id, -32601, `Method not found: ${method}`);
     }
@@ -208,7 +212,7 @@ export function createMockServer({ token = "", results, log = () => {} }) {
       const response = !hasMethod && hasId && ("result" in message || "error" in message);
       return notification || response ? reply(res, 202) : reply(res, 400, rpcError(null, -32600, "Invalid request"));
     }
-    const answer = dispatch(message);
+    const answer = dispatch(message, req);
     // What a client sent is quoted, so that a newline in it cannot forge a line of the log.
     const what = message.method === "tools/call" ? [message.method, message.params?.name] : [message.method];
     log(`${what.map((v) => JSON.stringify(String(v).slice(0, 64))).join(" ")} -> ${answer.error ? answer.error.code : "ok"}`);
