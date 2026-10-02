@@ -125,7 +125,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.surfaces` | list of `agui`, `mcp`, `thread-tools`, `webhook-generic`, `webhook-github`; `[agui]` | `ORCH_SURFACES` (a comma list) | now |
 | `server.publicUrl` | origin, none | `ORCH_PUBLIC_URL` | now |
 | `server.shutdownGraceSecs` | ≥ 1, `15` | `SHUTDOWN_GRACE_SECS` | now |
-| `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header` ([Authentication](#authentication)) |
+| `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
 | `database.maxConnections` | ≥ 2, `10` | `DATABASE_MAX_CONNECTIONS` | now |

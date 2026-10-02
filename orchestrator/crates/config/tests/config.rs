@@ -1102,6 +1102,20 @@ fn a_production_process_refuses_the_proxy_header() {
         "auth: { mode: jwt_or_proxy_header, jwt: { issuer: 'https://i.example', audiences: [a] } }\n",
     );
     assert!(load(&migration, &minimal_env()).is_ok());
+    // In production the issuer's keys come over TLS only.
+    let plain = production(
+        "auth: { mode: jwt, jwt: { issuer: 'http://i.example', audiences: [a], jwksUrl: 'HTTP://i.example/keys' } }\n",
+    );
+    let errors = lines(load(&plain, &minimal_env()));
+    for key in [
+        "auth.jwt.issuer: an https:// URL",
+        "auth.jwt.jwksUrl: an https:// URL",
+    ] {
+        assert!(
+            errors.iter().any(|l| l.starts_with(key)),
+            "{key}: {errors:?}"
+        );
+    }
     // Development is the default and takes the header.
     let development = format!("{MINIMAL}server: {{ environment: development }}\n");
     assert!(load(&development, &minimal_env()).is_ok());

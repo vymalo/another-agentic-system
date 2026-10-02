@@ -1220,7 +1220,8 @@ async fn in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the
         &scratch,
         "jwt.log",
         &format!(
-            "server: {{ environment: production }}\nauth:\n  mode: jwt\n  jwt:\n    issuer: {}\n    audiences: [orchestrator-web]\n",
+            // Development: the local issuer is plain http, which production refuses.
+            "auth:\n  mode: jwt\n  jwt:\n    issuer: {}\n    audiences: [orchestrator-web]\n",
             idp.issuer()
         ),
     )

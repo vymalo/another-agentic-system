@@ -406,6 +406,25 @@ impl Checker<'_> {
                          or password",
                     );
                 }
+                // In production the keys that decide who is calling come over TLS only: anyone on
+                // the path to a plain-http issuer could serve their own keys.
+                if cfg.server.environment == Environment::Production {
+                    let plain = |url: &str| url.trim().to_ascii_lowercase().starts_with("http://");
+                    if plain(&jwt.issuer) {
+                        self.invalid(
+                            "auth.jwt.issuer",
+                            "an https:// URL when server.environment is production: the issuer's \
+                             keys decide who is calling",
+                        );
+                    }
+                    if jwt.jwks_url.as_deref().is_some_and(plain) {
+                        self.invalid(
+                            "auth.jwt.jwksUrl",
+                            "an https:// URL when server.environment is production: the issuer's \
+                             keys decide who is calling",
+                        );
+                    }
+                }
                 if jwt.user_claim.trim().is_empty() {
                     self.invalid("auth.jwt.userClaim", "a claim name is not empty");
                 }

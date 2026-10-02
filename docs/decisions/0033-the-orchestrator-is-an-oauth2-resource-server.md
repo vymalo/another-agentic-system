@@ -149,7 +149,8 @@ stateDiagram-v2
 2. The dev stack switches to `jwt` (S16); production configuration moves to `jwt`, and `jwt_or_proxy_header` is there for
    one release.
 3. `proxy_header` remains for one user on a local machine, and is **refused when `server.environment` is `production`**
-   (a key that S9 reserved and S14 builds). `auth.devUser` exists only with `proxy_header`.
+   (a key that S9 reserved and S14 builds). A production process also refuses an `http://` issuer or
+   `jwksUrl`: whoever is on the path to it could serve their own keys. `auth.devUser` exists only with `proxy_header`.
 4. A mode whose implementation is not compiled in (Cargo features `auth-jwt`, `auth-header`, both on by default) is
    exit 78 naming the feature (as a surface is). A process that serves no routes needs none.
 
