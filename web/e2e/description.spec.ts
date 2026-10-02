@@ -48,6 +48,16 @@ const test = base.extend<{ config: { showDescriptions: (on: boolean) => Promise<
 const description = (page: Page) => page.locator('[data-slot="thread-description"]');
 const field = (page: Page) => page.getByRole("textbox", { name: "Thread description" });
 
+/**
+ * This page's own thread in the sidebar. The mock keeps every test's threads, and the tests of this
+ * file all start one with the same title, so the first row of that title can be another test's
+ * thread (one whose description has not come, or that a test cleared): no card is drawn for it.
+ */
+function ownRow(page: Page) {
+  const id = new URL(page.url()).pathname.split("/").pop();
+  return threadList(page).locator(`a[href$="/threads/${id}"]`);
+}
+
 /** An item of the thread's overflow menu, opened and chosen with the keyboard. */
 async function chooseFromMenu(page: Page, name: string | RegExp) {
   await page.getByRole("button", { name: "Thread options" }).focus();
@@ -106,7 +116,7 @@ test("the sidebar row shows it in a hover card, and says it as the link's descri
 }) => {
   await describedThread(page);
   await openThreadList(page);
-  const row = threadList(page).getByRole("link", { name: TITLE }).first();
+  const row = ownRow(page);
   await expect(row).toHaveAccessibleDescription(WHOLE);
   test.skip(isMobile, "a phone has no hover; the line under the header has the text");
   await row.hover();
@@ -202,7 +212,7 @@ test("with ui.showDescriptions off the description is nowhere: no line, no card,
   await expect(description(page)).toHaveCount(0);
   await expect(page.getByText(SENTENCE)).toHaveCount(0);
   await openThreadList(page);
-  const row = threadList(page).getByRole("link", { name: TITLE }).first();
+  const row = ownRow(page);
   expect(await row.getAttribute("aria-describedby")).toBeNull();
   if (!isMobile) {
     await row.hover();
@@ -233,10 +243,21 @@ for (const scheme of ["light", "dark"] as const) {
   test.describe(`accessibility of the description (${scheme})`, () => {
     test.use({ colorScheme: scheme, contextOptions: { reducedMotion: "reduce" } });
 
-    const serious = async (page: Page) =>
-      (await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze()).violations.filter(
-        (v) => v.impact === "serious" || v.impact === "critical",
+    const serious = async (page: Page) => {
+      // axe reads the colours as they are drawn: a card that is fading in is not at its colours yet
+      // (the fade runs for 150 ms and a loaded machine starts axe inside it)
+      await page.evaluate(() =>
+        Promise.all(
+          document
+            .getAnimations()
+            .filter((a) => a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
+            .map((a) => a.finished.catch(() => undefined)),
+        ),
       );
+      return (
+        await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze()
+      ).violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+    };
 
     test("axe: the line closed and open, the field, the hover card", async ({ page, isMobile }) => {
       await describedThread(page);
@@ -259,8 +280,11 @@ for (const scheme of ["light", "dark"] as const) {
       await page.keyboard.press("Escape");
 
       if (!isMobile) {
-        await threadList(page).getByRole("link", { name: TITLE }).first().hover();
-        await expect(page.locator('[data-slot="thread-description-card"]')).toBeVisible();
+        await ownRow(page).hover();
+        const card = page.locator('[data-slot="thread-description-card"]');
+        await expect(card).toBeVisible();
+        // open, and then at rest: `serious` waits for the end of its animation
+        await expect(card).toHaveAttribute("data-state", "open");
         expect(await serious(page)).toEqual([]);
       }
     });
