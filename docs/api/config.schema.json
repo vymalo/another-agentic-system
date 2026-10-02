@@ -141,8 +141,17 @@
     },
     "Auth": {
       "additionalProperties": false,
-      "description": "Authentication (ADR 0033). `auth.defaultRole` and `auth.roles` are reserved for PR S15.",
+      "description": "Authentication and what a person may do (ADR 0033).",
       "properties": {
+        "defaultRole": {
+          "description": "The role of a person none of whose roles is one of `roles`: a valid token whose roles claim holds none that is defined here, or no roles claim at all, and every request of the proxy header, which carries none. It must be one of `roles`. Written `null`, nobody gets a role by default: such a person is refused (403) by everything but `GET /api/me`. Absent, it is `user` when `roles` is absent too (so that a deployment that configures nothing is as it was), and `null` when `roles` is given (a deployment that defines its roles names the default, or has none).",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-null-is-a-value": true
+        },
         "devUser": {
           "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning, and only `auth.mode: proxy_header` takes it. Replaces `AUTH_DEV_USER`.",
           "minLength": 1,
@@ -156,6 +165,13 @@
           "$ref": "#/$defs/AuthMode",
           "default": "proxy_header",
           "description": "How a request says who it is from (default `proxy_header`, which changes nothing): `proxy_header` trusts the identity header oauth2-proxy sets (and `devUser`), `jwt` is an OAuth2 resource server that validates the bearer token against the issuer's keys (it needs `jwt`), `jwt_or_proxy_header` takes the token when there is one and the header when there is not (the migration, for one release). A mode whose Cargo feature (`auth-jwt`, `auth-header`) is not in the build is refused."
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AuthRole"
+          },
+          "description": "What each role grants, by the name the identity provider gives the role (a group, a realm role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also `admin`, and reading every thread, but changing only one's own). Given, it replaces both.",
+          "type": "object"
         }
       },
       "type": "object"
@@ -168,6 +184,67 @@
         "jwt_or_proxy_header"
       ],
       "type": "string"
+    },
+    "AuthPermission": {
+      "description": "A permission of a role. The names are the platform's (`another-agentic-platform` `docs/architecture/08-security.md`, section 52).",
+      "enum": [
+        "agent.read",
+        "agent.invoke",
+        "thread.read",
+        "thread.write",
+        "artifact.read",
+        "admin"
+      ],
+      "type": "string"
+    },
+    "AuthRole": {
+      "additionalProperties": false,
+      "description": "What a role grants (ADR 0033).",
+      "properties": {
+        "agents": {
+          "description": "The agents `agent.read` and `agent.invoke` are about: agent ids, or `\"*\"` for every agent (default `[\"*\"]`). An id that no agent has matches nothing. Only with a role that holds one of those two.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "description": "The permissions the role holds. Empty: the role is known and grants nothing.",
+          "items": {
+            "$ref": "#/$defs/AuthPermission"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "$ref": "#/$defs/AuthScopes",
+          "description": "How far `thread.read`, `artifact.read` and `thread.write` reach: `own` (the person's own threads), `any` (everyone's), or `{ read, write }` for one scope each (default `own`). Only with a role that holds one of those three."
+        }
+      },
+      "required": [
+        "permissions"
+      ],
+      "type": "object"
+    },
+    "AuthScope": {
+      "description": "How far a permission over threads reaches.",
+      "enum": [
+        "own",
+        "any"
+      ],
+      "type": "string"
+    },
+    "AuthScopes": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AuthScope",
+          "description": "`own` or `any`, for reading and for writing alike."
+        },
+        {
+          "$ref": "#/$defs/SplitScope",
+          "description": "`{ read: any, write: own }`: an administrator who reads everything and changes only their own. Each member defaults to `own`."
+        }
+      ],
+      "description": "The `scope` of a role: one scope for everything, or one for reading and one for writing."
     },
     "Database": {
       "additionalProperties": false,
@@ -729,6 +806,23 @@
           },
           "minItems": 1,
           "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SplitScope": {
+      "additionalProperties": false,
+      "description": "A scope for reading (`thread.read`, `artifact.read`) and one for writing (`thread.write`).",
+      "properties": {
+        "read": {
+          "$ref": "#/$defs/AuthScope",
+          "default": "own",
+          "description": "How far reading reaches (default `own`)."
+        },
+        "write": {
+          "$ref": "#/$defs/AuthScope",
+          "default": "own",
+          "description": "How far acting reaches (default `own`)."
         }
       },
       "type": "object"

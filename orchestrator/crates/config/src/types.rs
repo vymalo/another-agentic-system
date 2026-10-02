@@ -1136,7 +1136,7 @@ fn default_github_max_age_secs() -> u64 {
     86_400
 }
 
-/// Authentication (ADR 0033). `auth.defaultRole` and `auth.roles` are reserved for PR S15.
+/// Authentication and what a person may do (ADR 0033).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Auth {
@@ -1158,6 +1158,148 @@ pub struct Auth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1))]
     pub dev_user: Option<String>,
+    /// The role of a person none of whose roles is one of `roles`: a valid token whose roles claim
+    /// holds none that is defined here, or no roles claim at all, and every request of the proxy
+    /// header, which carries none. It must be one of `roles`. Written `null`, nobody gets a role by
+    /// default: such a person is refused (403) by everything but `GET /api/me`. Absent, it is
+    /// `user` when `roles` is absent too (so that a deployment that configures nothing is as it
+    /// was), and `null` when `roles` is given (a deployment that defines its roles names the
+    /// default, or has none).
+    #[serde(
+        default,
+        deserialize_with = "default_role_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(schema_with = "default_role_schema")]
+    pub default_role: Option<Option<String>>,
+    /// What each role grants, by the name the identity provider gives the role (a group, a realm
+    /// role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants
+    /// nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also
+    /// `admin`, and reading every thread, but changing only one's own). Given, it replaces both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<BTreeMap<String, AuthRole>>,
+}
+
+/// `Some(None)` for `defaultRole: null`, `Some(Some(name))` for a name; `None` (absent) is the
+/// serde default. `Option<Option<T>>` alone reads `null` as absent.
+fn default_role_value<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+/// The schema of `auth.defaultRole`: a non-empty text, or `null`, which is a value here (nobody
+/// gets a role by default) and so is kept when the schema is tidied (`x-null-is-a-value`).
+fn default_role_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "description": "The role of a person none of whose roles is one of `roles`; `null` for no default role.",
+        "type": ["string", "null"],
+        "minLength": 1,
+        "x-null-is-a-value": true
+    })
+}
+
+/// What a role grants (ADR 0033).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthRole {
+    /// The permissions the role holds. Empty: the role is known and grants nothing.
+    pub permissions: Vec<AuthPermission>,
+    /// How far `thread.read`, `artifact.read` and `thread.write` reach: `own` (the person's own
+    /// threads), `any` (everyone's), or `{ read, write }` for one scope each (default `own`).
+    /// Only with a role that holds one of those three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<AuthScopes>,
+    /// The agents `agent.read` and `agent.invoke` are about: agent ids, or `"*"` for every agent
+    /// (default `["*"]`). An id that no agent has matches nothing. Only with a role that holds
+    /// one of those two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<String>>,
+}
+
+/// A permission of a role. The names are the platform's
+/// (`another-agentic-platform` `docs/architecture/08-security.md`, section 52).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+pub enum AuthPermission {
+    /// See an agent in the list and read its card.
+    #[serde(rename = "agent.read")]
+    AgentRead,
+    /// Start a thread on an agent, or send it a message.
+    #[serde(rename = "agent.invoke")]
+    AgentInvoke,
+    /// Read threads: the thread, its log and stream, its export, its branches.
+    #[serde(rename = "thread.read")]
+    ThreadRead,
+    /// Act on threads: start one, send, answer, cancel, rename, describe, fork.
+    #[serde(rename = "thread.write")]
+    ThreadWrite,
+    /// Download the files of the threads the person may read.
+    #[serde(rename = "artifact.read")]
+    ArtifactRead,
+    /// Ask for another person's threads, or everyone's (`GET /api/threads?owner=`).
+    #[serde(rename = "admin")]
+    Admin,
+}
+
+impl AuthPermission {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AuthPermission::AgentRead => "agent.read",
+            AuthPermission::AgentInvoke => "agent.invoke",
+            AuthPermission::ThreadRead => "thread.read",
+            AuthPermission::ThreadWrite => "thread.write",
+            AuthPermission::ArtifactRead => "artifact.read",
+            AuthPermission::Admin => "admin",
+        }
+    }
+}
+
+/// How far a permission over threads reaches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthScope {
+    /// The threads the person owns.
+    #[default]
+    Own,
+    /// Every thread.
+    Any,
+}
+
+/// The `scope` of a role: one scope for everything, or one for reading and one for writing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AuthScopes {
+    /// `own` or `any`, for reading and for writing alike.
+    Both(AuthScope),
+    /// `{ read: any, write: own }`: an administrator who reads everything and changes only their
+    /// own. Each member defaults to `own`.
+    Split(SplitScope),
+}
+
+/// A scope for reading (`thread.read`, `artifact.read`) and one for writing (`thread.write`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SplitScope {
+    /// How far reading reaches (default `own`).
+    #[serde(default)]
+    pub read: AuthScope,
+    /// How far acting reaches (default `own`).
+    #[serde(default)]
+    pub write: AuthScope,
+}
+
+impl AuthScopes {
+    /// The scope of reading and the scope of writing.
+    pub fn read_write(&self) -> (AuthScope, AuthScope) {
+        match self {
+            AuthScopes::Both(scope) => (*scope, *scope),
+            AuthScopes::Split(split) => (split.read, split.write),
+        }
+    }
 }
 
 /// How a request says who it is from.

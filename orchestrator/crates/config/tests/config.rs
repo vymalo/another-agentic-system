@@ -337,7 +337,6 @@ agents: { file: agents.yaml, nonsense: 1 }
 tasks:
   turnSummary: {}
   stepLabel: {}
-auth: { defaultRole: user, roles: {} }
 ";
     let errors = lines(load(text, &minimal_env()));
     let find = |key: &str| {
@@ -350,8 +349,6 @@ auth: { defaultRole: user, roles: {} }
     for (key, by) in [
         ("tasks.turnSummary", "no PR yet"),
         ("tasks.stepLabel", "no PR yet"),
-        ("auth.defaultRole", "PR S15 (ADR 0033"),
-        ("auth.roles", "PR S15 (ADR 0033"),
     ] {
         let line = find(key);
         assert!(
@@ -1155,6 +1152,179 @@ fn the_auth_rules_name_the_key() {
         errors.iter().any(|l| l.starts_with("auth.mode: ")),
         "{errors:?}"
     );
+}
+
+const ROLES: &str = "\
+auth:
+  defaultRole: reader
+  roles:
+    reader: { permissions: [agent.read, thread.read] }
+    ops:
+      permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin]
+      scope: { read: any }
+      agents: [coder, researcher]
+    all-access:
+      permissions: [thread.read, thread.write]
+      scope: any
+    nobody: { permissions: [] }
+";
+
+#[test]
+fn the_roles_and_the_default_role_are_read() {
+    use orch_config::{AuthPermission, AuthScope, AuthScopes};
+    let valid = load(&format!("{MINIMAL}{ROLES}"), &minimal_env()).unwrap();
+    let auth = &valid.config.auth;
+    assert_eq!(auth.default_role, Some(Some("reader".to_owned())));
+    let roles = auth.roles.as_ref().unwrap();
+    assert_eq!(
+        roles.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["all-access", "nobody", "ops", "reader"]
+    );
+    let ops = &roles["ops"];
+    assert!(ops.permissions.contains(&AuthPermission::Admin));
+    // `scope: { read: any }` leaves writing at `own`.
+    assert_eq!(
+        ops.scope.as_ref().unwrap().read_write(),
+        (AuthScope::Any, AuthScope::Own)
+    );
+    assert_eq!(
+        ops.agents.as_deref(),
+        Some(&["coder".to_owned(), "researcher".to_owned()][..])
+    );
+    assert!(matches!(
+        roles["all-access"].scope,
+        Some(AuthScopes::Both(AuthScope::Any))
+    ));
+    assert!(roles["nobody"].permissions.is_empty());
+    assert!(roles["reader"].scope.is_none() && roles["reader"].agents.is_none());
+    // What was read is what `--print-config` shows.
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(json["auth"]["defaultRole"], "reader");
+    assert_eq!(json["auth"]["roles"]["ops"]["permissions"][5], "admin");
+}
+
+#[test]
+fn without_roles_nothing_is_set_and_the_built_ins_apply() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.auth.roles.is_none());
+    assert_eq!(valid.config.auth.default_role, None);
+    // The built-in roles can be the default, or `null` can mean none.
+    for text in [
+        "auth: { defaultRole: admin }",
+        "auth: { defaultRole: user }",
+    ] {
+        assert!(
+            load(&format!("{MINIMAL}{text}\n"), &minimal_env()).is_ok(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_null_default_role_is_a_value_and_every_other_null_is_an_error() {
+    let valid = load(
+        &format!("{MINIMAL}auth: {{ defaultRole: null }}\n"),
+        &minimal_env(),
+    )
+    .unwrap();
+    assert_eq!(valid.config.auth.default_role, Some(None));
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert!(json["auth"]["defaultRole"].is_null());
+    // A key written with nothing after it is still a type error elsewhere.
+    let errors = lines(load(
+        &format!("{MINIMAL}auth: {{ devUser: null }}\n"),
+        &minimal_env(),
+    ));
+    assert!(
+        errors.iter().any(|l| l.starts_with("auth.devUser: ")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn the_role_rules_name_the_key() {
+    let cases: [(&str, &str); 10] = [
+        (
+            "auth: { defaultRole: wizard }",
+            "auth.defaultRole: not one of the roles (user, admin)",
+        ),
+        (
+            "auth: { defaultRole: user, roles: { reader: { permissions: [thread.read] } } }",
+            "auth.defaultRole: not one of the roles (reader)",
+        ),
+        (
+            "auth: { roles: {} }",
+            "auth.roles: at least one role is needed (leave the key out for the built-in user and admin)",
+        ),
+        (
+            "auth: { roles: { ' padded': { permissions: [] } } }",
+            "auth.roles.\" padded\": a role name is not empty and has no space around it",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [thread.read, thread.read] } } }",
+            "auth.roles.r.permissions[1]: thread.read is listed twice",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [agent.read], scope: own } } }",
+            "auth.roles.r.scope: only with a role that holds thread.read, thread.write or artifact.read: it would silently do nothing",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [thread.read], agents: ['*'] } } }",
+            "auth.roles.r.agents: only with a role that holds agent.read or agent.invoke: it would silently do nothing",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [agent.invoke], agents: [] } } }",
+            "auth.roles.r.agents: at least one agent id, or \"*\" for every agent",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [agent.invoke], agents: [' '] } } }",
+            "auth.roles.r.agents[0]: an agent id is not empty",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [agent.invoke, thread.read] } }, defaultRole: r }",
+            "",
+        ),
+    ];
+    for (auth, expected) in cases {
+        let result = load(&format!("{MINIMAL}{auth}\n"), &minimal_env());
+        if expected.is_empty() {
+            assert!(result.is_ok(), "{auth}");
+            continue;
+        }
+        let errors = lines(result);
+        assert!(errors.iter().any(|l| l == expected), "{auth}\n{errors:?}");
+    }
+}
+
+#[test]
+fn the_shape_of_a_role_is_checked_by_the_schema() {
+    for (auth, key) in [
+        ("auth: { roles: { r: {} } }", "auth.roles.r.permissions"),
+        (
+            "auth: { roles: { r: { permissions: [thread.destroy] } } }",
+            "auth.roles.r.permissions[0]",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [thread.read], scope: everyone } } }",
+            "auth.roles.r.scope",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [thread.read], scope: { read: any, delete: any } } } }",
+            "auth.roles.r.scope",
+        ),
+        (
+            "auth: { roles: { r: { permissions: [thread.read], colour: red } } }",
+            "auth.roles.r.colour",
+        ),
+        ("auth: { defaultRole: '' }", "auth.defaultRole"),
+        ("auth: { defaultRole: 5 }", "auth.defaultRole"),
+    ] {
+        let errors = lines(load(&format!("{MINIMAL}{auth}\n"), &minimal_env()));
+        assert!(
+            errors.iter().any(|l| l.starts_with(&format!("{key}: "))),
+            "{auth}\n{errors:?}"
+        );
+    }
 }
 
 #[test]
