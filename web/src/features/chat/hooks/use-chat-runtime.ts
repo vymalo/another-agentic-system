@@ -1,6 +1,7 @@
 import { type AgUiAssistantRuntime, useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useElapsed } from "@/features/chat/hooks/use-elapsed";
 import { dropFailedSend } from "@/features/chat/lib/agui/failed-send";
 import {
   type SendError,
@@ -36,6 +37,13 @@ export type ChatRuntime = {
 };
 
 const newThreadId = (): string => uuidv7();
+
+/**
+ * How long a finished thread keeps following its stream. The orchestrator's title and description
+ * (ADR 0035) are written by a model once a job has ended, each a call of up to its endpoint's
+ * timeout (30 s by default) and a retry or two, so a thread that is already `done` still changes.
+ */
+export const FINISHED_GRACE_MS = 45_000;
 
 /**
  * `@assistant-ui/react-ag-ui` over one `ThreadAgent` (ADR 0006, ADR 0012).
@@ -79,9 +87,13 @@ export function useChatRuntime({
   const snapshot = useSyncExternalStore(agent.onChange, agent.getSnapshot, agent.getSnapshot);
 
   const caughtUp = threadLastSeq !== null && snapshot.lastSeq >= threadLastSeq;
-  // A finished thread that is fully loaded needs no stream, and neither does one that is not there.
-  const paused =
-    notFound || snapshot.notFound || (isTerminal(snapshot.state) && caughtUp && !snapshot.openRun);
+  // A finished thread that is fully loaded needs no stream for long, and neither does one that is not
+  // there. "For long": what the orchestrator writes after a job ends, its title and the thread's
+  // description (ADR 0035), arrives on the stream after the thread is `done`, so a finished thread
+  // keeps its stream for a while (`FINISHED_GRACE_MS`) before it lets go.
+  const finished = isTerminal(snapshot.state) && caughtUp && !snapshot.openRun;
+  const lingered = useElapsed(finished, FINISHED_GRACE_MS);
+  const paused = notFound || snapshot.notFound || (finished && lingered);
   useEffect(() => {
     if (threadId === null || paused) return;
     agent.start();
