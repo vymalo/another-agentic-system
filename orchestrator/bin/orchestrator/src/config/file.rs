@@ -1304,6 +1304,7 @@ auth:
     }
 
     #[test]
+    #[cfg(feature = "auth-jwt")]
     fn the_auth_section_reaches_the_configuration() {
         let c = load_file_only(&base(), &format!("{FILE}{JWT}"))
             .unwrap()
@@ -1377,6 +1378,7 @@ auth:
     }
 
     #[test]
+    #[cfg(feature = "auth-jwt")]
     fn print_config_shows_the_auth_section() {
         let merged = load_file_only(&base(), &format!("{FILE}{JWT}"))
             .unwrap()
