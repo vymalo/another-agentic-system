@@ -365,6 +365,11 @@ pub struct Call {
     /// (`[{server, name, description?}]`) when MCP servers are attached to the thread that the
     /// agent may use (ADR 0024). Recorded as received, so a test can assert what an agent is told.
     pub thread_tools: Option<Value>,
+    /// `metadata[<mentions/v1 URI>]` of the message: `{mentions: [{agentId, name?, label, start,
+    /// end, cardUrl?}], coordinate?}`, the agents the person mentioned, when it carried one (ADR
+    /// 0026). Recorded as received, so a test can assert what an agent is told, and that an agent
+    /// whose card does not list the extension is told nothing.
+    pub mentions: Option<Value>,
 }
 
 impl Call {
@@ -791,6 +796,7 @@ impl Front {
             ui_catalog: ui_catalog_of(Some(message)),
             inline_catalogs: inline_catalogs_of(Some(message)),
             thread_tools: thread_tools_of(Some(message)),
+            mentions: mentions_of(Some(message)),
         });
         if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
             return Some(Err(A2AError::task_not_found(&task_id)));
@@ -1264,6 +1270,35 @@ fn thread_tools_of(message: Option<&Message>) -> Option<Value> {
         .cloned()
 }
 
+/// `metadata[mentions/v1]` of the message (ADR 0026): the agents the person mentioned.
+fn mentions_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::MENTIONS_EXTENSION)
+        .cloned()
+        .map(whole_numbers)
+}
+
+/// A receiver built on `a2a-server-lf` reads every number of a message's metadata as a double (`3`
+/// arrives as `3.0`); the sender wrote integers, so a whole double is read back as the integer it
+/// was, and a test compares the offsets it sent.
+fn whole_numbers(value: Value) -> Value {
+    match value {
+        Value::Number(n) if n.is_f64() => match n.as_f64() {
+            Some(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Value::from(f as i64),
+            _ => Value::Number(n),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(whole_numbers).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, whole_numbers(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 /// The `inlineCatalogs` of the renderer capabilities of the message, whatever the dialect.
 fn inline_catalogs_of(message: Option<&Message>) -> Vec<Value> {
     capabilities_of(message)
@@ -1321,6 +1356,7 @@ impl Shared {
             ui_catalog: ui_catalog_of(ctx.message.as_ref()),
             inline_catalogs: inline_catalogs_of(ctx.message.as_ref()),
             thread_tools: thread_tools_of(ctx.message.as_ref()),
+            mentions: mentions_of(ctx.message.as_ref()),
         });
     }
 

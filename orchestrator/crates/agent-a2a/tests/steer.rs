@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
-use orch_core::{AgentTaskState, AgentUpdate, STEER_EXTENSION, STEPS_EXTENSION};
+use orch_core::{
+    AgentTaskState, AgentUpdate, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
+};
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, SendContent, SendRequest,
 };
@@ -117,6 +119,81 @@ async fn an_activated_steer_is_read_by_the_running_task_which_answers_with_itsel
     assert!(call.message_extensions.iter().any(|e| e == STEER_EXTENSION));
     // a steer is not a reporting call: the task keeps reporting on the stream it has
     assert!(!call.activates_steps(), "{:?}", call.extensions_header);
+    fake.release_gate();
+}
+
+/// One mentioned agent, as the dispatcher resolves it from the registry (`@coder` at 5..11).
+fn coder() -> orch_ports::MentionInfo {
+    orch_ports::MentionInfo {
+        agent_id: orch_core::AgentId::new("coder"),
+        name: Some("Coder".to_owned()),
+        label: "@coder".to_owned(),
+        start: 5,
+        end: 11,
+        card_url: Some("http://coder:8080/.well-known/agent-card.json".to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn a_steer_is_told_the_mentions_when_the_card_lists_mentions_too() {
+    let fake = agent(&[STEER_EXTENSION, MENTIONS_EXTENSION]).await;
+    let ep = fake.endpoint("steerable", None);
+    let c = client();
+    let (_stream, task) = running(&c, &ep).await;
+
+    let mut request = steer(&ep, &task, "echo @coder later", "m-steer");
+    request.mentions = vec![coder()];
+    let mut answer = c.send_stream(request).await.unwrap();
+    assert_eq!(next(&mut answer).await.task_id, task);
+
+    let calls: Vec<_> = fake
+        .calls()
+        .into_iter()
+        .filter(|c| c.kind == CallKind::Steer)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(
+        call.mentions,
+        Some(serde_json::json!({"mentions": [{
+            "agentId": "coder",
+            "name": "Coder",
+            "label": "@coder",
+            "start": 5,
+            "end": 11,
+            "cardUrl": "http://coder:8080/.well-known/agent-card.json"
+        }]}))
+    );
+    // both extensions are activated, header and message, and nothing else of a reporting call
+    for uri in [STEER_EXTENSION, MENTIONS_EXTENSION] {
+        assert!(call.activates(uri), "{uri}: {:?}", call.extensions_header);
+        assert!(call.message_extensions.iter().any(|e| e == uri), "{uri}");
+    }
+    assert!(!call.activates_steps(), "{:?}", call.extensions_header);
+    fake.release_gate();
+}
+
+#[tokio::test]
+async fn a_steer_to_an_agent_that_lists_steer_but_not_mentions_carries_the_text_only() {
+    let fake = agent(&[STEER_EXTENSION]).await;
+    let ep = fake.endpoint("steerable", None);
+    let c = client();
+    let (_stream, task) = running(&c, &ep).await;
+
+    let mut request = steer(&ep, &task, "echo @coder later", "m-steer");
+    request.mentions = vec![coder()];
+    let mut answer = c.send_stream(request).await.unwrap();
+    assert_eq!(next(&mut answer).await.task_id, task);
+
+    let calls: Vec<_> = fake
+        .calls()
+        .into_iter()
+        .filter(|c| c.kind == CallKind::Steer)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].text, "echo @coder later");
+    assert_eq!(calls[0].mentions, None);
+    assert!(!calls[0].activates(MENTIONS_EXTENSION));
     fake.release_gate();
 }
 

@@ -19,15 +19,16 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, snapshot};
 use orch_core::{
-    BoxError, KnownExtension, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
-    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UiDelivery, UiVersion, history_preamble,
+    BoxError, KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
+    TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UiDelivery, UiVersion,
+    history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
     SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
@@ -35,6 +36,7 @@ use crate::a2ui::{
 use crate::errors::classify;
 use crate::extensions::extensions_from_card;
 use crate::files::{Fetcher, FileFetch};
+use crate::mentions::mentions_metadata;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
 
@@ -58,6 +60,12 @@ pub struct A2aConfig {
     /// card lists the extension carries `{url, token, expiresAt}` for the request's thread; without
     /// it (the default) no agent is given a grant. `Debug` shows no key.
     pub thread_tools: Option<Arc<ThreadToolsIssuer>>,
+    /// Whether the thread endpoint the grants open offers `ask_agent` (ADR 0026). Off (the
+    /// default) a message that mentions agents to an agent that lists `mentions/v1` carries the
+    /// references and **no `coordinate` member**, because the agent has no tool to ask them with;
+    /// on, `coordinate: {"tool": "ask_agent"}` is added when the card also lists `thread-tools/v1`
+    /// and a grant was minted. The composition root turns it on when it mounts the tool.
+    pub asks: bool,
     /// The hosts a `url` part of an artifact may be fetched from, and the size it may have
     /// (ADR 0032, `artifacts.fetchHosts`). Without it (the default) every `url` part stays a link.
     pub fetch_files: Option<FileFetch>,
@@ -72,6 +80,7 @@ impl Default for A2aConfig {
             call_timeout: Duration::from_secs(30),
             use_system_proxy: true,
             thread_tools: None,
+            asks: false,
             fetch_files: None,
         }
     }
@@ -410,6 +419,7 @@ fn extensions_of(
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
     thread_tools: Option<&ThreadToolsGrant>,
+    mentions: Option<&Value>,
     reporting: &[String],
 ) -> Vec<String> {
     let mut uris = Vec::new();
@@ -433,6 +443,9 @@ fn extensions_of(
     if thread_tools.is_some() {
         uris.push(THREAD_TOOLS_EXTENSION.to_owned());
     }
+    if mentions.is_some() {
+        uris.push(MENTIONS_EXTENSION.to_owned());
+    }
     uris.extend(reporting.iter().cloned());
     uris
 }
@@ -442,6 +455,7 @@ fn user_message(
     ui: Option<&UiSupport>,
     catalog: Option<&UiDelivery>,
     thread_tools: Option<&ThreadToolsGrant>,
+    mentions: Option<&Value>,
     reporting: &[String],
 ) -> Message {
     let part = match &req.content {
@@ -500,7 +514,12 @@ fn user_message(
             thread_tools_metadata(grant, attached),
         );
     }
-    let extensions = extensions_of(req, ui, catalog, thread_tools, reporting);
+    // The agents the person addressed, as references: only to an agent whose live card lists the
+    // extension (`crate::mentions`); the text itself is untouched.
+    if let Some(mentions) = mentions {
+        metadata.insert(MENTIONS_EXTENSION.to_owned(), mentions.clone());
+    }
+    let extensions = extensions_of(req, ui, catalog, thread_tools, mentions, reporting);
     if !metadata.is_empty() {
         message.metadata = Some(metadata);
     }
@@ -554,6 +573,7 @@ impl AgentClient for A2aAgentClient {
             &known,
             jiff::Timestamp::now(),
         );
+        let mentions = mentions_metadata(&req, &known, thread_tools.is_some(), self.cfg.asks);
         let reporting = if req.steer {
             Vec::new()
         } else {
@@ -568,6 +588,7 @@ impl AgentClient for A2aAgentClient {
                     ui.as_ref(),
                     catalog,
                     thread_tools.as_ref(),
+                    mentions.as_ref(),
                     &reporting,
                 ),
             )
@@ -578,6 +599,7 @@ impl AgentClient for A2aAgentClient {
                 ui.as_ref(),
                 catalog,
                 thread_tools.as_ref(),
+                mentions.as_ref(),
                 &reporting,
             ),
             configuration: None,
