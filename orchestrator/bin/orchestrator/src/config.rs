@@ -1165,7 +1165,7 @@ pub struct Config {
     pub tool_servers: Vec<ToolServerInfo>,
     /// `toolServers` of the configuration file, the part the relay needs to call them (ADR 0024): in
     /// the order of the file, each server's id, URL, timeout and resolved credentials as the port's
-    /// endpoint type. Only the relay reads it, and no process composes the relay yet. Its `Debug`
+    /// endpoint type. Only the relay reads it (composed by the binary behind the feature `tool-relay`). Its `Debug`
     /// lists the ids and nothing else.
     pub tool_endpoints: Vec<ToolServerEndpoint>,
     /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the

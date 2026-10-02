@@ -1158,7 +1158,7 @@ fn tool_servers_of(servers: &[orch_config::ToolServer]) -> Vec<ToolServerInfo> {
 
 /// The tool servers of the valid file as the relay calls them (ADR 0024): where each is and the
 /// credentials the file refers to, resolved, as the port's endpoint type, whose `Debug` shows no
-/// value. Held by the configuration and read by nothing else until the relay is composed.
+/// value. Held by the configuration and read by nothing but the relay (feature `tool-relay`).
 fn tool_endpoints_of(valid: &Validated) -> Vec<ToolServerEndpoint> {
     valid
         .config

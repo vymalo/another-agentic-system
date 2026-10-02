@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "auth-header", "auth-jwt"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "auth-header", "auth-jwt"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -27,6 +27,14 @@ surface-mcp = ["dep:orch-surface-mcp"]
 # variables make the A2A adapter mint grants, so every role gets them. Without the feature the
 # variables are not read and no agent is given a grant.
 surface-thread-tools = ["dep:orch-surface-thread-tools", "dep:orch-thread-token"]
+# The relay of the thread-tools endpoint (ADR 0024, `thread-tools/v1`): the tools of the MCP servers a
+# person attached to a thread, called for the agent with the credentials of the `toolServers` of the
+# configuration, each call a step with the server's icon. Needs the thread-tools surface (the relay is
+# one of its providers) and brings the MCP client (`orch-tools-mcp`, rmcp's client side). On by default
+# like the surfaces: with no `toolServers` in the configuration, or without the surface mounted, it does
+# nothing. Without the feature a configuration that lists servers still loads (a person can attach them)
+# and the process says at startup that no agent can use them.
+tool-relay = ["surface-thread-tools", "dep:orch-tools-mcp"]
 # The webhook routes (ADR 0017): signed CI results, machine routes outside the identity layer.
 # On by default, but a route is mounted only when ORCH_SURFACES names it and its secrets are set.
 surface-webhook = ["dep:orch-surface-webhook"]
@@ -69,6 +77,7 @@ orch-surface-agui = { workspace = true, optional = true }
 orch-surface-mcp = { workspace = true, optional = true }
 orch-surface-thread-tools = { workspace = true, optional = true }
 orch-thread-token = { workspace = true, optional = true }
+orch-tools-mcp = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true

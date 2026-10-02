@@ -2624,6 +2624,7 @@ dependencies = [
  "orch-surface-webhook",
  "orch-testsupport",
  "orch-thread-token",
+ "orch-tools-mcp",
  "reqwest",
  "secrecy",
  "serde",

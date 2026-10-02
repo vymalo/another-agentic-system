@@ -108,6 +108,9 @@ jobs:
       # The other combinations of the authenticators must build: only tokens, and none (a worker).
       - run: cargo clippy -p orchestrator --no-default-features --features auth-jwt --bins --locked -- -D warnings
       - run: cargo clippy -p orchestrator --no-default-features --bins --locked -- -D warnings
+      # The thread-tools surface without the relay (feature `tool-relay`): it must build and say, at
+      # startup, that listed servers give an agent no tools.
+      - run: cargo clippy -p orchestrator --no-default-features --features auth-header,surface-thread-tools --bins --locked -- -D warnings
       - run: cargo test --workspace --locked
       # In-process agents (ADR 0015) are a Cargo feature of the binary, off by default and so
       # not covered by the workspace commands above: lint it, and run its own tests (the
