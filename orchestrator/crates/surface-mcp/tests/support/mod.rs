@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use orch_api::ApiConfig;
-use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig};
+use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig, Policy};
 use orch_auth_header::HeaderAuth;
 use orch_core::{AgentId, GatePolicy, ThreadId, UserId};
 use orch_ports::memory::{MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{
-    AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, SystemClock, ThreadStore,
+    AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, Role, SystemClock, ThreadStore,
 };
 use orch_surface_mcp::{McpConfig, TokenTable};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, ProgressNotificationParam};
@@ -42,6 +42,13 @@ pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
 pub const ALICE_TOKEN: &str = "alice-token-0123456789abcdef0123456789";
 pub const BOB_TOKEN: &str = "bob-token-0123456789abcdef012345678901";
+/// A token whose entry names the role `chat` (defined only by a test that sets a `policy`; for the
+/// others an unknown role grants nothing and the default role is what is left).
+pub const CAROL: &str = "carol@example.com";
+pub const CAROL_TOKEN: &str = "carol-token-0123456789abcdef01234567890";
+/// A token whose entry names the role `admin`.
+pub const ROOT: &str = "root@example.com";
+pub const ROOT_TOKEN: &str = "root-token-0123456789abcdef0123456789012";
 pub const T: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
@@ -55,6 +62,8 @@ pub struct Options {
     pub wait_limits: Option<(usize, usize)>,
     pub tool_timeout: Option<Duration>,
     pub allowed_origins: Vec<&'static str>,
+    /// The roles and what they grant; the built-in `user` and `admin` by default.
+    pub policy: Option<Policy>,
 }
 
 pub struct Harness {
@@ -105,9 +114,19 @@ fn secret(s: &str) -> SecretString {
 }
 
 pub fn tokens() -> TokenTable {
-    TokenTable::new([
-        (UserId::new(ALICE), secret(ALICE_TOKEN)),
-        (UserId::new(BOB), secret(BOB_TOKEN)),
+    TokenTable::with_roles([
+        (UserId::new(ALICE), Default::default(), secret(ALICE_TOKEN)),
+        (UserId::new(BOB), Default::default(), secret(BOB_TOKEN)),
+        (
+            UserId::new(CAROL),
+            [Role::new("chat")].into(),
+            secret(CAROL_TOKEN),
+        ),
+        (
+            UserId::new(ROOT),
+            [Role::new("admin")].into(),
+            secret(ROOT_TOKEN),
+        ),
     ])
     .unwrap()
 }
@@ -150,6 +169,7 @@ impl Harness {
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
                     gate: options.gate,
+                    policy: options.policy.unwrap_or_default(),
                     ..AppConfig::default()
                 },
             )
