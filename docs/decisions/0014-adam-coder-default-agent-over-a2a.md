@@ -332,3 +332,29 @@ reads its card live and fails closed (ADR 0008), the image is pinned by tag and 
   passes at that commit.
 - *Unverified where this was written* (the machine had 2.4 GB of free disk and could not pull the 2.9 GB image or start the stack): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull
   request that pins it; that a real model uses the consent tools as the script does; the coder as a GitHub App against github.com and the real `github-mcp-server` (the stack mocks both).
+
+### Status note, 2026-10-02: tool steps carry their input and output, and the coder knows what the person sees (adam-rs d56dd94)
+
+Since adam-rs `d56dd94` ([#69](https://github.com/vymalo/another-adam-rs/pull/69), with [#68](https://github.com/vymalo/another-adam-rs/pull/68) before it) the coder is pinned at that commit.
+Nothing about the decision changes: the coder is a plain A2A agent, the orchestrator reads its card live and fails closed (ADR 0008), the image is pinned by tag and digest at the commit in `dev/coder/UPSTREAM`.
+What the pin brings:
+
+- **A tool step carries its call.** The coder, and every agent served by `adam-agent`, send each tool call's `input` (the arguments, redacted and cut) on the step's start and its `output` (`{text, truncated?, bytes?, error?}`)
+  on its end, the two optional members that `steps/v1` gained on 2026-10-02 ([ADR 0030](0030-a-step-carries-its-input-and-output-bounded-and-redacted.md); the orchestrator side is built, plan 10 S1; adam-rs [ADR 0011](https://github.com/vymalo/another-adam-rs/blob/d56dd9418ec1b4e814be8c58966381ed14e664b4/docs/decisions/0011-a-tool-calls-step-carries-its-input-and-output.md)). An MCP tool's `title`
+  is its step's label, where the label was `<server>__<tool>`. An agent that does not send them is read as before.
+- **Clearer instructions.** The coder's `instructions.md` (the folder vendored at `dev/coder/agent/`) gained "What the person sees": the words before a tool call are one-line working notes shown beside the steps,
+  the reply that ends the turn is the only text in the conversation and must be complete on its own, and replies render as Markdown. It also describes the work environment (below). The `show` tool lists the catalog's components
+  and refuses `Choices`, and `get_ui_catalog` is hidden from the model.
+- **A run may work in its repository's devcontainer** (adam-rs #68, [ADR 0010](https://github.com/vymalo/another-adam-rs/blob/d56dd9418ec1b4e814be8c58966381ed14e664b4/docs/decisions/0010-a-run-works-in-its-repositorys-devcontainer.md)),
+  with `DEVCONTAINER_RUNTIME=podman`. It is off by default and nothing here sets it: the stack's coder runs its commands in its own container, as before.
+- **A local-process MCP server is the coder's deployment's decision.** The image sets no `MCP_ALLOW_STDIO` (at `1021836` it did): it carries `github-mcp-server` for the coder and `adam-agent`, which must refuse
+  local processes. `compose.live.yaml` sets it on the coder service alone, because the live coder starts the real `github-mcp-server`; the chat and the researcher use http servers and do not get it, and the offline coder
+  reads GitHub over http (the mock `mcp.json`).
+- **In this repository:** the pin and the vendored files (changed: the agent folder's `instructions.md` and three mappings of the coder's and OpenCode's scripts, additions only; new: two seeded repositories for the devcontainer scenario of adam-rs and
+  two bodies of its OpenCode script; every other vendored file unchanged), `compose.live.yaml`, and the scenarios `agents` and `coder`, which assert that the researcher's search is one step labelled `Web search` and that
+  the coder's tool steps carry their input and output ([`dev/README.md`](../../dev/README.md#what-was-checked)).
+- *Verified 2026-10-02* (anonymous ghcr API, HTTP 200): `coder:sha-d56dd94` is one `linux/amd64` manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, no `MCP_ALLOW_STDIO`, label
+  `org.opencontainers.image.revision` `d56dd9418ec1b4e814be8c58966381ed14e664b4`, digest `sha256:9beeb71a...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh`
+  passes at that commit.
+- *Unverified where this was written* (the machine could not pull the 2.9 GB image or start the stack): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it;
+  that the coder's real step labels, inputs and outputs are as the new assertions expect (read from adam-rs's source at that commit, not run); and the real `github-mcp-server` in the live coder with `MCP_ALLOW_STDIO` set.

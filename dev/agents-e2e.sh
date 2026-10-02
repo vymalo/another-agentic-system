@@ -25,7 +25,10 @@
 #   * RESEARCHER, "Who won the football world cup in 2014?": the thread ends `done`, the words cite a link of the
 #     mock web search (https://example.org/mock-search/...), `mock-mcp-search` was called exactly once, with
 #     `web_search` and a query that holds the person's words, and the model got the tool `search__web_search`
-#     from the folder's mcp.json and the results back (two requests: the call, then the answer);
+#     from the folder's mcp.json and the results back (two requests: the call, then the answer); the call is one step
+#     (`vymalo.step`, kind tool) labelled with the tool's title, `Web search` (adam-rs d56dd94: not `search__web_search`), whose start
+#     carries the call's `input` (the query) and whose end carries its `output` (`{text}`, the mock's list of links), as the replay says it
+#     (docs/api/steps-v1.md, "Input and output");
 #   * CODER, "hi" (cheap, and the contrast): the thread ends `blocked` and the words say "I'm Coder";
 #   * `mock-model` matched every request.
 # Exit status 0 when every check passed.
@@ -277,6 +280,43 @@ result=$(printf '%s' "$researcher_requests" | jq -r '[.[1].messages // [] | .[] 
 case $result in
   *"https://example.org/mock-search/"*) ok "researcher: the results of the search went back to the model" ;;
   *) bad "researcher: the second model request holds no search result (tool message: '${result:-none}')" ;;
+esac
+
+# The call as a step (steps/v1, adam-rs d56dd94: a tool step carries its input and its output, and an MCP tool's `title` is its label). The
+# replay holds one `vymalo.step` snapshot per report of the step, the start first and the end last, and the end says the step as it stands.
+# The mock search server gives `Web search` as the title of its one tool (dev/mock-mcp-search/server.mjs), so that is the label; without a
+# title it would be `search__web_search`, as the model knows the tool.
+# shellcheck disable=SC2016 # jq's own variables, not the shell's
+steps_def='def steps: .[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.step"); '
+search_steps=$(jq -c "$steps_def"'[steps | select(.content.kind == "tool" and .content.label == "Web search")]' "$events" 2>/dev/null || echo '[]')
+n_search=$(printf '%s' "$search_steps" | jq -r 'map(.content.id) | unique | length' 2>/dev/null || echo 0)
+if [ "$n_search" = 1 ]; then
+  ok "researcher: the call is one step, labelled with the tool's title: Web search"
+else
+  seen=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool") | .content.label] | unique | join(" ")' "$events" 2>/dev/null || true)
+  bad "researcher: $n_search tool steps labelled 'Web search', want exactly one (tool steps seen: ${seen:-none}; is the label the MCP tool's title?)"
+fi
+step_state=$(printf '%s' "$search_steps" | jq -r 'last | .content.state // empty' 2>/dev/null || true)
+if [ "$step_state" = completed ]; then
+  ok "researcher: the step ended completed"
+else
+  bad "researcher: the Web search step ended '${step_state:-none}', want completed"
+fi
+step_query=$(printf '%s' "$search_steps" | jq -r 'first | .content.input.query // empty' 2>/dev/null || true)
+case $step_query in
+  *football*) ok "researcher: the step's start carries the call's input, the query \"$step_query\"" ;;
+  *) bad "researcher: the step's start carries no input with the person's words (input.query: '${step_query:-none}'; steps/v1 input, adam-rs d56dd94)" ;;
+esac
+step_output=$(printf '%s' "$search_steps" | jq -r 'last | .content.output.text // empty' 2>/dev/null || true)
+step_error=$(printf '%s' "$search_steps" | jq -r 'last | .content.output.error // false' 2>/dev/null || true)
+case $step_output in
+  *"https://example.org/mock-search/"*)
+    if [ "$step_error" = false ]; then
+      ok "researcher: the step's end carries the output, the links of the mock web search (not an error)"
+    else
+      bad "researcher: the step's output is marked as an error: $step_output"
+    fi ;;
+  *) bad "researcher: the step's end carries no output with a link of the mock web search (output.text: '${step_output:-none}'; steps/v1 output, adam-rs d56dd94)" ;;
 esac
 
 # --- the coder, for contrast ---------------------------------------------------------------------------

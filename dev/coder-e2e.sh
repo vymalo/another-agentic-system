@@ -38,6 +38,10 @@
 #     sub-agent step labelled OpenCode (a SUBAGENT_STARTED inside the coder's invocation, ended completed, finished once after its
 #     last step) with at least one command or tool step running under it (OpenCode's own bash call), and the log keeps no more than
 #     6 `agent_step` events of any one step (a start, at most four updates, an end). With NO_OPENCODE=1 there is no OpenCode step;
+#     since adam-rs d56dd94 a tool step carries the call (steps/v1, "Input and output"): the start of prepare_workspace, run_checks,
+#     commit_and_push and open_pull_request has the `input` the script sent (the repository, the check command, the commit message, the
+#     title), the end is `completed` with an `output` whose text is not empty and not an error, and so does `github__list_branches`
+#     (an MCP tool, the default variant: its input the repository, its output the branch `main`);
 #   * the coder's answer is shown as it is written (`text-stream/v1`, adam-rs cf6ddbb; docs/api/agui.md, "Live text"): on the run
 #     stream an assistant message marked `metadata["vymalo.live"]` opens, grows in at least two live deltas from offset 0, and the log's
 #     final message completes the SAME message id (one START, the live deltas, the final delta, one END); what the deltas say, read by
@@ -334,6 +338,51 @@ for tool in prepare_workspace run_checks commit_and_push open_pull_request; do
     *) bad "steps: no vymalo.step for the call of $tool (top-level tool steps: ${top_tools:-none}); does the coder's card list steps/v1?" ;;
   esac
 done
+# What each tool step says of its call (steps/v1 "Input and output", adam-rs d56dd94; docs/api/agui.md, "Nested steps"): the step's start
+# carries the call's `input` (the arguments the scripted model sent) and its end carries the `output` (`{text}`, what the tool returned).
+# The replay holds one snapshot per report, the start first, the end last, and the end says the step as it stands. Only what the scripts
+# fix is asserted: the input, which the script spells, and that the output is a non-empty text that is not an error; what a tool says is
+# the coder's own wording (docs/api/steps-v1.md: a client draws `output.text` as text and does not parse it).
+# tool_io LABEL KEY VALUE: the one top-level tool step labelled LABEL has an input whose KEY is VALUE (VALUE empty: only that KEY is
+# there) on its start, and, on its end, state completed and an output whose text is not empty and is not an error.
+tool_io() {
+  _snaps=$(jq -c --arg l "$1" "$steps_def"'[steps | select(.content.kind == "tool" and .content.label == $l and ((.content.path // []) | length) == 0)]' "$events" 2>/dev/null || echo '[]')
+  _n=$(printf '%s' "$_snaps" | jq -r 'map(.content.id) | unique | length' 2>/dev/null || echo 0)
+  if [ "$_n" != 1 ]; then
+    bad "steps: $_n top-level tool steps labelled $1, want exactly one"
+    return 0
+  fi
+  _in=$(printf '%s' "$_snaps" | jq -r --arg k "$2" 'first | .content.input[$k] // empty | if type == "string" then . else tojson end' 2>/dev/null || true)
+  if [ -n "$_in" ] && { [ -z "$3" ] || [ "$_in" = "$3" ]; }; then
+    ok "steps: the start of $1 carries its input ($2: $_in)"
+  else
+    bad "steps: the start of $1 carries input.$2 '${_in:-none}', want '${3:-a value}' (input: $(printf '%s' "$_snaps" | jq -c 'first | .content.input // "none"' 2>/dev/null || true))"
+  fi
+  _state=$(printf '%s' "$_snaps" | jq -r 'last | .content.state // empty' 2>/dev/null || true)
+  _text=$(printf '%s' "$_snaps" | jq -r 'last | .content.output.text // empty' 2>/dev/null || true)
+  _err=$(printf '%s' "$_snaps" | jq -r 'last | .content.output.error // false' 2>/dev/null || true)
+  if [ "$_state" = completed ] && [ -n "$_text" ] && [ "$_err" = false ]; then
+    ok "steps: the end of $1 carries its output ($(printf '%s' "$_text" | wc -c | tr -d ' ') bytes of text, not an error)"
+  else
+    bad "steps: the end of $1 is '${_state:-none}' with output text '${_text:-none}' (error: $_err), want completed with a text that is no error"
+  fi
+}
+if [ "${NO_OPENCODE:-}" = 1 ]; then checks_command='echo hello > hello.txt && sh ./check.sh'; else checks_command='sh ./check.sh'; fi
+tool_io prepare_workspace repo_url "$repo_url"
+tool_io run_checks command "$checks_command"
+tool_io commit_and_push message 'feat: add hello.txt'
+tool_io open_pull_request title 'feat: add hello.txt'
+if [ "${NO_OPENCODE:-}" != 1 ]; then
+  # An MCP tool: the mock GitHub server gives no title, so the label is the name the model knows, `<server>__<tool>`; its input is
+  # the script's arguments and its output the mock's list of branches, which names `main`.
+  tool_io github__list_branches repo sandbox
+  branches_text=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and .content.label == "github__list_branches")] | last | .content.output.text // empty' "$events" 2>/dev/null || true)
+  case $branches_text in
+    *main*) ok "steps: the output of github__list_branches names the branch main" ;;
+    *) bad "steps: the output of github__list_branches does not name main ('${branches_text:-none}')" ;;
+  esac
+fi
+
 opencode_ids=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and .content.label == "OpenCode") | .content.id] | unique | join(" ")' "$events" 2>/dev/null || true)
 oid=
 if [ "${NO_OPENCODE:-}" = 1 ]; then
