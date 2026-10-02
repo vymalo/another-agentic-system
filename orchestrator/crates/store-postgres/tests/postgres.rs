@@ -69,6 +69,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         finishes_outbox: None,
         title: None,
         description: None,
+        skip_unsent_delegates: false,
     }
 }
 

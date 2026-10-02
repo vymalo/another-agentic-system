@@ -123,6 +123,30 @@ fn apply_binding(binding: &mut AgentBinding, update: &BindingUpdate) {
     }
 }
 
+/// Finishes the thread's unsent `delegate` rows as `skipped`: those `pending`, and those
+/// `inflight` whose lease expired before `now`. Returns the count.
+fn skip_unsent(inner: &mut Inner, thread: ThreadId, now: Timestamp) -> u32 {
+    let mut n = 0;
+    for row in inner
+        .outbox
+        .iter_mut()
+        .filter(|r| r.thread_id == thread && r.kind == OutboxKind::Delegate && r.sent_at.is_none())
+    {
+        let skippable = match row.status {
+            OutboxStatus::Pending => true,
+            OutboxStatus::Inflight => row.lease_until.is_some_and(|until| until < now),
+            OutboxStatus::Delivered | OutboxStatus::Dead | OutboxStatus::Skipped => false,
+        };
+        if skippable {
+            row.status = OutboxStatus::Skipped;
+            row.lease_owner = None;
+            row.lease_until = None;
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Appends the commit's events, sets state and version, inserts outbox rows and applies the
 /// binding. The caller has already checked the version and the idempotency keys.
 fn write_commit(
@@ -211,6 +235,11 @@ fn write_commit(
         && let Some(row) = leased(inner, lease)
     {
         finish_row(row, outcome);
+    }
+    // The abandoned job's unsent delegations are finished before this commit's own rows exist,
+    // in the same step (ADR 0036).
+    if commit.skip_unsent_delegates {
+        skip_unsent(inner, thread, commit.now);
     }
     for row in commit.outbox {
         inner.outbox.push(OutboxItem {
@@ -305,6 +334,7 @@ fn insert_thread(
         finishes_outbox: None,
         title: None,
         description: None,
+        skip_unsent_delegates: false,
         ..first
     };
     if inner.threads.contains_key(&new.id) {
@@ -782,23 +812,7 @@ impl ThreadStore for MemoryStore {
         now: Timestamp,
     ) -> Result<u32, StoreError> {
         let mut inner = self.lock();
-        let mut n = 0;
-        for row in inner.outbox.iter_mut().filter(|r| {
-            r.thread_id == thread && r.kind == OutboxKind::Delegate && r.sent_at.is_none()
-        }) {
-            let skippable = match row.status {
-                OutboxStatus::Pending => true,
-                OutboxStatus::Inflight => row.lease_until.is_some_and(|until| until < now),
-                OutboxStatus::Delivered | OutboxStatus::Dead | OutboxStatus::Skipped => false,
-            };
-            if skippable {
-                row.status = OutboxStatus::Skipped;
-                row.lease_owner = None;
-                row.lease_until = None;
-                n += 1;
-            }
-        }
-        Ok(n)
+        Ok(skip_unsent(&mut inner, thread, now))
     }
 
     async fn release_leases(&self, owner: &str, now: Timestamp) -> Result<u32, StoreError> {

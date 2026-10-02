@@ -1939,6 +1939,11 @@ impl<P: Ports> App<P> {
         let mut timers = Vec::new();
         let mut title = None;
         let mut description = None;
+        // The commit that starts the job after a Stop & send supersedes the unsent delegations of
+        // the abandoned job (ADR 0036): the store finishes them in the same transaction, before
+        // it inserts the delegation of the new job, so that one is the next the dispatcher
+        // claims, never behind them, and a commit that loses a race skips nothing.
+        let mut skip_unsent_delegates = false;
         for cmd in cmds {
             match cmd {
                 Command::Append(draft) => {
@@ -1975,9 +1980,9 @@ impl<P: Ports> App<P> {
                         ui_catalog: catalog,
                     },
                 }),
-                // The unsent rows of the abandoned job were finished before this commit was
-                // made (see `apply_fenced`), so none of the rows written here is touched.
-                Command::DropQueued { .. } => {}
+                // Said by the commit itself: the store finishes the abandoned job's unsent rows in
+                // the transaction that writes this commit's, so none of those is touched.
+                Command::DropQueued { .. } => skip_unsent_delegates = true,
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel { job: Some(job) },
@@ -2064,6 +2069,7 @@ impl<P: Ports> App<P> {
             finishes_outbox: None,
             title,
             description,
+            skip_unsent_delegates,
         }
     }
 
@@ -2156,16 +2162,6 @@ impl<P: Ports> App<P> {
                 .ok_or(AppError::NotFound)?;
             let (next, cmds) = transition(&record.snapshot(), &input)?;
             let now = self.ports.clock().now();
-            // The commit that starts the job after a Stop & send supersedes the unsent
-            // delegations of the abandoned job (ADR 0036): they are finished first, so that
-            // the one this commit writes is the next the dispatcher claims, never behind them.
-            // Done again by a retry of the commit, and harmless then: the rows are skipped.
-            if cmds.iter().any(|c| matches!(c, Command::DropQueued { .. })) {
-                self.ports
-                    .store()
-                    .skip_unsent_delegates(thread, now)
-                    .await?;
-            }
             let job = (next.job != record.job).then_some(next.job);
             let next = next.state;
             let mut commit = self.build_commit(
@@ -2392,6 +2388,7 @@ impl<P: Ports> App<P> {
                 finishes_outbox: None,
                 title: None,
                 description: None,
+                skip_unsent_delegates: false,
             };
             match self
                 .ports

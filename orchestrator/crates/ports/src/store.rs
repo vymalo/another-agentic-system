@@ -262,6 +262,16 @@ pub struct Commit {
     /// `None` leaves it as it is, and `Some("")` clears it. Ignored by
     /// [`ThreadStore::create_thread`], which takes the description from the new thread.
     pub description: Option<String>,
+    /// Finish the thread's unsent `delegate` rows as `skipped`, in this transaction and before
+    /// this commit's own rows are inserted (the rows
+    /// [`skip_unsent_delegates`](ThreadStore::skip_unsent_delegates) finishes: `pending`, or
+    /// `inflight` with an expired lease, and never sent). It is how the commit that starts the
+    /// next job after a Stop & send (ADR 0036) supersedes the abandoned job's delegations: done
+    /// by a separate call before the commit, a second worker that decided the same thing could
+    /// skip the row the first one had just written. A commit that is refused (a version
+    /// conflict, a lost fence, a duplicate) skips nothing. Ignored by
+    /// [`ThreadStore::create_thread`].
+    pub skip_unsent_delegates: bool,
 }
 
 impl Commit {

@@ -741,7 +741,9 @@ cancel the running task and keeps the text in `Job.after_stop`; a thread that ha
 | `UiAction` | `InvalidInState`: an answer to a job being abandoned |
 
 `DropQueued` finishes the thread's unsent `delegate` rows as `skipped` so that none of the abandoned job's runs ahead of
-the next job's: the application does it just before the commit that starts the job (`skip_unsent_delegates`). A thread's
+the next job's: the commit that starts the job says so (`Commit.skip_unsent_delegates`) and the store does it in the same
+transaction, before it inserts the commit's own rows (done by a separate call before the commit, a second worker that decided the
+same thing could skip the row the first had just written). A thread's
 first message goes through `start_thread`, not `transition`, so it carries no `delivery`.
 
 **Jobs on a thread** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md), built 2026-09-30). A thread is

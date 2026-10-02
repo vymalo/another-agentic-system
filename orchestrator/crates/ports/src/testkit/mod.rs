@@ -32,7 +32,8 @@ macro_rules! thread_store_conformance {
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
-            skip_unsent_delegates release_leases outbox_stats binding_applied_with_commit
+            skip_unsent_delegates a_commit_can_skip_the_unsent_delegates_it_supersedes
+            release_leases outbox_stats binding_applied_with_commit
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
             job_roundtrip job_tools_roundtrip job_is_written_with_the_state gate_events_roundtrip ui_catalog_roundtrip
