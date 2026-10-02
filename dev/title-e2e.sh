@@ -107,9 +107,9 @@ wait_title() { # wait_title THREAD WANT: succeeds once the thread has the title 
   done
 }
 
-requests() { # requests: what mock-title was asked, one JSON body per line
+requests() { # requests: what mock-title was asked, one JSON body per line, OLDEST FIRST (the journal lists the newest first)
   curl -s --max-time 30 "$model/__admin/requests" |
-    jq -c '.requests[].request.body | fromjson? | select(.model == "mock-title")' 2>/dev/null || true
+    jq -c '.requests | sort_by(.request.loggedDate) | .[].request.body | fromjson? | select(.model == "mock-title")' 2>/dev/null || true
 }
 
 asked() { requests | wc -l | tr -d ' '; }
