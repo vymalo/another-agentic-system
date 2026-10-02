@@ -20,6 +20,13 @@ name: Coder E2E
 # (dev/mock-oidc) that approves everybody, and the orchestrator as an OAuth2 resource server (`auth.mode: jwt`, ADR 0033); every script
 # gets a token of the mock (dev/auth-header.sh), and dev/rbac-e2e.sh asserts the roles (a user sees only their threads, an administrator
 # reads all and acts on none of another's, a wrong audience is 401, `chat-only` is refused the coder).
+# A repository's own devcontainer is the coder's work environment (ADR 0028, dev/devcontainer-e2e.sh): the stack runs again with
+# dev/compose.devcontainer.yaml, a rootless Podman service (no `privileged`, no `cap_add`, no `devices`) the coder builds
+# `.devcontainer/devcontainer.json` on, and the script asserts the devcontainer (`local/devbox`), the default image
+# (`local/sandbox`), a stopped service (the run goes on in the coder's own container, and says so), a devcontainer.json that cannot be
+# used (`local/devbox-broken`: the person decides), the teardown, and the service's privileges. Ubuntu 24.04 restricts unprivileged user
+# namespaces under AppArmor: the job turns that off when the key exists. It runs on every run, on the small MCR base image as the
+# default environment (the real `workspace` image, about 9 GB more, is for a run by hand: dev/README.md, "Devcontainers").
 # The coder needs no repository to start (dev/workspace-e2e.sh): it builds in a scratch project, creates a repository only after the person
 # says yes to a form, and adds a second repository to its workspace only after a yes; GitHub is read over MCP (the mock `mock-github-mcp`),
 # and the coder pass is run twice, once with the coder's GitHub credential a token and once as a GitHub App installation
@@ -34,6 +41,8 @@ name: Coder E2E
 #              hands over (kept, referenced, served, the SVG sanitized, another user's request a 404), and the coder
 #              restarted on a copy of its agent folder with another name), then run the coder, with and without OpenCode, and the workspaces again
 #              with the coder as a GitHub App (`-f dev/compose.github-app.yaml`; GITHUB_AUTH=app), then
+#              the work environments (the stack with `-f dev/compose.devcontainer.yaml`, the AppArmor sysctl set first, and
+#              dev/devcontainer-e2e.sh), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
 #              dev/split-e2e.sh, which SIGKILLs the worker that holds a task (ADR 0015)
 #
@@ -174,6 +183,30 @@ jobs:
           sh dev/coder-e2e.sh
           NO_OPENCODE=1 sh dev/coder-e2e.sh
           sh dev/workspace-e2e.sh
+      - name: Work environments (a rootless Podman service beside the coder, dev/compose.devcontainer.yaml; dev/devcontainer-e2e.sh)
+        # `up` starts `podman` (built from dev/coder/podman: Podman's own image, pinned) and recreates the coder (it now builds a repository's
+        # devcontainer on the service), mock-ci (it now watches `local/devbox`, where the gate waits for CI) and mock-openai (OpenCode,
+        # inside a devcontainer, reaches it on the service's network). The script first asserts that the service has no privileged, cap_add
+        # or devices, then runs the four scenarios (devcontainer, default-env, broken-env, no-runtime). The default environment of a
+        # repository without a devcontainer is the small MCR base image (367 MiB; the override's DEVCONTAINER_DEFAULT_IMAGE): the real
+        # workspace image is about 9 GB more, for a run by hand. Rootless Podman needs unprivileged user namespaces, and Ubuntu 24.04
+        # runners set kernel.apparmor_restrict_unprivileged_userns=1 (*unverified*, a secondary source: this step is the proof), so it is
+        # turned off where the key exists; without it the coder would fall back to its own container and the scenarios would fail saying so.
+        # The next step brings the base stack back (its `up` recreates the coder without the override).
+        timeout-minutes: 40
+        env:
+          COMPOSE_FILES: -f compose.yaml -f dev/compose.devcontainer.yaml
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES build podman
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 podman coder mock-ci
+          dev/devcontainer-e2e.sh
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES stop podman
       - name: Split roles (a control plane and two workers; the worker that holds a task is killed; a file a worker keeps is served by the control plane)
         # `up` recreates `orchestrator` with ORCHESTRATOR_ROLE=control-plane (compose.yaml) and starts the
         # two workers from the same image; the script then needs every process to deliver through them.
@@ -191,8 +224,9 @@ jobs:
         env:
           COMPOSE_PROFILES: app,split
         run: |
-          docker compose ps --all || true
-          docker compose logs --no-color || true
+          # the override is named so that the Podman service's logs are in the output too
+          docker compose -f compose.yaml -f dev/compose.devcontainer.yaml ps --all || true
+          docker compose -f compose.yaml -f dev/compose.devcontainer.yaml logs --no-color || true
           for m in 8091 8092 8083 8094 8085; do
             echo "== journal of the mock on port $m"
             curl -s "http://127.0.0.1:$m/__admin/requests" | jq -c '.requests[] | {method: .request.method, url: .request.url, status: .response.status, body: (.request.body // "" | .[0:300])}' || true
@@ -207,4 +241,4 @@ jobs:
         if: always()
         env:
           COMPOSE_PROFILES: app,split
-        run: docker compose down -v
+        run: docker compose -f compose.yaml -f dev/compose.devcontainer.yaml down -v --remove-orphans
