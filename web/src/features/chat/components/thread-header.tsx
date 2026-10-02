@@ -4,13 +4,16 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentMenu } from "@/features/agents/components/agent-menu";
 import type { AgentsView } from "@/features/agents/hooks/use-agents";
+import { useDescribeThread } from "@/features/chat/hooks/use-describe-thread";
 import { useExportThread } from "@/features/chat/hooks/use-export-thread";
 import { type ThreadRenamer, useRenameThread } from "@/features/chat/hooks/use-rename-thread";
+import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import { ForkError, useThreadFork } from "@/features/threads/components/fork-provider";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
 import { StateBadge } from "./state-badge";
+import { DescriptionField, ThreadDescription } from "./thread-description";
 import { ThreadMenu } from "./thread-menu";
 
 type Props = {
@@ -65,6 +68,8 @@ function TitleField({ renamer, current }: { renamer: ThreadRenamer; current: str
 /**
  * The top bar of a thread: the agent picker (a menu, like a model picker), the title, the state,
  * and the overflow menu. The title is the page's heading; below `md` it is for screen readers only.
+ * Under it the thread's description, a muted line a person can read in full and write (ADR 0035),
+ * unless the configuration hides descriptions (`ui.showDescriptions`).
  */
 export function ThreadHeader({
   thread,
@@ -77,6 +82,8 @@ export function ThreadHeader({
 }: Props) {
   const exporter = useExportThread(thread?.id ?? null);
   const renamer = useRenameThread(thread, onRenamed);
+  const describer = useDescribeThread(thread, onRenamed);
+  const showDescription = useShowDescriptions();
   const fork = useThreadFork();
   return (
     <>
@@ -125,10 +132,31 @@ export function ThreadHeader({
           <StateBadge state={state} needsAnswer={waiting} />
           <div className="flex items-center">
             <PanelToggle />
-            <ThreadMenu exporter={exporter} renamer={renamer} disabled={thread === null} />
+            <ThreadMenu
+              exporter={exporter}
+              renamer={renamer}
+              {...(showDescription ? { describer, hasDescription: !!thread?.description } : {})}
+              disabled={thread === null}
+            />
           </div>
         </div>
       </header>
+      {showDescription && thread && (describer.draft !== null || thread.description) ? (
+        <div className="mx-auto w-full max-w-3xl px-4 pb-2 md:px-6">
+          {describer.draft !== null ? (
+            <DescriptionField describer={describer} />
+          ) : thread.description ? (
+            <ThreadDescription key={thread.id} text={thread.description} />
+          ) : null}
+        </div>
+      ) : null}
+      {describer.error ? (
+        <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+          <InlineStatus tone="error" role="alert">
+            Could not save the description: {describer.error}
+          </InlineStatus>
+        </div>
+      ) : null}
       {renamer.error ? (
         <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
           <InlineStatus tone="error" role="alert">

@@ -1,6 +1,6 @@
 "use client";
 
-import { DownloadIcon, EllipsisIcon, PencilIcon } from "lucide-react";
+import { DownloadIcon, EllipsisIcon, PencilIcon, TextCursorInputIcon } from "lucide-react";
 import { useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,25 +9,33 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { ThreadDescriber } from "@/features/chat/hooks/use-describe-thread";
 import type { ThreadExporter } from "@/features/chat/hooks/use-export-thread";
 import type { ThreadRenamer } from "@/features/chat/hooks/use-rename-thread";
 
 /**
- * The thread's overflow menu. "Rename" turns the title in the header into a field. "Export JSON"
- * downloads the whole thread as a file to send to a developer; both are disabled until the
- * thread is known, and the export while a download is being fetched.
+ * The thread's overflow menu. "Rename" turns the title in the header into a field, and "Edit
+ * description" (or "Add description") the line under it (not offered when the configuration hides
+ * descriptions: no `describer`). "Export JSON" downloads the whole thread as a file to send to a
+ * developer. All are disabled until the thread is known, and the export while a download is being
+ * fetched.
  */
 export function ThreadMenu({
   exporter,
   renamer,
+  describer,
+  hasDescription = false,
   disabled,
 }: {
   exporter: ThreadExporter;
   renamer: ThreadRenamer;
+  describer?: ThreadDescriber;
+  /** The thread has a description: the item says "Edit", else "Add". */
+  hasDescription?: boolean;
   disabled: boolean;
 }) {
-  /** The menu closes and would hand the focus back to its button: the title field has it instead. */
-  const renaming = useRef(false);
+  /** The menu closes and would hand the focus back to its button: the field being edited has it instead. */
+  const editing = useRef<ThreadRenamer | null>(null);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -44,17 +52,18 @@ export function ThreadMenu({
       <DropdownMenuContent
         align="end"
         onCloseAutoFocus={(event) => {
-          if (!renaming.current) return;
-          renaming.current = false;
+          const editor = editing.current;
+          if (!editor) return;
+          editing.current = null;
           event.preventDefault();
-          renamer.field.current?.focus();
-          renamer.field.current?.select();
+          editor.field.current?.focus();
+          editor.field.current?.select();
         }}
       >
         <DropdownMenuItem
           disabled={disabled || renamer.saving}
           onSelect={() => {
-            renaming.current = true;
+            editing.current = renamer;
             renamer.start();
           }}
           title="Give this chat another title"
@@ -62,6 +71,19 @@ export function ThreadMenu({
           <PencilIcon aria-hidden="true" />
           Rename
         </DropdownMenuItem>
+        {describer ? (
+          <DropdownMenuItem
+            disabled={disabled || describer.saving}
+            onSelect={() => {
+              editing.current = describer;
+              describer.start();
+            }}
+            title="Say what this chat is about. What you write stays: the model does not change it."
+          >
+            <TextCursorInputIcon aria-hidden="true" />
+            {hasDescription ? "Edit description" : "Add description"}
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem
           disabled={disabled || exporter.exporting}
           onSelect={exporter.run}

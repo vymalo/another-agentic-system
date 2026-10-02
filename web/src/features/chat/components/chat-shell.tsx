@@ -119,14 +119,16 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
   // so, else the fetch; a thread without a gate has none.
   const job = snapshot.state !== undefined ? snapshot.job : parseJob(meta.thread?.job);
 
-  // The conversation moved on: the title and lastSeq of the resource move with it.
+  // The conversation moved on: the title, the description and lastSeq of the resource move with it.
   const { refetchSoon } = meta;
   useEffect(() => {
     if (snapshot.lastSeq > 0) refetchSoon();
   }, [snapshot.lastSeq, refetchSoon]);
   useEffect(() => {
-    setThreadsKey(`${threadId}:${state}:${meta.thread?.lastSeq}:${meta.thread?.title}`);
-  }, [threadId, state, meta.thread?.lastSeq, meta.thread?.title]);
+    setThreadsKey(
+      `${threadId}:${state}:${meta.thread?.lastSeq}:${meta.thread?.title}:${meta.thread?.description}`,
+    );
+  }, [threadId, state, meta.thread?.lastSeq, meta.thread?.title, meta.thread?.description]);
 
   const cancel = useCallback(() => {
     agent.cancel().catch((e: unknown) => setSendError(problemMessage(e)));
