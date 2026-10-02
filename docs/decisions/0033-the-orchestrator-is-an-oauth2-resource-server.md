@@ -326,8 +326,11 @@ Where the build differs from, or settles, what section 8 planned:
    would leave the stack broken if the script died; the Rust smoke test runs the real binary against an issuer that is not there, and the README gives the
    three commands for doing it by hand.
 
-**Unverified:** the stack in containers (the images build and start, the healthchecks, the orchestrator reading these files and the issuer over the compose
-network, every scenario behind the sign-in, `dev/rbac-e2e.sh`): the first run is the `Coder E2E` workflow; a browser session past the token's hour.
+**Verified later on 2026-10-02, on containers:** the real oauth2-proxy image, the mock issuer, Caddy and the real orchestrator binary on `dev/orchestrator.yaml`
+(with stand-ins for the web and for the adam agents): `dev/rbac-e2e.sh` and seven other scripts pass, a browser walk signs in as `dev` and as `admin`, and an issuer that
+is down while the orchestrator starts gives `/readyz` 503 until it is back (item 9's by-hand check).
+**Unverified:** the Rust and web image builds, the scenarios that need the adam image (`coder`, `chat`, `researcher`, `coder-share`) and `split`: the first run is the `Coder E2E`
+workflow; a browser session past the token's hour.
 
 ## Consequences
 
