@@ -13,6 +13,17 @@
 //! | status carrying message `M` | `Task("a2a:T:status-msg:M")` |
 //! | status without a message | `Turn("T:status:<state>")` (the dispatcher prefixes the outbox row) |
 //!
+//! Files (ADR 0032). A `raw` part of an artifact is a file: one envelope per such part,
+//! `AgentUpdate::File { name, media_type, filename, bytes }` (`name` is the artifact's, the type and the
+//! file name are the part's own, blank text is none), under its own key. The artifact's other parts
+//! make the artifact as before, and an artifact whose parts are all files has no artifact envelope. A
+//! `raw` part of a message is ignored, as it was. A `url` part stays the artifact's `uri`: this crate
+//! does no I/O, so fetching one from an allowed host is the A2A adapter's.
+//!
+//! | File in | key |
+//! |---|---|
+//! | artifact `X` of task `T`, part `i` (a `raw` part) | `Task("a2a:T:artifact:X:file:i")` |
+//!
 //! Steps (ADR 0025, `steps/v1`). A status whose state is `working` and whose message carries a
 //! valid entry under the extension's URI (`docs/api/steps-v1.md`) is a step, not a status: it maps
 //! to one envelope, `AgentUpdate::Step`, with `task_state: Working`, and the status text (the label
@@ -166,22 +177,48 @@ fn claims_a2ui(part: &Part) -> bool {
 /// The outcome of the envelope check for one A2UI part: its operations, or why it is refused.
 type UiCheck = Result<Vec<Value>, String>;
 
-/// Parts split into what is A2UI (with each part's position) and what is not.
+/// A file part (`raw`): its position, and what it says of itself.
+struct FilePart {
+    index: usize,
+    media_type: Option<String>,
+    filename: Option<String>,
+    bytes: Vec<u8>,
+}
+
+/// Parts split into what is A2UI (with each part's position), the files (`raw` parts, with their
+/// positions) and what is neither.
 struct Split {
     rest: Vec<Part>,
     ui: Vec<(usize, UiCheck)>,
+    files: Vec<FilePart>,
 }
 
-/// Separates the A2UI parts, checking each one. A part that claims A2UI and is not a data part
-/// is refused too: it is never treated as text.
+/// `Some` only for text that is not empty.
+fn nonempty(text: &Option<String>) -> Option<String> {
+    text.as_ref().filter(|t| !t.trim().is_empty()).cloned()
+}
+
+/// Separates the A2UI parts, checking each one, and the files. A part that claims A2UI and is
+/// not a data part is refused too: it is never treated as text.
 fn split_ui(parts: &[Part]) -> Split {
     let mut split = Split {
         rest: Vec::new(),
         ui: Vec::new(),
+        files: Vec::new(),
     };
     for (i, part) in parts.iter().enumerate() {
         if !claims_a2ui(part) {
-            split.rest.push(part.clone());
+            // A `raw` part is a file (ADR 0032): it is never text, and never dropped silently.
+            if let PartContent::Raw(bytes) = &part.content {
+                split.files.push(FilePart {
+                    index: i,
+                    media_type: nonempty(&part.media_type),
+                    filename: nonempty(&part.filename),
+                    bytes: bytes.clone(),
+                });
+            } else {
+                split.rest.push(part.clone());
+            }
             continue;
         }
         let check = match &part.content {
@@ -241,6 +278,7 @@ fn status_envelopes(
     let split = message.map(|m| split_ui(&m.parts)).unwrap_or(Split {
         rest: Vec::new(),
         ui: Vec::new(),
+        files: Vec::new(),
     });
     let state = state_of(&status.state);
     let mut out = match message.filter(|m| !m.message_id.is_empty()) {
@@ -604,7 +642,8 @@ fn artifact_envelopes(
 ) -> Vec<AgentEnvelope> {
     let split = split_ui(parts);
     let mut out = Vec::new();
-    if split.ui.is_empty() || !split.rest.is_empty() {
+    // The artifact itself, unless every part is a file or A2UI.
+    if !split.rest.is_empty() || (split.ui.is_empty() && split.files.is_empty()) {
         out.push(AgentEnvelope {
             task_id: task_id.to_owned(),
             context_id: context_id.to_owned(),
@@ -612,6 +651,30 @@ fn artifact_envelopes(
             revision: revision.clone(),
             key: IdemKey::Task(format!("a2a:{task_id}:artifact:{artifact_id}")),
             update: Some(artifact_update(artifact_id, name, &split.rest)),
+            live: None,
+        });
+    }
+    // One file per `raw` part, in order, each under its own key (the part's position).
+    let name = name
+        .filter(|n| !n.is_empty())
+        .unwrap_or(artifact_id)
+        .to_owned();
+    for file in split.files {
+        out.push(AgentEnvelope {
+            task_id: task_id.to_owned(),
+            context_id: context_id.to_owned(),
+            task_state: None,
+            revision: revision.clone(),
+            key: IdemKey::Task(format!(
+                "a2a:{task_id}:artifact:{artifact_id}:file:{}",
+                file.index
+            )),
+            update: Some(AgentUpdate::File {
+                name: name.clone(),
+                media_type: file.media_type,
+                filename: file.filename,
+                bytes: file.bytes,
+            }),
             live: None,
         });
     }
@@ -1067,6 +1130,133 @@ mod tests {
                 text: Some(r#"{"ok":true}"#.into()),
             })
         );
+    }
+
+    /// ADR 0032: a `raw` part is a file, with what the agent said of it, under its own key.
+    #[test]
+    fn a_raw_part_is_a_file_and_nothing_else() {
+        let a = art(
+            "a-file",
+            Some("chart"),
+            vec![
+                Part::raw(vec![1, 2, 3])
+                    .with_media_type("image/png")
+                    .with_filename("chart.png"),
+            ],
+        );
+        let env = only(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert_eq!(
+            env.key,
+            IdemKey::Task("a2a:task-1:artifact:a-file:file:0".into())
+        );
+        assert_eq!(
+            env.update,
+            Some(AgentUpdate::File {
+                name: "chart".into(),
+                media_type: Some("image/png".into()),
+                filename: Some("chart.png".into()),
+                bytes: vec![1, 2, 3],
+            })
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_name_or_types_falls_back_and_blank_text_is_none() {
+        let mut part = Part::raw(vec![9]).with_filename("  ");
+        part.media_type = Some(String::new());
+        let env = only(StreamMapper::default().map(artifact_update(
+            art("a-bare", None, vec![part]),
+            None,
+            Some(true),
+        )));
+        assert_eq!(
+            env.update,
+            Some(AgentUpdate::File {
+                name: "a-bare".into(),
+                media_type: None,
+                filename: None,
+                bytes: vec![9],
+            })
+        );
+    }
+
+    /// An artifact of text and two files: the text is the artifact, each file is its own update
+    /// under the key of its position, so a replay and a poll collapse into the same keys.
+    #[test]
+    fn text_and_files_in_one_artifact_are_one_artifact_and_one_update_per_file() {
+        let parts = vec![
+            Part::text("see the files"),
+            Part::raw(vec![1]).with_filename("a.txt"),
+            Part::raw(vec![2]).with_filename("b.txt"),
+        ];
+        let live = StreamMapper::default()
+            .map(artifact_update(
+                art("a-mix", Some("report"), parts.clone()),
+                None,
+                Some(true),
+            ))
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        let polled = snapshot(&task(
+            TaskState::Completed,
+            vec![art("a-mix", Some("report"), parts)],
+            None,
+        ))
+        .unwrap()
+        .envelopes;
+        let keys = |v: &[AgentEnvelope]| v.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&live),
+            [
+                IdemKey::Task("a2a:task-1:artifact:a-mix".into()),
+                IdemKey::Task("a2a:task-1:artifact:a-mix:file:1".into()),
+                IdemKey::Task("a2a:task-1:artifact:a-mix:file:2".into()),
+            ]
+        );
+        assert_eq!(keys(&live), keys(&polled[..3]));
+        assert_eq!(
+            live[0].update,
+            Some(AgentUpdate::Artifact {
+                name: "report".into(),
+                mime_type: None,
+                uri: None,
+                text: Some("see the files".into()),
+            })
+        );
+    }
+
+    /// A `url` part stays a link here: this crate does no I/O, so fetching one from an allowed
+    /// host is the adapter's.
+    #[test]
+    fn a_url_part_stays_a_link() {
+        let a = art(
+            "a-url",
+            Some("report"),
+            vec![Part::url("https://files.example.com/r.pdf").with_media_type("application/pdf")],
+        );
+        let env = only(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert_eq!(
+            env.update,
+            Some(AgentUpdate::Artifact {
+                name: "report".into(),
+                mime_type: Some("application/pdf".into()),
+                uri: Some("https://files.example.com/r.pdf".into()),
+                text: None,
+            })
+        );
+    }
+
+    /// A raw part that claims to be A2UI is refused as A2UI, never taken for a file.
+    #[test]
+    fn a_raw_part_that_claims_a2ui_is_refused_not_kept() {
+        let a = art(
+            "a-ui",
+            Some("ui"),
+            vec![Part::raw(vec![1]).with_media_type(A2UI_MEDIA_TYPE)],
+        );
+        let env = only(StreamMapper::default().map(artifact_update(a, None, Some(true))));
+        assert!(matches!(env.update, Some(AgentUpdate::UiRejected { .. })));
     }
 
     #[test]
