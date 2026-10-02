@@ -244,7 +244,19 @@ impl<P: Ports> McpServer<P> {
             // The first agent listed (ADR 0014), read now from the registry (ADR 0022).
             None => match self.app.default_agent(who).await {
                 Some(id) => id,
-                None => return Ok(refused("no agent is configured")),
+                None => {
+                    // A token whose roles hold no `agent.invoke` is refused for that; one that
+                    // may invoke some agent, and finds none listed, is told so.
+                    return match self.app.access(who).check(
+                        orch_app::Permission::AgentInvoke,
+                        &orch_app::Resource::Anything,
+                    ) {
+                        Err(_) => failure(&AppError::missing_permission(
+                            orch_app::Permission::AgentInvoke,
+                        )),
+                        Ok(()) => Ok(refused("no agent you may use is configured")),
+                    };
+                }
             },
         };
         // A retried call names the same job; without a request id every call is new.
