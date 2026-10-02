@@ -467,6 +467,19 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     assert!(r.headers.contains_key("retry-after"));
     h.registry.set_down(false);
 
+    // 403 of every operation: a person whose roles grant nothing is refused before anything else
+    // (the header carries no role, and this deployment has no default role).
+    let denied = Harness::start_with_policy(orch_app::Policy::deny_all()).await;
+    let r = denied.refused("plain", Some(ALICE), &fresh("r")).await;
+    seen.problem("runAgent", 403, &r);
+    assert_eq!(r.json()["code"], "no_access");
+    let resp = denied.connect_raw(&thread, Some(ALICE), None, None).await;
+    seen.problem("connectThread", 403, &resp_of(resp).await);
+    let r = denied
+        .get("/agui/agents/coder/capabilities", Some(ALICE))
+        .await;
+    seen.problem("getAgentCapabilities", 403, &r);
+
     // The documented statuses are the answered ones, operation by operation. A store that fails
     // to read a thread (a 503 of connectThread, `App::get_thread` through `problem_for`) cannot be
     // injected into the in-memory store, which only fails commits and creates; the status is

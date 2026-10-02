@@ -489,7 +489,7 @@ fn only_the_preview_types_have_a_preview_and_a_file_has_an_href() {
 }
 
 #[test]
-fn thread_wire_hides_owner_and_version() {
+fn thread_wire_has_the_owner_and_hides_the_version() {
     let t = ThreadRecord {
         id: tid(),
         owner: UserId::new("a@b.c"),
@@ -511,6 +511,7 @@ fn thread_wire_hides_owner_and_version() {
         serde_json::to_value(&t).unwrap(),
         json!({
             "id": "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000",
+            "owner": "a@b.c",
             "title": "T",
             "target": {"agentId": "coder"},
             "state": "working",
