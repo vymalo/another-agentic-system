@@ -24,6 +24,7 @@ orch-registry-platform.workspace = true
 orch-surface-mcp.workspace = true
 orch-surface-thread-tools.workspace = true
 orch-thread-token.workspace = true
+orch-tools-mcp.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 secrecy.workspace = true
 orch-agent-adam = { workspace = true, features = ["testkit"] }

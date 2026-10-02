@@ -471,11 +471,12 @@ function normalise(list: Frame[], threadId: string): Frame[] {
 const FORKS = ["fork", "fork-blocked"];
 
 /**
- * The scenario of the MCP servers attached to a thread (ADR 0024, `tools-attach`). The mock server
- * has no route to attach one yet (the composer's picker brings it), so it is not driven through its
- * server: its projection reads the golden event log and must produce the golden stream.
+ * The scenarios of the MCP servers attached to a thread (ADR 0024): `tools-attach`, and `tools-relay`,
+ * a relayed call as one step with the server's icon. The mock server has no route to attach one yet
+ * (the composer's picker brings it), so it is not driven through its server: its projection reads the
+ * golden event log and must produce the golden stream.
  */
-const TOOLS = ["tools-attach"];
+const TOOLS = ["tools-attach", "tools-relay"];
 
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {

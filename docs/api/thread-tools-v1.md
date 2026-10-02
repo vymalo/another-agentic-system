@@ -9,10 +9,11 @@
   [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md) amendment of 2026-10-02) is built, below.
   **Built 2026-10-02 (slice 8, first half):** the servers a person attaches to a thread (the configuration, the events
   and the API: [below](#what-is-attached-and-by-whom)) and the `attached` member of the message
-  ([below](#the-attached-member)). **Written 2026-10-02 (contract accepted on the owner's delegation,
-  not built):** the relayed tools of attached MCP servers (slice 8, second half: their `_meta`, the step the orchestrator
-  reports for each call, the error table) and `ask_agent` with the `ask:<n>` ledger (slice 10), all
-  [below](#attached-servers-and-the-relay-slice-8). "Not yet" is marked where it matters. The adam-rs side (an agent
+  ([below](#the-attached-member)). **Built 2026-10-02 (slice 8, second half):** the relay of the attached servers' tools (their `_meta`, the
+  step the orchestrator reports for each call, the error table), [below](#attached-servers-and-the-relay-slice-8):
+  `RelayTools` in `orch-surface-thread-tools`, composed by the binary behind the Cargo feature `tool-relay` (on by
+  default). **Written 2026-10-02 (contract accepted on the owner's delegation, not built):** `ask_agent` with the
+  `ask:<n>` ledger (slice 10), [below](#ask_agent). "Not yet" is marked where it matters. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
   support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
@@ -334,7 +335,7 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 |---|---|---|---|
 | 3 (built) | `get_ui_catalog` | built in | below |
 | built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
-| 8 (attaching built; relay written, not built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
+| 8 (built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
 | 10 (written, not built) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
@@ -450,9 +451,9 @@ fake agent's `turn-output` scripts (the `turn-output` golden of [`examples/`](ex
 ## Attached servers and the relay (slice 8)
 
 *Written 2026-10-02 on the owner's decisions of plan 11 (the servers come from the YAML configuration, who may attach, the
-icons, no doubled steps); contract accepted on the owner's delegation. **Built:** what is attached and by whom (the
-configuration, the events, the API, the message's `attached`). **Not built:** the relay (the tools on the endpoint, the
-step of a call, the error table). It amends the plan of
+icons, no doubled steps); contract accepted on the owner's delegation. **Built (2026-10-02):** what is attached and by
+whom (the configuration, the events, the API, the message's `attached`) and the relay (the tools on the endpoint, the step
+of a call, the error table: `RelayTools`, behind the binary's feature `tool-relay`). It amends the plan of
 [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) as that ADR's status note of 2026-10-02 says.*
 
 ### What is attached, and by whom
@@ -552,6 +553,39 @@ one anyway has two lines on screen.
 
 A server that the deployment no longer lists, or whose credentials were rotated, fails like the rows above: the thread keeps
 the attachment, and the failure names the server, never a credential.
+
+### As built
+
+What the contract left open, as `RelayTools` does it (*verified 2026-10-02, by this repository's tests*,
+`crates/surface-thread-tools/tests/relay.rs` over `MemoryToolServers` and `crates/e2e/tests/tool_relay.rs` over the real
+MCP client and `FakeToolServer`s, on both stores):
+
+- **What is the relay's to answer.** A name is the relay's when it is `<server>__<tool>` of a server the deployment lists,
+  offered for the caller's agent, **attached to the thread**, whose allow-list (if any) names the tool, and that fits the
+  name rule. Anything else is not owned by any provider, so the endpoint answers `-32602`: a detached server, one not
+  offered for the agent, a tool left out by the allow-list, `<server>___x` (a tool name starting with `_`). Nothing reaches
+  a server and no step is written. A tool that **no allow-list names and the server does not have** is the server's to
+  refuse: the call goes upstream and its JSON-RPC error is the row "a JSON-RPC error" (a failed step), because the relay
+  does not list before it calls.
+- **The step's id** is `tool-<callId>` when the request's `callId` is usable (a string of 1 to 256 bytes with no control
+  character, and short enough for a step id), so a retried call is the same step again (the ledger coalesces it; the call is
+  made again upstream, as said above); otherwise `tool-<uuid>`. `parentStepId` is the agent's own id, which the adapter
+  prefixed with the task id when it logged the agent's steps, so the relay's step nests under `<task id>/<parentStepId>`
+  (the thread's binding names the task); without a task or a parent the step is at the top, which is where the agent's own
+  top steps are (the log has no step for the agent's invocation).
+- **The step is attributed** to the calling agent with the revision that serves its task, and is one `start` and one `end`
+  (a step that cannot be recorded is logged, never fails the call). In `blocked` and `verifying` the core drops a step, so a
+  call made then has none; in a finished thread the call is not made at all (the "task is over" row).
+- **A call the agent drops.** A connection that closes drops the call's future: a guard records the `canceled` end from a
+  task of its own. A cancellation notification ends the call the same way. The upstream request is dropped either way (the
+  server may run it to the end).
+- **Wording.** Beyond the table: a server that does not answer as MCP is "the MCP server '<name>' did not answer as MCP", an
+  endpoint that cannot be used "... is not set up for use" (both `failed`). A result over 256 KiB has a text block appended:
+  `[the result is longer than 256 KiB and was cut here]`; the step's `output` is the text, cut to 8 KiB with `truncated`.
+- **Bounds.** A call is also bounded by the server's `timeoutSecs` plus 5 s, whatever the client does, so the
+  `timeoutSecs` of the tool's `_meta` (the server's plus 5) is an upper bound the agent can wait for.
+- **No credential** is in a step, an event, a frame, the export, any table of the database or a log line: the tests search
+  all of them for the bearer and a header value (`tables_mentioning`), and for the thread token.
 
 ```mermaid
 sequenceDiagram
@@ -756,8 +790,8 @@ stateDiagram-v2
 - What a tool returns goes back into an agent's model: a relayed result or an asked agent's answer is untrusted text
   there, as any tool result is (prompt injection). The orchestrator does not interpret it.
 - **The relay is an outbound surface.** The servers come only from the deployment's configuration, never from a person or
-  an agent; a response is cut at 256 KiB; a credential is never logged (the relay's tests search every table and log for
-  the bearer); a server's result and an asked agent's answer are untrusted text in the agent's model.
+  an agent; a response is cut at 256 KiB; a credential is never logged or stored (the relay's tests search every table of the database, the event log, the export and
+  the frames for the bearer); a server's result and an asked agent's answer are untrusted text in the agent's model.
 - **An ask runs another agent** on the person's behalf, so each ask is checked against what the person may invoke
   (`agent.invoke`) when it is made, not only when the agent was mentioned, and an asked agent never reaches the gate.
 - The endpoint has no browser use, so it needs no cookie and no CORS; it must not be routed from the public edge.

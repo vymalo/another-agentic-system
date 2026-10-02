@@ -1972,6 +1972,127 @@ async fn an_agent_that_lists_the_extension_calls_the_binary_back_with_the_grant_
     );
 }
 
+/// The relay is composed by the binary (feature `tool-relay`, ADR 0024): the real process, its
+/// configuration file listing a web search with a bearer, a fake agent that lists `thread-tools/v1`
+/// and calls the relayed tool with the grant it was given, and a real MCP server that wants the
+/// bearer. The call is one step with the server's icon; neither the bearer nor the grant token is
+/// in the thread or in the binary's log.
+#[cfg(feature = "tool-relay")]
+#[tokio::test]
+async fn the_binary_relays_an_attached_servers_tool_with_the_configured_bearer() {
+    const KEY: &str = "not-a-real-secret-smoke-relay-0123456789abcdef0123456789";
+    const BEARER: &str = "smoke-relay-bearer-3b9d51e7a2c84f60-not-a-real-credential";
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let server = orch_testsupport::FakeToolServer::spawn(
+        orch_testsupport::FakeToolServerOptions::default().bearer(BEARER),
+    )
+    .await;
+    let agent = FakeAgent::spawn(FakeAgentOptions {
+        bearer: Some(TOKEN.to_owned()),
+        extensions: vec![orch_core::THREAD_TOOLS_EXTENSION.to_owned()],
+        ..FakeAgentOptions::default()
+    })
+    .await;
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml(&agent.card_url()));
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}toolServers:\n  - id: websearch\n    name: Web search\n    url: {}\n\
+             \x20   icon: \"data:image/svg+xml;base64,PHN2Zy8+\"\n    bearer: {{ env: SEARCH_TOKEN }}\n    agents: [fake]\n",
+            server.url()
+        ),
+    );
+    let addr = format!("127.0.0.1:{}", free_port());
+    let base = format!("http://{addr}");
+    let database_url = database_url_of(&db);
+    let run = std::cell::RefCell::new(spawn(
+        &scratch,
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", &database_url),
+            ("LISTEN_ADDR", &addr),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("SEARCH_TOKEN", BEARER),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+            ("ORCH_SURFACES", "agui,thread-tools"),
+            ("THREAD_TOOLS_SECRET", KEY),
+            ("THREAD_TOOLS_URL", &base),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    let chat = Chat::new(&base, "alice@example.com");
+    let (status, servers) = chat.tool_servers().await;
+    assert_eq!(status, 200, "{servers}");
+    assert_eq!(servers[0]["id"], "websearch");
+    let (status, created) = chat
+        .try_create_thread_with_tools(
+            "fake",
+            r#"tool websearch__echo {"text":"relayed"}"#,
+            &["websearch"],
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    let id = created["threadId"].as_str().unwrap().to_owned();
+    chat.wait_state(&id, "done").await;
+    let (status, export) = chat.get(&format!("/api/threads/{id}/export")).await;
+    assert_eq!(status, 200);
+    let events = export["events"].as_array().unwrap();
+    let said: Vec<&str> = events
+        .iter()
+        .filter(|e| e["kind"] == "artifact" && e["data"]["name"] == "result")
+        .map(|e| e["data"]["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        said,
+        [r#"tool websearch__echo: {"text":"relayed"}"#],
+        "log:\n{}",
+        run.borrow().log()
+    );
+    let steps: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["kind"] == "agent_step")
+        .map(|e| &e["data"])
+        .collect();
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps[0]["icon"], "mcp-server:websearch");
+    assert_eq!(steps[1]["state"], "completed");
+
+    // the server saw the configured bearer; it is nowhere the binary says or keeps
+    let seen = server.seen();
+    let called = seen.iter().find(|r| r.method == "tools/call").unwrap();
+    assert_eq!(called.bearer.as_deref(), Some(BEARER));
+    let token = agent
+        .executions()
+        .into_iter()
+        .find_map(|c| c.thread_tools)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let log = run.borrow().log();
+    for secret in [BEARER, KEY, token.as_str()] {
+        assert!(
+            !export.to_string().contains(secret),
+            "a secret is in the thread"
+        );
+        assert!(!log.contains(secret), "a secret leaked into the log");
+    }
+}
+
 /// The JSON-RPC messages of a response, or none for an empty or non-JSON body (a refusal).
 #[cfg(feature = "surface-thread-tools")]
 fn rpc_messages_or_empty(body: &str) -> Vec<serde_json::Value> {

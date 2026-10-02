@@ -1,0 +1,130 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "messageId": "msg-1",
+      "runId": "run-1",
+      "text": "tool websearch__echo {\"text\":\"rust async\"}"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "servers": [
+        "websearch"
+      ]
+    },
+    "kind": "tools_attached",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "mcp-server:websearch",
+      "id": "tool-T:call-1",
+      "input": {
+        "text": "rust async"
+      },
+      "kind": "tool",
+      "label": "Web search · echo",
+      "path": [],
+      "phase": "start",
+      "state": "running"
+    },
+    "kind": "agent_step",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "mcp-server:websearch",
+      "id": "tool-T:call-1",
+      "kind": "tool",
+      "label": "Web search · echo",
+      "output": {
+        "text": "{\"text\":\"rust async\"}"
+      },
+      "path": [],
+      "phase": "end",
+      "state": "completed"
+    },
+    "kind": "agent_step",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "name": "result",
+      "text": "tool websearch__echo: {\"text\":\"rust async\"}",
+      "uri": "https://github.com/acme/demo/pull/1"
+    },
+    "kind": "artifact",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  }
+]

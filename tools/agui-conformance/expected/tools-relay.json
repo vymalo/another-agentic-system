@@ -1,0 +1,101 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-3",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "text": "tool websearch__echo {\"text\":\"rust async\"}"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "attached": [
+          "websearch"
+        ]
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "step-4",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "icon": "mcp-server:websearch",
+        "id": "tool-T:call-1",
+        "input": {
+          "text": "rust async"
+        },
+        "kind": "tool",
+        "label": "Web search · echo",
+        "output": {
+          "text": "{\"text\":\"rust async\"}"
+        },
+        "path": [],
+        "startedAt": "2027-01-15T08:00:04Z",
+        "state": "completed"
+      }
+    },
+    {
+      "id": "evt-6",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:06Z",
+        "kind": "file",
+        "name": "result",
+        "text": "tool websearch__echo: {\"text\":\"rust async\"}",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "subagentRunId": "sub-3",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "tool websearch__echo {\"text\":\"rust async\"}",
+      "tools": [
+        "websearch"
+      ]
+    }
+  },
+  "pendingInterrupts": []
+}

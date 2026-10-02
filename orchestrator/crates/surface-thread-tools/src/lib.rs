@@ -42,6 +42,7 @@
 
 mod guard;
 mod provider;
+mod relay;
 mod server;
 mod tools;
 
@@ -62,6 +63,10 @@ use crate::provider::DynProvider;
 
 pub use guard::ROUTE;
 pub use provider::{ProgressSink, ThreadToolProvider, ToolCtx};
+pub use relay::{
+    ERRORS as RELAY_ERRORS, MAX_TOOL_NAME_BYTES, META_KEY as RELAY_META_KEY, RelayError,
+    RelayTools, TASK_OVER, TIMEOUT_MARGIN,
+};
 pub use tools::ThreadTool;
 
 /// How long a built-in tool may take before it is cut off. A machine route has no request

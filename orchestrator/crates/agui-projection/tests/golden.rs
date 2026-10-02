@@ -33,7 +33,7 @@ use support::{lines, verify};
 const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 /// The thread a fork scenario was cut from.
 const PARENT: &str = "00000000-0000-7000-8000-000000000002";
-const SCENARIOS: [&str; 25] = [
+const SCENARIOS: [&str; 26] = [
     "echo",
     "file",
     "ask",
@@ -59,6 +59,7 @@ const SCENARIOS: [&str; 25] = [
     "fork",
     "fork-blocked",
     "tools-attach",
+    "tools-relay",
 ];
 
 /// The golden streams made of a log and live text.

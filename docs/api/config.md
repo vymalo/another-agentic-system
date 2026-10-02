@@ -264,7 +264,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 *Built 2026-10-02 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), slice 8).* The MCP servers a person may
 attach to a conversation, **the deployment's own list**: a person cannot enter a URL. A list of at most 64 servers, in the
 order the web shows them; absent or empty, nothing is attachable. The orchestrator will call a server on the agent's behalf
-and holds its credentials ([the relay](thread-tools-v1.md#attached-servers-and-the-relay-slice-8), not built yet); the
+and holds its credentials ([the relay](thread-tools-v1.md#attached-servers-and-the-relay-slice-8), built behind the binary's feature `tool-relay`, on by default); the
 application, the API and the log hold only the part that is not secret. Replaces nothing: it has no variable.
 
 | Key | Type, default | Replaces | When |

@@ -31,6 +31,7 @@
 //! | `ui` | `working`, two artifacts that are only A2UI parts (surface `s1`: a `createSurface`, then an `updateComponents` with a button), `input-required("Pick one")`; the follow-up (an A2UI action, or text) answers like `ask` |
 //! | `choices` | as `ui`, but the surface is one `Choices` of three questions under the web's own catalog ([`UI_CATALOG_ID`]) and the question is "Three questions"; the follow-up (the person's answers, an action named `answer`) is answered `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order) |
 //! | `thread-tools` | `working`, then calls back the thread's MCP endpoint with the grant of its message (`thread-tools/v1`: [`call_back`](crate::call_back)), lists the tools and calls `get_ui_catalog` twice (the second time with the digest it was given), and ends with the artifact `thread-tools: tools=get_ui_catalog,turn_output; catalog=<id> v<version> <digest>; again unchanged=true` (or `no catalog: …`, `no grant`, `refused: …`) |
+//! | `tool <name> <json>` | `working`, then calls the thread's MCP endpoint with the grant of its message ([`call_tool`](crate::call_tool)): lists the tools, and calls `<name>` (a relayed tool, `<server>__<tool>`) with the JSON object as its arguments and `_meta` `callId` `<task id>:call-1`; ends with the artifact `tool <name>: <the result's text>` (or `failed: …` for a result that says `isError`, `refused: …` for a protocol error, `not offered; offered=…` for a name the endpoint does not list, `tool: no grant`) |
 //! | `ui-msg` | `working`, an agent `Message` with text and an A2UI part, artifact, `completed` |
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
@@ -158,7 +159,7 @@ pub fn stream_id(task_id: &str) -> String {
 /// How long the `stream` scripts wait between two chunks.
 const STREAM_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
 
-/// How long the `turn-output` scripts wait before they call the tool: time for the orchestrator to
+/// How long the `turn-output` and `tool` scripts wait before they call the tool: time for the orchestrator to
 /// log what the agent said before, which arrives by another road.
 const ANNOUNCE_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -1552,6 +1553,23 @@ async fn script(
         "thread-tools" => {
             // The agent's side of `thread-tools/v1`: the endpoint and token in the message.
             let report = crate::call_back(grant).await;
+            let (a, done) = finish(shared.next_artifact_id(), report);
+            emit(&tx, a).await?;
+            emit(&tx, done).await?;
+        }
+        "tool" => {
+            // The agent's side of a relayed tool: `tool <name> <json arguments>`.
+            let rest = text
+                .trim_start()
+                .strip_prefix("tool")
+                .unwrap_or_default()
+                .trim();
+            let (name, arguments) = rest.split_once(char::is_whitespace).unwrap_or((rest, "{}"));
+            let arguments = serde_json::from_str(arguments.trim()).unwrap_or(Value::Null);
+            let call_id = format!("{}:call-1", ctx.task_id);
+            // time for the orchestrator to log the `working` status, which arrives by another road
+            tokio::time::sleep(ANNOUNCE_PAUSE).await;
+            let report = crate::call_tool(grant, name, arguments, &call_id).await;
             let (a, done) = finish(shared.next_artifact_id(), report);
             emit(&tx, a).await?;
             emit(&tx, done).await?;

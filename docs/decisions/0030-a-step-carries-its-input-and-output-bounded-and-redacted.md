@@ -74,7 +74,7 @@ asked and what it said.
 - A secret in an unknown shape can reach the log. The ADR does not hide it: the filter's corpus test pins what it
   catches and what it lets through, and a new shape is a rule and a test.
 - Agents must opt in by sending the members: adam-rs (its ADR 0011) is the first. Every other agent is unchanged.
-- The relay (ADR 0024, not built) and `ask_agent` (ADR 0026) have a requirement: fill both members under these rules.
+- The relay (ADR 0024, built 2026-10-02: its steps fill both members under these rules) and `ask_agent` (ADR 0026) have a requirement: fill both members under these rules.
 - Required elsewhere: the core types and `redact`, the adapter's lenient parse, the projection's activity content,
   `chat-api.yaml`, [`steps-v1.md`](../api/steps-v1.md), [`agui.md`](../api/agui.md), the goldens, the web (S3) and
   adam-rs (A1).

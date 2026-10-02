@@ -104,6 +104,16 @@ impl Harness {
         keys: ThreadToolsKeys,
         shape: impl FnOnce(ThreadToolsConfig) -> ThreadToolsConfig,
     ) -> Self {
+        Self::start_full(keys, AppConfig::default(), |_, config| shape(config)).await
+    }
+
+    /// The surface over `keys` on an application with `cfg`, shaped by `shape`, which is given the
+    /// application (a provider that records steps needs it).
+    pub async fn start_full(
+        keys: ThreadToolsKeys,
+        cfg: AppConfig,
+        shape: impl FnOnce(&Arc<App<Ports>>, ThreadToolsConfig) -> ThreadToolsConfig,
+    ) -> Self {
         let entry = |id: &str, name: &str| AgentEntry {
             endpoint: AgentEndpoint::a2a(
                 AgentId::new(id),
@@ -130,7 +140,7 @@ impl Harness {
                 directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
-                    ..AppConfig::default()
+                    ..cfg
                 },
             )
             .expect("a valid gate"),
@@ -142,7 +152,10 @@ impl Harness {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let config = shape(ThreadToolsConfig::new(keys, ["127.0.0.1", "localhost"]).unwrap());
+        let config = shape(
+            &app,
+            ThreadToolsConfig::new(keys, ["127.0.0.1", "localhost"]).unwrap(),
+        );
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             ApiConfig::default(),

@@ -11,9 +11,9 @@ sees the port's types and never an MCP library type.
 An **adapter** of the `ToolServerClient` port
 ([ADR 0009](../../../docs/decisions/0009-swappable-implementations-at-build-time.md)): the one
 implementation that speaks the network. The in-memory one, `MemoryToolServers`, is in `orch-ports`
-(feature `testkit`). Nothing depends on this crate yet: the relay
-(`orch-surface-thread-tools`, behind the binary's feature `tool-relay`) is the slice after the port,
-and the binary composes it. The client side of `rmcp` is enabled in this crate's manifest only (the
+(feature `testkit`). Its one user is the relay
+(`RelayTools` of `orch-surface-thread-tools`): the binary composes this client into it behind its feature `tool-relay`
+(default). The client side of `rmcp` is enabled in this crate's manifest only (the
 workspace entry has the server side, which the surfaces use). The server a person lists is the
 deployment's own (`toolServers` of the configuration, [`config.md`](../../../docs/api/config.md#toolservers)),
 never one a person or an agent typed.

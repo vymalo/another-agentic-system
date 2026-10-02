@@ -144,3 +144,34 @@ signature. Decided where the plan was silent, on the same delegation:
 
 Still to build: the relay itself (the tools on the thread's endpoint, the step of each call, the errors) and the picker in the
 composer.
+
+## Status note, 2026-10-02: the relay is built
+
+Built (slice 8, second half): the relay, `RelayTools` in `orch-surface-thread-tools`, a provider of the thread's endpoint. It lists
+the tools of each server that is attached to the thread and offered for the caller's agent, named `<server>__<tool>` with the
+deployment's allow-list applied and `_meta["thread-tools/v1"] = {reportsStep: true, timeoutSecs}`, and relays a call through the
+`ToolServerClient` port with the server's bearer and headers, recording **one step per call** through the same input an agent's
+step takes (`App::record_step`): the server's icon (`mcp-server:<id>`), the arguments as `input` and the result's text as
+`output` under the bounds of [ADR 0030](0030-a-step-carries-its-input-and-output-bounded-and-redacted.md), `running` and then
+`completed`, `failed` or `canceled`. Every row of the contract's error table is a test, on the in-memory client and on the real
+MCP client against a real server, and no credential reaches a table, the log, the export or a frame. The contract is
+[`api/thread-tools-v1.md`](../api/thread-tools-v1.md#attached-servers-and-the-relay-slice-8) ("As built" lists what it left
+open); the picker in the composer is the web's slice. Decided where the plan was silent, on the same delegation:
+
+- **The binary composes it behind the Cargo feature `tool-relay`, on by default**, with `surface-thread-tools` (the relay is
+  one of that surface's providers). On by default because it does nothing without `toolServers` in the configuration and the
+  surface mounted, and the image the stack runs must have it; a build without it still lets a person attach the listed servers
+  and says at startup that they give an agent no tools.
+- **A tool that fits no rule the relay can check is the server's to refuse.** The relay answers `-32602` for what it can see
+  is not on the endpoint (an unlisted or detached server, one not offered for the agent, a name the allow-list or the name rule
+  leaves out). A name of an attached server's tool that the server does not have is sent to it, and the server's JSON-RPC
+  error is a failed step: the relay does not list before each call.
+- **The step's id comes from the agent's `callId`** (`tool-<callId>`), so a retry is the same step; the call itself is not
+  deduplicated (at least once, as the contract says). Without a usable `callId` the id is `tool-<uuid>`.
+- **A call is bounded twice**: by the endpoint's timeout in the client, and by that timeout plus 5 s around the client, so a
+  client that does not keep the port's promise cannot hold the endpoint.
+- **A call that is dropped ends its step as `canceled`** from a guard that records it from a task of its own, because a
+  connection that closes drops the call's future, which cannot await.
+
+Still to build: the picker in the composer and the web's step icon (PR-8 of plan 11), and the adam-rs side that reads
+`reportsStep`, `timeoutSecs` and sends `callId` and `parentStepId`.

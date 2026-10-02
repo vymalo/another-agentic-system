@@ -222,12 +222,68 @@ fn thread_tools_routes<P: orch_ports::Ports>(
         var: "THREAD_TOOLS_ALLOWED_HOSTS",
         reason: e.to_string(),
     })?;
+    let config = with_relay(app, cfg, config)?;
     tracing::info!(
         allowed_hosts = %settings.allowed_hosts.join(","),
         "the thread-tools endpoint is mounted at {}",
         orch_surface_thread_tools::ROUTE
     );
     Ok(orch_surface_thread_tools::routes(Arc::clone(app), config))
+}
+
+/// The relay of the attached MCP servers (ADR 0024), a provider of the endpoint: the deployment's
+/// `toolServers`, each with its endpoint (the URL and the credentials the configuration resolved),
+/// called through the MCP client. Nothing is added when no server is listed.
+#[cfg(feature = "tool-relay")]
+fn with_relay<P: orch_ports::Ports>(
+    app: &Arc<App<P>>,
+    cfg: &Config,
+    config: orch_surface_thread_tools::ThreadToolsConfig,
+) -> Result<orch_surface_thread_tools::ThreadToolsConfig, ConfigError> {
+    if cfg.tool_servers.is_empty() {
+        return Ok(config);
+    }
+    let invalid = |reason: String| ConfigError::Invalid {
+        var: "toolServers",
+        reason,
+    };
+    let servers = cfg
+        .tool_servers
+        .iter()
+        .map(|info| {
+            let endpoint = cfg
+                .tool_endpoints
+                .iter()
+                .find(|e| e.id == info.id)
+                .cloned()
+                .ok_or_else(|| invalid(format!("the server {:?} has no endpoint", info.id)))?;
+            Ok((info.clone(), endpoint))
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+    let client = orch_tools_mcp::McpToolClient::new().map_err(|e| invalid(e.to_string()))?;
+    let relay = orch_surface_thread_tools::RelayTools::new(Arc::clone(app), client, servers)
+        .map_err(|e| invalid(e.to_string()))?;
+    tracing::info!(
+        servers = %cfg.tool_servers.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(","),
+        "the attached MCP servers are relayed on the thread-tools endpoint"
+    );
+    Ok(config.with_provider(relay))
+}
+
+/// Without the feature the servers a deployment lists can be attached and no agent can use them:
+/// the operator is told once, at startup.
+#[cfg(all(feature = "surface-thread-tools", not(feature = "tool-relay")))]
+fn with_relay<P: orch_ports::Ports>(
+    _app: &Arc<App<P>>,
+    cfg: &Config,
+    config: orch_surface_thread_tools::ThreadToolsConfig,
+) -> Result<orch_surface_thread_tools::ThreadToolsConfig, ConfigError> {
+    if !cfg.tool_servers.is_empty() {
+        tracing::warn!(
+            "toolServers are listed, but this build has no relay (Cargo feature `tool-relay`): attached servers give an agent no tools"
+        );
+    }
+    Ok(config)
 }
 
 /// The platform's registry type: the real one with the feature `registry-platform`, else a type

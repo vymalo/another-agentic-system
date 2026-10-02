@@ -24,8 +24,13 @@ use orch_app::GateLayer;
 use orch_core::{
     A2UI_EXTENSION_V0_9_1, AgentId, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
 };
-use orch_testsupport::{Chat, FakeAgentOptions, VerifierScript, with_ui_catalog};
+use orch_testsupport::{
+    Chat, FakeAgentOptions, FakeToolServer, FakeToolServerOptions, VerifierScript, with_ui_catalog,
+};
 use serde_json::{Value, json};
+
+/// The bearer the golden's tool server wants: a made-up value. It is never in the transcript.
+const GOLDEN_BEARER: &str = "golden-tool-server-bearer-not-a-real-credential";
 
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")
@@ -56,7 +61,15 @@ fn normalise(events: Vec<Value>) -> Value {
                             id.split_once('/').map_or(id, |(_, rest)| rest)
                         ))
                     };
-                    e["data"]["id"] = bare(&e["data"]["id"]);
+                    // a relayed call's step is `tool-<the agent's call id>`, which holds the task id
+                    let id = e["data"]["id"].as_str().unwrap_or_default().to_owned();
+                    if let Some(rest) = id.strip_prefix("tool-")
+                        && let Some((_, call)) = rest.split_once(":call-")
+                    {
+                        e["data"]["id"] = json!(format!("tool-T:call-{call}"));
+                    } else {
+                        e["data"]["id"] = bare(&e["data"]["id"]);
+                    }
                     if let Some(path) = e["data"]["path"].as_array_mut() {
                         for id in path {
                             *id = bare(id);
@@ -72,7 +85,7 @@ fn normalise(events: Vec<Value>) -> Value {
 /// One scripted run to its final state; returns the thread's events.
 async fn run(world: &World, name: &str) -> Vec<Value> {
     // the agent of `turn-output` calls the orchestrator's thread tools back
-    let orch = if name == "turn-output" {
+    let orch = if matches!(name, "turn-output" | "tools-relay") {
         world.instance_with_thread_tools("orch-1", true).await
     } else {
         world.instance("orch-1").await
@@ -283,6 +296,20 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert_eq!(set, json!({"servers": ["docs"]}));
             (id, "done")
         }
+        // An attached MCP server's tool, relayed (ADR 0024, `thread-tools/v1`): the thread is created
+        // with the server attached, the agent calls its tool on the thread's endpoint, and the
+        // orchestrator reports the call as one step with the server's icon, its input and output.
+        "tools-relay" => {
+            let (status, created) = chat
+                .try_create_thread_with_tools(
+                    "plain",
+                    r#"tool websearch__echo {"text":"rust async"}"#,
+                    &["websearch"],
+                )
+                .await;
+            assert_eq!(status, 200, "{created}");
+            (created["threadId"].as_str().unwrap().to_owned(), "done")
+        }
         // Forking a thread (ADR 0029). The log is the fork's: a copy of the parent's events up to
         // the cut, `thread_forked`, then its own life. `fork`: the second message of a finished
         // thread is edited, so the fork holds the first turn and the replacing message, which
@@ -356,7 +383,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 25] = [
+const SCENARIOS: [&str; 26] = [
     "echo",
     "file",
     "ask",
@@ -382,11 +409,39 @@ const SCENARIOS: [&str; 25] = [
     "fork",
     "fork-blocked",
     "tools-attach",
+    "tools-relay",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
-async fn world_for(name: &str) -> World {
+async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
     match name {
+        // the deployment lists a web search, which the relay calls with a bearer (ADR 0024)
+        "tools-relay" => {
+            let server = tool_server.expect("the scenario has a tool server");
+            let endpoint = orch_ports::ToolServerEndpoint::new(
+                "websearch",
+                server.url(),
+                std::time::Duration::from_secs(5),
+            )
+            .with_bearer(orch_ports::ToolSecret::new(GOLDEN_BEARER));
+            World::with(
+                Backend::Memory,
+                Setup {
+                    thread_tools: true,
+                    plain: FakeAgentOptions {
+                        extensions: vec![THREAD_TOOLS_EXTENSION.to_owned()],
+                        ..FakeAgentOptions::default()
+                    },
+                    tool_servers: vec![orch_app::ToolServerInfo {
+                        description: Some("Search the web.".to_owned()),
+                        ..orch_app::ToolServerInfo::new("websearch", "Web search")
+                    }],
+                    tool_endpoints: vec![endpoint],
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
         "a2ui" => {
             World::with(
                 Backend::Memory,
@@ -517,7 +572,15 @@ async fn transcripts_match_docs_api_examples() {
     let dir = examples_dir();
     let mut stale = Vec::new();
     for name in SCENARIOS {
-        let world = world_for(name).await;
+        // the tool server of the relay scenario lives as long as the scenario runs
+        let tool_server = if name == "tools-relay" {
+            Some(
+                FakeToolServer::spawn(FakeToolServerOptions::default().bearer(GOLDEN_BEARER)).await,
+            )
+        } else {
+            None
+        };
+        let world = world_for(name, tool_server.as_ref()).await;
         let got = normalise(run(&world, name).await);
         let path = dir.join(format!("{name}.events.json"));
         let mut text = serde_json::to_string_pretty(&got).unwrap();
