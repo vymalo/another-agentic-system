@@ -21,6 +21,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 // The app in jsdom against the mock orchestrator: the shell, the runtime, the agent and LiveRuns.
 let ChatShell: typeof import("./chat-shell").ChatShell;
 let REVOKE_AFTER_MS: number;
+let backoffMs: (attempt: number) => number;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
 let base = "";
@@ -74,6 +75,7 @@ beforeAll(async () => {
   // the API client binds fetch and Request when it is created: import the app after the patch
   ({ ChatShell } = await import("./chat-shell"));
   ({ REVOKE_AFTER_MS } = await import("@/features/chat/lib/export-thread"));
+  ({ backoffMs } = await import("@/features/chat/lib/agui/thread-agent"));
 });
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -829,9 +831,16 @@ describe("ChatShell over AG-UI", () => {
   it("an unknown thread is not found, and its connect is not retried", async () => {
     shell("00000000-0000-7000-8000-00000000dead");
     await screen.findByText(/Thread not found/);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(calls.filter((c) => c.includes("/connect"))).toEqual([
-      "GET /agui/threads/00000000-0000-7000-8000-00000000dead/connect 404",
-    ]);
+    // The page says so from the thread's own 404, which can come before the connect stream's: a
+    // call is recorded when its response arrives, so wait for it and not for a moment to pass.
+    const connects = () => calls.filter((c) => c.includes("/connect"));
+    await waitFor(() =>
+      expect(connects()).toEqual([
+        "GET /agui/threads/00000000-0000-7000-8000-00000000dead/connect 404",
+      ]),
+    );
+    // not retried: the connect loop's first backoff goes by, and still the one call
+    await new Promise((r) => setTimeout(r, backoffMs(0) + 250));
+    expect(connects()).toHaveLength(1);
   });
 });
