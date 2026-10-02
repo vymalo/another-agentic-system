@@ -1,0 +1,16 @@
+[package]
+name = "orch-svg-clean"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Pure allow-list sanitizer for SVG: what an image of an agent may keep to be served inline (ADR 0032). No I/O."
+readme = "README.md"
+
+[dependencies]
+quick-xml = { workspace = true }
+thiserror.workspace = true
+
+[lints]
+workspace = true

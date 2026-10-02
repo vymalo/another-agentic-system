@@ -2519,6 +2519,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-svg-clean"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "thiserror",
+]
+
+[[package]]
 name = "orch-testsupport"
 version = "0.1.0"
 dependencies = [
