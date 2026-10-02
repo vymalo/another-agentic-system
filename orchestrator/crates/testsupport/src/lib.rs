@@ -9,6 +9,8 @@
 //! - [`call_back`] and [`announce`]: the agent's side of the thread tools (`thread-tools/v1`), what
 //!   the fake agent's `thread-tools` and `turn-output` scripts do with the grant in its message
 //!   (ADR 0023, ADR 0031);
+//! - [`call_tool`]: what the fake agent's `tool <name> <json>` script does with the endpoint, a call of a
+//!   relayed tool (ADR 0024);
 //! - [`FakeToolServer`]: a real MCP server over streamable HTTP with the four tools of the tool-server
 //!   testkit, a bearer check and a journal (ADR 0024);
 //! - [`eventually`]: wait-until with a deadline, instead of sleeping.
@@ -31,6 +33,6 @@ pub use fake::{
 };
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
-pub use thread_tools::{announce, call_back};
+pub use thread_tools::{announce, call_back, call_tool};
 pub use tool_server::{FakeToolServer, FakeToolServerOptions};
 pub use wait::{DEFAULT_TIMEOUT, eventually, eventually_within};

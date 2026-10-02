@@ -160,6 +160,10 @@ pub struct Setup {
     pub fetch_plain: bool,
     /// The MCP servers a person may attach (ADR 0024): the public part of each; none by default.
     pub tool_servers: Vec<orch_app::ToolServerInfo>,
+    /// Where those servers are and the credentials to call them (ADR 0024, one endpoint per server
+    /// of `tool_servers`, by id): with any, the thread-tools endpoint of an instance relays them
+    /// through the real MCP client. None by default.
+    pub tool_endpoints: Vec<orch_ports::ToolServerEndpoint>,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -206,6 +210,7 @@ impl Default for Setup {
             files: orch_app::FileLimits::default(),
             fetch_plain: false,
             tool_servers: Vec::new(),
+            tool_endpoints: Vec::new(),
         }
     }
 }
@@ -269,6 +274,7 @@ pub struct World {
     descriptions: bool,
     files: orch_app::FileLimits,
     tool_servers: Vec<orch_app::ToolServerInfo>,
+    tool_endpoints: Vec<orch_ports::ToolServerEndpoint>,
     /// Where the files are kept: a directory store in a temporary directory that lives as long as
     /// the world, shared by every instance as a shared volume would be.
     pub artifacts: orch_artifacts_fs::FsArtifacts,
@@ -358,6 +364,7 @@ impl World {
             descriptions: setup.descriptions,
             files: setup.files,
             tool_servers: setup.tool_servers,
+            tool_endpoints: setup.tool_endpoints,
             artifacts,
             artifacts_dir,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
@@ -438,6 +445,17 @@ impl World {
         )
     }
 
+    /// The servers the relay calls: each server of the setup with its endpoint.
+    fn relay(&self) -> Vec<(orch_app::ToolServerInfo, orch_ports::ToolServerEndpoint)> {
+        self.tool_servers
+            .iter()
+            .filter_map(|info| {
+                let endpoint = self.tool_endpoints.iter().find(|e| e.id == info.id)?;
+                Some((info.clone(), endpoint.clone()))
+            })
+            .collect()
+    }
+
     /// The directory the files of this world are kept in.
     pub fn artifacts_root(&self) -> std::path::PathBuf {
         self.artifacts_dir.path().join("files")
@@ -507,7 +525,7 @@ impl World {
         match &self.db {
             Db::Memory { store, wakeup } => {
                 let app = self.app(store.clone(), wakeup.clone());
-                let extra = extra_routes(&app, surfaces);
+                let extra = extra_routes(&app, surfaces, self.relay());
                 let listener = self.listener_for(surfaces).await;
                 TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
@@ -519,7 +537,7 @@ impl World {
                     "the wakeup listener did not attach"
                 );
                 let app = self.app(PgStore::from_pool(pool), wakeup);
-                let extra = extra_routes(&app, surfaces);
+                let extra = extra_routes(&app, surfaces, self.relay());
                 let listener = self.listener_for(surfaces).await;
                 TestInstance::spawn_on(listener, app, api, dispatcher, owner, extra).await
             }
@@ -624,6 +642,7 @@ pub fn thread_tools_keys() -> orch_thread_token::ThreadToolsKeys {
 fn extra_routes<P: orch_ports::Ports>(
     app: &Arc<App<P>>,
     surfaces: Surfaces,
+    relay: Vec<(orch_app::ToolServerInfo, orch_ports::ToolServerEndpoint)>,
 ) -> Vec<orch_api::SurfaceRoutes> {
     let mut routes = Vec::new();
     if surfaces.mcp {
@@ -637,9 +656,16 @@ fn extra_routes<P: orch_ports::Ports>(
         routes.push(orch_surface_mcp::routes(Arc::clone(app), config));
     }
     if surfaces.thread_tools {
-        let config =
+        let mut config =
             orch_surface_thread_tools::ThreadToolsConfig::new(thread_tools_keys(), ["127.0.0.1"])
                 .unwrap();
+        // The relay of the attached servers, over the real MCP client (ADR 0024).
+        if !relay.is_empty() {
+            let client = orch_tools_mcp::McpToolClient::new().unwrap();
+            config = config.with_provider(
+                orch_surface_thread_tools::RelayTools::new(Arc::clone(app), client, relay).unwrap(),
+            );
+        }
         routes.push(orch_surface_thread_tools::routes(Arc::clone(app), config));
     }
     routes

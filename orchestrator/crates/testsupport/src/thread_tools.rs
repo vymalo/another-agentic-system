@@ -11,11 +11,15 @@
 //! thread-tools: refused: <what the client said>
 //! ```
 //!
+//! [`call_tool`] is what the `tool <name> <json>` script does: list the endpoint's tools and call one
+//! (a relayed tool of an attached MCP server, ADR 0024) with a `callId` of the agent's own, and say
+//! what came back.
+//!
 //! [`announce`] is the other thing an agent does with the endpoint: it says "this is my answer"
 //! (`turn_output`, ADR 0031).
 
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, ContentBlock};
+use rmcp::model::{CallToolRequestParams, ContentBlock, MetaObject, RequestMetaObject};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
@@ -131,4 +135,58 @@ pub async fn announce(grant: Option<Value>, texts: &[&str]) -> Result<Vec<String
         });
     }
     Ok(results)
+}
+
+/// Calls the tool `name` with `arguments` on the endpoint `grant` names, as an agent that exposes
+/// every tool the endpoint lists does: it lists first, and calls only a tool that is listed. The
+/// request's `_meta["thread-tools/v1"]` carries `call_id`, the agent's own id for the call.
+///
+/// The line is the evidence a test reads from the agent's artifact:
+///
+/// ```text
+/// tool websearch__echo: {"text":"x"}
+/// tool websearch__fail failed: the tool failed on purpose
+/// tool websearch__echo refused: <what the client said>
+/// tool websearch__nope not offered; offered=get_ui_catalog,turn_output,websearch__echo
+/// tool: no grant
+/// ```
+pub async fn call_tool(
+    grant: Option<Value>,
+    name: &str,
+    arguments: Value,
+    call_id: &str,
+) -> String {
+    let Some(grant) = grant else {
+        return "tool: no grant".to_owned();
+    };
+    let (Some(url), Some(token)) = (grant["url"].as_str(), grant["token"].as_str()) else {
+        return "tool: a grant without a url or a token".to_owned();
+    };
+    let Value::Object(arguments) = arguments else {
+        return format!("tool {name} refused: the arguments are not a JSON object");
+    };
+    let config = StreamableHttpClientTransportConfig::with_uri(url.to_owned()).auth_header(token);
+    let client = match ().serve(StreamableHttpClientTransport::from_config(config)).await {
+        Ok(client) => client,
+        Err(e) => return format!("tool {name} refused: {e}"),
+    };
+    let offered: Vec<String> = match client.list_all_tools().await {
+        Ok(tools) => tools.iter().map(|t| t.name.to_string()).collect(),
+        Err(e) => return format!("tool {name} refused: {e}"),
+    };
+    if !offered.iter().any(|n| n == name) {
+        return format!("tool {name} not offered; offered={}", offered.join(","));
+    }
+    let Value::Object(meta) = json!({"thread-tools/v1": {"callId": call_id}}) else {
+        unreachable!("an object")
+    };
+    let mut params = CallToolRequestParams::new(name.to_owned()).with_arguments(arguments);
+    params.meta = Some(RequestMetaObject(MetaObject(meta)));
+    match client.call_tool(params).await {
+        Ok(result) if result.is_error == Some(true) => {
+            format!("tool {name} failed: {}", text_of(&result.content))
+        }
+        Ok(result) => format!("tool {name}: {}", text_of(&result.content)),
+        Err(e) => format!("tool {name} refused: {e}"),
+    }
 }
