@@ -124,3 +124,23 @@ Decided where the plan was silent, on the same delegation:
 
 Still to build: the relay (the tools on the thread's endpoint, the step of each call, the errors), the client port it needs, and the
 picker in the composer.
+
+## Status note, 2026-10-02: the client port is built; the relay is not
+
+Built (slice 8, second half, first part): the port the relay calls the servers through, `ToolServerClient` in `orch-ports`
+([ADR 0009](0009-swappable-implementations-at-build-time.md)), and its MCP implementation, `orch-tools-mcp` (`rmcp`'s client over
+streamable HTTP). The port lists a server's tools and calls one, in MCP's shapes as plain JSON, so no MCP library type is in a
+signature. Decided where the plan was silent, on the same delegation:
+
+- **The timeout belongs to the endpoint** (`toolServers[].timeoutSecs`) and bounds the whole request, connecting included; a
+  caller that wants another limit for one call clones the endpoint with another timeout. A handshake that has not answered by
+  then is `Unreachable`, a call that has not is `TimedOut`. A call is cancelled by dropping its future.
+- **The credentials are `ToolSecret`s** (`Debug` prints `<redacted>`), on the endpoint beside the URL; no error of the port holds
+  one, and the client follows no redirect, so the headers go to the configured server and nowhere else.
+- **One request is one session**: nothing is held between calls and no listing is cached, so any replica serves any request.
+- **The 256 KiB bound is the port's**: every implementation cuts a result's content at `MAX_RESULT_BYTES` and says so
+  (`truncated`), so the relay appends its note and does not re-measure. A tool's `isError` is an `Ok` result, passed through; a
+  server's JSON-RPC error (an unknown tool among them) is `Remote`, its message cut at 1 KiB.
+
+Still to build: the relay itself (the tools on the thread's endpoint, the step of each call, the errors) and the picker in the
+composer.

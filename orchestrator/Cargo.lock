@@ -2579,6 +2579,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-tools-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "orch-ports",
+ "orch-testsupport",
+ "reqwest",
+ "rmcp",
+ "rustls",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [

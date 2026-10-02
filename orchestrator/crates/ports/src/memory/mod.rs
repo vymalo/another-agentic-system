@@ -8,6 +8,7 @@ mod fixtures;
 mod model;
 mod registry;
 mod store;
+mod tools;
 mod wakeup;
 
 pub use agent::{Call, STREAM_PIECES, ScriptedAgent, VerdictScript, stream_id, stream_text};
@@ -17,4 +18,5 @@ pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use model::{ModelStep, ScriptedModel};
 pub use registry::{MEMORY_SOURCE, MemoryRegistry};
 pub use store::MemoryStore;
+pub use tools::{MemoryToolServer, MemoryToolServers, ToolScript};
 pub use wakeup::MemoryWakeup;

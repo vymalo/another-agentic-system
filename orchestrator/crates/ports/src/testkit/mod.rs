@@ -16,6 +16,7 @@ pub mod bearer;
 pub mod chat_model;
 pub mod registry;
 pub mod thread_store;
+pub mod tool_server;
 pub mod wakeup;
 
 /// Generates one `#[tokio::test]` per `ThreadStore` conformance case. `$make` is an
@@ -230,6 +231,35 @@ macro_rules! agent_registry_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::registry::$case(fixture).await,
                     None => eprintln!("skipped: no registry available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `ToolServerClient` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated
+/// [`ToolServerFixture`](tool_server::ToolServerFixture) (`None` skips the suite). Each case gives
+/// up after 20 s. The calling crate needs `tokio` (with `macros`, `rt` and `time`) as a
+/// dev-dependency.
+#[macro_export]
+macro_rules! tool_server_conformance {
+    ($make:path) => {
+        $crate::tool_server_conformance!(@cases $make;
+            lists_the_tools_with_their_schemas the_credentials_reach_the_server
+            an_echo_round_trip is_error_is_passed_through a_wrong_bearer_is_unauthenticated
+            an_unreachable_server_is_unreachable a_slow_call_times_out_within_the_limit
+            a_dropped_call_leaves_the_client_usable an_unknown_tool_is_a_remote_error
+            a_result_over_the_bound_is_cut no_error_or_debug_text_shows_a_secret
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => $crate::testkit::tool_server::$case(fixture).await,
+                    None => eprintln!("skipped: no tool server available"),
                 }
             }
         )*

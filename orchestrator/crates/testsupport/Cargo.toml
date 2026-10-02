@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true
-orch-ports.workspace = true
+orch-ports = { workspace = true, features = ["testkit"] }
 orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui.workspace = true

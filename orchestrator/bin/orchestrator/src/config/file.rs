@@ -31,6 +31,7 @@ use std::time::Duration;
 use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiSettings};
 use orch_config::{Resolve, SecretRef, Validated};
 use orch_core::{AgentId, LanguageRule, TaskKind};
+use orch_ports::{ToolSecret, ToolServerEndpoint};
 use secrecy::SecretString;
 use serde_json::{Map, Value};
 
@@ -1024,6 +1025,7 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         auth: super::AuthSettings::from_file(&c.auth),
         models: Some(models_of(valid)),
         tool_servers: tool_servers_of(&c.tool_servers),
+        tool_endpoints: tool_endpoints_of(valid),
         public: Some(PublicConfig {
             ui: UiSettings {
                 show_descriptions: c.ui.show_descriptions,
@@ -1150,6 +1152,33 @@ fn tool_servers_of(servers: &[orch_config::ToolServer]) -> Vec<ToolServerInfo> {
                 .as_ref()
                 .map(|agents| agents.iter().map(AgentId::new).collect()),
             timeout: Duration::from_secs(server.timeout_secs),
+        })
+        .collect()
+}
+
+/// The tool servers of the valid file as the relay calls them (ADR 0024): where each is and the
+/// credentials the file refers to, resolved, as the port's endpoint type, whose `Debug` shows no
+/// value. Held by the configuration and read by nothing else until the relay is composed.
+fn tool_endpoints_of(valid: &Validated) -> Vec<ToolServerEndpoint> {
+    valid
+        .config
+        .tool_servers
+        .iter()
+        .map(|server| {
+            let mut endpoint = ToolServerEndpoint::new(
+                &server.id,
+                server.url.trim(),
+                Duration::from_secs(server.timeout_secs),
+            );
+            if let Some(secrets) = valid.secrets.tool_servers.get(&server.id) {
+                if let Some(bearer) = &secrets.bearer {
+                    endpoint = endpoint.with_bearer(ToolSecret::new(bearer.expose()));
+                }
+                for (name, value) in &secrets.headers {
+                    endpoint = endpoint.with_header(name, ToolSecret::new(value.expose()));
+                }
+            }
+            endpoint
         })
         .collect()
 }
@@ -2082,11 +2111,50 @@ toolServers:
         assert!(!merged.contains("search-token-must-not-leak"), "{merged}");
     }
 
+    /// The relay's part of the servers: the URL, the timeout and the credentials resolved, as the
+    /// port's endpoint type, in the order of the file, and in no `Debug`.
+    #[test]
+    fn the_tool_servers_reach_the_relay_as_endpoints_with_their_credentials() {
+        let file =
+            format!("{FILE}{TOOL_SERVERS}    headers:\n      X-Api-Key: {{ env: DOCS_KEY }}\n");
+        let mut pairs = base();
+        pairs.push(("SEARCH_TOKEN", "search-token-must-not-leak"));
+        pairs.push(("DOCS_KEY", "docs-key-must-not-leak"));
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        let endpoints = &loaded.config.tool_endpoints;
+        assert_eq!(
+            endpoints.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["websearch", "docs"]
+        );
+        let web = &endpoints[0];
+        assert_eq!(web.url, "http://search.internal:8080/mcp");
+        assert_eq!(web.timeout, Duration::from_secs(45));
+        assert_eq!(
+            web.bearer.as_ref().map(ToolSecret::expose),
+            Some("search-token-must-not-leak")
+        );
+        assert!(web.headers.is_empty());
+        let docs = &endpoints[1];
+        assert_eq!(docs.url, "https://docs.example.com/mcp");
+        assert_eq!(docs.timeout, Duration::from_secs(120));
+        assert!(docs.bearer.is_none());
+        assert_eq!(docs.headers.len(), 1);
+        assert_eq!(docs.headers[0].0, "X-Api-Key");
+        assert_eq!(docs.headers[0].1.expose(), "docs-key-must-not-leak");
+        // an endpoint's own `Debug` hides every value, and the configuration's lists ids only
+        let shown = format!("{:?} {:?}", loaded.config, endpoints);
+        for hidden in ["search-token-must-not-leak", "docs-key-must-not-leak"] {
+            assert!(!shown.contains(hidden), "{hidden} is in a Debug: {shown}");
+        }
+        assert!(!format!("{:?}", loaded.config).contains("search.internal"));
+    }
+
     /// The default is no server, and the variables alone cannot name one.
     #[test]
     fn without_the_key_nothing_is_attachable() {
         let loaded = load_file_only(&base(), FILE).unwrap();
         assert!(loaded.config.app_config().tool_servers.is_empty());
+        assert!(loaded.config.tool_endpoints.is_empty());
         assert!(!loaded.merged.unwrap().contains("toolServers"));
     }
 
