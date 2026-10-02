@@ -76,7 +76,7 @@ Check a file without starting anything (every secret's variable must be set, any
 ORCH_CONFIG_FILE=dev/orchestrator.yaml DATABASE_URL=x AGENT_REGISTRY_AGENT_TOKEN=x MOCK_AGENT_TOKEN=x CODER_A2A_TOKEN=x \
   CHAT_A2A_TOKEN=x RESEARCHER_A2A_TOKEN=x THREAD_TOOLS_SECRET=0123456789abcdef0123456789abcdef \
   WEBHOOK_GENERIC_SECRETS=0123456789abcdef0123456789abcdef WEBHOOK_GITHUB_SECRETS=0123456789abcdef0123456789abcdef \
-  MCP_TOKEN_DEV=0123456789abcdef0123456789abcdef cargo run -q --manifest-path orchestrator/Cargo.toml -p orchestrator -- --print-config
+  MCP_TOKEN_DEV=0123456789abcdef0123456789abcdef WEBSEARCH_TOKEN=x WEBSEARCH_TENANT=x cargo run -q --manifest-path orchestrator/Cargo.toml -p orchestrator -- --print-config
 ```
 
 A mistake in the file is exit 78 with **every** error listed on stderr, each naming a key path and never a value: an unknown key, a
@@ -301,6 +301,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `agents` | `dev/agents-e2e.sh` | `GET /api/agents` lists `coder chat researcher`; the chat greets in role (`done`, no repository talk, no tool of the coder); the researcher searches the mock web search exactly once with the person's words and answers citing a link of it, and the search is one step labelled with the tool's title (`Web search`) whose start carries the query as `input` and whose end carries the links as `output` (adam-rs `d56dd94`); the coder still greets and waits (`blocked`); the model mock matched every request |
 | `choices` | `dev/choices-e2e.sh` | the coder asks three questions at once as one form drawn from the web's catalog (one `a2ui-surface` with a `Choices`, under the catalog's id); one action answers them and the coder's next words quote them; a message from a newer screen records a second `ui_catalog`; the thread's own tools reached the coder ([Choices](#choices-the-coder-asks-with-a-form)) |
 | `cards` | `dev/cards-e2e.sh` | the researcher searches the mock web search and answers with one surface under the web's catalog (a Text, three cards with the links it found, a Mermaid graph) beside its words; an older screen writing to the thread leaves its catalog alone; a screen whose catalog has no `Cards` gets words only ([Cards and Mermaid](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph)) |
+| `tools` | `dev/tools-e2e.sh` | a web search is attached to a chat ([Tools per conversation](#tools-per-conversation)): `GET /api/tool-servers` lists `websearch` with its `data:` icon and nothing of the orchestrator's alone; a plain agent's capabilities have no thread-tools key and attaching to it is 422; a chat created with `vymalo.tools` calls the relayed tool `websearch__web_search` on the scripted model and answers from its result (`done`); the export has `tools_attached` and exactly one tool step, `running` then `completed`, with `icon: mcp-server:websearch`, its input and its output; the mock search is sent the bearer and the header the configuration sets, and no secret value is in the export, the frames, the thread or the model's requests; after `PUT /api/threads/{id}/tools` with no servers the chat answers "No web search attached" |
 | `title` | `dev/title-e2e.sh` | after the agent's first reply the thread is given a short title by the orchestrator's own model (`mock-title` on `mock-model`: one `thread_titled` of the orchestrator with `source: model`, the sidebar's list says it, the model was asked once with the conversation fenced as data); a model that says `NONE` or fails (a 500, asked three times) leaves the first words as the title and the thread `done`; a model that drifts into Chinese for an English conversation is declined by the core and asked again with the language named once more (the title is the second answer, the first ask ended in "Write the title in English."), and a Chinese conversation keeps its Chinese title; a person's rename is final, the model is not asked again ([Thread titles](#thread-titles-the-orchestrator-asks-a-model)) |
 | `description` | `dev/description-e2e.sh` | when a job ends the thread is given a description by a model of its own at an endpoint of its own ([ADR 0035](../docs/decisions/0035-utility-model-tasks.md); `mock-description` on `mock-model`, reached through the endpoint `small`, so its request goes to `/chat/completions` and not the title's `/v1/chat/completions`): one `thread_described` of the orchestrator with `source: model`, the sidebar's list and the last `STATE_SNAPSHOT` say it, the request holds the guidance of `tasks.description.system`, then the core's form of the answer and data clause, the conversation fenced as data and the language line last, with the task's `max_tokens`; a model that says `NONE` leaves no description and one that fails (a 500, asked three times) leaves the thread `done` with none and no `error` event; the next job asks again with the description so far in a fence of its own; a person's description (`PATCH /api/threads/{id}`) is the thread's, one with a line break is a 400, a fork has it from the start (the `thread_forked` event says so), and the model is not asked again, nor after a person clears it; `GET /api/config` says `{"ui": {"showDescriptions": true}}` |
 | `fork` | `dev/fork-e2e.sh` | a finished thread on `mock-coder` is forked through the API (`POST /api/threads/{id}/fork`, 201, a new thread that is `done` and says `forkedFrom`); the first message of the fork reaches the mock agent with the conversation it continues in front of it (the parent's first message as `person: …` between `<<<conversation` and `>>>conversation`, then the message in the same text part), read from WireMock's request journal; the next message of the fork and the parent's own message reach it as they are ([Forking a thread](#forking-a-thread)) |
@@ -1131,6 +1132,93 @@ orchestrator `THREAD_TOOLS_SECRET` (32 bytes or more: `openssl rand -hex 32`) an
 endpoint back and its artifact says what it got (`thread-tools: tools=get_ui_catalog,turn_output; …`; the script `turn-output` makes it announce an answer with the `turn_output` tool); `GET /__control/<agent>/calls`
 on the fake agent shows the grant under `threadTools`. A `401` from the endpoint is the same answer for a missing,
 expired, foreign or forged token (nothing else says why, on purpose); a `403` is a `Host` it does not list.
+
+## Tools per conversation
+
+A person can attach the deployment's own tool servers (MCP) to a conversation, and the agent of that conversation then has their tools
+([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md); the contract is
+[`thread-tools-v1.md`](../docs/api/thread-tools-v1.md#attached-servers-and-the-relay-slice-8), the list of servers is the `toolServers` section of
+[`config.md`](../docs/api/config.md#toolservers)). The orchestrator is the one that calls the server: it holds the credentials, relays each
+call, and reports it as one step with the server's icon. The stack lists one server, **`websearch`**, which is [`mock-mcp-search`](#mock-web-search-mcp):
+
+| What | Where |
+|---|---|
+| The list | `toolServers` of [`orchestrator.yaml`](orchestrator.yaml): `id: websearch`, `name: Web search`, `url: http://mock-mcp-search:8080/mcp`, an `icon` (a `data:` SVG, the mock's own magnifier: an icon at a URL is never fetched), `tools: [web_search]`, `agents: [chat, coder]` (the researcher has a search of its own, in its folder) |
+| Its secrets | `bearer: { env: WEBSEARCH_TOKEN }` and `headers: { X-Search-Tenant: { env: WEBSEARCH_TENANT } }`: references, resolved at startup; `compose.yaml` sets both to dummies in `x-orchestrator-env` (every role reads them) and `mock-mcp-search` requires the first (`MOCK_MCP_TOKEN`) and journals the second |
+| What the person sees | `GET /api/tool-servers`: id, name, description, icon and the agents it is for; never the URL, a header, the bearer, the allow-list or the timeout |
+| Attaching | `forwardedProps["vymalo.tools"] = ["websearch"]` on the run that creates the thread, or `PUT /api/threads/{id}/tools` with the whole set wanted (`{"servers": []}` detaches); a server not offered for the thread's agent is 422 |
+| What the agent is told | the thread-tools grant of the message carries `attached` (the id, the name, the description: no URL, no credential), and the thread's endpoint lists the relayed tool `websearch__web_search` at every model turn |
+| The chat's model | `mock-persona` ([`wiremock/model/mappings/persona-websearch.json`](wiremock/model/mappings/persona-websearch.json) and its SSE twin): a message that carries `[mock:websearch]` calls `websearch__web_search` when the agent offers it to the model, answers from the result with its first link, and answers "No web search attached" when it is not offered |
+| Live | `orchestrator.live.yaml` lists the same id, name and icon over `searxng-mcp` (`web_search` and `fetch`, bearer `SEARCH_MCP_TOKEN`: [Web search for real](#web-search-for-real)) |
+
+```mermaid
+sequenceDiagram
+  participant P as Person (the script, or the web's picker)
+  participant O as Orchestrator
+  participant A as chat (adam-agent)
+  participant M as Scripted model (mock-model)
+  participant S as mock-mcp-search
+  P->>O: run with vymalo.tools ["websearch"] (or PUT /api/threads/{id}/tools)
+  O->>O: log: user_message, tools_attached
+  O->>A: message with the grant: endpoint, token, attached [websearch]
+  A->>O: tools/list on the thread's endpoint
+  O-->>A: get_ui_catalog, turn_output, websearch__web_search (its _meta: reportsStep)
+  A->>M: the history and the tools offered
+  M-->>A: call websearch__web_search {query}
+  A->>O: tools/call, with the call id
+  O->>O: log: agent_step running (icon mcp-server:websearch, the input)
+  O->>S: tools/call web_search, Authorization: Bearer, X-Search-Tenant
+  S-->>O: the canned results
+  O->>O: log: agent_step completed (the output)
+  O-->>A: the result
+  A->>M: the history with the result
+  M-->>A: the answer, citing the first link
+  P->>O: PUT /api/threads/{id}/tools {"servers": []}
+  O->>O: log: tools_detached
+  P->>O: the next message
+  O->>A: message with the grant, no attached
+  A->>O: tools/list (no websearch__web_search)
+  A->>M: the tools offered, without it
+  M-->>A: "No web search attached"
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> None: a thread is created
+  [*] --> Attached: created with vymalo.tools
+  None --> Attached: PUT with the server (tools_attached)
+  Attached --> None: PUT without it (tools_detached)
+  Attached --> Attached: a new job keeps the set
+```
+
+The agent reports no step of its own for a relayed call (the tool's `_meta` says `reportsStep`, adam-rs `b22d93e`, #74): the orchestrator's
+step is the only one, so the screen draws the call once. The web's picker is a separate change; the scenario below speaks the API the picker will.
+
+### The scenario (`dev/tools-e2e.sh`)
+
+```sh
+dev/tools-e2e.sh      # or: dev/e2e-all.sh tools
+```
+
+On the running `app` profile (the coder image is pulled for `chat`, which runs from it). One thread on `chat`, then the same thread again:
+
+1. `GET /api/tool-servers` lists `websearch` with the icon of `orchestrator.yaml` and nothing else of it; the capabilities of `chat` list
+   `thread-tools/v1`, those of the plain `mock-coder` have no thread-tools key, and a run that attaches `websearch` to `mock-coder` is 422 and creates nothing.
+2. A run with `vymalo.tools` and "[mock:websearch] Who won the football world cup in 2014?" ends `done` and cites `https://example.org/mock-search/world-cup-2014`.
+   The export has one `tools_attached` and **exactly one** tool step (two `agent_step` events of one id, `running` then `completed`) with `icon: mcp-server:websearch`,
+   the label `Web search · web_search`, the query as its input and the links as its output; the frames say the same.
+3. The mock's journal (`GET /__journal` on port 8096) holds one call, with `bearer: true` and `headers` `{"x-search-tenant": "<the configured value>"}`. Neither secret is in the
+   export, the frames, the thread, the list of servers or the requests the model was sent (`mock-model`'s journal).
+4. `PUT /api/threads/{id}/tools` with `{"servers": []}` is 200, the thread has none, and the log has one `tools_detached`. The next message ("[mock:websearch] And now?")
+   gets "No web search attached": the model was not offered the tool, and the mock search got no second call.
+
+By hand, the same API with a token of the mock issuer (`H=$(sh dev/auth-header.sh)`):
+
+```sh
+curl -s -H "$H" http://127.0.0.1:8080/api/tool-servers | jq
+curl -s -X PUT -H "$H" -H 'content-type: application/json' -d '{"servers":["websearch"]}' http://127.0.0.1:8080/api/threads/<thread id>/tools
+curl -s http://127.0.0.1:8096/__journal | jq                       # what the mock search was sent
+```
 
 ## Choices: the coder asks with a form
 
@@ -2051,7 +2139,7 @@ web, and a web search attached to a chat, run offline and give the same answer e
 | Answer | One `text` content: `1. <title> — <url>` and the snippet on the next line, one entry per result |
 | Keywords | The first keyword of [`results.json`](mock-mcp-search/results.json) (in file order, case-insensitive) that the query contains picks the list (`world cup`: the 2014 final; `rust`; `async`: three sources on async programming, what the [`[mock:cards]`](#cards-and-mermaid-the-researcher-answers-with-cards-and-a-graph) script searches for); any other query gets `default`: `https://example.org/mock-search/1` and `/2` |
 | Scenarios | `[mock:empty]` in the query answers `No results.`; `[mock:error]` answers a tool execution error (`isError: true`); a missing or empty `query` is one too, not a protocol error (the spec's way to let a model correct itself); an unknown tool is `-32602` |
-| Journal | `GET /__journal` lists the calls of the tool, `{"calls": [{"tool", "arguments", "at"}]}` (a call refused with 401 is not in it; the last 1000 are kept); `DELETE /__journal` empties it |
+| Journal | `GET /__journal` lists the calls of the tool, `{"calls": [{"tool", "arguments", "at", "bearer", "headers"}]}` (a call refused with 401 is not in it; the last 1000 are kept). `bearer` is true when the call carried the token the server requires, and `headers` holds the request's `X-*` headers, lower-cased: how [`tools-e2e.sh`](tools-e2e.sh) shows that the orchestrator sent the header its `toolServers` entry sets ([Tools per conversation](#tools-per-conversation)). `DELETE /__journal` empties it |
 
 ```mermaid
 sequenceDiagram
@@ -2612,3 +2700,24 @@ The devcontainers (MVP slice 7b: [Devcontainers](#devcontainers), `dev/compose.d
 (1) that rootless Podman runs on the GitHub runners at all (the AppArmor sysctl, a secondary source); (2) the first pulls and the build of `local/devbox`'s image inside the job's time (`TIMEOUT` 900 s a run, 40 minutes the step); (3) that Compose reads the relative seccomp path (it works in adam-rs's CI with `./dev/podman/seccomp.json`; here it is
 `./dev/coder/podman/seccomp.json` and the project directory is the same); (4) that the gate completes for `local/devbox` (`mock-ci` finding `agent/*` on it and the orchestrator matching its report, as it does for `scratch/*`); (5) the janitor emptying Podman within 90 s of the end of a run; (6) the steps' exact labels and
 the `completed` state in the thread's frames (read from adam-rs's script, which asserts them as `done` text lines of a client that did not ask for steps); (7) that `broken-env` leaves the thread `blocked` with the run ending `interrupt`, like the other plain questions of the coder.
+
+A web search attached to a chat (MVP slice 8, the compose end of ADR 0024: [Tools per conversation](#tools-per-conversation); the pin moves to adam-rs `851ff21`, which has [#74](https://github.com/vymalo/another-adam-rs/pull/74) and [#75](https://github.com/vymalo/another-adam-rs/pull/75)):
+
+*Verified 2026-10-02*:
+
+- **The pin.** `coder:sha-851ff21@sha256:329cdc4f...` (the full digest is in `compose.yaml`) is the manifest digest the ghcr API returns for that tag (anonymous token, HTTP 200; the `Docker-Content-Digest` header and the sha-256 of the body agree): one `linux/amd64` manifest (Docker schema 2) of thirteen layers (2.92 GB, compressed), uid 10001,
+  entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision` = `851ff216613b2dc8f8194fd7081da9d3968186d3`. The tag did not exist when the merge was minutes old (404 until adam-rs's `coder` workflow finished). `dev/coder/check-vendored.sh` passes at that commit (against raw.githubusercontent.com and the GitHub API), and **no vendored file changed**:
+  `git diff c0f12dd 851ff21 -- dev bin/adam-coder/agent` in adam-rs is empty.
+- **`node --test dev/mock-mcp-search/server.test.mjs`: 24 tests, all pass** (Node 22.22), two of them new: a call's journal entry says `bearer` and keeps the `X-*` headers, lower-cased.
+- **`dev/check-agent-mocks.sh` passes against the real services** (`docker compose --profile app up -d --build --wait mock-mcp-search mock-model mock-openai`, then the script with its defaults: 120 checks, "all checks passed"): the journal checks above, and the new `[mock:websearch]` script of `mock-persona`, plain and as its SSE twin: with
+  `websearch__web_search` among the functions the request offers, the first turn calls it (`websearch-call-1`, a query that holds `world cup`); with the result in, it answers with the first link; without the function (none offered at all, or only `turn_output`, also after a search in the history) it says "No web search attached"; and without the keyword the search is ignored
+  (a greeting).
+- **`dev/tools-e2e.sh`'s own logic** ran against a throwaway fake of the orchestrator's API (a 100-line Node server written for the occasion and not kept) standing in front of the real `mock-model` and `mock-mcp-search` containers: all 57 checks passed, and the `jq` filters were also run on the goldens `docs/api/examples/tools-relay.events.json` and `agui/tools-relay.agui.json`. That proves the script's shell and
+  `jq` and what the mocks answer; it proves nothing about the real orchestrator.
+- `orchestrator.yaml` and `orchestrator.live.yaml` validate against `docs/api/config.schema.json` (Draft 2020-12, Python `jsonschema`); `shellcheck dev/*.sh dev/coder/*.sh dev/mock-ci/*.sh dev/smee/*.sh` and `sh -n dev/*.sh` are clean; `docker compose --profile '*' config -q`, with `-f dev/compose.github-app.yaml`, with `-f dev/compose.devcontainer.yaml` and with
+  `-f compose.live.yaml --env-file .env.example` are clean (the live `orchestrator` gets `WEBSEARCH_TOKEN` from `SEARCH_MCP_TOKEN`); the docs check passes.
+
+*Unverified where this was written* (the orchestrator image is built from the Rust source and the coder's is 2.9 GB: neither was built or pulled, so `dev/tools-e2e.sh` has **never run against the real stack**, and the Coder E2E job of the pull request that built it is its proof; `orchestrator --print-config` was not run on the two files). The likeliest to fail first, in order:
+(1) that the orchestrator starts with the `toolServers` entry (`--print-config` rules beyond the schema, e.g. the `agents` ids and the secrets' variables, which every role reads); (2) that `adam-agent` at `851ff21` offers the relayed tool to the model as `websearch__web_search` and the stack's chat is told about it, so the model mock sees it in `tools[].function.name` (the script `[mock:websearch]` keys on that);
+(3) that the relay's call reaches `mock-mcp-search` (its handshake, the bearer and the `X-Search-Tenant` header) and the export holds exactly one tool step with the label `Web search · web_search`; (4) that the second message on the same thread is answered by a model that is not offered the tool, the grant of the new message having no `attached` and the endpoint no longer listing it;
+(5) the exact shape of the thread (`tools`) and of the capabilities (`identity.name` of `mock-coder`) that the first checks read, from `docs/api/chat-api.yaml` and `agui.md`.

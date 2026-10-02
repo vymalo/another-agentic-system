@@ -35,6 +35,7 @@ name: Coder E2E
 #   vendored   the vendored files still equal upstream and compose.yaml pins the matching image
 #   coder-e2e  build orchestrator + web, pull the coder (about 2.9 GB; the chat and the researcher use the same image),
 #              run dev/e2e-all.sh (every scenario: the roles of the sign-in (dev/rbac-e2e.sh), the coder's greeting, the three agents each answering in its role,
+#              a web search attached to a chat (dev/tools-e2e.sh),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), the files the coder
@@ -146,7 +147,12 @@ jobs:
         # questions as one form from the web's catalog and goes on with the answers of one action (dev/choices-e2e.sh; a newer
         # catalog is recorded too, and the coder's thread tools, plain http to the orchestrator, are offered to its model), the researcher
         # searches the mock web search and answers with one surface of a Text, three cards and a Mermaid graph (dev/cards-e2e.sh; a screen
-        # without Cards gets words only), the orchestrator's own model call (dev/title-e2e.sh: a thread is titled by `mock-title` after the agent's
+        # without Cards gets words only), a web search attached to a conversation (dev/tools-e2e.sh: GET /api/tool-servers lists `websearch`
+        # with its icon; a chat created with `vymalo.tools` calls the relayed tool `websearch__web_search` of the thread's endpoint on the scripted
+        # model, answers from its result and ends done; the export has `tools_attached` and exactly one tool step, running then completed, with the
+        # icon `mcp-server:websearch`, the input and the output; the mock search is sent the configured bearer and header; no secret value is
+        # in the export, the frames or the model's requests; after `PUT /api/threads/{id}/tools` with no servers the chat answers "No web search
+        # attached"; a plain agent's capabilities have no thread-tools key), the orchestrator's own model call (dev/title-e2e.sh: a thread is titled by `mock-title` after the agent's
         # first reply, a model with no topic or a failing one leaves the first words, a person's rename is final), the thread's description (dev/description-e2e.sh: when a job ends `mock-description` writes one at its own endpoint, with the guidance of the configuration and the core's form, data clause and language line around it; a person's description or clearing it is final and a fork has it), a thread forked through the API
         # (dev/fork-e2e.sh: the first message of the fork reaches the mock agent with the conversation it continues, read from the mock's request journal),
         # chat -> coder ->
@@ -235,7 +241,7 @@ jobs:
           for m in 8091 8094; do
             curl -s "http://127.0.0.1:$m/__admin/requests/unmatched" | jq -c '.requests[] | {method: .method, url: .url, body: (.body // "" | .[0:300])}' || true
           done
-          echo "== calls of the mock web search (the researcher's tool)"
+          echo "== calls of the mock web search (the researcher's tool, and the one attached to a chat)"
           curl -s http://127.0.0.1:8096/__journal | jq -c '.calls[]' || true
       - name: Tear down
         if: always()

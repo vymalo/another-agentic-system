@@ -17,6 +17,15 @@
 #   cards             the researcher searches and answers with one surface of cards    cards-e2e.sh
 #                     and a graph under the web's catalog; an older screen keeps the
 #                     thread's catalog; a screen without Cards gets words only
+#   tools             a web search is attached to a chat (the run that creates the   tools-e2e.sh
+#                     thread names it); the chat's model calls the relayed tool
+#                     `websearch__web_search` and answers from its result; the call is
+#                     ONE step with the icon `mcp-server:websearch`, its input and its
+#                     output; the search is sent the configured bearer and header and
+#                     no secret is in the export, the frames or the model's requests;
+#                     after a detach the chat answers "No web search attached";
+#                     GET /api/tool-servers lists the server with its icon; a plain
+#                     agent's capabilities have no thread-tools key
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
@@ -87,7 +96,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards title description fork registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools title description fork registry rbac coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -143,6 +152,13 @@ for s in "$@"; do
         case " $agents " in
           *" $a "*) ;;
           *) echo "scenario artifact needs the agents coder-share and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
+    tools)
+      for a in chat mock-coder; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario tools needs the agents chat and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
     cards)
@@ -209,6 +225,7 @@ for s in "$@"; do
     agents) run agents sh "$here/agents-e2e.sh" ;;
     choices) run choices sh "$here/choices-e2e.sh" ;;
     cards) run cards sh "$here/cards-e2e.sh" ;;
+    tools) run tools sh "$here/tools-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
