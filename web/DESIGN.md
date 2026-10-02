@@ -102,8 +102,9 @@ beside it. The orchestrator's own lines (checks, CI) keep their step icons. The 
 - **Reading column** max 768 px (`max-w-3xl`), 16 px gutters on a phone, 24 px from `md`.
 - **Composer** sticky at the bottom of the column, a 24 px-radius surface with a soft shadow: the
   text (1 to 8 lines), then a row with a 36 px round Send / Stop button on the right; the left of the
-  row is empty and kept for the tools picker and mentions (plan 05): the agent is picked in the top
-  bar, not in the box. A one-line disclaimer under it.
+  row is the **tools picker** and its chips ("Tools"), and is kept for mentions (plan 05): the agent is picked in the top
+  bar, not in the box. What is true of the message before it is sent (an agent that cannot use the attached tools, a
+  change of them that was refused) is a line above the box. A one-line disclaimer under it.
 - **Empty state** (new chat): the panda, the greeting "What should we get done?" and what the chosen
   agent does, the composer in the middle of the page on the plain canvas (no glow), and suggestion
   chips under it (a chip fills the box, it does not send); the agent picker is in the top bar, in the
@@ -156,6 +157,64 @@ like the new ChatGPT"). It is a menu button in the top bar, on the new chat and 
   the muted colour under what it does. They route and select nothing. The configured agents come first, so
   the default agent never moves because a registry changed. The list is also read again when the window gets
   the focus back (at most every 5 s), so an agent the platform added shows without a reload.
+
+## Tools
+
+*Added 2026-10-02 ([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md), PR-8 of plan 11).* A person gives a
+conversation the tools it may use (a web search, the team's docs) from the composer, as one chooses what to attach to a message
+in a chat app: a quiet button in the box, not a form (`features/tools/`). What is chosen is visible as chips, and what happened is a line.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-tools-picker.png">
+  <img src="e2e/__screens__/desktop-light-tools-picker.png" alt="A new chat with the Tools menu open above the message box: Web search, GitHub and Team docs, each with an icon and one line of what it is for, Web search and Team docs checked. Under the box, a Tools button and two chips, Team docs and Web search, each with a button that takes it off." width="640">
+</picture>
+
+*The picker on a new chat, the mock's servers: the menu opens upward, over the greeting, because the box is at the bottom.*
+
+- **The button**: ghost, 32 px, a plug and the word "Tools", muted, at the left of the box's bottom row, its name "Tools" (a
+  menu button: `aria-haspopup="menu"`, `aria-expanded`). No count and no colour on it: what is attached is the chips.
+- **The chips**: after the button, a list named "Attached tools" that wraps; a chip is a 28 px pill on `--muted`, the server's icon
+  (16 px), its name (13 px, cut), and a 24 px round button, "Remove Web search", with an X. They are in the tab order, so the
+  keyboard takes one off with Enter. On a phone they wrap under the button, never sideways.
+- **The menu** (300 to 380 px, `--popover`, 12 px radius, the shadow of the composer; it opens **upward**, the box being at the
+  bottom): the label "Tools for this chat", then one **checkbox item** per server offered for this agent
+  (`role="menuitemcheckbox"`, `aria-checked`): its icon (20 px), its name (14 px, weight 500), what it is for in one or two muted
+  lines (12 px), a check in `--brand` at the end. A choice **does not close the menu** (several are made in one visit); Escape
+  does and the focus goes back to the button. A hint under the items says what is true of the agent: "The agent can use what is
+  attached, from your next message on." or, for an agent whose card does not list `thread-tools/v1`, "This agent does not use
+  attached tools." The list and the card are read again each time the menu opens. At 16 chosen the others are disabled.
+- **Nothing when there is nothing**: no button when the deployment offers nothing for this agent and nothing is attached, and none
+  for a person who may not write (the read-only line is in the box's place and says why). A deployment that offers tools to some
+  agents shows the button for those only; changing the agent on a new chat drops the chips that agent may not have.
+- **The flag before sending** is a quiet warning line above the box (the same line the registry notice uses: `--warning-soft`, a
+  `status`): "Reviewer cannot use attached tools, so they will not be sent to it." The words are the state; the colour only backs
+  them. The chips stay, and Send is not disabled: the thread keeps its servers, and a person may still write. A card that cannot
+  be read says "Could not check whether Coder can use attached tools." and never "can".
+- **A refused change** on a thread is the orchestrator's own words in a destructive line above the box, the chip is not drawn
+  and the item is not checked (the orchestrator decides; the screen only stops offering what it knows it would refuse).
+- **The line in the conversation**: "Web search attached", "GitHub detached", "Team docs and Web search attached": one muted
+  13 px line with a plug (14 px), above the agent's turn it came in or alone when it was a thread of its own run, with the person's
+  other acts (the bubble of a Choices answer, the divider of a fork). It is not a step of the agent's work and not in the panel's
+  tree, and not a live region (a replay would announce every old attachment).
+- **The icon** is the server's own, an image of the `data:` URI the deployment configured (SVG, PNG or WebP, at most 8 KiB),
+  with a 3 px radius, never inlined and never from an address. Anything else, an http(s) URL above all, is no icon: the plug is
+  drawn, and the page requests nothing for it (`lib/icon.ts`; it is the point of the rule: a request for an icon says to whoever runs
+  that host that this person is reading this conversation). The icon of a server is only ever as bright as the deployment made it:
+  an image has no `currentColor`, so it is not tinted; the step ring and the chip sit on `--muted`, where an icon drawn for a light page
+  stays readable in dark too (axe is run in both schemes with an icon, and the contrast of the words never depends on it).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-tools-steps.png">
+  <img src="e2e/__screens__/desktop-light-tools-steps.png" alt="A finished thread that started with two servers attached. The conversation holds the line “Team docs and Web search attached” above the coder’s turn. The Activity panel lists a web search with the search server’s own icon, a GitHub call and a Team docs call that failed." width="640">
+</picture>
+
+*The icon slot, from the mock's `relay` script: the search server's own image on its call, the wrench of a tool for a server with no icon, the cross of a call that failed.*
+
+- **The icon slot of a step.** A step whose `icon` is `mcp-server:<id>` (the orchestrator reports a relayed call so, and an agent cannot
+  claim it) shows that server's image in its 20 px ring, where the glyph of the vocabulary is, once the call has ended; while it
+  runs the ring spins as for every step, and a failed call is the same image on the destructive ring with the words of the
+  failure. A server with no icon, one whose icon is a URL and one the deployment no longer lists keep the wrench. The label says
+  what called ("Web search · search"), so the icon is never the only way to know.
 
 ## Panel
 
@@ -588,7 +647,9 @@ tabs are a `tablist` with the arrows, Home and End; its edge is a `separator` wi
 `max`; its toggle keeps one name and says its state in `aria-expanded`, and announces its shortcut
 (`aria-keyshortcuts`). The agent picker's menu is not modal (axe reports the siblings of a modal menu as
 focusable though hidden), and axe is run with the picker's menu open and with the panel open, both tabs,
-in both schemes.
+in both schemes. The tools picker is the same kind of menu (checkbox items, not modal) and its chips are a labelled
+list of native buttons; axe is run with it open, with chips, with the flag for an agent that cannot use them, and on a thread
+whose steps carry a server's icon, in both schemes (`e2e/tools.spec.ts`), and the whole of it works from the keyboard alone.
 
 ## A surface that needs a newer version of the app
 

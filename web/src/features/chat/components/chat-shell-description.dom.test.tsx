@@ -154,6 +154,10 @@ describe("a thread's description in the app", () => {
     const id = await makeThread("talk to me");
     shell(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    // The badge is the stream's state; the transcript is the replay's, applied a little later. A
+    // message sent before the replay has been applied supersedes it (the runtime lets a send
+    // replace the run in progress), so the follow-up must wait for the first reply to be drawn.
+    await waitFor(() => expect(screen.getAllByText("Plan: add a test")).toHaveLength(1));
     // a thread opened already finished lets its stream go; a follow-up makes the page watch a job end,
     // and a thread it watched finish keeps its stream for a while (FINISHED_GRACE_MS)
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "talk again" } });

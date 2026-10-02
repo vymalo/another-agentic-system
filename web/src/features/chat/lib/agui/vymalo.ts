@@ -26,6 +26,11 @@ export const ACTIVITY = {
   /** A CI system reported a check on a commit (ADR 0017), whether or not the gate counted it. */
   ci: "vymalo.ci",
   /**
+   * MCP servers were attached to the thread, or detached from it (ADR 0024): ids only. The chat
+   * draws one muted line for it, naming the servers from the deployment's list.
+   */
+  tools: "vymalo.tools",
+  /**
    * A step of the agent's work (ADR 0025, steps/v1): the same activity says the step again at each
    * of its events, under one message id, and its `path` places it in the tree.
    */
@@ -42,6 +47,13 @@ export const A2UI_SURFACE = "a2ui-surface";
 
 /** `metadata["vymalo.actor"]` of an attributed event: `{type, name, revision?}`. */
 export const ACTOR_KEY = "vymalo.actor";
+
+/**
+ * ADR 0024: `forwardedProps["vymalo.tools"]` on the run that creates a thread: the ids of the MCP
+ * servers to attach to it, committed with the first message. Ignored by a run on a thread that
+ * exists (the set is changed with `PUT /api/threads/{id}/tools`).
+ */
+export const TOOLS_PROP = "vymalo.tools";
 
 /** ADR 0008: the release travels in `forwardedProps` under the extension URI. */
 export const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
@@ -209,6 +221,22 @@ export const STEP_ICONS = [
 ] as const;
 export type StepIcon = (typeof STEP_ICONS)[number];
 
+/** The id of an MCP server the deployment offers (ADR 0024, `ToolServer.id`). */
+export const SERVER_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
+
+/**
+ * `icon: "mcp-server:<id>"` of a step the orchestrator reports for a call of an attached MCP
+ * server (docs/api/thread-tools-v1.md, "The step of a call"): the server whose icon the step shows.
+ * An id that is not a server id is no server.
+ */
+export const MCP_ICON_PREFIX = "mcp-server:";
+
+export function serverOfIcon(icon: string | undefined): string | undefined {
+  if (!icon?.startsWith(MCP_ICON_PREFIX)) return undefined;
+  const id = icon.slice(MCP_ICON_PREFIX.length);
+  return SERVER_ID.test(id) ? id : undefined;
+}
+
 /**
  * A step of the agent's work as it stands (`vymalo.step`, docs/api/agui.md "Nested steps"). `id` is
  * unique in the thread and `path` the ids of the steps it runs under, outermost first. `label` and
@@ -222,6 +250,12 @@ export type StepContent = WithActor<{
   label: string;
   state: StepState;
   icon?: StepIcon;
+  /**
+   * The MCP server the step is a call of (`icon: "mcp-server:<id>"`), whose own icon the step shows
+   * in place of the vocabulary's glyph. The id only: the name and the icon come from the
+   * deployment's list (`GET /api/tool-servers`).
+   */
+  server?: string;
   detail?: string;
   startedAt?: string;
   input?: StepInput;
@@ -297,6 +331,40 @@ export const parseActor = readActor;
  */
 export const parseActorRun = (v: unknown): string | undefined =>
   isRecord(v) ? str(v.runId) : undefined;
+
+/**
+ * `vymalo.tools` (docs/api/agui.md, "Attaching MCP servers"): the ids that came, or the ids that
+ * went, never both and never a name or a URL. A payload with neither is nothing.
+ */
+export type ToolsContent = WithActor<{ attached?: string[]; detached?: string[] }>;
+
+const serverIds = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? v.filter((id): id is string => typeof id === "string" && SERVER_ID.test(id))
+    : [];
+
+/**
+ * `thread.tools` of a snapshot or of the thread resource: the ids of the servers attached, or
+ * undefined when there are none (the member is absent then; so is one that is not a list of ids).
+ */
+export const parseToolIds = (v: unknown): string[] | undefined => {
+  const ids = serverIds(v);
+  return ids.length > 0 ? ids : undefined;
+};
+
+export function parseTools(v: unknown): ToolsContent | null {
+  if (!isRecord(v)) return null;
+  const attached = serverIds(v.attached);
+  const detached = serverIds(v.detached);
+  if (attached.length === 0 && detached.length === 0) return null;
+  const actor = readActor(v.actor);
+  return {
+    ...(attached.length > 0 ? { attached } : {}),
+    ...(detached.length > 0 ? { detached } : {}),
+    ...(actor ? { actor } : {}),
+    ...readAt(v),
+  };
+}
 
 /** `vymalo.fork` (docs/api/agui.md, "Forks"): what the thread was made from, and how. */
 export type ForkContent = WithActor<{
@@ -595,6 +663,7 @@ export function parseStep(v: unknown): StepContent | null {
     label,
     state: state as StepState,
     ...(icon && (STEP_ICONS as readonly string[]).includes(icon) ? { icon: icon as StepIcon } : {}),
+    ...(serverOfIcon(icon) ? { server: serverOfIcon(icon) as string } : {}),
     ...(detail ? { detail } : {}),
     ...(startedAt && !Number.isNaN(Date.parse(startedAt)) ? { startedAt } : {}),
     ...(input ? { input } : {}),

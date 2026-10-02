@@ -143,6 +143,36 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "agent-menu");
     });
 
+    test("tools picker", async ({ page }) => {
+      // the servers the deployment offers for the coder, two of them attached to the chat that is about to start
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await page.getByRole("button", { name: "Tools", exact: true }).click();
+      await page.getByRole("menuitemcheckbox", { name: /^Web search/ }).click();
+      await page.getByRole("menuitemcheckbox", { name: /^Team docs/ }).click();
+      await expect(page.getByRole("menuitemcheckbox", { name: /^Team docs/ })).toBeChecked();
+      await shot(page, "tools-picker");
+    });
+
+    test("tools on the steps", async ({ page }) => {
+      // a chat that started with two servers: the line that says so, and in Activity each call with its server's icon
+      await page.goto("/");
+      await page.getByRole("button", { name: "Tools", exact: true }).click();
+      await page.getByRole("menuitemcheckbox", { name: /^Web search/ }).click();
+      await page.getByRole("menuitemcheckbox", { name: /^Team docs/ }).click();
+      await page.keyboard.press("Escape");
+      await send(page, "relay please");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await expect(page.locator('[data-slot="tools-line"]')).toHaveText(
+        "Team docs and Web search attached",
+      );
+      await showActivity(page);
+      await expect(
+        turnSections(page).first().locator('img[data-slot="step-server-icon"]'),
+      ).toHaveCount(2);
+      await shot(page, "tools-steps");
+    });
+
     test("agent menu on a thread", async ({ page }) => {
       await startThread(page, "Fix the redirect loop after signing in");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });

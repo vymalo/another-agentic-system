@@ -32,8 +32,10 @@ import {
   PURPOSE_PART,
   parseJob,
   parsePurpose,
+  parseToolIds,
   parseUiCatalog,
   RELEASE_CHANNELS_URI,
+  TOOLS_PROP,
 } from "./vymalo";
 
 /**
@@ -133,6 +135,11 @@ export type ThreadSnapshot = {
    */
   uiCatalog: UiCatalogRef | undefined;
   /**
+   * `STATE_SNAPSHOT.thread.tools`: the ids of the MCP servers attached to the thread (ADR 0024),
+   * sorted; undefined when there are none (the member is absent then).
+   */
+  tools: string[] | undefined;
+  /**
    * The `RUN_ERROR` that ended the newest run (`code` such as `agent_failed`, `checks_failed`), so
    * the page can say why a thread failed; null while a run is open and after a run that did not fail.
    */
@@ -170,7 +177,16 @@ export class SendError extends MessageNotSentError {
   }
 }
 
-export type Target = { agentId: string | null; release: string | null };
+export type Target = {
+  agentId: string | null;
+  release: string | null;
+  /**
+   * The MCP servers a new chat attaches (ADR 0024): sent as `forwardedProps["vymalo.tools"]` on the
+   * run that creates the thread, and only then. Absent for an open thread, whose set is changed
+   * with `PUT /api/threads/{id}/tools` (`features/tools`).
+   */
+  tools?: readonly string[] | undefined;
+};
 
 export type ThreadAgentOptions = {
   threadId: string;
@@ -245,6 +261,7 @@ export class ThreadAgent extends AbstractAgent {
     title: undefined,
     job: null,
     uiCatalog: undefined,
+    tools: undefined,
     failure: null,
     openRun: null,
     waiting: false,
@@ -489,6 +506,8 @@ export class ThreadAgent extends AbstractAgent {
             job: parseJob(isRecord(event.snapshot) ? event.snapshot.job : undefined),
             // likewise: a snapshot without a catalog is a thread without one
             uiCatalog: parseUiCatalog(thread.uiCatalog) ?? undefined,
+            // likewise: no `tools` is no server attached
+            tools: parseToolIds(thread.tools),
           });
         }
         break;
@@ -783,7 +802,7 @@ export class ThreadAgent extends AbstractAgent {
     action: Record<string, unknown> | undefined,
     signal: AbortSignal,
   ): Promise<BaseEvent> {
-    const { agentId, release } = this.options.target();
+    const { agentId, release, tools } = this.options.target();
     if (!agentId) throw new SendError("Choose an agent first.", undefined, !!action);
     const resume = input.resume?.length ? input.resume : undefined;
     // The orchestrator owns the history: it wants the one new user message, or the `resume`
@@ -806,6 +825,8 @@ export class ThreadAgent extends AbstractAgent {
             : release
               ? { [RELEASE_CHANNELS_URI]: { release } }
               : {}),
+          // the servers of a new chat ride the run that creates it; an action carries nothing else
+          ...(tools?.length && !action ? { [TOOLS_PROP]: [...tools] } : {}),
           ...this.catalogProps(),
         },
         ...(resume && !action ? { resume } : {}),

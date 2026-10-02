@@ -14,6 +14,8 @@ import {
   type StepState,
   visibleChildren,
 } from "@/features/chat/lib/step-tree";
+import { useToolServer } from "@/features/tools/components/tool-servers-context";
+import { iconSrc } from "@/features/tools/lib/icon";
 import { cn } from "@/lib/utils";
 import { ExpandableText } from "../parts/expandable-text";
 import { CheckStep } from "./check-step";
@@ -156,6 +158,9 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
   const expandable = hasChildren || hasDetails;
   const open = expandable && shown > 0;
   const Icon = iconOf(node);
+  // a call of an attached MCP server shows that server's icon, when the deployment gave it one
+  const server = useToolServer(node.server);
+  const image = iconSrc(server?.icon);
   const duration = nodeDuration(node);
   const word = STATE_WORD[node.state];
   const isCommand = node.kind === "command";
@@ -215,6 +220,8 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
     <StepRow
       state={ROW_STATE[node.state]}
       {...(Icon ? { icon: Icon } : {})}
+      {...(image ? { image } : {})}
+      {...(node.server ? { "data-server": node.server } : {})}
       data-slot="step"
       data-kind={node.kind}
       data-node-state={node.state}

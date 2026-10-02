@@ -24,6 +24,9 @@ import {
   PROFILES,
   type ProfileName,
   REGISTRY_UNREACHABLE,
+  THREAD_TOOLS_AGENTS,
+  THREAD_TOOLS_URI,
+  TOOL_SERVERS,
 } from "./fixtures";
 import { LiveOverlay, type LivePiece } from "./live";
 import {
@@ -42,6 +45,7 @@ type Event = components["schemas"]["Event"];
 type Actor = components["schemas"]["Actor"];
 type Agent = components["schemas"]["Agent"];
 type Me = components["schemas"]["Me"];
+type ToolServer = components["schemas"]["ToolServer"];
 type ThreadState = components["schemas"]["ThreadState"];
 
 /** A run is open while the thread is queued, working or being verified. */
@@ -49,6 +53,11 @@ const isActiveState = (s: ThreadState): boolean =>
   s === "queued" || s === "working" || s === "verifying";
 
 const RELEASE_CHANNELS_URI = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
+const TOOLS_PROP = "vymalo.tools";
+/** `ToolServer.id`, and the pattern of a thread's `tools` and of a request's `servers`. */
+const SERVER_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
+/** At most this many distinct servers on a thread. */
+const MAX_SERVERS = 16;
 const UI_CATALOG_PROP = "vymalo.uiCatalog";
 const OWN_CATALOG_ID = "https://agents.vymalo.com/a2ui/catalogs/chat";
 const MAX_CATALOG_BYTES = 64 * 1024;
@@ -211,12 +220,25 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    * session is (`me`, a profile of fixtures.ts): the default is a person with every permission over
    * their own threads, which is what a session was before roles.
    */
-  type Registry = { agents: Agent[]; down: boolean; showDescriptions: boolean; me: ProfileName };
+  type Registry = {
+    agents: Agent[];
+    down: boolean;
+    showDescriptions: boolean;
+    me: ProfileName;
+    /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
+    toolServers: ToolServer[];
+  };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
     let registry = registries.get(session);
     if (!registry) {
-      registry = { agents: [], down: false, showDescriptions: true, me: "user" };
+      registry = {
+        agents: [],
+        down: false,
+        showDescriptions: true,
+        me: "user",
+        toolServers: [...TOOL_SERVERS],
+      };
       registries.set(session, registry);
     }
     return registry;
@@ -578,6 +600,107 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     return { type: "agent", name: t.target.agentId, ...(revision ? { revision } : {}) };
   }
 
+  // ---- MCP servers attached to a thread (ADR 0024) -------------------------------------
+
+  /** What the deployment offers for this agent, in its order (`agents` absent: every agent). */
+  const offeredFor = (req: http.IncomingMessage, agentId: string): ToolServer[] =>
+    registryOf(sessionOf(req)).toolServers.filter(
+      (t) => t.agents === undefined || t.agents.includes(agentId),
+    );
+
+  /**
+   * Why `ids` cannot be attached to a thread of `agentId`, or undefined: a server the deployment
+   * does not list, or does not offer for the agent, or more than 16 distinct ones. A server the
+   * thread has already is not checked again (a deployment that stopped listing it leaves the thread
+   * its attachment). The words name the server's id, never a URL.
+   */
+  function refusedServers(
+    req: http.IncomingMessage,
+    ids: readonly string[],
+    agentId: string,
+    attached: ReadonlySet<string>,
+  ): string | undefined {
+    if (new Set(ids).size > MAX_SERVERS) return `more than ${MAX_SERVERS} servers`;
+    const listed = registryOf(sessionOf(req)).toolServers;
+    const offered = offeredFor(req, agentId);
+    for (const id of ids) {
+      if (attached.has(id)) continue;
+      if (!listed.some((t) => t.id === id)) return `the server ${id} is not offered`;
+      if (!offered.some((t) => t.id === id)) {
+        return `the server ${id} is not offered for the agent ${agentId}`;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Makes `wanted` the whole set of servers attached to the thread: what differs is one
+   * `tools_attached` and one `tools_detached` event (ids sorted, never empty) of `actor`, and the
+   * same set writes nothing. The thread's `tools` is the sorted set, and absent when there are none.
+   */
+  function setTools(thread: Thread, wanted: readonly string[], actor: Actor) {
+    const have = new Set(thread.tools ?? []);
+    const want = new Set(wanted);
+    const attach = [...want].filter((id) => !have.has(id)).sort();
+    const detach = [...have].filter((id) => !want.has(id)).sort();
+    const after = [...want].sort();
+    if (attach.length > 0) append(thread.id, "tools_attached", actor, { servers: attach });
+    if (detach.length > 0) append(thread.id, "tools_detached", actor, { servers: detach });
+    if (after.length > 0) thread.tools = after;
+    else delete thread.tools;
+  }
+
+  /** The servers a log leaves attached: `tools_attached` adds and `tools_detached` takes away, in order. */
+  const attachedBy = (log: readonly Event[]): Set<string> => {
+    const set = new Set<string>();
+    for (const e of log) {
+      const ids = Array.isArray(e.data.servers) ? (e.data.servers as string[]) : [];
+      if (e.kind === "tools_attached") for (const id of ids) set.add(id);
+      if (e.kind === "tools_detached") for (const id of ids) set.delete(id);
+    }
+    return set;
+  };
+
+  /**
+   * `PUT /api/threads/{id}/tools` (`putThreadTools`): the whole set wanted, in any state of the
+   * thread. A body that is not exactly `{servers: [ids]}` of ids that are server ids is a 400; a server
+   * the deployment does not list or does not offer for the thread's agent, or more than 16, is a 422.
+   */
+  async function putThreadTools(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    thread: Thread,
+  ) {
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch {
+      return problem(res, 400, "Bad Request", "the body is not JSON");
+    }
+    if (
+      !isRecord(body) ||
+      Object.keys(body).some((k) => k !== "servers") ||
+      !Array.isArray(body.servers) ||
+      !body.servers.every((id) => typeof id === "string")
+    ) {
+      return problem(
+        res,
+        400,
+        "Bad Request",
+        "the body is exactly an object with a `servers` array",
+      );
+    }
+    const ids = body.servers as string[];
+    const bad = ids.find((id) => !SERVER_ID.test(id));
+    if (bad !== undefined) {
+      return problem(res, 400, "Bad Request", "a server id is lower-case letters, digits and -");
+    }
+    const refused = refusedServers(req, ids, thread.target.agentId, new Set(thread.tools ?? []));
+    if (refused !== undefined) return problem(res, 422, "Unprocessable", refused);
+    setTools(thread, ids, { type: "user", name: meOf(req).user });
+    return sendJson(res, 200, { servers: thread.tools ?? [] });
+  }
+
   // ---- scripted agent ------------------------------------------------------------------
 
   function play(t: Thread, steps: Step[]) {
@@ -718,6 +841,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.owner = owner;
       return void res.writeHead(204).end();
     }
+    // The MCP servers the deployment offers, as a test sets them for its own session: the body is the
+    // whole list (a JSON array of `ToolServer`s, in the deployment's order). It is taken as it is,
+    // an icon that is a URL included, so that a test can show the screen never fetches one.
+    if (path === "/__mock/tool-servers" && method === "POST") {
+      const list = await readJson(req);
+      if (!Array.isArray(list)) return problem(res, 400, "Bad Request", "the body is an array");
+      registryOf(session).toolServers = list as ToolServer[];
+      return void res.writeHead(204).end();
+    }
     if (path === "/__mock/registry/agents" && method === "POST") {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
@@ -760,6 +892,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       });
     }
 
+    // `GET /api/tool-servers` (`listToolServers`, ADR 0024): what a person may attach, in the
+    // deployment's order. It takes `thread.write`, as attaching does; never cached.
+    if (path === "/api/tool-servers" && method === "GET") {
+      if (!holds(meOf(req), "thread.write")) return forbid(res, "thread.write");
+      return sendJson(res, 200, registryOf(sessionOf(req)).toolServers);
+    }
+
     if (path === "/api/threads" && method === "GET") return listThreads(req, res, url);
 
     const run = /^\/agui\/agents\/([^/]+)$/.exec(path);
@@ -790,14 +929,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return void res.end(file.bytes);
     }
 
-    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches))?$/.exec(path);
+    const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches|tools))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
       const sub = m[2];
       // reading a thread takes `thread.read`; patching, cancelling and forking it take `thread.write`
       // over it (a thread of another's, read and not changed, is `read_only`)
       const acts =
-        method === "PATCH" || (method === "POST" && (sub === "cancel" || sub === "fork"));
+        method === "PATCH" ||
+        (method === "POST" && (sub === "cancel" || sub === "fork")) ||
+        (method === "PUT" && sub === "tools");
       if (!acts && method !== "GET") return problem(res, 404, "Not found");
       const thread = accessible(req, res, id, acts);
       if (!thread) return;
@@ -807,6 +948,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (sub === "export" && method === "GET") return exportThread(res, thread);
       if (sub === "fork" && method === "POST") return forkThread(req, res, thread);
       if (sub === "branches" && method === "GET") return listBranches(res, thread);
+      if (sub === "tools" && method === "PUT") return putThreadTools(req, res, thread);
     }
     return problem(res, 404, "Not found");
   }
@@ -1082,6 +1224,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       log.slice(0, cut).map((e) => ({ ...e, threadId: forkId })),
     );
     links.set(forkId, { parent: parent.id, cut, kind });
+    // the servers the copied log left attached stay (ADR 0024)
+    const copied = [...attachedBy(events.get(forkId) ?? [])].sort();
+    if (copied.length > 0) created.tools = copied;
     const gate = gates.get(parent.id);
     if (gate) gates.set(forkId, gate);
     const person: Actor = { type: "user", name: meOf(req).user };
@@ -1092,6 +1237,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       ...(parent.description ? { description: parent.description } : {}),
       target: to,
     });
+    // ...minus those its agent may not use, which the fork's own log detaches, first
+    const offered = new Set(offeredFor(req, to.agentId).map((t) => t.id));
+    const kept = copied.filter((id) => offered.has(id));
+    if (kept.length < copied.length) setTools(created, kept, person);
     if (kind === "edit" && typeof text === "string") {
       const message = append(forkId, "user_message", person, {
         text,
@@ -1217,7 +1366,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           { name: agent.id, ...(agent.description ? { description: agent.description } : {}) },
         ],
       },
-      ...(agent.releases ? { custom: { [RELEASE_CHANNELS_URI]: agent.releases } } : {}),
+      // the extensions of the orchestrator's own that the live card lists, by exact URI: the key is the signal
+      ...(agent.releases || THREAD_TOOLS_AGENTS.has(agent.id)
+        ? {
+            custom: {
+              ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
+              ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
+            },
+          }
+        : {}),
     });
   }
 
@@ -1310,6 +1467,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     const send = sendRaw === "steer" || sendRaw === "interrupt" ? sendRaw : undefined;
 
+    // `forwardedProps["vymalo.tools"]` is read on every run: one that is not an array of strings is a
+    // 400 before the stream. It is applied only by the run that creates the thread.
+    let tools: string[] = [];
+    const sentTools = isRecord(body.forwardedProps) ? body.forwardedProps[TOOLS_PROP] : undefined;
+    if (sentTools !== undefined && sentTools !== null) {
+      if (!Array.isArray(sentTools) || !sentTools.every((id) => typeof id === "string")) {
+        return problem(res, 400, "Invalid request", "vymalo.tools must be an array of server ids");
+      }
+      tools = sentTools as string[];
+    }
+
     const messages = body.messages as Record<string, unknown>[];
     const resume = Array.isArray(body.resume)
       ? (body.resume as { interruptId?: string; status?: string; payload?: { text?: unknown } }[])
@@ -1350,6 +1518,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           release in agent.releases.channels || (agent.releases.revisions ?? []).includes(release);
         if (!ok) return problem(res, 400, "Unknown release", `No release "${release}"`);
       }
+      const refused = refusedServers(req, tools, agent.id, new Set());
+      if (refused !== undefined) return problem(res, 422, "Unprocessable", refused);
       const now = new Date().toISOString();
       const created: Thread = {
         id: threadId,
@@ -1381,6 +1551,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         { type: "user", name: me.user },
         { text, messageId: first.id as string, runId },
       );
+      // the creation commit holds the message, then the servers attached with it (ADR 0024)
+      setTools(created, tools, { type: "user", name: me.user });
       if (script.gate) gates.set(created.id, script.gate);
       runs.set(created.id, { timer: undefined, pending: [], resume: script.resume });
       play(created, script.start);

@@ -971,6 +971,10 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   input (start) and output (end), a cut output (`truncated`, `bytes`), an input too big to keep
  *   (`{_cut, bytes}`), a failed command whose output is its error, a step the job's budget had no room for
  *   (`ioDropped`), and a step with none. The `steps` golden's `npm test` carries input and output too.
+ * - `relay`: mock only: calls of attached MCP servers as the orchestrator reports them (thread-tools-v1, "The
+ *   step of a call", `icon: "mcp-server:<id>"`): a web search of a server with an icon, one of a server the
+ *   list has no icon for (the generic icon), one that failed, one of a server the deployment no longer lists;
+ *   the answer and done. The orchestrator does not relay yet (slice 8's second half): the mock plays the story.
  * - `steps-ask`: the same sub-agent with a command that is `waiting` when the agent asks "Allow rm -rf
  *   build?" and blocks (the `steps-ask` golden); the answer ends the command and the sub-agent.
  * - `slow`: works until cancelled. `gate`: works until a test releases the run (`POST /__mock/release`), then the result and done.
@@ -1728,6 +1732,80 @@ export function scriptFor(text: string): {
             { ioDropped: true },
           ),
           agentStep("tool:s6", [], "tool", "no_details", "completed", "end", "tool"),
+          {
+            kind: "agent_message",
+            data: { messageId: nextMessageId(), final: true, text: "Done." },
+          },
+          { kind: "agent_status", data: { status: "completed", detail: "Done." } },
+          done,
+        ],
+      };
+    case "relay":
+      // calls of attached MCP servers, as the orchestrator reports them (docs/api/thread-tools-v1.md,
+      // "The step of a call"): `icon: "mcp-server:<id>"`, the label "<server name> · <tool>", the input on
+      // the start and the output on the end. One call of a server with an icon, one of a server the
+      // list has no icon for (the generic one is drawn), one that failed, and one of a server the
+      // deployment no longer lists.
+      return {
+        start: [
+          working,
+          agentStep(
+            "tool:r1",
+            [],
+            "tool",
+            "Web search \u00b7 search",
+            "running",
+            "start",
+            "mcp-server:websearch",
+            undefined,
+            { input: { query: "Stephane Segning", limit: 3 } },
+          ),
+          agentStep(
+            "tool:r1",
+            [],
+            "tool",
+            "Web search \u00b7 search",
+            "completed",
+            "end",
+            "mcp-server:websearch",
+            undefined,
+            {
+              output: {
+                text: "1. Stephane Segning - vymalo\n   https://example.org/mock-search/1",
+              },
+            },
+          ),
+          agentStep(
+            "tool:r2",
+            [],
+            "tool",
+            "GitHub \u00b7 get_issue",
+            "completed",
+            "end",
+            "mcp-server:github",
+            undefined,
+            { input: { repo: "vymalo/demo", number: 7 }, output: { text: "Issue 7: Fix login" } },
+          ),
+          agentStep(
+            "tool:r3",
+            [],
+            "tool",
+            "Team docs \u00b7 find",
+            "failed",
+            "end",
+            "mcp-server:docs",
+            "the server did not answer",
+            { input: { query: "deploy" }, output: { text: "unreachable", error: true } },
+          ),
+          agentStep(
+            "tool:r4",
+            [],
+            "tool",
+            "retired \u00b7 lookup",
+            "completed",
+            "end",
+            "mcp-server:retired",
+          ),
           {
             kind: "agent_message",
             data: { messageId: nextMessageId(), final: true, text: "Done." },

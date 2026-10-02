@@ -30,12 +30,14 @@ import {
   parseActorRun,
   parseAnswers,
   parseFork,
+  parseTools,
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
 import { type TextRole, textRoles } from "@/features/chat/lib/working";
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
+import { ToolsLine } from "@/features/tools/components/tools-line";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
 import { uuidv7 } from "@/lib/uuid";
@@ -374,6 +376,12 @@ export const AssistantMessage: FC = () => {
     const data = isAnswerPart(p) ? parseAnswers(p.data) : null;
     return data ? [{ i, data }] : [];
   });
+  // what the person attached or detached (ADR 0024): their own act, a muted line above the turn
+  const toolsPart = activityPartName(ACTIVITY.tools);
+  const tools = content.flatMap((p) => {
+    const data = p.type === "data" && p.name === toolsPart ? parseTools(p.data) : null;
+    return data ? [data] : [];
+  });
   // the marker of a fork (ADR 0029) is a run of its own: a divider, not a turn
   const marker = content.find(
     (p) => p.type === "data" && p.name === activityPartName(ACTIVITY.fork),
@@ -382,7 +390,7 @@ export const AssistantMessage: FC = () => {
     const fork = parseFork(marker.data);
     return fork ? <ForkDivider fork={fork} /> : null;
   }
-  if (lastDrawn < 0 && !running && answers.length === 0) return null;
+  if (lastDrawn < 0 && !running && answers.length === 0 && tools.length === 0) return null;
   // the answer and the working text of the turn (ADR 0031); Copy takes the answer
   const roles = textRoles(content, running);
   const ownWords = content
@@ -401,6 +409,12 @@ export const AssistantMessage: FC = () => {
       {answers.map(({ i, data }) => (
         <AnswerBubble key={i} data={data} />
       ))}
+      {tools.map((data) => (
+        <ToolsLine
+          key={`${data.at ?? ""}:${data.attached?.join() ?? ""}:${data.detached?.join() ?? ""}`}
+          content={data}
+        />
+      ))}
     </>
   );
   if (lastDrawn < 0 && !running) {
@@ -417,7 +431,9 @@ export const AssistantMessage: FC = () => {
       data-turn-id={messageId}
       className="group/turn flex min-w-0 motion-safe:animate-turn-in flex-col gap-3"
     >
-      {answers.length > 0 ? <div className="mb-3 flex flex-col gap-3">{answered}</div> : null}
+      {answers.length > 0 || tools.length > 0 ? (
+        <div className="mb-3 flex flex-col gap-3">{answered}</div>
+      ) : null}
       <TurnHeader actor={actor} at={createdAt} />
       <div className="flex min-w-0 flex-col gap-4 sm:pl-10">
         <TurnSummaryLine turnId={messageId} />
@@ -432,6 +448,8 @@ export const AssistantMessage: FC = () => {
               case "data":
                 // the person's answers are drawn above the turn
                 if (isAnswerPart(part as AnyPart)) return null;
+                // what was attached is drawn above the turn, with the person's other acts
+                if ((part as AnyPart).name === toolsPart) return null;
                 return <div className="w-full empty:hidden">{part.dataRendererUI}</div>;
               case "indicator":
                 // the turn's line says it works; before its first event there is only this

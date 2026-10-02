@@ -123,3 +123,48 @@ export const PROFILES: Record<ProfileName, Me> = {
 };
 export const isProfileName = (v: string | null): v is ProfileName =>
   v !== null && Object.hasOwn(PROFILES, v);
+
+type ToolServer = components["schemas"]["ToolServer"];
+
+/** What a server's icon is made of: a magnifier, as the SVG a deployment would put in its configuration. */
+const SEARCH_ICON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="#2f6f4f" stroke-width="2"/><path d="M10.5 10.5 14 14" stroke="#2f6f4f" stroke-width="2" stroke-linecap="round"/></svg>';
+
+/** A 16 by 16 PNG (a teal page with three lines), as the second kind of icon a configuration may carry. */
+const DOCS_ICON_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKklEQVR42mNgAAL50OD/5GAGmGb9hlqyMNiQYWYAsWDUC6NeoL4BlGZnANSjQtmyrOTxAAAAAElFTkSuQmCC";
+
+/**
+ * The MCP servers the mock deployment offers for attaching (`GET /api/tool-servers`, ADR 0024), in
+ * its order: one with an SVG icon for every agent, one with no icon (the generic one is drawn) for
+ * the coder only, and one with a PNG for the coder and the reviewer. A test swaps the list for its
+ * own session with `POST /__mock/tool-servers`.
+ */
+export const TOOL_SERVERS: readonly ToolServer[] = [
+  {
+    id: "websearch",
+    name: "Web search",
+    description: "Search the web and read what comes back.",
+    icon: `data:image/svg+xml;base64,${Buffer.from(SEARCH_ICON_SVG).toString("base64")}`,
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    description: "Read repositories, issues and pull requests.",
+    agents: ["coder"],
+  },
+  {
+    id: "docs",
+    name: "Team docs",
+    description: "Look things up in the team's documentation.",
+    icon: `data:image/png;base64,${DOCS_ICON_PNG}`,
+    agents: ["coder", "reviewer"],
+  },
+];
+
+/**
+ * The agents whose card lists `thread-tools/v1` (the capabilities document says it in `custom`, so a
+ * client can flag an agent before it sends): the others are sent no tools and the web says so.
+ */
+export const THREAD_TOOLS_AGENTS: ReadonlySet<string> = new Set(["coder"]);
+export const THREAD_TOOLS_URI = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";

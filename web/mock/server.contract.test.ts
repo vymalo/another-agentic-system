@@ -2419,3 +2419,446 @@ describe("a message sent while the agent works (ADR 0036)", () => {
     await frames(first);
   });
 });
+
+describe("MCP servers attached to a thread (ADR 0024), as the mock does it", () => {
+  type ToolServer = components["schemas"]["ToolServer"];
+  type ThreadTools = components["schemas"]["ThreadTools"];
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+  type Exported = {
+    thread: Thread;
+    events: { seq: number; kind: string; actor: { type: string; name: string }; data: unknown }[];
+  };
+
+  let sessions = 0;
+  /** A session of its own, as the web carries it (a cookie): `me`, and the deployment's servers. */
+  async function session(opts: { me?: string; servers?: ToolServer[] } = {}) {
+    const name = `tools-${++sessions}`;
+    if (opts.me)
+      expect((await post(`/__mock/config?me=${opts.me}&session=${name}`)).status).toBe(204);
+    if (opts.servers) {
+      expect((await post(`/__mock/tool-servers?session=${name}`, opts.servers)).status).toBe(204);
+    }
+    return { Cookie: `mock-registry=${name}` };
+  }
+  const send = (method: string, p: string, headers: Record<string, string>, body?: unknown) =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": "application/json", ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const put = (threadId: string, headers: Record<string, string>, body: unknown) =>
+    send("PUT", `/api/threads/${threadId}/tools`, headers, body);
+
+  /** A thread of `headers`' session, run to its end; `tools` ride the run that creates it. */
+  async function threadOf(
+    headers: Record<string, string>,
+    opts: { agent?: string; tools?: unknown; text?: string } = {},
+  ) {
+    const threadId = newId();
+    const res = await fetch(`${base}/agui/agents/${opts.agent ?? "coder"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...headers },
+      body: JSON.stringify({
+        state: {},
+        tools: [],
+        context: [],
+        forwardedProps: opts.tools === undefined ? {} : { "vymalo.tools": opts.tools },
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: opts.text ?? "echo tools" }],
+      }),
+    });
+    return { threadId, res };
+  }
+  async function finished(
+    headers: Record<string, string>,
+    opts: Parameters<typeof threadOf>[1] = {},
+  ) {
+    const { threadId, res } = await threadOf(headers, opts);
+    expect(res.status).toBe(200);
+    await frames(res);
+    for (let i = 0; i < 200; i++) {
+      const t = (await (
+        await fetch(`${base}/api/threads/${threadId}`, { headers })
+      ).json()) as Thread;
+      if (t.state === "done") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    return threadId;
+  }
+  const exported = async (threadId: string, headers: Record<string, string> = {}) =>
+    (await (await fetch(`${base}/api/threads/${threadId}/export`, { headers })).json()) as Exported;
+  const toolEvents = (log: Exported["events"]) =>
+    log.filter((e) => e.kind === "tools_attached" || e.kind === "tools_detached");
+  const problemOf = async (
+    template: string,
+    method: string,
+    res: Response,
+    status: number,
+    code?: string,
+  ): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    const body = (await expectDocumented(template, method, res)) as Problem;
+    expect(body.code).toBe(code);
+    return body;
+  };
+
+  it("listToolServers: the deployment's servers in its order, icons as data: URIs, no URL or credential, never cached", async () => {
+    const res = await fetch(`${base}/api/tool-servers`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const list = (await expectDocumented("/api/tool-servers", "get", res)) as ToolServer[];
+    expect(list.map((s) => s.id)).toEqual(["websearch", "github", "docs"]);
+    expect(list[0]?.icon).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(list[1]?.icon).toBeUndefined();
+    expect(list[1]?.agents).toEqual(["coder"]);
+    expect(list[2]?.icon).toMatch(/^data:image\/png;base64,/);
+    for (const s of list) {
+      expect(
+        Object.keys(s).every((k) => ["id", "name", "description", "icon", "agents"].includes(k)),
+      ).toBe(true);
+    }
+    // a test sets the list of its own session; the others keep theirs
+    const own = await session({ servers: [{ id: "only", name: "Only one" }] });
+    const mine = await fetch(`${base}/api/tool-servers`, { headers: own });
+    expect(((await mine.json()) as ToolServer[]).map((s) => s.id)).toEqual(["only"]);
+    expect(((await (await fetch(`${base}/api/tool-servers`)).json()) as ToolServer[]).length).toBe(
+      3,
+    );
+    // an empty list is a deployment with nothing to attach
+    const none = await session({ servers: [] });
+    const empty = await fetch(`${base}/api/tool-servers`, { headers: none });
+    expect(await expectDocumented("/api/tool-servers", "get", empty)).toEqual([]);
+  });
+
+  it("listToolServers takes thread.write: a role without it is 403 forbidden, one that grants nothing no_access", async () => {
+    const viewer = await session({ me: "read-only" });
+    const body = await problemOf(
+      "/api/tool-servers",
+      "get",
+      await fetch(`${base}/api/tool-servers`, { headers: viewer }),
+      403,
+      "forbidden",
+    );
+    expect(body.detail).toBe("your roles do not grant thread.write");
+    const nobody = await session({ me: "no-access" });
+    await problemOf(
+      "/api/tool-servers",
+      "get",
+      await fetch(`${base}/api/tool-servers`, { headers: nobody }),
+      403,
+      "no_access",
+    );
+  });
+
+  it("putThreadTools: the whole set, sorted, in any state; one tools_attached and one tools_detached for what differs, the same set nothing", async () => {
+    const threadId = await finished({});
+    const before = (await exported(threadId)).events.length;
+
+    const attach = await put(threadId, {}, { servers: ["docs", "websearch", "docs"] });
+    expect(attach.status).toBe(200);
+    expect(
+      ((await expectDocumented("/api/threads/{threadId}/tools", "put", attach)) as ThreadTools)
+        .servers,
+    ).toEqual(["docs", "websearch"]);
+    let doc = await exported(threadId);
+    expect(doc.thread.tools).toEqual(["docs", "websearch"]);
+    expect(toolEvents(doc.events)).toEqual([
+      expect.objectContaining({
+        kind: "tools_attached",
+        actor: { type: "user", name: "dev@example.com" },
+        data: { servers: ["docs", "websearch"] },
+      }),
+    ]);
+    expect(doc.events.length).toBe(before + 1);
+
+    // the same set writes nothing and is still a 200
+    const same = await put(threadId, {}, { servers: ["websearch", "docs"] });
+    expect(same.status).toBe(200);
+    await same.text();
+    expect((await exported(threadId)).events.length).toBe(before + 1);
+
+    // one more and one fewer: an attach and a detach, each with the ids that came or went
+    const swap = await put(threadId, {}, { servers: ["websearch", "github"] });
+    expect(((await swap.json()) as ThreadTools).servers).toEqual(["github", "websearch"]);
+    doc = await exported(threadId);
+    expect(
+      toolEvents(doc.events)
+        .slice(1)
+        .map((e) => [e.kind, e.data]),
+    ).toEqual([
+      ["tools_attached", { servers: ["github"] }],
+      ["tools_detached", { servers: ["docs"] }],
+    ]);
+
+    // none at all: `tools` is absent from the thread
+    const none = await put(threadId, {}, { servers: [] });
+    expect(((await none.json()) as ThreadTools).servers).toEqual([]);
+    const thread = (await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread;
+    expect(thread.tools).toBeUndefined();
+    expect(thread.state).toBe("done");
+  });
+
+  it("the stream says an attach as a snapshot with thread.tools and a vymalo.tools card, in a run of its own for a finished thread", async () => {
+    const threadId = await finished({});
+    expect((await put(threadId, {}, { servers: ["websearch"] })).status).toBe(200);
+    const read = await validated(
+      await frames(await connect(base, threadId, { mode: "run" })),
+      "tools frames",
+    );
+    const card = read.find(
+      (f) => f.event.type === "ACTIVITY_SNAPSHOT" && f.event.activityType === "vymalo.tools",
+    );
+    expect(card?.event.content).toMatchObject({ attached: ["websearch"] });
+    const snapshots = read.filter((f) => f.event.type === "STATE_SNAPSHOT");
+    expect(snapshots.at(-1)?.event).toMatchObject({
+      snapshot: { thread: { state: "done", tools: ["websearch"] } },
+    });
+    // a snapshot from before the attach says no tools
+    expect(snapshots[0]?.event).not.toHaveProperty("snapshot.thread.tools");
+  });
+
+  it("putThreadTools: 400 for a body that is not exactly {servers: [ids]} or an id that is not a server id, and nothing is written", async () => {
+    const threadId = await finished({});
+    const bodies: unknown[] = [
+      null,
+      [],
+      "websearch",
+      {},
+      { servers: "websearch" },
+      { servers: [1] },
+      { servers: ["websearch"], extra: true },
+      { servers: ["Web Search"] },
+      { servers: ["-x"] },
+      { servers: ["a".repeat(32)] },
+      { servers: [""] },
+    ];
+    for (const body of bodies) {
+      await problemOf("/api/threads/{threadId}/tools", "put", await put(threadId, {}, body), 400);
+    }
+    const notJson = await fetch(`${base}/api/threads/${threadId}/tools`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    });
+    await problemOf("/api/threads/{threadId}/tools", "put", notJson, 400);
+    expect(toolEvents((await exported(threadId)).events)).toEqual([]);
+  });
+
+  it("putThreadTools: 422 for a server the deployment does not list or does not offer for the thread's agent, or more than 16; the detail names the id", async () => {
+    const reviewed = await finished({}, { agent: "reviewer" });
+    const unlisted = await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(reviewed, {}, { servers: ["nope"] }),
+      422,
+    );
+    expect(unlisted.detail).toContain("nope");
+    const notForAgent = await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(reviewed, {}, { servers: ["websearch", "github"] }),
+      422,
+    );
+    expect(notForAgent.detail).toContain("github");
+    expect(notForAgent.detail).toContain("reviewer");
+    // one refused server attaches nothing: not even the one that was fine
+    expect(((await exported(reviewed)).thread.tools ?? []).length).toBe(0);
+
+    const many = Array.from({ length: 17 }, (_, i) => `s${i}`);
+    const own = await session({ servers: many.map((id) => ({ id, name: id })) });
+    const crowded = await finished(own);
+    await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(crowded, own, { servers: many }),
+      422,
+    );
+    // sixteen are fine
+    const sixteen = await put(crowded, own, { servers: many.slice(0, 16) });
+    expect(sixteen.status).toBe(200);
+    expect(((await sixteen.json()) as ThreadTools).servers.length).toBe(16);
+  });
+
+  it("putThreadTools: a server the thread has is not checked again; a person can detach what the deployment stopped listing", async () => {
+    const own = await session({
+      servers: [
+        { id: "websearch", name: "Web search" },
+        { id: "files", name: "Files" },
+      ],
+    });
+    const threadId = await finished(own);
+    expect((await put(threadId, own, { servers: ["websearch", "files"] })).status).toBe(200);
+    // the deployment stops listing `files`
+    expect(
+      (
+        await post(`/__mock/tool-servers?session=${own.Cookie.split("=")[1]}`, [
+          { id: "websearch", name: "Web search" },
+        ])
+      ).status,
+    ).toBe(204);
+    // keeping it is no new attach: 200; and so is dropping it
+    const kept = await put(threadId, own, { servers: ["files", "websearch"] });
+    expect(kept.status).toBe(200);
+    await kept.text();
+    const dropped = await put(threadId, own, { servers: ["websearch"] });
+    expect(((await dropped.json()) as ThreadTools).servers).toEqual(["websearch"]);
+    // but it cannot be attached again
+    await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(threadId, own, { servers: ["websearch", "files"] }),
+      422,
+    );
+  });
+
+  it("putThreadTools: 404 for a thread that is not there or not the caller's, 403 read_only for an administrator on another's thread, 403 forbidden without thread.write", async () => {
+    await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(newId(), {}, { servers: [] }),
+      404,
+    );
+    const theirs = await finished({});
+    const stranger = await session({ me: "limited" });
+    await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(theirs, stranger, { servers: ["websearch"] }),
+      404,
+    );
+    const admin = await session({ me: "admin" });
+    const readOnly = await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(theirs, admin, { servers: ["websearch"] }),
+      403,
+      "read_only",
+    );
+    expect(readOnly.detail).toBe(
+      "this thread is read-only for you: you may read it, not change it",
+    );
+    const viewer = await session({ me: "read-only" });
+    await problemOf(
+      "/api/threads/{threadId}/tools",
+      "put",
+      await put(theirs, viewer, { servers: ["websearch"] }),
+      403,
+      "forbidden",
+    );
+    expect(toolEvents((await exported(theirs)).events)).toEqual([]);
+  });
+
+  it("a run that creates a thread attaches the servers it names, in the creation commit after the message", async () => {
+    const { threadId, res } = await threadOf({}, { tools: ["websearch", "docs"] });
+    expect(res.status).toBe(200);
+    const body = await validated(await frames(res), "creation frames");
+    const card = body.find(
+      (f) => f.event.type === "ACTIVITY_SNAPSHOT" && f.event.activityType === "vymalo.tools",
+    );
+    expect(card?.event.content).toMatchObject({ attached: ["docs", "websearch"] });
+    const doc = await exported(threadId);
+    expect(doc.events.slice(0, 2).map((e) => e.kind)).toEqual(["user_message", "tools_attached"]);
+    expect(doc.thread.tools).toEqual(["docs", "websearch"]);
+    // the first snapshot has no tools; the one after the attach has them
+    const snapshots = body.filter((f) => f.event.type === "STATE_SNAPSHOT");
+    expect(snapshots[0]?.event).not.toHaveProperty("snapshot.thread.tools");
+    expect(snapshots.at(-1)?.event).toMatchObject({
+      snapshot: { thread: { tools: ["docs", "websearch"] } },
+    });
+  });
+
+  it("vymalo.tools that is [], null or absent attaches none; one that is not an array of strings is a 400 before the stream, a server not offered for the agent a 422, and no thread is made", async () => {
+    for (const tools of [[], null, undefined]) {
+      const { threadId, res } = await threadOf({}, { tools });
+      expect(res.status).toBe(200);
+      await frames(res);
+      expect((await exported(threadId)).thread.tools).toBeUndefined();
+    }
+    for (const tools of ["websearch", { id: "websearch" }, [1], [["websearch"]]]) {
+      const { threadId, res } = await threadOf({}, { tools });
+      await problemOf("/agui/agents/{agentId}", "post", res, 400);
+      expect((await fetch(`${base}/api/threads/${threadId}`)).status).toBe(404);
+    }
+    const refused = await threadOf({}, { tools: ["websearch", "github"], agent: "reviewer" });
+    const body = await problemOf("/agui/agents/{agentId}", "post", refused.res, 422);
+    expect(body.detail).toContain("github");
+    expect((await fetch(`${base}/api/threads/${refused.threadId}`)).status).toBe(404);
+    const crowded = await threadOf({}, { tools: Array.from({ length: 17 }, (_, i) => `s${i}`) });
+    await problemOf("/agui/agents/{agentId}", "post", crowded.res, 422);
+  });
+
+  it("a run on a thread that exists carries vymalo.tools and attaches nothing (the set is changed with PUT)", async () => {
+    const threadId = await finished({});
+    const res = await postRun(base, "coder", {
+      threadId,
+      runId: "run-2",
+      messages: [
+        { id: "m-1", role: "user", content: "echo tools" },
+        { id: "m-2", role: "user", content: "echo more" },
+      ],
+      forwardedProps: { "vymalo.tools": ["websearch"] },
+    });
+    expect(res.status).toBe(200);
+    await frames(res);
+    expect(toolEvents((await exported(threadId)).events)).toEqual([]);
+  });
+
+  it("a thread keeps its servers from job to job, and a fork keeps what its agent may use and detaches the rest first", async () => {
+    const threadId = await finished({}, { tools: ["docs", "github", "websearch"] });
+    const next = await postRun(base, "coder", {
+      threadId,
+      runId: "run-2",
+      messages: [
+        { id: "m-1", role: "user", content: "echo tools" },
+        { id: "m-2", role: "user", content: "echo second" },
+      ],
+    });
+    await frames(next);
+    expect(
+      ((await (await fetch(`${base}/api/threads/${threadId}`)).json()) as Thread).tools,
+    ).toEqual(["docs", "github", "websearch"]);
+
+    const same = await fetch(`${base}/api/threads/${threadId}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after: 1 }),
+    });
+    expect(same.status).toBe(201);
+    expect(((await same.json()) as Thread).tools).toEqual(["docs", "github", "websearch"]);
+
+    // to the reviewer, which may use `docs` and `websearch` but not `github`
+    const toReviewer = await fetch(`${base}/api/threads/${threadId}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after: 1, target: { agentId: "reviewer" } }),
+    });
+    expect(toReviewer.status).toBe(201);
+    const fork = (await expectDocumented(
+      "/api/threads/{threadId}/fork",
+      "post",
+      toReviewer,
+    )) as Thread;
+    expect(fork.tools).toEqual(["docs", "websearch"]);
+    const log = (await exported(fork.id)).events;
+    expect(toolEvents(log).at(-1)).toMatchObject({
+      kind: "tools_detached",
+      data: { servers: ["github"] },
+    });
+    const forkedAt = log.findIndex((e) => e.kind === "thread_forked");
+    expect(log[forkedAt + 1]?.kind).toBe("tools_detached");
+  });
+
+  it("capabilities: only the agents whose card lists thread-tools/v1 say so, in custom", async () => {
+    const uri = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";
+    const custom = async (agent: string) =>
+      (
+        (await (await fetch(`${base}/agui/agents/${agent}/capabilities`)).json()) as {
+          custom?: Record<string, unknown>;
+        }
+      ).custom;
+    expect(Object.keys((await custom("coder")) ?? {})).toContain(uri);
+    expect(Object.keys((await custom("reviewer")) ?? {})).not.toContain(uri);
+    expect(Object.keys((await custom("verifier")) ?? {})).not.toContain(uri);
+  });
+});

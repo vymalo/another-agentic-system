@@ -6,6 +6,7 @@ export type ApiBranchPoint = ApiBranches["points"][number];
 export type ApiAgent = components["schemas"]["Agent"];
 export type ApiMe = components["schemas"]["Me"];
 export type ApiPermission = components["schemas"]["Permission"];
+export type ApiToolServer = components["schemas"]["ToolServer"];
 export type ApiActor = components["schemas"]["Actor"];
 export type ApiReleases = NonNullable<ApiAgent["releases"]>;
 export type ThreadState = components["schemas"]["ThreadState"];
