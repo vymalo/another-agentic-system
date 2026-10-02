@@ -1,0 +1,43 @@
+[package]
+name = "orch-auth-jwt"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Authenticator over OAuth2 bearer tokens: JWTs validated against the issuer's JWKS (RS256, RS384, ES256, EdDSA), a key cache refreshed and refetched on an unknown kid, failing closed."
+readme = "README.md"
+
+[features]
+default = []
+# `testkit::TestIdp`: a token issuer on a local port (discovery document, JWKS, RSA, EC and Ed25519
+# keys made once per process, tokens signed as a case asks, including the ones that must be
+# refused). For this crate's tests and for the tests of the crates that authenticate with it.
+testkit = ["dep:aws-lc-rs", "dep:axum", "orch-ports/testkit", "tokio/net", "tokio/rt"]
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+# The crypto backend is aws-lc-rs, the one rustls already uses in this workspace. `use_pem` is
+# off: keys come from a JWKS, never from a PEM.
+jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+url.workspace = true
+aws-lc-rs = { version = "1.15", optional = true }
+axum = { workspace = true, optional = true }
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+aws-lc-rs = "1.15"
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+
+[lints]
+workspace = true
