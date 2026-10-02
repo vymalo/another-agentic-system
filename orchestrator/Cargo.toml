@@ -28,6 +28,7 @@ orch-registry-platform = { path = "crates/registry-platform" }
 orch-auth-header = { path = "crates/auth-header" }
 orch-auth-jwt = { path = "crates/auth-jwt" }
 orch-model-openai = { path = "crates/model-openai" }
+orch-tools-mcp = { path = "crates/tools-mcp" }
 orch-artifacts-fs = { path = "crates/artifacts-fs" }
 orch-artifacts-s3 = { path = "crates/artifacts-s3" }
 orch-svg-clean = { path = "crates/svg-clean" }
