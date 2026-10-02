@@ -333,8 +333,9 @@ class Boundary extends Component<
 }
 
 /** What a control that cannot act says, once per surface. */
-function hint(canSend: boolean, finished: boolean): string | null {
+function hint(canSend: boolean, finished: boolean, readOnly?: string | null): string | null {
   if (canSend) return null;
+  if (readOnly) return `${readOnly} You cannot act on its interface.`;
   return finished
     ? "This request is finished: the actions of this interface are off. Write a message to go on."
     : "The actions of this interface work while the thread waits for you.";
@@ -362,7 +363,9 @@ export function SurfaceView({
     [prepared.surfaceId, prepared.fields, live, edits],
   );
   const note =
-    live && prepared.eventActions > 0 ? hint(host.canSend, isTerminal(host.state)) : null;
+    live && prepared.eventActions > 0
+      ? hint(host.canSend, isTerminal(host.state), host.readOnly)
+      : null;
   return (
     <ViewCtx.Provider value={view}>
       <Boundary fallback={fallback} spec={prepared.spec}>

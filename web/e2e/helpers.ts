@@ -56,7 +56,8 @@ export const threadRows = (page: Page) => threadList(page).getByRole("listitem")
 
 /** Opens the thread list where it is a sheet (a phone); a no-op where it is always visible. */
 export async function openThreadList(page: Page) {
-  const toggle = page.getByRole("button", { name: "Threads" });
+  // exact: an administrator's "All threads" is a button too
+  const toggle = page.getByRole("button", { name: "Threads", exact: true });
   if (await toggle.isVisible()) await toggle.click();
 }
 

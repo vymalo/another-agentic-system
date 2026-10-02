@@ -6,7 +6,9 @@
  * It is typed from the generated contract types and checked against the contract by
  * server.contract.test.ts; the AG-UI frames are the orchestrator's (mock/projection.ts, checked
  * against the goldens of docs/api/examples/agui by golden.test.ts). Authentication is not enforced
- * (oauth2-proxy's job in production). The first word of the first message picks a scripted agent
+ * (oauth2-proxy's job in production), but who a session is, is: `GET /api/me`, and the 403s and 404s
+ * its permissions give (ADR 0033), switched per session by `POST /__mock/config?me=` (fixtures.ts
+ * `PROFILES`). The first word of the first message picks a scripted agent
  * behaviour: see scripts.ts and web/README.md.
  */
 import { randomUUID } from "node:crypto";
@@ -15,7 +17,14 @@ import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
 import { FILES, fileHeaders } from "./files";
-import { AGENTS, DEV_USER, REGISTRY_UNREACHABLE } from "./fixtures";
+import {
+  AGENTS,
+  DEV_USER,
+  isProfileName,
+  PROFILES,
+  type ProfileName,
+  REGISTRY_UNREACHABLE,
+} from "./fixtures";
 import { LiveOverlay, type LivePiece } from "./live";
 import {
   type Audience,
@@ -32,6 +41,7 @@ type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
 type Actor = components["schemas"]["Actor"];
 type Agent = components["schemas"]["Agent"];
+type Me = components["schemas"]["Me"];
 type ThreadState = components["schemas"]["ThreadState"];
 
 /** A run is open while the thread is queued, working or being verified. */
@@ -187,14 +197,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    * The state is kept per session, so that e2e tests running in parallel against one mock do not
    * see each other's registry: a browser says which in the cookie `mock-registry`, a test hook in
    * `?session=`. No session is the `default` one. The `ui` configuration (`GET /api/config`) is kept
-   * the same way, so that a test can switch descriptions off for its own browser.
+   * the same way, so that a test can switch descriptions off for its own browser. So is who the
+   * session is (`me`, a profile of fixtures.ts): the default is a person with every permission over
+   * their own threads, which is what a session was before roles.
    */
-  type Registry = { agents: Agent[]; down: boolean; showDescriptions: boolean };
+  type Registry = { agents: Agent[]; down: boolean; showDescriptions: boolean; me: ProfileName };
   const registries = new Map<string, Registry>();
   const registryOf = (session: string): Registry => {
     let registry = registries.get(session);
     if (!registry) {
-      registry = { agents: [], down: false, showDescriptions: true };
+      registry = { agents: [], down: false, showDescriptions: true, me: "user" };
       registries.set(session, registry);
     }
     return registry;
@@ -203,10 +215,63 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     /(?:^|;\s*)mock-registry=([^;]+)/.exec(req.headers.cookie ?? "")?.[1] ?? "default";
   const listedAgents = (req: http.IncomingMessage): Agent[] => {
     const registry = registryOf(sessionOf(req));
-    return [...AGENTS, ...(registry.down ? [] : registry.agents)];
+    const read = meOf(req).agents.read;
+    return [...AGENTS, ...(registry.down ? [] : registry.agents)].filter((a) => covers(read, a.id));
   };
   const findAgent = (req: http.IncomingMessage, id: string): Agent | undefined =>
     listedAgents(req).find((a) => a.id === id);
+  /** Who the session is (`GET /api/me`). */
+  const meOf = (req: http.IncomingMessage): Me => PROFILES[registryOf(sessionOf(req)).me];
+  const scopeOf = (me: Me, permission: string): string | undefined =>
+    me.permissions.find((p) => p.permission === permission)?.scope;
+  const holds = (me: Me, permission: string): boolean =>
+    me.permissions.some((p) => p.permission === permission);
+  const covers = (ids: string[], agentId: string): boolean =>
+    ids.includes("*") || ids.includes(agentId);
+  /** The 403 of a permission no role of the person holds, whatever is asked for (`code: forbidden`). */
+  const forbid = (res: http.ServerResponse, permission: string, agentId?: string) =>
+    problem(
+      res,
+      403,
+      "Forbidden",
+      agentId === undefined
+        ? `your roles do not grant ${permission}`
+        : `your roles do not grant ${permission} for the agent ${agentId}`,
+      "forbidden",
+    );
+  const readOnly = (res: http.ServerResponse) =>
+    problem(
+      res,
+      403,
+      "Forbidden",
+      "this thread is read-only for you: you may read it, not change it",
+      "read_only",
+    );
+  /**
+   * The thread the caller reads (`act` false) or changes (`act` true), or the answer that refuses
+   * it, as the orchestrator gives it: a permission no role holds is a 403; a thread the caller
+   * may not read is a 404 (it does not leak that it exists); a thread they may read and not change
+   * is a 403 `read_only`.
+   */
+  const accessible = (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    id: string,
+    act: boolean,
+  ): Thread | undefined => {
+    const me = meOf(req);
+    if (act && !holds(me, "thread.write")) return void forbid(res, "thread.write");
+    const read = scopeOf(me, "thread.read");
+    if (read === undefined) return void forbid(res, "thread.read");
+    const thread = threads.get(id);
+    if (!thread || (read === "own" && thread.owner !== me.user)) {
+      return void problem(res, 404, "Thread not found");
+    }
+    if (act && scopeOf(me, "thread.write") === "own" && thread.owner !== me.user) {
+      return void readOnly(res);
+    }
+    return thread;
+  };
   /** Every agent any session's registry lists: a thread keeps its agent when a session's registry goes. */
   const everyAgent = (): Agent[] => [
     ...AGENTS,
@@ -564,9 +629,27 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       registryOf(session).down = url.searchParams.get("down") === "true";
       return void res.writeHead(204).end();
     }
-    // `ui.showDescriptions` as a test sets it, for its own session: `?showDescriptions=false`.
+    // What a test sets for its own session, each only when it is given: `?showDescriptions=false`
+    // (`ui.showDescriptions`), and `?me=admin` (who the session is, `PROFILES`: `user`, `admin`,
+    // `read-only`, `no-access`; 400 for another name).
     if (path === "/__mock/config" && method === "POST") {
-      registryOf(session).showDescriptions = url.searchParams.get("showDescriptions") !== "false";
+      const state = registryOf(session);
+      const shown = url.searchParams.get("showDescriptions");
+      const who = url.searchParams.get("me");
+      if (who !== null && !isProfileName(who)) {
+        return problem(res, 400, "Bad Request", `me is one of ${Object.keys(PROFILES).join(", ")}`);
+      }
+      if (shown !== null) state.showDescriptions = shown !== "false";
+      if (who !== null) state.me = who as ProfileName;
+      return void res.writeHead(204).end();
+    }
+    // The person a thread belongs to, as a test says it (a thread is made by the session that runs
+    // into it, so this is how a thread of someone else gets into the list): `?thread=<id>&owner=<e-mail>`.
+    if (path === "/__mock/owner" && method === "POST") {
+      const thread = threads.get(url.searchParams.get("thread") ?? "");
+      const owner = url.searchParams.get("owner")?.trim().toLowerCase();
+      if (!thread || !owner) return problem(res, 404, "Not found", "no such thread, or no owner");
+      thread.owner = owner;
       return void res.writeHead(204).end();
     }
     if (path === "/__mock/registry/agents" && method === "POST") {
@@ -574,13 +657,33 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       registryOf(session).agents.push({ ...agent, source: "registry" });
       return void res.writeHead(204).end();
     }
-    if (path === "/api/agents" && method === "GET") return sendJson(res, 200, listedAgents(req));
+    // `GET /api/me` (`getMe`, ADR 0033): who the session is and what its roles let it do; the one
+    // route that answers a person whose roles grant nothing. Every other route of the APIs refuses
+    // such a person (`no_access`).
+    if (path === "/api/me" && method === "GET") return sendJson(res, 200, meOf(req));
+    if (
+      (path.startsWith("/api/") || path.startsWith("/agui/")) &&
+      meOf(req).permissions.length === 0
+    ) {
+      return problem(
+        res,
+        403,
+        "Forbidden",
+        "your roles do not grant access to this API",
+        "no_access",
+      );
+    }
+    if (path === "/api/agents" && method === "GET") {
+      if (!holds(meOf(req), "agent.read")) return forbid(res, "agent.read");
+      return sendJson(res, 200, listedAgents(req));
+    }
     // `GET /api/config` (`getConfig`, ADR 0034): the public subset, every `ui` key with its value
     if (path === "/api/config" && method === "GET") {
       const { showDescriptions } = registryOf(sessionOf(req));
       return sendJson(res, 200, { ui: { showDescriptions } });
     }
     if (path === "/api/registry" && method === "GET") {
+      if (!holds(meOf(req), "agent.read")) return forbid(res, "agent.read");
       return sendJson(res, 200, {
         sources: [
           { name: "static", status: "ok" },
@@ -591,7 +694,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       });
     }
 
-    if (path === "/api/threads" && method === "GET") return listThreads(res, url);
+    if (path === "/api/threads" && method === "GET") return listThreads(req, res, url);
 
     const run = /^\/agui\/agents\/([^/]+)$/.exec(path);
     if (run && method === "POST") return runAgent(req, res, decodeURIComponent(run[1] ?? ""));
@@ -605,9 +708,14 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // `GET /api/threads/{id}/artifacts/{sha256}` (`getArtifact`, ADR 0032): a file of the thread
     const artifact = /^\/api\/threads\/([^/]+)\/artifacts\/([^/]+)$/.exec(path);
     if (artifact && method === "GET") {
+      const me = meOf(req);
+      if (!holds(me, "artifact.read")) return forbid(res, "artifact.read");
       const thread = threads.get(decodeURIComponent(artifact[1] ?? ""));
       const file = FILES.get(decodeURIComponent(artifact[2] ?? ""));
       if (!thread || !file) return problem(res, 404, "Not found");
+      if (scopeOf(me, "artifact.read") === "own" && thread.owner !== me.user) {
+        return problem(res, 404, "Not found");
+      }
       const download = url.searchParams.get("download");
       if (download !== null && !["0", "1", "true", "false"].includes(download)) {
         return problem(res, 400, "Bad Request", "download must be 1");
@@ -620,8 +728,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
       const sub = m[2];
-      const thread = threads.get(id);
-      if (!thread) return problem(res, 404, "Thread not found");
+      // reading a thread takes `thread.read`; patching, cancelling and forking it take `thread.write`
+      // over it (a thread of another's, read and not changed, is `read_only`)
+      const acts =
+        method === "PATCH" || (method === "POST" && (sub === "cancel" || sub === "fork"));
+      if (!acts && method !== "GET") return problem(res, 404, "Not found");
+      const thread = accessible(req, res, id, acts);
+      if (!thread) return;
       if (!sub && method === "GET") return sendJson(res, 200, viewOf(thread));
       if (!sub && method === "PATCH") return patchThread(req, res, thread);
       if (sub === "cancel" && method === "POST") return cancel(res, thread);
@@ -689,7 +802,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         append(
           thread.id,
           "thread_titled",
-          { type: "user", name: DEV_USER },
+          { type: "user", name: meOf(req).user },
           { title, source: "user" },
         );
       }
@@ -700,7 +813,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         append(
           thread.id,
           "thread_described",
-          { type: "user", name: DEV_USER },
+          { type: "user", name: meOf(req).user },
           { description, source: "user" },
         );
       }
@@ -732,10 +845,32 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     res.end(JSON.stringify(document, null, 2));
   }
 
-  function listThreads(res: http.ServerResponse, url: URL) {
+  /**
+   * `GET /api/threads` (`listThreads`): the caller's own threads. `owner` asks for another person's
+   * (an e-mail address) or everyone's (`*`): that takes `admin` and a `thread.read` of scope `any`
+   * (else a 403, not a short list), and the caller's own address is the plain list for anyone.
+   */
+  function listThreads(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+    const me = meOf(req);
+    if (!holds(me, "thread.read")) return forbid(res, "thread.read");
+    const owner = url.searchParams.get("owner")?.trim().toLowerCase();
+    if (url.searchParams.has("owner") && !owner) {
+      return problem(res, 400, "Bad Request", "`owner` is an e-mail address, or *");
+    }
+    const others = owner !== undefined && owner !== me.user;
+    if (others && !(holds(me, "admin") && scopeOf(me, "thread.read") === "any")) {
+      return problem(
+        res,
+        403,
+        "Forbidden",
+        "listing the threads of others takes the admin permission and thread.read over any thread",
+        "forbidden",
+      );
+    }
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
     const before = url.searchParams.get("before");
-    let all = [...threads.values()].reverse(); // newest first
+    const whose = owner === undefined ? me.user : owner;
+    let all = [...threads.values()].filter((t) => whose === "*" || t.owner === whose).reverse(); // newest first
     // an edit is a branch of a conversation the list already shows (`listBranches` finds it)
     if (url.searchParams.get("branches") !== "include") {
       all = all.filter((t) => links.get(t.id)?.kind !== "edit");
@@ -821,6 +956,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       to = { agentId: agent.id, ...(typeof release === "string" ? { release } : {}) };
     }
 
+    if (!covers(meOf(req).agents.invoke, to.agentId)) {
+      return forbid(res, "agent.invoke", to.agentId);
+    }
+
     const forkId = typeof id === "string" ? id : randomUUID();
     const made = threads.get(forkId);
     if (made) {
@@ -861,7 +1000,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const now = new Date().toISOString();
     const created: Thread = {
       id: forkId,
-      owner: DEV_USER,
+      owner: meOf(req).user,
       title: parent.title,
       ...(parent.description ? { description: parent.description } : {}),
       target: to,
@@ -879,7 +1018,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     links.set(forkId, { parent: parent.id, cut, kind });
     const gate = gates.get(parent.id);
     if (gate) gates.set(forkId, gate);
-    const person: Actor = { type: "user", name: DEV_USER };
+    const person: Actor = { type: "user", name: meOf(req).user };
     append(forkId, "thread_forked", person, {
       from: { threadId: parent.id, seq: cut },
       kind,
@@ -990,6 +1129,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   }
 
   function capabilities(req: http.IncomingMessage, res: http.ServerResponse, agentId: string) {
+    // the agents a person reads are the ones `agent.read` names: another is a 403, not a 404
+    const me = meOf(req);
+    if (!holds(me, "agent.read") || !covers(me.agents.read, agentId)) {
+      return forbid(res, "agent.read", agentId);
+    }
     const agent = agentOrRefuse(req, res, agentId);
     if (!agent) return;
     res.setHeader("Cache-Control", "no-store");
@@ -1017,8 +1161,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     url: URL,
     threadId: string,
   ) {
-    const thread = threads.get(threadId);
-    if (!thread) return problem(res, 404, "Thread not found");
+    const thread = accessible(req, res, threadId, false);
+    if (!thread) return;
     const mode = url.searchParams.get("mode");
     if (mode !== null && mode !== "run") {
       return problem(res, 400, "Invalid request", "mode must be run");
@@ -1064,6 +1208,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     if (!UUID.test(threadId))
       return problem(res, 400, "Invalid request", "threadId must be a UUID");
+    // a run is a write of a thread, with an agent the roles name: a 403 whatever else is true of it
+    const me = meOf(req);
+    if (!holds(me, "thread.write")) return forbid(res, "thread.write");
+    if (!covers(me.agents.invoke, agentId)) return forbid(res, "agent.invoke", agentId);
     const agent = agentOrRefuse(req, res, agentId);
     if (!agent) return;
     let catalog: CatalogSent | undefined;
@@ -1083,7 +1231,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const resume = Array.isArray(body.resume)
       ? (body.resume as { interruptId?: string; status?: string; payload?: { text?: unknown } }[])
       : [];
-    const thread = threads.get(threadId);
+    // an existing thread is the person's to read (else it is not there for them) and to change
+    // (else it is theirs to read only); a new id is theirs to make
+    const thread = threads.has(threadId) ? accessible(req, res, threadId, true) : undefined;
+    if (threads.has(threadId) && !thread) return;
     const log = events.get(threadId) ?? [];
     const known = new Set(log.map((e) => e.data.messageId).filter((v) => typeof v === "string"));
     const fresh = messages.filter(
@@ -1119,7 +1270,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const now = new Date().toISOString();
       const created: Thread = {
         id: threadId,
-        owner: DEV_USER,
+        owner: me.user,
         title: text.slice(0, 60),
         target: { agentId: agent.id, ...(typeof release === "string" ? { release } : {}) },
         state: "queued",
@@ -1144,7 +1295,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       append(
         created.id,
         "user_message",
-        { type: "user", name: DEV_USER },
+        { type: "user", name: me.user },
         { text, messageId: first.id as string, runId },
       );
       if (script.gate) gates.set(created.id, script.gate);
@@ -1161,7 +1312,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 409, "Conflict", `the thread targets ${thread.target.agentId}`);
     }
     if (isRecord(body.forwardedProps) && "a2uiAction" in body.forwardedProps) {
-      return runAction(res, thread, runId, body, fresh.length + resume.length > 0, catalog);
+      return runAction(
+        me.user,
+        res,
+        thread,
+        runId,
+        body,
+        fresh.length + resume.length > 0,
+        catalog,
+      );
     }
     // A retry of a run the log holds attaches to it.
     const recorded = log.find((e) => e.kind === "user_message" && e.data.runId === runId);
@@ -1188,7 +1347,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       append(
         thread.id,
         "user_message",
-        { type: "user", name: DEV_USER },
+        { type: "user", name: me.user },
         { text: next, messageId: nextId, runId },
       );
       const job = log.filter((e) => e.kind === "job_started").length + 2;
@@ -1238,7 +1397,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     append(
       thread.id,
       "user_message",
-      { type: "user", name: DEV_USER },
+      { type: "user", name: me.user },
       { text, ...(messageId ? { messageId } : {}), runId },
     );
     setState(thread, "queued");
@@ -1257,6 +1416,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
    * owner and only for a surface the thread has now. The scripted agent answers `ui-action <name>`.
    */
   function runAction(
+    who: string,
     res: http.ServerResponse,
     thread: Thread,
     runId: string,
@@ -1317,7 +1477,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     append(
       thread.id,
       "ui_action",
-      { type: "user", name: DEV_USER },
+      { type: "user", name: who },
       { ...strings, context, version: version as "v0.9" | "v0.9.1" | "v1.0", runId },
     );
     setState(thread, "queued");

@@ -8,8 +8,13 @@ import { isActive, type ThreadState } from "@/lib/api/types";
 
 /** What the chat needs to fork the open thread (ADR 0029); the defaults are those of a page with no thread. */
 export type ThreadFork = {
-  /** There is a thread to fork. False on the new-chat page. */
+  /** There is a thread to fork. False on the new-chat page, and on a thread the person may only read. */
   available: boolean;
+  /**
+   * Why the person may not act on this thread (`Read only: this is alice@example.com’s thread.`):
+   * a fork, an edit and the other agents of the menu are not offered. Null when they may.
+   */
+  readOnly: string | null;
   /** The agent's turn is going on: nothing of it can be copied (the server says `turn_open`). */
   turnOpen: boolean;
   /** A fork is being made. */
@@ -36,6 +41,7 @@ export type ThreadFork = {
 
 const NONE: ThreadFork = {
   available: false,
+  readOnly: null,
   turnOpen: false,
   busy: false,
   error: null,
@@ -55,7 +61,8 @@ export const useThreadFork = (): ThreadFork => useContext(Context);
 
 /**
  * Forking for the open thread: the turn actions, the agent menu's "continue with another agent"
- * and the edit of a message of the person (a branch). It never forks a turn that is not over (`turnOpen`: the thread is queued, working or
+ * and the edit of a message of the person (a branch). A thread the person may only read
+ * (`readOnly`) offers none of it. It never forks a turn that is not over (`turnOpen`: the thread is queued, working or
  * verifying), and says why the server refused a fork that was made anyway (a turn that began after
  * the page last heard, `turn_open`) in a line under the top bar.
  */
@@ -64,11 +71,14 @@ export function ForkProvider({
   agent,
   state,
   lastSeq,
+  readOnly = null,
   children,
 }: {
   threadId: string;
   agent: ThreadAgent;
   state: ThreadState | undefined;
+  /** Why the person may not act on the thread, when they may not (`threadAccess`): it forks nothing. */
+  readOnly?: string | null;
   /** The newest event the page has read: what the answers about the log (`seqOfMessage`) move with. */
   lastSeq: number;
   children: ReactNode;
@@ -112,7 +122,8 @@ export function ForkProvider({
 
   const value = useMemo<ThreadFork>(
     () => ({
-      available: true,
+      available: readOnly === null,
+      readOnly,
       turnOpen,
       busy,
       error,
@@ -125,6 +136,7 @@ export function ForkProvider({
       editMessage,
     }),
     [
+      readOnly,
       turnOpen,
       busy,
       error,

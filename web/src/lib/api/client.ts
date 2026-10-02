@@ -1,8 +1,11 @@
 import createClient from "openapi-fetch";
 import type { paths } from "./schema";
+import { signInAgain } from "./session";
 
 /** Relative base URL: every call goes to `/api/*` on the page's own origin. */
 export const api = createClient<paths>({ baseUrl: "" });
+// a 401 is an expired session: the edge's sign-in, when the deployment has one (session.ts)
+api.use(signInAgain);
 
 /** Best-effort human message from an RFC 9457 problem body or anything else. */
 export function problemMessage(error: unknown): string {

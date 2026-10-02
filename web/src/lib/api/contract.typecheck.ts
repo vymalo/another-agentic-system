@@ -7,7 +7,7 @@
  */
 import { api } from "./client";
 import type { components } from "./schema";
-import type { ApiThread, ThreadState } from "./types";
+import type { ApiMe, ApiPermission, ApiThread, ThreadState } from "./types";
 
 // @ts-expect-error "running" is not a ThreadState
 export const badState: ThreadState = "running";
@@ -21,6 +21,15 @@ export const badThread: ApiThread = {
   createdAt: "",
   updatedAt: "",
 };
+
+// @ts-expect-error Me requires the agents each agent permission is about
+export const badMe: ApiMe = { user: "x", roles: [], permissions: [] };
+
+// @ts-expect-error a permission's scope is own or any
+export const badScope: ApiPermission = { permission: "thread.read", scope: "everyone" };
+
+// @ts-expect-error a thread listing's owner is a string (an e-mail address, or *)
+export const badOwner = () => api.GET("/api/threads", { params: { query: { owner: 1 } } });
 
 export async function badCalls() {
   // @ts-expect-error unknown path

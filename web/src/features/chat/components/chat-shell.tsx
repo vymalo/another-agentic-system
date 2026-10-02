@@ -17,6 +17,10 @@ import { effectiveSelection, requestedAgent } from "@/features/agents/lib/select
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
+import { NoAccess } from "@/features/me/components/no-access";
+import { ReadOnlyNotice } from "@/features/me/components/read-only-notice";
+import { useMe } from "@/features/me/hooks/use-me";
+import { hasNoAccess, invokable, newChatAccess, threadAccess } from "@/features/me/lib/access";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
 import { BranchesProvider } from "@/features/threads/components/branches-provider";
@@ -27,6 +31,7 @@ import {
   ThreadsSheet,
 } from "@/features/threads/components/thread-sidebar";
 import { useScrollToMessage } from "@/features/threads/hooks/use-scroll-to-message";
+import { useThreadScope } from "@/features/threads/hooks/use-thread-scope";
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
 import { problemMessage } from "@/lib/api/client";
@@ -66,13 +71,34 @@ function useSidebarOpen(): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
-/** `null` is the new-thread page. Every navigation remounts, so no state leaks between threads. */
+/**
+ * `null` is the new-thread page. Every navigation remounts, so no state leaks between threads.
+ *
+ * Who the person is (`GET /api/me`, ADR 0033) comes first: a person whose roles grant nothing gets
+ * the screen that says so, and the chat (which would only list 403s) is not mounted. Everything
+ * else the roles decide, the chat hides or disables itself; the orchestrator enforces it either way.
+ */
 export function ChatShell({ threadId }: { threadId: string | null }) {
+  const { me } = useMe();
+  if (me && hasNoAccess(me)) return <NoAccess me={me} />;
+  return <Chat threadId={threadId} />;
+}
+
+function Chat({ threadId }: { threadId: string | null }) {
+  const { me } = useMe();
   const meta = useThreadMeta(threadId);
+  const { scope } = useThreadScope();
   const [threadsKey, setThreadsKey] = useState("");
-  const threads = useThreads(threadsKey);
-  // the list also names the agent of an open thread and offers the others (the header's menu)
-  const agents = useAgents(true);
+  const threads = useThreads(threadsKey, scope === "all");
+  // the list also names the agent of an open thread and offers the others (the header's menu); only the
+  // ones `agent.invoke` covers are offered, and the thread's own agent is named whatever the roles say
+  const listed = useAgents(true);
+  const threadAgentId = meta.thread?.target.agentId ?? null;
+  const invokableAgents = useMemo(
+    () => invokable(listed.agents, me, threadAgentId),
+    [listed.agents, me, threadAgentId],
+  );
+  const agents = { ...listed, agents: invokableAgents };
   const [selection, setSelection] = useState<Selection>({ agentId: null, release: null });
   const [sendError, setSendError] = useState<string | null>(null);
 
@@ -161,9 +187,15 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
   }, [setSidebarOpen]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const thread = meta.thread;
+  // what the roles let the person do here: a thread of another's, or one of an agent they may not use,
+  // is read-only (nothing is offered that the orchestrator would answer with a 403)
+  const access = threadId === null ? newChatAccess(me) : threadAccess(me, thread);
+  const readOnly = access.readOnly ? access.reason : null;
   // a thread has a right-hand panel (its sources, later its activity); the new-chat page has none
   const Panels = threadId === null ? Fragment : PanelProvider;
-  const composer = (
+  const composer = readOnly ? (
+    <ReadOnlyNotice reason={readOnly} isNew={threadId === null} />
+  ) : (
     <Composer
       state={state}
       job={job}
@@ -188,7 +220,13 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
     threadId === null ? (
       children
     ) : (
-      <ForkProvider threadId={threadId} agent={agent} state={state} lastSeq={snapshot.lastSeq}>
+      <ForkProvider
+        threadId={threadId}
+        agent={agent}
+        state={state}
+        lastSeq={snapshot.lastSeq}
+        readOnly={readOnly}
+      >
         <BranchesProvider threadId={threadId} refreshKey={state ?? ""}>
           {children}
         </BranchesProvider>
@@ -216,6 +254,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
     <AssistantRuntimeProvider runtime={runtime}>
       <SurfaceHostProvider
         agent={agent}
+        readOnly={readOnly}
         state={state}
         composerRef={composerRef}
         onRejected={onSendFailed}
@@ -247,10 +286,10 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
                       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
                         <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
                           <NewChatGreeting agents={agents} selection={effective} />
-                          <AgentsProblem agents={agents} />
+                          {readOnly ? null : <AgentsProblem agents={agents} />}
                           <RegistryNotice agents={agents} />
                           {composer}
-                          <Suggestions inputRef={composerRef} />
+                          {readOnly ? null : <Suggestions inputRef={composerRef} />}
                         </div>
                       </div>
                     </>

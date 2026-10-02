@@ -24,6 +24,9 @@ COPY --from=deps /app/web/node_modules web/node_modules
 WORKDIR /app/web
 # Runs gen:api (types from ../docs/api/chat-api.yaml), then `next build` (standalone output).
 # MOCK_API_ORIGIN must stay unset: production routes /api/* at the ingress, same origin.
+# NEXT_PUBLIC_SIGN_IN_PATH is the edge's sign-in path (oauth2-proxy: /oauth2/sign_in); Next inlines it
+# at build time, so it is a build argument. Empty (the default): a 401 is an error line, not a redirect.
+ARG NEXT_PUBLIC_SIGN_IN_PATH=""
 RUN pnpm build
 
 FROM node:24-bookworm-slim AS runtime
