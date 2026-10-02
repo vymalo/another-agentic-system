@@ -77,11 +77,13 @@ jobs:
         run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083 http://127.0.0.1:8084
       - name: The mock web-search MCP server (built here) and the scripted models of the agents (WireMock) answer as documented
         # `mock-persona` greets from the persona lines of an agent folder, `mock-researcher` calls the search tool and
-        # names the first link of the results (dev/wiremock/model, dev/README.md, "Several agents").
+        # names the first link of the results (dev/wiremock/model, dev/README.md, "Several agents"), and the `[mock:share]` script of
+        # the coder's `mock-coder` (mock-openai, beside the vendored scripts: dev/wiremock/coder-share) makes three files, shares them and
+        # shows two as Images, with the bytes it writes compared with dev/wiremock/coder-share/files.
         run: |
           docker compose --profile app build mock-mcp-search
-          docker compose --profile app up -d --wait mock-mcp-search mock-model
-          dev/check-agent-mocks.sh http://127.0.0.1:8096 http://127.0.0.1:8094
+          docker compose --profile app up -d --wait mock-mcp-search mock-model mock-openai
+          dev/check-agent-mocks.sh http://127.0.0.1:8096 http://127.0.0.1:8094 http://127.0.0.1:8091
       - name: The real orchestrator client against the mocks
         run: |
           cd orchestrator

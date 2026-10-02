@@ -8,16 +8,22 @@
 #     `[mock:cards]` goes on to `ui_catalog` and `show` (a Text, three cards and a graph) before it answers. Since adam-rs
 #     cf6ddbb the agents stream their model calls, so each of those scripts also has an SSE twin (`*-stream.json`, the same
 #     matchers plus `"stream": true`, one priority above): the twins are played here too and must say what the plain script says.
-# CI runs it after `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
+#   * the `[mock:share]` script of the coder's model, `mock-coder` on `mock-openai` (dev/wiremock/coder-share, ours; the other scripts of
+#     that mock are adam-rs's, vendored): the coder makes three files, shares them with `share_file` and places two of them in a
+#     surface with `Image` (dev/artifact-e2e.sh). Each turn is played, with its SSE twin, and the files the script writes, the PNG it
+#     decodes and the hashes the `Image`s name are compared with dev/wiremock/coder-share/files/, the one source of the bytes.
+# CI runs it after `docker compose --profile app up -d --wait mock-mcp-search mock-model mock-openai`.
 #
-#   dev/check-agent-mocks.sh [SEARCH_URL [MODEL_URL]]
-#     SEARCH_URL default: http://127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}
-#     MODEL_URL  default: http://127.0.0.1:${MOCK_MODEL_PORT:-8094}
+#   dev/check-agent-mocks.sh [SEARCH_URL [MODEL_URL [CODER_MODEL_URL]]]
+#     SEARCH_URL       default: http://127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}
+#     MODEL_URL        default: http://127.0.0.1:${MOCK_MODEL_PORT:-8094}
+#     CODER_MODEL_URL  default: http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}; when it is not given and nothing answers there, the
+#                      `[mock:share]` checks are skipped (a stack without mock-openai); given, they must pass
 #
 # It plays the MCP handshake as a client does (initialize, notifications/initialized, tools/list, tools/call),
 # then the answers a client has to cope with (an empty result, a tool error, a refused token, 405 on GET), and
 # it EMPTIES the server's journal of calls (DELETE /__journal) before and after, and the request journal of the
-# model mock (DELETE /__admin/requests), so run it on a stack you are not in the middle of a scenario on.
+# model mocks (DELETE /__admin/requests, on both), so run it on a stack you are not in the middle of a scenario on.
 # MOCK_MCP_TOKEN names the bearer token (default: the one of compose.yaml).
 #
 # Needs: curl, jq. Exit status 0 when every check passes.
@@ -25,6 +31,8 @@ set -eu
 
 SEARCH=${1:-http://127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}}
 MODEL=${2:-http://127.0.0.1:${MOCK_MODEL_PORT:-8094}}
+CODER=${3:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
+SHARE_FILES=$(cd "$(dirname "$0")" && pwd)/wiremock/coder-share/files
 TOKEN=${MOCK_MCP_TOKEN:-dev-search-token}
 ICON_PREFIX='data:image/svg+xml;base64,'
 fail=0
@@ -322,6 +330,94 @@ check "an unknown model is a 404, not an invented answer" \
 check "the journal holds the requests, and exactly the unknown model was unmatched" \
   "$(curl -fsS "$MODEL/__admin/requests/unmatched" | jq -r '[(.requests | length), (.requests[0].body | fromjson | .model)] | join(" ")')" "1 no-such-model"
 curl -sS -X DELETE "$MODEL/__admin/requests" -o /dev/null
+
+# --- the coder's model: the `[mock:share]` script (WireMock, dev/wiremock/coder-share) ----------------------------------------------
+# The coder's model is `mock-coder` on `mock-openai`. Its scripts are adam-rs's, vendored (dev/coder/wiremock), and this one is ours,
+# mounted beside them. The turn after the result of call N holds `sh-call-N` and not `sh-call-N+1`, so each turn is told by the ids the
+# history holds, as the others are. From here on `completion`, `streamed` and `twin` talk to the coder's mock.
+echo "== $CODER (the coder's model mock: the [mock:share] script)"
+if [ -z "${3:-}" ] && ! curl -fsS --max-time 5 "$CODER/__admin/health" >/dev/null 2>&1; then
+  echo "skip  the [mock:share] script: nothing answers at $CODER (and no CODER_MODEL_URL was given)"
+else
+  MODEL=$CODER
+  check "coder model mock: health" "$(curl -sS -o /dev/null -w '%{http_code}' "$CODER/__admin/health")" "200"
+  curl -sS -X DELETE "$CODER/__admin/requests" -o /dev/null
+
+  share_system=$(jq -cn '{role: "system", content: "You are the coder."}')
+  share_user=$(user '[mock:share] make me a chart, a picture and a report, and show them')
+  # share_history N: the conversation after the results of calls 1..N.
+  share_history() {
+    _h="$share_system, $share_user"
+    _i=1
+    while [ "$_i" -le "$1" ]; do
+      _h="$_h, $(call "sh-call-$_i" some_tool), $(result "sh-call-$_i" ok)"
+      _i=$((_i + 1))
+    done
+    printf '[%s]' "$_h"
+  }
+  turn() { completion mock-coder "$(share_history "$1")"; }
+  tool_of() { jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")'; }
+  args_of() { jq -c '.message.tool_calls[0].function.arguments | fromjson'; }
+
+  t0=$(turn 0)
+  check "mock-coder [mock:share]: the first turn starts a scratch project (sh-call-1)" "$(printf '%s' "$t0" | tool_of)" "tool_calls | sh-call-1 | start_scratch"
+  t1=$(turn 1)
+  check "mock-coder [mock:share]: then it writes chart.svg (sh-call-2)" "$(printf '%s' "$t1" | tool_of)" "tool_calls | sh-call-2 | write_file"
+  printf '%s' "$t1" | args_of | jq -j '.content' > "$TMPB"
+  check "mock-coder [mock:share]: chart.svg is the fixture file byte for byte (an SVG with a script and two handlers)" \
+    "$(cmp -s "$TMPB" "$SHARE_FILES/chart.svg" && echo same || echo different) $(printf '%s' "$t1" | args_of | jq -r '.path')" "same chart.svg"
+  t2=$(turn 2)
+  check "mock-coder [mock:share]: then report.json (sh-call-3)" "$(printf '%s' "$t2" | tool_of)" "tool_calls | sh-call-3 | write_file"
+  printf '%s' "$t2" | args_of | jq -j '.content' > "$TMPB"
+  check "mock-coder [mock:share]: report.json is the fixture file byte for byte" \
+    "$(cmp -s "$TMPB" "$SHARE_FILES/report.json" && echo same || echo different) $(printf '%s' "$t2" | args_of | jq -r '.path')" "same report.json"
+  t3=$(turn 3)
+  check "mock-coder [mock:share]: then it makes square.png with a command (run, sh-call-4)" "$(printf '%s' "$t3" | tool_of)" "tool_calls | sh-call-4 | run"
+  printf '%s' "$t3" | args_of | jq -r '.command' | sed -n "s/^printf '%s' '\([A-Za-z0-9+\/=]*\)' | base64 -d > square.png\$/\1/p" | base64 -d > "$TMPB" 2>/dev/null || true
+  check "mock-coder [mock:share]: the command decodes to the fixture PNG byte for byte" \
+    "$(cmp -s "$TMPB" "$SHARE_FILES/square.png" && echo same || echo different)" "same"
+  for spec in "4:sh-call-5:chart.svg:Chart" "5:sh-call-6:square.png:Square" "6:sh-call-7:report.json:Report"; do
+    _t=${spec%%:*}
+    _rest=${spec#*:}
+    _id=${_rest%%:*}
+    _rest=${_rest#*:}
+    _path=${_rest%%:*}
+    _name=${_rest#*:}
+    check "mock-coder [mock:share]: it shares $_path as $_name ($_id)" \
+      "$(turn "$_t" | jq -r '[.message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .path + " " + .name)] | join(" | ")')" \
+      "$_id | share_file | $_path $_name"
+  done
+  check "mock-coder [mock:share]: then it reads which components the screen has (ui_catalog, sh-call-8)" "$(turn 7 | tool_of)" "tool_calls | sh-call-8 | ui_catalog"
+  t8=$(turn 8)
+  check "mock-coder [mock:share]: then it shows (sh-call-9): a Text and two Images" \
+    "$(printf '%s' "$t8" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | [.blocks[].component] | join("+"))] | join(" | ")')" \
+    "tool_calls | sh-call-9 | show | Text+Image+Image"
+  _svg_sha=$(sha256sum "$SHARE_FILES/chart.svg" | cut -d ' ' -f 1)
+  _png_sha=$(sha256sum "$SHARE_FILES/square.png" | cut -d ' ' -f 1)
+  check "mock-coder [mock:share]: the Images name the files by the SHA-256 of the fixtures (the SVG, then the PNG), each with an alt" \
+    "$(printf '%s' "$t8" | args_of | jq -r '[.blocks[] | select(.component == "Image") | .artifact + ":" + ((.alt | length > 0) | tostring)] | join(" ")')" \
+    "$_svg_sha:true $_png_sha:true"
+  check "mock-coder [mock:share]: once show is answered it says what it made, in words" \
+    "$(turn 9 | jq -r '[.finish_reason, (.message.content | contains("chart.svg") and contains("square.png") and contains("report.json") | tostring)] | join(" | ")')" \
+    "stop | true"
+  check "mock-coder [mock:share]: a conversation without the keyword never gets this script (the vendored 404 stays for an off-script request)" \
+    "$(jq -cn '{model: "mock-coder", messages: [{role: "user", content: "something nobody scripted"}, {role: "assistant", content: null, tool_calls: [{id: "sh-call-1", type: "function", function: {name: "x", arguments: "{}"}}]}, {role: "tool", tool_call_id: "sh-call-1", content: "ok"}]}' |
+       curl -s -o /dev/null -w '%{http_code}' -X POST "$CODER/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"
+
+  # The twins, as above: the stream assembles to the plain answer, the arguments of a long call arrive in pieces.
+  _t=0
+  while [ "$_t" -le 9 ]; do
+    if [ "$_t" -eq 9 ]; then twin "mock-coder [mock:share], the words" mock-coder "$(share_history 9)" 2; else twin "mock-coder [mock:share], turn $_t" mock-coder "$(share_history "$_t")"; fi
+    _t=$((_t + 1))
+  done
+  check "twin, mock-coder [mock:share], show: the arguments of the call arrive in several deltas" \
+    "$(jq -cn --argjson msgs "$(share_history 8)" '{model: "mock-coder", messages: $msgs, stream: true}' |
+       curl -sS -X POST "$CODER/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
+       sed -n 's/^data: //p' | grep -v '^\[DONE\]' | jq -s '[.[] | select((.choices | length) > 0) | .choices[0].delta.tool_calls // [] | .[] | select(.function.arguments != "")] | length > 2')" "true"
+  check "the coder's mock matched every request of these checks" \
+    "$(curl -fsS "$CODER/__admin/requests/unmatched" | jq -r '.requests | length')" "0"
+  curl -sS -X DELETE "$CODER/__admin/requests" -o /dev/null
+fi
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"
