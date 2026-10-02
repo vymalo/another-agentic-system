@@ -556,6 +556,7 @@ mod tests {
             email: Some(email.to_owned()),
             name: None,
             roles: roles.iter().map(|r| Role::new(*r)).collect(),
+            expires_at: None,
         }
     }
 

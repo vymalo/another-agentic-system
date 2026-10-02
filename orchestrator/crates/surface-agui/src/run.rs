@@ -12,7 +12,7 @@ use orch_agui_projection::{
     thread_id_of, translate_with_warnings,
 };
 use orch_agui_proto::RunAgentInput;
-use orch_api::sse::{keep_alive, stream_headers};
+use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, GateLayer, Inbound, NewThread, THREAD_GATE_KEY,
@@ -21,7 +21,7 @@ use orch_app::{
 use orch_core::{
     AgentId, AgentTarget, Event, Input, Origin, ThreadId, ThreadRecord, UiCatalogData, report,
 };
-use orch_ports::{Ports, Principal};
+use orch_ports::{Clock, Ports, Principal};
 
 use crate::refuse::{check_accept, check_json, input_error};
 use crate::stream::{Feed, Start, frames};
@@ -77,7 +77,9 @@ pub(crate) async fn run<P: Ports>(
         )
         .await?
         {
-            let stream = frames(feed);
+            // As long as the token the run was started with (ADR 0033).
+            let budget = stream_budget(&principal, state.app.ports().clock().now());
+            let stream = bounded(frames(feed), budget);
             let sse = Sse::new(stream).keep_alive(keep_alive(state.keepalive));
             return Ok((stream_headers(), sse).into_response());
         }

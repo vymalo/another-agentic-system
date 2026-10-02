@@ -25,10 +25,10 @@ use axum::response::{IntoResponse, Response};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use orch_agui_projection::{Connect, Follow, Frame, LiveOverlay};
-use orch_api::sse::{keep_alive, stream_headers};
+use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, ApiQuery, Problem, parse_thread_id};
 use orch_app::FeedItem;
-use orch_ports::{Ports, Principal};
+use orch_ports::{Clock, Ports, Principal};
 use serde::Deserialize;
 
 use crate::State as SurfaceState;
@@ -96,7 +96,11 @@ pub(crate) async fn connect<P: Ports>(
         ?follow,
         "a viewer connected"
     );
-    let sse = Sse::new(frames(connect, live)).keep_alive(keep_alive(state.keepalive));
+    // The stream lasts as long as the token it was opened with (ADR 0033): the client reconnects
+    // with `Last-Event-ID` and a fresh one.
+    let budget = stream_budget(&principal, state.app.ports().clock().now());
+    let sse =
+        Sse::new(bounded(frames(connect, live), budget)).keep_alive(keep_alive(state.keepalive));
     Ok((stream_headers(), sse).into_response())
 }
 

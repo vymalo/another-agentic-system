@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::future::Future;
 
-use orch_core::{BoxError, Classify, ErrorClass, UserId};
+use orch_core::{BoxError, Classify, ErrorClass, Timestamp, UserId};
 
 /// What a request carried that may say who is calling. Each part is `None` when the request had
 /// none, and `Some("")` when it had one that is empty or cannot be read as text, so that a
@@ -85,16 +85,22 @@ pub struct Principal {
     pub name: Option<String>,
     /// The roles the credential carries. Empty for a credential that has none (the proxy header).
     pub roles: BTreeSet<Role>,
+    /// When the credential stops being valid (a token's `exp`); `None` for one that does not run
+    /// out (the proxy header, a static token). A stream opened with it ends no later than this
+    /// (plus the leeway), and the client reconnects with a fresh credential (ADR 0033).
+    pub expires_at: Option<Timestamp>,
 }
 
 impl Principal {
-    /// A principal that is only a user: no e-mail beyond the key, no name, no roles.
+    /// A principal that is only a user: no e-mail beyond the key, no name, no roles, and a
+    /// credential that does not run out.
     pub fn of(user: UserId) -> Self {
         Principal {
             user,
             email: None,
             name: None,
             roles: BTreeSet::new(),
+            expires_at: None,
         }
     }
 }

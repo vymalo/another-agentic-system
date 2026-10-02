@@ -124,6 +124,7 @@ impl TokenTable {
                     user,
                     name: None,
                     roles,
+                    expires_at: None,
                 },
                 digest,
             });

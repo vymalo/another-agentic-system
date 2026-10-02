@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use orch_core::UserId;
+use orch_core::{Timestamp, UserId};
 use orch_ports::{AuthError, Principal, Role};
 use serde_json::{Map, Value};
 
@@ -91,6 +91,12 @@ pub(crate) fn principal(
         roles: roles_claim
             .map(|path| roles(claims, path))
             .unwrap_or_default(),
+        // The library has checked `exp` (it is required); a value that is not a time cannot be
+        // here, and would only mean a stream that is not bounded by it.
+        expires_at: claims
+            .get("exp")
+            .and_then(Value::as_i64)
+            .and_then(|seconds| Timestamp::from_second(seconds).ok()),
     })
 }
 
@@ -146,6 +152,25 @@ mod tests {
         let p = principal(&c, "email", None).unwrap();
         assert_eq!(p.user.as_str(), "alice@example.com");
         assert!(p.roles.is_empty());
+    }
+
+    #[test]
+    fn the_principal_carries_the_expiry_of_the_token() {
+        let at = |value: Value| {
+            principal(
+                &claims(json!({"email": "a@b.c", "exp": value})),
+                "email",
+                None,
+            )
+            .unwrap()
+            .expires_at
+            .map(|t| t.as_second())
+        };
+        assert_eq!(at(json!(1_800_000_000)), Some(1_800_000_000));
+        // Something that is not a time bounds nothing (the library refuses a token with no `exp`).
+        assert_eq!(at(json!("soon")), None);
+        let none = principal(&claims(json!({"email": "a@b.c"})), "email", None).unwrap();
+        assert_eq!(none.expires_at, None);
     }
 
     #[test]
