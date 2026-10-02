@@ -22,6 +22,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { useThreadBranches } from "@/features/threads/components/branches-provider";
 import type { ThreadsView } from "@/features/threads/hooks/use-threads";
 import { groupByRecency } from "@/features/threads/lib/recency";
 import type { ApiThread } from "@/lib/api/types";
@@ -51,16 +52,30 @@ function LiveMark({ state }: { state: ApiThread["state"] }) {
   return null;
 }
 
-/** One thread: its title on one line, a link to it. */
-function ThreadRow({ thread, active }: { thread: ApiThread; active: boolean }) {
+/**
+ * One thread: its title on one line, a link to it. `active` is the open thread. `family` is the
+ * thread an open edit was made from, the one the list has in place of the edit (a branch is not
+ * a row of its own): it is the open chat for the eye (the same highlight) and `aria-current="true"`
+ * for a screen reader, which keeps "page" for the address that is open.
+ */
+function ThreadRow({
+  thread,
+  active,
+  family,
+}: {
+  thread: ApiThread;
+  active: boolean;
+  family: boolean;
+}) {
+  const open = active || family;
   return (
     <li data-slot="thread-row">
       <Link
         href={`/threads/${thread.id}`}
-        aria-current={active ? "page" : undefined}
+        aria-current={active ? "page" : family ? "true" : undefined}
         className={cn(
           "flex h-10 min-w-0 items-center gap-2 rounded-full px-3 text-sm text-foreground/90 no-underline transition-colors hover:bg-sidebar-accent/70 md:h-9",
-          active && "bg-sidebar-accent font-medium text-foreground",
+          open && "bg-sidebar-accent font-medium text-foreground",
         )}
       >
         {thread.forkedFrom?.kind === "fork" ? (
@@ -80,6 +95,8 @@ function ThreadRow({ thread, active }: { thread: ApiThread; active: boolean }) {
 /** "New chat", then the threads grouped by recency (newest first), and paging. */
 function ThreadNav({ threads }: { threads: ThreadsView }) {
   const pathname = usePathname();
+  // the open thread may be an edit, which the list leaves out: its conversation's first thread is the row
+  const { root } = useThreadBranches();
   // the groups are relative to today; computed on the client, after the first render
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => setNow(new Date()), []);
@@ -115,7 +132,12 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
           <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground">{group}</h2>
           <ul className="flex flex-col gap-px">
             {items.map((t) => (
-              <ThreadRow key={t.id} thread={t} active={pathname === `/threads/${t.id}`} />
+              <ThreadRow
+                key={t.id}
+                thread={t}
+                active={pathname === `/threads/${t.id}`}
+                family={t.id === root}
+              />
             ))}
           </ul>
         </div>

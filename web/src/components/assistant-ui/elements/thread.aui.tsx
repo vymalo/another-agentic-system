@@ -6,9 +6,10 @@ import {
   ThreadPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { ArrowDownIcon, MessageCircleQuestionIcon } from "lucide-react";
-import type { FC, ReactNode } from "react";
+import { ArrowDownIcon, MessageCircleQuestionIcon, PencilIcon } from "lucide-react";
+import { type FC, type ReactNode, useRef, useState } from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import { MessageEditor } from "@/components/assistant-ui/elements/message-editor";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { TurnActions } from "@/components/assistant-ui/elements/turn-actions";
 import { AgentAvatar } from "@/components/brand/agent-avatar";
@@ -30,9 +31,12 @@ import {
   parseFork,
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
+import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
+import { useThreadFork } from "@/features/threads/components/fork-provider";
 import type { ApiActor } from "@/lib/api/types";
 import { isActive } from "@/lib/api/types";
+import { uuidv7 } from "@/lib/uuid";
 
 /*
  * Pruned from the assistant-ui `thread` registry item and rebuilt as a classical chat
@@ -162,19 +166,91 @@ function WithTime({ at, children }: { at: Date | undefined; children: ReactNode 
   );
 }
 
+/**
+ * Where a message of the person is in the log (ADR 0029: an edit and the versions of a message name
+ * events by `seq`): the `seq` a replayed message was appended with, else what the page read of the
+ * message it sent itself. Undefined until the log has said it.
+ */
+const useUserSeq = (): number | undefined => {
+  const custom = useAuiState((s) => s.message.metadata?.custom?.seq);
+  const id = useAuiState((s) => s.message.id);
+  const { seqOfMessage } = useThreadFork();
+  return typeof custom === "number" ? custom : seqOfMessage(id);
+};
+
+/**
+ * A message of the person: a soft bubble on the right. Under it, `‹ 2/3 ›` when it has other
+ * versions, and, on hover and on focus (always on a touch screen), **Edit**: the bubble becomes an
+ * editor, and sending it makes a new branch of the conversation from this message (a new chat the
+ * page goes to; the old words and their answers stay in the other version). `id="m-<seq>"` and
+ * `data-seq` name the message in the log, which is where a version's link scrolls to.
+ */
 export const UserMessage: FC = () => {
   const createdAt = useCreatedAt();
+  const seq = useUserSeq();
+  const fork = useThreadFork();
+  const text = useAuiState((s) =>
+    s.message.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n"),
+  );
+  const [editing, setEditing] = useState(false);
+  // one id for the message this edit makes, so a retry of the same edit is the same request
+  const messageId = useRef("");
+  const editButton = useRef<HTMLButtonElement>(null);
+  const editable = fork.available && seq !== undefined;
+  const stop = () => {
+    setEditing(false);
+    // the button the editor replaced is where the person was
+    requestAnimationFrame(() => editButton.current?.focus());
+  };
   return (
     <MessagePrimitive.Root
       data-slot="user-message"
       data-role="user"
-      className="flex min-w-0 motion-safe:animate-turn-in flex-col items-end"
+      {...(seq !== undefined ? { id: `m-${seq}`, "data-seq": seq } : {})}
+      // focusable by the program only: arriving at a version puts the focus on its message
+      tabIndex={-1}
+      className="group/user flex min-w-0 motion-safe:animate-turn-in flex-col items-end outline-none"
     >
-      <WithTime at={createdAt}>
-        <div className="max-w-[85%] rounded-[20px] rounded-tr-md bg-bubble px-4 py-2.5 text-[0.9375rem] leading-6 [&_.aui-md-p]:leading-6 [overflow-wrap:anywhere] sm:max-w-[80%] [&_.aui-md-inline-code]:bg-background/70">
-          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+      {editing && seq !== undefined ? (
+        <MessageEditor
+          initialText={text}
+          busy={fork.busy}
+          onCancel={stop}
+          onSend={(next) => {
+            void fork.editMessage(seq, next, messageId.current);
+          }}
+        />
+      ) : (
+        <WithTime at={createdAt}>
+          <div className="max-w-[85%] rounded-[20px] rounded-tr-md bg-bubble px-4 py-2.5 text-[0.9375rem] leading-6 [&_.aui-md-p]:leading-6 [overflow-wrap:anywhere] sm:max-w-[80%] [&_.aui-md-inline-code]:bg-background/70">
+            <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+          </div>
+        </WithTime>
+      )}
+      {editing ? null : (
+        <div className="mt-0.5 flex items-center gap-0.5 text-muted-foreground">
+          <MessageBranches seq={seq} />
+          {editable ? (
+            <TooltipIconButton
+              ref={editButton}
+              tooltip="Edit"
+              aria-label="Edit what you said"
+              data-slot="edit-message"
+              side="bottom"
+              className="size-7 rounded-md p-0 transition-opacity aria-disabled:opacity-50 group-focus-within/user:opacity-100 group-hover/user:opacity-100 focus-visible:opacity-100 [@media(hover:hover)]:opacity-0 [&_svg]:size-3.5"
+              // not `disabled`: a disabled button takes no focus, and a fork is being made
+              aria-disabled={fork.busy}
+              onClick={() => {
+                if (fork.busy) return;
+                messageId.current = uuidv7();
+                setEditing(true);
+              }}
+            >
+              <PencilIcon aria-hidden="true" />
+            </TooltipIconButton>
+          ) : null}
         </div>
-      </WithTime>
+      )}
     </MessagePrimitive.Root>
   );
 };

@@ -11,7 +11,8 @@
   front of the message by the A2A and the local-agent clients): **the agent of a fork is now told the
   conversation it continues**. The web (2026-10-01): "Fork from here" under a finished turn and
   "continue with another agent" in the agent menu are built ([`web/DESIGN.md`](../../web/DESIGN.md), "Fork
-  and branch"); editing a message into a branch is not yet.
+  and branch"), and so is editing a message into a branch with `‹ 1/2 ›` between the versions (the
+  same section, "Edit a message, and the versions of it").
 
 ## Context
 

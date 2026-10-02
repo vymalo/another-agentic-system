@@ -256,5 +256,37 @@ for (const scheme of ["light", "dark"] as const) {
       }
       await shot(page, "sidebar");
     });
+
+    test("branches", async ({ page }) => {
+      // the second message said again: the editor in its place, then the new chat with `‹ 2/2 ›`
+      // under the new words (the conversation shows once in the list, its first thread highlighted)
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await send(page, "echo and now the tests as well");
+      await expect(
+        conversation(page).getByText("echo: echo and now the tests as well"),
+      ).toBeVisible();
+      await expect(badge(page)).toHaveText("Done");
+      const second = conversation(page)
+        .locator('[data-slot="user-message"]')
+        .filter({ hasText: "and now the tests as well" });
+      await second.hover();
+      await second.getByRole("button", { name: "Edit what you said" }).click();
+      const editor = page.getByRole("textbox", { name: "What you said" });
+      await expect(editor).toBeFocused();
+      await editor.fill("echo and now the docs as well");
+      await shot(page, "branches-edit");
+      await editor.press("Control+Enter");
+      await expect(
+        conversation(page).getByText("echo: echo and now the docs as well"),
+      ).toBeVisible();
+      await expect(badge(page)).toHaveText("Done");
+      const edited = conversation(page)
+        .locator('[data-slot="user-message"]')
+        .filter({ hasText: "the docs as well" });
+      await expect(edited.locator('[data-slot="branch-picker"]')).toContainText("2/2");
+      await expect(edited).toBeFocused();
+      await shot(page, "branches");
+    });
   });
 }
