@@ -12,8 +12,10 @@
   enforcement on threads, agents and files, `GET /api/me`, the administrators' listing, the roles of an MCP token and
   the bound on a stream (sections 4 to 7, with the points where the build differs from what they planned, in
   [*Status: built in S15*](#status-built-in-s15)). **Built (2026-10-02, PR S17):** the web reads `/api/me` and follows it
-  ([*Status: built in S17*](#status-built-in-s17)). **Planned:** S16 (the dev stack: a mock issuer and a real
-  oauth2-proxy). Section 8 describes what S16 builds; sections 1 to 3 are what S14 built.
+  ([*Status: built in S17*](#status-built-in-s17)). **Built (2026-10-02, PR S16):** the dev stack: a mock issuer,
+  a real oauth2-proxy behind Caddy's `forward_auth`, the orchestrator on `auth.mode: jwt`, tokens in every scenario
+  script and `dev/rbac-e2e.sh` (section 8, with what the build settled in [*Status: built in S16*](#status-built-in-s16)).
+  Sections 1 to 3 are what S14 built.
 
 ## Context
 
@@ -194,7 +196,7 @@ the client reconnects with `Last-Event-ID` and gets a fresh token from oauth2-pr
 `{user, roles, permissions, agents}`, so the web hides what its person cannot do. It is a convenience, never a check:
 the orchestrator enforces.
 
-### 8. The edge and the dev stack (planned, S16)
+### 8. The edge and the dev stack (built in S16)
 
 oauth2-proxy stays in front of the web and the API and forwards `Authorization: Bearer <JWT>` (the ID token by default,
 whose `aud` is oauth2-proxy's client id, so it works with any OIDC provider; an access token with an API audience is
@@ -283,6 +285,49 @@ nothing. Where the build settles what section 7 left open:
 **Unverified:** that oauth2-proxy's `/oauth2/sign_in` (or `/oauth2/start`) honours `rd` with a relative path (its documentation
 names `rd` for `/oauth2/sign_out`; S16's real oauth2-proxy is where it is checked); the web against a real orchestrator with
 roles (the system e2e still runs as one person with the built-in `user` role).
+
+## Status: built in S16
+
+**Built (2026-10-02, PR S16).** `dev/mock-oidc/` (a dependency-free Node stub), a real oauth2-proxy and Caddy's `forward_auth` in
+`compose.yaml` and `dev/Caddyfile`, `auth.mode: jwt` with the roles `user`, `admin` and `chat-only` in `dev/orchestrator.yaml`,
+`dev/auth-header.sh` for the scripts, `dev/rbac-e2e.sh` ([`dev/README.md`](../../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
+Where the build differs from, or settles, what section 8 planned:
+
+1. **oauth2-proxy** is `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine`, pinned by tag and by the digest of its image index
+   (*verified 2026-10-02*, quay.io registry API: v7.15.5 was pushed on 2026-10-01 and is the newest release; the `-alpine` variant has the
+   shell and `wget` a healthcheck needs, the plain one is distroless). The flags are those of the 7.15.x configuration page
+   (*verified 2026-10-02*, <https://oauth2-proxy.github.io/oauth2-proxy/configuration/overview>).
+2. **The wiring section 8 called "a design to be run" was run** with oauth2-proxy v7.15.5 and Caddy 2.11.4 built from source, as processes beside
+   the mock and stand-in upstreams (*verified 2026-10-02*; the containers were not): `forward_auth` sends a GET with no body, so the AG-UI POST
+   body is still there for the proxy that follows; **`copy_headers Authorization` deletes the client's own `Authorization` before it sets the one
+   oauth2-proxy answered with** (read in `forwardauth/caddyfile.go` at v2.11.4), so a client cannot pass a header through when oauth2-proxy
+   returns none; with `--set-authorization-header` the 202 of `/oauth2/auth` carries `Authorization: Bearer <ID token>` for a cookie session and, for a bearer
+   it verified, the same token it was given.
+3. **A refusal is the client's, a redirect is the browser's.** `/api/*` and `/agui/*` answer oauth2-proxy's 401 as it is (a program must not be
+   redirected); the web's catch-all turns that 401 into a redirect to `/oauth2/start`, and `--skip-provider-button` sends the browser straight to the
+   issuer. `/mcp`, `/webhooks/*` and the probes never meet oauth2-proxy. A token that oauth2-proxy refuses never reaches the orchestrator, so the
+   wrong-audience 401 of `dev/rbac-e2e.sh` is oauth2-proxy's; the orchestrator's own audience check is the Rust tests' (S14).
+4. **The issuer has two addresses.** The tokens' `iss` and what the orchestrator and oauth2-proxy are configured with is the compose network's
+   `http://mock-oidc:8080`; a browser reaches the issuer's `authorize` on the published `http://127.0.0.1:8099`. So oauth2-proxy skips discovery
+   (`--skip-oidc-discovery`, with `--oidc-issuer-url`, `--oidc-jwks-url`, `--redeem-url`, and `--login-url` for the browser). The orchestrator's discovery
+   works as ever: the document says the configured issuer.
+5. **A script's token** is a `client_credentials` token of the mock with a `user` parameter (an extension of the mock, which a real issuer does not
+   have) and the same audience as the browser's, the client id `dev-chat` (`auth.jwt.audiences`); another audience can be asked for (`audience=`), which is how a
+   wrong-audience token is made. oauth2-proxy verifies it with the provider's own verifier first and with the `--extra-jwt-issuers` pair second (the same issuer
+   and audience, so the pair adds nothing here and shows the setting a real deployment needs for a client with its own audience).
+6. **Tokens last an hour** (`TOKEN_TTL_SECS`), the most an AG-UI stream lasts (section 6): a stream is ended at the token's `exp` plus 60 s and after an
+   hour at most, so an hour is the longest stream there is, and a session of the web ends with its token (a request is then a 401 until the page is reloaded, which
+   signs in again: S17's re-login redirect is the web's own answer). The mock issues no refresh token.
+7. **`login_hint`** is how `authorize` picks a user, but oauth2-proxy sends none, so a person chooses before signing in with `/login-as?user=` on the mock (a cookie
+   for the host `127.0.0.1`), then signs out and in. With nothing chosen the user is `dev@example.com`, so a person who changes nothing is the user they were before.
+8. **MCP tokens stay static**; the one of the dev stack has `role: user` (S15). **The roles**: `user` and `admin` as the built-ins, and `chat-only`
+   (`agents: [chat]`), with `defaultRole: user` for a token with none (`guest@example.com`). `server.environment` stays `development`: the issuer is plain http.
+9. **Not staged**: an issuer that is down while the orchestrator starts. It means stopping `mock-oidc` and restarting the orchestrator inside a scenario, which
+   would leave the stack broken if the script died; the Rust smoke test runs the real binary against an issuer that is not there, and the README gives the
+   three commands for doing it by hand.
+
+**Unverified:** the stack in containers (the images build and start, the healthchecks, the orchestrator reading these files and the issuer over the compose
+network, every scenario behind the sign-in, `dev/rbac-e2e.sh`): the first run is the `Coder E2E` workflow; a browser session past the token's hour.
 
 ## Consequences
 

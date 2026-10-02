@@ -77,7 +77,7 @@ capabilities document and A2UI surfaces), read from the code on 2026-09-29. Soli
 flowchart LR
   browser(("Browser"))
   subgraph EDGE["Edge: one origin"]
-    edge["oauth2-proxy in production<br/>Caddy stand-in in compose: authenticates nobody<br/>sets X-Auth-Request-Email"]
+    edge["oauth2-proxy in production<br/>Caddy in compose, in front of a real oauth2-proxy<br/>and a mock issuer that approves anybody"]
   end
   web["<b>web</b>: Next.js + assistant-ui<br/>serves the UI only<br/>no API routes, no server-side calls"]
   subgraph REPLICA["Orchestrator process: stateless, any number, one binary (ORCH_ROLE: all, control-plane, worker)"]
@@ -136,8 +136,9 @@ flowchart LR
   permissions `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read` and `admin`, which the
   application enforces (a person reads and changes their own threads; an administrator reads every thread and changes
   only their own; a thread one may not read is a 404, one that is read-only is a 403) and `GET /api/me` reports
-  ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally, `edge` is Caddy and replaces the header with
-  `dev@example.com` ([`dev/README.md`](../dev/README.md)); the dev stack moves to tokens in S16.
+  ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally (S16), `edge` is Caddy in front of a real oauth2-proxy and a mock issuer that approves
+  anybody (`dev@example.com`, or the user the sign-in is told to be), the orchestrator runs `auth.mode: jwt`, and the scripts send a token of the
+  mock ([`dev/README.md`](../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
 - **A process runs the halves its role asks for** (`ORCH_ROLE`, ADR 0015): the HTTP server
   (`orch-api` plus the mounted surfaces) as the **control plane**, the dispatcher as a **worker**, or
   both (`all`, the default). A worker serves only `/healthz` and `/readyz`. The two halves meet only in

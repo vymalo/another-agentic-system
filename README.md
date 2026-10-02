@@ -159,8 +159,10 @@ To point the coder at a real model and GitHub, copy [`.env.example`](.env.exampl
 `docker compose -f compose.yaml -f compose.live.yaml --profile app up --build` (Compose v2.24.4 or newer;
 [`dev/README.md`](dev/README.md#going-live)).
 
-The `edge` proxy replaces oauth2-proxy locally by injecting `X-Auth-Request-Email: dev@example.com`.
-It authenticates nobody; it is for a laptop, never for production.
+Locally the sign-in is real and costs nothing to use: the `edge` proxy asks a real oauth2-proxy, which signs a browser in at `mock-oidc`, a mock issuer
+that approves it as `dev@example.com` (a user; `admin@example.com` is an administrator), and the orchestrator validates the token as an OAuth2 resource server;
+the scripts get a token from the mock. It is for a laptop, never for production
+([`dev/README.md`](dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)).
 
 To run the code you are changing against the mocks (compose supplies only the infrastructure):
 
