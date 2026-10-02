@@ -94,6 +94,9 @@ fn every_kind_roundtrips_and_never_emits_null() {
             phase: StepPhase::Start,
             icon: Some("execute".into()),
             detail: Some("12 passed".into()),
+            input: None,
+            output: None,
+            io_dropped: false,
         }),
         EventBody::ThreadTitled(ThreadTitledData {
             title: "Fix the build".into(),
@@ -189,6 +192,9 @@ fn an_agent_step_is_the_agents_event_and_leaves_out_what_it_does_not_say() {
         phase: StepPhase::End,
         icon: None,
         detail: Some("1 failed".into()),
+        input: None,
+        output: None,
+        io_dropped: false,
     };
     let e = event(
         EventBody::AgentStep(data.clone()),

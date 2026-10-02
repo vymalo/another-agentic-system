@@ -78,6 +78,7 @@ serde_norway = "0.9.42"
 jsonschema = { version = "0.58", default-features = false }
 eventsource-stream = "0.2.3"
 proptest = "1"
+regex = "1"
 url = "2"
 chrono = { version = "0.4", default-features = false }
 # The MCP server surface (ADR 0019). `server` brings the handler traits and the JSON Schema

@@ -233,6 +233,8 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
             state: StepState::Running,
             icon: None,
             detail: None,
+            input: None,
+            output: None,
         },
         StepSource::Agent,
     );
@@ -633,6 +635,8 @@ fn step_report(state: StepState) -> StepReport {
         state,
         icon: Some("execute".into()),
         detail: None,
+        input: None,
+        output: None,
     }
 }
 
@@ -646,6 +650,9 @@ fn step_body(phase: StepPhase, state: StepState) -> EventBody {
         phase,
         icon: Some("execute".into()),
         detail: None,
+        input: None,
+        output: None,
+        io_dropped: false,
     })
 }
 

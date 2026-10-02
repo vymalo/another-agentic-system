@@ -472,6 +472,8 @@ impl Shared {
                 state: step.state,
                 icon: step.icon.map(str::to_owned),
                 detail: step.detail.map(str::to_owned),
+                input: step.input.and_then(|v| v.as_object().cloned()),
+                output: step.output,
             })),
         );
     }
@@ -544,6 +546,8 @@ struct ScriptedStep {
     state: StepState,
     icon: Option<&'static str>,
     detail: Option<&'static str>,
+    input: Option<serde_json::Value>,
+    output: Option<orch_core::StepOutput>,
 }
 
 fn ui_create(surface: &str) -> serde_json::Value {
@@ -646,6 +650,8 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
                 state,
                 icon,
                 detail,
+                input: None,
+                output: None,
             };
             use StepKind::{Command, Subagent};
             use StepState::{Completed as Done, Failed as Bad, Running};
@@ -678,24 +684,34 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
                     Some("execute"),
                     None,
                 ),
-                step(
-                    "acp:2",
-                    Some(open),
-                    Command,
-                    "npm test",
-                    Running,
-                    Some("test"),
-                    None,
-                ),
-                step(
-                    "acp:2",
-                    Some(open),
-                    Command,
-                    "npm test",
-                    Bad,
-                    Some("test"),
-                    Some("1 failed"),
-                ),
+                ScriptedStep {
+                    input: Some(serde_json::json!({"command": "npm test"})),
+                    ..step(
+                        "acp:2",
+                        Some(open),
+                        Command,
+                        "npm test",
+                        Running,
+                        Some("test"),
+                        None,
+                    )
+                },
+                ScriptedStep {
+                    output: Some(orch_core::StepOutput {
+                        text: "1 failed".to_owned(),
+                        error: true,
+                        ..orch_core::StepOutput::default()
+                    }),
+                    ..step(
+                        "acp:2",
+                        Some(open),
+                        Command,
+                        "npm test",
+                        Bad,
+                        Some("test"),
+                        Some("1 failed"),
+                    )
+                },
                 step(open, None, Subagent, "OpenCode", Done, Some("agent"), None),
             ] {
                 shared.push_step(&task, s);

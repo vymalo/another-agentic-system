@@ -518,6 +518,8 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     state: step_state(*state),
                     icon: None,
                     detail: None,
+                    input: None,
+                    output: None,
                 };
                 if *by_orchestrator {
                     Input::Step {

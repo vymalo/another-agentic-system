@@ -6,11 +6,11 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentInfo, AgentTarget, BranchPoint, Classify, Command, Event, EventKind, ForkKind,
-    ForkPoint, ForkSource, GatePolicy, Input, Job, LiveText, MAX_FORK_FAMILY, Origin, Replacement,
-    Snapshot, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource,
-    UiCatalogData, UserId, WatchKey, branch_points, check_title, copied, family_root, fork_commit,
-    fork_cut, is_commit_hash, repo_key, report, transition,
+    AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command, Event, EventKind,
+    ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job, LiveText, MAX_FORK_FAMILY, Origin,
+    Replacement, Snapshot, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp,
+    TitleSource, UiCatalogData, UserId, WatchKey, branch_points, check_title, copied, family_root,
+    fork_commit, fork_cut, is_commit_hash, repo_key, report, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -90,6 +90,11 @@ pub struct AppConfig {
     /// What a target or a thread may ask of the gate: which sources this build honours and the
     /// most attempts it may raise the limit to.
     pub gate_rules: GateRules,
+    /// Whether a step's input and output are recorded (ADR 0030). `true` by default: a step
+    /// carries what its tool was called with and what it returned, redacted and capped by the
+    /// core. `false` drops both before the core sees them (the core is pure and has no
+    /// configuration), so a step is its label and detail only.
+    pub record_step_io: bool,
     /// The model that writes thread titles (ADR 0005). `None` (the default) turns titles off: a
     /// thread keeps the first words of its first message, and no model is ever asked.
     pub title_model: Option<String>,
@@ -108,10 +113,27 @@ impl Default for AppConfig {
             gate: GatePolicy::default(),
             target_gates: BTreeMap::new(),
             gate_rules: GateRules::default(),
+            record_step_io: true,
             title_model: None,
             title_timeout: Duration::from_secs(20),
         }
     }
+}
+
+/// Takes the input and output out of a step report (`ORCH_STEPS_RECORD_IO=false`, ADR 0030):
+/// the agent's own and the orchestrator's. The core is pure and has no configuration, so the
+/// switch acts here, before the core sees the input.
+fn drop_step_io(input: &mut Input) {
+    let report = match input {
+        Input::Step { report, .. } => report,
+        Input::Agent {
+            update: AgentUpdate::Step(report),
+            ..
+        } => report,
+        _ => return,
+    };
+    report.input = None;
+    report.output = None;
 }
 
 /// A listed agent with what its live card says right now (see [`App::describe_agent`]).
@@ -1460,6 +1482,10 @@ impl<P: Ports> App<P> {
             inbox,
             finishes,
         } = claim;
+        let mut input = input;
+        if !self.cfg.record_step_io {
+            drop_step_io(&mut input);
+        }
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
                 .ports

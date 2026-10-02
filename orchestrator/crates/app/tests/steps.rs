@@ -7,8 +7,8 @@ mod support;
 
 use orch_app::{AppError, ApplyOutcome};
 use orch_core::{
-    Actor, AgentId, AgentStepData, EventBody, Input, MAX_STEP_UPDATES, StepKind, StepPhase,
-    StepReport, StepState, ThreadState, TransitionError,
+    Actor, AgentId, AgentStepData, EventBody, Input, MAX_STEP_UPDATES, StepKind, StepOutput,
+    StepPhase, StepReport, StepState, ThreadState, TransitionError,
 };
 use orch_ports::ThreadStore;
 use support::*;
@@ -32,6 +32,8 @@ fn report(id: &str, parent: Option<&str>, state: StepState) -> StepReport {
         state,
         icon: Some("mcp-server:websearch".into()),
         detail: None,
+        input: None,
+        output: None,
     }
 }
 
@@ -249,5 +251,143 @@ async fn a_user_cannot_submit_a_step() {
     assert!(steps_of(&events(&app, &alice(), t.id).await).is_empty());
     w.agent.release_gate();
     wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    run.shutdown().await;
+}
+
+/// A report of a tool call the orchestrator relays, with what it was called with and what it
+/// returned (ADR 0030; plan 05's "arguments and results are not logged" is overridden).
+fn relayed(state: StepState) -> StepReport {
+    let mut r = report("relay-1", None, state);
+    if state == StepState::Running {
+        r.input = serde_json::json!({"query": "node 24", "api_key": "k-123456"})
+            .as_object()
+            .cloned();
+    } else {
+        r.output = Some(StepOutput {
+            text: "two results\nAuthorization: Bearer abcdefghijklmnop".into(),
+            ..StepOutput::default()
+        });
+    }
+    r
+}
+
+#[tokio::test]
+async fn a_step_the_orchestrator_reports_carries_its_input_and_output_redacted() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "gate go").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    let actor = Actor::agent(&AgentId::new("plain"), None);
+    for (state, key) in [(StepState::Running, "start"), (StepState::Completed, "end")] {
+        app.record_step(
+            t.id,
+            actor.clone(),
+            relayed(state),
+            Some(format!("relay:{key}")),
+        )
+        .await
+        .unwrap();
+    }
+    let ev = events_of(&app, t.id).await;
+    let steps = steps_of(&ev);
+    assert_eq!(steps.len(), 2);
+    assert_eq!(
+        steps[0]
+            .input
+            .as_ref()
+            .map(|i| serde_json::Value::Object(i.clone())),
+        Some(serde_json::json!({"query": "node 24", "api_key": "[redacted]"}))
+    );
+    assert_eq!(steps[0].output, None);
+    assert_eq!(
+        steps[1].input, None,
+        "the input is logged once, with the start"
+    );
+    let output = steps[1].output.as_ref().unwrap();
+    assert!(output.text.contains("two results"));
+    assert!(!output.text.contains("abcdefghijklmnop"), "{}", output.text);
+    w.agent.release_gate();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_the_switch_off_no_step_carries_input_or_output() {
+    let w = World::new();
+    let app = w.app_with(orch_app::AppConfig {
+        record_step_io: false,
+        ..orch_app::AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    // the steps an agent reports: the scripted agent's `npm test` has an input and an output
+    let t = create(&app, &alice(), "plain", "steps now").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let ev = events_of(&app, t.id).await;
+    let steps = steps_of(&ev);
+    assert_eq!(steps.len(), 6, "every step is still logged");
+    assert!(
+        steps
+            .iter()
+            .all(|s| s.input.is_none() && s.output.is_none() && !s.io_dropped)
+    );
+    // and the steps the orchestrator reports itself
+    let t = create(&app, &alice(), "plain", "gate go").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+    let actor = Actor::agent(&AgentId::new("plain"), None);
+    for (state, key) in [(StepState::Running, "start"), (StepState::Completed, "end")] {
+        app.record_step(
+            t.id,
+            actor.clone(),
+            relayed(state),
+            Some(format!("relay:{key}")),
+        )
+        .await
+        .unwrap();
+    }
+    let ev = events_of(&app, t.id).await;
+    let steps = steps_of(&ev);
+    assert_eq!(steps.len(), 2);
+    assert!(
+        steps
+            .iter()
+            .all(|s| s.input.is_none() && s.output.is_none())
+    );
+    w.agent.release_gate();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn by_default_the_steps_an_agent_reports_carry_theirs() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "steps now").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let ev = events_of(&app, t.id).await;
+    let steps = steps_of(&ev);
+    let start = steps
+        .iter()
+        .find(|s| s.id.ends_with("acp:2") && s.phase == StepPhase::Start);
+    assert_eq!(
+        start
+            .unwrap()
+            .input
+            .as_ref()
+            .map(|i| serde_json::Value::Object(i.clone())),
+        Some(serde_json::json!({"command": "npm test"}))
+    );
+    let end = steps
+        .iter()
+        .find(|s| s.id.ends_with("acp:2") && s.phase == StepPhase::End);
+    assert_eq!(
+        end.unwrap().output,
+        Some(StepOutput {
+            text: "1 failed".into(),
+            error: true,
+            ..StepOutput::default()
+        })
+    );
     run.shutdown().await;
 }

@@ -18,6 +18,10 @@
 //! orchestrator reports itself ([`Input::Step`](crate::Input::Step): a tool call it relays, an
 //! agent it asked for) go through the same rules.
 //!
+//! A step may carry what the tool was called with and what it returned (ADR 0030): `input` on
+//! its start and `output` on its end, **cut, redacted and budgeted** at the same door: see
+//! [`StepReport::sanitize`], [`StepOutput`] and [`MAX_STEP_IO_BYTES_PER_JOB`].
+//!
 //! Reports are **data from an agent**: [`StepReport::sanitize`] is the door, as
 //! [`check_operation_list`](crate::check_operation_list) is for A2UI. What does not pass is
 //! dropped, never stored.
@@ -25,8 +29,10 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::event::{Actor, EventBody};
+use crate::redact::{redact_text, redact_value};
 use crate::thread::ThreadState;
 use crate::transition::{Command, append};
 
@@ -46,6 +52,21 @@ pub const MAX_STEP_ID_BYTES: usize = 200;
 pub const MAX_STEP_LABEL_CHARS: usize = 200;
 /// Longest detail, in characters; a longer one is cut and ends in `…`.
 pub const MAX_STEP_DETAIL_CHARS: usize = 1000;
+
+/// Most bytes of a step's `input` the log keeps (serialized JSON). A bigger one is replaced by
+/// `{"_cut": true, "bytes": n}` after its long strings were cut.
+pub const STEP_INPUT_MAX_BYTES: usize = 4096;
+/// Longest string inside a step's `input`, in characters; a longer one is cut and ends in `…`.
+pub const STEP_INPUT_STRING_MAX_CHARS: usize = 512;
+/// Most bytes of a step's `output.text` the log keeps, marker included: the head and the tail of
+/// a longer text (errors are at the end).
+pub const STEP_OUTPUT_MAX_BYTES: usize = 8192;
+/// Most bytes of `input` and `output` all the steps of one job may log together (the owner's
+/// default of 2026-10-02). Past it the members are dropped and the step says so (`ioDropped`):
+/// the worst case for the log is this, not 24 MiB.
+pub const MAX_STEP_IO_BYTES_PER_JOB: u32 = 2 * 1024 * 1024;
+/// How deep a step's `input` may nest; what is deeper is replaced by `"…"`.
+const MAX_INPUT_DEPTH: usize = 12;
 
 /// The icons an agent may name: the vocabulary of `steps/v1`. Any other value is dropped (the
 /// step is kept and shows no icon), so a client draws from a fixed set.
@@ -164,6 +185,25 @@ pub enum StepPhase {
     End,
 }
 
+/// What a step returned (ADR 0030): text, cut to [`STEP_OUTPUT_MAX_BYTES`], or the error the tool
+/// gave. Plain text; a screen draws it as text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepOutput {
+    /// The text, with control characters but line breaks and tabs taken out, credentials
+    /// redacted, and cut to [`STEP_OUTPUT_MAX_BYTES`] keeping its head and its tail.
+    pub text: String,
+    /// The text is not all of what the tool returned (the agent cut it, or the core did).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    /// The size of what the tool returned, in bytes, when `truncated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// `text` is the error the tool returned (the step failed).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub error: bool,
+}
+
 /// What an agent (or the orchestrator) reported about one step: protocol-neutral, and not yet
 /// trusted. `id` and `parent` are unique within the thread (the adapter makes them so).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +222,11 @@ pub struct StepReport {
     pub icon: Option<String>,
     /// More words: the failure, the result.
     pub detail: Option<String>,
+    /// What the tool was called with: a JSON object. Cut, redacted and budgeted by
+    /// [`StepReport::sanitize`] and [`record_step`]; a value that is not an object is no input.
+    pub input: Option<Map<String, Value>>,
+    /// What the tool returned, or the error it gave. Same door.
+    pub output: Option<StepOutput>,
 }
 
 /// Who a report comes from, which decides what it may name as its icon.
@@ -218,6 +263,22 @@ pub struct AgentStepData {
     /// More words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// What the tool was called with (a JSON object of at most [`STEP_INPUT_MAX_BYTES`], or
+    /// `{"_cut": true, "bytes": n}`), credentials redacted. Logged once per step, with its start
+    /// (or with the first report that has it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Map<String, Value>>,
+    /// What the tool returned, or the error it gave, on the step's end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<StepOutput>,
+    /// The step had an `input` or an `output` that the job's budget
+    /// ([`MAX_STEP_IO_BYTES_PER_JOB`]) had no room for: it was dropped.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub io_dropped: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_icon(icon: &str, source: StepSource) -> bool {
@@ -307,8 +368,144 @@ impl StepReport {
             state: self.state,
             icon,
             detail,
+            input: self.input.as_ref().and_then(sanitize_input),
+            output: self.output.as_ref().and_then(sanitize_output),
         })
     }
+}
+
+/// `s` without control characters (line breaks and tabs stay).
+fn strip_controls(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
+/// A JSON value with its control characters taken out of every string and key, and what nests
+/// deeper than [`MAX_INPUT_DEPTH`] replaced by `"…"`.
+fn clean_value(value: &Value, depth: usize) -> Value {
+    match value {
+        Value::String(s) => Value::String(strip_controls(s)),
+        Value::Array(items) if depth >= MAX_INPUT_DEPTH && !items.is_empty() => {
+            Value::String("\u{2026}".to_owned())
+        }
+        Value::Object(map) if depth >= MAX_INPUT_DEPTH && !map.is_empty() => {
+            Value::String("\u{2026}".to_owned())
+        }
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|v| clean_value(v, depth + 1)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (strip_controls(k), clean_value(v, depth + 1)))
+                .collect(),
+        ),
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
+    }
+}
+
+/// Every string of `value` cut to [`STEP_INPUT_STRING_MAX_CHARS`] characters.
+fn cut_strings(value: &mut Value) {
+    match value {
+        Value::String(s) => {
+            if s.chars().count() > STEP_INPUT_STRING_MAX_CHARS {
+                *s = cut_chars(s, STEP_INPUT_STRING_MAX_CHARS);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(cut_strings),
+        Value::Object(map) => map.values_mut().for_each(cut_strings),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn json_len(value: &Value) -> usize {
+    serde_json::to_string(value).map_or(usize::MAX, |s| s.len())
+}
+
+/// A step's input as the log may keep it: control characters taken out, credentials redacted
+/// (the values of keys that name one, and the shapes of [`redact_text`]), strings cut to
+/// [`STEP_INPUT_STRING_MAX_CHARS`], and, when it is still bigger than [`STEP_INPUT_MAX_BYTES`]
+/// serialized, replaced by `{"_cut": true, "bytes": n}` with the size it had before the strings
+/// were cut. An empty object is no input.
+fn sanitize_input(input: &Map<String, Value>) -> Option<Map<String, Value>> {
+    if input.is_empty() {
+        return None;
+    }
+    let mut value = clean_value(&Value::Object(input.clone()), 0);
+    redact_value(&mut value);
+    let whole = json_len(&value);
+    cut_strings(&mut value);
+    let Value::Object(map) = value else {
+        return None;
+    };
+    if json_len(&Value::Object(map.clone())) <= STEP_INPUT_MAX_BYTES {
+        return Some(map);
+    }
+    let mut cut = Map::new();
+    cut.insert("_cut".to_owned(), Value::Bool(true));
+    cut.insert("bytes".to_owned(), Value::from(whole as u64));
+    Some(cut)
+}
+
+/// `text` cut to `max` bytes, keeping its head (three quarters) and its tail (the rest), with a
+/// line between that says how many bytes are not kept. Cuts only between characters. `text` is
+/// returned as it is when it fits.
+fn cut_head_tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    // the marker's length is at most that of the one that names the whole text
+    let room = max.saturating_sub(marker(text.len()).len());
+    let head_len = room - room / 4;
+    let tail_len = room / 4;
+    let mut head_end = head_len.min(text.len());
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = text.len().saturating_sub(tail_len).max(head_end);
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{}{}{}",
+        &text[..head_end],
+        marker(tail_start - head_end),
+        &text[tail_start..]
+    )
+}
+
+fn marker(omitted: usize) -> String {
+    format!("\n\u{2026} {omitted} bytes not kept \u{2026}\n")
+}
+
+/// A step's output as the log may keep it: control characters taken out (line breaks and tabs
+/// stay), credentials redacted, the text cut to [`STEP_OUTPUT_MAX_BYTES`] with its head and its
+/// tail, `truncated` and `bytes` set when the text is not all of what was returned (an agent
+/// that cut it says so itself; the size it names is kept when it is at least the text's). An
+/// output with no text and no error is none.
+fn sanitize_output(output: &StepOutput) -> Option<StepOutput> {
+    let received = output.text.len();
+    let clean = strip_controls(&output.text);
+    let redacted = redact_text(&clean);
+    let cut_here = redacted.len() > STEP_OUTPUT_MAX_BYTES;
+    let text = cut_head_tail(&redacted, STEP_OUTPUT_MAX_BYTES);
+    if text.is_empty() && !output.error {
+        return None;
+    }
+    let truncated = output.truncated || cut_here;
+    let bytes = if !truncated {
+        None
+    } else if cut_here {
+        Some((received as u64).max(output.bytes.unwrap_or(0)))
+    } else {
+        output.bytes.filter(|b| *b >= text.len() as u64)
+    };
+    Some(StepOutput {
+        text,
+        truncated,
+        bytes,
+        error: output.error,
+    })
 }
 
 /// A step the job tracks as open.
@@ -318,6 +515,10 @@ struct OpenStep {
     path: Vec<String>,
     /// How many updates were logged since it started.
     updates: u8,
+    /// Its input was logged (with the start, or with the first report that had one): a later
+    /// report does not log it again.
+    #[serde(default, skip_serializing_if = "is_false")]
+    input: bool,
 }
 
 /// The job's memory of its steps (`Job.steps`): which are open, and how many were logged. Belongs
@@ -330,6 +531,10 @@ pub struct StepLedger {
     open: BTreeMap<String, OpenStep>,
     #[serde(skip_serializing_if = "is_zero")]
     started: u32,
+    /// Bytes of `input` and `output` the job's steps logged so far, against
+    /// [`MAX_STEP_IO_BYTES_PER_JOB`].
+    #[serde(skip_serializing_if = "is_zero")]
+    io_bytes: u32,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -340,7 +545,7 @@ impl StepLedger {
     /// A ledger that has seen no step, which is what a job without steps has (and what the log
     /// leaves out).
     pub fn is_empty(&self) -> bool {
-        self.open.is_empty() && self.started == 0
+        self.open.is_empty() && self.started == 0 && self.io_bytes == 0
     }
 
     /// How many steps are open.
@@ -361,6 +566,53 @@ impl StepLedger {
     /// How many steps this job logged.
     pub fn started(&self) -> u32 {
         self.started
+    }
+
+    /// How many bytes of step input and output this job logged, of [`MAX_STEP_IO_BYTES_PER_JOB`].
+    pub fn io_bytes(&self) -> u32 {
+        self.io_bytes
+    }
+
+    /// Takes what the job's budget has room for of a step's input and output, in that order.
+    /// `input_wanted` is false when the step's input was logged already; the output is only
+    /// wanted on an end. Returns what to log and whether something was dropped for lack of room.
+    fn admit_io(
+        &mut self,
+        input: Option<Map<String, Value>>,
+        output: Option<StepOutput>,
+        input_wanted: bool,
+        output_wanted: bool,
+    ) -> (Option<Map<String, Value>>, Option<StepOutput>, bool) {
+        let mut dropped = false;
+        let mut input = input.filter(|_| input_wanted);
+        if let Some(map) = &input
+            && !self.take_io(json_len(&Value::Object(map.clone())))
+        {
+            input = None;
+            dropped = true;
+        }
+        let mut output = output.filter(|_| output_wanted);
+        if let Some(out) = &output
+            && !self.take_io(out.text.len())
+        {
+            output = None;
+            dropped = true;
+        }
+        (input, output, dropped)
+    }
+
+    /// Spends `size` bytes of the job's input/output budget, if it has them.
+    fn take_io(&mut self, size: usize) -> bool {
+        let Ok(size) = u32::try_from(size) else {
+            return false;
+        };
+        match self.io_bytes.checked_add(size) {
+            Some(total) if total <= MAX_STEP_IO_BYTES_PER_JOB => {
+                self.io_bytes = total;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The task ended: nothing stays open. The log gets no event for it (the projection closes
@@ -421,6 +673,7 @@ fn decide(ledger: &mut StepLedger, report: &StepReport) -> Decision {
                 OpenStep {
                     path: path.clone(),
                     updates: 0,
+                    input: false,
                 },
             );
             Decision::Log {
@@ -485,9 +738,22 @@ pub fn record_step(
     let Some(report) = report.sanitize(source) else {
         return (state, Vec::new());
     };
+    let input_logged = job.steps.open.get(&report.id).is_some_and(|o| o.input);
     let Decision::Log { phase, path } = decide(&mut job.steps, &report) else {
         return (state, Vec::new());
     };
+    // the input once per step, the output on its end, both within the job's budget
+    let (input, output, io_dropped) = job.steps.admit_io(
+        report.input,
+        report.output,
+        !input_logged,
+        phase == StepPhase::End,
+    );
+    if input.is_some()
+        && let Some(open) = job.steps.open.get_mut(&report.id)
+    {
+        open.input = true;
+    }
     let event = append(
         actor,
         EventBody::AgentStep(AgentStepData {
@@ -499,6 +765,9 @@ pub fn record_step(
             phase,
             icon: report.icon,
             detail: report.detail,
+            input,
+            output,
+            io_dropped,
         }),
     );
     (ThreadState::Working, vec![event])

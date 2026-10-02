@@ -89,7 +89,7 @@ use a2a::{
 };
 use orch_core::{
     A2UI_MEDIA_TYPE, AgentTaskState, AgentUpdate, LiveChunk, LiveEnd, STEPS_EXTENSION, StepKind,
-    StepReport, StepState, TEXT_STREAM_EXTENSION, check_operations,
+    StepOutput, StepReport, StepState, TEXT_STREAM_EXTENSION, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -406,11 +406,39 @@ fn optional_text<'a>(
     }
 }
 
+/// What a step reports it was called with: an object. Anything else (absent, `null`, a string, a
+/// list) is no input, and the step stays: `input` and `output` are **lenient** on purpose
+/// (ADR 0030), unlike the members that identify the step, so that an agent that sends them badly
+/// loses only them.
+fn input_of(entry: &serde_json::Map<String, Value>) -> Option<serde_json::Map<String, Value>> {
+    entry.get("input")?.as_object().cloned()
+}
+
+/// What a step reports it returned: `{text, truncated?, bytes?, error?}`. Without a string
+/// `text` there is no output; an optional member of the wrong type is read as absent.
+fn output_of(entry: &serde_json::Map<String, Value>) -> Option<StepOutput> {
+    let output = entry.get("output")?.as_object()?;
+    Some(StepOutput {
+        text: output.get("text")?.as_str()?.to_owned(),
+        truncated: output
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        bytes: output.get("bytes").and_then(Value::as_u64),
+        error: output
+            .get("error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
 /// The step a status message reports under `steps/v1`, or `None` when it reports none: no entry
 /// under the URI, or one that does not validate (no usable `id`, no `label`, a `state` that is not
 /// one of the five, a member of the wrong type). The ids carry the task id, so they are unique
-/// within the thread. What is left to the core's door ([`StepReport::sanitize`]) is the cutting
-/// of long text, the icon vocabulary and the control characters.
+/// within the thread. `input` and `output` are read leniently ([`input_of`], [`output_of`]): a
+/// bad one is dropped and the step is kept. What is left to the core's door
+/// ([`StepReport::sanitize`]) is the cutting of long text, the icon vocabulary, the control
+/// characters and the redaction.
 fn step_of(task_id: &str, message: &Message) -> Option<StepReport> {
     let entry = message
         .metadata
@@ -442,6 +470,8 @@ fn step_of(task_id: &str, message: &Message) -> Option<StepReport> {
         state,
         icon: optional_text(entry, "icon").ok()?.map(str::to_owned),
         detail: optional_text(entry, "detail").ok()?.map(str::to_owned),
+        input: input_of(entry),
+        output: output_of(entry),
     })
 }
 
@@ -1534,12 +1564,110 @@ mod tests {
                 state: StepState::Running,
                 icon: Some("execute".into()),
                 detail: Some("12 passed, 1 failed".into()),
+                input: None,
+                output: None,
             }
         );
         assert_eq!(
             env.key,
             IdemKey::Task("a2a:task-1:step:acp:call_2:toolu_01:sm-1".into()),
             "the key names the agent's id and the status message"
+        );
+    }
+
+    #[test]
+    fn a_steps_input_and_output_are_read_and_an_agent_that_sends_none_still_works() {
+        // the members of ADR 0030, as an agent sends them
+        let mut entry = step_entry();
+        entry["input"] = json!({"query": "node 24", "limit": 3});
+        entry["output"] =
+            json!({"text": "two results", "truncated": true, "bytes": 90_000, "error": true});
+        let m = step_message("sm-1", entry);
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        let step = step_of_envelope(&env);
+        assert_eq!(
+            step.input.as_ref().map(|i| Value::Object(i.clone())),
+            Some(json!({"query": "node 24", "limit": 3}))
+        );
+        assert_eq!(
+            step.output,
+            Some(StepOutput {
+                text: "two results".into(),
+                truncated: true,
+                bytes: Some(90_000),
+                error: true,
+            })
+        );
+        // an agent that sends neither (every agent before ADR 0030)
+        let m = step_message("sm-2", step_entry());
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        let step = step_of_envelope(&env);
+        assert_eq!((&step.input, &step.output), (&None, &None));
+        // an output that only has its text
+        let mut entry = step_entry();
+        entry["output"] = json!({"text": "ok"});
+        let m = step_message("sm-3", entry);
+        let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+        assert_eq!(
+            step_of_envelope(&env).output,
+            Some(StepOutput {
+                text: "ok".into(),
+                ..StepOutput::default()
+            })
+        );
+    }
+
+    #[test]
+    fn a_bad_input_or_output_drops_only_that_member_and_never_the_step() {
+        let cases = [
+            ("input", json!("npm test")),
+            ("input", json!(["npm", "test"])),
+            ("input", json!(null)),
+            ("input", json!(7)),
+            ("output", json!("two results")),
+            ("output", json!(["two results"])),
+            ("output", json!({"text": 5})),
+            ("output", json!({"text": null})),
+            ("output", json!({"truncated": true})),
+            ("output", json!(null)),
+        ];
+        for (member, value) in cases {
+            let mut entry = step_entry();
+            entry[member] = value.clone();
+            let m = step_message("sm-1", entry);
+            let env = only(StreamMapper::default().map(status_update(TaskState::Working, Some(m))));
+            let step = step_of_envelope(&env);
+            assert_eq!(step.label, "npm test", "{member} {value}: the step stays");
+            assert_eq!(step.detail.as_deref(), Some("12 passed, 1 failed"));
+            assert!(
+                step.input.is_none() && step.output.is_none(),
+                "{member} {value}: dropped"
+            );
+        }
+        // a bad input does not take a good output with it, and the other way round
+        let mut entry = step_entry();
+        entry["input"] = json!("npm test");
+        entry["output"] = json!({"text": "fine"});
+        let env = only(StreamMapper::default().map(status_update(
+            TaskState::Working,
+            Some(step_message("sm-1", entry)),
+        )));
+        let step = step_of_envelope(&env);
+        assert!(step.input.is_none());
+        assert_eq!(step.output.as_ref().map(|o| o.text.as_str()), Some("fine"));
+        // an optional member of an output that has the wrong type is read as absent
+        let mut entry = step_entry();
+        entry["output"] = json!({"text": "fine", "truncated": "yes", "bytes": -1, "error": 1});
+        let env = only(StreamMapper::default().map(status_update(
+            TaskState::Working,
+            Some(step_message("sm-2", entry)),
+        )));
+        assert_eq!(
+            step_of_envelope(&env).output,
+            Some(StepOutput {
+                text: "fine".into(),
+                ..StepOutput::default()
+            })
         );
     }
 

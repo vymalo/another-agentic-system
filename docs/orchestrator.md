@@ -733,7 +733,7 @@ never goes down, inline only in the commit that made it current, and the events 
 **Steps on a thread** ([ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md), built in MVP slice 5;
 the contract an agent reports them under is [`api/steps-v1.md`](api/steps-v1.md)). An agent's work has a shape (the
 agent, the sub-agent it delegated to, their commands), and the log keeps it as `agent_step` events: `{id, path, kind,
-label, state, phase: start|update|end, icon?, detail?}`, where `path` is the chain of step ids the step runs under. The
+label, state, phase: start|update|end, icon?, detail?, input?, output?, ioDropped?}`, where `path` is the chain of step ids the step runs under. The
 core keeps the log **bounded** with a ledger in the job (`Job.steps`, `StepLedger`: which steps are open, each with the
 path it started with and the count of updates logged, and how many steps the job logged), through one free function,
 `record_step`, so that an agent's report (`AgentUpdate::Step`) and one the orchestrator makes itself (`Input::Step`,
@@ -755,6 +755,17 @@ the parent's own path and the parent, at most the 8 nearest. When the agent's ta
 (`tests/properties.rs`, `the_log_of_a_step_is_bounded_and_the_ledger_follows_the_events`) pins: at most a start, 4
 updates and an end per step, a start only for a step that is not open, an end with the path of its start, the ledger
 and the events agree, and steps are logged only while the thread works.
+
+**What a step carries** ([ADR 0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)): `input`
+(what the tool was called with, an object) with the start and `output` (`StepOutput {text, truncated, bytes, error}`) with
+the end, both cleaned by the same door: control characters out, credentials redacted by the pure `orch_core::redact`
+(a filter, not a guarantee), `input` cut to 4 KiB (`{"_cut": true, "bytes": n}` past it) and `output.text` to 8 KiB with
+its head and tail. `record_step` logs an input once per step (the ledger's `OpenStep` remembers it) and an output only on
+an end, and spends a **budget of 2 MiB per job** (`StepLedger.io_bytes`) on both: past it the event carries
+`ioDropped: true` and neither member. `orch-app` takes both members off a report before the core sees it when
+`ORCH_STEPS_RECORD_IO=false` (`AppConfig.record_step_io`): the core is pure and has no configuration. The tests are
+`crates/core/tests/step_io.rs` and `redact.rs` (a positive and a negative corpus, and a property test that no kept member
+exceeds its bound).
 
 **Built in the core** (MVP slice 2; [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md)): a seventh state, `verifying`, and

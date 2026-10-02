@@ -128,6 +128,8 @@ fn arb_step() -> impl Strategy<Value = StepReport> {
             state,
             icon: None,
             detail: None,
+            input: None,
+            output: None,
         })
 }
 

@@ -1724,6 +1724,8 @@ fn busy_job() -> Job {
             state,
             icon: None,
             detail: None,
+            input: None,
+            output: None,
         };
         orch_core::record_step(
             ThreadState::Working,
@@ -2385,9 +2387,12 @@ pub async fn agent_step_roundtrip<S: ThreadStore>(store: S) {
                 phase,
                 icon: icon.map(str::to_owned),
                 detail: detail.map(str::to_owned),
+                input: None,
+                output: None,
+                io_dropped: false,
             })
         };
-    let bodies = vec![
+    let mut bodies = vec![
         step(
             "t/tool:c1",
             &[],
@@ -2434,6 +2439,21 @@ pub async fn agent_step_roundtrip<S: ThreadStore>(store: S) {
             None,
         ),
     ];
+    // the start of the command says what it was called with, its end what it returned (ADR 0030)
+    if let EventBody::AgentStep(d) = &mut bodies[1] {
+        d.input = serde_json::json!({"command": "npm test", "cwd": "web"})
+            .as_object()
+            .cloned();
+    }
+    if let EventBody::AgentStep(d) = &mut bodies[3] {
+        d.output = Some(orch_core::StepOutput {
+            text: "1 failed\nexit 1 \u{1f600}".to_owned(),
+            truncated: true,
+            bytes: Some(20_000),
+            error: true,
+        });
+        d.io_dropped = true;
+    }
     let events: Vec<NewEvent> = bodies
         .iter()
         .map(|body| NewEvent {

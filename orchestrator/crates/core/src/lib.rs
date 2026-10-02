@@ -13,6 +13,7 @@ mod fork;
 mod gate;
 mod ids;
 mod live;
+mod redact;
 mod step;
 mod thread;
 mod thread_tools;
@@ -49,10 +50,13 @@ pub use gate::{
 };
 pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};
 pub use live::{LiveChunk, LiveEnd, LiveText, MAX_LIVE_PIECE_BYTES};
+pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
 pub use step::{
     AgentStepData, MAX_OPEN_STEPS, MAX_STEP_DEPTH, MAX_STEP_DETAIL_CHARS, MAX_STEP_ID_BYTES,
-    MAX_STEP_LABEL_CHARS, MAX_STEP_UPDATES, MAX_STEPS_PER_JOB, MCP_SERVER_ICON_PREFIX, STEP_ICONS,
-    StepKind, StepLedger, StepPhase, StepReport, StepSource, StepState, record_step,
+    MAX_STEP_IO_BYTES_PER_JOB, MAX_STEP_LABEL_CHARS, MAX_STEP_UPDATES, MAX_STEPS_PER_JOB,
+    MCP_SERVER_ICON_PREFIX, STEP_ICONS, STEP_INPUT_MAX_BYTES, STEP_INPUT_STRING_MAX_CHARS,
+    STEP_OUTPUT_MAX_BYTES, StepKind, StepLedger, StepOutput, StepPhase, StepReport, StepSource,
+    StepState, record_step,
 };
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{Caller, CallerError, ToolsGrant};
