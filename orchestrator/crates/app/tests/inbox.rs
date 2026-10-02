@@ -64,6 +64,7 @@ impl Rig {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    artifacts: orch_ports::NoArtifacts,
                     store: store.clone(),
                     wakeup: MemoryWakeup::new(),
                     agents: ScriptedAgent::new(),
@@ -1103,6 +1104,7 @@ async fn a_watch_that_lands_between_the_lookup_and_the_park_is_not_missed() {
     let app = Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store: store.clone(),
                 wakeup: MemoryWakeup::new(),
                 agents: ScriptedAgent::new(),

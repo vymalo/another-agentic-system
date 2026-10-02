@@ -80,13 +80,15 @@ flowchart TB
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
   subgraph G_PORTS["Ports: traits only"]
-    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, AgentRegistry, ChatModel, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
+    ports["<b>orch-ports</b><br/>ThreadStore (threads, events, outbox, inbox, watches), Wakeup,<br/>AgentClient, AgentRegistry, ChatModel, ArtifactStore, Clock, IdGen, Ports<br/>feature testkit: memory impls + conformance"]
   end
   subgraph G_ADAPT["Adapters: implement the ports"]
     pg["<b>orch-store-postgres</b><br/>ThreadStore + Wakeup<br/>sqlx, LISTEN/NOTIFY, migrations"]
     a2a["<b>orch-agent-a2a</b><br/>AgentClient over A2A 1.0<br/>a2a-client-lf"]
     adam["<b>orch-agent-adam</b><br/>AgentClient over adam-rs agents<br/>hosted in this process (feature agent-local)"]
     openai["<b>orch-model-openai</b><br/>ChatModel over an OpenAI-compatible<br/>chat completions endpoint (thread titles)"]
+    artfs["<b>orch-artifacts-fs</b><br/>ArtifactStore over a directory<br/>atomic rename, mode 0600 (feature artifacts-fs)"]
+    arts3["<b>orch-artifacts-s3</b><br/>ArtifactStore over an S3 bucket<br/>object_store, aws only (feature artifacts-s3)"]
     registry["<b>orch-registry-platform</b><br/>AgentRegistry over the platform's agent-registry/v1<br/>read live, cache headers, fails closed (feature registry-platform)"]
   end
   subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
@@ -111,7 +113,7 @@ flowchart TB
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
   subgraph G_BIN["Binary: the composition root"]
-    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, surface-webhook, registry-platform (default), agent-local (off)"]
+    bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, surface-webhook, registry-platform, artifacts-fs, artifacts-s3 (default), agent-local (off)"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -125,6 +127,8 @@ flowchart TB
   a2a --> token
   adam --> ports
   registry --> ports
+  artfs --> ports
+  arts3 --> ports
   adam --> a2amap
   a2amap --> ports
   app --> ports
@@ -138,6 +142,8 @@ flowchart TB
   bin --> config
   bin --> a2a
   bin -. "feature registry-platform" .-> registry
+  bin -. "feature artifacts-fs" .-> artfs
+  bin -. "feature artifacts-s3" .-> arts3
   bin -. "feature agent-local" .-> adam
   bin -. "feature surface-agui" .-> surfagui
   bin -. "feature surface-mcp" .-> surfmcp
@@ -202,8 +208,10 @@ Rules the graph enforces, each checkable in the manifests:
 | Crate (directory) | Role | Status |
 |---|---|---|
 | `orch-core` (`crates/core`) | Contract types and `transition` | **Built** |
-| `orch-ports` (`crates/ports`) | `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` and `agent_registry_conformance!` | **Built** |
+| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)), `ThreadStore`, `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `ScriptedAgent` and the conformance macros `thread_store_conformance!`, `wakeup_conformance!`, `agent_client_conformance!` and `agent_registry_conformance!` | **Built** |
 | `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`) | **Built** |
+| `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; for development and one node | **Built** (S10) |
+| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; static credentials; the production store | **Built** (S10) |
 | `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | **Built** (MVP slice 9) |
 | `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`) | **Built** |
 | `orch-model-openai` (`crates/model-openai`) | `ChatModel` over an OpenAI-compatible `POST {base}/chat/completions`: the orchestrator's first model call, the title of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)); `reqwest` only, no vendor SDK, the key never in an error or a `Debug` | **Built** |

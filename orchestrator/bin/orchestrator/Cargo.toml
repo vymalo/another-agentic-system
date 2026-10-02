@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook", "registry-platform"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -35,6 +35,15 @@ surface-webhook = ["dep:orch-surface-webhook"]
 # `agents.registry.url` (AGENT_REGISTRY_URL) is set. Without the feature a registry is refused at
 # startup (exit 78), never quietly ignored.
 registry-platform = ["dep:orch-registry-platform"]
+# The artifact stores (`artifacts.store`, ADR 0032): where the files agents hand over are kept, each an
+# implementation of the `ArtifactStore` port in its own crate. `artifacts-fs` (a directory, for development
+# and a single node) and `artifacts-s3` (an S3 bucket, the production store) are on by default, so that the
+# image can be configured for either; the configuration picks one (or none: the files are then refused with
+# "no artifact store configured"). Without a feature, `artifacts.store` naming it is refused at startup
+# (exit 78), never ignored. `artifacts-s3` brings the S3 backend of `object_store` (six crates, no second TLS
+# stack): a build that does not need it drops the feature.
+artifacts-fs = ["dep:orch-artifacts-fs"]
+artifacts-s3 = ["dep:orch-artifacts-s3"]
 # In-process agents (`transport: local` in AGENTS_FILE, ADR 0015): adam-rs agents hosted by this
 # process, journaled in the orchestrator's own Postgres under the prefix `orch_agent_`. Off by
 # default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
@@ -56,9 +65,12 @@ orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
+orch-artifacts-fs = { workspace = true, optional = true }
+orch-artifacts-s3 = { workspace = true, optional = true }
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 anyhow.workspace = true
+bytes.workspace = true
 clap.workspace = true
 jiff.workspace = true
 axum.workspace = true
@@ -75,6 +87,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+futures.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 reqwest.workspace = true

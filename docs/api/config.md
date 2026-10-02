@@ -1,8 +1,9 @@
 # The orchestrator's configuration file
 
-> **Status: built (PR S9 of plan 10, 2026-10-02).** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
-> validation, migration) and [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections).
+> validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections) and
+> [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section).
 > The loader builds every key marked **now** (crate [`orch-config`](../../orchestrator/crates/config/README.md), the
 > loader in [`orchestrator/bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-configuration-file));
 > a key marked **reserved** belongs to the PR named beside it and is refused (exit 78, naming that PR and ADR) until it
@@ -84,6 +85,9 @@ models:
       apiKey: { env: ORCH_MODEL_API_KEY }
 tasks:
   title: { endpoint: default, model: small-model }
+artifacts:
+  store: fs
+  fs: { root: /var/lib/orchestrator/artifacts }
 threadTools:
   url: http://orchestrator:8080
   secret: { file: /run/secrets/thread-tools }
@@ -104,7 +108,7 @@ value does for a check elsewhere); the notes about variables that override the f
 
 ## Every key
 
-**Now** is built by S9; **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
+**Now** is built by S9 (the `artifacts` keys by S10); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
 (and flag) of today; during the transition release it still works and wins over the file, with a warning naming the
 variable and the key ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md#migration)). A
 secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` set means
@@ -195,7 +199,17 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `webhooks.github.maxAgeSecs` | ≥ 1, `86400` | `WEBHOOK_GITHUB_MAX_AGE_SECS` | now |
 | `auth.devUser` | an e-mail, none; development only (warns) | `AUTH_DEV_USER` | now |
 | `auth.mode`, `auth.jwt`, `auth.defaultRole`, `auth.roles` | plan 10 §3.4 | — | reserved: S14 and S15, ADR 0033 |
-| `artifacts.store`, `artifacts.fs`, `artifacts.s3`, `artifacts.maxFileBytes`, `artifacts.maxPerJobBytes`, `artifacts.fetchHosts` | plan 10 §3.3 (`s3.accessKeyId` and `s3.secretAccessKey` are secrets) | — | reserved: S10 and S11, ADR 0032 |
+| `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
+| `artifacts.store` | `fs` \| `s3`; required with the section. Names only what this build compiled in: `fs` needs the Cargo feature `artifacts-fs`, `s3` needs `artifacts-s3`, else exit 78 naming it. The section of the store chosen is required and the other one is an error | — | now |
+| `artifacts.fs.root` | path (relative to this file's directory); required with `store: fs`. Made (mode `0700`) when missing. Every role must see the same directory (one machine, or a shared volume) | — | now |
+| `artifacts.s3.bucket` | 3 to 63 characters of `a-z`, `0-9`, `-`, `.`, starting and ending with a letter or a digit; required with `store: s3`; the bucket must exist | — | now |
+| `artifacts.s3.region` | slug, `us-east-1` | — | now |
+| `artifacts.s3.endpoint` | `http(s)` URL with a host, no credentials, query or fragment; absent: AWS S3. The bucket is then in the path (`<endpoint>/<bucket>/<key>`). An `http` endpoint sends the files in the clear | — | now |
+| `artifacts.s3.prefix` | `a-z A-Z 0-9 . _ - /`, no `..`, at most 128 characters; keys go under it, so one bucket serves several deployments | — | now |
+| `artifacts.s3.accessKeyId`, `artifacts.s3.secretAccessKey` | **secrets**, required with `store: s3`. Static credentials only: this build does not read `AWS_*` variables or an instance profile | — | now |
+| `artifacts.s3.timeoutSecs` | 1 to 3600, `60` (one request) | — | now |
+| `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest of S11: a larger file is not kept | — | now (read: S11) |
+| `artifacts.maxPerJobBytes`, `artifacts.fetchHosts` | plan 10 §3.3: the bytes a job may keep (100 MiB) and the hosts a `url` part may be fetched from (none) | — | reserved: S11, ADR 0032 |
 
 ### Variables that are not keys
 

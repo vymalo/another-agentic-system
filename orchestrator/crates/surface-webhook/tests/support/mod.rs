@@ -32,6 +32,7 @@ impl Rig {
         let app: Arc<App<Ports>> = Arc::new(
             App::new(
                 PortSet {
+                    artifacts: orch_ports::NoArtifacts,
                     store: store.clone(),
                     wakeup: MemoryWakeup::new(),
                     agents: ScriptedAgent::new(),

@@ -705,7 +705,7 @@ fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_
     let config = write_config(
         &scratch,
         "version: 1\nnonsense: 1\nserver: { role: hunter2-s3cr3t, listen: 5 }\n\
-         database: hunter2-s3cr3t\nartifacts: { store: fs }\ndispatcher: { concurrency: 0 }\n",
+         database: hunter2-s3cr3t\nartifacts: { store: fs, fs: { root: x }, maxPerJobBytes: 1 }\ndispatcher: { concurrency: 0 }\n",
     );
     let out = run_to_end(&[], &[("ORCH_CONFIG_FILE", path_str(&config))]);
     assert_eq!(out.status.code(), Some(78), "EX_CONFIG: {}", out.stderr);
@@ -714,7 +714,7 @@ fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_
         "server.role: not an allowed value",
         "server.listen: expected string",
         "database: ",
-        "artifacts: reserved for PR S10 and S11 (ADR 0032, artifacts)",
+        "artifacts.maxPerJobBytes: reserved for PR S11 (ADR 0032, ingesting files)",
         "dispatcher.concurrency: must be at least 1",
     ] {
         assert!(
@@ -3257,4 +3257,191 @@ fn a_registry_url_in_a_build_without_the_registry_exits_78_naming_the_feature() 
     let status = run.wait(Duration::from_secs(10));
     assert_eq!(status.code(), Some(78), "EX_CONFIG; {}", run.log());
     assert!(run.log().contains("registry-platform"), "{}", run.log());
+}
+
+// ---- the artifact store (ADR 0032) -----------------------------------------------------------
+
+#[cfg(feature = "artifacts-s3")]
+#[test]
+fn print_config_shows_the_artifact_store_with_references_and_never_a_credential() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}artifacts:\n  store: s3\n  maxFileBytes: 2048\n  s3:\n    bucket: orchestrator-files\n    \
+             endpoint: https://minio.example.com:9000\n    accessKeyId: {{ env: S3_ACCESS_KEY_ID }}\n    \
+             secretAccessKey: {{ file: s3-secret }}\n"
+        ),
+    );
+    fs::write(scratch.file("s3-secret"), "hunter2-s3-secret\n").unwrap();
+    let out = run_to_end(
+        &["--print-config"],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", SECRET_URL),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("S3_ACCESS_KEY_ID", "AKIDHUNTER2EXAMPLE"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", out.stderr);
+    for shown in [
+        "artifacts:",
+        "store: s3",
+        "maxFileBytes: 2048",
+        "bucket: orchestrator-files",
+        "region: us-east-1",
+        "env: S3_ACCESS_KEY_ID",
+        "file: s3-secret",
+    ] {
+        assert!(out.stdout.contains(shown), "{shown}:\n{}", out.stdout);
+    }
+    for value in ["AKIDHUNTER2EXAMPLE", "hunter2-s3-secret"] {
+        assert!(
+            !out.stdout.contains(value) && !out.stderr.contains(value),
+            "{value} is printed:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+/// A store this build lacks, or a section that is not complete, is exit 78 naming the key (and
+/// the feature), with no database to be reached first.
+#[test]
+fn an_artifact_store_that_is_not_usable_is_78_before_anything_connects() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let run_with = |section: &str| {
+        let config = write_config(&scratch, &format!("{CONFIG}{section}"));
+        run_to_end(
+            &[],
+            &[
+                ("ORCH_CONFIG_FILE", path_str(&config)),
+                ("DATABASE_URL", SECRET_URL),
+                ("SMOKE_AGENT_TOKEN", TOKEN),
+            ],
+        )
+    };
+    let out = run_with(
+        "artifacts: { store: s3, s3: { accessKeyId: { env: X }, secretAccessKey: { env: X } } }\n",
+    );
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("artifacts.s3.bucket: required key is missing"),
+        "{}",
+        out.stderr
+    );
+    let out = run_with("artifacts: { store: fs }\n");
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("artifacts.fs: required when artifacts.store is fs"),
+        "{}",
+        out.stderr
+    );
+    let out = run_with("artifacts: { store: fs, fs: { root: x }, maxFileBytes: 0 }\n");
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("artifacts.maxFileBytes: "),
+        "{}",
+        out.stderr
+    );
+}
+
+/// Without the Cargo feature of the store the file names, the process does not start.
+#[cfg(not(feature = "artifacts-fs"))]
+#[test]
+fn a_directory_store_in_a_build_without_it_exits_78_naming_the_feature() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!("{CONFIG}artifacts: {{ store: fs, fs: {{ root: files }} }}\n"),
+    );
+    let out = run_to_end(
+        &[],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", SECRET_URL),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(out.stderr.contains("artifacts-fs"), "{}", out.stderr);
+}
+
+#[cfg(feature = "artifacts-fs")]
+#[tokio::test]
+async fn a_directory_store_is_made_at_startup_and_a_root_that_cannot_be_used_stops_it_with_78() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let database_url = database_url_of(&db);
+
+    // a root that is a file: the process says which key and exits 78
+    let blocked = scratch.file("a-file");
+    fs::write(&blocked, b"x").unwrap();
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}artifacts:\n  store: fs\n  fs: {{ root: {} }}\n",
+            blocked.display()
+        ),
+    );
+    let mut run = spawn(
+        &scratch,
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", &database_url),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    let status = run.wait(Duration::from_secs(60));
+    assert_eq!(status.code(), Some(78), "EX_CONFIG; {}", run.log());
+    assert!(
+        run.log().contains("artifacts.fs.root: cannot use"),
+        "{}",
+        run.log()
+    );
+    drop(run);
+
+    // a root under the config file's directory that is not there yet: made, and the process serves
+    let config = write_config(
+        &scratch,
+        &format!("{CONFIG}artifacts:\n  store: fs\n  fs: {{ root: data/artifacts }}\n"),
+    );
+    let addr = format!("127.0.0.1:{}", free_port());
+    let run = std::cell::RefCell::new(spawn(
+        &scratch,
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", &database_url),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("LISTEN_ADDR", &addr),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    eventually("the binary answers /healthz", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("http://{addr}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+    assert!(scratch.file("data/artifacts").is_dir());
+    let log = run.borrow().log();
+    assert!(
+        log.contains("files from agents are kept in a directory"),
+        "{log}"
+    );
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    assert_eq!(status.code(), Some(0), "{}", run.borrow().log());
 }

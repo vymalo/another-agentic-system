@@ -3,6 +3,7 @@
 //! over it, or the flags and variables alone; `boot` composes the adapters and `config` reads and
 //! validates the file, the flags, the environment and the agent list.
 
+mod artifacts;
 mod boot;
 mod config;
 mod local;

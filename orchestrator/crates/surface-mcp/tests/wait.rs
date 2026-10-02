@@ -105,6 +105,7 @@ impl World {
         Arc::new(
             App::new(
                 PortSet {
+                    artifacts: orch_ports::NoArtifacts,
                     store: self.store.clone(),
                     wakeup: self.wakeup.clone(),
                     agents: self.agent.clone(),

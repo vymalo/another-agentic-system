@@ -60,6 +60,12 @@
   - **`sendA2uiAction` cannot answer an open interrupt** (it throws), which is the usual case for a surface
     that comes with the agent's question. The app closes the interrupt through the runtime and stages the
     action on `ThreadAgent`, which sends it in place of the `resume`.
+  Status note (2026-10-02, [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)): **an `Image` of the catalog
+  will be drawn, from a file of the thread and from nothing else.** Catalog v4 gives `Image` an `artifact` member, the
+  SHA-256 of a file the thread's agent handed over and the artifact store holds, and a required `alt`; it is never a URL,
+  and the validator refuses an id that is not one of this thread's files. This amends rule 5 ("an `Image` is a
+  placeholder that is never fetched") for that one source and closes the image half of open question 38; remote images,
+  in markdown or by `src`, stay refused. Not built (S12).
 
 ## Context
 

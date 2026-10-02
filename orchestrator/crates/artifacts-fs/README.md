@@ -1,0 +1,74 @@
+# orch-artifacts-fs
+
+`ArtifactStore` over a directory: the store for development and for a single node.
+
+## Where it sits
+
+An **adapter** of the `ArtifactStore` port in [`orch-ports`](../ports/README.md)
+([ADR 0032](../../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md),
+[ADR 0009](../../../docs/decisions/0009-swappable-implementations-at-build-time.md)): the files an agent hands
+over are kept here by the hash of their content, and the event log keeps only the reference. Only the binary
+([`orchestrator`](../../bin/orchestrator/README.md)) depends on it, behind the Cargo feature `artifacts-fs` (on by
+default), and builds it from `artifacts.fs.root` when `artifacts.store` is `fs`. The production store is
+[`orch-artifacts-s3`](../artifacts-s3/README.md).
+
+**Every role of a deployment must see the same directory** (the worker that ingests a file and the control plane that
+serves it): one machine, or a volume that all of them mount. Anything else needs the S3 store.
+
+## API at a glance
+
+| Item | What |
+|---|---|
+| `FsArtifacts::open(root).await -> Result<FsArtifacts, OpenError>` | creates the root and its parents (mode `0700`) when they are not there, and writes and removes a probe file in it, so a root that cannot be used is found at startup and not when the first file is shared. Cheap to clone |
+| `FsArtifacts::root()` | the directory |
+| `OpenError` | `cannot use <path> as the artifact root: <io error>`: the only error that shows a path (it goes to the operator's log; `ArtifactError`s never show one) |
+| `impl ArtifactStore for FsArtifacts` | `put`, `get`, `delete` as the port says |
+
+## Layout and guarantees
+
+```text
+<root>/threads/<thread uuid>/<sha256>             the bytes, mode 0600
+<root>/threads/<thread uuid>/<sha256>.meta.json   {"mediaType","size","sha256","filename"}, mode 0600
+```
+
+* **A write is atomic and durable.** The meta, then the bytes, are each written to a temporary file in the same
+  directory (`.tmp-<uuid>`, created `create_new`, mode `0600`), flushed, fsynced and renamed into place; the directory
+  is fsynced at the end, and `put` returns only then. The bytes are renamed last, so a file is found only when both
+  are there: a crash in the middle leaves a meta without bytes (not found, and a retried `put` repairs it) or a
+  `.tmp-*` file that nobody reads and that is safe to delete while no process is writing.
+* **Idempotent by content.** A `put` of a file whose bytes are there (right size) and whose meta is the same writes
+  nothing; with another meta (a second file name for the same content) it replaces the meta file whole and leaves the
+  bytes. Concurrent puts of one key each write their own temporary files and rename: the last rename wins and the
+  result is whole.
+* **A key cannot leave the root.** The path is built from the key's two parts, a UUID and 64 hex digits, and from
+  nothing an agent wrote; and `ArtifactKey::parse` refuses every other text. The root is trusted: a symbolic link put
+  under it by someone who can write there is followed.
+* **Private.** Files `0600`, directories the store makes `0700` (the process's umask can only take more away).
+* **Damage is reported, not served.** A file whose size is not its meta's, a meta that is not the JSON above or names
+  another hash is `ArtifactError::Corrupt` (class `Corrupt`, alert). `get` reads the file as a stream of 64 KiB pieces.
+* **Errors.** An I/O failure (a full disk, a permission) is `ArtifactError::Unavailable` (transient), with the I/O
+  error as its source and no path in its text.
+* Nothing is removed but by `delete`: no expiry and no cleanup of empty directories (retention is open question 46).
+
+## Tests
+
+No environment variables; each case uses a temporary directory.
+
+* `tests/conformance.rs`: the `ArtifactStore` testkit of `orch-ports` (`artifact_store_conformance!`, twelve cases:
+  round trip, empty file, the meta kept whole, idempotent put, a second name, missing key, an 8 MiB file streamed,
+  concurrent puts of one key and of different files, delete, threads that share nothing, bytes that are not their key
+  refused), and what only a directory has: the files left after a put are the two and no temporary file, with the
+  contents and the JSON; modes `0600` and `0700` (a root made with its parents); files survive a reopen of the root;
+  a second put of the same file writes nothing (the modification times do not move); a second name replaces the meta
+  and keeps the bytes; bytes without a meta and a meta without bytes are not found and a put repairs both; a short
+  file, a meta that is not JSON, names another hash or has an unknown member is `Corrupt`; a root that is a file or
+  below one is refused when opened, a missing root is made; a write that cannot land is transient, shows no path and
+  leaves no temporary file.
+* Unit tests in `src/lib.rs`: every path the store builds, for a key of zeros, of `0xff` and of `0x2e` bytes, is a
+  chain of plain names under the root two or three deep; nine traversal attempts are not keys; a meta of another hash is
+  corrupt.
+
+## See also
+
+[`orch-ports`](../ports/README.md), [`orch-artifacts-s3`](../artifacts-s3/README.md),
+[`orchestrator`](../../bin/orchestrator/README.md).

@@ -253,7 +253,7 @@ auth: { devUser: 5 }
 
 #[test]
 fn a_plain_string_is_refused_wherever_a_secret_goes() {
-    // One file with a string at each of the eight secrets.
+    // One file with a string at each of the ten secrets.
     let text = "\
 version: 1
 database: { url: postgres://u:hunter2@db/orch }
@@ -266,12 +266,17 @@ threadTools: { url: http://orch:8080, secret: plain, previousSecret: plain }
 webhooks:
   generic: { secrets: [plain] }
   github: { secrets: [plain] }
+artifacts:
+  store: s3
+  s3: { bucket: files, accessKeyId: plain, secretAccessKey: plain }
 ";
     let errors = lines(load(text, &minimal_env()));
     let reference = "a secret is a reference: `{ env: NAME }` or `{ file: PATH }`";
     let want = [
         "agents.registry.agentToken",
         "agents.registry.token",
+        "artifacts.s3.accessKeyId",
+        "artifacts.s3.secretAccessKey",
         "database.url",
         "models.endpoints.default.apiKey",
         "threadTools.previousSecret",
@@ -318,7 +323,7 @@ tasks:
   turnSummary: {}
 ui: { showDescriptions: true }
 auth: { mode: jwt, roles: {} }
-artifacts: { store: fs }
+artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
 ";
     let errors = lines(load(text, &minimal_env()));
     let find = |key: &str| {
@@ -338,7 +343,8 @@ artifacts: { store: fs }
         ("ui", "PR S18 and S19"),
         ("auth.mode", "PR S14 and S15 (ADR 0033"),
         ("auth.roles", "PR S14 and S15 (ADR 0033"),
-        ("artifacts", "PR S10 and S11 (ADR 0032"),
+        ("artifacts.maxPerJobBytes", "PR S11 (ADR 0032"),
+        ("artifacts.fetchHosts", "PR S11 (ADR 0032"),
     ] {
         let line = find(key);
         assert!(
@@ -351,6 +357,319 @@ artifacts: { store: fs }
             .iter()
             .any(|l| l.contains("unknown key") && l.starts_with("ui"))
     );
+    // `artifacts` itself is built (ADR 0032): only the two keys of the ingest are reserved
+    assert!(
+        !errors.iter().any(|l| l.starts_with("artifacts: ")
+            || l.starts_with("artifacts.store")
+            || l.starts_with("artifacts.fs")),
+        "{errors:?}"
+    );
+}
+
+const S3_ENV: [(&str, &str); 2] = [
+    ("S3_ACCESS_KEY_ID", "AKIDEXAMPLE"),
+    ("S3_SECRET_ACCESS_KEY", "s3cr3t-access-key"),
+];
+
+fn s3_env() -> Fake {
+    S3_ENV
+        .iter()
+        .fold(minimal_env(), |fake, (name, value)| fake.env(name, value))
+}
+
+/// The artifact store (ADR 0032).
+mod artifacts {
+    use orch_config::{ArtifactStoreKind, DEFAULT_MAX_FILE_BYTES, DEFAULT_S3_REGION};
+
+    use super::*;
+
+    const S3: &str = "\
+artifacts:
+  store: s3
+  s3:
+    bucket: orchestrator-files
+    endpoint: https://minio.example.com:9000
+    prefix: prod/files
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+";
+
+    #[test]
+    fn no_section_is_no_store() {
+        let valid = load(MINIMAL, &minimal_env()).unwrap();
+        assert!(valid.config.artifacts.is_none());
+        assert!(valid.artifacts_fs_root().is_none());
+        assert!(valid.secrets.s3_access_key_id.is_none());
+        let shown = serde_norway::to_string(&valid.config.effective()).unwrap();
+        assert!(!shown.contains("artifacts"), "{shown}");
+    }
+
+    #[test]
+    fn a_directory_store_is_valid_with_its_defaults() {
+        let text = format!("{MINIMAL}artifacts:\n  store: fs\n  fs: {{ root: files }}\n");
+        let valid = load(&text, &minimal_env()).unwrap();
+        let artifacts = valid.config.artifacts.as_ref().unwrap();
+        assert_eq!(artifacts.store, ArtifactStoreKind::Fs);
+        assert_eq!(artifacts.max_file_bytes, DEFAULT_MAX_FILE_BYTES);
+        assert_eq!(DEFAULT_MAX_FILE_BYTES, 10 * 1024 * 1024);
+        assert_eq!(
+            valid.artifacts_fs_root().unwrap(),
+            std::path::Path::new("/etc/orchestrator/files"),
+            "relative to the directory of the file"
+        );
+        let absolute = format!(
+            "{MINIMAL}artifacts: {{ store: fs, fs: {{ root: /var/lib/orchestrator/artifacts }}, maxFileBytes: 1 }}\n"
+        );
+        let valid = load(&absolute, &minimal_env()).unwrap();
+        assert_eq!(
+            valid.artifacts_fs_root().unwrap(),
+            std::path::Path::new("/var/lib/orchestrator/artifacts")
+        );
+        assert_eq!(valid.config.artifacts.unwrap().max_file_bytes, 1);
+        assert!(valid.secrets.s3_access_key_id.is_none());
+    }
+
+    #[test]
+    fn an_s3_store_is_valid_and_its_credentials_are_read_by_reference() {
+        let valid = load(&format!("{MINIMAL}{S3}"), &s3_env()).unwrap();
+        let artifacts = valid.config.artifacts.as_ref().unwrap();
+        assert_eq!(artifacts.store, ArtifactStoreKind::S3);
+        let s3 = artifacts.s3.as_ref().unwrap();
+        assert_eq!(s3.bucket, "orchestrator-files");
+        assert_eq!(s3.region, DEFAULT_S3_REGION);
+        assert_eq!(s3.timeout_secs, 60);
+        assert_eq!(s3.prefix.as_deref(), Some("prod/files"));
+        assert_eq!(
+            valid.secrets.s3_access_key_id.as_ref().unwrap().expose(),
+            "AKIDEXAMPLE"
+        );
+        assert_eq!(
+            valid
+                .secrets
+                .s3_secret_access_key
+                .as_ref()
+                .unwrap()
+                .reference(),
+            &SecretRef::Env("S3_SECRET_ACCESS_KEY".to_owned())
+        );
+        assert!(valid.artifacts_fs_root().is_none());
+        // `--print-config` shows references and never a value
+        let shown = serde_norway::to_string(&valid.config.effective()).unwrap();
+        assert!(shown.contains("S3_SECRET_ACCESS_KEY"), "{shown}");
+        assert!(
+            !shown.contains("AKIDEXAMPLE") && !shown.contains("s3cr3t"),
+            "{shown}"
+        );
+        let debug = format!("{valid:?}");
+        assert!(
+            !debug.contains("AKIDEXAMPLE") && !debug.contains("s3cr3t"),
+            "{debug}"
+        );
+    }
+
+    #[test]
+    fn credentials_can_be_read_from_files_and_cannot_be_unset() {
+        let text = format!("{MINIMAL}{S3}")
+            .replace("{ env: S3_SECRET_ACCESS_KEY }", "{ file: /run/secrets/s3 }");
+        let fake = Fake::default()
+            .env("DATABASE_URL", "postgres://u:pw@db/orch")
+            .env("S3_ACCESS_KEY_ID", "AKIDEXAMPLE")
+            .file("/run/secrets/s3", "from-a-file\n");
+        let valid = load(&text, &fake).unwrap();
+        assert_eq!(
+            valid.secrets.s3_secret_access_key.unwrap().expose(),
+            "from-a-file"
+        );
+        // a variable that is not set is exit 78, naming the key and the variable
+        let errors = lines(load(&format!("{MINIMAL}{S3}"), &minimal_env()));
+        assert_eq!(
+            errors,
+            [
+                "artifacts.s3.accessKeyId: the environment variable S3_ACCESS_KEY_ID is unset or empty",
+                "artifacts.s3.secretAccessKey: the environment variable S3_SECRET_ACCESS_KEY is unset or empty",
+            ]
+        );
+    }
+
+    #[test]
+    fn s3_without_a_bucket_or_a_section_is_refused() {
+        let no_bucket = "\
+artifacts:
+  store: s3
+  s3: { accessKeyId: { env: S3_ACCESS_KEY_ID }, secretAccessKey: { env: S3_SECRET_ACCESS_KEY } }
+";
+        assert_eq!(
+            lines(load(&format!("{MINIMAL}{no_bucket}"), &s3_env())),
+            ["artifacts.s3.bucket: required key is missing"]
+        );
+        let no_section = "artifacts: { store: s3 }\n";
+        assert_eq!(
+            lines(load(&format!("{MINIMAL}{no_section}"), &s3_env())),
+            ["artifacts.s3: required when artifacts.store is s3"]
+        );
+        let no_credentials = "artifacts: { store: s3, s3: { bucket: files } }\n";
+        assert_eq!(
+            lines(load(&format!("{MINIMAL}{no_credentials}"), &s3_env())),
+            [
+                "artifacts.s3.accessKeyId: required key is missing",
+                "artifacts.s3.secretAccessKey: required key is missing",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_store_needs_its_section_and_refuses_the_other_ones() {
+        let cases = [
+            (
+                "artifacts: { store: fs }",
+                vec!["artifacts.fs: required when artifacts.store is fs"],
+            ),
+            (
+                "artifacts: { store: fs, fs: { root: x }, s3: { bucket: files, accessKeyId: { env: S3_ACCESS_KEY_ID }, secretAccessKey: { env: S3_SECRET_ACCESS_KEY } } }",
+                vec!["artifacts.s3: only with artifacts.store: s3; this file's store is fs"],
+            ),
+            (
+                "artifacts: { store: s3, fs: { root: x }, s3: { bucket: files, accessKeyId: { env: S3_ACCESS_KEY_ID }, secretAccessKey: { env: S3_SECRET_ACCESS_KEY } } }",
+                vec!["artifacts.fs: only with artifacts.store: fs; this file's store is s3"],
+            ),
+            (
+                "artifacts: { fs: { root: x } }",
+                vec!["artifacts.store: required key is missing"],
+            ),
+            (
+                "artifacts: { store: gcs }",
+                vec!["artifacts.store: not an allowed value (allowed: fs, s3)"],
+            ),
+            (
+                "artifacts: { store: fs, fs: {} }",
+                vec!["artifacts.fs.root: required key is missing"],
+            ),
+            (
+                "artifacts: { store: fs, fs: { root: '  ' } }",
+                vec!["artifacts.fs.root: must name a directory"],
+            ),
+        ];
+        for (section, want) in cases {
+            assert_eq!(
+                lines(load(&format!("{MINIMAL}{section}\n"), &s3_env())),
+                want,
+                "{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_values_of_the_section_are_checked_and_every_error_is_listed() {
+        let text = "\
+artifacts:
+  store: s3
+  maxFileBytes: 0
+  s3:
+    bucket: Not_A_Bucket
+    region: US East
+    endpoint: ftp://files.example.com
+    prefix: ../escape
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+    timeoutSecs: 0
+";
+        let errors = lines(load(&format!("{MINIMAL}{text}"), &s3_env()));
+        assert_eq!(
+            errors.len(),
+            2,
+            "the shape errors come first and alone: {errors:?}"
+        );
+        assert!(
+            errors[0].starts_with("artifacts.maxFileBytes: "),
+            "{errors:?}"
+        );
+        assert!(
+            errors[1].starts_with("artifacts.s3.timeoutSecs: "),
+            "{errors:?}"
+        );
+        let text = text
+            .replace("maxFileBytes: 0", "maxFileBytes: 268435457")
+            .replace("timeoutSecs: 0", "timeoutSecs: 5");
+        let errors = lines(load(&format!("{MINIMAL}{text}"), &s3_env()));
+        assert!(
+            errors[0].starts_with("artifacts.maxFileBytes: "),
+            "{errors:?}"
+        );
+        let text = text.replace("maxFileBytes: 268435457", "maxFileBytes: 268435456");
+        let errors = lines(load(&format!("{MINIMAL}{text}"), &s3_env()));
+        let keys: Vec<_> = errors
+            .iter()
+            .map(|l| l.split(':').next().unwrap())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "artifacts.s3.bucket",
+                "artifacts.s3.endpoint",
+                "artifacts.s3.prefix",
+                "artifacts.s3.region",
+            ],
+            "{errors:?}"
+        );
+        for bucket in [
+            "ab",
+            "-bucket",
+            "bucket-",
+            "Bucket",
+            "a_b_c",
+            &"a".repeat(64),
+            "a/b/c",
+        ] {
+            let text = format!("{MINIMAL}{S3}").replace("orchestrator-files", bucket);
+            assert!(load(&text, &s3_env()).is_err(), "{bucket}");
+        }
+        for bucket in ["abc", "my.bucket-1", &"a".repeat(63)] {
+            let text = format!("{MINIMAL}{S3}").replace("orchestrator-files", bucket);
+            assert!(load(&text, &s3_env()).is_ok(), "{bucket}");
+        }
+        for prefix in ["a/../b", "..", "/", "has space", "tr\u{e9}s", "a?b"] {
+            let text = format!("{MINIMAL}{S3}").replace("prod/files", &format!("'{prefix}'"));
+            assert!(load(&text, &s3_env()).is_err(), "{prefix}");
+        }
+        for prefix in [
+            "files",
+            "prod/files",
+            "/leading/and/trailing/",
+            "a.b_c-d/E9",
+        ] {
+            let text = format!("{MINIMAL}{S3}").replace("prod/files", &format!("'{prefix}'"));
+            assert!(load(&text, &s3_env()).is_ok(), "{prefix}");
+        }
+        for endpoint in [
+            "https://user:pw@h.example.com",
+            "https://h.example.com?x=1",
+            "minio:9000",
+            "https://",
+        ] {
+            let text = format!("{MINIMAL}{S3}").replace("https://minio.example.com:9000", endpoint);
+            assert!(load(&text, &s3_env()).is_err(), "{endpoint}");
+        }
+        for endpoint in [
+            "http://minio:9000",
+            "https://s3.eu-central-1.amazonaws.com",
+            "http://127.0.0.1:9000/s3",
+        ] {
+            let text = format!("{MINIMAL}{S3}").replace("https://minio.example.com:9000", endpoint);
+            assert!(load(&text, &s3_env()).is_ok(), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn a_secret_that_is_a_plain_string_never_shows_its_value() {
+        let text =
+            format!("{MINIMAL}{S3}").replace("{ env: S3_SECRET_ACCESS_KEY }", "hunter2-s3cr3t");
+        let errors = render(&load(&text, &s3_env()).unwrap_err());
+        assert!(
+            errors.contains("artifacts.s3.secretAccessKey: a secret is a reference"),
+            "{errors}"
+        );
+        assert!(!errors.contains("hunter2"), "{errors}");
+    }
 }
 
 /// Every rule between keys, in one run.

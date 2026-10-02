@@ -37,6 +37,7 @@ fn app_over(w: &World, registry: &MemoryRegistry) -> Arc<RegistryApp> {
     Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
                 agents: w.agent.clone(),

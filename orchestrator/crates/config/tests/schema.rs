@@ -51,13 +51,16 @@ fn secret_fields(schema: &Value) -> Vec<String> {
     found
 }
 
-/// ADR 0034: "the secrets are the eight values of today that are secrets". A ninth, or a string
-/// where one of these is, would be a change of the contract, so it fails here first.
+/// ADR 0034: "the secrets are the eight values of today that are secrets" and, with ADR 0032, the
+/// two credentials of the S3 store. A eleventh, or a string where one of these is, would be a change
+/// of the contract, so it fails here first.
 #[test]
-fn the_secrets_are_the_eight_the_contract_names() {
+fn the_secrets_are_the_ten_the_contract_names() {
     assert_eq!(
         secret_fields(&orch_config::schema()),
         [
+            "ArtifactsS3.accessKeyId",
+            "ArtifactsS3.secretAccessKey",
             "Database.url",
             "Endpoint.apiKey",
             "Registry.agentToken",

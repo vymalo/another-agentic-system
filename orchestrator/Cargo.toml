@@ -26,6 +26,8 @@ orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }
 orch-registry-platform = { path = "crates/registry-platform" }
 orch-model-openai = { path = "crates/model-openai" }
+orch-artifacts-fs = { path = "crates/artifacts-fs" }
+orch-artifacts-s3 = { path = "crates/artifacts-s3" }
 orch-app = { path = "crates/app" }
 orch-api = { path = "crates/api" }
 orch-surface-agui = { path = "crates/surface-agui" }
@@ -62,6 +64,12 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "ti
 tokio-util = { version = "0.7.19", features = ["rt"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 futures = "0.3.34"
+bytes = "1"
+# The S3 artifact store (ADR 0032, `orch-artifacts-s3`): only the `aws` backend (S3 and compatible servers),
+# not the local file system, Azure, GCP or plain HTTP. Its reqwest is the workspace's 0.13 and its TLS
+# provider aws-lc-rs, the one backend of this process.
+object_store = { version = "0.14", default-features = false, features = ["aws"] }
+percent-encoding = "2"
 axum = "0.8.9"
 tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit"] }

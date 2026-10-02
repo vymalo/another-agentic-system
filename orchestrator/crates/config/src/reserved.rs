@@ -64,8 +64,12 @@ pub const RESERVED: &[Reserved] = &[
         by: "PR S14 and S15 (ADR 0033, authentication and roles)",
     },
     Reserved {
-        path: "artifacts",
-        by: "PR S10 and S11 (ADR 0032, artifacts)",
+        path: "artifacts.maxPerJobBytes",
+        by: "PR S11 (ADR 0032, ingesting files)",
+    },
+    Reserved {
+        path: "artifacts.fetchHosts",
+        by: "PR S11 (ADR 0032, ingesting files)",
     },
 ];
 

@@ -219,6 +219,7 @@ async fn a_wakeup_without_live_text_changes_nothing_about_the_log() {
     let app = std::sync::Arc::new(
         App::new(
             PortSet {
+                artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: NoLive(w.wakeup.clone()),
                 agents: w.agent.clone(),

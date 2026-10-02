@@ -38,7 +38,9 @@ order is `docs/mvp.md`.
    fail closed, removable without breaking plain A2A.
 3. **Stateless processes, one event log (ADR 0001).** Only the job ledger and
    event log (the chat) persist, in Postgres. *(Amended by ADR 0015: a local agent's journal
-   counts as job ledger.)*
+   counts as job ledger. Amended by ADR 0032: the files agents hand over are durable outside
+   Postgres, in an artifact store behind a port, by content hash; the log keeps only the
+   reference.)*
 4. **Verification over consensus (ADR 0002)** and **git is the artifact (ADR 0003).**
 5. **The core is pure (orchestrator.md).** `transition(&state, &event)` has no
    I/O; protocols are closed enums (ADR 0004).

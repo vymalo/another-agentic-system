@@ -26,13 +26,16 @@
 use std::collections::HashMap;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use orch_config::{Resolve, SecretRef, Validated};
+use secrecy::SecretString;
 use serde_json::{Map, Value};
 
 use super::{
     Args, Config, ConfigError, LogFormat, Resolved, Surface, flag, number, parse_surfaces,
 };
+use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings};
 
 /// The most a configuration file or an agents file may be.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -894,6 +897,21 @@ fn load_file(
         ));
     }
 
+    // `artifacts.store` names only what this build compiled in: refused, never ignored (ADR 0032).
+    if let Some(artifacts) = &valid.config.artifacts {
+        let (compiled, feature) = match artifacts.store {
+            orch_config::ArtifactStoreKind::Fs => (cfg!(feature = "artifacts-fs"), "artifacts-fs"),
+            orch_config::ArtifactStoreKind::S3 => (cfg!(feature = "artifacts-s3"), "artifacts-s3"),
+        };
+        if !compiled {
+            return Err(document(format!(
+                "artifacts.store: {} needs the Cargo feature \"{feature}\", which this build does not have \
+                 (ADR 0032)",
+                artifacts.store.as_str()
+            )));
+        }
+    }
+
     let (file_args, resolved) = project(&valid, &tree, args.hostname.clone());
     let merged = serde_norway::to_string(&valid.config.effective())
         .map_err(|_| document("the configuration cannot be written as YAML (a bug)"))?;
@@ -1014,14 +1032,44 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
     if let Some(github) = &c.webhooks.github {
         a.webhook_github_max_age_secs = some(github.max_age_secs.to_string());
     }
-    #[cfg(feature = "surface-webhook")]
     let resolved = Resolved {
+        artifacts: artifact_settings(valid),
+        #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
+        #[cfg(feature = "surface-webhook")]
         webhook_github: webhook_values(&s.webhook_github, "WEBHOOK_GITHUB_SECRETS"),
     };
-    #[cfg(not(feature = "surface-webhook"))]
-    let resolved = Resolved::default();
     (a, resolved)
+}
+
+/// The artifact store of the valid file, in the terms of this process: the directory resolved
+/// against the file's directory, the credentials as resolved secrets. `None` without the section.
+fn artifact_settings(valid: &Validated) -> Option<ArtifactSettings> {
+    let artifacts = valid.config.artifacts.as_ref()?;
+    let store = match artifacts.store {
+        orch_config::ArtifactStoreKind::Fs => StoreSettings::Fs {
+            root: valid.artifacts_fs_root()?,
+        },
+        orch_config::ArtifactStoreKind::S3 => {
+            let s3 = artifacts.s3.as_ref()?;
+            let secrets = &valid.secrets;
+            StoreSettings::S3(S3Settings {
+                bucket: s3.bucket.clone(),
+                region: s3.region.clone(),
+                endpoint: s3.endpoint.clone(),
+                prefix: s3.prefix.clone(),
+                access_key_id: SecretString::from(secrets.s3_access_key_id.as_ref()?.expose()),
+                secret_access_key: SecretString::from(
+                    secrets.s3_secret_access_key.as_ref()?.expose(),
+                ),
+                timeout: Duration::from_secs(s3.timeout_secs),
+            })
+        }
+    };
+    Some(ArtifactSettings {
+        store,
+        max_file_bytes: artifacts.max_file_bytes,
+    })
 }
 
 /// The values of a webhook's secrets, separated. A secret that is read through the legacy
@@ -1855,5 +1903,160 @@ agents:
                 50
             }
         );
+    }
+
+    /// The artifact store (ADR 0032): the section reaches the `Config`, resolved, and a build
+    /// without the store's Cargo feature refuses it.
+    mod artifacts {
+        use super::*;
+        #[cfg(any(feature = "artifacts-fs", feature = "artifacts-s3"))]
+        use crate::artifacts::StoreSettings;
+
+        fn with(section: &str) -> String {
+            format!("{FILE}{section}")
+        }
+
+        fn s3_env<'a>() -> Vec<(&'a str, &'a str)> {
+            let mut pairs = base();
+            pairs.push(("S3_ACCESS_KEY_ID", "AKIDEXAMPLE"));
+            pairs.push(("S3_SECRET_ACCESS_KEY", "s3cr3t-access-key"));
+            pairs
+        }
+
+        const S3: &str = "\
+artifacts:
+  store: s3
+  maxFileBytes: 2048
+  s3:
+    bucket: orchestrator-files
+    region: eu-central-1
+    endpoint: https://minio.example.com:9000
+    prefix: prod
+    accessKeyId: { env: S3_ACCESS_KEY_ID }
+    secretAccessKey: { env: S3_SECRET_ACCESS_KEY }
+    timeoutSecs: 7
+";
+
+        #[test]
+        fn no_section_and_no_file_are_no_store() {
+            let loaded = load_file_only(&base(), FILE).unwrap();
+            assert!(loaded.config.artifacts.is_none());
+            assert!(!loaded.merged.unwrap().contains("artifacts"));
+            let by_variables = Loaded::load(
+                args_of(&[("DATABASE_URL", "postgres://u:hunter2@db/orch")]),
+                FlagSecrets::new(),
+                env_of(&[]),
+                |_| Ok(AGENTS.to_owned()),
+            );
+            assert!(by_variables.is_err() || by_variables.unwrap().config.artifacts.is_none());
+        }
+
+        #[cfg(feature = "artifacts-fs")]
+        #[test]
+        fn a_directory_store_reaches_the_configuration_with_its_root_resolved() {
+            let loaded = load_file_only(
+                &base(),
+                &with("artifacts: { store: fs, fs: { root: files }, maxFileBytes: 4096 }\n"),
+            )
+            .unwrap();
+            let artifacts = loaded.config.artifacts.unwrap();
+            assert_eq!(artifacts.max_file_bytes, 4096);
+            match artifacts.store {
+                StoreSettings::Fs { root } => {
+                    assert_eq!(root, Path::new("/etc/orch/files"), "relative to the file")
+                }
+                other @ StoreSettings::S3(_) => panic!("{other:?}"),
+            }
+            assert!(
+                loaded.merged.unwrap().contains("root: files"),
+                "--print-config shows the key as written"
+            );
+        }
+
+        #[cfg(feature = "artifacts-s3")]
+        #[test]
+        fn a_bucket_store_reaches_the_configuration_with_its_credentials_resolved_and_hidden() {
+            let loaded = load_file_only(&s3_env(), &with(S3)).unwrap();
+            let artifacts = loaded.config.artifacts.as_ref().unwrap();
+            assert_eq!(artifacts.max_file_bytes, 2048);
+            let StoreSettings::S3(s3) = &artifacts.store else {
+                panic!("{artifacts:?}")
+            };
+            assert_eq!(
+                (s3.bucket.as_str(), s3.region.as_str(), s3.prefix.as_deref()),
+                ("orchestrator-files", "eu-central-1", Some("prod"))
+            );
+            assert_eq!(
+                s3.endpoint.as_deref(),
+                Some("https://minio.example.com:9000")
+            );
+            assert_eq!(s3.timeout, Duration::from_secs(7));
+            use secrecy::ExposeSecret as _;
+            assert_eq!(s3.access_key_id.expose_secret(), "AKIDEXAMPLE");
+            assert_eq!(s3.secret_access_key.expose_secret(), "s3cr3t-access-key");
+            // no credential in a Debug of the configuration or in what --print-config prints
+            let debug = format!("{:?}", loaded.config);
+            let printed = loaded.merged.unwrap();
+            for text in [&debug, &printed] {
+                assert!(
+                    !text.contains("AKIDEXAMPLE") && !text.contains("s3cr3t"),
+                    "{text}"
+                );
+            }
+            assert!(printed.contains("S3_SECRET_ACCESS_KEY"), "{printed}");
+        }
+
+        #[cfg(feature = "artifacts-s3")]
+        #[test]
+        fn a_bucket_store_whose_credentials_are_missing_is_78_naming_the_variable() {
+            let errors = lines(load_file_only(&base(), &with(S3)));
+            assert_eq!(
+                errors,
+                [
+                    "artifacts.s3.accessKeyId: the environment variable S3_ACCESS_KEY_ID is unset or empty",
+                    "artifacts.s3.secretAccessKey: the environment variable S3_SECRET_ACCESS_KEY is unset or empty",
+                ]
+            );
+        }
+
+        /// A key that selects an implementation names only what the build has: exit 78 naming the
+        /// feature, never ignored.
+        #[cfg(not(feature = "artifacts-fs"))]
+        #[test]
+        fn a_directory_store_is_refused_by_a_build_without_it() {
+            let errors = lines(load_file_only(
+                &base(),
+                &with("artifacts: { store: fs, fs: { root: files } }\n"),
+            ));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0]
+                    .starts_with("artifacts.store: fs needs the Cargo feature \"artifacts-fs\""),
+                "{errors:?}"
+            );
+        }
+
+        #[cfg(not(feature = "artifacts-s3"))]
+        #[test]
+        fn a_bucket_store_is_refused_by_a_build_without_it() {
+            let errors = lines(load_file_only(&s3_env(), &with(S3)));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0]
+                    .starts_with("artifacts.store: s3 needs the Cargo feature \"artifacts-s3\""),
+                "{errors:?}"
+            );
+            assert!(!errors[0].contains("s3cr3t"));
+        }
+
+        /// The rules of the file are checked first, whatever the build has.
+        #[test]
+        fn a_store_without_its_section_is_refused_by_every_build() {
+            let errors = lines(load_file_only(&base(), &with("artifacts: { store: s3 }\n")));
+            assert_eq!(
+                errors,
+                ["artifacts.s3: required when artifacts.store is s3"]
+            );
+        }
     }
 }

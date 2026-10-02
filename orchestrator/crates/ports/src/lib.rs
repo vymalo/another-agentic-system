@@ -10,13 +10,17 @@
 //! - [`ChatModel`]: one question to a language model and its answer (the orchestrator's titles);
 //! - [`AgentRegistry`]: which agents exist right now, read live and failing closed (ADR 0022), with
 //!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one);
+//! - [`ArtifactStore`]: where the files agents hand over are kept, by the hash of their content;
+//!   the log keeps only the reference (ADR 0032); [`NoArtifacts`] is a deployment without one;
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
 //! this crate ships in-memory ones behind the `testkit` feature together with a conformance
-//! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` implementation must pass.
+//! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` / `ChatModel` / `ArtifactStore`
+//! implementation must pass.
 
 mod agent;
+mod artifacts;
 mod bundle;
 mod clock;
 mod inbox;
@@ -34,6 +38,10 @@ pub mod testkit;
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
     AgentTransport, IdemKey, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
+};
+pub use artifacts::{
+    ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
+    MAX_NAME_BYTES, NoArtifacts, stream_of,
 };
 pub use bundle::{PortSet, Ports};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
