@@ -14,12 +14,15 @@
 //!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one);
 //! - [`ArtifactStore`]: where the files agents hand over are kept, by the hash of their content;
 //!   the log keeps only the reference (ADR 0032); [`NoArtifacts`] is a deployment without one;
+//! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
+//!   one (ADR 0024); what a server answers is untrusted text, and its credentials are
+//!   [`ToolSecret`]s that never print;
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
 //! this crate ships in-memory ones behind the `testkit` feature together with a conformance
-//! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` / `ChatModel` / `ArtifactStore`
-//! implementation must pass.
+//! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` / `ChatModel` / `ArtifactStore` /
+//! `ToolServerClient` implementation must pass.
 
 mod agent;
 mod artifacts;
@@ -31,6 +34,7 @@ mod model;
 mod registry;
 mod route;
 mod store;
+mod tools;
 mod wakeup;
 
 #[cfg(feature = "testkit")]
@@ -65,5 +69,9 @@ pub use store::{
     AgentBinding, BindingUpdate, Commit, CommitOutcome, ForkOrigin, Lease, NewEvent, NewOutbox,
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
     OutboxStatus, StoreError, ThreadStore,
+};
+pub use tools::{
+    MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, ToolCall, ToolCallOutput, ToolDef, ToolSecret,
+    ToolServerClient, ToolServerEndpoint, ToolServerError,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};
