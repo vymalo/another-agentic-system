@@ -19,12 +19,14 @@ import { useThreadMeta } from "@/features/chat/hooks/use-thread";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
+import { BranchesProvider } from "@/features/threads/components/branches-provider";
 import { ForkProvider } from "@/features/threads/components/fork-provider";
 import {
   SidebarOpeners,
   ThreadSidebar,
   ThreadsSheet,
 } from "@/features/threads/components/thread-sidebar";
+import { useScrollToMessage } from "@/features/threads/hooks/use-scroll-to-message";
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
 import { problemMessage } from "@/lib/api/client";
@@ -176,13 +178,18 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
       {sidebarOpen ? null : <SidebarOpeners onOpen={openSidebar} openRef={openRef} />}
     </>
   );
-  // a thread can be forked (ADR 0029), from its turns and from the agent menu; a new chat has nothing to fork
+  // a version's link (`#m-<seq>`) scrolls to the message once the conversation has it
+  useScrollToMessage(threadId, loaded);
+  // a thread can be forked (ADR 0029), from its turns and from the agent menu, and a message of
+  // the person edited into a branch whose versions are picked between; a new chat has none of it
   const inFork = (children: ReactNode) =>
     threadId === null ? (
       children
     ) : (
-      <ForkProvider threadId={threadId} agent={agent} state={state}>
-        {children}
+      <ForkProvider threadId={threadId} agent={agent} state={state} lastSeq={snapshot.lastSeq}>
+        <BranchesProvider threadId={threadId} refreshKey={state ?? ""}>
+          {children}
+        </BranchesProvider>
       </ForkProvider>
     );
   const view = useMemo(

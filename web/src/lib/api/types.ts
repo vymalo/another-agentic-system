@@ -1,6 +1,8 @@
 import type { components } from "./schema";
 
 export type ApiThread = components["schemas"]["Thread"];
+export type ApiBranches = components["schemas"]["Branches"];
+export type ApiBranchPoint = ApiBranches["points"][number];
 export type ApiAgent = components["schemas"]["Agent"];
 export type ApiActor = components["schemas"]["Actor"];
 export type ApiReleases = NonNullable<ApiAgent["releases"]>;

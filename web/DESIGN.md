@@ -217,7 +217,10 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
 *A turn while the agent writes: the summary line under its name, the draft in the type of the finished reply, and its caret.*
 
 - **The person**: a soft bubble on the right (`--bubble`), 20 px radius with a 6 px corner at the top
-  right, max 85 % of the column, markdown inside.
+  right, max 85 % of the column, markdown inside. Under it, small and muted: `‹ 2/3 ›` when the message has
+  other versions, and a pencil (**Edit**) that shows on hover and while the focus is inside the message (always
+  on a touch screen). The bubble is `id="m-<seq>"` with `data-seq`, where `<seq>` is its event in the log, which
+  is what a link to a version scrolls to. See "Fork and branch".
 - **The agent**: its avatar (a 28 px circle with its first letter, see "Brand") and its name once, then, in order:
   one **summary line** for its steps, its **words** as prose, and its **cards**. Nothing of the agent's sits in
   a bubble.
@@ -269,7 +272,8 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
 
 *Added 2026-10-01 (owner: "chat forking and branching"; ADR 0029, `docs/api/chat-api.yaml` `forkThread`).* A fork is
 a **new chat** that begins as a copy of this one, so the conversation can go two ways without losing either.
-The chat shows it in three places.
+The chat shows it in three places, and an **edit of a message** (below) is the same fork, drawn as versions
+of one message.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-fork.png">
@@ -294,6 +298,46 @@ The chat shows it in three places.
   threads made by editing a message are not listed (the list is `GET /api/threads`, which leaves them out).
 - **Id of the fork** is chosen by the page and kept for a repeat of the same request, so a connection that
   dropped after the server made the fork never makes two.
+
+### Edit a message, and the versions of it
+
+*Added 2026-10-01 (F5b).* Saying a message again is a fork that copies the conversation up to just before that
+message and then holds the new words: `POST /api/threads/{id}/fork {replace: <seq>, text, messageId}`. The old
+words and everything after them stay in the first chat, which is the message's other version.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-branches.png">
+  <img src="e2e/__screens__/desktop-light-branches.png" alt="A chat after an edit: the first message and its answer, then the edited second message with a small ‹ 2/2 › under it and the agent's new answer; in the list on the left one row for the whole conversation, highlighted." width="720">
+</picture>
+
+*An edited message, from the web's mock server: the new chat holds the first turn, then the new words and their answer, with `‹ 2/2 ›` under them.*
+
+- **The editor** takes the bubble's place (`message-editor.tsx`): a growing text area on the card surface with
+  the composer's ring, opened with the caret at the end of the words, **Cancel** and **Send**, and one muted line,
+  "Esc cancels · Ctrl/⌘ Enter sends", which describes the field (`aria-describedby`; hidden from sight on a
+  phone, which has no keys, but read). **Escape** cancels, **Ctrl or ⌘ with Enter** sends, a plain Enter is a
+  new line (the person is rewriting, unlike the composer); an Enter that ends an input method's composition is
+  left alone. An empty message is not sent. While the fork is made the field is read-only and Send says
+  "Sending…". Cancelling puts the focus back on the pencil. The button is named "Edit what you said" and the
+  field "What you said", not "message": the composer is the one control a script or a screen reader finds
+  by the name "Message".
+- **After Send** the page goes to the new chat at `#m-<seq>` of the new words and the answer is drawn as for
+  any message. A refusal is a line under the top bar ("Could not edit the message: …"), with the editor open
+  and the words in it. The message id is chosen when the editor opens and kept, so a retry is the same request.
+- **The picker** `‹ 2/3 ›` (`branch-picker.tsx`) is under a message that has other versions, read from
+  `GET /api/threads/{id}/branches`: when the thread opens, when its state changes, and when the window gets the
+  focus back. Each version is a thread of its own, so an arrow **goes to** it (`/threads/<id>#m-<seq>`); the first
+  version's ‹ and the last one's › are disabled, never wrapping round. The eye reads `2/3` (muted, tabular
+  figures); a screen reader reads "Version 2 of 3" from a polite `role="status"` inside a group named "Versions
+  of this message", and the arrival moves the focus to the message, which is how the change is heard. A
+  picker that cannot be read is simply absent: the chat does not need it.
+- **Arriving at a message**: a link ends in `#m-<seq>`. The messages are drawn after the page opens (the
+  replay), so the browser's own jump finds nothing; `use-scroll-to-message.ts` waits for the bubble, scrolls it
+  to the middle, once, and focuses it (`tabindex="-1"`, no outline: it is where the reader is, not a control).
+  It gives up after ten seconds, and stops when the person scrolls.
+- **The list** shows a conversation once: the edits are left out (`GET /api/threads` without
+  `branches=include`), and while an edit is open the row of the conversation's first thread is highlighted like
+  the open chat, with `aria-current="true"` (`"page"` stays with the address that is open).
 
 ## Steps panel
 

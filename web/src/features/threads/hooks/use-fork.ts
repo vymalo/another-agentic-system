@@ -46,6 +46,15 @@ const bodyOf = (request: ForkRequest, id: string) =>
     : { id, replace: request.replace, text: request.text, messageId: request.messageId };
 
 /**
+ * Where an edit lands: its new message. The edit copies the events before the replaced message
+ * (`forkedFrom.seq` is the last of them), then writes `thread_forked` and then the message, so the
+ * message is the second event after the cut (ADR 0029). The page scrolls to it (`#m-<seq>`) and a
+ * fork the server made some other way is simply opened at its end.
+ */
+const editLanding = (fork: { forkedFrom?: { seq: number } | undefined }): string =>
+  fork.forkedFrom ? `#m-${fork.forkedFrom.seq + 2}` : "";
+
+/**
  * Forking the open thread and going to the new one. The thread is the parent's id; the fork gets
  * an id of this page's choosing, which stays the same for a repeat of the same request (a
  * connection that dropped after the server made the fork): the server then answers the fork it
@@ -78,7 +87,7 @@ export function useFork(parentId: string | null): Forker {
           return false;
         }
         attempt.current = null;
-        router.push(`/threads/${data.id}`);
+        router.push(`/threads/${data.id}${"replace" in request ? editLanding(data) : ""}`);
         return true;
       } catch (e) {
         setError(problemMessage(e));
