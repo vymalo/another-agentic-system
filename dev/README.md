@@ -44,6 +44,43 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 | The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded (with `local/library.git`, which only a second repository of a workspace reads, and `local/devbox.git` and `local/devbox-broken.git`, adam-rs's devcontainer fixtures, which no scenario here names); the branches the coder pushes are here, and so are the repositories it creates under `scratch/` ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). `/__repos/` lists what it holds, as JSON |
 | The mock web search | http://127.0.0.1:8096/mcp (MCP, bearer `dev-search-token`), `/__journal` | An MCP server with one canned `web_search` tool; [Mock web search (MCP)](#mock-web-search-mcp) |
 
+### How the orchestrator is configured
+
+The orchestrator reads **one YAML file**, [`orchestrator.yaml`](orchestrator.yaml)
+([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md); every key is in
+[`docs/api/config.md`](../docs/api/config.md), the JSON Schema in
+[`docs/api/config.schema.json`](../docs/api/config.schema.json), which an editor can validate against). `compose.yaml` mounts it
+read-only at `/etc/orchestrator/config.yaml` beside the agents file and the MCP tokens file it names (`agents.file: agents.yaml`,
+`mcp.tokensFile: mcp-tokens.yaml`, relative to the file's directory) and sets `ORCH_CONFIG_FILE`. The `split` profile's workers
+read the same file.
+
+| To change | Edit |
+|---|---|
+| the surfaces, the hosts they accept, the agents file, the platform's registry, the title model, the thread tools' address, the log format | the keys of [`orchestrator.yaml`](orchestrator.yaml), then `docker compose up -d orchestrator` (the file is read once, at startup) |
+| a secret (the database, the registry's agent token, the thread tools' key, the webhook secrets) | the **variable** the file names (`database.url: { env: DATABASE_URL }`, ...), in `x-orchestrator-env` or the `orchestrator` service of [`compose.yaml`](../compose.yaml). A secret is only a reference in the file, never a value; the values in `compose.yaml` are dummies |
+| the agents | [`agents.yaml`](agents.yaml), as ever; its `tokenEnv` variables are in the same `environment` |
+| the role of the control plane, the name of a worker | `ORCHESTRATOR_ROLE` and the workers' `ORCH_INSTANCE_ID`: process overrides, which win over `server.role` and `server.instanceId` and log at info |
+
+What a variable still does: **each old variable that is set wins over the file**, with a warning at startup that names the
+variable and the key (`OUTBOX_LEASE_SECS sets dispatcher.outboxLeaseSecs, which the configuration file leaves out`), never the value.
+The split workers' 5-second lease stays that variable (a profile cannot change one key of a file; open question 44), and the
+`local-agent` profile stays on variables alone, which keeps the old path covered by a stack that runs (it logs one warning that the
+environment alone is deprecated). `EDGE_PORT` other than 8080 sets `ORCH_PUBLIC_URL`, because a file cannot read it.
+
+Check a file without starting anything (every secret's variable must be set, any dummy will do; secrets print as references):
+
+```sh
+ORCH_CONFIG_FILE=dev/orchestrator.yaml DATABASE_URL=x AGENT_REGISTRY_AGENT_TOKEN=x MOCK_AGENT_TOKEN=x CODER_A2A_TOKEN=x \
+  CHAT_A2A_TOKEN=x RESEARCHER_A2A_TOKEN=x THREAD_TOOLS_SECRET=0123456789abcdef0123456789abcdef \
+  WEBHOOK_GENERIC_SECRETS=0123456789abcdef0123456789abcdef WEBHOOK_GITHUB_SECRETS=0123456789abcdef0123456789abcdef \
+  MCP_TOKEN_DEV=0123456789abcdef0123456789abcdef cargo run -q --manifest-path orchestrator/Cargo.toml -p orchestrator -- --print-config
+```
+
+A mistake in the file is exit 78 with **every** error listed on stderr, each naming a key path and never a value: an unknown key, a
+plain string where a secret goes, a key that is reserved for a later change (and the PR that brings it), a reference whose variable is
+unset. `cargo test -p orchestrator --test smoke` runs `--print-config` on `orchestrator.yaml` and `orchestrator.live.yaml`, each beside
+its agents file, as a control plane and as a worker.
+
 ### Try it in the chat
 
 Open http://127.0.0.1:8080, keep **Coder** selected and say hello first:
@@ -230,6 +267,7 @@ docker compose -f compose.yaml -f compose.live.yaml --profile app up --build
 with the values of `.env`; stops `mock-openai`, `mock-github`, `mock-github-mcp`, `git-server`, `mock-ci` and `mock-model` (they move to a profile,
 `offline-mocks`, that is never enabled, and the coder no longer waits for them); puts the real secrets on the orchestrator
 (`CODER_A2A_TOKEN`, `WEBHOOK_GITHUB_SECRETS`, `MCP_TOKEN_DEV`, each 32 bytes or more); and gives the orchestrator
+[`orchestrator.live.yaml`](orchestrator.live.yaml) (the same file as offline, a whole file mounted at the same path, without the title model) and
 [`agents.live.yaml`](agents.live.yaml), where the coder is gated on its own checks only. The chat and the researcher
 go live with it: `compose.live.yaml` gives them the same model endpoint (`CHAT_MODEL` and `RESEARCHER_MODEL` name another alias for each, else
 `MODEL`) and a bearer token each (`CHAT_A2A_TOKEN`, `RESEARCHER_A2A_TOKEN`, from `.env`), and drops `mock-model`. The orchestrator's own thread titles go live the same way (`TITLE_MODEL`, else `MODEL`). **The live researcher still
@@ -302,10 +340,10 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
 | `mock-registry` | `wiremock/wiremock:3.13.2` | `8084` (`MOCK_REGISTRY_PORT`) | default | The platform's agent registry ([`agent-registry/v1`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md), [ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md)) as a stub: a linkset that lists `platform-coder`. The orchestrator reads it (`AGENT_REGISTRY_URL`); see [The agent registry](#the-agent-registry). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `ORCH_SURFACES` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`ORCH_SURFACES` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). Configured by [`orchestrator.yaml`](orchestrator.yaml) ([how](#how-the-orchestrator-is-configured)). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `server.surfaces` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`server.surfaces` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
-| `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s. See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
+| `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. They read the same `orchestrator.yaml`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s (`OUTBOX_LEASE_SECS`, a variable over the file). See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`, and the SSE twin of each script of `mock-coder` that answers a request with `"stream": true` (the coder streams its model calls). Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
@@ -778,16 +816,16 @@ Going live with it takes the same three edits as `chat`'s in [`compose.live.yaml
 ## The MCP server
 
 The `orchestrator` service of the `app` profile also mounts the MCP server ([ADR 0019](../docs/decisions/0019-mcp-server-over-streamable-http.md),
-`ORCH_SURFACES=agui,mcp`), so Claude Code, opencode or any MCP client can start and follow a job. It is a **machine route**:
+`server.surfaces` naming `mcp`), so Claude Code, opencode or any MCP client can start and follow a job. It is a **machine route**:
 the edge forwards `/mcp` without an identity header (and drops one the client sent), and the orchestrator authenticates
 `Authorization: Bearer <token>` itself.
 
 | What | Where |
 |---|---|
 | The URL | `http://127.0.0.1:8080/mcp` (the edge; `EDGE_PORT` moves it) |
-| The token | `dev-mcp-token-0123456789abcdef0123456789`, a dummy: `MCP_TOKEN_DEV` in `compose.yaml`, named by `tokenEnv` in [`mcp-tokens.yaml`](mcp-tokens.yaml) (`MCP_TOKENS_FILE`) |
-| Whose jobs | `dev@example.com`, the identity the edge gives the chat, so a job started over MCP is in the chat's thread list (`web_url` in the answer of `start_job` points at it: `ORCH_PUBLIC_URL`) |
-| Which `Host` | `127.0.0.1` and `localhost`, any port (`MCP_ALLOWED_HOSTS`); anything else is 403 |
+| The token | `dev-mcp-token-0123456789abcdef0123456789`, a dummy: `MCP_TOKEN_DEV` in `compose.yaml`, named by `tokenEnv` in [`mcp-tokens.yaml`](mcp-tokens.yaml) (`mcp.tokensFile`) |
+| Whose jobs | `dev@example.com`, the identity the edge gives the chat, so a job started over MCP is in the chat's thread list (`web_url` in the answer of `start_job` points at it: `server.publicUrl`) |
+| Which `Host` | `127.0.0.1` and `localhost`, any port (`mcp.allowedHosts`); anything else is 403 |
 | The tools | `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` |
 
 ```sh
@@ -836,8 +874,8 @@ What an agent of the stack receives, **only if its card lists** `https://agents.
 
 | What | Where |
 |---|---|
-| The key | `THREAD_TOOLS_SECRET`, a dummy in the `x-orchestrator-env` of `compose.yaml` (`dev-thread-tools-secret-…`); a `.env` that sets `THREAD_TOOLS_SECRET` replaces it (it is in [`.env.example`](../.env.example)). **Every orchestrator process has it**: a worker mints the grant it sends with the message, the control plane verifies it |
-| The address agents use | `THREAD_TOOLS_URL=http://orchestrator:8080`, the service name; the `orchestrator` service names `thread-tools` in `ORCH_SURFACES` and accepts the `Host` values `THREAD_TOOLS_ALLOWED_HOSTS=orchestrator:8080,127.0.0.1:8080,localhost:8080` |
+| The key | `threadTools.secret: { env: THREAD_TOOLS_SECRET }`, the variable a dummy in the `x-orchestrator-env` of `compose.yaml` (`dev-thread-tools-secret-…`); a `.env` that sets `THREAD_TOOLS_SECRET` replaces it (it is in [`.env.example`](../.env.example)). **Every orchestrator process has it**: a worker mints the grant it sends with the message, the control plane verifies it |
+| The address agents use | `threadTools.url: http://orchestrator:8080`, the service name; `server.surfaces` names `thread-tools` and `threadTools.allowedHosts` accepts the `Host` values `orchestrator:8080`, `127.0.0.1:8080` and `localhost:8080` (all in [`orchestrator.yaml`](orchestrator.yaml)) |
 | The tools | `get_ui_catalog`: the newest UI catalog the thread's screen sent, or an error "this thread has no UI catalog; answer in text". `turn_output {text}`: the agent announces its answer for the turn ([ADR 0031](../docs/decisions/0031-working-text-and-the-turns-answer.md)); it is the answer on the person's screen, and everything else the agent says in the turn is working text |
 | `split` profile | the control plane serves it, the workers (same variables) mint |
 
@@ -1072,7 +1110,7 @@ the platform is a WireMock stub, `mock-registry`.
 
 | What | Where |
 |---|---|
-| The settings | `AGENT_REGISTRY_URL` (`http://mock-registry:8080/registry/v1/agents`), `AGENT_REGISTRY_AGENT_TOKEN` (`dev-registry-agent-token`, sent to every agent the registry lists; the mocks accept any token), set on the orchestrator and the split workers in [`compose.yaml`](../compose.yaml). Unset `AGENT_REGISTRY_URL` and only `agents.yaml` is read (and `AGENTS_FILE` may then be the only source, or, with a registry, unset). Also `AGENT_REGISTRY_TOKEN` (a bearer for the registry itself), `AGENT_REGISTRY_TIMEOUT_SECS` (3) and `AGENT_REGISTRY_MAX_AGE_SECS` (60) |
+| The settings | `agents.registry.url` (`http://mock-registry:8080/registry/v1/agents`) in [`orchestrator.yaml`](orchestrator.yaml), and `agents.registry.agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN }` (`dev-registry-agent-token`, sent to every agent the registry lists; the mocks accept any token), the variable set on the orchestrator and the split workers in [`compose.yaml`](../compose.yaml). Take `agents.registry` out of the file and only `agents.yaml` is read (and `AGENTS_FILE` may then be the only source, or, with a registry, unset). Also `AGENT_REGISTRY_TOKEN` (a bearer for the registry itself), `AGENT_REGISTRY_TIMEOUT_SECS` (3) and `AGENT_REGISTRY_MAX_AGE_SECS` (60) |
 | The document | [`wiremock/registry/__files/agents.json`](wiremock/registry/__files/agents.json): one agent, `platform-coder` ("Platform coder", tags `coding` and `git`), at the card of `mock-agent-releases`. [`02-agents.json`](wiremock/registry/mappings/02-agents.json) serves it as `application/linkset+json` with `Cache-Control: private, max-age=2` and an `ETag`; [`01-not-modified.json`](wiremock/registry/mappings/01-not-modified.json) answers a request that asks with that ETag `304` |
 | The releases | not in the registry: the card of `mock-agent-releases` declares them ([release channels](#release-channels-mock-agent-releases)), and `GET /api/agents` shows them on `platform-coder` as on any agent |
 | The scenario | `dev/registry-e2e.sh`, `registry` in `dev/e2e-all.sh`; it resets `mock-registry` and empties the request journal of `mock-agent-releases` first |
@@ -1106,7 +1144,7 @@ a person's rename (the thread menu, `PATCH /api/threads/{id}`) is final.
 
 | What | Where |
 |---|---|
-| The settings | `ORCH_TITLE_MODEL` (unset: titles are off), `ORCH_MODEL_BASE_URL` (an OpenAI-compatible endpoint, with `/v1`), `ORCH_MODEL_API_KEY` (optional), `ORCH_MODEL_TIMEOUT_SECS` (20). [`compose.yaml`](../compose.yaml) sets the first two on the orchestrator (`mock-title` at `http://mock-model:8080/v1`); [`compose.live.yaml`](../compose.live.yaml) points them at your endpoint (`TITLE_MODEL`, else `MODEL`) |
+| The settings | `tasks.title.model` and `tasks.title.endpoint` (no `tasks.title`: titles are off), `models.endpoints.default.baseUrl` (an OpenAI-compatible endpoint, with `/v1`), `.apiKey` (optional, a reference) and `.timeoutSecs` (20). [`orchestrator.yaml`](orchestrator.yaml) names `mock-title` at `http://mock-model:8080/v1`; [`compose.live.yaml`](../compose.live.yaml) points them at your endpoint (`TITLE_MODEL`, else `MODEL`) through the variables `ORCH_MODEL_BASE_URL`, `ORCH_MODEL_API_KEY` and `ORCH_TITLE_MODEL` (a YAML file cannot read `.env`; the orchestrator warns about each) |
 | The script | `mock-title` on `mock-model`, [`wiremock/model/mappings/title.json`](wiremock/model/mappings/title.json): any conversation is titled `Mock thread title`; one that holds `[mock:untitled]` gets `NONE` (no topic yet); one that holds `[mock:title-error]` gets a 500; one that holds `[mock:title-chinese]` is answered in Chinese the first time it is asked (a WireMock scenario: once, reset by `title-e2e.sh`) and `Mock thread title` after; one that holds `[mock:title-zh]` is always answered in Chinese |
 | The agent | the `chat` of [`agents/chat/`](agents/chat/agent/instructions.md) (it runs from the coder's image), which answers every first message |
 | The scenario | `dev/title-e2e.sh`, `title` in `dev/e2e-all.sh`; it empties `mock-model`'s request journal first |
@@ -1447,9 +1485,9 @@ the fail-closed reading of "no pushed commit".
 an agent that says `completed` is not done until a **signed CI report about the commit it pushed** arrives at
 `POST /webhooks/ci`, and **named `ci/build`**: a gate that requires CI names the checks that count (`ci.required`), and a
 report of any other name is shown and decides nothing (there is no "first report decides": it let a red commit pass on
-a `skipped` report of another check). The orchestrator serves that route because compose sets
-`ORCH_SURFACES=agui,mcp,thread-tools,webhook-generic,webhook-github` and `WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123`
-on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**
+a `skipped` report of another check). The orchestrator serves that route because `orchestrator.yaml` names
+`server.surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]` and `webhooks.generic.secrets: [{ env: WEBHOOK_GENERIC_SECRETS }]`, and compose sets
+`WEBHOOK_GENERIC_SECRETS=dev-webhook-secret-0123456789abcdef0123` on it (a secret is at least 32 bytes; a process that mounts no webhook refuses `ci` and exits 78 if a gate requires it); the edge passes `/webhooks/*` on **without an identity**
 (`header_up -X-Auth-Request-Email` in the [Caddyfile](Caddyfile): a webhook is a machine route, authenticated by its
 signature and nothing else). The mock pushes a `branch` artifact and completes; the job then waits for CI, at most
 `ORCH_CI_TIMEOUT_SECS` (3600), after which the thread is blocked with `ci_timeout` and no attempt is used.
@@ -1682,6 +1720,8 @@ LISTEN_ADDR=127.0.0.1:8090 \
   cargo run -p orchestrator
 BASE_URL=http://127.0.0.1:8090 ../dev/try-thread.sh "add a health endpoint"
 ```
+
+These are variables alone, which still work (the orchestrator logs one warning that they are deprecated, and a file would replace them: [How the orchestrator is configured](#how-the-orchestrator-is-configured)).
 
 For the UI on top of it, `MOCK_API_ORIGIN=http://127.0.0.1:8090 pnpm dev` in `web/` (that variable is
 the dev rewrite of `/api/*`, whatever serves it). `pnpm dev:mock` is the web app's own contract mock

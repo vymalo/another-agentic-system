@@ -1,0 +1,48 @@
+# The configuration of the compose `orchestrator` service when compose.live.yaml is used ("Going live" in dev/README.md):
+# mounted at /etc/orchestrator/config.yaml INSTEAD of dev/orchestrator.yaml (compose.live.yaml replaces the volume), beside
+# dev/agents.live.yaml at the same path as ever. A whole file, not a patch: there is no layering (ADR 0034).
+#
+# What differs from dev/orchestrator.yaml: no `models` and no `tasks`. The model that writes the thread titles is the real
+# one, and its address, key and name come from `.env`, which a YAML file cannot read, so compose.live.yaml sets the
+# variables ORCH_MODEL_BASE_URL, ORCH_MODEL_API_KEY and ORCH_TITLE_MODEL from MODEL_BASE_URL, MODEL_API_KEY and
+# TITLE_MODEL (else MODEL). They are the legacy way to say `models.endpoints.default` and `tasks.title`, and the
+# orchestrator logs one warning for each at startup; they stay until the variables are removed (ADR 0034), when this file
+# names the endpoint and the model and reads the key with `apiKey: { env: MODEL_API_KEY }`.
+#
+# Every secret is a reference to a variable `.env` sets (CODER_A2A_TOKEN, WEBHOOK_GITHUB_SECRETS, MCP_TOKEN_DEV, ...): the
+# values are in `.env`, never here.
+#
+# Check it: `orchestrator --config dev/orchestrator.live.yaml --print-config`.
+version: 1
+
+server:
+  # The CI webhook that is used live is GitHub's; the generic one has a secret of its own that nothing knows.
+  surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]
+  publicUrl: http://127.0.0.1:8080 # the edge on EDGE_PORT 8080; another port: set ORCH_PUBLIC_URL in the environment
+
+log:
+  format: text
+
+database:
+  url: { env: DATABASE_URL }
+
+agents:
+  file: agents.yaml # dev/agents.live.yaml, mounted at this path by compose.live.yaml
+  registry:
+    url: http://mock-registry:8080/registry/v1/agents
+    agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN }
+
+threadTools:
+  url: http://orchestrator:8080
+  secret: { env: THREAD_TOOLS_SECRET }
+  allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
+
+mcp:
+  tokensFile: mcp-tokens.yaml
+  allowedHosts: [127.0.0.1, localhost]
+
+webhooks:
+  generic:
+    secrets: [{ env: WEBHOOK_GENERIC_SECRETS }] # `.env`: WEBHOOK_GENERIC_SECRETS, else the GitHub secret
+  github:
+    secrets: [{ env: WEBHOOK_GITHUB_SECRETS }]

@@ -60,6 +60,14 @@ resource API's `GET /api/threads`.
 
 ### Configuration
 
+**One YAML file** (`ORCH_CONFIG_FILE`, or `--config`; `version: 1`, secrets only by reference, every key and the
+variable it replaces in [`docs/api/config.md`](../docs/api/config.md), the JSON Schema at
+[`docs/api/config.schema.json`](../docs/api/config.schema.json), [ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md))
+configures the process; `orchestrator --print-config` prints what it would run with (secrets as references) and opens no
+connection. **In this transition release every variable below still works and wins over the file**, each logging one
+warning that names the variable and the key; unset `ORCH_CONFIG_FILE` and the environment alone configures the process, as
+before, with one warning. The details are in [`bin/orchestrator`](bin/orchestrator/README.md#the-configuration-file).
+
 Every setting is a command-line flag with an environment fallback (`orchestrator
 --help` lists both); the variables below are what deployments set, and a flag
 wins over its variable. The process refuses to start, with a message naming the
@@ -213,6 +221,7 @@ change of the composition root, never a runtime plugin.
 | [`crates/app`](crates/app/README.md) | `orch-app` | Thread service (`transition` + optimistic commit loop, live event streams), the durable outbox `Dispatcher` and the `InboxWorker` (timers and stored reports), written against the ports. |
 | [`crates/api`](crates/api/README.md) | `orch-api` | The always-mounted HTTP edge: proxy-identity auth (fail closed), RFC 9457 problems, the resource API (agents, threads, cancel), health, and `SurfaceRoutes`, the mounting point of interaction surfaces (behind the identity layer, or, as a `machine` route with its own guard, outside it). |
 | [`crates/surface-mcp`](crates/surface-mcp/README.md) | `orch-surface-mcp` | The MCP server at `/mcp` (rmcp, streamable HTTP, stateless): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` behind static bearer tokens; a machine route straight to `App`. Feature `surface-mcp` of the binary, on by default, mounted by `ORCH_SURFACES=mcp`. |
+| [`crates/config`](crates/config/README.md) | `orch-config` | Pure: the configuration file ([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)): the typed keys, the JSON Schema committed at `docs/api/config.schema.json`, syntax / shape / rules passes that list every error and never a value, secrets only as `{ env }` or `{ file }` references. |
 | [`crates/thread-token`](crates/thread-token/README.md) | `orch-thread-token` | Pure: the thread-tools token (HS256 JWS, ten claims, the current and the previous key), `mint`, `verify` and the issuer that gives an agent `{url, token, expiresAt}`; known-answer vectors. |
 | [`crates/surface-thread-tools`](crates/surface-thread-tools/README.md) | `orch-surface-thread-tools` | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (rmcp, streamable HTTP, stateless): `get_ui_catalog` behind the thread-scoped token, and the provider seam later slices add tools through; a machine route straight to `App`. Feature `surface-thread-tools` of the binary, on by default, mounted by `ORCH_SURFACES=thread-tools`. |
 | [`crates/surface-webhook`](crates/surface-webhook/README.md) | `orch-surface-webhook` | The webhook surfaces: `POST /webhooks/ci` (a signed CI report, HMAC-SHA-256 over the timestamp and body) and `POST /webhooks/github` (GitHub's own deliveries, HMAC over the body), secrets with rotation, stored in the inbox through `App::receive`. Machine routes. |

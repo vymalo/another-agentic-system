@@ -32,8 +32,8 @@ surface-thread-tools = ["dep:orch-surface-thread-tools", "dep:orch-thread-token"
 surface-webhook = ["dep:orch-surface-webhook"]
 # The platform's agent registry (`agent-registry/v1`, ADR 0022): the agents another-agentic-platform
 # provisions, read live over HTTP beside the static AGENTS_FILE. On by default; it is used only when
-# AGENT_REGISTRY_URL is set. Without the feature an AGENT_REGISTRY_URL is refused at startup
-# (exit 78), never quietly ignored.
+# `agents.registry.url` (AGENT_REGISTRY_URL) is set. Without the feature a registry is refused at
+# startup (exit 78), never quietly ignored.
 registry-platform = ["dep:orch-registry-platform"]
 # In-process agents (`transport: local` in AGENTS_FILE, ADR 0015): adam-rs agents hosted by this
 # process, journaled in the orchestrator's own Postgres under the prefix `orch_agent_`. Off by
@@ -43,6 +43,7 @@ agent-local = ["dep:orch-agent-adam"]
 
 [dependencies]
 adam-host.workspace = true
+orch-config.workspace = true
 orch-core.workspace = true
 orch-ports.workspace = true
 orch-app.workspace = true

@@ -17,6 +17,7 @@ unwrap_used = "warn"
 expect_used = "warn"
 
 [workspace.dependencies]
+orch-config = { path = "crates/config" }
 orch-core = { path = "crates/core" }
 orch-ports = { path = "crates/ports" }
 orch-store-postgres = { path = "crates/store-postgres" }

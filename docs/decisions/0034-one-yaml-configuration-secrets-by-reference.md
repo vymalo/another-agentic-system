@@ -2,10 +2,16 @@
 
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,
   section 3.6) and the owner may revisit them. Amends the environment-only practice of the composition root
-  ([ADR 0009](0009-swappable-implementations-at-build-time.md), status note there). **Not built:** PR S9 builds the
+  ([ADR 0009](0009-swappable-implementations-at-build-time.md), status note there). **Built (2026-10-02, PR S9):** the
   loader and every key marked *now* in [`docs/api/config.md`](../api/config.md); the keys marked *reserved* come with
   S10/S11 (ADR 0032, artifacts), S14/S15 (ADR 0033, authentication and roles), each written with its PR, and S18
   ([ADR 0035](0035-utility-model-tasks.md), utility model tasks).
+  Status note (2026-10-02, PR S9): the three passes each list all of their errors, and a pass runs only when the one
+  before it found none (a rule cannot be checked on a value that is not there), so one run lists the shape errors, or,
+  when there are none, the rule errors; `docs/api/config.md` says so. A role that serves no routes (`worker`) is not
+  asked for the secrets of the routes it would not mount (`webhooks.*`), so one file serves a control plane and its
+  workers. A relative path is relative to the directory of the file even when a legacy variable gave it. A secret flag
+  given on the command line is read through the `{ env: NAME }` reference of the file, ahead of the variable.
 
 ## Context
 

@@ -17,6 +17,15 @@ on:
       - "docs/api/examples/**"
       # the e2e suite reads the web's UI catalog (crates/e2e/tests/ui_catalog.rs)
       - "web/src/features/chat/lib/a2ui/catalog/**"
+      # the configuration file (ADR 0034): orch-config's tests compare its schema and read the example of
+      # its document, and the binary's tests run --print-config on the dev files compose mounts
+      - "docs/api/config.md"
+      - "docs/api/config.schema.json"
+      - "dev/orchestrator.yaml"
+      - "dev/orchestrator.live.yaml"
+      - "dev/agents.yaml"
+      - "dev/agents.live.yaml"
+      - "dev/mcp-tokens.yaml"
       - ".github/workflows/orchestrator.yml"
   push:
     branches: [main]
@@ -26,6 +35,15 @@ on:
       - "docs/api/examples/**"
       # the e2e suite reads the web's UI catalog (crates/e2e/tests/ui_catalog.rs)
       - "web/src/features/chat/lib/a2ui/catalog/**"
+      # the configuration file (ADR 0034): orch-config's tests compare its schema and read the example of
+      # its document, and the binary's tests run --print-config on the dev files compose mounts
+      - "docs/api/config.md"
+      - "docs/api/config.schema.json"
+      - "dev/orchestrator.yaml"
+      - "dev/orchestrator.live.yaml"
+      - "dev/agents.yaml"
+      - "dev/agents.live.yaml"
+      - "dev/mcp-tokens.yaml"
       - ".github/workflows/orchestrator.yml"
 
 permissions:

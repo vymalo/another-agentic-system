@@ -85,7 +85,7 @@ reshapes; OIDC for MCP (first plan, slice 14).
 configuration file for the orchestrator, secrets by reference, the environment variables kept for one release
 ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in
 [`api/config.md`](api/config.md)), then the title and a new thread description as utility model tasks, each with its
-endpoint, model, prompt and language rule ([ADR 0035](decisions/0035-utility-model-tasks.md)). Neither is built.
+endpoint, model, prompt and language rule ([ADR 0035](decisions/0035-utility-model-tasks.md)). The file is built (S9); the tasks are not.
 
 ## Out of scope for the MVP
 

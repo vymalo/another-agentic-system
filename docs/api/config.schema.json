@@ -1,0 +1,709 @@
+{
+  "$defs": {
+    "Agents": {
+      "additionalProperties": false,
+      "description": "The agents of this deployment.",
+      "properties": {
+        "file": {
+          "description": "The agents file: a YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}`, relative to this file's directory. Required unless `registry.url` is set. Replaces `AGENTS_FILE`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "localConcurrency": {
+          "description": "Runs of local agents stepped at once, at least 1 (default 4). A build without the Cargo feature `agent-local` refuses the key. Replaces `AGENT_LOCAL_CONCURRENCY`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "registry": {
+          "$ref": "#/$defs/Registry",
+          "description": "The platform's agent registry (`agent-registry/v1`, ADR 0022). A build without the Cargo feature `registry-platform` refuses it."
+        }
+      },
+      "type": "object"
+    },
+    "Auth": {
+      "additionalProperties": false,
+      "description": "Authentication.",
+      "properties": {
+        "devUser": {
+          "description": "The e-mail served for requests without `X-Auth-Request-Email`. Development only: the orchestrator logs a warning. Replaces `AUTH_DEV_USER`.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Database": {
+      "additionalProperties": false,
+      "description": "The Postgres database.",
+      "properties": {
+        "maxConnections": {
+          "default": 10,
+          "description": "The pool size, at least 2: the wakeup listener holds one (default 10). Replaces `DATABASE_MAX_CONNECTIONS`.",
+          "format": "uint64",
+          "minimum": 2,
+          "type": "integer"
+        },
+        "url": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The connection string, a secret. Replaces `DATABASE_URL`."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "Dispatcher": {
+      "additionalProperties": false,
+      "description": "The dispatcher.",
+      "properties": {
+        "concurrency": {
+          "default": 32,
+          "description": "Outbox rows processed at once (default 32). Replaces `DISPATCHER_CONCURRENCY`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "outboxLeaseSecs": {
+          "default": 30,
+          "description": "Seconds a crashed replica's claim blocks others, at least 3 (default 30). Also how long a local agent's run stays leased. Replaces `OUTBOX_LEASE_SECS`.",
+          "format": "uint64",
+          "minimum": 3,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Endpoint": {
+      "additionalProperties": false,
+      "description": "An OpenAI-compatible endpoint (ADR 0005).",
+      "properties": {
+        "apiKey": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The bearer token the endpoint wants, when it wants one. Replaces `ORCH_MODEL_API_KEY`."
+        },
+        "baseUrl": {
+          "description": "The base URL, up to and not including `/chat/completions`, `http` or `https`. Replaces `ORCH_MODEL_BASE_URL`.",
+          "type": "string"
+        },
+        "timeoutSecs": {
+          "default": 20,
+          "description": "Seconds one question may take, at least 1 (default 20). Replaces `ORCH_MODEL_TIMEOUT_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "baseUrl"
+      ],
+      "type": "object"
+    },
+    "Gate": {
+      "additionalProperties": false,
+      "description": "The deployment's layer of the verification gate. The members have the names of an agent entry's `gate` in the agents file.",
+      "properties": {
+        "ci": {
+          "$ref": "#/$defs/GateCi",
+          "default": {
+            "required": [],
+            "timeoutSecs": 3600
+          },
+          "description": "The CI checks of the deployment's gate."
+        },
+        "maxAttempts": {
+          "description": "Attempts a job's agent gets under a gate, the first included, at least 1 and at most `maxAttemptsCap` (default 3, lowered to the cap when the cap is lower). Replaces `ORCH_MAX_ATTEMPTS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxAttemptsCap": {
+          "default": 10,
+          "description": "The most a target or a thread may raise the attempts to, 1 to 100 (default 10). Replaces `ORCH_MAX_ATTEMPTS_CAP`.",
+          "format": "uint64",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "require": {
+          "default": [],
+          "description": "The sources every job's work must pass before it is done (default none: an agent that completes is done). Replaces `ORCH_GATE`.",
+          "items": {
+            "$ref": "#/$defs/GateSource"
+          },
+          "type": "array"
+        },
+        "verifier": {
+          "description": "The agent that verifies the pushed work: the id of another configured agent. Needed when the gate requires `verifier`. Replaces `ORCH_VERIFIER`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "verifierTimeoutSecs": {
+          "default": 1800,
+          "description": "Seconds the verifier has to answer before the thread waits for the user, at least 1 (default 1800). Replaces `ORCH_VERIFIER_TIMEOUT_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "verifierWatchSecs": {
+          "default": 5,
+          "description": "Seconds between a verification's looks at its thread, at least 1 (default 5). Replaces `ORCH_VERIFIER_WATCH_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "GateCi": {
+      "additionalProperties": false,
+      "description": "The CI settings of the deployment's gate.",
+      "properties": {
+        "required": {
+          "default": [],
+          "description": "The names of the CI checks that must pass: GitHub's check name or workflow name, or the `name` of a generic report. A gate that requires `ci` must name at least one, here or in an agent's `gate.ci.required`. Replaces `ORCH_CI_REQUIRED`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "timeoutSecs": {
+          "default": 3600,
+          "description": "Seconds a job waits for the CI reports its gate needs before it is blocked, at least 1 (default 3600). Replaces `ORCH_CI_TIMEOUT_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "GateSource": {
+      "description": "A source a job's work can be required to pass (ADR 0018). `ci`: CI reports the pushed commit green (needs `gate.ci.required` and a CI webhook surface). `agent-checks`: the agent's own `checks` artifact passes. `verifier`: another agent reviews the pushed commit (needs `gate.verifier`).",
+      "enum": [
+        "ci",
+        "agent-checks",
+        "verifier"
+      ],
+      "type": "string"
+    },
+    "Inbox": {
+      "additionalProperties": false,
+      "description": "The inbox worker.",
+      "properties": {
+        "leaseSecs": {
+          "default": 30,
+          "description": "Seconds a worker's claim on a row lasts, at least 3 (default 30). Replaces `INBOX_LEASE_SECS`.",
+          "format": "uint64",
+          "minimum": 3,
+          "type": "integer"
+        },
+        "maxAttempts": {
+          "default": 10,
+          "description": "Claims of one row before it is given up on, at least 1 (default 10). Replaces `INBOX_MAX_ATTEMPTS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "parkedTtlSecs": {
+          "default": 86400,
+          "description": "Seconds a report that matches no watch waits before it expires, at least 1 (default 86400). Replaces `INBOX_PARKED_TTL_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "pollSecs": {
+          "default": 2,
+          "description": "Seconds between the worker's polls, at least 1 (default 2). Replaces `INBOX_POLL_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Log": {
+      "additionalProperties": false,
+      "description": "Logging. The filter is `RUST_LOG`, read before anything else (default `info,rmcp=warn`).",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/LogFormat",
+          "default": "json",
+          "description": "The format of a log line (default `json`). Replaces `LOG_FORMAT`."
+        }
+      },
+      "type": "object"
+    },
+    "LogFormat": {
+      "description": "The format of a log line: `json`, one object per line, what a log collector wants; or `text`, human-readable lines for local development.",
+      "enum": [
+        "json",
+        "text"
+      ],
+      "type": "string"
+    },
+    "Mcp": {
+      "additionalProperties": false,
+      "description": "The MCP server surface.",
+      "properties": {
+        "allowedHosts": {
+          "description": "The `Host` values the server accepts, each `host` or `host:port`. Required when `mcp` is mounted by a role that serves routes. Replaces `MCP_ALLOWED_HOSTS`.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "allowedOrigins": {
+          "default": [],
+          "description": "Browser origins let through, each `http(s)://host[:port]` (default none). Replaces `MCP_ALLOWED_ORIGINS`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tokensFile": {
+          "description": "The tokens file: a YAML list of `{user, tokenEnv}`, relative to this file's directory. Required when `mcp` is mounted by a role that serves routes. Replaces `MCP_TOKENS_FILE`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "waitMaxConcurrent": {
+          "default": 256,
+          "description": "The most `wait_for_job` calls this process holds open, at least 1 (default 256). Replaces `MCP_WAIT_MAX_CONCURRENT`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "waitMaxPerUser": {
+          "default": 16,
+          "description": "The most one user may hold open, at least 1 (default 16). Replaces `MCP_WAIT_MAX_PER_USER`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "waitMaxSecs": {
+          "default": 3600,
+          "description": "The largest `timeout_secs` of `wait_for_job`, 1 to 86400 (default 3600). Replaces `MCP_WAIT_MAX_SECS`.",
+          "format": "uint64",
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Models": {
+      "additionalProperties": false,
+      "description": "The model endpoints.",
+      "properties": {
+        "endpoints": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Endpoint"
+          },
+          "default": {},
+          "description": "Endpoints by name (a slug: `a-z`, `0-9` and `-`, up to 32 characters). This build takes one endpoint; the legacy `ORCH_MODEL_*` variables are the endpoint named `default`.",
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "Registry": {
+      "additionalProperties": false,
+      "description": "The platform's agent registry, read live beside the agents file.",
+      "properties": {
+        "agentToken": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The bearer token sent to every agent the registry lists. Replaces `AGENT_REGISTRY_AGENT_TOKEN`."
+        },
+        "maxAgeSecs": {
+          "default": 60,
+          "description": "The most seconds a copy of the document is kept, 1 to 3600 (default 60). Replaces `AGENT_REGISTRY_MAX_AGE_SECS`.",
+          "format": "uint64",
+          "maximum": 3600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "timeoutSecs": {
+          "default": 3,
+          "description": "Seconds one read may take, 1 to 60 (default 3). Replaces `AGENT_REGISTRY_TIMEOUT_SECS`.",
+          "format": "uint64",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The bearer token sent to the registry, when it wants one. Replaces `AGENT_REGISTRY_TOKEN`."
+        },
+        "url": {
+          "description": "The full URL of the document, `http` or `https`, with a host and no user name or password. Replaces `AGENT_REGISTRY_URL`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "description": "What this process runs. A closed enum owned by the host library (`adam-host`); the names are the same for every host. `all`: the control plane and the workers, in one process. `control-plane`: the HTTP server, the resource API and the surfaces, no dispatcher. `worker`: the dispatcher, and a router with only `/healthz` and `/readyz`.",
+      "enum": [
+        "all",
+        "control-plane",
+        "worker"
+      ],
+      "type": "string"
+    },
+    "SecretRef": {
+      "description": "A reference to a secret: where its value is read from at startup, never the value. `{ env: NAME }` reads the environment variable `NAME` (it must be set and not empty); `{ file: PATH }` reads the file at `PATH` (a relative path is relative to the directory of the configuration file; one trailing newline is cut; at most 64 KiB). A plain string where a secret goes is an error.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The name of an environment variable that holds the secret.",
+          "properties": {
+            "env": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "env"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The path of a file that holds the secret.",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Server": {
+      "additionalProperties": false,
+      "description": "The process: where it listens, what it runs, what it mounts.",
+      "properties": {
+        "instanceId": {
+          "description": "Names this replica in outbox leases (default `$HOSTNAME-<uuid>`). `ORCH_INSTANCE_ID` and `--instance-id` stay as a process override.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "listen": {
+          "default": "0.0.0.0:8080",
+          "description": "The socket address to listen on (default `0.0.0.0:8080`). Replaces `LISTEN_ADDR`.",
+          "type": "string"
+        },
+        "publicUrl": {
+          "description": "The public origin of the chat, for example `https://chat.example.com`: the MCP surface gives `start_job` a `web_url` from it. Replaces `ORCH_PUBLIC_URL`.",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/Role",
+          "default": "all",
+          "description": "What this process runs (default `all`). `ORCH_ROLE` and `--role` stay as a process override: a control plane and its workers share one file."
+        },
+        "shutdownGraceSecs": {
+          "default": 15,
+          "description": "Seconds a graceful shutdown may take (default 15). Replaces `SHUTDOWN_GRACE_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "surfaces": {
+          "description": "The surfaces to mount, as far as the build has them (default `[agui]`). Replaces `ORCH_SURFACES`.",
+          "items": {
+            "$ref": "#/$defs/Surface"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Steps": {
+      "additionalProperties": false,
+      "description": "What a step records.",
+      "properties": {
+        "recordToolIo": {
+          "default": true,
+          "description": "Whether a step's input and output (what a tool was called with and what it returned) are recorded in the log, redacted and capped (ADR 0030; default `true`). Replaces `ORCH_STEPS_RECORD_IO`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Surface": {
+      "description": "An interaction surface: a set of HTTP routes the orchestrator can mount. `agui`: the AG-UI routes the web speaks (ADR 0012). `mcp`: the MCP server at `/mcp` (ADR 0019; needs `mcp.tokensFile` and `mcp.allowedHosts`). `thread-tools`: the per-thread MCP endpoint (`thread-tools/v1`; needs `threadTools.url` and `secret`). `webhook-generic`: `POST /webhooks/ci`, the generic signed CI report (needs `webhooks.generic`). `webhook-github`: `POST /webhooks/github`, GitHub's own deliveries (needs `webhooks.github`).",
+      "enum": [
+        "agui",
+        "mcp",
+        "thread-tools",
+        "webhook-generic",
+        "webhook-github"
+      ],
+      "type": "string"
+    },
+    "Tasks": {
+      "additionalProperties": false,
+      "description": "The utility tasks.",
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/TitleTask",
+          "description": "The thread title. Absent: titles are off."
+        }
+      },
+      "type": "object"
+    },
+    "ThreadTools": {
+      "additionalProperties": false,
+      "description": "The thread tools (`thread-tools/v1`).",
+      "properties": {
+        "allowedHosts": {
+          "description": "The `Host` values the endpoint accepts, each `host` or `host:port` (default: the host of `url`). Replaces `THREAD_TOOLS_ALLOWED_HOSTS`.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "previousSecret": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The previous key, for verifying only (a rotation): a secret of at least 32 bytes, not the current one. Replaces `THREAD_TOOLS_SECRET_PREVIOUS`."
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The HMAC key of the tokens, a secret of at least 32 bytes. Replaces `THREAD_TOOLS_SECRET`."
+        },
+        "tokenTtlSecs": {
+          "default": 7200,
+          "description": "Seconds a token lives, 60 to 86400 (default 7200). Replaces `THREAD_TOOLS_TOKEN_TTL_SECS`.",
+          "format": "uint64",
+          "maximum": 86400,
+          "minimum": 60,
+          "type": "integer"
+        },
+        "url": {
+          "description": "The base URL under which agents reach this orchestrator, `http` or `https`. Both or neither of `url` and `secret`. Replaces `THREAD_TOOLS_URL`.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TitleTask": {
+      "additionalProperties": false,
+      "description": "The title task: after the agent's first reply, the model is asked for a 3 to 6 word title.",
+      "properties": {
+        "endpoint": {
+          "description": "The name of an endpoint in `models.endpoints`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "model": {
+          "description": "The model's name at the endpoint. Replaces `ORCH_TITLE_MODEL`.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "model"
+      ],
+      "type": "object"
+    },
+    "WebhookGeneric": {
+      "additionalProperties": false,
+      "description": "The generic signed CI report.",
+      "properties": {
+        "maxSkewSecs": {
+          "default": 300,
+          "description": "Seconds the `X-Vymalo-Timestamp` may differ from the clock, either way, at least 1 (default 300). Replaces `WEBHOOK_GENERIC_MAX_SKEW_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "secrets": {
+          "description": "One or two shared secrets, each at least 32 bytes: a report is accepted when its signature matches either, so a secret can be rotated. Replaces `WEBHOOK_GENERIC_SECRETS` (one variable holding one or two comma-separated secrets).",
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "secrets"
+      ],
+      "type": "object"
+    },
+    "WebhookGithub": {
+      "additionalProperties": false,
+      "description": "GitHub's own `check_run` and `workflow_run` deliveries.",
+      "properties": {
+        "maxAgeSecs": {
+          "default": 86400,
+          "description": "Seconds old the signed completion time of an event may be, at least 1 (default 86400). Replaces `WEBHOOK_GITHUB_MAX_AGE_SECS`.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "secrets": {
+          "description": "One or two secrets of the GitHub webhook, each at least 32 bytes. Replaces `WEBHOOK_GITHUB_SECRETS` (one variable holding one or two comma-separated secrets).",
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "secrets"
+      ],
+      "type": "object"
+    },
+    "Webhooks": {
+      "additionalProperties": false,
+      "description": "The webhook surfaces.",
+      "properties": {
+        "generic": {
+          "$ref": "#/$defs/WebhookGeneric",
+          "description": "`POST /webhooks/ci`. Required when the surface `webhook-generic` is mounted by a role that serves routes."
+        },
+        "github": {
+          "$ref": "#/$defs/WebhookGithub",
+          "description": "`POST /webhooks/github`. Required when the surface `webhook-github` is mounted by a role that serves routes."
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The configuration of the orchestrator (`version: 1`).",
+  "properties": {
+    "agents": {
+      "$ref": "#/$defs/Agents",
+      "default": {},
+      "description": "The agents: a file, in-process agents, the platform's registry."
+    },
+    "auth": {
+      "$ref": "#/$defs/Auth",
+      "default": {},
+      "description": "Authentication."
+    },
+    "database": {
+      "$ref": "#/$defs/Database",
+      "description": "The Postgres database, the one place the system keeps state."
+    },
+    "dispatcher": {
+      "$ref": "#/$defs/Dispatcher",
+      "default": {
+        "concurrency": 32,
+        "outboxLeaseSecs": 30
+      },
+      "description": "The dispatcher: the outbox rows worked at once, and the lease on them."
+    },
+    "gate": {
+      "$ref": "#/$defs/Gate",
+      "default": {
+        "ci": {
+          "required": [],
+          "timeoutSecs": 3600
+        },
+        "maxAttemptsCap": 10,
+        "require": [],
+        "verifierTimeoutSecs": 1800,
+        "verifierWatchSecs": 5
+      },
+      "description": "The deployment's layer of the verification gate (ADR 0018)."
+    },
+    "inbox": {
+      "$ref": "#/$defs/Inbox",
+      "default": {
+        "leaseSecs": 30,
+        "maxAttempts": 10,
+        "parkedTtlSecs": 86400,
+        "pollSecs": 2
+      },
+      "description": "The inbox worker: timers and stored reports."
+    },
+    "log": {
+      "$ref": "#/$defs/Log",
+      "default": {
+        "format": "json"
+      },
+      "description": "Logging."
+    },
+    "mcp": {
+      "$ref": "#/$defs/Mcp",
+      "default": {
+        "allowedOrigins": [],
+        "waitMaxConcurrent": 256,
+        "waitMaxPerUser": 16,
+        "waitMaxSecs": 3600
+      },
+      "description": "The MCP server surface (ADR 0019)."
+    },
+    "models": {
+      "$ref": "#/$defs/Models",
+      "default": {
+        "endpoints": {}
+      },
+      "description": "The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035)."
+    },
+    "server": {
+      "$ref": "#/$defs/Server",
+      "default": {
+        "listen": "0.0.0.0:8080",
+        "role": "all",
+        "shutdownGraceSecs": 15
+      },
+      "description": "The process: the address it listens on, its role, the interaction surfaces it mounts."
+    },
+    "steps": {
+      "$ref": "#/$defs/Steps",
+      "default": {
+        "recordToolIo": true
+      },
+      "description": "What a step records."
+    },
+    "tasks": {
+      "$ref": "#/$defs/Tasks",
+      "default": {},
+      "description": "The utility tasks that use a model: a task that is absent is off (ADR 0035)."
+    },
+    "threadTools": {
+      "$ref": "#/$defs/ThreadTools",
+      "default": {
+        "tokenTtlSecs": 7200
+      },
+      "description": "The thread tools: the endpoint agents call back, and the key of its tokens."
+    },
+    "version": {
+      "description": "The version of this file's format. This build reads `1`.",
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "webhooks": {
+      "$ref": "#/$defs/Webhooks",
+      "default": {},
+      "description": "The CI webhook surfaces (ADR 0017)."
+    }
+  },
+  "required": [
+    "version",
+    "database"
+  ],
+  "title": "Orchestrator configuration",
+  "type": "object"
+}

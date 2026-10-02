@@ -1,6 +1,7 @@
-//! The orchestrator service. Configuration is read from flags with environment fallback (see
-//! the README and `--help`); `boot` composes the adapters and `config` parses and validates the
-//! flags, the environment and the agent list.
+//! The orchestrator service. Configuration is one YAML file (`ORCH_CONFIG_FILE`, ADR 0034, see
+//! the README and `docs/api/config.md`) with the flags and variables of the transition release
+//! over it, or the flags and variables alone; `boot` composes the adapters and `config` reads and
+//! validates the file, the flags, the environment and the agent list.
 
 mod boot;
 mod config;
@@ -12,8 +13,8 @@ use std::process::ExitCode;
 
 use adam_host::HostError;
 use boot::Fatal;
-use clap::Parser as _;
-use config::{Args, Config, ConfigError, LogFormat};
+use clap::{CommandFactory as _, FromArgMatches as _, parser::ValueSource};
+use config::{Args, ConfigError, FlagSecrets, LogFormat};
 use orch_core::{Classify as _, ErrorClass};
 use orch_ports::StoreError;
 
@@ -81,26 +82,67 @@ fn exit_code(err: &anyhow::Error) -> u8 {
     1
 }
 
+/// The secret flags that were given on the command line: a flag wins over its variable, and a
+/// secret that the file names as `{ env: NAME }` is read from the flag when there is one.
+fn flag_secrets(args: &Args, matches: &clap::ArgMatches) -> FlagSecrets {
+    config::secret_flags()
+        .filter(|(_, id)| matches.value_source(id) == Some(ValueSource::CommandLine))
+        .filter_map(|(var, _)| args.secret_value(var).map(|value| (var, value)))
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // `--help` and `--version` exit 0 here, and a malformed command line exits 2 (clap's usage
     // error); every problem with a *value* is a `ConfigError`, exit 78, after tracing is up.
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let print = args.print_config;
     let format = LogFormat::parse(args.log_format.as_deref());
+    let flags = flag_secrets(&args, &matches);
     // The configuration is read before tracing is installed, so that every line carries the
     // role and the instance id. A bad configuration is logged like any other fatal error, just
     // without them (there is no role yet).
-    let cfg = Config::from_args(args);
+    let loaded = config::Loaded::from_process(args, flags);
+    if print {
+        // `--print-config` opens no connection and starts no logging: stdout is the YAML.
+        return match loaded {
+            Ok(loaded) => {
+                for note in &loaded.notes {
+                    eprintln!("{}", note.describe());
+                }
+                print!("{}", loaded.merged.unwrap_or_default());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                report(&e);
+                ExitCode::from(EX_CONFIG)
+            }
+        };
+    }
+    let format = match &loaded {
+        Ok(loaded) => loaded.config.log_format,
+        Err(_) => format,
+    };
     logging::init(
         format,
-        cfg.as_ref().ok().map(|cfg| logging::ProcessFields {
-            role: cfg.role.as_str(),
-            instance: cfg.instance_id.clone(),
+        loaded.as_ref().ok().map(|loaded| logging::ProcessFields {
+            role: loaded.config.role.as_str(),
+            instance: loaded.config.instance_id.clone(),
         }),
     );
-    let outcome = match cfg {
-        Ok(cfg) => boot::run(cfg, termination()).await,
-        Err(e) => Err(anyhow::Error::from(e).context("reading the configuration")),
+    let outcome = match loaded {
+        Ok(loaded) => {
+            for note in &loaded.notes {
+                note.log();
+            }
+            boot::run(loaded.config, termination()).await
+        }
+        Err(e) => {
+            // The list of errors of a file, one per line, for the person who has to fix it.
+            report(&e);
+            Err(anyhow::Error::from(e).context("reading the configuration"))
+        }
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
@@ -111,6 +153,18 @@ async fn main() -> ExitCode {
             tracing::error!(error = %format!("{e:#}"), code, "orchestrator failed");
             ExitCode::from(code)
         }
+    }
+}
+
+/// The errors of a configuration file on stderr, one line each (the other errors are one line,
+/// which the structured log line carries).
+fn report(error: &ConfigError) {
+    if let ConfigError::Document(lines) = error {
+        for line in lines {
+            eprintln!("configuration error: {line}");
+        }
+    } else {
+        eprintln!("configuration error: {error}");
     }
 }
 
@@ -146,6 +200,14 @@ mod tests {
         })
         .context("reading the configuration");
         assert_eq!(exit_code(&removed), 78);
+
+        // The errors of a configuration file are one error, 78, however many lines it lists.
+        let document = anyhow::Error::from(ConfigError::Document(vec![
+            "database.url: a secret is a reference".to_owned(),
+            "server.role: not an allowed value".to_owned(),
+        ]))
+        .context("reading the configuration");
+        assert_eq!(exit_code(&document), 78);
 
         let gate = anyhow::Error::from(ConfigError::Gate {
             context: "AGENTS_FILE",
