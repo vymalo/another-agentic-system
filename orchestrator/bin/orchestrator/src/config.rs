@@ -1510,6 +1510,16 @@ impl Config {
             record_step_io: self.steps_record_io,
             tasks: self.models.tasks.clone(),
             public: self.public.clone(),
+            // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
+            // they are never reached.
+            files: self
+                .artifacts
+                .as_ref()
+                .map_or(defaults.files, |a| orch_app::FileLimits {
+                    max_file_bytes: a.max_file_bytes,
+                    max_per_job_bytes: a.max_per_job_bytes,
+                    ..orch_app::FileLimits::default()
+                }),
             ..defaults
         }
     }
