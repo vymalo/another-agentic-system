@@ -241,9 +241,19 @@ impl ToolServerClient for MemoryToolServers {
         &self,
         server: &ToolServerEndpoint,
     ) -> Result<Vec<ToolDef>, ToolServerError> {
-        match self.request(server, "tools/list", None)? {
-            Answer::Tools(tools) => Ok(tools),
-            Answer::Script(_) => unreachable!("a listing is answered with tools"),
+        // Bounded like every request of the port, though a listing here always answers at once:
+        // the reference client must not show an implementation an unbounded listing.
+        let listing = async {
+            match self.request(server, "tools/list", None)? {
+                Answer::Tools(tools) => Ok::<_, ToolServerError>(tools),
+                Answer::Script(_) => unreachable!("a listing is answered with tools"),
+            }
+        };
+        match tokio::time::timeout(server.timeout, listing).await {
+            Ok(answer) => answer,
+            Err(_) => Err(ToolServerError::TimedOut {
+                after: server.timeout,
+            }),
         }
     }
 
