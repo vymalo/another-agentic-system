@@ -16,9 +16,6 @@
 use orch_core::UserId;
 use orch_ports::{AuthError, Authenticator, Credentials, Principal};
 
-/// The identity header oauth2-proxy sets after the login.
-pub const IDENTITY_HEADER: &str = "x-auth-request-email";
-
 /// The proxy-header authenticator. `HeaderAuth::default()` has no development user, so a request
 /// without the header is refused.
 #[derive(Debug, Clone, Default)]

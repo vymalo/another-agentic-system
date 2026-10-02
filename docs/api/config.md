@@ -1,9 +1,10 @@
 # The orchestrator's configuration file
 
-> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10).** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
-> validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections) and
-> [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section).
+> validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections),
+> [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section) and
+> [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) (the `auth` section and `server.environment`).
 > The loader builds every key marked **now** (crate [`orch-config`](../../orchestrator/crates/config/README.md), the
 > loader in [`orchestrator/bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-configuration-file));
 > a key marked **reserved** belongs to the PR named beside it and is refused (exit 78, naming that PR and ADR) until it
@@ -124,7 +125,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.surfaces` | list of `agui`, `mcp`, `thread-tools`, `webhook-generic`, `webhook-github`; `[agui]` | `ORCH_SURFACES` (a comma list) | now |
 | `server.publicUrl` | origin, none | `ORCH_PUBLIC_URL` | now |
 | `server.shutdownGraceSecs` | ≥ 1, `15` | `SHUTDOWN_GRACE_SECS` | now |
-| `server.environment` | `development` \| `production` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | reserved: S14, ADR 0033 |
+| `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
 | `database.maxConnections` | ≥ 2, `10` | `DATABASE_MAX_CONNECTIONS` | now |
@@ -197,8 +198,14 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `webhooks.generic.maxSkewSecs` | ≥ 1, `300` | `WEBHOOK_GENERIC_MAX_SKEW_SECS` | now |
 | `webhooks.github.secrets` | list of 1 or 2 **secrets**; required when `webhook-github` is mounted | `WEBHOOK_GITHUB_SECRETS` (comma rule kept) | now |
 | `webhooks.github.maxAgeSecs` | ≥ 1, `86400` | `WEBHOOK_GITHUB_MAX_AGE_SECS` | now |
-| `auth.devUser` | an e-mail, none; development only (warns) | `AUTH_DEV_USER` | now |
-| `auth.mode`, `auth.jwt`, `auth.defaultRole`, `auth.roles` | plan 10 §3.4 | — | reserved: S14 and S15, ADR 0033 |
+| `auth.devUser` | an e-mail, none; development only (warns); only with `auth.mode: proxy_header` | `AUTH_DEV_USER` | now |
+| `auth.mode` | `proxy_header` \| `jwt` \| `jwt_or_proxy_header`, `proxy_header` (nothing changes); a mode whose Cargo feature (`auth-jwt`, `auth-header`) is not in the build is refused (78) | — | now |
+| `auth.jwt.issuer` | `http(s)` URL without credentials, query or fragment; required with a mode that reads tokens | — | now |
+| `auth.jwt.audiences` | list of at least one non-empty text; required with `issuer` | — | now |
+| `auth.jwt.jwksUrl` | `http(s)` URL without credentials, none (the keys are found from `<issuer>/.well-known/openid-configuration`) | — | now |
+| `auth.jwt.userClaim` | the claim whose value is the user, `email` | — | now |
+| `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, nothing reads them until S15 |
+| `auth.defaultRole`, `auth.roles` | plan 10 §3.4 | — | reserved: S15, ADR 0033 |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
 | `artifacts.store` | `fs` \| `s3`; required with the section. Names only what this build compiled in: `fs` needs the Cargo feature `artifacts-fs`, `s3` needs `artifacts-s3`, else exit 78 naming it. The section of the store chosen is required and the other one is an error | — | now |
 | `artifacts.fs.root` | path (relative to this file's directory); required with `store: fs`. Made (mode `0700`) when missing. Every role must see the same directory (one machine, or a shared volume) | — | now |
@@ -210,6 +217,36 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `artifacts.s3.timeoutSecs` | 1 to 3600, `60` (one request) | — | now |
 | `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest of S11: a larger file is not kept | — | now (read: S11) |
 | `artifacts.maxPerJobBytes`, `artifacts.fetchHosts` | plan 10 §3.3: the bytes a job may keep (100 MiB) and the hosts a `url` part may be fetched from (none) | — | reserved: S11, ADR 0032 |
+
+### Authentication
+
+```yaml
+server:
+  environment: production
+auth:
+  mode: jwt
+  jwt:
+    issuer: https://idp.example/realms/main
+    audiences: [oauth2-proxy-client-id]
+    userClaim: email                    # the default: keeps the threads that exist
+    rolesClaim: realm_access.roles      # optional
+```
+
+- **`proxy_header`** (the default) trusts `X-Auth-Request-Email` and `auth.devUser`: safe only behind a proxy that strips
+  client-supplied copies. **`jwt`** validates the `Authorization: Bearer` token oauth2-proxy forwards (the ID token by
+  default; its `aud` is oauth2-proxy's client id) or a client's own token, and reads no header. **`jwt_or_proxy_header`**
+  takes the token when the request has one (and a refused token is never reconsidered as the header) and the header when
+  it has not: one release of migration.
+- **Rules** (exit 78, each naming its key): `auth.jwt` is required by `jwt` and `jwt_or_proxy_header` and refused by
+  `proxy_header` (a key that does nothing is an error); `auth.devUser` only with `proxy_header`; **`proxy_header` is
+  refused when `server.environment` is `production`**; a mode needs its Cargo feature. A process that serves no routes
+  (`server.role: worker`) needs no authenticator.
+- **The token** must be signed with RS256, RS384, ES256 or EdDSA by a key of the issuer's JWKS, and carry `iss` equal to
+  `issuer`, one of `audiences` in `aud`, `exp` and `iat`; 60 seconds of leeway; `email_verified` must not be `false`. The
+  user is `userClaim`, trimmed and lower-cased. See [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#2-the-jwt-authenticator-orch-auth-jwt-authmode-jwt)
+  for the key cache (10 minutes; an unknown `kid` at most once in 30 seconds; an hour of grace) and what is bounded.
+- **Responses:** 401 with `WWW-Authenticate: Bearer` for no token or a refused one; **503** with `Retry-After` while the
+  issuer's keys cannot be fetched; `/readyz` is 503 until they have been fetched.
 
 ### Variables that are not keys
 

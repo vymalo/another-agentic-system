@@ -125,10 +125,15 @@ flowchart LR
   everything else to the web. There are no Next.js API routes, no server-side fetches and no secrets in the web
   (`web/README.md`). Its settings, when it has any, are the public `ui` section of the orchestrator's configuration
   file, read from `GET /api/config` (planned, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). SSE goes browser → edge → orchestrator, unbuffered.
-- **The edge owns identity.** The orchestrator trusts `X-Auth-Request-Email` and answers 401
-  without it (fail closed), so it must only run behind a proxy that strips client-supplied copies.
-  Locally, `edge` is Caddy and replaces the header with `dev@example.com`
-  ([`dev/README.md`](../dev/README.md)).
+- **The orchestrator authenticates; the edge logs people in.** Identity is what the `Authenticator` port makes of a
+  request's credentials, and it fails closed ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
+  amending ADR 0012). With `auth.mode: jwt` the orchestrator is an OAuth2 resource server: oauth2-proxy stays in front
+  of the web and forwards `Authorization: Bearer <JWT>`, a CLI sends its own token, and the orchestrator validates
+  either against the issuer's JWKS (401 with `WWW-Authenticate: Bearer`; 503 while the keys cannot be fetched, and
+  `/readyz` with it). The default `proxy_header` mode still trusts `X-Auth-Request-Email` and answers 401 without it,
+  so it must only run behind a proxy that strips client-supplied copies; it is refused when `server.environment` is
+  `production`. Roles and their enforcement are planned (S15). Locally, `edge` is Caddy and replaces the header with
+  `dev@example.com` ([`dev/README.md`](../dev/README.md)); the dev stack moves to tokens in S16.
 - **A process runs the halves its role asks for** (`ORCH_ROLE`, ADR 0015): the HTTP server
   (`orch-api` plus the mounted surfaces) as the **control plane**, the dispatcher as a **worker**, or
   both (`all`, the default). A worker serves only `/healthz` and `/readyz`. The two halves meet only in

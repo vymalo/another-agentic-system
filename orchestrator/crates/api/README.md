@@ -1,6 +1,6 @@
 # orch-api
 
-The HTTP edge of the orchestrator: an axum 0.8 router with proxy-identity auth,
+The HTTP edge of the orchestrator: an axum 0.8 router whose identity layer asks the `Authenticator` port,
 RFC 9457 problems, the resource API (agents, thread list and details, export, cancel)
 and health, over `orch_app::App`. Interaction surfaces plug into it, and
 `health_router` serves health alone.
@@ -27,7 +27,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `SurfaceRoutes` | what a surface contributes: `plain(Router)` (request timeout applies), `streaming(Router)` (SSE, no timeout) and `machine(Router, guard)`; already bound to the surface's own state |
 | `SurfaceRoutes::machine(routes, guard)` | routes for a caller that is not a person behind oauth2-proxy (an MCP client with a bearer token, later a webhook): **outside** the identity layer and the request timeout, wrapped in `guard`, a tower layer that is the surface's own authentication and a required argument, so a machine route cannot be added without one. It must fail closed and never read `X-Auth-Request-Email` ([ADR 0016](../../../docs/decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). The users are [`orch-surface-mcp`](../surface-mcp/README.md) (a bearer token that names a person) and [`orch-surface-thread-tools`](../surface-thread-tools/README.md) (an HMAC token scoped to a thread) |
 | `ApiConfig` | `auth`, `sse_keepalive` (15 s; read by surfaces, not by this crate), `request_timeout` (30 s, everything but streaming routes) |
-| `AuthConfig { dev_user }`, `IDENTITY_HEADER` | identity handling; `dev_user: None` fails closed |
+| `IDENTITY_HEADER` | the header the identity layer reads beside `Authorization: Bearer`. Identity itself is the `Authenticator` of the application's `Ports` ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)); `ApiConfig.auth` and `AuthConfig` are gone, a development user is `HeaderAuth::with_dev_user` |
 | `Problem`, `ApiError` | RFC 9457 `application/problem+json` errors, and what a handler can `?` (an `AppError` mapped by its class, or a ready problem) |
 | `ApiJson<T>`, `ApiQuery<T>` | extractors whose rejections are 400 problems |
 | `EXPORT_FORMAT`, `EXPORT_VERSION` | the `format` (`another-agentic-system/thread-export`) and `version` (1) members of the export document |
@@ -55,11 +55,22 @@ let router = orch_api::router_with_surfaces(app, cfg, vec![agui]);
 // axum::serve(listener, router).await
 ```
 
-Identity comes from `X-Auth-Request-Email`; every path except `/healthz`,
-`/readyz` and `/metrics` answers 401 without it, surfaces' paths and unknown ones included, and
-a present but malformed header is refused even when a dev user is configured.
-**The header is only trustworthy behind a proxy (oauth2-proxy) that strips
-client-supplied copies.**
+Identity is what `app.ports().auth()` makes of the request's credentials: the token of `Authorization: Bearer`
+(another scheme is not a bearer; a header that is empty, sent twice or not text is a bearer that is refused) and
+`X-Auth-Request-Email` (one that is not text is read as empty). Every path except `/healthz`, `/readyz` and
+`/metrics` is refused unless it authenticates, surfaces' paths and unknown ones included, and a credential that
+is present and bad is refused even when another would have served.
+
+| Outcome | Response |
+|---|---|
+| authenticated | the `Principal` and its `UserId` are in the request extensions (a handler takes `Extension<UserId>`; S15 reads the `Principal`) |
+| `Missing`, `Invalid` | 401 problem; with `WWW-Authenticate: Bearer realm="orchestrator"` when the authenticator reads bearer tokens, and `, error="invalid_token"` when a token was presented and refused (RFC 6750) |
+| `Unavailable` (the issuer's keys cannot be fetched), `NotConfigured` | 503 problem with `Retry-After: 5`: nobody is let in, and it is not a refusal of the caller |
+
+`/readyz` is 503 (`not ready: cannot authenticate`) while the authenticator's `ready()` fails, so a pod whose issuer's keys were
+never fetched is kept out of the service. `/healthz` does not follow it.
+**The identity header is only trustworthy behind a proxy (oauth2-proxy) that strips client-supplied copies**; with
+`auth.mode: jwt` it is not read at all.
 
 ### `GET /api/threads/{id}/export`
 
@@ -129,7 +140,11 @@ HTTP. No environment variables.
   path but the probes (a surface's paths, unknown paths and the removed legacy routes included),
   a blank or malformed header is 401, one user never sees another's thread (the same 404 as for a
   thread that does not exist), identity is case- and space-insensitive, the dev user applies only
-  when configured, and the probes report readiness and shutdown while the API keeps answering.
+  when configured (it is the `HeaderAuth` of the test's `PortSet`), and the probes report readiness and shutdown while the API keeps answering.
+
+* `src/auth.rs` unit tests: what is a bearer (the scheme in any case, another scheme none, an empty, repeated or non-text header a bearer that is refused) and an identity header that is not text.
+* The challenge (`WWW-Authenticate`), the 503 for an unavailable issuer and `/readyz` are pinned end to end by the binary's smoke test
+  `in_jwt_mode_only_a_valid_token_is_an_identity_and_readiness_follows_the_keys` (a real process, a local issuer, Postgres).
 
 ## See also
 

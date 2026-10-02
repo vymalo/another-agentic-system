@@ -79,13 +79,18 @@ Slice 6 depends on nothing and can run beside any other. 3 → 4 and 5 can run i
 **After these slices:** the remaining components (List, Stepper, Agent suggestion, Skill request,
 then Image and Web view after question 38, Notification opt-in after question 37); the first plan's
 steps 4 (planner and parallel agents) and 5 (reviewers), which the coordination choice of slice 10
-reshapes; OIDC for MCP (first plan, slice 14).
+reshapes. (OIDC for MCP, the first plan's slice 14, is replaced by [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md): the orchestrator validates bearer tokens for every route, MCP's included once S15 maps them to roles.)
 
 **From the owner's feedback of 2026-10-02:** "a custom model for title, description … using a yaml". One YAML
 configuration file for the orchestrator, secrets by reference, the environment variables kept for one release
 ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in
 [`api/config.md`](api/config.md)), then the title and a new thread description as utility model tasks, each with its
 endpoint, model, prompt and language rule ([ADR 0035](decisions/0035-utility-model-tasks.md)). The file is built (S9); the tasks are not.
+
+And: "We need RBAC. We'll keep an OAuth2 proxy on top of the web and ensure the backend is an OAuth2 resource server."
+[ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md): an `Authenticator` port, JWT validation against the
+issuer's JWKS (`auth.mode`, built in S14, default `proxy_header` so nothing changes), then roles, permissions and their
+enforcement (S15), the dev stack with a mock issuer and oauth2-proxy (S16) and the web's `/api/me` (S17).
 
 ## Out of scope for the MVP
 
@@ -124,7 +129,7 @@ Diagrams of what is built: [Architecture: as built](architecture.md#as-built).
 
 ### The slices of steps 2, 3 and 6
 
-**Slices 2 to 13 are built (2026-09-30); slice 14 (OIDC bearer tokens for MCP, after the MVP) is planned, not built** (owner decisions and design of 2026-09-30: [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
+**Slices 2 to 13 are built (2026-09-30); slice 14 (OIDC bearer tokens for MCP, after the MVP) is replaced by ADR 0033 (2026-10-02)** (owner decisions and design of 2026-09-30: [ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md),
 [ADR 0017](decisions/0017-ci-results-by-webhook.md), [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md),
 [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). One pull request each; size S < M < L.
 Slice 1 is the documentation these ADRs are in.
@@ -144,7 +149,7 @@ Slice 1 is the documentation these ADRs are in.
 | 11 | MCP server with `start_job` and static bearer tokens | L | **Built (2026-09-30).** `orch-surface-mcp`; `list_agents`, `start_job`, `get_job`, `answer`, `cancel_job`; `MCP_TOKENS_FILE`, `MCP_ALLOWED_HOSTS`, `ORCH_PUBLIC_URL`; `origin`; `SurfaceRoutes::machine`. 401 paths, idempotent `start_job`, an in-process rmcp client on the memory store and on Postgres, a binary smoke test. Dev stack: Caddy `handle @mcp`, `dev/mcp-tokens.yaml`, `dev/mcp.json.example`, `dev/mcp-e2e.sh`. rmcp's stateless mode is checked with rmcp's own client only; against Claude Code it is *unverified*. **Review fixes (2026-09-30):** `start_job.gate`, a retry that says something else is refused, job ids of UUID version 8 reserved, caps on open waits, a token-less wait capped at one heartbeat, `MCP_ALLOWED_ORIGINS` and the 32-byte token minimum (see the [ADR 0019 status note](decisions/0019-mcp-server-over-streamable-http.md#status-note-2026-09-30-review-fixes)) | 2 (3 for the gate) |
 | 12 | `wait_for_job` with MCP progress notifications | M | **Built (2026-09-30).** Progress stream, heartbeat, timeout, shutdown; `MCP_WAIT_MAX_SECS`; increasing progress then the result; a timeout and a re-call with `after_seq` that lose nothing; a finished job at once; a shutdown; a replica killed mid-wait and the call repeated on another (two `App`s over one Postgres). The wait loop is tested on a paused clock. Dev stack: `dev/mcp-e2e.sh` reads the progress from the SSE response | 11 |
 | 13 | **Built.** Complete local stack for the MVP | M | **Built (2026-09-30).** The `app` profile stays offline and deterministic, one script per scenario (chat to PR: `coder-e2e.sh`; `red-once` reworks to green and `red-always` fails: `verify-e2e.sh`; a signed CI report reworks then ends the job: `ci-e2e.sh`; verifier findings rework: `verifier-e2e.sh`; MCP `start_job` with progress: `mcp-e2e.sh`) and `dev/e2e-all.sh`, which runs them all and prints a summary; "Test it locally" at the top of [`dev/README.md`](../dev/README.md); `compose.live.yaml` (a real model and GitHub from `.env`, [`.env.example`](../.env.example), `dev/agents.live.yaml`); the opt-in `smee` profile (a pinned smee-client behind a Caddy that passes only `/webhooks/github`; smee.io is a third party); the optional `local-agent` profile (the orchestrator built with `agent-local`); the coder re-pinned to adam-rs `ae540e9`, whose `checks` artifact the coder's gate now requires (`agent-checks` and `ci`). The compose config of every profile and of the live override is checked in CI; the images and the stack in containers were *not run* where this was written (no Docker daemon). | 4, 8, 9, 10, 12 |
-| 14 | OIDC bearer tokens for MCP (after the MVP) | M | JWKS validation against WireMock | 11 |
+| 14 | **Replaced** by [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) (2026-10-02): OIDC bearer tokens for every route, not MCP alone. JWT validation against a JWKS is **built** (PR S14, `orch-auth-jwt`, tested against a local issuer over HTTP); the MCP tokens' mapping to roles is S15 | M | JWKS validation against a local issuer | 11 |
 
 After slice 2, {3 → 4}, {5 → 6 → 7, 8, 9} and {11 → 12} can run in parallel; 10 can start after 3 and
 5. Migration numbers are fixed now (`0003` in slice 2, which widens every `CHECK` once; `0004` in
