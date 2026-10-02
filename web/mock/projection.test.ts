@@ -219,3 +219,77 @@ describe("Projector and the UI catalog", () => {
     expect("uiCatalog" in snapshot.snapshot.thread).toBe(false);
   });
 });
+
+describe("the mentions of a user message (ADR 0026)", () => {
+  const info = {
+    threadId: "00000000-0000-7000-8000-000000000001",
+    title: "t",
+    target: { agentId: "plain" },
+  };
+  const at = "2026-01-01T00:00:00Z";
+  const user = { type: "user" as const, name: "alice@example.com" };
+  const mentions = [
+    {
+      agentId: "mock-researcher",
+      label: "@researcher",
+      start: 3,
+      end: 14,
+      cardUrl: "http://mock-researcher:8080/.well-known/agent-card.json",
+    },
+    { agentId: "mock-coder", label: "@coder", start: 20, end: 26 },
+  ];
+  const message = (data: Record<string, unknown>) => ({
+    seq: 1,
+    threadId: info.threadId,
+    at,
+    kind: "user_message" as const,
+    actor: user,
+    data: { text: "\u{1F604} @researcher then @coder", messageId: "m-1", ...data },
+  });
+  const startOf = (frames: ReturnType<Projector["apply"]>) =>
+    frames.find((f) => f.event.type === "TEXT_MESSAGE_START")?.event as unknown as {
+      role: string;
+      metadata: Record<string, unknown>;
+    };
+
+  it("puts the references on the START of the message, beside the actor, as the log stores them", () => {
+    const start = startOf(new Projector(info).apply(message({ mentions })));
+    expect(start.role).toBe("user");
+    expect(start.metadata["vymalo.mentions"]).toEqual(mentions);
+    expect(start.metadata["vymalo.actor"]).toEqual({ type: "user", name: user.name });
+  });
+
+  it("says nothing of mentions for a message that mentions nobody", () => {
+    for (const data of [{}, { mentions: [] }]) {
+      const start = startOf(new Projector(info).apply(message(data)));
+      expect("vymalo.mentions" in start.metadata).toBe(false);
+    }
+  });
+
+  it("a message sent while the agent works carries both its delivery and its mentions (ADR 0036)", () => {
+    // the first message opens the run, the steer lands in it (and ends it: a message of its own)
+    const projector = new Projector(info);
+    projector.apply({ ...message({ text: "go" }), seq: 1 });
+    const steered = projector.apply({
+      ...message({ mentions, delivery: "steer", messageId: "m-2" }),
+      seq: 2,
+    });
+    const start = startOf(steered);
+    expect(start.metadata["vymalo.delivery"]).toBe("steer");
+    expect(start.metadata["vymalo.mentions"]).toEqual(mentions);
+    expect(start.metadata["vymalo.actor"]).toEqual({ type: "user", name: user.name });
+    // each member only when the log has it
+    const plain = new Projector(info);
+    plain.apply({ ...message({ text: "go" }), seq: 1 });
+    const onlyDelivery = startOf(
+      plain.apply({ ...message({ delivery: "steer", messageId: "m-3" }), seq: 2 }),
+    );
+    expect(onlyDelivery.metadata["vymalo.delivery"]).toBe("steer");
+    expect("vymalo.mentions" in onlyDelivery.metadata).toBe(false);
+  });
+
+  it("counts the offsets in UTF-16 code units, which is what a string of this runtime indexes", () => {
+    const text = "\u{1F604} @researcher then @coder";
+    for (const m of mentions) expect(text.slice(m.start, m.end)).toBe(m.label);
+  });
+});

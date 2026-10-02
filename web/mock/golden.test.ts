@@ -531,6 +531,14 @@ const FORKS = ["fork", "fork-blocked"];
  */
 const TOOLS = ["tools-attach", "tools-relay"];
 
+/**
+ * The scenario of the agents a message mentions (ADR 0026): `mentions` reaches the log only through
+ * `forwardedProps["vymalo.mentions"]` of a run, which the mock server does not read yet (the
+ * composer brings it), so it is not driven through its server either: its projection reads the golden
+ * event log and must produce the golden stream, `vymalo.mentions` on the user message included.
+ */
+const MENTIONS = ["mentions"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -543,9 +551,9 @@ function forkLog(name: string): Event[] {
   }));
 }
 
-describe("the mock's projection against the AG-UI goldens of a fork, a description and attached servers", () => {
+describe("the mock's projection against the AG-UI goldens of a fork, a description, attached servers and mentions", () => {
   // the description's log too: the projection alone, from the events the orchestrator wrote
-  for (const name of [...FORKS, ...TOOLS, "description"]) {
+  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, "description"]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real
@@ -571,7 +579,7 @@ describe("the mock server against the AG-UI goldens", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
       .map((f) => f.replace(/\.events\.json$/, ""))
-      .filter((f) => !FORKS.includes(f) && !TOOLS.includes(f));
+      .filter((f) => !FORKS.includes(f) && !TOOLS.includes(f) && !MENTIONS.includes(f));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

@@ -875,6 +875,8 @@ export class Projector {
     purpose?: { purpose?: string; via?: string },
     /** How a user message reached an agent that was working, when the log says (ADR 0036). */
     delivery?: string,
+    /** The agents a user message mentions (ADR 0026): `vymalo.mentions` of the START's metadata. */
+    mentions?: unknown[],
   ): Ev[] {
     const attr = sub ? { subagentRunId: sub } : {};
     return [
@@ -889,6 +891,7 @@ export class Projector {
           ...(purpose?.purpose ? { "vymalo.purpose": purpose.purpose } : {}),
           ...(purpose?.via ? { "vymalo.via": purpose.via } : {}),
           ...(delivery ? { "vymalo.delivery": delivery } : {}),
+          ...(mentions?.length ? { "vymalo.mentions": mentions } : {}),
         },
       },
       { type: "TEXT_MESSAGE_CONTENT", messageId, delta: text, ...attr },
@@ -1059,6 +1062,8 @@ export class Projector {
         this.openRun(e, out, superseding);
         const messageId = str(e.data.messageId) ?? `evt-${e.seq}`;
         if (!audience.skipUserMessageIds?.has(messageId)) {
+          // the references as the log stores them, none when the message mentions nobody (ADR 0026)
+          const mentions = Array.isArray(e.data.mentions) ? e.data.mentions : undefined;
           out.push(
             ...this.textTriad(
               e,
@@ -1068,6 +1073,7 @@ export class Projector {
               undefined,
               undefined,
               delivery,
+              mentions,
             ),
           );
         }

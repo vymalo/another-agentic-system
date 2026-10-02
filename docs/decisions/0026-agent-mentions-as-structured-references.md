@@ -89,3 +89,29 @@ The extension is written in [`api/mentions-v1.md`](../api/mentions-v1.md) and `a
   `branch` and `checks` never reach the gate; an ask is deduplicated by its call key, and a dropped call does not cancel it.
 - **A message sent while a job runs** ([ADR 0036](0036-sending-while-an-agent-works.md)) adds its mentions to the job's set;
   a Stop & send carries them to the next job.
+
+## Status note, 2026-10-02: built (slice 10, the references)
+
+The orchestrator's side of the references is built; the composer, `ask_agent` and the agent side that asks the mentioned
+agents are not. What exists: the pure checks and the resolution (`orch_app::mentions`: the shape, **400**; the labels against
+the text in UTF-16 code units, the registry, the person's roles, the thread's own agent, **422**; a registry that cannot
+answer, **503**), run before anything is written by `App::create_thread_as` and `App::submit` for every surface;
+`forwardedProps["vymalo.mentions"]` on the AG-UI run; `user_message.mentions`; the job's set of mentioned agents
+(`Job.mentioned`: the agents the addressed agent may ask) with a message sent while a job runs adding to it and a Stop & send
+carrying its mentions, moved by what stands in front of them, to the next job; the metadata under the URI to an agent whose
+live card lists it, with the agent's name and card URL read from the registry when the message is sent; the capabilities
+key; and `vymalo.mentions` on the user message's `TEXT_MESSAGE_START`. Decided where the contract was silent:
+
+- **The roles are asked before the registry**, so a person is never told whether an agent they may not invoke exists.
+- **`coordinate` is not sent yet.** The contract says it is present only when the card lists `thread-tools/v1`; it also
+  needs a tool to call, and `ask_agent` is not built, so the adapter has a switch (`asks`, off) that the slice building the
+  tool turns on.
+- **The first task of a fork** has the conversation it continues in front of the message, in the same part, so the offsets
+  an agent is sent are moved past it.
+- **A mention of an id that cannot be an agent's** (not `^[a-z0-9][a-z0-9-]{0,62}$`) is unknown without asking the registry.
+- **What a Stop & send holds** keeps at most 16 references in all, the first ones.
+- **A steered message keeps its mentions** ([ADR 0036](0036-sending-while-an-agent-works.md)). The `steer` outbox row holds
+  them (`OutboxPayload::Steer.mentions`, absent when empty, so a row written before reads back), the dispatcher resolves the
+  agents when it sends, and the adapter tells the running task under the URI when the card lists `mentions/v1` as well as
+  `steer/v1`. A steer the agent does not take becomes the delegation it stands for with the same references, and a
+  redelivery the dispatcher adopts (open question 33) hands them to the job it lands in.
