@@ -1,17 +1,19 @@
 # Where the files under dev/coder/ come from. `dev/coder/check-vendored.sh` reads this file.
 #
-# Every file under dev/coder/wiremock/, dev/coder/git-server/ and dev/coder/coder-agent/ is a byte-for-byte copy of the
+# Every file under dev/coder/wiremock/, dev/coder/git-server/, dev/coder/podman/ and dev/coder/coder-agent/ is a byte-for-byte copy of the
 # file at the same path below dev/ in the repository and at the commit named here, for example
-# dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream, and dev/coder/coder-agent/mcp.json (the
+# dev/coder/git-server/Dockerfile is dev/git-server/Dockerfile upstream, dev/coder/podman/ (the Containerfile, the pinned seccomp profile and the
+# README of the rootless Podman service that dev/compose.devcontainer.yaml builds) is dev/podman/ upstream, and dev/coder/coder-agent/mcp.json (the
 # `mcp.json` that points the coder at the mock GitHub MCP server, mounted over the folder's) is dev/coder-agent/mcp.json.
 # Every file under dev/coder/agent/ (the folder the coder reads at run time, mounted by compose.yaml at /etc/adam/agent,
 # its `mcp.json` the one that starts the real github-mcp-server) is a copy of the file below bin/adam-coder/agent/ upstream.
 # Never edit them here: change them upstream, then update this commit, the copies and the image pin in compose.yaml (`x-adam-image`, one pin for the coder and for the agents that
 # are only a folder, which run `adam-agent` from the same image) together. (To try a change to the agent folder
 # before it is upstream, point CODER_AGENT_DIR at a copy: dev/README.md, "Change what the coder says".)
-# Not vendored, on purpose: upstream's compose.yaml (ours), its dev/compose.github-app.yaml (dev/compose.github-app.yaml here is a
-# copy with its comments adapted: the service names are the same) and its dev/coder-e2e.sh (ours speaks AG-UI and asserts the
-# gates); upstream's own `mock-assistant` model (dev/wiremock/mock-openai/mappings/agent-script.json and its SSE twin
+# Not vendored, on purpose: upstream's compose.yaml (ours), its dev/compose.devcontainer.yaml (dev/compose.devcontainer.yaml here is ours: it
+# builds ./dev/coder/podman and has mock-ci watch local/devbox, which the coder's gate waits for), its dev/compose.github-app.yaml (dev/compose.github-app.yaml here is a
+# copy with its comments adapted: the service names are the same) and its dev/coder-e2e.sh (ours speak AG-UI and assert the
+# gates: dev/coder-e2e.sh and, for its devcontainer scenarios, dev/devcontainer-e2e.sh); upstream's own `mock-assistant` model (dev/wiremock/mock-openai/mappings/agent-script.json and its SSE twin
 # agent-script-stream.json), its researcher script and twin (researcher-cards*.json) and its example agent (dev/agents/assistant).
 # The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and dev/wiremock/model/ (each script with its own SSE
 # twin, as upstream's), which follow the same persona convention (adam-rs bin/adam-agent/README.md).
