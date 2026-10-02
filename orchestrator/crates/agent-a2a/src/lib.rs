@@ -31,6 +31,10 @@
 //! as it writes it, which the adapter maps to live pieces that are relayed and never applied
 //! (`orch_a2a_mapping`), and states the whole text once.
 //!
+//! Files (ADR 0032): an artifact's `raw` part reaches the worker as `AgentUpdate::File` (the
+//! mapper), and a `url` part on a host of [`A2aConfig::fetch_files`] is read here and reaches it the
+//! same way ([`FileFetch`]); any other `url` part stays a link.
+//!
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
@@ -39,6 +43,7 @@ mod a2ui;
 mod client;
 mod errors;
 mod extensions;
+mod files;
 mod releases;
 mod thread_tools;
 
@@ -47,5 +52,6 @@ pub use a2ui::{
 };
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
 pub use extensions::{extensions_from_card, steps_from_card, text_stream_from_card};
+pub use files::FileFetch;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;

@@ -237,7 +237,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `artifacts.s3.timeoutSecs` | 1 to 3600, `60` (one request) | — | now |
 | `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest (ADR 0032, S11): a larger file is not kept; the agent's artifact is logged without it, with an error "the file is too large to keep" | — | now |
 | `artifacts.maxPerJobBytes` | 1 to 4294967296 (4 GiB), `104857600` (100 MiB). The bytes of files one job (one run of an agent) keeps; a job also keeps at most 50 files (not a key). A file over either is refused like one over `maxFileBytes` | — | now (S11) |
-| `artifacts.fetchHosts` | list of hosts (`files.example.com`, `10.0.0.5:8080`: a host name or address with or without a port; no scheme, path, wildcard or credentials), default none. A `url` part of an agent's artifact on one of them is fetched by the worker and kept like a `raw` part; any other `url` stays a link. The list is the SSRF control: a host on it is trusted; the fetch is `http(s)` only, follows no redirect, sends no credential and stops at `maxFileBytes` | — | now (S11) |
+| `artifacts.fetchHosts` | list of hosts (`files.example.com`, `10.0.0.5:8080`: a host name or address with or without a port, which without one is the scheme's default, 80 or 443; no scheme, path, wildcard or credentials), default none. A `url` part of an agent's artifact on one of them is fetched by the worker and kept like a `raw` part; any other `url` stays a link. The list is the SSRF control: a host on it is trusted; the fetch is `http(s)` only, follows no redirect, sends no credential and stops at `maxFileBytes` | — | now (S11) |
 
 ### Authentication
 

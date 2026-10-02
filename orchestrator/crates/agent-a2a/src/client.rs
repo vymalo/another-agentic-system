@@ -34,6 +34,7 @@ use crate::a2ui::{
 };
 use crate::errors::classify;
 use crate::extensions::extensions_from_card;
+use crate::files::{Fetcher, FileFetch};
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
 
@@ -57,6 +58,9 @@ pub struct A2aConfig {
     /// card lists the extension carries `{url, token, expiresAt}` for the request's thread; without
     /// it (the default) no agent is given a grant. `Debug` shows no key.
     pub thread_tools: Option<Arc<ThreadToolsIssuer>>,
+    /// The hosts a `url` part of an artifact may be fetched from, and the size it may have
+    /// (ADR 0032, `artifacts.fetchHosts`). Without it (the default) every `url` part stays a link.
+    pub fetch_files: Option<FileFetch>,
 }
 
 impl Default for A2aConfig {
@@ -68,6 +72,7 @@ impl Default for A2aConfig {
             call_timeout: Duration::from_secs(30),
             use_system_proxy: true,
             thread_tools: None,
+            fetch_files: None,
         }
     }
 }
@@ -159,6 +164,7 @@ impl CallInterceptor for ActivateExtensions {
 pub struct A2aAgentClient {
     card_http: reqwest::Client,
     rpc_http: reqwest::Client,
+    fetcher: Option<Fetcher>,
     cfg: A2aConfig,
 }
 
@@ -191,9 +197,16 @@ impl A2aAgentClient {
             .read_timeout(cfg.read_timeout)
             .build()
             .map_err(|e| BuildError(e.without_url().into()))?;
+        let fetcher = cfg
+            .fetch_files
+            .clone()
+            .map(|policy| Fetcher::new(policy, cfg.use_system_proxy))
+            .transpose()
+            .map_err(|e| BuildError(e.without_url().into()))?;
         Ok(A2aAgentClient {
             card_http,
             rpc_http,
+            fetcher,
             cfg,
         })
     }
@@ -273,6 +286,14 @@ impl A2aAgentClient {
         self.client_for(ep, &card, Vec::new()).await
     }
 
+    /// The snapshot with the links on allowed hosts turned into the files they name.
+    async fn files_of(&self, snap: TaskSnapshot) -> Result<TaskSnapshot, AgentError> {
+        Ok(match &self.fetcher {
+            Some(fetcher) => fetcher.resolve_snapshot(snap).await,
+            None => snap,
+        })
+    }
+
     /// Bounds a call that has no protocol-level timeout of its own.
     async fn timed<T>(
         &self,
@@ -293,6 +314,7 @@ type Item = Result<orch_ports::AgentEnvelope, AgentError>;
 
 struct Mapping {
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
+    fetcher: Option<Fetcher>,
     mapper: StreamMapper,
     queue: VecDeque<Item>,
     seen_any: bool,
@@ -302,9 +324,13 @@ struct Mapping {
 /// Maps the SDK's stream. A response that ends without a single event is reported as an
 /// error: the SDK treats a body-less answer to a streaming call as an empty stream, which is
 /// what a refused request (for example a proxy's 401, whose status the SDK drops) looks like.
-fn map_stream(inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>) -> AgentStream {
+fn map_stream(
+    inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
+    fetcher: Option<Fetcher>,
+) -> AgentStream {
     let state = Mapping {
         inner,
+        fetcher,
         mapper: StreamMapper::default(),
         queue: VecDeque::new(),
         seen_any: false,
@@ -313,6 +339,11 @@ fn map_stream(inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>) 
     futures::stream::unfold(state, |mut st| async move {
         loop {
             if let Some(item) = st.queue.pop_front() {
+                // A link on an allowed host becomes the file it names (ADR 0032), in order.
+                let item = match (item, &st.fetcher) {
+                    (Ok(env), Some(fetcher)) => Ok(fetcher.resolve(env).await),
+                    (item, _) => item,
+                };
                 return Some((item, st));
             }
             if st.ended {
@@ -535,7 +566,7 @@ impl AgentClient for A2aAgentClient {
                 client.send_streaming_message(&request),
             )
             .await?;
-        Ok(map_stream(stream))
+        Ok(map_stream(stream, self.fetcher.clone()))
     }
 
     async fn resubscribe(&self, task: &TaskHandle) -> Result<AgentStream, AgentError> {
@@ -555,7 +586,7 @@ impl AgentClient for A2aAgentClient {
                 client.subscribe_to_task(&request),
             )
             .await?;
-        Ok(map_stream(stream))
+        Ok(map_stream(stream, self.fetcher.clone()))
     }
 
     async fn get_task(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
@@ -568,7 +599,7 @@ impl AgentClient for A2aAgentClient {
         let found = self
             .timed("reading the task", client.get_task(&request))
             .await?;
-        snapshot(&found)
+        self.files_of(snapshot(&found)?).await
     }
 
     async fn cancel(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
@@ -581,7 +612,7 @@ impl AgentClient for A2aAgentClient {
         let canceled = self
             .timed("cancelling the task", client.cancel_task(&request))
             .await?;
-        snapshot(&canceled)
+        self.files_of(snapshot(&canceled)?).await
     }
 
     /// A2A 1.0 has no lookup by message id, so this lists the tasks of the context (`ListTasks`)

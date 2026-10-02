@@ -2111,6 +2111,7 @@ dependencies = [
  "orch-ports",
  "orch-testsupport",
  "orch-thread-token",
+ "percent-encoding",
  "reqwest",
  "rustls",
  "secrecy",
@@ -2119,6 +2120,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

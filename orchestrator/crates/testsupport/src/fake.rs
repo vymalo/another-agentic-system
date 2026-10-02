@@ -36,6 +36,16 @@
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
 //! | `ui-big` | `working`, an artifact whose A2UI part is larger than the cap, then `completed` |
 //! | `ui-delete` | `working`, an A2UI part that creates surface `s2`, then one that deletes it, `completed` |
+//! | `file` | `working`, one artifact `chart` whose only part is a file (ADR 0032, an A2A `raw` part: [`PNG`], `image/png`, `chart.png`), `completed` |
+//! | `file-svg` | as `file`, an SVG ([`SVG_WITH_SCRIPT`], `image/svg+xml`, `drawing.svg`) that carries a script and an `onload`: the sanitizer's |
+//! | `file-lie` | as `file`, HTML bytes that are declared `image/png`: the sniff's |
+//! | `file-text` | as `file`, `hello from a file`, `text/plain`, `notes.txt` |
+//! | `file-big` | as `file`, 64 KiB of zeros as `application/octet-stream` (`dump.bin`): a test sets a lower cap |
+//! | `file-twice` | `working`, the `file` artifact sent twice as two artifacts, `completed`: one stored object |
+//! | `file-many` | `working`, one artifact of 52 text files `f0.txt` to `f51.txt` of distinct content, `completed`: the cap of 50 files per job |
+//! | `file-url` | as `file`, but the part is a `url` to this agent's own `/files/chart.png` ([`FakeAgent::base_url`]), which serves [`PNG`] as `image/png` |
+//! | `file-url-other` | as `file-url`, the `url` is `https://other.example.com/chart.png`: never on a list |
+//! | `file-url-redirect` | as `file-url`, the `url` is this agent's `/redirect`, which answers 302 to `/files/chart.png`: a redirect is never followed |
 //! | `recall` | `working`, artifact `recalled: <the first line of the conversation the message was told>` (or `recalled: nothing`), `completed`: what the first task of a **fork** carries (ADR 0029) |
 //! | `verify-pass` | `working`, artifacts `branch` (a commit) and `checks` (`passed: true`), `completed` |
 //! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
@@ -104,6 +114,19 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
+
+/// A valid 1 x 1 PNG: what the `file` scripts send and `/files/chart.png` serves.
+pub const PNG: [u8; 70] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+    0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// What `file-svg` sends: a drawing with a script and an event handler, which a sanitizer removes.
+pub const SVG_WITH_SCRIPT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" \
+onload=\"alert(1)\"><script>alert(2)</script><circle cx=\"10\" cy=\"10\" r=\"8\" fill=\"teal\"/></svg>";
 
 /// The release-channels extension URI (kept literal: test support must not depend on the adapter).
 pub const EXTENSION_URI: &str = "https://agents.vymalo.com/a2a/extensions/release-channels/v1";
@@ -390,6 +413,8 @@ struct Shared {
     verifying: Mutex<HashMap<String, String>>,
     /// The verifier script, when this agent plays the verifier.
     verifier: Option<VerifierScript>,
+    /// `http://127.0.0.1:<port>`: what the `file-url` scripts point at.
+    base_url: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -434,6 +459,7 @@ impl FakeAgent {
             accepts_inline_catalogs: AtomicBool::new(opts.accepts_inline_catalogs),
             verifying: Mutex::new(HashMap::new()),
             verifier: opts.verifier,
+            base_url: base_url.clone(),
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -458,15 +484,16 @@ impl FakeAgent {
             None => rpc,
         };
         let card = card(&base_url, capabilities, opts.releases.as_ref());
-        let app =
-            axum::Router::new()
-                .nest("/a2a", rpc)
-                .merge(a2a_server::agent_card::agent_card_router(Arc::new(
-                    LiveCard {
-                        base: card,
-                        shared: Arc::clone(&shared),
-                    },
-                )));
+        let app = axum::Router::new()
+            .route("/files/chart.png", axum::routing::get(serve_png))
+            .route("/redirect", axum::routing::get(serve_redirect))
+            .nest("/a2a", rpc)
+            .merge(a2a_server::agent_card::agent_card_router(Arc::new(
+                LiveCard {
+                    base: card,
+                    shared: Arc::clone(&shared),
+                },
+            )));
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -1329,6 +1356,16 @@ async fn verifier_script(
     emit(tx, ctx.status(TaskState::Completed, None)).await
 }
 
+/// `GET /files/chart.png`: the file the `file-url` scripts point at.
+async fn serve_png() -> Response {
+    ([(header::CONTENT_TYPE, "image/png")], PNG.to_vec()).into_response()
+}
+
+/// `GET /redirect`: a 302 to the file, which a fetch that follows redirects would read.
+async fn serve_redirect() -> Response {
+    (StatusCode::FOUND, [(header::LOCATION, "/files/chart.png")]).into_response()
+}
+
 /// What the first task of a fork is told in front of its message (the start of
 /// `orch_core::history_preamble`).
 const HISTORY_OPEN: &str = "[This chat continues an earlier conversation.";
@@ -1917,6 +1954,65 @@ async fn script(
         "slow" => {
             // Runs until CancelTask; the handler publishes the Canceled status itself.
             cancel.notified().await;
+        }
+        // Files (ADR 0032): what an agent hands over as a `raw` part, or points at with a `url`.
+        "file" | "file-svg" | "file-lie" | "file-text" | "file-big" | "file-url"
+        | "file-url-other" | "file-url-redirect" | "file-twice" | "file-many" => {
+            let file = |part: Part| (shared.next_artifact_id(), vec![part]);
+            let mut sends: Vec<(String, Vec<Part>)> = Vec::new();
+            match word {
+                "file" | "file-twice" => {
+                    let part = Part::raw(PNG.to_vec())
+                        .with_media_type("image/png")
+                        .with_filename("chart.png");
+                    sends.push(file(part.clone()));
+                    if word == "file-twice" {
+                        sends.push(file(part));
+                    }
+                }
+                "file-svg" => sends.push(file(
+                    Part::raw(SVG_WITH_SCRIPT.as_bytes().to_vec())
+                        .with_media_type("image/svg+xml")
+                        .with_filename("drawing.svg"),
+                )),
+                "file-lie" => sends.push(file(
+                    Part::raw(b"<html><script>alert(1)</script></html>".to_vec())
+                        .with_media_type("image/png")
+                        .with_filename("photo.png"),
+                )),
+                "file-text" => sends.push(file(
+                    Part::raw(b"hello from a file".to_vec())
+                        .with_media_type("text/plain")
+                        .with_filename("notes.txt"),
+                )),
+                "file-big" => sends.push(file(
+                    Part::raw(vec![0; 64 * 1024])
+                        .with_media_type("application/octet-stream")
+                        .with_filename("dump.bin"),
+                )),
+                "file-many" => sends.push((
+                    shared.next_artifact_id(),
+                    (0..52)
+                        .map(|n| {
+                            Part::raw(format!("file number {n}").into_bytes())
+                                .with_media_type("text/plain")
+                                .with_filename(format!("f{n}.txt"))
+                        })
+                        .collect(),
+                )),
+                "file-url" => sends.push(file(Part::url(format!(
+                    "{}/files/chart.png",
+                    shared.base_url
+                )))),
+                "file-url-other" => {
+                    sends.push(file(Part::url("https://other.example.com/chart.png")))
+                }
+                _ => sends.push(file(Part::url(format!("{}/redirect", shared.base_url)))),
+            }
+            for (id, parts) in sends {
+                emit(&tx, ctx.artifact(&id, "chart", parts, false, Some(true))).await?;
+            }
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "chunks" => {
             let id = shared.next_artifact_id();
