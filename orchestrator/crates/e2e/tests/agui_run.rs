@@ -379,8 +379,172 @@ async fn a_message_from_another_producer_joins_the_same_log(backend: Backend) {
     assert_contiguous(&events);
 }
 
+/// Waits until job `job` has started and its task has ended (`done` after its `job_started`).
+async fn wait_for_job(chat: &Chat, thread: &str, job: u64) -> Vec<Value> {
+    eventually(&format!("job {job} of {thread} to be done"), || async {
+        let events = chat.events(thread).await;
+        let started = events
+            .iter()
+            .position(|e| e["kind"] == "job_started" && e["data"]["job"] == job)?;
+        events[started..]
+            .iter()
+            .any(|e| e["kind"] == "thread_state" && e["data"]["state"] == "done")
+            .then_some(events)
+    })
+    .await
+}
+
+fn send(thread: &str, run: &str, messages: &[(&str, &str)], how: &str) -> Value {
+    input(
+        thread,
+        run,
+        messages,
+        json!({"forwardedProps": {"vymalo.send": how}}),
+    )
+}
+
+/// ADR 0036, `steer`: a run posted while one is open is served; the run that was open ends with
+/// the message, the new one is its own response, and (the dispatcher does not steer yet) the
+/// message reaches the agent after its turn.
+async fn a_run_posted_while_one_is_open_is_served_when_it_says_steer(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = thread_id(20);
+    let first = chat
+        .agui_run(
+            "plain",
+            &input(&thread, "run-1", &[("m-1", "gate hold")], json!({})),
+        )
+        .await;
+    chat.wait_state(&thread, "working").await;
+
+    // without `vymalo.send` it is the 409 it was
+    let both = [("m-1", "gate hold"), ("m-2", "hurry")];
+    let refused = chat
+        .agui_post("plain", &input(&thread, "run-x", &both, json!({})))
+        .await;
+    assert_eq!(refused.status().as_u16(), 409);
+    // a member that is not one of the two is a 400, and nothing is written
+    let bad = chat
+        .agui_post("plain", &send(&thread, "run-x", &both, "stop"))
+        .await;
+    assert_eq!(bad.status().as_u16(), 400);
+    assert_eq!(chat.events(&thread).await.len(), 2, "nothing was written");
+
+    let second = chat
+        .agui_run("plain", &send(&thread, "run-2", &both, "steer"))
+        .await;
+    let first = read(first).await;
+    assert_eq!(first[0].event["runId"], "run-1");
+    assert_eq!(last(&first)["type"], "RUN_FINISHED");
+    assert_eq!(last(&first)["runId"], "run-1");
+    assert_eq!(last(&first)["outcome"], json!({"type": "success"}));
+    world.plain.release_gate();
+    let second = read(second).await;
+    assert_eq!(second[0].event["type"], "RUN_STARTED");
+    assert_eq!(second[0].event["runId"], "run-2");
+    assert_eq!(last(&second)["runId"], "run-2");
+    assert_eq!(last(&second)["outcome"], json!({"type": "success"}));
+
+    let events = wait_for_job(&chat, &thread, 2).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "user_message",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done",
+            "job_started",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done",
+        ]
+    );
+    assert_eq!(events[2]["data"]["delivery"], "steer");
+    assert_eq!(events[2]["data"]["runId"], "run-2");
+    assert!(events[0]["data"].get("delivery").is_none());
+    assert_contiguous(&events);
+    // delivered once, after the turn, as the next task
+    let hurry: Vec<_> = world
+        .plain
+        .executions()
+        .into_iter()
+        .filter(|c| c.text == "hurry")
+        .collect();
+    assert_eq!(hurry.len(), 1, "the message reached the agent once");
+}
+
+/// ADR 0036, `interrupt`: the running task is cancelled, and the next job starts in the run of
+/// the message and names the cancelled task.
+async fn a_run_posted_while_one_is_open_is_served_when_it_says_interrupt(backend: Backend) {
+    let world = World::start(backend).await;
+    let orch = world.instance("orch-1").await;
+    let chat = world.chat(&orch);
+    let thread = thread_id(21);
+    let first = chat
+        .agui_run(
+            "plain",
+            &input(&thread, "run-1", &[("m-1", "slow work")], json!({})),
+        )
+        .await;
+    chat.wait_state(&thread, "working").await;
+
+    let second = run(
+        &chat,
+        "plain",
+        &send(
+            &thread,
+            "run-2",
+            &[("m-1", "slow work"), ("m-2", "echo do X instead")],
+            "interrupt",
+        ),
+    )
+    .await;
+    let first = read(first).await;
+    assert_eq!(last(&first)["runId"], "run-1");
+    assert_eq!(last(&first)["outcome"], json!({"type": "success"}));
+    assert_eq!(second[0].event["runId"], "run-2");
+    assert_eq!(last(&second)["runId"], "run-2");
+    assert_eq!(last(&second)["outcome"], json!({"type": "success"}));
+    assert!(
+        !second
+            .iter()
+            .any(|f| f.event["snapshot"]["thread"]["state"] == "cancelled"),
+        "the abandoned job is never shown as cancelled"
+    );
+
+    let events = wait_for_job(&chat, &thread, 2).await;
+    assert_eq!(
+        shape(&events),
+        [
+            "user_message",
+            "agent_status:working",
+            "user_message",
+            "agent_status:canceled",
+            "job_started",
+            "agent_status:working",
+            "artifact",
+            "agent_status:completed",
+            "thread_state:done",
+        ]
+    );
+    assert_eq!(events[2]["data"]["delivery"], "interrupt");
+    assert_contiguous(&events);
+    let calls = world.plain.executions();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].text, "echo do X instead");
+    assert_eq!(calls[1].reference_task_ids, [calls[0].task_id.clone()]);
+    assert_eq!(world.plain.cancels().len(), 1);
+}
+
 backends!(
     echo,
+    a_run_posted_while_one_is_open_is_served_when_it_says_steer,
+    a_run_posted_while_one_is_open_is_served_when_it_says_interrupt,
     ask_and_resume,
     fail,
     cancel,
@@ -635,6 +799,71 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
                 .await,
             ]
         }
+        // A message sent while the agent works (ADR 0036): the response of the run it was posted
+        // in ends at the message (the run is finished, the agent's work is not), and the response
+        // to the message is a run of its own. `steer`: the message is read after the agent's turn
+        // until the dispatcher steers it, so the second run ends with that turn.
+        "steer" => {
+            let first = chat
+                .agui_run(
+                    "plain",
+                    &input(
+                        thread,
+                        "run-1",
+                        &[("msg-1", "gate refactor the parser")],
+                        json!({}),
+                    ),
+                )
+                .await;
+            chat.wait_state(thread, "working").await;
+            let second = chat
+                .agui_run(
+                    "plain",
+                    &input(
+                        thread,
+                        "run-2",
+                        &[
+                            ("msg-1", "gate refactor the parser"),
+                            ("msg-2", "echo you were wrong since line 1"),
+                        ],
+                        json!({"forwardedProps": {"vymalo.send": "steer"}}),
+                    ),
+                )
+                .await;
+            let first = read(first).await;
+            world.plain.release_gate();
+            vec![first, read(second).await]
+        }
+        // `stop-and-send`: the second response shows the cancelled task, then the next job.
+        "stop-and-send" => {
+            let first = chat
+                .agui_run(
+                    "plain",
+                    &input(
+                        thread,
+                        "run-1",
+                        &[("msg-1", "slow refactor the parser")],
+                        json!({}),
+                    ),
+                )
+                .await;
+            chat.wait_state(thread, "working").await;
+            let second = run(
+                &chat,
+                "plain",
+                &input(
+                    thread,
+                    "run-2",
+                    &[
+                        ("msg-1", "slow refactor the parser"),
+                        ("msg-2", "echo do X instead"),
+                    ],
+                    json!({"forwardedProps": {"vymalo.send": "interrupt"}}),
+                ),
+            )
+            .await;
+            vec![read(first).await, second]
+        }
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -680,6 +909,8 @@ async fn run_responses_match_docs_api_examples() {
         "steps",
         "steps-ask",
         "fork",
+        "steer",
+        "stop-and-send",
     ]
     .into_iter()
     .enumerate()

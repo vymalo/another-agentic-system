@@ -377,13 +377,69 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             }
             (id, "done")
         }
+        // A message sent while the agent works (ADR 0036), through the AG-UI run route, which is
+        // the door that says how it is delivered (`forwardedProps["vymalo.send"]`): the log holds
+        // the consumer's message and run ids. `steer`: the message reaches the agent after its
+        // turn until the dispatcher steers it into the running task (`steer/v1`, not built yet),
+        // so the first task finishes and the message starts job 2.
+        "steer" => {
+            let id = chat
+                .seed_thread("plain", "gate refactor the parser", None)
+                .await;
+            chat.wait_state(&id, "working").await;
+            let body = Chat::agui_input(
+                &id,
+                "run-2",
+                &[("msg-2", "echo you were wrong since line 1")],
+                json!({"forwardedProps": {"vymalo.send": "steer"}}),
+            );
+            let response = chat.agui_run("plain", &body).await;
+            assert_eq!(response.status, 200);
+            world.plain.release_gate();
+            wait_for_job(&chat, &id, 2).await;
+            (id, "done")
+        }
+        // `stop-and-send`: the running task is cancelled, and the message starts job 2 once it
+        // has ended; the abandoned job is never judged (no `thread_state`).
+        "stop-and-send" => {
+            let id = chat
+                .seed_thread("plain", "slow refactor the parser", None)
+                .await;
+            chat.wait_state(&id, "working").await;
+            let body = Chat::agui_input(
+                &id,
+                "run-2",
+                &[("msg-2", "echo do X instead")],
+                json!({"forwardedProps": {"vymalo.send": "interrupt"}}),
+            );
+            let response = chat.agui_run("plain", &body).await;
+            assert_eq!(response.status, 200);
+            wait_for_job(&chat, &id, 2).await;
+            (id, "done")
+        }
         other => panic!("unknown scenario {other}"),
     };
     chat.wait_state(&id, last).await;
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 26] = [
+/// Waits until job `job` of the thread has started and its task has ended: a `thread_state` that
+/// is `done` after its `job_started`.
+async fn wait_for_job(chat: &Chat, id: &str, job: u64) {
+    eventually(&format!("job {job} of {id} to be done"), || async {
+        let events = chat.events(id).await;
+        let started = events
+            .iter()
+            .position(|e| e["kind"] == "job_started" && e["data"]["job"] == job)?;
+        events[started..]
+            .iter()
+            .any(|e| e["kind"] == "thread_state" && e["data"]["state"] == "done")
+            .then_some(())
+    })
+    .await;
+}
+
+const SCENARIOS: [&str; 28] = [
     "echo",
     "file",
     "ask",
@@ -410,6 +466,8 @@ const SCENARIOS: [&str; 26] = [
     "fork-blocked",
     "tools-attach",
     "tools-relay",
+    "steer",
+    "stop-and-send",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.

@@ -1,0 +1,118 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-2",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "suspended:"
+    },
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success",
+      "result": {
+        "status": "canceled"
+      }
+    },
+    {
+      "id": "sub-6",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "slow refactor the parser"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-2",
+      "role": "user",
+      "text": "echo do X instead"
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "detail": "canceled",
+        "status": "canceled"
+      }
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-6",
+      "role": "activity",
+      "subagentRunId": "sub-6",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:06Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "subagentRunId": "sub-6",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo do X instead",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-6",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "slow refactor the parser"
+    }
+  },
+  "pendingInterrupts": []
+}
