@@ -375,13 +375,19 @@ describe("ChatShell over AG-UI", () => {
     await waitFor(() => within(log()).getByText("steps run the tests"));
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "steps once more" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    // The badge can still say Done from the first job, so it is the turns that say that both are
+    // over: a click moves the panel to a turn, and it must not do so under a turn still being written.
+    const lines = () => within(log()).getAllByRole("button", { name: /steps:/ });
+    await waitFor(() => expect(lines()).toHaveLength(2));
     await waitFor(() =>
-      expect(within(log()).getAllByRole("button", { name: /steps:/ })).toHaveLength(2),
+      expect(lines().map((l) => l.getAttribute("data-state"))).not.toContain("running"),
     );
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
-    const [first, second] = within(log()).getAllByRole("button", { name: /steps:/ });
+    const [first, second] = lines();
     const headings = () => within(activity()).getAllByRole("heading", { level: 3 });
-    expect(headings().map((h) => h.textContent?.slice(0, 6))).toEqual(["Turn 1", "Turn 2"]);
+    await waitFor(() =>
+      expect(headings().map((h) => h.textContent?.slice(0, 6))).toEqual(["Turn 1", "Turn 2"]),
+    );
     fireEvent.click(first as HTMLElement);
     await waitFor(() => expect(document.activeElement).toBe(headings()[0]));
     fireEvent.click(second as HTMLElement);
