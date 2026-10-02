@@ -388,6 +388,7 @@ mod tests {
                     mime_type: None,
                     uri: None,
                     text: None,
+                    file: None,
                 }),
                 "#1 artifact: Pull request",
             ),

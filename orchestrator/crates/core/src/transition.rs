@@ -16,7 +16,7 @@
 
 use jiff::SignedDuration;
 
-use crate::agent::{AgentTaskState, AgentUpdate};
+use crate::agent::{AgentTaskState, AgentUpdate, FileRefusal};
 use crate::answer::announce;
 use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
@@ -384,6 +384,34 @@ fn refused_ui(reason: &str) -> EventBody {
         message: format!("an A2UI part from the agent was refused: {reason}"),
         retryable: false,
     })
+}
+
+/// A file that was not kept: its entry in the log without a file, then the error that says why.
+fn refused_file(
+    actor: Actor,
+    name: &str,
+    mime_type: Option<&str>,
+    reason: FileRefusal,
+) -> Vec<Command> {
+    vec![
+        append(
+            actor.clone(),
+            EventBody::Artifact(ArtifactData {
+                name: name.to_owned(),
+                mime_type: mime_type.map(str::to_owned),
+                uri: None,
+                text: None,
+                file: None,
+            }),
+        ),
+        append(
+            actor,
+            EventBody::Error(ErrorData {
+                message: reason.message().to_owned(),
+                retryable: false,
+            }),
+        ),
+    ]
 }
 
 pub(crate) fn append(actor: Actor, body: EventBody) -> Command {
@@ -919,6 +947,7 @@ fn agent_input(
                     mime_type: mime_type.clone(),
                     uri: uri.clone(),
                     text: text.clone(),
+                    file: None,
                 }),
             )];
             // While the work is being verified the ledger is frozen: what is checked is what
@@ -936,6 +965,40 @@ fn agent_input(
             }
             Ok((state, cmds))
         }
+        // The worker has put the file in the store before this input exists (ADR 0032): the log
+        // gets the reference, never the bytes.
+        AgentUpdate::FileKept {
+            name,
+            mime_type,
+            file,
+        } => Ok((
+            state,
+            vec![append(
+                actor,
+                EventBody::Artifact(ArtifactData {
+                    name: name.clone(),
+                    mime_type: Some(mime_type.clone()),
+                    uri: None,
+                    text: None,
+                    file: Some(file.clone()),
+                }),
+            )],
+        )),
+        AgentUpdate::FileRefused {
+            name,
+            mime_type,
+            reason,
+        } => Ok((
+            state,
+            refused_file(actor, name, mime_type.as_deref(), *reason),
+        )),
+        // Bytes that reached the core were not put anywhere: not kept, and never logged.
+        AgentUpdate::File {
+            name, media_type, ..
+        } => Ok((
+            state,
+            refused_file(actor, name, media_type.as_deref(), FileRefusal::NotKept),
+        )),
         // The adapter has checked the payload; the door is checked again here, so nothing
         // unchecked reaches the log whatever adapter sent it (ADR 0013).
         AgentUpdate::Ui { operations } => Ok((

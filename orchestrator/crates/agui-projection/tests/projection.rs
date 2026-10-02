@@ -106,6 +106,7 @@ fn artifact(seq: i64) -> Event {
             mime_type: None,
             uri: Some("https://example.com/pr/1".to_owned()),
             text: None,
+            file: None,
         }),
     )
 }
@@ -1050,6 +1051,7 @@ fn the_next_job_forgets_the_surfaces_the_attempt_and_the_commit_of_the_last() {
                     })
                     .to_string(),
                 ),
+                file: None,
             }),
         )
     };
@@ -1125,6 +1127,7 @@ fn named_artifact(seq: i64, name: &str, uri: Option<&str>, text: Option<&str>) -
             mime_type: None,
             uri: uri.map(str::to_owned),
             text: text.map(str::to_owned),
+            file: None,
         }),
     )
 }

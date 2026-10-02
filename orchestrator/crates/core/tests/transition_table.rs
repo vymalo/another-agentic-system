@@ -595,9 +595,110 @@ fn row13_artifact_keeps_state() {
                 name: "pr".into(),
                 mime_type: None,
                 uri: Some("https://github.com/acme/demo/pull/1".into()),
-                text: None
+                text: None,
+                file: None
             })]
         );
+    }
+}
+
+fn digest() -> String {
+    "ab".repeat(32)
+}
+
+fn file_input(update: AgentUpdate) -> Input {
+    Input::Agent {
+        agent: agent(),
+        revision: None,
+        update,
+    }
+}
+
+/// ADR 0032: a file the worker kept is an artifact that holds the reference.
+#[test]
+fn row13a_a_kept_file_is_an_artifact_with_its_reference() {
+    let file = FileRef {
+        sha256: digest(),
+        size: 4,
+        filename: Some("chart.png".into()),
+    };
+    let input = file_input(AgentUpdate::FileKept {
+        name: "chart".into(),
+        mime_type: "image/png".into(),
+        file: file.clone(),
+    });
+    for s in OPEN {
+        let (next, cmds) = run(s, &input);
+        assert_eq!(next, s);
+        assert_eq!(
+            bodies(&cmds),
+            [&EventBody::Artifact(ArtifactData {
+                name: "chart".into(),
+                mime_type: Some("image/png".into()),
+                uri: None,
+                text: None,
+                file: Some(file.clone()),
+            })]
+        );
+    }
+}
+
+/// A file that was not kept is an artifact without a file and an error that says why, whatever
+/// the reason; the turn goes on (the state does not change).
+#[test]
+fn row13b_a_refused_file_is_an_entry_without_a_file_and_an_error() {
+    for (reason, words) in [
+        (FileRefusal::TooLarge, "the file is too large to keep"),
+        (FileRefusal::NotKept, "the file could not be kept"),
+        (
+            FileRefusal::JobLimit,
+            "this job has reached its limit of files, so the file is not kept",
+        ),
+    ] {
+        let input = file_input(AgentUpdate::FileRefused {
+            name: "dump".into(),
+            mime_type: Some("application/zip".into()),
+            reason,
+        });
+        for s in OPEN {
+            let (next, cmds) = run(s, &input);
+            assert_eq!(next, s);
+            assert_eq!(
+                bodies(&cmds),
+                [
+                    &EventBody::Artifact(ArtifactData {
+                        name: "dump".into(),
+                        mime_type: Some("application/zip".into()),
+                        uri: None,
+                        text: None,
+                        file: None,
+                    }),
+                    &EventBody::Error(ErrorData {
+                        message: words.into(),
+                        retryable: false,
+                    }),
+                ]
+            );
+        }
+    }
+}
+
+/// Bytes that reach the core were put nowhere: never logged, logged as not kept.
+#[test]
+fn row13c_bytes_that_reach_the_core_are_never_logged() {
+    let input = file_input(AgentUpdate::File {
+        name: "raw".into(),
+        media_type: None,
+        filename: Some("raw.bin".into()),
+        bytes: vec![1, 2, 3],
+    });
+    let (next, cmds) = run(Working, &input);
+    assert_eq!(next, Working);
+    let shown = format!("{:?}", bodies(&cmds));
+    assert!(shown.contains("the file could not be kept"), "{shown}");
+    assert!(!shown.contains("[1, 2, 3]"), "{shown}");
+    for s in TERMINAL {
+        assert!(transition(&s, &input).is_err());
     }
 }
 

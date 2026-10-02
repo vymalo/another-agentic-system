@@ -325,6 +325,26 @@ pub struct ArtifactData {
     /// Inline text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The file this artifact is, when an agent handed one over and the artifact store kept it
+    /// (ADR 0032). Then `mime_type` is the type the worker sniffed, and the bytes are in the store,
+    /// never in the log. Absent for an artifact of text or a link, and for a file that was refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileRef>,
+}
+
+/// A file kept in the artifact store, as the log refers to it (ADR 0032): the content's hash (the
+/// second half of the store's key `threads/<thread>/<sha256>`, the thread being the event's), its
+/// size and the name the agent gave it. A decision reads this, never the bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRef {
+    /// The SHA-256 of the content, 64 lowercase hexadecimal digits.
+    pub sha256: String,
+    /// The size in bytes.
+    pub size: u64,
+    /// The file's name as the agent gave it, cleaned of path parts and control characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
 }
 
 /// `data` of a `thread_state`.

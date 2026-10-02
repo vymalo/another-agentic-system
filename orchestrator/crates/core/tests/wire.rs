@@ -71,6 +71,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             mime_type: None,
             uri: Some("https://x".into()),
             text: None,
+            file: None,
         }),
         EventBody::ThreadState(ThreadStateData {
             state: ThreadState::Cancelled,
@@ -399,6 +400,7 @@ fn artifact_uses_camel_case_mime_type() {
             mime_type: Some("text/x-diff".into()),
             uri: None,
             text: Some("diff".into()),
+            file: None,
         }),
         Actor::system(),
     );
@@ -406,6 +408,52 @@ fn artifact_uses_camel_case_mime_type() {
         serde_json::to_value(&e).unwrap()["data"],
         json!({"name": "patch", "mimeType": "text/x-diff", "text": "diff"})
     );
+}
+
+#[test]
+fn a_file_artifact_holds_a_reference_and_old_events_still_read() {
+    let sha = "0f".repeat(32);
+    let e = event(
+        EventBody::Artifact(ArtifactData {
+            name: "chart".into(),
+            mime_type: Some("image/png".into()),
+            uri: None,
+            text: None,
+            file: Some(FileRef {
+                sha256: sha.clone(),
+                size: 12,
+                filename: Some("chart.png".into()),
+            }),
+        }),
+        Actor::system(),
+    );
+    let wire = serde_json::to_value(&e).unwrap();
+    assert_eq!(
+        wire["data"],
+        json!({
+            "name": "chart", "mimeType": "image/png",
+            "file": {"sha256": sha, "size": 12, "filename": "chart.png"}
+        })
+    );
+    assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), e);
+    // an artifact logged before files existed has no `file`
+    let mut old = serde_json::to_value(event(
+        EventBody::Artifact(ArtifactData {
+            name: "pr".into(),
+            mime_type: None,
+            uri: Some("https://x".into()),
+            text: None,
+            file: None,
+        }),
+        Actor::system(),
+    ))
+    .unwrap();
+    assert!(old["data"].get("file").is_none());
+    old["data"] = json!({"name": "pr", "uri": "https://x"});
+    let EventBody::Artifact(read) = serde_json::from_value::<Event>(old).unwrap().body else {
+        panic!("not an artifact")
+    };
+    assert!(read.file.is_none());
 }
 
 #[test]

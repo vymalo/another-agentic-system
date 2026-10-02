@@ -27,7 +27,7 @@ mod ui;
 mod ui_catalog;
 mod verify;
 
-pub use agent::{AgentTaskState, AgentUpdate};
+pub use agent::{AgentTaskState, AgentUpdate, FileRefusal};
 pub use answer::{AnswerError, AnswerLedger, MAX_ANSWER_BYTES, check_answer};
 pub use description::{
     DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,
@@ -37,7 +37,7 @@ pub use description::{
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
-    ErrorData, Event, EventBody, EventKind, JobStartedData, MessagePurpose, Origin,
+    ErrorData, Event, EventBody, EventKind, FileRef, JobStartedData, MessagePurpose, Origin,
     ThreadStateData, UserMessageData,
 };
 pub use extension::{
