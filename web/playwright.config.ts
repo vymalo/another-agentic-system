@@ -37,7 +37,7 @@ export default defineConfig({
       name: "mobile",
       use: { ...devices["Pixel 7"] },
       testMatch:
-        /create-thread|follow-up|cancel|verification|ci-card|export|choices|cards\.spec|files\.spec|agent-menu|registry\.spec|panel|steps\.spec|step-io|stream\.spec|fork\.spec|branches\.spec|answer-view/,
+        /create-thread|follow-up|cancel|verification|ci-card|export|choices|cards\.spec|files\.spec|agent-menu|registry\.spec|panel|steps\.spec|step-io|stream\.spec|fork\.spec|branches\.spec|answer-view|description\.spec/,
     },
   ],
 });

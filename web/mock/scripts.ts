@@ -978,7 +978,8 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  * - `talk`: a status with text, one agent message, the result.
  * - `describe`: the same as `talk`, then, after the thread is done, the description the orchestrator's model
  *   writes for it (`thread_described`, `source: model`, ADR 0035; the `description` golden). `describe-long`: the
- *   same with a description of three sentences, longer than a line. A description a person wrote is never
+ *   same with a description of three sentences, longer than a line (`Plan …` is that one in plain words, for the
+ *   screenshots and the e2e of descriptions). A description a person wrote is never
  *   replaced by one of these.
  * - `file`: one artifact that is a file the artifact store keeps (ADR 0032: a PNG, `chart.png`, the reference in
  *   the event's `file`), then done (the `file` golden). The mock serves it as `getArtifact` does.
@@ -2062,6 +2063,7 @@ export function scriptFor(text: string): {
       };
     case "describe":
     case "describe-long":
+    case "Plan": // plain words, for the screenshots and the e2e of descriptions
       return {
         start: [
           working,
