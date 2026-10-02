@@ -4,6 +4,7 @@ import {
   MessagePrimitive,
   type PartState,
   ThreadPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import { ArrowDownIcon, MessageCircleQuestionIcon, PencilIcon } from "lucide-react";
@@ -31,6 +32,7 @@ import {
   parseFork,
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
+import { type TextRole, textRoles } from "@/features/chat/lib/working";
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
@@ -47,6 +49,11 @@ import { uuidv7 } from "@/lib/uuid";
  * a failure or a surface stands on its own; the reply the agent is still writing (live text, never
  * in the transcript) is drawn after the parts, with a caret; the pull requests and files it shared
  * follow as cards. A `vymalo.actor` marker part says who ran.
+ *
+ * The column keeps one answer per turn (ADR 0031): what the agent said while it worked is not drawn
+ * here at all, neither collapsed nor behind a control; it is a note among the steps in the panel
+ * (`lib/working.ts` says which text is which, `lib/step-tree.ts` files the notes). The runtime's
+ * message is whole: the text parts are all in it, the chat only does not draw the working ones.
  */
 
 type AnyPart = { type: string; name?: string; data?: unknown; text?: string };
@@ -277,6 +284,24 @@ function TurnHeader({ actor, at }: { actor: ApiActor | undefined; at?: Date | un
   );
 }
 
+/**
+ * One text part of the turn: the agent's words when they are its answer, nothing when they are
+ * working text (a note of the panel's steps). The part does not know its own place, so the index
+ * comes from the runtime's part accessor; a part that cannot say is drawn, as words always were.
+ */
+const TextLeaf: FC<{
+  roles: ReadonlyMap<number, TextRole>;
+  /** The index of the last part with words, which a waiting turn asks its question in. */
+  lastText: number;
+  asking: boolean;
+}> = ({ roles, lastText, asking }) => {
+  const aui = useAui();
+  const where = aui.part.query as { type?: string; index?: number } | undefined;
+  const index = where?.type === "index" ? where.index : undefined;
+  if (index !== undefined && roles.get(index) === "working") return null;
+  return <AgentText question={asking && index !== undefined && index === lastText} />;
+};
+
 /** The agent's words: prose, no bubble. The last words of a waiting turn are the question. */
 const AgentText: FC<{ question: boolean }> = ({ question }) => (
   <div data-slot="agent-message" data-role="assistant" className="min-w-0 [overflow-wrap:anywhere]">
@@ -358,9 +383,12 @@ export const AssistantMessage: FC = () => {
     return fork ? <ForkDivider fork={fork} /> : null;
   }
   if (lastDrawn < 0 && !running && answers.length === 0) return null;
-  const lastTextValue = lastText >= 0 ? content[lastText]?.text : undefined;
+  // the answer and the working text of the turn (ADR 0031); Copy takes the answer
+  const roles = textRoles(content, running);
   const ownWords = content
-    .flatMap((p) => (p.type === "text" && p.text?.trim() ? [p.text] : []))
+    .flatMap((p, i) =>
+      p.type === "text" && p.text?.trim() && roles.get(i) !== "working" ? [p.text] : [],
+    )
     .join("\n\n");
   const writing = newest
     ? drawnDrafts(
@@ -400,11 +428,7 @@ export const AssistantMessage: FC = () => {
                 // the steps are the panel's Activity tab; the line above opens it on this turn
                 return null;
               case "text":
-                return (
-                  <AgentText
-                    question={waiting && isLast && lastText >= 0 && part.text === lastTextValue}
-                  />
-                );
+                return <TextLeaf roles={roles} lastText={lastText} asking={waiting && isLast} />;
               case "data":
                 // the person's answers are drawn above the turn
                 if (isAnswerPart(part as AnyPart)) return null;

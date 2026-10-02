@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentTurns } from "@/features/panel/lib/sources";
-import { ACTIVITY, ACTOR_PART, activityPartName } from "./agui/vymalo";
+import { ACTIVITY, ACTOR_PART, activityPartName, PURPOSE_PART } from "./agui/vymalo";
 import {
   buildTurnSteps,
   countUnder,
@@ -473,7 +473,7 @@ describe("the summary", () => {
 describe("summaryLine", () => {
   const turn = (state: TurnSteps["state"], extra: Partial<TurnSteps["summary"]> = {}) => ({
     state,
-    summary: { total: 14, running: 0, failed: 0, ...extra },
+    summary: { total: 14, notes: 0, running: 0, failed: 0, ...extra },
   });
 
   it("says what a running turn is on and how many steps it has", () => {
@@ -743,5 +743,142 @@ describe("finding a step", () => {
       ]),
     ]);
     expect(firstFailed(echoed as TurnSteps)?.id).toBe("T/rc");
+  });
+});
+
+describe("working text is a note among the steps (ADR 0031)", () => {
+  const said = (words: string, purpose?: "working" | "answer") =>
+    purpose
+      ? [{ type: "data", name: PURPOSE_PART, data: { purpose } }, text(words)]
+      : [text(words)];
+  const one = (
+    content: StepMessage["content"],
+    state: StepMessage["status"] = { type: "complete" },
+  ) =>
+    build(
+      [assistant(content, state)],
+      state?.type === "running" ? { ...VIEW, state: "working" } : VIEW,
+    )[0] as TurnSteps;
+  const rows = (turn: TurnSteps) => root(turn).children.map((c) => `${c.kind}:${c.label}`);
+
+  it("files the working text where it was said, in time order among the steps, and keeps the answer out", () => {
+    const turn = one([
+      actor(),
+      status("working", undefined, 1),
+      ...said("I'll look at it.", "working"),
+      step("read", "completed", {}, 2),
+      ...said("Now the fix.", "working"),
+      step("edit", "completed", {}, 3),
+      ...said("It is fixed.", "answer"),
+    ]);
+    expect(rows(turn)).toEqual([
+      "status:Started working",
+      "note:I'll look at it.",
+      "tool:read",
+      "note:Now the fix.",
+      "tool:edit",
+    ]);
+    expect(root(turn).children[1]).toMatchObject({
+      kind: "note",
+      content: { text: "I'll look at it." },
+      state: "completed",
+    });
+  });
+
+  it("does not count the notes as steps, and says them in the line of a turn that has no steps", () => {
+    const turn = one([
+      actor(),
+      ...said("A.", "working"),
+      step("a", "completed"),
+      ...said("B.", "working"),
+      ...said("End.", "answer"),
+    ]);
+    expect(turn.summary).toMatchObject({ total: 1, notes: 2 });
+    expect(countUnder(root(turn))).toMatchObject({ total: 1 });
+    expect(summaryLine(turn)).toMatchObject({ text: "1 step" });
+    const notesOnly = one([actor(), ...said("Thinking out loud.", "working")], {
+      type: "incomplete",
+      reason: "cancelled",
+    });
+    expect(notesOnly.summary).toMatchObject({ total: 0, notes: 1 });
+    expect(summaryLine(notesOnly)).toMatchObject({ icon: "stopped", text: "Stopped · 1 note" });
+    // a turn that is only its answer has no line and no notes
+    const plain = one([actor(), text("Hello.")]);
+    expect(plain.summary.notes).toBe(0);
+    expect(summaryLine(plain)).toBeNull();
+  });
+
+  it("is not the step a running turn is on", () => {
+    const turn = one(
+      [
+        actor(),
+        status("working", undefined, 1),
+        step("read", "completed", {}, 2),
+        ...said("Reading more.", "working"),
+      ],
+      { type: "running" },
+    );
+    expect(turn.summary.current).toBe("read");
+  });
+
+  it("reads text with no mark by the rule: earlier text is a note, the last is the answer", () => {
+    const turn = one([
+      actor(),
+      text("First."),
+      step("a", "completed"),
+      text("Second."),
+      step("b", "completed"),
+      text("Last."),
+    ]);
+    expect(rows(turn)).toEqual(["note:First.", "tool:a", "note:Second.", "tool:b"]);
+  });
+
+  it("while it runs, an unmarked text before a step is a note and the one after the last step is not", () => {
+    const parts = [actor(), text("Looking."), step("a", "running"), text("Writing it up")];
+    const turn = one(parts, { type: "running" });
+    expect(rows(turn)).toEqual(["note:Looking.", "tool:a"]);
+  });
+
+  it("names a long note by its first line, whole in its content", () => {
+    const long = `${"word ".repeat(40)}\nsecond line`;
+    const turn = one([actor(), ...said(long, "working"), ...said("End.", "answer")]);
+    const note = root(turn).children[0] as StepNode & { content: { text: string } };
+    expect(note.label.length).toBeLessThanOrEqual(80);
+    expect(note.content.text).toBe(long);
+  });
+
+  describe("the ticker", () => {
+    it("is the last line of the last note while the turn runs", () => {
+      const turn = one(
+        [
+          actor(),
+          ...said("I'll run the tests.", "working"),
+          step("t", "completed"),
+          ...said("Fixing the glob.\nThen the retry.", "working"),
+        ],
+        { type: "running" },
+      );
+      expect(turn.ticker).toBe("Then the retry.");
+    });
+
+    it("is not there when the turn is over, has no note, or its notes say nothing", () => {
+      expect(
+        one([actor(), ...said("Hello", "working"), ...said("End.", "answer")]).ticker,
+      ).toBeUndefined();
+      expect(one([actor(), step("a", "running")], { type: "running" }).ticker).toBeUndefined();
+      expect(one([actor(), ...said("``", "working")], { type: "running" }).ticker).toBeUndefined();
+    });
+
+    it("is not there for a draft of the answer: text that is not a note", () => {
+      expect(
+        one([actor(), text("Writing the answer")], { type: "running" }).ticker,
+      ).toBeUndefined();
+    });
+  });
+
+  it("rebuilds a turn only when its message changed, notes included", () => {
+    const message = assistant([actor(), text("A."), step("a", "completed"), text("B.")]);
+    const first = buildTurnSteps([message], VIEW)[0];
+    expect(buildTurnSteps([message], VIEW)[0]).toBe(first);
   });
 });

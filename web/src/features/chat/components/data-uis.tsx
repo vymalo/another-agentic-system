@@ -5,6 +5,7 @@ import {
   ACTIVITY,
   ACTOR_PART,
   activityPartName,
+  PURPOSE_PART,
   parseError,
   parseStatus,
 } from "@/features/chat/lib/agui/vymalo";
@@ -46,6 +47,12 @@ const ActorDataUI = makeAssistantDataUI<unknown>({
   render: () => null,
 });
 
+/** The purpose marker (ADR 0031) is read by the turn, which keeps the answer and files the rest. */
+const PurposeDataUI = makeAssistantDataUI<unknown>({
+  name: PURPOSE_PART,
+  render: () => null,
+});
+
 /**
  * `vymalo.job`: a message on a finished thread started the thread's next job (ADR 0020). The
  * message itself is the boundary a person sees, so the marker draws nothing.
@@ -71,6 +78,7 @@ export function DataUIs() {
       <StatusDataUI />
       <ErrorDataUI />
       <ActorDataUI />
+      <PurposeDataUI />
       <JobDataUI />
       <SurfaceDataUI />
     </>

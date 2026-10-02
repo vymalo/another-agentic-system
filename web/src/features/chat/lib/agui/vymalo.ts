@@ -61,6 +61,27 @@ export const activityPartName = (activityType: string) => `agui-activity/${activ
 export const ACTOR_PART = "vymalo.actor";
 
 /**
+ * `metadata["vymalo.purpose"]` of a text message's `START` (ADR 0031): what the agent's words are
+ * for, `"working"` (said while it works, before a tool call) or `"answer"` (what its turn ends
+ * with). Absent for text the log does not mark (a plain A2A agent, the status words, an older log).
+ */
+export const PURPOSE_KEY = "vymalo.purpose";
+
+/**
+ * The marker part `ThreadAgent` puts right before the text of a message that says its purpose (a
+ * `CUSTOM` event, which the runtime turns into a data part of this name): the runtime reduces a
+ * text message to bare text and drops its metadata, so the mark rides in front of the text it
+ * belongs to. Like the actor marker, it is read by the turn and drawn as nothing.
+ */
+export const PURPOSE_PART = "vymalo.purpose";
+
+export type TextPurpose = "working" | "answer";
+
+/** `"working"` or `"answer"`; anything else (a newer word, a wrong type) is no purpose at all. */
+export const parsePurpose = (value: unknown): TextPurpose | undefined =>
+  value === "working" || value === "answer" ? value : undefined;
+
+/**
  * The contents of the activities, as the renderers read them. `actor` is not on the wire in the
  * content: the runtime drops an event's `metadata`, so `ThreadAgent` folds
  * `metadata["vymalo.actor"]` into the content it hands over.

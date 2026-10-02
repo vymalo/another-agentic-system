@@ -47,7 +47,7 @@ export function mountRuntime(
 
 type Message = ReturnType<AgUiAssistantRuntime["thread"]["getState"]>["messages"][number];
 
-/** One line per part: `status:working`, `artifact`, `text:...`, `actor`. */
+/** One line per part: `status:working`, `artifact`, `text:...`, `actor`, `purpose:working`. */
 export type Summary = { role: string; status?: string; parts: string[] }[];
 
 export function summarize(messages: readonly Message[]): Summary {
@@ -65,7 +65,9 @@ export function summarize(messages: readonly Message[]): Summary {
       if (p.type === "text") return `text:${p.text}`;
       if (p.type !== "data") return p.type;
       const name = p.name.replace("agui-activity/vymalo.", "").replace("vymalo.", "");
-      const data = p.data as { status?: string } | undefined;
+      const data = p.data as { status?: string; purpose?: string } | undefined;
+      // the marker before a text says what its words are for (ADR 0031)
+      if (name === "purpose" && data?.purpose) return `purpose:${data.purpose}`;
       return data?.status ? `${name}:${data.status}` : name;
     }),
   }));

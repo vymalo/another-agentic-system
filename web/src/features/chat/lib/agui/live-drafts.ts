@@ -1,6 +1,6 @@
 import { EventType } from "@ag-ui/client";
 import type { ApiActor } from "@/lib/api/types";
-import { ACTOR_KEY, parseActor } from "./vymalo";
+import { ACTOR_KEY, PURPOSE_KEY, parseActor, parsePurpose, type TextPurpose } from "./vymalo";
 
 /**
  * Live text, the web's side (docs/api/agui.md "Live text", ADR 0027): the words of a reply that is
@@ -19,6 +19,7 @@ import { ACTOR_KEY, parseActor } from "./vymalo";
  * | `CONTENT` `{offset}` | `text = text.slice(0, offset) + delta`, when that grows it; an offset beyond what is held is a gap and says nothing |
  * | `END` `{abandoned}` | the generation was given up: the draft goes |
  * | `CONTENT` `{offset, final}` + `END` `{final}` | the log's message for the id, in the group of its event: the draft's text up to `offset` plus the rest, as the plain `START`/`CONTENT`/`END` the runtime reads |
+ * | `END` `{final, purpose: "working"}` | the same, and the words were not the answer (ADR 0031): the draft stops being drawn in the conversation and the runtime's `START` says `vymalo.purpose: working`, so the turn files the text with its steps. An `END` that says only `final` is an answer (or unmarked text): the draft stays |
  *
  * `offset` is in UTF-16 code units, the unit of a JS string, so a client slices with it as it is.
  * Everything here is pure: `ThreadAgent` keeps the list and calls these on each frame.
@@ -49,6 +50,12 @@ export type Draft = {
    * transcript shows these words, so the text never goes missing nor appears twice.
    */
   final?: string;
+  /**
+   * What the log's message said its words were for, when its `END` said so (ADR 0031): only
+   * `"working"` is ever said there. A working draft draws nothing in the conversation: its text is
+   * a note of the turn's steps.
+   */
+  purpose?: TextPurpose;
 };
 
 /** A frame as `ThreadAgent` reads it. */
@@ -66,6 +73,8 @@ export type LiveMark = {
   final: boolean;
   /** The reply was given up (on an `END`). */
   abandoned: boolean;
+  /** What the words were for, said on the `END` of the log's own message (ADR 0031). */
+  purpose: TextPurpose | undefined;
 };
 
 /** The live mark of a text-message frame, or null for any other frame. */
@@ -87,6 +96,7 @@ export function liveMark(event: LiveEvent): LiveMark | null {
         : undefined,
     final: live.final === true,
     abandoned: live.abandoned === true,
+    purpose: parsePurpose(live.purpose),
   };
 }
 
@@ -162,6 +172,15 @@ export function resolveGroup(drafts: readonly Draft[], events: LiveEvent[]): Res
   if (!events.some((e) => liveMark(e)?.final)) return { events, drafts };
   const whole = new Map<string, string>();
   const out: LiveEvent[] = [];
+  // what the words were for is said on the `END`, after the `CONTENT` that the `START` is made at
+  const purposes = new Map<string, TextPurpose>();
+  for (const event of events) {
+    const mark = liveMark(event);
+    const id = str(event.messageId);
+    if (mark?.final && mark.purpose && id && event.type === EventType.TEXT_MESSAGE_END) {
+      purposes.set(id, mark.purpose);
+    }
+  }
   for (const event of events) {
     const mark = liveMark(event);
     const id = str(event.messageId);
@@ -178,13 +197,21 @@ export function resolveGroup(drafts: readonly Draft[], events: LiveEvent[]): Res
       whole.set(id, text);
       const name = draft?.name;
       const sub = draft?.subagentRunId ?? str(event.subagentRunId);
+      const purpose = purposes.get(id);
       out.push({
         type: EventType.TEXT_MESSAGE_START,
         messageId: id,
         role: "assistant",
         ...(name ? { name } : {}),
         ...(sub ? { subagentRunId: sub } : {}),
-        ...(draft?.actor ? { metadata: { [ACTOR_KEY]: draft.actor } } : {}),
+        ...(draft?.actor || purpose
+          ? {
+              metadata: {
+                ...(draft?.actor ? { [ACTOR_KEY]: draft.actor } : {}),
+                ...(purpose ? { [PURPOSE_KEY]: purpose } : {}),
+              },
+            }
+          : {}),
       });
       out.push({ ...bare, delta: text });
     } else if (event.type === EventType.TEXT_MESSAGE_END) {
@@ -196,7 +223,9 @@ export function resolveGroup(drafts: readonly Draft[], events: LiveEvent[]): Res
   }
   const next = drafts.map((d) => {
     const text = whole.get(d.id);
-    return text === undefined ? d : { ...d, final: text };
+    if (text === undefined) return d;
+    const purpose = purposes.get(d.id);
+    return { ...d, final: text, ...(purpose ? { purpose } : {}) };
   });
   return { events: out, drafts: next };
 }
@@ -208,7 +237,8 @@ export const pending = (drafts: readonly Draft[]): readonly Draft[] =>
 /**
  * The drafts a turn draws, given the text parts its transcript holds: a merged draft says the
  * log's words until the transcript has them, and then nothing, so the swap is one render, and the
- * words never go missing nor show twice. An empty draft draws nothing.
+ * words never go missing nor show twice. An empty draft draws nothing, and neither does one whose
+ * `END` said it was working text (ADR 0031): that is a note of the steps, never a reply.
  */
 export function drawnDrafts(
   drafts: readonly Draft[],
@@ -216,6 +246,8 @@ export function drawnDrafts(
 ): { id: string; text: string; name?: string }[] {
   const out: { id: string; text: string; name?: string }[] = [];
   for (const d of drafts) {
+    // the words turned out to be working text: a note of the turn's steps, not a reply
+    if (d.purpose === "working") continue;
     const text = d.final ?? d.text;
     if (d.final !== undefined && texts.some((t) => t.includes(text))) continue;
     if (text.trim() === "") continue;

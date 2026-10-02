@@ -241,6 +241,42 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "step-io");
     });
 
+    test("working text: one answer in the chat, what was said on the way in Activity", async ({
+      page,
+    }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "Draw a picture in Node.js and show me the export");
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      await expect(conversation(page).getByText("What the drawing holds")).toBeVisible();
+      // the chat holds the surface and the answer; the sentences said before each tool call are not there
+      await expect(conversation(page).locator('[data-slot="agent-message"]')).toHaveCount(1);
+      // from the top of the turn: its line, the surface, the answer
+      await conversation(page)
+        .locator('[data-slot="turn-header"]')
+        .first()
+        .evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await shot(page, "working");
+      // the sheet of a phone covers the chat, so the still is of the panel on both devices
+      const tab = await showActivity(page);
+      await expect(tab.locator('li[data-kind="note"]')).toHaveCount(6);
+      await shot(page, "working-activity");
+    });
+
+    test("working text while the agent works: its last sentence is a quiet line", async ({
+      page,
+    }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "Sketch a picture in Node.js and show me the export");
+      await expect(conversation(page).locator('[data-slot="turn-ticker"]')).toHaveText(
+        "All 7 tests pass. Now I'll export the drawing.",
+        { timeout: 30_000 },
+      );
+      await expect(conversation(page).locator('[data-slot="agent-message"]')).toHaveCount(0);
+      await shot(page, "working-running");
+      await page.getByRole("button", { name: "Stop" }).click();
+      await expect(badge(page)).toHaveText("Stopped");
+    });
+
     test("steps while the agent works", async ({ page }) => {
       await startThread(page, "Investigate the login redirect");
       await expect(turnSummaries(page)).toContainText("Running cargo test -p auth");

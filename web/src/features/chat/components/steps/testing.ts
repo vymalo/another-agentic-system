@@ -1,4 +1,10 @@
-import { ACTIVITY, ACTOR_PART, activityPartName } from "@/features/chat/lib/agui/vymalo";
+import {
+  ACTIVITY,
+  ACTOR_PART,
+  activityPartName,
+  PURPOSE_PART,
+  type TextPurpose,
+} from "@/features/chat/lib/agui/vymalo";
 import {
   buildTurnSteps,
   type StepMessage,
@@ -49,6 +55,15 @@ export const statusPart = (status: string, detail?: string, at = 1) =>
   part(ACTIVITY.status, { status, ...(detail ? { detail } : {}), at: AT(at) });
 
 export const textPart = (text: string) => ({ type: "text", text });
+
+/**
+ * Words the log marked (ADR 0031) as the runtime holds them: the marker part, then the text. With
+ * no purpose it is the bare text, as an unmarked message is.
+ */
+export const saidPart = (text: string, purpose?: TextPurpose) =>
+  purpose
+    ? [{ type: "data", name: PURPOSE_PART, data: { purpose } }, textPart(text)]
+    : [textPart(text)];
 
 let counter = 0;
 export function assistant(

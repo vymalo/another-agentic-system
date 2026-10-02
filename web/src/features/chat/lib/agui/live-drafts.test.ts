@@ -44,6 +44,13 @@ const finalEnd = (id = "msg-3"): LiveEvent => ({
   subagentRunId: "sub-2",
   metadata: { "vymalo.live": { final: true } },
 });
+/** The END of the log's message for a draft that turned out to be working text (ADR 0031). */
+const workingEnd = (id = "msg-3"): LiveEvent => ({
+  type: "TEXT_MESSAGE_END",
+  messageId: id,
+  subagentRunId: "sub-2",
+  metadata: { "vymalo.live": { final: true, purpose: "working" } },
+});
 const abandoned = (id = "msg-3"): LiveEvent => ({
   type: "TEXT_MESSAGE_END",
   messageId: id,
@@ -337,5 +344,72 @@ describe("pending and drawnDrafts: the swap to the log's message", () => {
     expect(drawnDrafts([done], ["Fibonacci in Rust."])).toEqual([]);
     // the transcript may join the words of two messages in one text part
     expect(drawnDrafts([done], ["Plan: write it.Fibonacci in Rust."])).toEqual([]);
+  });
+});
+
+describe("working text (ADR 0031): a draft that turns out not to be the answer", () => {
+  it("reads the purpose an END says, and only `working` or `answer`", () => {
+    expect(liveMark(workingEnd())).toEqual({
+      offset: undefined,
+      final: true,
+      abandoned: false,
+      purpose: "working",
+    });
+    expect(liveMark(finalEnd())?.purpose).toBeUndefined();
+    const odd: LiveEvent = {
+      type: "TEXT_MESSAGE_END",
+      messageId: "a",
+      metadata: { "vymalo.live": { final: true, purpose: "thinking" } },
+    };
+    expect(liveMark(odd)?.purpose).toBeUndefined();
+  });
+
+  it("the plain message the runtime reads says it on its START, and the draft remembers it", () => {
+    const out = resolveGroup([drafted("Let me look.")], [finalContent(12, ""), workingEnd()]);
+    expect(out?.events[0]).toMatchObject({
+      type: "TEXT_MESSAGE_START",
+      messageId: "msg-3",
+      metadata: { "vymalo.actor": ACTOR, "vymalo.purpose": "working" },
+    });
+    expect(out?.events.some((e) => liveMark(e) !== null)).toBe(false);
+    expect(out?.drafts).toEqual([
+      drafted("Let me look.", { final: "Let me look.", purpose: "working" }),
+    ]);
+  });
+
+  it("says it even for a message with no draft to continue (a final that is the whole text)", () => {
+    const out = resolveGroup([], [finalContent(0, "Whole."), workingEnd()]);
+    expect(out?.events[0]).toMatchObject({ metadata: { "vymalo.purpose": "working" } });
+  });
+
+  it("an END that says only `final` is the answer: the START has no purpose and the draft stays to be drawn", () => {
+    const out = resolveGroup([drafted("The answer.")], [finalContent(11, ""), finalEnd()]);
+    expect(out?.events[0]).toMatchObject({ metadata: { "vymalo.actor": ACTOR } });
+    expect(
+      (out?.events[0]?.metadata as Record<string, unknown>)?.["vymalo.purpose"],
+    ).toBeUndefined();
+    expect(out?.drafts[0]?.purpose).toBeUndefined();
+    expect(drawnDrafts(out?.drafts ?? [], [])).toEqual([
+      { id: "msg-3", text: "The answer.", name: "plain" },
+    ]);
+  });
+
+  it("a working draft draws nothing in the conversation, not even before the transcript has its words", () => {
+    const done = drafted("Let me look.", { final: "Let me look.", purpose: "working" });
+    expect(drawnDrafts([done], [])).toEqual([]);
+    expect(drawnDrafts([done], ["Let me look."])).toEqual([]);
+    // another draft of the same turn is not affected
+    const open = drafted("Now the answer", { id: "msg-5" });
+    expect(drawnDrafts([done, open], [])).toEqual([
+      { id: "msg-5", text: "Now the answer", name: "plain" },
+    ]);
+  });
+
+  it("only the draft the END names is working", () => {
+    const out = resolveGroup(
+      [drafted("One."), drafted("Two.", { id: "msg-5" })],
+      [finalContent(4, ""), workingEnd()],
+    );
+    expect(out?.drafts.map((d) => d.purpose)).toEqual(["working", undefined]);
   });
 });
