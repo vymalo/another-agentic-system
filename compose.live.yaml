@@ -223,6 +223,8 @@ services:
       # The generic signed webhook is not used live: a secret of its own that nothing knows.
       WEBHOOK_GENERIC_SECRETS: "${WEBHOOK_GENERIC_SECRETS:-${WEBHOOK_GITHUB_SECRETS}}"
       MCP_TOKEN_DEV: "${MCP_TOKEN_DEV:?set MCP_TOKEN_DEV in .env (at least 32 bytes: openssl rand -hex 32)}"
+      # The bearer of the `websearch` tool server of dev/orchestrator.live.yaml: the token of `searxng-mcp`, the one the researcher uses.
+      WEBSEARCH_TOKEN: "${SEARCH_MCP_TOKEN:-dev-search-token}"
       # The model that writes the thread titles: the agents' endpoint and key, and `TITLE_MODEL` (a cheap model is enough),
       # else MODEL. The offline `mock-model` is gone from this stack. These three are variables, not keys of the file, because
       # a YAML file cannot read `.env`: they are the legacy way to say `models.endpoints.default` and `tasks.title`, and the

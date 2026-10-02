@@ -139,6 +139,33 @@ describe("the tool", () => {
   });
 });
 
+describe("the journal, as a client's headers reach it", () => {
+  it("says whether the call carried the required token and keeps the X-* headers, lower-cased", async () => {
+    const headers = { ...HEADERS, "X-Search-Tenant": "tenant-1", "X-Other": "two", "user-agent": "t" };
+    await post(rpc("tools/call", { name: "web_search", arguments: { query: "x" } }), headers);
+    const { calls } = await (await fetch(`${base}/__journal`)).json();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].bearer, true);
+    assert.deepEqual(calls[0].headers, { "x-search-tenant": "tenant-1", "x-other": "two" });
+    await call("web_search", { query: "y" });
+    assert.deepEqual((await (await fetch(`${base}/__journal`)).json()).calls[1].headers, {});
+  });
+
+  it("says bearer: false when the server requires no token", async () => {
+    const open = createMockServer({ token: "", results });
+    await new Promise((resolve) => open.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${open.address().port}`;
+      const { authorization: _, ...noAuth } = HEADERS;
+      await fetch(`${url}/mcp`, { method: "POST", headers: noAuth, body: JSON.stringify(rpc("tools/call", { name: "web_search", arguments: { query: "z" } })) });
+      assert.equal((await (await fetch(`${url}/__journal`)).json()).calls[0].bearer, false);
+    } finally {
+      open.closeAllConnections();
+      open.close();
+    }
+  });
+});
+
 describe("the HTTP rules", () => {
   it("answers 401 without the token or with another, and journals nothing", async () => {
     const { authorization: _, ...open } = HEADERS;

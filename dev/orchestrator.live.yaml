@@ -43,6 +43,21 @@ threadTools:
   secret: { env: THREAD_TOOLS_SECRET }
   allowedHosts: [orchestrator:8080, 127.0.0.1:8080, localhost:8080]
 
+# What a person may attach to a conversation (ADR 0024, docs/api/config.md "toolServers"). Live, `websearch` is `searxng-mcp` (dev/searxng-mcp:
+# SearXNG, Brave or Tavily), the same server the researcher reads through its own mcp.json: the id and the icon are those of
+# dev/orchestrator.yaml, so a thread's attachment means the same in both stacks. `fetch` (one page as plain text) is offered beside
+# `web_search`. The bearer is SEARCH_MCP_TOKEN of `.env` (compose.live.yaml sets WEBSEARCH_TOKEN from it).
+toolServers:
+  - id: websearch
+    name: Web search
+    description: Search the web, and read a page.
+    url: http://searxng-mcp:8080/mcp
+    icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE4YzRkIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTEiIGN5PSIxMSIgcj0iNyIvPjxwYXRoIGQ9Im0yMCAyMC0zLjUtMy41Ii8+PC9zdmc+
+    bearer: { env: WEBSEARCH_TOKEN }
+    tools: [web_search, fetch]
+    agents: [chat, coder]
+    timeoutSecs: 60
+
 mcp:
   tokensFile: mcp-tokens.yaml
   allowedHosts: [127.0.0.1, localhost]

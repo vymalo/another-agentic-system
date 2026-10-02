@@ -20,6 +20,9 @@
             "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
           },
           {
+            "doesNotContain": "[mock:websearch]"
+          },
+          {
             "matchesJsonPath": {
               "expression": "$.stream",
               "equalTo": "true"
@@ -58,6 +61,9 @@
               "expression": "$.model",
               "equalTo": "mock-persona"
             }
+          },
+          {
+            "doesNotContain": "[mock:websearch]"
           },
           {
             "matchesJsonPath": {

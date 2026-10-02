@@ -15,6 +15,9 @@
           },
           {
             "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool')]"
+          },
+          {
+            "doesNotContain": "[mock:websearch]"
           }
         ]
       },
@@ -60,6 +63,9 @@
               "expression": "$.model",
               "equalTo": "mock-persona"
             }
+          },
+          {
+            "doesNotContain": "[mock:websearch]"
           }
         ]
       },
