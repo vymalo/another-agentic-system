@@ -171,7 +171,7 @@ fn mcp_routes<P: orch_ports::Ports>(
         .mcp
         .as_ref()
         .ok_or(ConfigError::Missing("MCP_TOKENS_FILE"))?;
-    let tokens = orch_surface_mcp::TokenTable::new(settings.tokens.iter().cloned())
+    let tokens = orch_surface_mcp::TokenTable::with_roles(settings.tokens.iter().cloned())
         .map_err(|e| invalid("MCP_TOKENS_FILE")(&e))?;
     let mut config =
         orch_surface_mcp::McpConfig::new(tokens, settings.allowed_hosts.iter().cloned())

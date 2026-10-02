@@ -1367,6 +1367,65 @@ auth:
     }
 
     #[test]
+    fn the_roles_of_the_file_become_the_policy() {
+        use orch_app::{Permission, Resource, Scope};
+        let user = orch_core::UserId::new("a@example.com");
+        let other = orch_core::UserId::new("b@example.com");
+        let mine = Resource::Thread { owner: &user };
+        let theirs = Resource::Thread { owner: &other };
+        let principal = |roles: &[&str]| orch_ports::Principal {
+            roles: roles.iter().map(|r| orch_ports::Role::new(*r)).collect(),
+            ..orch_ports::Principal::of(user.clone())
+        };
+        // Without roles in the file: the built-in pair, and everyone without a role is a user.
+        let policy = load_file_only(&base(), FILE).unwrap().config.auth.policy;
+        assert!(policy.allows(&principal(&[]), Permission::ThreadWrite, &mine));
+        assert!(!policy.allows(&principal(&[]), Permission::ThreadRead, &theirs));
+        assert!(policy.allows(&principal(&["admin"]), Permission::ThreadRead, &theirs));
+        assert!(!policy.allows(&principal(&["admin"]), Permission::ThreadWrite, &theirs));
+        // `defaultRole: null` without roles: the built-ins, and nobody without a role is let in.
+        let strict = load_file_only(&base(), &format!("{FILE}auth: {{ defaultRole: null }}\n"))
+            .unwrap()
+            .config
+            .auth
+            .policy;
+        assert!(strict.access(&principal(&[])).is_empty());
+        assert!(strict.allows(&principal(&["user"]), Permission::ThreadRead, &mine));
+        // Roles in the file replace the built-ins, and with no `defaultRole` there is none.
+        let text = format!(
+            "{FILE}auth:\n  roles:\n    reader: {{ permissions: [thread.read], scope: any }}\n    \
+             clerk: {{ permissions: [agent.invoke, thread.write], agents: [coder] }}\n"
+        );
+        let policy = load_file_only(&base(), &text).unwrap().config.auth.policy;
+        assert!(policy.default_role().is_none());
+        assert!(policy.access(&principal(&[])).is_empty());
+        assert!(
+            policy.access(&principal(&["user"])).is_empty(),
+            "the built-ins are gone"
+        );
+        let reader = policy.access(&principal(&["reader"]));
+        assert_eq!(reader.scope(Permission::ThreadRead), Some(Scope::Any));
+        let clerk = policy.access(&principal(&["clerk"]));
+        assert_eq!(clerk.agents(Permission::AgentInvoke).patterns(), ["coder"]);
+        assert!(!clerk.has(Permission::ThreadRead));
+        // A default role of the file is the one a person with no known role gets.
+        let text = format!("{text}  defaultRole: reader\n");
+        let policy = load_file_only(&base(), &text).unwrap().config.auth.policy;
+        assert!(policy.allows(&principal(&["wizard"]), Permission::ThreadRead, &theirs));
+        // A default role nobody defined is a rule of the file.
+        let errors = lines(load_file_only(
+            &base(),
+            &format!("{FILE}auth: {{ defaultRole: nobody }}\n"),
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.starts_with("auth.defaultRole: not one of the roles")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn auth_mode_and_the_development_user_are_refused_together_through_the_variable_too() {
         // AUTH_DEV_USER is the variable of auth.devUser: the rule of the file applies to it.
         let mut pairs = base();
