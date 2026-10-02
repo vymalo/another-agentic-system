@@ -35,7 +35,7 @@ use orch_core::{
     AgentId, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
     DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, TaskKind, UserId,
 };
-use orch_ports::AgentEndpoint;
+use orch_ports::{AgentEndpoint, ToolServerEndpoint};
 #[cfg(feature = "surface-webhook")]
 use orch_surface_webhook::{GenericConfig, GithubConfig, Secrets};
 #[cfg(feature = "surface-thread-tools")]
@@ -1163,6 +1163,11 @@ pub struct Config {
     /// the environment alone: the section has no variable). The URL and the credentials are not
     /// here.
     pub tool_servers: Vec<ToolServerInfo>,
+    /// `toolServers` of the configuration file, the part the relay needs to call them (ADR 0024): in
+    /// the order of the file, each server's id, URL, timeout and resolved credentials as the port's
+    /// endpoint type. Only the relay reads it, and no process composes the relay yet. Its `Debug`
+    /// lists the ids and nothing else.
+    pub tool_endpoints: Vec<ToolServerEndpoint>,
     /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the
     /// inbox worker (timers and reports).
     pub inbox: InboxConfig,
@@ -1202,6 +1207,14 @@ impl fmt::Debug for Config {
             .field("models", &self.models)
             .field("public", &self.public)
             .field("tool_servers", &self.tool_servers)
+            .field(
+                "tool_endpoints",
+                &self
+                    .tool_endpoints
+                    .iter()
+                    .map(|e| &e.id)
+                    .collect::<Vec<_>>(),
+            )
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace)
@@ -1502,6 +1515,7 @@ impl Config {
         let models = resolved.models.unwrap_or(from_variables);
         let public = resolved.public.unwrap_or_default();
         let tool_servers = resolved.tool_servers;
+        let tool_endpoints = resolved.tool_endpoints;
         let inbox = InboxConfig {
             lease: Duration::from_secs(number(
                 clean(args.inbox_lease_secs),
@@ -1573,6 +1587,7 @@ impl Config {
             models,
             public,
             tool_servers,
+            tool_endpoints,
             inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
@@ -2357,6 +2372,8 @@ struct Resolved {
     public: Option<PublicConfig>,
     /// `toolServers`, the public part of each server.
     tool_servers: Vec<ToolServerInfo>,
+    /// `toolServers`, the URL and the credentials of each, for the relay.
+    tool_endpoints: Vec<ToolServerEndpoint>,
     /// `webhooks.generic.secrets`, separated.
     #[cfg(feature = "surface-webhook")]
     webhook_generic: Option<Vec<String>>,
