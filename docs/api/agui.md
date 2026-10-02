@@ -133,7 +133,7 @@ gets everything.
 | Log event (`kind`, data) | Context | AG-UI frames |
 |---|---|---|
 | `user_message{text}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor"}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
-| `user_message` | Run open (a follow-up mid-run) | The user triad inside the current run |
+| `user_message` | Run open (a person sent while the agent works, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) | The open run ends and the message opens its own: any open text message ends (a live draft as abandoned), `SUBAGENT_FINISHED{outcome:{type:"suspended"}}` (no `interruptIds`: nobody is asked) for the open invocation, `STATE_SNAPSHOT` (the thread's state, unchanged), `RUN_FINISHED{outcome:{type:"success"}}`; then `RUN_STARTED{runId: the message's, else "run-<seq>"}` → `STATE_SNAPSHOT` → the user triad, with `vymalo.delivery` in the `START`'s metadata when the log says how it was delivered. The agent's next event re-opens the same invocation (`SUBAGENT_STARTED` under the same id), as after an answered question. See [Sending while an agent works](#sending-while-an-agent-works) |
 | `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
 | `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
 | `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
@@ -370,7 +370,8 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | Nothing new, no resume, `runId` already recorded | Attach: stream that run from its start (an idempotent retry) |
 | Nothing new, no resume, unknown `runId` | 422 (nothing to run) |
 | A new message or answer under a `runId` the thread already used | 422: a run id is never reused |
-| A run already open on the thread | 409 before the stream |
+| A run already open on the thread | 409 before the stream, **unless** the run carries one new user message and `forwardedProps["vymalo.send"]` (next row) |
+| `forwardedProps["vymalo.send"]` (ADR 0036) on a run | How a message sent **while a run is open** is delivered: `"steer"` (Send) is `Input::UserMessage`, which the core logs `delivery: steer`; `"interrupt"` (Stop & send) is `Input::StopAndSend`. Served only for one new user message: an A2UI action, nothing new, a second new message or a reused `runId` are refused as always. Read on every run, so any other value (`"stop"`, a boolean, an object) is **400** whatever the thread is doing; `null` is no member. With no run open the member changes nothing, except that `"interrupt"` is `Input::StopAndSend` for a thread that exists (the core treats it as a plain message when nothing runs, ADR 0036 row 4). The response is a run of its own, [see below](#sending-while-an-agent-works) |
 | Thread terminal (`done`, `failed`, `cancelled`), one new user message | Served: `Input::UserMessage` starts the thread's next job ([ADR 0020](../decisions/0020-a-thread-is-a-conversation.md)): `user_message`, `job_started`, a delegation. The run is an ordinary run from `RUN_STARTED` on |
 | Thread terminal, an A2UI action | 409, "this card belongs to a finished request" |
 | `protocolVersion` of another major | 400 before the stream; a newer 1.x is served with a warning |
@@ -380,6 +381,77 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | Non-text content parts | Skipped with a warning; the run does not fail |
 | Idempotency | The event the input writes carries the key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with no message id of its own); a retried POST, even a concurrent one, attaches instead of duplicating. There is no inbox table yet: the key is the log's per-thread `idempotency_key` |
 | Cancel | `POST /api/threads/{id}/cancel`; the outcome arrives as `RUN_FINISHED{outcome:{type:"cancelled"}}` |
+
+## Sending while an agent works
+
+*Built 2026-10-02 (plan 11, PR-12, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)).* A person can write
+while the agent works. The consumer posts the message as a run like any other and says how it is delivered in
+`forwardedProps["vymalo.send"]`: `"steer"` (Send) or `"interrupt"` (Stop & send). The core logs the message at once with
+`delivery: steer` or `delivery: interrupt` (it decides; the consumer only asks), and the projection treats **every**
+`user_message` that arrives inside an open run alike (the MCP surface's too): the open run ends and the message opens its own.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Person (web)
+  participant S as Run route
+  participant L as Event log
+  participant V as Projection
+  Note over P,V: run-1 is open: the agent works
+  P->>S: POST run-2, one new message, vymalo.send = steer | interrupt
+  S->>L: user_message with runId run-2 and its delivery, and for interrupt a cancel request
+  L-->>V: the event
+  V-->>P: response of run-1 ends: SUBAGENT_FINISHED suspended, STATE_SNAPSHOT, RUN_FINISHED success
+  V-->>P: response of run-2 starts: RUN_STARTED run-2, STATE_SNAPSHOT, no echo of the message
+  Note over P,V: the agent goes on and its next event re-opens the same invocation in run-2
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> RunOpen: RUN_STARTED run-1
+  RunOpen --> RunOpen: agent events
+  RunOpen --> NextRun: a user_message arrives, run-1 is finished and the invocation suspended
+  NextRun --> RunOpen: RUN_STARTED with the runId of the message, the next agent event re-opens the invocation
+  RunOpen --> [*]: thread_state done or failed or cancelled or blocked
+  note right of NextRun
+    The thread's state does not move:
+    still working (or queued, for a message
+    that abandons a verification)
+  end note
+```
+
+What each side reads:
+
+- **The response to the POST that carried the message** is the run the message opened: it starts at `RUN_STARTED` under the
+  request's `runId` (it never contains the run that ended, which would end it at once), does not repeat the message the
+  consumer holds, and ends with the job that run was opened in. **The response of the run that was open** ends at the message:
+  `SUBAGENT_FINISHED` (suspended, no ids) → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}`. `success` says the
+  *run* is over, not the thread: the snapshot before it says `working` (or `queued`). A client that reads `thread.state`, as the
+  web does, is not misled.
+- **`steer`**: until the dispatcher steers a message into the running task (`steer/v1`, not built), it reaches the agent after the
+  turn: the second run ends with the first job (`thread_state{done}`), and the message starts job 2 in a producer-initiated
+  run (`run-<seq>` of its `job_started`, as for any redelivered message, ADR 0020). Golden: `steer`.
+- **`interrupt`**: the running task is cancelled and the message starts job 2 once it has ended, **in the run of the message**:
+  the cancelled task's invocation re-opens, says `canceled` (`SUBAGENT_FINISHED{result:{status:"canceled"}}`), the `vymalo.job`
+  activity and a `STATE_SNAPSHOT{queued, jobNumber: 2}` mark the boundary, and the next job's invocation follows. The abandoned
+  job is never judged: no `thread_state`, no verification (the projection does not start one at its `completed`), so a viewer
+  never reads `done` or `cancelled` for it. A task that asks while it is being stopped is logged and nobody waits for the
+  answer: no interrupt, and its invocation is closed by the task's end or by the job boundary. A stop the agent refused for good
+  goes back to being judged (the core logs an `error` of the orchestrator's, which ends the projection's "stopping"). Golden:
+  `stop-and-send`.
+- **A message while the work is verified** (`verifying`) is not a steer (nothing runs; the core logs no `delivery`): it still ends
+  the run and opens its own, and abandons the verification as before.
+- **Message metadata.** `TEXT_MESSAGE_START.metadata["vymalo.delivery"]` is `"steer"` or `"interrupt"` on a user message the core
+  logged with that `delivery`; absent otherwise and in every log written before the field.
+- **Reconnecting.** Nothing is new for a connect stream: it is a fold of the log. A cursor at the message gets a preamble for the
+  run the message opened (no suspended invocation to name, so `RUN_STARTED` and `STATE_SNAPSHOT`), a cursor before it the old run's
+  preamble, then the old run's end and the new run, exactly the frames an uninterrupted stream wrote. A retried POST of the message
+  (same message id) attaches to the run it opened.
+- **Server support.** There is no capability to read: the member is part of this surface from the build that has this section on,
+  and an older orchestrator answers the 409 it always did.
+
+Goldens: [`steer`, `stop-and-send`](examples/README.md) (the viewer's stream) and `run-steer`, `run-stop-and-send` (the two
+responses, in order).
 
 ## Verification (the gate)
 
@@ -911,12 +983,12 @@ was streamed and nothing was written.
 
 | Status | When |
 |---|---|
-| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024) |
+| 400 | The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024); a `vymalo.send` that is not `"steer"` or `"interrupt"` (ADR 0036) |
 | 401 | No edge identity |
 | 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); the run continues a thread the caller may read and not change (`code: read_only`); their roles grant nothing (`code: no_access`) |
 | 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's) |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
-| 409 | The thread targets another agent; a run is open on it; the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
+| 409 | The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
 | 422 | Nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
