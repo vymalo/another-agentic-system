@@ -34,8 +34,9 @@
 #   * mock-openai, mock-github, mock-github-mcp, git-server, mock-ci, mock-model
 #                  move to the profile `offline-mocks`, which is never enabled: a real model, a real GitHub and
 #                  a real CI replace them. Do not enable that profile with this file;
-#   * orchestrator AGENTS_FILE becomes dev/agents.live.yaml (the coder is gated on its own checks; CI is
-#                  opt-in there, because `mock-ci/build` is not the name of a real check), and the
+#   * orchestrator its configuration becomes dev/orchestrator.live.yaml (the same keys, no title model: that one is read from
+#                  .env, see the variables below) and its agents file dev/agents.live.yaml (the coder is gated on its own
+#                  checks; CI is opt-in there, because `mock-ci/build` is not the name of a real check), and the
 #                  secrets come from .env instead of the dummies of compose.yaml;
 #   * edge, web, postgres, the WireMock agents: unchanged. The edge still authenticates NOBODY and puts
 #                  dev@example.com on every /api and /agui request: it is for 127.0.0.1 only. Do not publish
@@ -148,8 +149,10 @@ services:
     profiles: !override [offline-mocks]
 
   orchestrator:
-    # The anchor's volumes are replaced again: the live agents file, and the MCP tokens.
+    # The anchor's volumes are replaced again: the live configuration (a whole file, the same path), the live agents file,
+    # and the MCP tokens.
     volumes: !override
+      - ./dev/orchestrator.live.yaml:/etc/orchestrator/config.yaml:ro
       - ./dev/agents.live.yaml:/etc/orchestrator/agents.yaml:ro
       - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
     environment:
@@ -161,7 +164,9 @@ services:
       WEBHOOK_GENERIC_SECRETS: "${WEBHOOK_GENERIC_SECRETS:-${WEBHOOK_GITHUB_SECRETS}}"
       MCP_TOKEN_DEV: "${MCP_TOKEN_DEV:?set MCP_TOKEN_DEV in .env (at least 32 bytes: openssl rand -hex 32)}"
       # The model that writes the thread titles: the agents' endpoint and key, and `TITLE_MODEL` (a cheap model is enough),
-      # else MODEL. The offline `mock-model` is gone from this stack.
+      # else MODEL. The offline `mock-model` is gone from this stack. These three are variables, not keys of the file, because
+      # a YAML file cannot read `.env`: they are the legacy way to say `models.endpoints.default` and `tasks.title`, and the
+      # orchestrator logs a warning for each (dev/orchestrator.live.yaml says why, and what replaces them).
       ORCH_MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
       ORCH_MODEL_API_KEY: "${MODEL_API_KEY:-}"
       ORCH_TITLE_MODEL: "${TITLE_MODEL:-${MODEL:?set MODEL in .env (the model alias)}}"
