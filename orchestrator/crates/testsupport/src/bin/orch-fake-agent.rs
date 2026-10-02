@@ -9,7 +9,7 @@
 //! | `FAKE_CODER_ADDR` | `127.0.0.1:4021` | the `coder` agent, with the sample release channels |
 //! | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
 //! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
-//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions` |
+//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer` |
 //!
 //! Control endpoints (`<agent>` is `coder` or `plain`), so a browser test can drive the `gate`
 //! script and assert what reached the agent:

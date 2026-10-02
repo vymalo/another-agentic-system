@@ -480,8 +480,8 @@ The turn as the code runs it, step by step, is a sequence diagram in
 
 ## Command (outbox) lifecycle
 
-**Built.** Four outbox kinds exist: `delegate` (send the user's text to the agent), `cancel`
-(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)) and `description` (ask it for a description, [below](#thread-descriptions-adr-0035)). A `cancel`, a `verify`, a `title` and a `description` row are claimable whatever the thread's older delegations. Rows have the statuses below (`outbox.status`, `OutboxStatus`
+**Built.** Six outbox kinds exist: `delegate` (send the user's text to the agent), `cancel`
+(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)) `description` (ask it for a description, [below](#thread-descriptions-adr-0035)) and `steer` (a message for the agent's running task, [below](#steering-a-running-task-adr-0036)). A `cancel`, a `verify`, a `title` and a `description` row are claimable whatever the thread's older delegations. Rows have the statuses below (`outbox.status`, `OutboxStatus`
 in `orch-ports`):
 
 ```mermaid
@@ -508,7 +508,8 @@ step happened. The dispatcher applies it with the idempotency key `dead:<row id>
 What the diagrams cannot say:
 
 - **Per-thread order.** A `delegate` row is claimable only if no older `pending` or `inflight`
-  `delegate` row exists for the same thread; `cancel` rows are not held back.
+  `delegate` row exists for the same thread, and a `steer` row only if no older open `steer` row does (it never waits
+  for a delegation); `cancel` rows are not held back.
 - **Resume, not resend.** `sent_at` is set when the agent's first frame arrives (with the A2A task
   id). A worker that re-claims a row with `sent_at` set resumes the task (`SubscribeToTask`, then
   polling `GetTask`) instead of sending the message again. On a later attempt of a row whose `sent_at` was
@@ -533,6 +534,55 @@ What the diagrams cannot say:
   attempts, a 2 s outbox poll as a safety net under `LISTEN/NOTIFY`.
 - **Shutdown.** The dispatcher stops its workers and sets `lease_until = now` on its rows, so another
   replica takes them at once ([`orchestrator/README.md`](../orchestrator/README.md#shutdown)).
+
+### Steering a running task (ADR 0036)
+
+A message a person writes while a job runs is logged at once (`user_message { delivery: steer }`) and written as an outbox row of
+the kind `steer` in the same commit. The row is claimed **beside** the thread's delegation in flight, which stays open until the
+agent's turn ends, and in order among the thread's other steer rows. The agent's live card is read by the adapter for this very send
+([`steer-v1.md`](api/steer-v1.md): exact URI, never cached, fail closed).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant D as Dispatcher (steer row)
+  participant S as Store
+  participant A as Agent (task T1 working)
+
+  D->>S: claim_outbox: the steer row, beside the delegation in flight
+  D->>D: thread working, binding task T1 submitted or working?
+  alt card lists steer/v1 and T1 runs
+    D->>A: message {taskId T1, contextId, messageId = row id}, steer/v1 activated
+    A-->>D: first event: T1, working (the stream is dropped)
+    D->>S: complete_outbox: delivered
+  else not listed, no running task, refused, T1 ended, another task, no answer
+    D->>S: requeue_as_delegate: the same row, kind delegate, pending, same place in the order
+    Note over D,S: it waits behind the delegation in flight, then goes out as a new task<br/>naming T1, or is redelivered if the job ended (ADR 0020)
+  else the agent cannot be reached
+    D->>S: retry_outbox (backoff) until max attempts, then requeue_as_delegate
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: written with the message (kind steer)
+  Pending --> Inflight: claimed, no older open steer row of the thread
+  Inflight --> Delivered: the running task answered with itself, not ended
+  Inflight --> Pending: transient error, backoff
+  Inflight --> Pending: requeue_as_delegate, kind is now delegate, same place
+  Pending --> Skipped: a Stop and send superseded it (unsent)
+  Delivered --> [*]
+  Skipped --> [*]
+```
+
+- **The row falls back, never dies.** A steer the agent did not take becomes the delegation it stands for
+  (`ThreadStore::requeue_as_delegate`, in place: same position, same creation time, `attempts` kept), so a message is never lost and
+  its delivery is today's. Retryable errors are retried first.
+- **Open question 33.** A delegation whose first event names a task other than the binding's last, on a thread that has meanwhile become
+  `done`, `failed` or `verifying`, is applied as `Input::Redeliver { text, sent: true }` before the new task is recorded: the next job
+  starts (or the same job goes back to `queued`) with no second `Delegate`, and the task's updates are kept (key `adopt:<row id>`).
+- A `steer` row is skipped with the unsent delegations when a Stop & send starts the next job
+  (`Commit.skip_unsent_delegates`).
 
 ### Fenced commits
 
@@ -690,7 +740,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 
 | Input | `queued` / `working` | `blocked` | `done` / `failed` / `cancelled` |
 |---|---|---|---|
-| `UserMessage` | State kept; append `user_message { delivery: steer }`, `Steer { text }` (**steer**, [ADR 0036](decisions/0036-sending-while-an-agent-works.md); the application writes it as a delegation row until the dispatcher steers). With `after_stop` set: joined to it, `delivery: interrupt`, no command ([Stop & send](#stop--send-adr-0036)) | → `queued`; append `user_message`, `Delegate` | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
+| `UserMessage` | State kept; append `user_message { delivery: steer }`, `Steer { text }` (**steer**, [ADR 0036](decisions/0036-sending-while-an-agent-works.md); the application writes a `steer` outbox row, which the dispatcher sends into the running task when the agent lists `steer/v1` and otherwise turns into the delegation it stands for). With `after_stop` set: joined to it, `delivery: interrupt`, no command ([Stop & send](#stop--send-adr-0036)) | → `queued`; append `user_message`, `Delegate` | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
 | `StopAndSend` (ADR 0036) | Append `user_message { delivery: interrupt }`, `RequestCancel { job }`, `after_stop = text`; state kept. With `after_stop` set: joined, no command | Exactly `UserMessage` (nothing runs, so nothing to stop; `delivery` absent) |
 | `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event; dropped while `after_stop` is set | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
 | `UserMessage` or `UiAction` that **carries a catalog** (`catalog: Some`, [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) | As the row of the input, and `ui_catalog` is appended **first**, before `user_message` / `ui_action`, when the thread has not recorded that digest; the delegation carries the catalog **inline** when this input made it current, else a reference | The same | The same for a message (the catalog goes before `job_started`); an action is `Err(Finished)` and records nothing |
@@ -1365,7 +1415,7 @@ pub enum Input {
 pub enum Command {
     Append(EventDraft),          // → an event in the thread's log
     Delegate { text: String, catalog: Option<UiDelivery> },   // → an outbox row, kind `delegate`
-    Steer { text: String, catalog: Option<UiDelivery> },      // ADR 0036: to the running task; a `delegate` row until the dispatcher steers
+    Steer { text: String, catalog: Option<UiDelivery> },      // ADR 0036: to the running task; a `steer` row, a `delegate` when the agent cannot take it
     DropQueued { job: u32 },     // ADR 0036: skip the thread's unsent delegations of the abandoned job, before the commit
     RequestCancel { job: u32 },  // → an outbox row, kind `cancel`, for that job of the thread
 }

@@ -404,8 +404,8 @@ fn send(thread: &str, run: &str, messages: &[(&str, &str)], how: &str) -> Value 
 }
 
 /// ADR 0036, `steer`: a run posted while one is open is served; the run that was open ends with
-/// the message, the new one is its own response, and (the dispatcher does not steer yet) the
-/// message reaches the agent after its turn.
+/// the message, the new one is its own response, and (this agent lists no `steer/v1`) the message
+/// reaches the agent after its turn; `steer.rs` has the agent that does, and the `steer` golden.
 async fn a_run_posted_while_one_is_open_is_served_when_it_says_steer(backend: Backend) {
     let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;

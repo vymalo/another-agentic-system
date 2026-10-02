@@ -428,9 +428,13 @@ What each side reads:
   `SUBAGENT_FINISHED` (suspended, no ids) → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}`. `success` says the
   *run* is over, not the thread: the snapshot before it says `working` (or `queued`). A client that reads `thread.state`, as the
   web does, is not misled.
-- **`steer`**: until the dispatcher steers a message into the running task (`steer/v1`, not built), it reaches the agent after the
-  turn: the second run ends with the first job (`thread_state{done}`), and the message starts job 2 in a producer-initiated
-  run (`run-<seq>` of its `job_started`, as for any redelivered message, ADR 0020). Golden: `steer`.
+- **`steer`**: what the message does depends on the agent ([ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`steer-v1.md`](steer-v1.md)).
+  An agent whose card lists `steer/v1` (`custom` of the capabilities document says so) has the message **read by its running task**:
+  the job is one job, the task says what it read as an agent message of the same invocation, and the second run ends with that job
+  (`thread_state{done}`), once. Golden: `steer`. Any other agent gets it **after the turn**: the second run ends with the first job,
+  and the message starts job 2 in a producer-initiated run (`run-<seq>` of its `job_started`, as for any redelivered message, ADR 0020);
+  so does a message the agent refused (a task that ended as it was sent). The log's order is the truth, and the projection is the same
+  either way: it shows what the log holds.
 - **`interrupt`**: the running task is cancelled and the message starts job 2 once it has ended, **in the run of the message**:
   the cancelled task's invocation re-opens, says `canceled` (`SUBAGENT_FINISHED{result:{status:"canceled"}}`), the `vymalo.job`
   activity and a `STATE_SNAPSHOT{queued, jobNumber: 2}` mark the boundary, and the next job's invocation follows. The abandoned
@@ -1104,7 +1108,7 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1` and `…/text-stream/v1` (ADR 0008; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1` and `…/steer/v1` (ADR 0008, ADR 0036; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.

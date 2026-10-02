@@ -1,10 +1,11 @@
 # A2A extension: steer (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/steer/v1`
-- **Status:** **contract accepted (2026-10-02, on the owner's delegation); not built.** The owner may revisit anything
-  here. The orchestrator's side (the `steer` outbox row, the adapter that activates the extension, the fallback) and the
-  adam-rs side (an agent that reads a message sent to its running task) are separate pull requests that follow this page;
-  the order is in [ADR 0036](../decisions/0036-sending-while-an-agent-works.md).
+- **Status:** **contract accepted (2026-10-02, on the owner's delegation); built on the orchestrator's side in PR-13
+  (2026-10-02)**: the `steer` outbox row, the adapter that activates the extension and the fallback. The owner may revisit anything
+  here. The adam-rs side (an agent that reads a message sent to its running task) is
+  [another-adam-rs#75](https://github.com/vymalo/another-adam-rs/pull/75); the order is in
+  [ADR 0036](../decisions/0036-sending-while-an-agent-works.md) ([Built in PR-13](../decisions/0036-sending-while-an-agent-works.md#built-in-pr-13)).
 - **Decided in:** [ADR 0036](../decisions/0036-sending-while-an-agent-works.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that can read a message while a task runs (adam-coder and

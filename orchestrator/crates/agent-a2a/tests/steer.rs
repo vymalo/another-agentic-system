@@ -177,9 +177,11 @@ async fn the_card_is_read_for_every_steer_and_never_remembered() {
     let ep = fake.endpoint("steerable", None);
     let c = client();
     let (_stream, task) = running(&c, &ep).await;
-    c.send_stream(steer(&ep, &task, "one", "m-1"))
+    let mut answer = c
+        .send_stream(steer(&ep, &task, "one", "m-1"))
         .await
         .unwrap();
+    assert_eq!(next(&mut answer).await.task_id, task);
     fake.set_extensions(&[]);
     let err = c
         .send_stream(steer(&ep, &task, "two", "m-2"))
