@@ -397,8 +397,8 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                 agents,
                 clock: SystemClock,
                 ids: UuidV7Ids,
-                model: ConfiguredModel::build(cfg.model.as_ref())
-                    .context("cannot build the title model (ORCH_MODEL_BASE_URL)")?,
+                model: ConfiguredModel::build(&cfg.models)
+                    .context("cannot build the model endpoints (models.endpoints)")?,
                 auth,
                 registry: CompositeRegistry::new(directory.fixed_registry(), platform),
             },

@@ -93,3 +93,76 @@ fn the_schema_is_closed_and_has_no_null() {
     }
     assert_eq!(schema["additionalProperties"], Value::Bool(false));
 }
+
+/// ADR 0034: the `ui` section is what the web reads, so it holds no secret and never will. Every
+/// definition reachable from `Config.ui` is checked for a reference to `SecretRef`.
+#[test]
+fn the_ui_section_has_no_secret_reference() {
+    let schema = orch_config::schema();
+    let mut stack = vec![schema["properties"]["ui"].clone()];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut count = 0;
+    while let Some(node) = stack.pop() {
+        match node {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    if key == "$ref" {
+                        let target = value.as_str().unwrap().to_owned();
+                        assert!(!target.contains("SecretRef"), "ui reaches {target}");
+                        if seen.insert(target.clone()) {
+                            let name = target.trim_start_matches("#/$defs/");
+                            stack.push(schema["$defs"][name].clone());
+                        }
+                    } else {
+                        stack.push(value);
+                    }
+                }
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => count += 1,
+        }
+    }
+    assert!(count > 0, "the walk reached the ui section");
+    assert_eq!(
+        schema["$defs"]["Ui"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["showDescriptions"]
+    );
+}
+
+/// The languages a task can be fixed to are the core's closed set, and the file spells them as the
+/// core reads them.
+#[test]
+fn the_languages_are_the_closed_set_of_the_design() {
+    let schema = orch_config::schema();
+    let allowed: Vec<&str> = schema["$defs"]["Language"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        allowed,
+        [
+            "conversation",
+            "english",
+            "french",
+            "german",
+            "spanish",
+            "portuguese",
+            "italian",
+            "chinese",
+            "japanese",
+            "korean",
+            "cyrillic",
+            "arabic",
+            "hebrew",
+            "greek",
+            "devanagari",
+            "thai"
+        ]
+    );
+}

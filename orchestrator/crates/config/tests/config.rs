@@ -54,6 +54,12 @@ fn a_minimal_file_is_valid_and_every_default_is_filled_in() {
     assert_eq!(c.mcp.wait_max_concurrent, 256);
     assert_eq!(c.mcp.wait_max_per_user, 16);
     assert!(c.tasks.title.is_none(), "no task, titles are off");
+    assert!(c.tasks.description.is_none(), "no task, no descriptions");
+    assert!(
+        c.ui.show_descriptions,
+        "the web shows descriptions by default"
+    );
+    assert_eq!(valid.prompts, orch_config::Prompts::default());
     assert_eq!(
         valid.secrets.database_url.expose(),
         "postgres://u:pw@db/orch"
@@ -104,7 +110,19 @@ fn the_example_of_the_contract_is_valid() {
     let title = c.tasks.title.as_ref().unwrap();
     assert_eq!(
         (title.endpoint.as_str(), title.model.as_str()),
-        ("default", "small-model")
+        ("small", "small-model")
+    );
+    let description = c.tasks.description.as_ref().unwrap();
+    assert_eq!(description.endpoint, "default");
+    assert_eq!(description.recompute.min_new_messages, 4);
+    assert_eq!(
+        valid.prompts.description.as_deref(),
+        Some("Say in one or two sentences what the person wants and where it stands.")
+    );
+    assert!(c.ui.show_descriptions);
+    assert_eq!(
+        c.models.endpoints.keys().collect::<Vec<_>>(),
+        ["default", "small"]
     );
     assert_eq!(
         valid.secrets.model_api_keys["default"].expose(),
@@ -317,10 +335,8 @@ version: 1
 database: { url: { env: DATABASE_URL } }
 agents: { file: agents.yaml, nonsense: 1 }
 tasks:
-  title: { endpoint: default, model: m, system: { inline: x }, maxTokens: 9, language: conversation }
-  description: { endpoint: default, model: m }
   turnSummary: {}
-ui: { showDescriptions: true }
+  stepLabel: {}
 auth: { defaultRole: user, roles: {} }
 artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
 ";
@@ -333,12 +349,8 @@ artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
     };
     assert_eq!(find("agents.nonsense"), "agents.nonsense: unknown key");
     for (key, by) in [
-        ("tasks.title.system", "PR S18 (ADR 0035"),
-        ("tasks.title.maxTokens", "PR S18 (ADR 0035"),
-        ("tasks.title.language", "PR S18 (ADR 0035"),
-        ("tasks.description", "PR S18 (ADR 0035"),
         ("tasks.turnSummary", "no PR yet"),
-        ("ui", "PR S18 and S19"),
+        ("tasks.stepLabel", "no PR yet"),
         ("auth.defaultRole", "PR S15 (ADR 0033"),
         ("auth.roles", "PR S15 (ADR 0033"),
         ("artifacts.maxPerJobBytes", "PR S11 (ADR 0032"),
@@ -350,11 +362,6 @@ artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
             "{line}"
         );
     }
-    assert!(
-        !errors
-            .iter()
-            .any(|l| l.contains("unknown key") && l.starts_with("ui"))
-    );
     // `artifacts` itself is built (ADR 0032): only the two keys of the ingest are reserved
     assert!(
         !errors.iter().any(|l| l.starts_with("artifacts: ")
@@ -362,6 +369,18 @@ artifacts: { store: fs, fs: { root: files }, maxPerJobBytes: 1, fetchHosts: [] }
             || l.starts_with("artifacts.fs")),
         "{errors:?}"
     );
+    // S18 built these: they are keys now, not reservations
+    let built = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+models: { endpoints: { default: { baseUrl: 'https://m.example.com/v1' } } }
+tasks:
+  title: { endpoint: default, model: m, system: { inline: x }, maxTokens: 9, language: conversation }
+  description: { endpoint: default, model: m }
+ui: { showDescriptions: false }
+";
+    load(built, &minimal_env()).unwrap();
 }
 
 const S3_ENV: [(&str, &str); 2] = [
@@ -700,7 +719,6 @@ auth: { devUser: nobody }
         "mcp.allowedHosts[0]: not a host name or address, with or without a port (no scheme, path, wildcard or credentials): write orch.example.com or orch.example.com:8443",
         "mcp.allowedOrigins[0]: not an origin: write https://host or https://host:port, with no path",
         "mcp.tokensFile: required when server.surfaces mounts mcp",
-        "models.endpoints: this build takes one endpoint (several: PR S18, ADR 0035)",
         "models.endpoints.Second_One: an endpoint name is a slug: a to z, 0 to 9 and -, 1 to 32 characters",
         "models.endpoints.default.baseUrl: expected an http:// or https:// URL, like https://api.example.com/v1",
         "server.listen: not a socket address like 0.0.0.0:8080",
@@ -1127,4 +1145,302 @@ fn a_production_process_refuses_the_proxy_header() {
         errors.iter().any(|l| l.starts_with("server.environment: ")),
         "{errors:?}"
     );
+}
+
+// ---- the endpoints and the tasks (ADR 0035) ------------------------------------------------------
+
+const ENDPOINTS: &str = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+models:
+  endpoints:
+    default: { baseUrl: 'https://models.example.com/v1', apiKey: { env: ORCH_MODEL_API_KEY }, timeoutSecs: 20 }
+    small: { baseUrl: 'https://small.example.com/v1', apiKey: { file: /run/secrets/small-key } }
+";
+
+fn tasks_env() -> Fake {
+    minimal_env()
+        .env("ORCH_MODEL_API_KEY", "default-key")
+        .file("/run/secrets/small-key", "small-key\n")
+}
+
+#[test]
+fn several_named_endpoints_each_with_its_own_key_and_timeout() {
+    let valid = load(ENDPOINTS, &tasks_env()).unwrap();
+    let endpoints = &valid.config.models.endpoints;
+    assert_eq!(endpoints.keys().collect::<Vec<_>>(), ["default", "small"]);
+    assert_eq!(endpoints["default"].timeout_secs, 20);
+    assert_eq!(endpoints["small"].timeout_secs, 20, "the default");
+    assert_eq!(
+        valid.secrets.model_api_keys["default"].expose(),
+        "default-key"
+    );
+    assert_eq!(valid.secrets.model_api_keys["small"].expose(), "small-key");
+}
+
+#[test]
+fn a_task_has_its_own_endpoint_model_prompt_and_limits_and_every_default_is_filled_in() {
+    let text = format!(
+        "{ENDPOINTS}tasks:
+  title:
+    endpoint: small
+    model: small-model
+  description:
+    endpoint: default
+    model: big-model
+    system: {{ file: prompts/description.md }}
+    maxTokens: 200
+    language: french
+    maxChars: 250
+    recompute: {{ minNewMessages: 6 }}
+"
+    );
+    let fake = tasks_env().file(
+        "/etc/orchestrator/prompts/description.md",
+        "  Say in two sentences what the person wants.\n\n",
+    );
+    let valid = load(&text, &fake).unwrap_or_else(|e| panic!("{}", render(&e)));
+    let title = valid.config.tasks.title.as_ref().unwrap();
+    assert_eq!(
+        (title.endpoint.as_str(), title.model.as_str()),
+        ("small", "small-model")
+    );
+    assert_eq!(title.max_tokens, 32);
+    assert_eq!(title.language, orch_config::Language::Conversation);
+    assert_eq!(title.system, None);
+    let description = valid.config.tasks.description.as_ref().unwrap();
+    assert_eq!(description.endpoint, "default");
+    assert_eq!(description.max_tokens, 200);
+    assert_eq!(description.language, orch_config::Language::French);
+    assert_eq!(description.max_chars, 250);
+    assert_eq!(description.recompute.min_new_messages, 6);
+    // the file is read through the resolver, relative to the file's directory, and trimmed
+    assert_eq!(valid.prompts.title, None);
+    assert_eq!(
+        valid.prompts.description.as_deref(),
+        Some("Say in two sentences what the person wants.")
+    );
+    // an unset knob is its default
+    let minimal = format!("{ENDPOINTS}tasks:\n  description: {{ endpoint: small, model: m }}\n");
+    let valid = load(&minimal, &tasks_env()).unwrap();
+    let d = valid.config.tasks.description.as_ref().unwrap();
+    assert_eq!(
+        (d.max_tokens, d.max_chars, d.recompute.min_new_messages),
+        (160, 300, 4)
+    );
+    assert_eq!(d.language, orch_config::Language::Conversation);
+    // and it is shown filled in
+    let shown = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(shown["tasks"]["description"]["maxChars"], 300);
+    assert_eq!(
+        shown["tasks"]["description"]["recompute"]["minNewMessages"],
+        4
+    );
+}
+
+#[test]
+fn an_inline_prompt_is_the_text() {
+    let text = format!(
+        "{ENDPOINTS}tasks:\n  title: {{ endpoint: small, model: m, system: {{ inline: 'Be brief.' }} }}\n"
+    );
+    let valid = load(&text, &tasks_env()).unwrap();
+    assert_eq!(valid.prompts.title.as_deref(), Some("Be brief."));
+}
+
+#[test]
+fn every_error_of_the_tasks_and_the_endpoints_is_listed_at_once() {
+    let text = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: agents.yaml }
+models:
+  endpoints:
+    default: { baseUrl: 'https://m.example.com/v1' }
+    Bad_Name: { baseUrl: 'https://m.example.com/v1' }
+    far: { baseUrl: 'ftp://m.example.com' }
+tasks:
+  title: { endpoint: nowhere, model: m, system: { inline: '   ' } }
+  description: { endpoint: also-nowhere, model: m, system: { file: missing.md } }
+";
+    let errors = lines(load(text, &minimal_env()));
+    assert_eq!(
+        errors,
+        [
+            "models.endpoints.Bad_Name: an endpoint name is a slug: a to z, 0 to 9 and -, 1 to 32 characters",
+            "models.endpoints.far.baseUrl: expected an http:// or https:// URL, like https://api.example.com/v1",
+            "tasks.description.endpoint: names no endpoint of models.endpoints",
+            "tasks.description.system: the file missing.md cannot be read",
+            "tasks.title.endpoint: names no endpoint of models.endpoints",
+            "tasks.title.system: the prompt is empty",
+        ]
+    );
+}
+
+#[test]
+fn a_prompt_file_that_is_empty_or_too_long_is_an_error_that_names_the_file() {
+    let base = format!(
+        "{ENDPOINTS}tasks:\n  title: {{ endpoint: small, model: m, system: {{ file: p.md }} }}\n"
+    );
+    let empty = tasks_env().file("/etc/orchestrator/p.md", " \n\n ");
+    assert_eq!(
+        lines(load(&base, &empty)),
+        ["tasks.title.system: the file p.md is empty"]
+    );
+    let long = tasks_env().file(
+        "/etc/orchestrator/p.md",
+        &"x".repeat(orch_config::MAX_PROMPT_BYTES + 1),
+    );
+    assert_eq!(
+        lines(load(&base, &long)),
+        ["tasks.title.system: the file p.md is larger than 4 KiB"]
+    );
+    let exact = tasks_env().file(
+        "/etc/orchestrator/p.md",
+        &"x".repeat(orch_config::MAX_PROMPT_BYTES),
+    );
+    assert!(load(&base, &exact).is_ok());
+    // a file that is not UTF-8 is read as an error by the resolver, and is "cannot be read"
+    let absent = tasks_env();
+    assert_eq!(
+        lines(load(&base, &absent)),
+        ["tasks.title.system: the file p.md cannot be read"]
+    );
+}
+
+#[test]
+fn the_shape_of_a_task_is_checked_with_the_key_path_and_the_allowed_values() {
+    let text = format!(
+        "{ENDPOINTS}tasks:
+  title:
+    endpoint: small
+    model: m
+    maxTokens: 0
+    language: klingon
+    system: just text
+  description:
+    endpoint: small
+    model: m
+    maxTokens: 2000
+    maxChars: 10
+    recompute: {{ minNewMessages: 0 }}
+    extra: 1
+    system: {{ inline: x, file: y }}
+  turnSummary: {{ endpoint: small, model: m }}
+"
+    );
+    let errors = lines(load(&text, &tasks_env()));
+    let find = |key: &str| {
+        errors
+            .iter()
+            .find(|l| l.starts_with(&format!("{key}: ")))
+            .unwrap_or_else(|| panic!("{key} in {errors:#?}"))
+            .as_str()
+    };
+    assert_eq!(
+        find("tasks.title.maxTokens"),
+        "tasks.title.maxTokens: must be at least 1"
+    );
+    assert!(
+        find("tasks.title.language")
+            .contains("not an allowed value (allowed: conversation, english, french")
+    );
+    assert_eq!(
+        find("tasks.title.system"),
+        "tasks.title.system: a prompt is `{ inline: TEXT }` or `{ file: PATH }`"
+    );
+    assert_eq!(
+        find("tasks.description.maxTokens"),
+        "tasks.description.maxTokens: must be at most 1024"
+    );
+    assert_eq!(
+        find("tasks.description.maxChars"),
+        "tasks.description.maxChars: must be at least 40"
+    );
+    assert_eq!(
+        find("tasks.description.recompute.minNewMessages"),
+        "tasks.description.recompute.minNewMessages: must be at least 1"
+    );
+    assert_eq!(
+        find("tasks.description.extra"),
+        "tasks.description.extra: unknown key"
+    );
+    assert_eq!(
+        find("tasks.description.system"),
+        "tasks.description.system: a prompt is `{ inline: TEXT }` or `{ file: PATH }`"
+    );
+    assert!(find("tasks.turnSummary").contains("reserved for"));
+    // the title's maximum is 256 and the description's 1024
+    let over =
+        format!("{ENDPOINTS}tasks:\n  title: {{ endpoint: small, model: m, maxTokens: 257 }}\n");
+    assert_eq!(
+        lines(load(&over, &tasks_env())),
+        ["tasks.title.maxTokens: must be at most 256"]
+    );
+}
+
+#[test]
+fn a_prompt_is_not_a_value_in_an_error() {
+    const SECRET: &str = "S3CR3T-PROMPT-THAT-MUST-NOT-LEAK";
+    let text = format!(
+        "{ENDPOINTS}tasks:\n  title: {{ endpoint: nowhere-{SECRET}, model: m, system: {{ file: ../{SECRET}.md }} }}\n  description: {{ endpoint: small, model: m, language: {SECRET}, system: [{SECRET}] }}\n"
+    );
+    let errors = load(&text, &tasks_env()).unwrap_err();
+    let shown = format!("{} {errors:?}", render(&errors));
+    // a path the file names is shown (as a secret's file is); the endpoint's name and the
+    // unknown language are not
+    assert!(!shown.contains(&format!("nowhere-{SECRET}")), "{shown}");
+    assert!(!shown.contains(&format!("language: {SECRET}")), "{shown}");
+    let shape = lines(load(
+        &format!(
+            "{ENDPOINTS}tasks:\n  description: {{ endpoint: small, model: m, language: {SECRET}, system: [{SECRET}] }}\n"
+        ),
+        &tasks_env(),
+    ));
+    assert!(shape.iter().all(|l| !l.contains(SECRET)), "{shape:?}");
+}
+
+#[test]
+fn the_ui_section_has_its_defaults_and_is_the_only_public_part() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert_eq!(valid.config.ui, orch_config::Ui::default());
+    let hidden = format!("{MINIMAL}ui: {{ showDescriptions: false }}\n");
+    assert!(
+        !load(&hidden, &minimal_env())
+            .unwrap()
+            .config
+            .ui
+            .show_descriptions
+    );
+    let wrong = format!("{MINIMAL}ui: {{ showDescriptions: 'yes', theme: dark }}\n");
+    assert_eq!(
+        lines(load(&wrong, &minimal_env())),
+        [
+            "ui.showDescriptions: expected boolean",
+            "ui.theme: unknown key"
+        ]
+    );
+    // the effective configuration says it (what --print-config prints)
+    let json = serde_json::to_value(valid.config.effective()).unwrap();
+    assert_eq!(json["ui"], serde_json::json!({ "showDescriptions": true }));
+}
+
+/// What `--print-config` prints is a file the loader reads back: a prompt is the mapping it was
+/// written as, never a YAML tag.
+#[test]
+fn the_printed_configuration_reads_back_with_its_tasks() {
+    let text = format!(
+        "{ENDPOINTS}tasks:\n  title: {{ endpoint: small, model: m, system: {{ file: p.md }} }}\n  description: {{ endpoint: small, model: m, system: {{ inline: 'Be brief.' }}, language: german }}\n"
+    );
+    let fake = tasks_env().file("/etc/orchestrator/p.md", "Guidance.\n");
+    let valid = load(&text, &fake).unwrap();
+    let printed = serde_norway::to_string(&valid.config.effective()).unwrap();
+    assert!(!printed.contains('!'), "no YAML tag: {printed}");
+    assert!(
+        printed.contains("file: p.md") && printed.contains("inline: Be brief."),
+        "{printed}"
+    );
+    let again = load(&printed, &fake).unwrap_or_else(|e| panic!("{}\n{printed}", render(&e)));
+    assert_eq!(again.config, valid.config.effective());
+    assert_eq!(again.prompts, valid.prompts);
 }

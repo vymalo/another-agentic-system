@@ -39,16 +39,40 @@ agents:
     url: http://mock-registry:8080/registry/v1/agents
     agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN } # sent to every agent the registry lists; the mocks accept any token
 
-# The orchestrator's own model call (ADR 0005, ADR 0035): after the agent's first reply it asks a model for a 3 to 6 word
-# title of the thread. Offline that model is the scripted `mock-model` (dev/wiremock/model/mappings/title.json), which
-# answers "Mock thread title" to `mock-title`. A model that is down costs a thread nothing: it keeps the first words of
-# its first message. Take `tasks.title` out and no model is ever asked (compose.live.yaml asks the real one).
+# The orchestrator's own model calls, the utility tasks (ADR 0005, ADR 0035). Each task has its own endpoint, model and
+# guidance, so a small cheap model can write the titles and another the descriptions:
+#   * the title: after the agent's first reply a model is asked for a 3 to 6 word title of the thread. Offline that model is
+#     the scripted `mock-model` (dev/wiremock/model/mappings/title.json), which answers "Mock thread title" to
+#     `mock-title`. A model that is down costs a thread nothing: it keeps the first words of its first message.
+#   * the description: when a job ends (or pauses for the person) a model is asked for a sentence or two on what the thread
+#     is about now (dev/wiremock/model/mappings/description.json answers "Mock thread description." to `mock-description`),
+#     once per job, and only when the conversation has grown by `recompute.minNewMessages` messages since the last one
+#     (here 2, so one exchange is enough; the default is 4). `system` replaces the core's guidance for the task: what to write
+#     and in what style. The core still adds the form of the answer, the data clause, the fence around the conversation and
+#     the language line, last, whatever it says. A person's edit of the description is final.
+# The two tasks use two endpoints on the same mock, one with `/v1` in its URL and one without, so dev/description-e2e.sh can
+# tell from the mock's request journal which task asked at which endpoint. Take `tasks.description` out and no description
+# is ever asked; take `tasks.title` out and titles are off (compose.live.yaml asks the real model for titles).
 models:
   endpoints:
     default:
       baseUrl: http://mock-model:8080/v1
+    small:
+      baseUrl: http://mock-model:8080
+      timeoutSecs: 10
 tasks:
   title: { endpoint: default, model: mock-title }
+  description:
+    endpoint: small
+    model: mock-description
+    system: { inline: "Say in one sentence what the person wants and where it stands." }
+    maxTokens: 120
+    recompute: { minNewMessages: 2 }
+
+# What the web is told (GET /api/config): the only part of this file it reads. The description is shown in the sidebar's
+# hover card and under the thread's header (PR S19); `false` hides it there, and the API still returns it.
+ui:
+  showDescriptions: true
 
 # The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and verified with,
 # and the address agents reach the orchestrator at (the compose network name: the edge does not route the endpoint).

@@ -174,6 +174,10 @@ fn map_error(instance: &str, schema_path: &str, kind: &ValidationErrorKind) -> V
     if at_version {
         return vec![ConfigError::new("version", ErrorKind::Version)];
     }
+    // Likewise a prompt that is not `{ inline }` or `{ file }`.
+    if schema_path.starts_with("/$defs/Prompt") {
+        return vec![ConfigError::new(path, ErrorKind::NotAPrompt)];
+    }
     // Anything the `SecretRef` definition refuses (a string, a number, a mapping with another
     // key) is "a secret is a reference".
     if schema_path.starts_with("/$defs/SecretRef") {

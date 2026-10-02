@@ -16,32 +16,12 @@ pub struct Reserved {
 /// Every reserved key.
 pub const RESERVED: &[Reserved] = &[
     Reserved {
-        path: "tasks.title.system",
-        by: "PR S18 (ADR 0035, utility model tasks)",
-    },
-    Reserved {
-        path: "tasks.title.maxTokens",
-        by: "PR S18 (ADR 0035, utility model tasks)",
-    },
-    Reserved {
-        path: "tasks.title.language",
-        by: "PR S18 (ADR 0035, utility model tasks)",
-    },
-    Reserved {
-        path: "tasks.description",
-        by: "PR S18 (ADR 0035, utility model tasks)",
-    },
-    Reserved {
         path: "tasks.turnSummary",
         by: "a later task of ADR 0035 that has no PR yet",
     },
     Reserved {
         path: "tasks.stepLabel",
         by: "a later task of ADR 0035 that has no PR yet",
-    },
-    Reserved {
-        path: "ui",
-        by: "PR S18 and S19 (ADR 0034 and ADR 0035, the public subset served as GET /api/config)",
     },
     Reserved {
         path: "auth.defaultRole",
