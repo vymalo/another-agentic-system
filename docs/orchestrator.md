@@ -103,7 +103,7 @@ flowchart TB
     surfagui["<b>orch-surface-agui</b><br/>POST /agui/agents/{agentId}<br/>GET /agui/threads/{id}/connect<br/>GET /agui/agents/{id}/capabilities"]
     surfwh["<b>orch-surface-webhook</b><br/>POST /webhooks/ci, /webhooks/github<br/>machine routes, HMAC guard"]
     surfmcp["<b>orch-surface-mcp</b><br/>/mcp, streamable HTTP, stateless<br/>machine route, bearer tokens"]
-    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog"]
+    surftt["<b>orch-surface-thread-tools</b><br/>/thread-tools/{id}/mcp, streamable HTTP, stateless<br/>machine route, HMAC token, get_ui_catalog, turn_output"]
   end
   subgraph G_AGUI["AG-UI: pure, no async, no I/O"]
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
@@ -216,7 +216,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
 | `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
-| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog`, and the `ThreadToolProvider` seam later slices add their tools through; feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
+| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through; feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | MCP client, Slack adapters | The client side of the MCP row and the Slack rows of the table above | **Planned**, not designed |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root | **Built** |
@@ -675,6 +675,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | Agent status `failed`, `rejected` | → `failed` (`rejected` prefixes the detail); `agent_status`, `thread_state` | → `failed` | `Err(InvalidInState)` |
 | Agent status `canceled` | → `cancelled`; `agent_status`, `thread_state` | → `cancelled` | `Err(InvalidInState)` |
 | Agent artifact, agent message, A2UI surface (`Ui`), refused A2UI part (`UiRejected`) | State kept; append `artifact`, `agent_message` (with the `purpose` the adapter read off the status it was stated on, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), `ui_surface` or `error` | Same | `Err(InvalidInState)` |
+| The agent announces its answer (`Input::Answer`, the `turn_output` thread tool), [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md) amendment | State kept (`queued`, `working` only); append `agent_message` `{id: out-<jti>-<n>, final, purpose: answer, via: turn_output}`, and `Job.answer` says the turn has an announced answer: from then on any other agent message of the turn is written `purpose: working`, one that repeats the last words is dropped, and the words of a `completed`, `input_required` or `auth_required` status that no message said are written as a `working` message ahead of the status | `Err(InvalidInState)` ("this turn is over"; the same for a job that is not the current one and for another token than the one that announced) | `Err(InvalidInState)` |
 | Agent step (`AgentUpdate::Step`) and the orchestrator's own (`Input::Step`), [ADR 0025](decisions/0025-nested-steps-events-carry-their-source-path.md) | `queued` → `working`; append `agent_step`, **coalesced** (below): a start, an end and at most 4 updates per step, the rest dropped with no event | Dropped (the work is not going on; the same in `verifying`) | `Err(InvalidInState)` |
 | User's A2UI action (`UiAction`) | State kept; append `ui_action`, delegate the action | → `queued`; the same | `Err(Finished)` (HTTP 409; the card belongs to a finished request) |
 | `DeliveryFailed`, retryable | → `blocked`; append `error`, and `thread_state` on entering | State kept; append `error` | State kept; append `error` |
@@ -1628,11 +1629,22 @@ marks the `agent_message` it makes from a stated stream by the status it was sta
 `working` status (the sentence before a tool call), `purpose: answer` on `completed`, `input_required` and
 `auth_required` (the words that end the turn); a plain A2A `Message`, and the words of any other status, are not
 marked. `AgentUpdate::Message` carries the field and the core copies it to `AgentMessageData` (`via`, how an
-answer was announced when it was not by that status, is reserved and always absent for now). Both are optional
+answer was announced when it was not by that status, is `turn_output` for an answer the agent announced, below). Both are optional
 members of the event's JSON, so an older log reads as it always did. The projection puts them on the message's
 `START` (`vymalo.purpose`, `vymalo.via`), and the live overlay says on the `END` of a live message that the log
 marked working text, so a screen can take the draft out of the conversation
 ([`api/agui.md`](api/agui.md#the-agents-words)).
+
+**The announced answer** (the `turn_output` thread tool, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md),
+amendment of 2026-10-02). The thread-tools endpoint reaches the core through `App::record_answer`, which feeds
+`Input::Answer { actor, text, job, token }` (as `App::record_step` feeds `Input::Step`; the surface never touches the
+store). `Job.answer` (`AnswerLedger`, inside `threads.job`, left out when empty) holds the token that announced and how
+many times (the `<n>` of the message id `out-<jti>-<n>`) and a digest of the last words said. A new delegation (a message,
+a card's action, a redelivery, a rework) and a new job forget it. **Once a turn has an announced answer nothing else it
+says is the answer**: a message is written `working`, one that repeats the last words said is dropped, and the words of a
+status that ends the turn that no message said are written as a `working` message (`out-<jti>-words-<n>`) ahead of the
+status. A later announcement replaces the earlier one by a rule, not by a rewrite: **the answer of a turn is the last
+message marked `answer` in it**.
 
 ```mermaid
 sequenceDiagram

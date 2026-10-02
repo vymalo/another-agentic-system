@@ -1435,6 +1435,65 @@ fn an_announced_answer_names_how() {
 }
 
 #[test]
+fn after_an_announced_answer_the_closing_words_are_working_text_said_once() {
+    // what the core writes when an agent announces its answer and then ends the turn with a short
+    // line: the announcement, the line as a working message ahead of the status that keeps it
+    let frames = project(&[
+        user(1, "go"),
+        status(2, AgentStatus::Working, None),
+        say_as(
+            3,
+            "out-j-1",
+            "The result.",
+            Some(MessagePurpose::Answer),
+            Some(AnswerVia::TurnOutput),
+        ),
+        say_as(
+            4,
+            "out-j-words-1",
+            "Done; see above.",
+            Some(MessagePurpose::Working),
+            None,
+        ),
+        status(5, AgentStatus::Completed, Some("Done; see above.")),
+        thread(6, ThreadState::Done),
+    ]);
+    let starts: Vec<(String, String)> = support::flatten(&frames)
+        .iter()
+        .filter_map(|f| match &f.event {
+            orch_agui_proto::Event::TextMessageStart(s)
+                if s.role == Some(orch_agui_proto::TextMessageRole::Assistant) =>
+            {
+                Some((
+                    s.message_id.as_str().to_owned(),
+                    s.base
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("vymalo.purpose"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    // two messages, the answer and the working line; the status words are not said again as an
+    // unmarked `st-5` that a reader would take for the answer
+    assert_eq!(
+        starts,
+        [
+            ("out-j-1".to_owned(), "answer".to_owned()),
+            ("out-j-words-1".to_owned(), "working".to_owned()),
+        ]
+    );
+    assert_eq!(
+        start_metadata(&frames, "out-j-1")["vymalo.via"],
+        "turn_output"
+    );
+}
+
+#[test]
 fn a_message_with_no_purpose_has_no_member_and_neither_have_the_status_words() {
     let frames = project(&[
         user(1, "go"),

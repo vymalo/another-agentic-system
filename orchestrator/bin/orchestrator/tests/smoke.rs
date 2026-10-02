@@ -1101,7 +1101,7 @@ async fn the_thread_tools_endpoint_is_mounted_by_its_name_and_a_minted_token_ope
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(tools, ["get_ui_catalog"]);
+    assert_eq!(tools, ["get_ui_catalog", "turn_output"]);
     // and the token never reached the log
     assert!(
         !run.borrow().log().contains(KEY),
@@ -1188,7 +1188,7 @@ async fn an_agent_that_lists_the_extension_calls_the_binary_back_with_the_grant_
     assert_eq!(
         said,
         [format!(
-            "thread-tools: tools=get_ui_catalog; catalog={} v1 {}; again unchanged=true",
+            "thread-tools: tools=get_ui_catalog,turn_output; catalog={} v1 {}; again unchanged=true",
             orch_testsupport::UI_CATALOG_ID,
             catalog["digest"].as_str().unwrap()
         )],

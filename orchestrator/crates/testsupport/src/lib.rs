@@ -6,8 +6,9 @@
 //! - [`Chat`] and [`SseClient`]: small HTTP clients for the resource API and the AG-UI routes (a
 //!   client from [`TestInstance::chat`] also reads the event log in-process);
 //! - [`ui_catalog`] and [`with_ui_catalog`]: the UI catalog as the web sends it (ADR 0023);
-//! - [`call_back`]: the agent's side of the thread tools (`thread-tools/v1`), what the fake agent's
-//!   `thread-tools` script does with the grant in its message (ADR 0023);
+//! - [`call_back`] and [`announce`]: the agent's side of the thread tools (`thread-tools/v1`), what
+//!   the fake agent's `thread-tools` and `turn-output` scripts do with the grant in its message
+//!   (ADR 0023, ADR 0031);
 //! - [`eventually`]: wait-until with a deadline, instead of sleeping.
 //!
 //! The helpers panic on failure (they are for tests), hence the lint allowances.
@@ -27,5 +28,5 @@ pub use fake::{
 };
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
-pub use thread_tools::call_back;
+pub use thread_tools::{announce, call_back};
 pub use wait::{DEFAULT_TIMEOUT, eventually, eventually_within};

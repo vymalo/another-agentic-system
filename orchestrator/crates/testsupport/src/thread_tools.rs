@@ -5,11 +5,14 @@
 //! The line is the evidence a test reads from the agent's artifact:
 //!
 //! ```text
-//! thread-tools: tools=get_ui_catalog; catalog=<catalogId> v2 <digest>; again unchanged=true
-//! thread-tools: tools=get_ui_catalog; no catalog: this thread has no UI catalog; answer in text
+//! thread-tools: tools=get_ui_catalog,turn_output; catalog=<catalogId> v2 <digest>; again unchanged=true
+//! thread-tools: tools=get_ui_catalog,turn_output; no catalog: this thread has no UI catalog; answer in text
 //! thread-tools: no grant
 //! thread-tools: refused: <what the client said>
 //! ```
+//!
+//! [`announce`] is the other thing an agent does with the endpoint: it says "this is my answer"
+//! (`turn_output`, ADR 0031).
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
@@ -87,4 +90,45 @@ pub async fn call_back(grant: Option<Value>) -> String {
         Err(e) => line.push_str(&format!("; again refused: {e}")),
     }
     line
+}
+
+/// Calls `turn_output` with each of `texts` in turn on the endpoint `grant` names, as an agent
+/// that announces its answer does (a later call replaces the earlier answer). `Ok` is the
+/// results the tool gave, each `delivered` or what it said when it refused; `Err` is a grant that
+/// cannot be used, or a call that failed at the protocol level.
+///
+/// # Errors
+///
+/// A line that says what went wrong, in the form of [`call_back`]'s (`thread-tools: …`).
+pub async fn announce(grant: Option<Value>, texts: &[&str]) -> Result<Vec<String>, String> {
+    let Some(grant) = grant else {
+        return Err("thread-tools: no grant".to_owned());
+    };
+    let (Some(url), Some(token)) = (grant["url"].as_str(), grant["token"].as_str()) else {
+        return Err("thread-tools: a grant without a url or a token".to_owned());
+    };
+    let config = StreamableHttpClientTransportConfig::with_uri(url.to_owned()).auth_header(token);
+    let client =
+        ().serve(StreamableHttpClientTransport::from_config(config))
+            .await
+            .map_err(|e| format!("thread-tools: refused: {e}"))?;
+    let mut results = Vec::new();
+    for text in texts {
+        let Value::Object(args) = json!({ "text": text }) else {
+            unreachable!("arguments are objects")
+        };
+        let result = client
+            .call_tool(CallToolRequestParams::new("turn_output").with_arguments(args))
+            .await
+            .map_err(|e| format!("thread-tools: turn_output refused: {e}"))?;
+        results.push(if result.is_error == Some(true) {
+            text_of(&result.content)
+        } else if result.structured_content.as_ref().map(|v| &v["delivered"]) == Some(&json!(true))
+        {
+            "delivered".to_owned()
+        } else {
+            "not delivered".to_owned()
+        });
+    }
+    Ok(results)
 }

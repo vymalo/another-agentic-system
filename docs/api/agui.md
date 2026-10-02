@@ -222,7 +222,7 @@ does any log written before the field existed. The projection puts it on the mes
 | `agent_message` | `TEXT_MESSAGE_START.metadata` |
 |---|---|
 | `purpose: "working"` | `{"vymalo.actor", "vymalo.purpose": "working"}` |
-| `purpose: "answer"` | `{"vymalo.actor", "vymalo.purpose": "answer"}`, and `"vymalo.via": "turn_output"` when `via` is `turn_output` (reserved: nothing writes it yet) |
+| `purpose: "answer"` | `{"vymalo.actor", "vymalo.purpose": "answer"}`, and `"vymalo.via": "turn_output"` when `via` is `turn_output` (the agent announced it with the [`turn_output` tool](thread-tools-v1.md#turn_output), below) |
 | no `purpose` | `{"vymalo.actor"}`, as before |
 
 - **A generic AG-UI client reads today's transcript**: the working sentences and the answer are all assistant
@@ -234,6 +234,33 @@ does any log written before the field existed. The projection puts it on the mes
 - **Rejected: `REASONING_*`.** A live text message cannot become a reasoning message after the fact, so a generic client
   would show both; with metadata it shows the transcript it always showed.
 - A message that is still open when a connection opens is told again with the same metadata.
+
+**The announced answer** ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md), amendment of 2026-10-02).
+An agent that lists `thread-tools/v1` can say "this is my answer" before it is done, with the
+[`turn_output`](thread-tools-v1.md#turn_output) tool. The log gets an `agent_message` with `purpose: "answer"` and
+`via: "turn_output"`, and the message's `START` says both (`vymalo.purpose: "answer"`, `vymalo.via: "turn_output"`). The
+rules a screen applies where it draws the turn:
+
+1. **The answer of a turn is the last message marked `answer` in it** (a run, from the person's message to the agent's
+   end or its question). A later `turn_output` **replaces** the answer: the log is append-only, so the earlier
+   announcement stays in the stream, still marked `answer, turn_output`, and **is working text** by this rule. Nothing
+   in the stream says that it was replaced; a client that ignores the rule shows both announcements, in order.
+2. **A turn that has an announced answer has no other.** The core writes everything else the agent says in that turn as
+   `purpose: "working"` (a stated stream on a status that ends the turn, an unmarked `Message`), so the screen's fallback
+   of ADR 0031 (the last unmarked text of an ended turn is the answer) is not needed for it. An announced answer wins
+   over the fallback.
+3. **The status words are not said as an answer.** The words of a `completed`, `input_required` or `auth_required`
+   status that no message said are written by the core as an `agent_message` `purpose: "working"` (id
+   `out-<jti>-words-<n>`) ahead of the status, so this projection finds them said and emits no `st-<seq>` message for
+   them: the closing line is a `working` message, kept and reachable, and the `st-<seq>` rule above applies only to a turn
+   that announced nothing. The status keeps the words as its `detail` for the interrupt (`int-<seq>`, whose `message` is
+   still the question). Words that repeat the last words said are not said again.
+4. **An announcement is not streamed.** It arrives whole, in one message (`START`, `CONTENT`, `END`), never as a live
+   draft. The agent's streamed text of the same turn is working text.
+
+The goldens [`turn-output.agui.json`](examples/agui/turn-output.agui.json) (a sentence before a tool call, a step, the
+announced answer, the closing line as working text and the status that keeps it) and its log
+[`turn-output.events.json`](examples/turn-output.events.json) show it.
 
 ### Live text
 

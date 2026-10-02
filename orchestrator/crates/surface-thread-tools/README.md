@@ -3,7 +3,7 @@
 The thread-tools surface ([`thread-tools/v1`](../../../docs/api/thread-tools-v1.md)): **one MCP endpoint per thread**,
 at `/thread-tools/{threadId}/mcp`, for the agent that is working on that thread. An agent whose card lists the extension
 receives `{url, token, expiresAt}` in the metadata of the A2A message and calls this endpoint with the token as a bearer.
-Today it serves one tool, `get_ui_catalog` (the refetch seam of [ADR 0023](../../../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md));
+Today it serves two tools, `get_ui_catalog` (the refetch seam of [ADR 0023](../../../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) and `turn_output` (the agent announces its answer for the turn, [ADR 0031](../../../docs/decisions/0031-working-text-and-the-turns-answer.md));
 the tools of attached MCP servers (slice 8) and `ask_agent` (slice 10) are added through the provider seam below.
 
 ## Where it sits
@@ -50,6 +50,7 @@ the JSON-RPC error `-32602`. A built-in tool is cut off after 30 s (a tool error
 | Tool | Arguments | Result (structured content, also as text) |
 |---|---|---|
 | `get_ui_catalog` | `knownDigest?` (`sha256:` and 64 lowercase hex) | `{catalogId, version, digest, unchanged, catalog?}`: the newest catalog the thread recorded; `catalog` is left out when `knownDigest` is the current digest (`unchanged: true`). A thread with no catalog is `isError: true`, "this thread has no UI catalog; answer in text". Read through `App::thread_ui_catalog` |
+| `turn_output` | `text` (Markdown, 1 to 65 536 bytes, no other member) | `{"delivered": true}`. Records the agent's answer through `App::record_answer` (an `agent_message` `purpose: answer, via: turn_output`, id `out-<jti>-<n>`, by the token's agent): accepted only while the thread is `queued` or `working`, for the token's job and, once the turn has an announcement, under the token that made it. An empty (white space alone) or oversize text, and a turn that is over (`this turn is over`: the thread is not working, another job, another token) are `isError: true` and write nothing; a missing or mistyped `text` is `-32602`. Not read-only and not idempotent: a later call replaces the answer ([`thread-tools-v1.md`](../../../docs/api/thread-tools-v1.md#turn_output)) |
 
 Stateless: `rmcp`'s `StreamableHttpService` runs with `legacy_session_mode = false` and a session manager that keeps
 nothing, so any replica serves any request; a call is one `application/json` response.
@@ -63,6 +64,7 @@ nothing, so any replica serves any request; a call is one `application/json` res
   newest stays), one catalog per thread, arguments that do not parse (`-32602`), an unknown name; the provider seam (order
   of the listing, routing of calls, the context a provider gets, a provider that cannot take a built-in's name, the
   listing built for each request).
+* `tests/turn_output.rs`: `turn_output` is listed after `get_ui_catalog` with its schemas and description; an announced answer is the agent's `agent_message` (`out-<jti>-1`, `purpose: answer`, `via: turn_output`) and the thread goes on working; a second call is `out-<jti>-2` (the later one replaces the answer by the reader's rule); an empty or oversize text is an error to read and writes nothing (the largest text is accepted); a missing, mistyped or extra argument is `-32602`; the turn is over for a finished thread and for one cancelled after the first announcement; a token of another job, and a token of another message once one announced, are refused.
 * `tests/guard.rs`: no credentials, two headers, every kind of bad token (garbage, another key, expired, issued in the
   future, another thread's, another agent's, an `ask`, a thread nobody created, a changed signature) is the same `401`
   and nothing is called; the previous key still opens the endpoint and a replica that dropped it refuses; the `Host` and

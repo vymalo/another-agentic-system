@@ -20,7 +20,7 @@ async fn tools_list_is_get_ui_catalog_with_its_schemas() {
     let tools = client.list_all_tools().await.unwrap();
     assert_eq!(
         tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(),
-        ["get_ui_catalog"]
+        ["get_ui_catalog", "turn_output"]
     );
     let tool = &tools[0];
     assert_eq!(tool.input_schema.get("type"), Some(&json!("object")));
@@ -166,7 +166,12 @@ async fn providers_add_tools_after_the_built_in_ones_in_the_order_they_were_adde
     let client = client_for(&h, thread, "plain").await;
     assert_eq!(
         tool_names(&client).await,
-        ["get_ui_catalog", "first_probe", "second_probe"]
+        [
+            "get_ui_catalog",
+            "turn_output",
+            "first_probe",
+            "second_probe"
+        ]
     );
 
     // each call goes to the provider that owns the name, with the call's context
@@ -208,7 +213,7 @@ async fn a_provider_cannot_take_a_name_a_built_in_tool_owns() {
     .await;
     let thread = h.thread("plain").await;
     let client = client_for(&h, thread, "plain").await;
-    assert_eq!(tool_names(&client).await, ["get_ui_catalog"]);
+    assert_eq!(tool_names(&client).await, ["get_ui_catalog", "turn_output"]);
     let out = call(&client, "get_ui_catalog", json!({})).await;
     assert!(out.is_error, "the built-in answered, not the provider");
     assert!(thief.seen().iter().all(|s| s.what == "list"));

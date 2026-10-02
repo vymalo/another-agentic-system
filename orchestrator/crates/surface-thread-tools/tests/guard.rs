@@ -226,7 +226,7 @@ async fn the_previous_key_still_opens_the_endpoint_until_it_is_removed() {
     // a token minted with the old key, and one with the new
     for signer in [&old, &keys()] {
         let client = connect(&h.url(thread), &token(signer, &good)).await;
-        assert_eq!(tool_names(&client).await, ["get_ui_catalog"]);
+        assert_eq!(tool_names(&client).await, ["get_ui_catalog", "turn_output"]);
     }
 
     // the rotation is over: a replica that no longer holds the old key refuses its tokens

@@ -165,6 +165,11 @@ An agent therefore chooses the status each stream is stated on with some care: t
 `working` status, the reply that ends the turn on the status that ends it. A screen shows the answer in the
 conversation and the working text with the steps ([`agui.md`](agui.md#the-agents-words)).
 
+An agent that lists `thread-tools/v1` can also announce its answer with the [`turn_output`](thread-tools-v1.md#turn_output)
+tool. From then on the orchestrator writes **everything else the agent says in that turn as `working`**, whatever status
+the stream was stated on, including the words of the status that ends the turn (they are kept, as working text), and does
+not say the same words twice: an agent whose `completed` states the answer it announced is read once.
+
 ## 5. What the orchestrator does with a chunk
 
 It never stores one. The worker that holds the agent's stream publishes each piece on the wakeup port to every process

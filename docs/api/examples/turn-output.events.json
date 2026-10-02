@@ -1,0 +1,123 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "turn-output go"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "final": true,
+      "messageId": "<message-id>",
+      "purpose": "working",
+      "text": "Let me run the tests first."
+    },
+    "kind": "agent_message",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "icon": "execute",
+      "id": "T/tool:c1",
+      "kind": "command",
+      "label": "npm test",
+      "path": [],
+      "phase": "end",
+      "state": "completed"
+    },
+    "kind": "agent_step",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "final": true,
+      "messageId": "<message-id>",
+      "purpose": "answer",
+      "text": "The tests pass: 12 of 12.",
+      "via": "turn_output"
+    },
+    "kind": "agent_message",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "final": true,
+      "messageId": "<message-id>",
+      "purpose": "working",
+      "text": "Done; the result is above."
+    },
+    "kind": "agent_message",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "detail": "Done; the result is above.",
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  }
+]

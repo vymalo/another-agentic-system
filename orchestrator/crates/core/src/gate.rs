@@ -14,6 +14,7 @@ use jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::answer::AnswerLedger;
 use crate::ids::{AgentId, ThreadId};
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
@@ -310,6 +311,12 @@ pub struct Job {
     /// ledger stored before the field existed has none.
     #[serde(skip_serializing_if = "StepLedger::is_empty")]
     pub steps: StepLedger,
+    /// The answer the agent's current turn announced with `turn_output`, if it did (ADR 0031):
+    /// from then on nothing else it says in the turn is the answer. A turn is over when the
+    /// person writes or acts again, or the gate sends the agent back; [`Job::next`] forgets it.
+    /// A ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "AnswerLedger::is_empty")]
+    pub answer: AnswerLedger,
     /// Whose words the thread's title is (a person's rename is never replaced). Belongs to the
     /// conversation, not to a job: a new job keeps it ([`Job::next`]). A ledger stored before the
     /// field existed has the first message's words, which is what its thread has.
@@ -336,6 +343,7 @@ impl Default for Job {
             hold: None,
             catalog: UiCatalogLedger::default(),
             steps: StepLedger::default(),
+            answer: AnswerLedger::default(),
             title: TitleLedger::default(),
         }
     }

@@ -6,6 +6,7 @@
 //! that it stays pure (ADR 0001, ADR 0004).
 
 mod agent;
+mod answer;
 mod error;
 mod event;
 mod extension;
@@ -25,6 +26,7 @@ mod ui_catalog;
 mod verify;
 
 pub use agent::{AgentTaskState, AgentUpdate};
+pub use answer::{AnswerError, AnswerLedger, MAX_ANSWER_BYTES, check_answer};
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
