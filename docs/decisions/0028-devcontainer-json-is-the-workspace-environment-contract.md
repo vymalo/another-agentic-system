@@ -1,8 +1,9 @@
 # ADR 0028 — devcontainer.json is the workspace environment contract
 
-- **Status:** accepted (2026-10-01), an owner decision. Not built: it is MVP slice 7b, after slice 7. The
-  defaults listed under [Defaults the owner may revisit](#defaults-the-owner-may-revisit) were chosen
-  by the plan, not by the owner.
+- **Status:** accepted (2026-10-01), an owner decision. **Built** (2026-10-02, MVP slice 7b): adam-rs builds the
+  environment and the coder uses it (adam-rs ADR 0010, `c0f12dd`), and this repository runs it end to end (see the
+  [status note](#status-note-2026-10-02-built-the-stack-and-its-scenario)). The defaults listed under
+  [Defaults the owner may revisit](#defaults-the-owner-may-revisit) were chosen by the plan, not by the owner.
 
 ## Context
 
@@ -282,3 +283,44 @@ The plan built these defaults. The owner may choose differently.
   another environment than the repository declared.
 - **Devcontainers on Kubernetes now.** They need a sandbox provider that the platform does not have yet
   ([open question 41](../open-questions.md)).
+
+## Status note, 2026-10-02: built, the stack and its scenario
+
+The contract is built on both sides. **adam-rs** (pinned in `compose.yaml` at `c0f12dd`, which contains its #67 and #68): the
+`adam-devcontainer` crate and its ADR 0010 (how adam-rs does it: the policy checked three times, the override file, the
+teardown), the coder's tools routed through the environment, OpenCode inside it, the `rebuild_environment` tool, the
+`environment {kind, source?, image}` of the `checks` artifact, and the fixtures `local/devbox` and `local/devbox-broken`.
+**This repository** (MVP slice 7b; no orchestrator or web change, as decided above):
+
+- `dev/compose.devcontainer.yaml`: an override that adds a **rootless Podman service** and points the coder at it
+  (`DEVCONTAINER_RUNTIME=podman`, the same workspace volume at the same path, a socket shared with the coder only). The
+  service is built from `dev/coder/podman/`, vendored byte for byte from adam-rs `dev/podman` at `c0f12dd` and covered by
+  `dev/coder/check-vendored.sh`. It has **no `privileged`, no `cap_add` and no `devices`**, and no Docker socket is mounted
+  anywhere; its three `security_opt` entries (a pinned seccomp profile file, `systempaths=unconfined`,
+  `apparmor=unconfined`) and why each is needed are in `dev/coder/podman/README.md` and
+  [`dev/README.md`](../../dev/README.md#devcontainers). The base stack does not change: without the override the coder
+  runs with the runtime off, in its own container. The override also makes `mock-ci` watch `local/devbox`, because the coder's
+  gate waits for CI on the pushed commit.
+- `dev/devcontainer-e2e.sh`: through the web's own path (AG-UI), the done-when items of
+  [MVP slice 7b](../mvp.md): the devcontainer of `local/devbox` is the environment (the step *Building the environment from
+  .devcontainer/devcontainer.json* completes, `devbox-tool` is found, the gate is green, `env` inside holds no secret);
+  `local/sandbox` runs in the default image (*Using the default environment*, the probe prints `devcontainer-env`); with the
+  service stopped the run goes on in the coder's own container, a step says so and `devbox-tool` is a missing tool; the
+  broken `local/devbox-broken` is a failed step that names `privileged`, the person decides, and `/work/INIT-RAN` does not
+  exist; after the run Podman lists no container with its label; the service has no `privileged`, `cap_add` or `devices`.
+- `.github/workflows/coder-e2e.yml` runs it **on every run**, after setting `kernel.apparmor_restrict_unprivileged_userns=0`
+  where the key exists, with the small MCR base image as the default environment (the owner's default for the "default image
+  in tests" row above). `compose.yml` checks the override's privileges on every pull request without starting anything.
+
+What is verified and what is not: *verified 2026-10-02* by reading adam-rs at `c0f12dd` (the service, its README, its ADR, its
+compose override and its own end-to-end script; the workflow of that repository pushes the image of a commit, and bumps its
+chart to it, only after its compose end to end, which runs those scenarios, passed, and `6dd238f` is that bump for `c0f12dd`) and by
+running `docker compose config` (with the base file, and with the GitHub App and live overrides), `shellcheck`, the drift check
+and the scripts' `jq` on samples. **Not run where this was written** (no container could be started): the scenario itself, and with
+it the items below, which the Coder E2E job of the pull request that built this is the proof of. The facts adam-rs's CI settled
+under *Unverified* above (the `podman-remote` client, the user-namespace ids) are in adam-rs's ADR 0010 status notes.
+
+- Still unverified until that job runs here: that the GitHub runners' AppArmor setting is the one to turn off (it is set only
+  where the key exists), that the coder's gate (`ci+agent_checks` with `mock-ci`) completes for a repository whose work was
+  done in a container, and that DNS to `mock-openai` and the pulls work from a nested container on the runners.
+- Kubernetes is unchanged: the coder stays `Local` there (open question 41).

@@ -68,7 +68,8 @@
 # SKIPPED, not failed, and the summary says how to reset (`docker compose --profile app down -v`).
 # `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
-# The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list.
+# The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
+# needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers").
 #
 # Each script's output goes to a file, and only the tail of a failing one is printed; the file is kept in
 # $LOG_DIR (default: a fresh directory under ${TMPDIR:-/tmp}) and named in the summary. Environment that the

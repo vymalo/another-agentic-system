@@ -253,7 +253,15 @@ and the agents agree.
 > devcontainer. With several repositories in one workspace, the first repository's devcontainer is used and the
 > others are mounted into it. The person sees the build as a step, and a broken file as a failed step, not as a
 > silent fallback. On Kubernetes the coder stays as it is until the platform has a sandbox provider (open
-> question 41). This is MVP slice 7b, after slice 7; it is not built yet.
+> question 41). This is MVP slice 7b, after slice 7.
+>
+> **Note, 2026-10-02: built (MVP slice 7b).** adam-coder (adam-rs `c0f12dd`) runs `run_command`, `run_checks` and OpenCode in the
+> repository's devcontainer, or in a default image, on a rootless Podman service; a stopped service is a step that says so, and a
+> devcontainer.json it cannot use is a failed step and a question to the person, never a silent fallback. The stack runs it with an
+> override (`dev/compose.devcontainer.yaml`, a Podman service with no `privileged`, `cap_add` or `devices`) and one scenario
+> ([`dev/devcontainer-e2e.sh`](../dev/README.md#devcontainers)) that CI runs on every Coder E2E run. The orchestrator and the web did
+> not change: the environment is a nested step ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md#status-note-2026-10-02-built-the-stack-and-its-scenario)).
+> The scenario had not run when this was written: CI is its proof. Still open: Kubernetes (question 41).
 
 ### 7. Agents configured at run time, not compiled
 

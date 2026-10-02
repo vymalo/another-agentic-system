@@ -43,7 +43,7 @@ pushed branches (`-v` matters: see [Troubleshooting](#troubleshooting)).
 | Webhooks | `POST http://127.0.0.1:8080/webhooks/github` and `/webhooks/ci` | Signed with the dummy secret `dev-webhook-secret-0123456789abcdef0123`, no identity. `mock-ci` posts here on its own; [`ci-webhook.sh`](ci-webhook.sh) plays a CI by hand |
 | Probes | http://127.0.0.1:8080/healthz, `/readyz` | |
 | The mocks' journals | http://127.0.0.1:8091/__admin/requests (the coder's model), :8094 (the model of the chat and the researcher), :8092 (GitHub), :8085 (the GitHub MCP server), :8081 (mock agent), :8083 (verifier) | What each mock was asked, and `/unmatched` for what it did not know |
-| The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded (with `local/library.git`, which only a second repository of a workspace reads, and `local/devbox.git` and `local/devbox-broken.git`, adam-rs's devcontainer fixtures, which no scenario here names); the branches the coder pushes are here, and so are the repositories it creates under `scratch/` ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). `/__repos/` lists what it holds, as JSON |
+| The git remote | http://127.0.0.1:8093/local/sandbox.git | Seeded (with `local/library.git`, which only a second repository of a workspace reads, and `local/devbox.git` and `local/devbox-broken.git`, adam-rs's devcontainer fixtures, which [`devcontainer-e2e.sh`](devcontainer-e2e.sh) runs on: [Devcontainers](#devcontainers)); the branches the coder pushes are here, and so are the repositories it creates under `scratch/` ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). `/__repos/` lists what it holds, as JSON |
 | The mock web search | http://127.0.0.1:8096/mcp (MCP, bearer `dev-search-token`), `/__journal` | An MCP server with one canned `web_search` tool; [Mock web search (MCP)](#mock-web-search-mcp) |
 
 ### How the orchestrator is configured
@@ -330,7 +330,7 @@ GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app NO_OPENCODE=1 dev/coder-e2e.
 
 (`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
 after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/devcontainer-e2e.sh`, which needs the stack **with** `-f dev/compose.devcontainer.yaml` (a rootless Podman service beside the coder; [Devcontainers](#devcontainers)): `devcontainer` (a repository's own devcontainer is the environment, behind the gate, with a janitor that leaves none of it), `default-env`, `no-runtime`, `broken-env`, and what the Podman service is given; `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`.
 
 ### Connect Claude Code over MCP
 
@@ -456,6 +456,7 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-github-mcp` | `wiremock/wiremock:3.13.2` | `8085` (`MOCK_GITHUB_MCP_PORT`) | `app` | The GitHub MCP server's streamable HTTP endpoint (`/mcp`, bearer `dev-github-mcp-token`) as the coder reads GitHub through it: `initialize`, `tools/list` (the twelve read-only tools of its allow-list) and `tools/call` of `get_me` and `list_branches`. The coder's folder starts the real `github-mcp-server` as a child process; here [`coder/coder-agent/mcp.json`](coder/coder-agent/mcp.json) is mounted over the folder's `mcp.json` and points the coder at this mock instead. Vendored. |
 | `git-server` | built from [`coder/git-server/`](coder/git-server/Dockerfile) | `8093` (`GIT_SERVER_PORT`) | `app` | A git remote over smart HTTP, seeded with `local/sandbox.git`, `local/library.git` and, since adam-rs `d56dd94`, `local/devbox.git` and `local/devbox-broken.git` (every `seed/<owner>/<name>/`). A repository of an owner in `AUTO_CREATE_OWNERS` (`scratch` here) is made, empty, the first time anything asks for it: what a repository just created on GitHub is like. `/__repos/` lists what it holds, as JSON. No authentication. Vendored. |
 | `mock-ci` | built from [`mock-ci/`](mock-ci/Dockerfile) (`alpine:3.23`, pinned by tag and digest, with git, curl, jq and openssl; the secret is read from `WEBHOOK_SECRET` and never on a command line) | not published | `app` | The CI of the repository, as a stand-in: polls `git ls-remote` on `git-server` for `agent/*` branches, in `local/sandbox` and in every repository of `scratch` (`MOCK_CI_REPOS: "local/sandbox scratch/*"`: `<owner>/*` and `*` are found through git-server's `/__repos/` on every pass, so a repository the coder created is watched as soon as it exists) and posts a signed GitHub `check_run` named `mock-ci/build` (`MOCK_CI_SHAPE=github-workflow`: a `workflow_run`; `generic`: the generic body) for each new commit through the edge. The coder is gated on CI, so its jobs end `done` when this has reported. See [CI](#ci-the-gate-by-webhook). |
+| `podman` | built from [`coder/podman/`](coder/podman/Containerfile) (`quay.io/podman/stable:v5.8.7-immutable`, by tag and digest, plus the user `agent`) | not published | `app`, only with `-f dev/compose.devcontainer.yaml` | A **rootless Podman service** the coder builds a repository's devcontainer on ([Devcontainers](#devcontainers)): uid 10001, a socket of mode 0600 shared with the coder only, the coder's workspace volume at the same path, **no `privileged`, no `cap_add`, no `devices`**. Without the override there is no such service and the coder runs its commands in its own container. |
 | `mock-mcp-search` | built from [`mock-mcp-search/`](mock-mcp-search/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies, nothing is installed) | `8096` (`MOCK_MCP_SEARCH_PORT`) | `app` | A mock web-search MCP server: streamable HTTP at `http://mock-mcp-search:8080/mcp` (bearer `dev-search-token`), one tool `web_search` with an icon, canned results from [`mock-mcp-search/results.json`](mock-mcp-search/results.json). See [Mock web search (MCP)](#mock-web-search-mcp). |
 | `smee-proxy` | `caddy:2.11.4-alpine` | not published | `smee` | A Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and nothing else (404); never the identity-injecting `edge`. See [Going live](#going-live). |
 | `smee` | built from [`smee/`](smee/Dockerfile) (`node:24-alpine3.23` by tag and digest, `smee-client` 5.0.0) | not published | `smee` | Forwards the deliveries smee.io holds for `SMEE_URL` to `smee-proxy`. Opt-in; exits with a message when `SMEE_URL` is unset. smee.io is a third party that sees the payloads. |
@@ -520,13 +521,14 @@ Everything else the coder needs is vendored from the same adam-rs commit, named 
 | `coder/wiremock/mock-github/` | `dev/wiremock/mock-github/` | `mappings/pulls.json` and its two bodies, `repos.json` (create a repository, `GET /user`, `GET /users/{owner}`) and `app.json` (a GitHub App's JWT for an installation token). |
 | `coder/wiremock/mock-github-mcp/` | `dev/wiremock/mock-github-mcp/` | `mappings/mcp.json`: the GitHub MCP server's endpoint ([below](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)). |
 | `coder/git-server/` | `dev/git-server/` | The Dockerfile, nginx config, entrypoint, `cgi.sh` (creates a repository of an owner in `AUTO_CREATE_OWNERS` on first use) and the seed of `local/sandbox.git`, `local/library.git`, `local/devbox.git` and `local/devbox-broken.git` (`seed/<owner>/<name>/`). |
+| `coder/podman/` | `dev/podman/` | The rootless Podman service of [`compose.devcontainer.yaml`](compose.devcontainer.yaml): the `Containerfile` (Podman's own image by tag and digest, plus the user `agent`), the pinned containers/container-libs `seccomp.json` and the README that says what the service is given and why ([Devcontainers](#devcontainers)). |
 | `coder/coder-agent/` | `dev/coder-agent/` | `mcp.json`: the coder's folder file that points it at `mock-github-mcp`, mounted over the folder's own `mcp.json`. |
 | `coder/agent/` | `bin/adam-coder/agent/` | The agent folder the coder reads at run time (`instructions.md`: its name, its card, its instructions; `mcp.json`: the real `github-mcp-server`, read-only), mounted at `/etc/adam/agent`. The whole upstream folder, nothing else. |
 
 Do not edit them here. [`coder/check-vendored.sh`](coder/check-vendored.sh) compares every one with
 `raw.githubusercontent.com` at the commit in `UPSTREAM`, checks that nothing is missing (every body file
-a vendored mapping names is vendored too, and `coder/git-server/`, `coder/coder-agent/` and `coder/agent/` hold exactly the files of
-`dev/git-server/`, `dev/coder-agent/` and `bin/adam-coder/agent/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
+a vendored mapping names is vendored too, and `coder/git-server/`, `coder/podman/`, `coder/coder-agent/` and `coder/agent/` hold exactly the files of
+`dev/git-server/`, `dev/podman/`, `dev/coder-agent/` and `bin/adam-coder/agent/` upstream, listed through the GitHub API), and checks that `compose.yaml` pins the
 image of that commit (`sha-<first 7 characters>@sha256:`); CI runs it first. The mappings are a
 deliberate subset, the scripted coder run only: a mapping the coder starts to need upstream shows up
 as an unmatched request in `dev/coder-e2e.sh`. To move to a newer adam-rs
@@ -764,6 +766,137 @@ the scripts with `GITHUB_AUTH=app`: they assert the trade and that every call to
 **Live.** [`compose.live.yaml`](../compose.live.yaml) drops the mock `mcp.json` (the real `github-mcp-server` runs, with the same credential) and the mocks, and takes the credential from `.env`:
 `GITHUB_TOKEN`, or `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID` and `GITHUB_APP_PRIVATE_KEY_FILE` (a PEM on your machine, mounted read-only; unset, an empty placeholder
 [`coder/no-github-app-key.pem`](coder/no-github-app-key.pem) is mounted that nothing reads), plus `CREATE_REPO_OWNERS` and, for GitHub Enterprise, `GITHUB_MCP_HOST`. See [Going live](#going-live).
+
+## Devcontainers
+
+Since adam-rs `c0f12dd` the coder can work in **a repository's own devcontainer** ([ADR 0028](../docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md), adam-rs ADR 0010; MVP slice 7b):
+`run_command`, `run_checks`, OpenCode and every command OpenCode starts run in the container that the official devcontainer CLI builds from the repository's
+`.devcontainer/devcontainer.json`, on a **rootless Podman service** beside the coder (never the host's Docker socket). A repository without a devcontainer gets a
+default image. The orchestrator did not change: the environment appears as nested steps ([Steps](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)),
+and the gate is the one every job has. The stack runs it only with an override, so the plain stack stays as it was (`DEVCONTAINER_RUNTIME` is off in the image):
+
+```sh
+docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile app up -d --build --wait
+dev/devcontainer-e2e.sh
+```
+
+On a stack that is already up without the override, `docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile app up -d --no-build --wait podman coder mock-ci` recreates the three that change:
+the service, the coder (which then uses it) and `mock-ci` (which then watches `local/devbox`, where the coder's gate waits for CI). `dev/e2e-all.sh` does not run the script: it needs the override, and
+`agent-folder-e2e.sh` restarts the coder without it. CI runs it after the other scenarios ([`coder-e2e.yml`](../.github/workflows/coder-e2e.yml)), on every run.
+
+```mermaid
+sequenceDiagram
+  actor P as the person (the web)
+  participant O as orchestrator
+  participant C as coder
+  participant D as devcontainer CLI
+  participant S as Podman service
+  participant I as mock-ci
+  P->>O: "... record where devbox-tool runs in tool.txt" (local/devbox)
+  O->>C: SendStreamingMessage
+  C->>S: probe (podman info)
+  C-->>O: step "Building the environment from .devcontainer/devcontainer.json (local/devbox)" (running)
+  C->>D: read-configuration, up --skip-post-create
+  D->>S: pull the base image, build the Dockerfile, create the container
+  C->>S: inspect: the policy (no privileged, no capability, no bind) has the last word
+  C->>D: run-user-commands (postCreateCommand)
+  C-->>O: the same step, completed
+  C->>D: exec: run_command, run_checks and OpenCode's own bash command run in the container
+  C-->>O: branch, checks (environment: devcontainer), pull request
+  I->>O: signed check_run mock-ci/build for the pushed commit
+  O-->>P: done (gate ci + agent_checks)
+  Note over C,S: the run is over: the janitor releases its container and its images (WORKSPACE_SWEEP_SECS: 10)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Probing: the first command of a run
+  Probing --> Local: no runtime, or it does not answer (a step says commands run in the coder's own container)
+  Probing --> Building: the service answers
+  Building --> Ready: built, checked by Podman's own inspect, set up
+  Building --> Broken: the file is refused or does not build (a failed step; the coder asks the person; no fallback)
+  Broken --> Building: the person fixed the file, or chose the default image (rebuild_environment)
+  Ready --> Released: the run is over (the janitor)
+  Broken --> Released
+  Local --> [*]
+  Released --> [*]
+```
+
+### What the four scenarios prove
+
+[`dev/devcontainer-e2e.sh`](devcontainer-e2e.sh) speaks AG-UI like [`workspace-e2e.sh`](workspace-e2e.sh), one new thread per scenario on `coder`, and signs in with
+[`auth-header.sh`](auth-header.sh). The coder's scripts are vendored from adam-rs (`[mock:devcontainer]`, `[mock:default-env]`, `[mock:broken-env]`, `[mock:no-runtime]` in `coder-script.json`, and OpenCode's `[mock:oc-devbox]`
+in `opencode-script.json`, with the fixtures `local/devbox` and `local/devbox-broken` on `git-server`): no model script here is ours. What a tool returned is read from the model's own request journal (the history of the next
+request holds it), the steps from the thread's `vymalo.step` activities and the log's `agent_step` events, and what Podman lists from the service itself. `SCENARIOS="default-env" dev/devcontainer-e2e.sh` runs one.
+
+| Scenario | The repository | It proves |
+|---|---|---|
+| `devcontainer` | `local/devbox`: its `.devcontainer/` has a Dockerfile that adds `devbox-tool`, which nothing else has | The thread ends `done` behind the gate (`agent_checks` on the pushed commit and `mock-ci/build`); the step **Building the environment from .devcontainer/devcontainer.json (local/devbox)** ends `completed`, in the frames and in the log; `run_command` finds `devbox-tool` (`devbox-tool 1.0 (from the devcontainer)`); `env` there holds none of the coder's secrets (`GITHUB_TOKEN`, `DATABASE_URL`, `A2A_BEARER_TOKENS`, `MODEL_API_KEY` and their values); the checks artifact says `environment {kind: devcontainer, source: .devcontainer/devcontainer.json}`; OpenCode's own bash command ran there too (`tool.txt` on the pushed branch); one pull request. Podman lists a container with the run's label (`adam.vymalo.com/run`) while the run lasts and **none** within 90 s of its end: the janitor released it |
+| `default-env` | `local/sandbox`: no devcontainer | The step `Using the default environment (<image>)` ends `completed`; the probe `test -d /opt/flutter && echo coder-env \|\| echo devcontainer-env` prints `devcontainer-env` (only the coder's own image has `/opt/flutter`); the checks ran in a devcontainer made from the default image (no source file); the gate and the pull request hold; Podman lists none afterwards |
+| `broken-env` | `local/devbox-broken`: `privileged`, an `initializeCommand` and a `${localEnv:GITHUB_TOKEN}` | The step above ends **`failed`** and its detail names `privileged`; the first command's result names the file, the key, `ask_user` and `rebuild_environment` (no silent fallback: the person decides); the run ends `interrupt` and the thread is `blocked` on the coder's question; no pull request. The hostile parts did nothing: `/work/INIT-RAN` (the `initializeCommand`, which runs on the coder's side) does not exist, the refused file made no container, and the coder's `GITHUB_TOKEN` is in no container of the service and not in the thread's export (the file is refused as a whole before any container exists, so what `${localEnv:...}` resolves to is adam-rs's unit tests' to show; what this script can observe is that the value arrives nowhere) |
+| `no-runtime` | `local/devbox`, with the service **stopped** (and started again at the end) | A step says **The container runtime is not reachable: commands run in the coder's own environment** (`completed`); `devbox-tool` is reported as a missing tool; the coder asks the person what to do; no pull request. The script waits 32 s first: the coder keeps a probe's answer for 30 s |
+| (always, first) least privilege | the Podman service | `docker compose config` shows no `privileged`, no `cap_add` and no `devices` on `podman`, exactly the three `security_opt` below, and no service that mounts a Docker socket; `docker inspect` of the **running** container says the same and that it runs as `10001:10001` |
+
+The scripts of `dev/e2e-all.sh` gate on `mock-ci` finding the pushed commit, and `mock-ci` watches only `local/sandbox` and `scratch/*` in the base stack (`local/library` on purpose, see [Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)).
+The override makes it watch `local/devbox` too (`MOCK_CI_REPOS`), or the devbox job would wait for a CI report for ever; the script checks that before it starts.
+
+### What the Podman service is given, and why
+
+[`compose.devcontainer.yaml`](compose.devcontainer.yaml) builds the service from [`coder/podman/`](coder/podman/Containerfile) (vendored from adam-rs `dev/podman`, [`coder/podman/README.md`](coder/podman/README.md) says the rest): `quay.io/podman/stable:v5.8.7-immutable` pinned by tag and digest,
+plus the user `agent` (uid 10001, the coder's, so the files a devcontainer makes in the shared volume are the coder's). It has **no `privileged`, no `cap_add`, no `devices`**, and no Docker socket.
+
+| Setting | Why |
+|---|---|
+| `user: 10001:10001` | rootless: the service is the coder's uid, the nested containers map their ids into the subordinate range `agent:100000:65536` |
+| `security_opt: seccomp=./dev/coder/podman/seccomp.json` | Docker's default profile refuses `unshare`, `clone` with a new user namespace and `mount`, which a rootless Podman needs. The containers/container-libs profile (pinned, with its commit and sha256 in the README) allows them and is otherwise as strict as Docker's. Not `seccomp=unconfined`. Compose reads the file relative to the project directory; `PODMAN_SECCOMP` gives an absolute path where yours does not |
+| `security_opt: systempaths=unconfined` | Docker masks parts of `/proc`; a nested container mounts a fresh `/proc` and the kernel refuses that over a masked one. The upstream image's way round it would show every devcontainer every other run's processes; this costs little because the service has no effective capability |
+| `security_opt: apparmor=unconfined` | `docker-default` has `deny mount,`. It does nothing where AppArmor is off |
+| `cpus: 2`, `mem_limit: 6g`, `pids_limit: 4096` | nested cgroups are off (the image's `containers.conf`), so the service's own limits bound all devcontainers together |
+| `podman-socket:/run/podman` (service and coder only) | the only way in: a socket of mode 0600 owned by uid 10001 |
+| `coder-work:/work` at the **same path** in both | a bind source is resolved by the service, so one service serves one workspace volume |
+| `podman-storage` | pulled images and build layers, kept across runs (`docker compose down -v` forgets them) |
+| network `devcontainers` (and `mock-openai` on it) | what a devcontainer reaches: the model (OpenCode's, here the mock) and the internet for pulls. Not Postgres and not the orchestrator |
+
+What a devcontainer does **not** get: the GitHub token (git stays in the coder), `DATABASE_URL`, the bearer tokens, the thread tools' token, a published port, a Docker or Podman socket, another run's workspace. The model key reaches
+OpenCode as a file (`/run/adam/secrets/model-key`), never on an argument list. The coder checks the file's policy three times, the last on Podman's own `inspect` of the container it made, and refuses `privileged`, other capabilities,
+host binds and compose-based devcontainers. The service is the trust boundary and is trusted like the coder: an escape lands there, sees every run's `/work`, and holds no GitHub credential. It is not isolation between tenants.
+
+### The host: Ubuntu 24.04 and its AppArmor setting
+
+Ubuntu 24.04 (the GitHub runners, many desktops) sets `kernel.apparmor_restrict_unprivileged_userns=1`, which stops a rootless Podman from making a user namespace (*unverified*: a secondary source, marcioapm/lux#35; the Coder E2E job is the proof).
+Turn it off before you start the service:
+
+```sh
+[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+Without it the service starts but cannot run a container, and the coder goes on in its own environment: the thread shows the step *The container runtime is not reachable: commands run in the coder's own environment*, and the scenarios
+fail saying so. It degrades; it does not break. (Another sign: `docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile app logs podman`, and `docker compose ... exec -T podman podman --remote --url unix:///run/podman/podman.sock ps -a`
+lists what the service holds.)
+
+### The default image, and the real one
+
+A repository without a devcontainer runs in `DEVCONTAINER_DEFAULT_IMAGE`. Here that is the small base image of the devcontainers.dev project, `mcr.microsoft.com/devcontainers/base:2.2.1-trixie` (367 MiB), **by digest only**
+(`...@sha256:1f851004...`, in the override): the devcontainer CLI cannot parse a reference with both a tag and a digest. `local/devbox`'s Dockerfile is `FROM` the same digest, so one pull serves both. A deployment uses the `workspace` image of
+another-agentic-images (the coder's own default, what the coder is built on); to try it here, about 9 GB more per machine:
+
+```sh
+DEVCONTAINER_DEFAULT_IMAGE=ghcr.io/vymalo/another-agentic-images/workspace@sha256:<digest> \
+  docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile app up -d --no-build --wait coder
+```
+
+(the digest of the tag you want: [ADR 0028](../docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md) records the one of `workspace:1.98.1-ee2273e`.) Where the containers have **no direct internet**, `PRELOAD_FROM_DOCKER=1 dev/devcontainer-e2e.sh`
+loads the default image into the service from the host's Docker first (`docker save | podman load`; *unverified*: the digest of a loaded image may differ from the pin, and then the service pulls it).
+
+**Combining.** The override only adds, so it goes **last**: `-f compose.yaml -f compose.live.yaml -f dev/compose.devcontainer.yaml` (the live override replaces the coder's `environment`, `depends_on` and `volumes` with `!override`, and the
+override then adds to the result), and `-f compose.yaml -f dev/compose.github-app.yaml -f dev/compose.devcontainer.yaml` for the coder as a GitHub App. With the live stack the OpenCode inside a devcontainer reaches the real model through the service's
+network. Kubernetes keeps `DEVCONTAINER_RUNTIME=off` until the platform has a sandbox provider (open question 41).
+
+### If a scenario fails
+
+A failed check prints the step that was expected beside the steps the thread did have, and, for a thread that did not end as it should, the tail of the coder's and the service's logs. The likeliest causes first: the sysctl above (the runtime step
+says it is not reachable); `docker compose ... ps` shows `podman` unhealthy (its `info` does not answer: read its log); a pull that does not finish (no internet: `PRELOAD_FROM_DOCKER=1`); the coder not recreated with the override (the script says so before it
+starts); `mock-ci` not watching `local/devbox`; a stale run's container (`podman ps -a --filter label=adam.vymalo.com/run`: the janitor sweeps every 10 s and `docker compose down -v` forgets the storage).
 
 ## Several agents
 
@@ -2411,7 +2544,7 @@ Step input and output, clearer instructions (plan 10 S4: the pin to adam-rs `d56
   `(devcontainer)` and `(default-env)` and the OpenCode `(devbox)` ones that adam-rs's devcontainer scenario drives; no existing mapping was touched, so the scripts of `dev/coder-e2e.sh` are what they were). **New**:
   `git-server/seed/local/devbox/` and `devbox-broken/` (two seeded repositories with a `.devcontainer/`, which `git-server` now serves too) and the two bodies `mock-openai/__files/opencode-devbox-bash.sse` and `opencode-devbox-done.sse`.
   Every other vendored file (`agent/mcp.json`, `coder-agent/mcp.json`, `git-server`'s `Dockerfile`, `cgi.sh`, `entrypoint.sh`, `nginx.conf`, the `library` and `sandbox` seeds, `mock-github`, `mock-github-mcp`, the other `mock-openai` files) is byte for byte what it was at `1021836`.
-  The devcontainer scenario itself (upstream's `dev/compose.devcontainer.yaml`, a rootless Podman service) is **not** adopted here: `DEVCONTAINER_RUNTIME` stays off, the coder's commands run in its own container as before.
+  The devcontainer scenario itself (upstream's `dev/compose.devcontainer.yaml`, a rootless Podman service) was **not** adopted at this pin: `DEVCONTAINER_RUNTIME` stayed off, the coder's commands ran in its own container. MVP slice 7b adopts it, at `c0f12dd`: [Devcontainers](#devcontainers).
 - **What the new assertions read** (`dev/agents-e2e.sh`, `dev/coder-e2e.sh`; the replay of a thread holds one `vymalo.step` snapshot per report of a step, the start first, the end last, and the end carries the input that came with the start as well:
   [`steps-v1.md`](../docs/api/steps-v1.md#input-and-output)). The researcher's search is one tool step labelled **`Web search`**, the `title` the mock search server gives its tool (adam-rs: an MCP tool's `title` is its step's label, `<server>__<tool>`
   otherwise), whose start carries `input.query` with the person's words and whose end is `completed` with an `output.text` that holds a link of the mock and is no error. The coder's `prepare_workspace`, `run_checks`, `commit_and_push` and
@@ -2459,3 +2592,23 @@ Agents that write Markdown and search the real web (plan 10 S20: the pin to adam
 *Unverified where this was written* (no image was pulled and no container was started: the coder's is 2.9 GB, and the instructions here were to use the registry API only): **that the stack runs** (the scenarios, which the Coder E2E workflow of the pull request that pins it runs, in particular the two new `turn_output` assertions of `agents-e2e.sh`, which rest on adam-rs offering the thread's tool to a model under the name `turn_output`);
 that the `searxng` image starts with a read-only settings file mounted over its `/etc/searxng/settings.yml` and `FORCE_OWNERSHIP=false` (read from its entrypoint, not run), that its `/healthz` answers to the Python one-liner of the healthcheck, and that its `json` format is served with the settings file (the `search.formats` key is the documented one); that Docker mounts the `mcp.live.json` file over a file of a read-only bind mount (the offline coder's mock
 `mcp.json` is mounted the same way, and that runs in CI); that `searxng-mcp` builds into its image (`node:24-alpine3.23`, the digest of the mock's; not built here); that SearXNG answers real queries from where it runs (its engines may block a data-centre address, and a result list can be empty or short, which the tool says); the Brave and Tavily adapters against the real services; and what a live model does with the new instructions and `turn_output`.
+
+The devcontainers (MVP slice 7b: [Devcontainers](#devcontainers), `dev/compose.devcontainer.yaml`, `dev/coder/podman/`, `dev/devcontainer-e2e.sh`; the pin stays `c0f12dd`):
+
+*Verified 2026-10-02*:
+
+- **What the scenario relies on, read from adam-rs at `c0f12dd`:** `dev/podman/` (the `Containerfile`, `seccomp.json` whose sha256 is the one its README records, `2598b3b9...`, and the README), its `dev/compose.devcontainer.yaml`, its ADR 0010, and the scenarios of its own
+  `dev/coder-e2e.sh` (`devcontainer`, `default-env`, `broken-env`, `no-runtime`), whose assertions this script repeats through AG-UI. The vendored mock scripts it drives (`[mock:devcontainer]` with `dc-call-1..7`, `[mock:default-env]` with `de-call-1..5`,
+  `[mock:broken-env]` with `be-call-1..2` and `[mock:no-runtime]` with `nr-call-1..2`, and OpenCode's `[mock:oc-devbox]`) were already vendored here at this pin, so no model script was added. The `agents.yaml` gate (`ci+agent_checks`, `mock-ci/build`)
+  makes `mock-ci` the one thing the stack lacked: it watched `local/sandbox` and `scratch/*` only, so a job on `local/devbox` would have waited for a CI report for ever; the override sets `MOCK_CI_REPOS` for it and the script refuses to start without that.
+- **`dev/coder/check-vendored.sh`** with `RAW_BASE` pointing at a checkout of `c0f12dd` (`raw.githubusercontent.com` answered 429 from where this was written): every file passes, the three of `dev/coder/podman/` included, and the set of files of `dev/coder/podman/` equals
+  `git ls-tree` of `dev/podman/` at that commit (the tree-listing call itself was not reachable).
+- **`docker compose config -q`** for the base file and with `-f dev/compose.devcontainer.yaml` (`--profile '*'`), with `-f dev/compose.github-app.yaml -f dev/compose.devcontainer.yaml`, and with `-f compose.yaml -f compose.live.yaml -f dev/compose.devcontainer.yaml` against dummy values for
+  the variables the live file requires (the override last: the coder keeps `DEVCONTAINER_RUNTIME`, `CONTAINER_HOST`, `DEVCONTAINER_DEFAULT_IMAGE`, `WORKSPACE_SWEEP_SECS`, the `podman` dependency and the `podman-socket` volume). `config --format json` of the override shows on `podman`:
+  no `privileged`, no `cap_add`, no `devices`, `user: 10001:10001`, exactly the three `security_opt`, the network `devcontainers` and the three volumes; on `mock-ci`, `MOCK_CI_REPOS: "local/sandbox local/devbox scratch/*"`.
+- **`shellcheck dev/*.sh dev/coder/*.sh`** and `sh -n` on the new script, and the docs check, are clean. The script's `jq` (the last snapshot of a step by its label prefix, an artifact's nested field such as `environment.kind`) was cut out and run on a sample of AG-UI events.
+
+*Unverified where this was written* (the Docker daemon was not running, so the Podman service was not started and no image was pulled; the scenario has **never run here**, and the Coder E2E job of the pull request that built it is its proof). The likeliest to fail first, in order:
+(1) that rootless Podman runs on the GitHub runners at all (the AppArmor sysctl, a secondary source); (2) the first pulls and the build of `local/devbox`'s image inside the job's time (`TIMEOUT` 900 s a run, 40 minutes the step); (3) that Compose reads the relative seccomp path (it works in adam-rs's CI with `./dev/podman/seccomp.json`; here it is
+`./dev/coder/podman/seccomp.json` and the project directory is the same); (4) that the gate completes for `local/devbox` (`mock-ci` finding `agent/*` on it and the orchestrator matching its report, as it does for `scratch/*`); (5) the janitor emptying Podman within 90 s of the end of a run; (6) the steps' exact labels and
+the `completed` state in the thread's frames (read from adam-rs's script, which asserts them as `done` text lines of a client that did not ask for steps); (7) that `broken-env` leaves the thread `blocked` with the run ending `interrupt`, like the other plain questions of the coder.
