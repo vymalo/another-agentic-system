@@ -365,6 +365,13 @@ export class Projector {
   private verification = 0;
   /** A source failed and nothing has answered it yet: an `error` that follows is the gate out of attempts. */
   private checksFailed = false;
+  /**
+   * A message stopped the job (`user_message` with `delivery: interrupt`, ADR 0036) and the job has
+   * not been replaced yet: the core judges nothing of it, so no verification starts at the stopped
+   * task's `completed`, and a task that asks is logged with no interrupt. Cleared by `job_started`,
+   * by any `thread_state` and by an `error` of the orchestrator's that cannot be retried.
+   */
+  private stopping = false;
   /** The actor of the agent's last event: a rework starts the next attempt's invocation as it. */
   private lastAgent: Event["actor"] | undefined;
   /** The open invocation's last final agent message: a status with the same words says nothing more. */
@@ -426,6 +433,7 @@ export class Projector {
 
   /** What a finished job leaves behind and the next must not inherit (the real projection's `forget_job`). */
   private forgetJob() {
+    this.stopping = false;
     this.attempt = 1;
     this.sha = undefined;
     this.checksFailed = false;
@@ -802,17 +810,20 @@ export class Projector {
     };
   }
 
-  private openRun(e: Event, out: Ev[]) {
+  private openRun(e: Event, out: Ev[], superseding = false) {
     const runId = str(e.data.runId) ?? `run-${e.seq}`;
     this.run = { runId };
-    // a rename (or a description) says what the thread is in and changes none of it
+    // a rename (or a description) says what the thread is in and changes none of it, and neither
+    // does a message that ends the run it arrived in: the agent is still at work (ADR 0036)
     if (e.kind !== "thread_titled" && e.kind !== "thread_described") {
       this.interrupt = null;
       this.failure = null;
-      this.state =
-        e.kind === "agent_step" || (e.kind === "agent_status" && e.data.status === "working")
-          ? "working"
-          : "queued";
+      if (!superseding) {
+        this.state =
+          e.kind === "agent_step" || (e.kind === "agent_status" && e.data.status === "working")
+            ? "working"
+            : "queued";
+      }
     }
     out.push({
       type: "RUN_STARTED",
@@ -862,6 +873,8 @@ export class Projector {
     sub?: string,
     /** What an agent's words are for, when the log says (ADR 0031): members of the START's metadata. */
     purpose?: { purpose?: string; via?: string },
+    /** How a user message reached an agent that was working, when the log says (ADR 0036). */
+    delivery?: string,
   ): Ev[] {
     const attr = sub ? { subagentRunId: sub } : {};
     return [
@@ -875,11 +888,48 @@ export class Projector {
           ...actorMeta(e),
           ...(purpose?.purpose ? { "vymalo.purpose": purpose.purpose } : {}),
           ...(purpose?.via ? { "vymalo.via": purpose.via } : {}),
+          ...(delivery ? { "vymalo.delivery": delivery } : {}),
         },
       },
       { type: "TEXT_MESSAGE_CONTENT", messageId, delta: text, ...attr },
       { type: "TEXT_MESSAGE_END", messageId, ...attr },
     ];
+  }
+
+  /**
+   * A message arrived inside the open run (ADR 0036, the real projection's `RunClose::Superseded`):
+   * the run ends and the message opens its own. An open text message ends, the invocation is
+   * suspended with no interrupt (nobody is asked, the agent is at work), the snapshot says the
+   * thread as it is, and the run finishes with `success`: the run is over, the thread is not.
+   */
+  private supersedeRun(out: Ev[]) {
+    const inv = this.invocation;
+    if (this.openText) {
+      out.push({
+        type: "TEXT_MESSAGE_END",
+        messageId: this.openText.id,
+        ...(inv ? { subagentRunId: inv.id } : {}),
+      });
+      this.openText = null;
+    }
+    if (inv) {
+      this.closeSteps("suspended", out);
+      out.push({
+        type: "SUBAGENT_FINISHED",
+        subagentRunId: inv.id,
+        outcome: { type: "suspended" },
+      });
+      this.suspended = inv;
+      this.invocation = null;
+    }
+    out.push(this.snapshot());
+    out.push({
+      type: "RUN_FINISHED",
+      threadId: this.info.threadId,
+      runId: this.run?.runId ?? "",
+      outcome: { type: "success" },
+    });
+    this.run = null;
   }
 
   /**
@@ -972,6 +1022,12 @@ export class Projector {
     // message redelivered to the agent), whose run it opens
     const finished = this.state === "done" || this.state === "failed" || this.state === "cancelled";
     const jobStart = e.kind === "job_started" ? Number(e.data.job) : undefined;
+    // a job boundary ends the invocation a stopped task left open (ADR 0036)
+    if (e.kind === "job_started" && this.invocation) {
+      this.closeSteps("canceled", out);
+      out.push(Projector.canceledSubagent(this.invocation.id));
+      this.invocation = null;
+    }
     const begunByMessage = jobStart !== undefined && jobStart === this.jobNumber;
     if (!this.run && finished && e.kind === "user_message") this.beginJob(this.jobNumber + 1);
     if (jobStart !== undefined && jobStart !== this.jobNumber) this.beginJob(jobStart);
@@ -990,15 +1046,30 @@ export class Projector {
         break;
       }
       case "user_message": {
-        if (!this.run) this.openRun(e, out);
         // a message during a verification abandons it
         this.closeVerifier("abandoned", out);
         if (this.state === "verifying") this.state = "queued";
         this.checksFailed = false;
         this.lastWasError = false;
+        // a message inside an open run ends it and opens its own (ADR 0036)
+        const superseding = this.run !== null;
+        if (superseding) this.supersedeRun(out);
+        const delivery = str(e.data.delivery);
+        if (delivery === "interrupt") this.stopping = true;
+        this.openRun(e, out, superseding);
         const messageId = str(e.data.messageId) ?? `evt-${e.seq}`;
         if (!audience.skipUserMessageIds?.has(messageId)) {
-          out.push(...this.textTriad(e, messageId, str(e.data.text) ?? "", "user"));
+          out.push(
+            ...this.textTriad(
+              e,
+              messageId,
+              str(e.data.text) ?? "",
+              "user",
+              undefined,
+              undefined,
+              delivery,
+            ),
+          );
         }
         break;
       }
@@ -1080,7 +1151,7 @@ export class Projector {
         if (status === "working" && this.state === "queued") {
           this.state = "working";
           out.push(this.snapshot());
-        } else if (status === "input_required" || status === "auth_required") {
+        } else if ((status === "input_required" || status === "auth_required") && !this.stopping) {
           const id = `int-${e.seq}`;
           this.interrupt = {
             id,
@@ -1101,7 +1172,7 @@ export class Projector {
           out.push({ type: "SUBAGENT_FINISHED", subagentRunId: inv.id });
           this.invocation = null;
           // under a gate the agent finishing is not the end: the work is verified, the run stays open
-          if (this.job()) {
+          if (this.job() && !this.stopping) {
             this.verification += 1;
             this.state = "verifying";
             out.push(this.snapshot());
@@ -1292,6 +1363,11 @@ export class Projector {
       }
       case "error": {
         const message = str(e.data.message) ?? "";
+        // the orchestrator's own error that cannot be retried, while a stop is on its way, is the
+        // agent that could not be stopped: the job goes on and is judged again (ADR 0036, row 7)
+        if (this.stopping && e.data.retryable !== true && e.actor.type === "system") {
+          this.stopping = false;
+        }
         out.push(
           this.activity(
             e,
@@ -1338,6 +1414,7 @@ export class Projector {
       case "thread_state": {
         if (!this.run) this.openRun(e, out);
         this.state = e.data.state as ThreadState;
+        this.stopping = false;
         // a verifier still waited for when the run ends never answered (a timeout, a cancel, or
         // another source decided the round); the run's success is its pass
         this.closeVerifier(this.state === "done" ? { passed: true } : "abandoned", out);

@@ -140,6 +140,12 @@ type Run = {
   resume: ((answer: string) => Step[]) | undefined;
   /** Set while the run waits at a `{ pause: "release" }` step: goes on with the steps after it. */
   release?: () => void;
+  /**
+   * Messages sent while the job runs (`vymalo.send: "steer"`, ADR 0036). Until the orchestrator
+   * steers into the running task (`steer/v1`) they reach the agent after its turn: the first of
+   * them starts the thread's next job when this one is done.
+   */
+  held?: string[];
 };
 
 /** One open response that gets the frames of a thread as its log grows. */
@@ -162,6 +168,10 @@ export type MockOptions = {
   /** How often the text so far of a reply being written is said again from its start (default 1000). */
   refreshMs?: number;
 };
+
+/** A run response ends with `RUN_FINISHED` or `RUN_ERROR`. */
+const isTerminalEvent = (event: { type?: unknown }) =>
+  event.type === "RUN_FINISHED" || event.type === "RUN_ERROR";
 
 export function createMockServer(options: MockOptions = {}): http.Server {
   const stepMs = options.stepMs ?? 400;
@@ -384,7 +394,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   function startViewer(
     res: http.ServerResponse,
     thread: Thread,
-    opts: { fromSeq: number; audience?: Audience; end: Viewer["end"] },
+    opts: {
+      fromSeq: number;
+      audience?: Audience;
+      end: Viewer["end"];
+      /**
+       * Start at the `RUN_STARTED` of this run: the response to a message that ended the run that
+       * was open (ADR 0036) is the run the message opened, and nothing of the one it ended.
+       */
+      fromRun?: string;
+    },
   ) {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -410,11 +429,29 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       clearInterval(viewer.keepalive);
       viewers.get(thread.id)?.delete(viewer);
     });
-    write(viewer, projector.preamble());
+    if (opts.fromRun === undefined) write(viewer, projector.preamble());
+    let writing = opts.fromRun === undefined;
     for (const e of log) {
       if (e.seq <= opts.fromSeq) continue;
       const wasOpen = projector.runOpen;
-      write(viewer, viewer.overlay.logged(projector, projector.apply(e, viewer.audience)));
+      let frames = viewer.overlay.logged(projector, projector.apply(e, viewer.audience));
+      if (!writing) {
+        const at = frames.findIndex(
+          (f) => f.event.type === "RUN_STARTED" && f.event.runId === opts.fromRun,
+        );
+        if (at < 0) continue;
+        frames = frames.slice(at);
+        writing = true;
+      }
+      if (viewer.end === "first-close") {
+        // a run response ends at its terminal event, whatever the event goes on to open
+        const last = frames.findIndex((f) => isTerminalEvent(f.event));
+        if (last >= 0) {
+          write(viewer, frames.slice(0, last + 1));
+          return closeViewer(viewer);
+        }
+      }
+      write(viewer, frames);
       if (viewer.end === "first-close" && wasOpen && !projector.runOpen) return closeViewer(viewer);
     }
     if (viewer.end === "after-replay" && !projector.runOpen) return closeViewer(viewer);
@@ -448,7 +485,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     for (const v of [...(viewers.get(threadId) ?? [])]) {
       const wasOpen = v.projector.runOpen;
-      write(v, v.overlay.logged(v.projector, v.projector.apply(event, v.audience)));
+      const frames = v.overlay.logged(v.projector, v.projector.apply(event, v.audience));
+      if (v.end === "first-close") {
+        // a run response ends at its terminal event, even when the event opens the next run (a
+        // message sent while the agent works, ADR 0036)
+        const last = frames.findIndex((f) => isTerminalEvent(f.event));
+        if (last >= 0) {
+          write(v, frames.slice(0, last + 1));
+          closeViewer(v);
+          continue;
+        }
+      }
+      write(v, frames);
       if (v.end !== "never" && wasOpen && !v.projector.runOpen) closeViewer(v);
     }
     return event;
@@ -570,6 +618,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           step.data,
         );
         if (step.setState) setState(t, step.setState);
+        // the job is done and a message was sent while it ran: it starts the next job
+        if (step.kind === "thread_state" && step.data.state === "done" && run.held?.length) {
+          const text = run.held.shift() as string;
+          startNextJob(t, text);
+          return;
+        }
       }
       const next = run.pending[0];
       if (next && "pause" in next && next.pause === "release") {
@@ -580,6 +634,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       run.timer = setTimeout(tick, next && "quick" in next && next.quick ? 0 : stepMs);
     };
     run.timer = setTimeout(tick, stepMs);
+  }
+
+  /** The thread's next job starts with `text` (ADR 0020): `job_started`, then the script of the text. */
+  function startNextJob(t: Thread, text: string, before: Step[] = []) {
+    const job = (events.get(t.id) ?? []).filter((e) => e.kind === "job_started").length + 2;
+    const script = scriptFor(text);
+    runs.set(t.id, { timer: undefined, pending: [], resume: script.resume });
+    play(t, [
+      ...before,
+      { kind: "job_started", data: { job }, system: true, setState: "queued" },
+      ...script.start,
+    ]);
   }
 
   // ---- routes --------------------------------------------------------------------------
@@ -1227,6 +1293,23 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       );
     }
 
+    // how a message sent while a run is open is delivered (ADR 0036): read on every run
+    const sendRaw = isRecord(body.forwardedProps) ? body.forwardedProps["vymalo.send"] : undefined;
+    if (
+      sendRaw !== undefined &&
+      sendRaw !== null &&
+      sendRaw !== "steer" &&
+      sendRaw !== "interrupt"
+    ) {
+      return problem(
+        res,
+        400,
+        "Invalid request",
+        `forwardedProps["vymalo.send"] must be "steer" or "interrupt", got ${JSON.stringify(sendRaw)}`,
+      );
+    }
+    const send = sendRaw === "steer" || sendRaw === "interrupt" ? sendRaw : undefined;
+
     const messages = body.messages as Record<string, unknown>[];
     const resume = Array.isArray(body.resume)
       ? (body.resume as { interruptId?: string; status?: string; payload?: { text?: unknown } }[])
@@ -1364,12 +1447,27 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       });
     }
     if (thread.state === "queued" || thread.state === "working" || thread.state === "verifying") {
-      return problem(
-        res,
-        409,
-        "Conflict",
-        "a run is already open on this thread; wait for it to finish",
-      );
+      // a message that says how it is delivered is served while a run is open (ADR 0036)
+      if (!send || resume.length > 0) {
+        return problem(
+          res,
+          409,
+          "Conflict",
+          'a run is already open on this thread; wait for it to finish, or send a message with forwardedProps["vymalo.send"] set to "steer" or "interrupt"',
+        );
+      }
+      if (fresh.length !== 1) {
+        return problem(res, 422, "Unprocessable", "nothing to run, or more than one new message");
+      }
+      if (log.some((e) => e.data.runId === runId)) {
+        return problem(res, 422, "Unprocessable", "the run id was used before");
+      }
+      const sent = messageText(fresh[0] as Record<string, unknown>);
+      const sentId = fresh[0]?.id as string;
+      if (typeof sent !== "string" || sent === "") {
+        return problem(res, 422, "Unprocessable", "a message without text");
+      }
+      return sendWhileRunning(me.user, res, thread, runId, sentId, sent, send, catalog);
     }
     const answer = resume.find((r) => r.status === "resolved");
     let text: string | undefined;
@@ -1406,6 +1504,56 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     return startViewer(res, thread, {
       fromSeq: from,
       audience: { skipUserMessageIds: new Set(messageId ? [messageId] : []) },
+      end: "first-close",
+    });
+  }
+
+  /**
+   * A message sent while the agent works (ADR 0036): logged at once, with the `delivery` the core
+   * writes (`steer` or `interrupt`; none while the work is verified, when nothing runs). The
+   * response is the run the message opens. `steer` reaches the agent after its turn (the mock does
+   * not play `steer/v1`): the next job starts when this one is done. `interrupt` cancels the
+   * running task and starts the next job with the text, with no `thread_state` for the abandoned one.
+   */
+  function sendWhileRunning(
+    who: string,
+    res: http.ServerResponse,
+    thread: Thread,
+    runId: string,
+    messageId: string,
+    text: string,
+    how: "steer" | "interrupt",
+    catalog: CatalogSent | undefined,
+  ) {
+    const from = lastSeq(thread.id);
+    recordCatalog(thread.id, catalog);
+    const verifying = thread.state === "verifying";
+    append(
+      thread.id,
+      "user_message",
+      { type: "user", name: who },
+      { text, messageId, runId, ...(verifying ? {} : { delivery: how }) },
+    );
+    if (verifying) {
+      // nothing runs: the message is a plain one, and the agent goes again (ADR 0036, row 4)
+      setState(thread, "queued");
+      const script = scriptFor(text);
+      runs.set(thread.id, { timer: undefined, pending: [], resume: script.resume });
+      play(thread, script.start);
+    } else if (how === "steer") {
+      const run = runs.get(thread.id);
+      if (run) run.held = [...(run.held ?? []), text];
+    } else {
+      const run = runs.get(thread.id);
+      if (run) clearTimeout(run.timer);
+      startNextJob(thread, text, [
+        { kind: "agent_status", data: { status: "canceled", detail: "canceled" } },
+      ]);
+    }
+    return startViewer(res, thread, {
+      fromSeq: from,
+      fromRun: runId,
+      audience: { skipUserMessageIds: new Set([messageId]) },
       end: "first-close",
     });
   }

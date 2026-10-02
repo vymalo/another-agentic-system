@@ -973,7 +973,7 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   (`ioDropped`), and a step with none. The `steps` golden's `npm test` carries input and output too.
  * - `steps-ask`: the same sub-agent with a command that is `waiting` when the agent asks "Allow rm -rf
  *   build?" and blocks (the `steps-ask` golden); the answer ends the command and the sub-agent.
- * - `slow`: works until cancelled.
+ * - `slow`: works until cancelled. `gate`: works until a test releases the run (`POST /__mock/release`), then the result and done.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
  * - `describe`: the same as `talk`, then, after the thread is done, the description the orchestrator's model
@@ -2038,6 +2038,10 @@ export function scriptFor(text: string): {
       };
     case "slow":
       return { start: [working, { pause: "cancel" }] };
+    // holds until a test releases the run (`POST /__mock/release`), then finishes: the agent that is
+    // working while a message is sent to it (ADR 0036)
+    case "gate":
+      return { start: [working, { pause: "release" }, ...finish(`echo: ${text}`)] };
     case "fail":
       return {
         start: [
