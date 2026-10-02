@@ -377,3 +377,19 @@ What the pin brings:
   passes at that commit.
 - *Unverified where this was written* (nothing was pulled or started): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it; that the model of an agent is offered `turn_output`
   under that name (the two new assertions of `dev/agents-e2e.sh`; read from adam-rs's documentation, not run).
+
+### Status note, 2026-10-02: tools attached to a conversation, and a message that steers (adam-rs 851ff21)
+
+The coder is pinned at adam-rs `851ff21`, which contains [#73](https://github.com/vymalo/another-adam-rs/pull/73) (a cancel stops the model call in flight), [#74](https://github.com/vymalo/another-adam-rs/pull/74) (the thread's tools: the `_meta` of a tool,
+long calls, mentions) and [#75](https://github.com/vymalo/another-adam-rs/pull/75) (`steer/v1`). Nothing about the decision changes: the coder is a plain A2A agent, the orchestrator reads its card live and fails closed (ADR 0008), the image is
+pinned by tag and digest at the commit in `dev/coder/UPSTREAM`. What the pin brings, and what this repository does with it:
+
+- **Tools the orchestrator reports** (#74, adam-rs ADR 0015): an agent that lists the thread's tools reads each tool's `_meta["thread-tools/v1"]` (`reportsStep`, `timeoutSecs`), waits as long as it says (capped by `THREAD_TOOLS_MAX_CALL_SECS`, 3600 by default), sends the
+  request `_meta` `{callId, parentStepId?}` and, for a tool that reports its own step, emits none of its own. That is what lets the orchestrator's relay ([ADR 0024](0024-mcp-tools-attached-per-conversation.md)) be the one step of a call.
+  The cards of the coder and of `adam-agent` also list `mentions/v1` (read into the run's context), and, since #75, `steer/v1` (a message to a working task is delivered into it when the request activates the extension; the orchestrator does not send one yet).
+- **In this repository:** the pin (`x-adam-image` and `dev/coder/UPSTREAM`; **no vendored file changed**: `dev/` and `bin/adam-coder/agent` are byte for byte the same at `c0f12dd` and at `851ff21`), `dev/orchestrator.yaml` and `dev/orchestrator.live.yaml` (a `toolServers` entry `websearch`),
+  the chat's `[mock:websearch]` model scripts, and `dev/tools-e2e.sh`, which attaches the web search to a chat and asserts the call is one step with the server's icon ([`dev/README.md`](../../dev/README.md#tools-per-conversation)).
+- *Verified 2026-10-02* (anonymous ghcr API, HTTP 200): `coder:sha-851ff21` is one `linux/amd64` manifest (2.92 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
+  `851ff216613b2dc8f8194fd7081da9d3968186d3`, digest `sha256:329cdc4f...` (the registry's `Docker-Content-Digest`, and the sha-256 of the manifest it returned; the first request, minutes after the merge, was a 404 until adam-rs's `coder` workflow finished). `dev/coder/check-vendored.sh` passes at that commit.
+- *Unverified where this was written* (the 2.9 GB image was not pulled and the orchestrator was not built): the scenarios in containers, the first run of which is the Coder E2E workflow of the pull request that pins it; in particular that `adam-agent` offers the relayed tool to the model under the name `websearch__web_search`
+  and emits no step of its own for it (read from adam-rs's source at that commit, not run).
