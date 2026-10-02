@@ -100,6 +100,19 @@ async function makeThread(text: string, agent = "reviewer"): Promise<string> {
   return threadId;
 }
 
+/**
+ * Lets a held reply (`stream-gate`, `stream-abandon`) go on. The mock says 409 until the reply has
+ * come to the place where it waits, which is what this waits for.
+ */
+async function release(threadId: string) {
+  await waitFor(async () => {
+    const released = await realFetch(`${base}/__mock/release?thread=${threadId}`, {
+      method: "POST",
+    });
+    expect(released.status).toBe(204);
+  });
+}
+
 const log = () => screen.getByRole("log", { name: "Conversation" });
 const stateBadge = () => screen.getByRole("status", { name: /^Thread state:/ });
 const drafts = () => [...log().querySelectorAll<HTMLElement>('[data-slot="agent-draft"]')];
@@ -108,8 +121,11 @@ const replies = () => [...log().querySelectorAll<HTMLElement>('[data-slot="agent
 const times = (words: string) => (log().textContent ?? "").split(words).length - 1;
 
 describe("live text, in the app", () => {
-  it("stream-long: the words grow in the turn as a draft, then the log's message is the one reply and no draft is left", async () => {
-    const id = await makeThread("stream-long write the plan");
+  it("stream-gate: the words grow in the turn as a draft, then the log's message is the one reply and no draft is left", async () => {
+    // the mock holds the reply after its fifth piece until `release`: what the test looks at is
+    // there as long as it needs, whatever the machine's speed (a reply that plays on its own is
+    // over in three seconds, which a loaded machine can spend before the page has drawn it)
+    const id = await makeThread("stream-gate write the plan");
     shell(id);
 
     // a draft in the agent's turn, with the first words, busy and silent for a screen reader
@@ -130,6 +146,8 @@ describe("live text, in the app", () => {
     await waitFor(() => expect(drafts()[0]?.textContent).toContain("that fixes it."));
     // Markdown as it is written: the list is a list
     await waitFor(() => expect(drafts()[0]?.querySelectorAll("li").length).toBeGreaterThan(0));
+    expect(replies()).toHaveLength(0);
+    await release(id);
 
     // the log says the reply: one message, the draft is gone, the words are there once
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
@@ -207,8 +225,7 @@ describe("live text, in the app", () => {
     shell(id);
     await waitFor(() => expect(drafts()[0]?.textContent).toContain("The answer is forty-"));
     // the model stalls halfway, and fails when the test says so
-    const released = await realFetch(`${base}/__mock/release?thread=${id}`, { method: "POST" });
-    expect(released.status).toBe(204);
+    await release(id);
     await waitFor(() => expect(drafts()).toHaveLength(0));
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     expect(replies().map((r) => r.textContent)).toEqual([
@@ -219,12 +236,14 @@ describe("live text, in the app", () => {
   });
 
   it("a connection cut mid-reply: the new one has the log only, and the reply arrives once, whole", async () => {
-    const id = await makeThread("stream-long write the plan");
+    const id = await makeThread("stream-gate write the plan");
     shell(id);
     await waitFor(() => expect(drafts()).toHaveLength(1));
     // the network went away: every open stream is cut; the drafts go with the connection
     await realFetch(`${base}/__mock/drop-streams`, { method: "POST" });
     await waitFor(() => expect(drafts()).toHaveLength(0));
+    // the reply goes on while the page is reconnecting, and is over when it is back
+    await release(id);
     await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
     await waitFor(() => expect(replies()).toHaveLength(1));
     expect(replies()[0]?.textContent).toContain("when it is green.");

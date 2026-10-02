@@ -330,6 +330,15 @@ describe("the goldens through the runtime", () => {
   // A fork's three runs (the parent's turn, the marker, the next job) are applied one after the
   // other, and a run that holds only the marker follows the transcript as it is *rendered*, which
   // inside `act` lags: so these wait for the transcript to become what it must be, outside `act`.
+  //
+  // They also hand the runs over one at a time, each once the transcript shows the one before it.
+  // `quiesce` (live-runs.ts) decides that the transcript has caught up when its message count has
+  // not changed for 20 ms; a marker run goes by in a single render, so on a loaded machine the
+  // render of its message can come later than that, and the next run then hangs off the message
+  // before it and replaces the marker. Writing all the frames at once left the outcome to the
+  // machine's speed; here it is the transcript that says when the next run may come.
+  /** How many messages the transcript holds once each run of the fork's golden has been applied. */
+  const FORK_RUNS = [2, 3, 5];
   const FORKS: Record<string, Summary> = {
     // a fork (ADR 0029): the parent's turn as it was, the marker as a run of its own (one `fork`
     // part, which the chat draws as a divider), then the message that goes on in the fork
@@ -373,11 +382,16 @@ describe("the goldens through the runtime", () => {
         const mounted = mountRuntime(() => sse(stream.body));
         mounted.agent.start();
         const frames = loadGolden(golden);
-        await act(async () => {
-          stream.frames(frames);
-        });
+        const starts = frames.flatMap((f, i) => (f.event.type === "RUN_STARTED" ? [i] : []));
+        expect(starts).toHaveLength(FORK_RUNS.length);
+        for (const [run, from] of starts.entries()) {
+          await act(async () => {
+            stream.frames(frames.slice(from, starts[run + 1]));
+          });
+          await waitFor(() => expect(mounted.messages()).toHaveLength(FORK_RUNS[run] as number));
+        }
         await waitFor(() => expect(summarize(mounted.messages())).toEqual(expected));
-        expect(mounted.agent.getSnapshot().state).toBe("done");
+        await waitFor(() => expect(mounted.agent.getSnapshot().state).toBe("done"));
         mounted.agent.stop();
       });
     }
