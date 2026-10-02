@@ -9,6 +9,8 @@
 //! - [`call_back`] and [`announce`]: the agent's side of the thread tools (`thread-tools/v1`), what
 //!   the fake agent's `thread-tools` and `turn-output` scripts do with the grant in its message
 //!   (ADR 0023, ADR 0031);
+//! - [`FakeToolServer`]: a real MCP server over streamable HTTP with the four tools of the tool-server
+//!   testkit, a bearer check and a journal (ADR 0024);
 //! - [`eventually`]: wait-until with a deadline, instead of sleeping.
 //!
 //! The helpers panic on failure (they are for tests), hence the lint allowances.
@@ -19,6 +21,7 @@ pub mod fake;
 mod instance;
 mod sse;
 mod thread_tools;
+mod tool_server;
 mod wait;
 
 pub use catalog::{UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog};
@@ -29,4 +32,5 @@ pub use fake::{
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
 pub use thread_tools::{announce, call_back};
+pub use tool_server::{FakeToolServer, FakeToolServerOptions};
 pub use wait::{DEFAULT_TIMEOUT, eventually, eventually_within};
