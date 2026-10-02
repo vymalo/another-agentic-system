@@ -66,7 +66,8 @@ is present and bad is refused even when another would have served.
 
 | Outcome | Response |
 |---|---|
-| authenticated | the `Principal` and its `UserId` are in the request extensions (a handler takes `Extension<UserId>`; S15 reads the `Principal`) |
+| authenticated | the `Principal` (the user, and the roles of the credential) is in the request extensions: a handler takes `Extension<Principal>` and hands it to the application, which enforces the roles ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)); there is no bare `UserId` extension any more |
+| authenticated, and the roles grant nothing | 403 problem with `code: no_access`, from every route but `GET /api/me`: a valid token with no role the configuration defines and no `auth.defaultRole` |
 | `Missing`, `Invalid` | 401 problem; with `WWW-Authenticate: Bearer realm="orchestrator"` when the authenticator reads bearer tokens, and `, error="invalid_token"` when a token was presented and refused (RFC 6750) |
 | `Unavailable` (the issuer's keys cannot be fetched), `NotConfigured` | 503 problem with `Retry-After: 5`: nobody is let in, and it is not a refusal of the caller |
 
@@ -75,12 +76,30 @@ never fetched is kept out of the service. `/healthz` does not follow it.
 **The identity header is only trustworthy behind a proxy (oauth2-proxy) that strips client-supplied copies**; with
 `auth.mode: jwt` it is not read at all.
 
+### Roles and permissions
+
+What a person may do is the application's ([`orch-app`](../app/README.md#api-at-a-glance), `authz`): the handlers pass the
+`Principal` and map the answer. `AppError::NotFound` is the 404 `no such thread` (a thread the person may not read is the
+answer for one that does not exist), `AppError::Forbidden` is a 403 whose `code` is `forbidden` (a permission or an agent
+the roles lack) or `read_only` (a thread the person may read and not change: an administrator's view of another's).
+
+* **`GET /api/me`** (`getMe`): `{user, email?, name?, roles, permissions: [{permission, scope?}], agents: {read, invoke}}`, `Cache-Control:
+  no-store`. It answers a person whose roles grant nothing too, so that a client can say why every other route is a 403. Never a check: the
+  orchestrator enforces every request.
+* **`GET /api/threads?owner=`**: the caller's own threads, or with `owner=<e-mail>` one person's and with `owner=*` everyone's (newest first, `Thread.owner`
+  says whose), for the `admin` permission and a `thread.read` of scope `any` (else 403, not a short list); the caller's own address is the plain list.
+* **`Thread.owner`**: every serialised thread says its owner (the e-mail), so a client that reads other people's threads can tell its own.
+* **Streams**: `sse::stream_budget(&principal, now)` is how long a stream may stay open for a credential (its `exp` plus 60 s, at most an hour,
+  `None` for one that does not run out) and `sse::bounded(stream, budget)` ends a stream when it is spent; the AG-UI surface applies them to its
+  connect and run streams, and the client resumes with `Last-Event-ID` and a fresh token.
+* Tests: `tests/rbac.rs` drives it all over HTTP from bearer tokens (`MemoryAuth`) and checks the answers against `docs/api/chat-api.yaml`.
+
 ### `GET /api/threads/{id}/export`
 
 The thread as one downloadable JSON document, for the owner to send to a developer
 ([`docs/orchestrator.md`](../../../docs/orchestrator.md#exporting-a-thread), operation `exportThread` of the contract).
 Authorised exactly like `GET /api/threads/{id}`: behind the identity layer (401 without it), and `App::export_thread` reads the
-thread as the caller, so another owner's thread, an unknown one and an id that is not a UUID are the same 404. The answer is
+thread as the caller (`thread.read`), so a thread the caller may not read, an unknown one and an id that is not a UUID are the same 404. The answer is
 `200 application/json` with `Content-Disposition: attachment; filename="thread-<id>.json"` and `Cache-Control: no-store`,
 pretty-printed: `{format, version: 1, exportedAt, thread, job, binding, events, eventsTruncated}`. `thread` is the contract `Thread`; `job` is the
 whole ledger (which `Thread.job` only summarises), with its `number` (which job of the thread this is, [ADR 0020](../../../docs/decisions/0020-a-thread-is-a-conversation.md)); `events` is the log in order from `seq` 1 exactly as stored, and stops at
@@ -91,9 +110,9 @@ messages. Built in `src/export.rs`; unit-free (a `Serialize` struct that borrows
 ### `GET /api/threads/{threadId}/artifacts/{sha256}`
 
 A file an agent handed over, from the artifact store ([ADR 0032](../../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md),
-operation `getArtifact`). Behind the identity layer; `App::open_artifact` decides who may read (the thread's owner
-today: `get_thread`, one line, where the role permission `artifact.read` of ADR 0033 will come), and **every miss is the same 404**:
-another person's thread, a thread that does not exist, a hash the thread holds no file for (the file of another thread is not reachable by
+operation `getArtifact`). Behind the identity layer; `App::open_artifact` decides who may read (the permission `artifact.read` of ADR 0033 over the thread:
+the owner's under a scope of `own`, anyone's under `any`; a role without it is a 403), and **every miss is the same 404**:
+a thread the caller may not read, a thread that does not exist, a hash the thread holds no file for (the file of another thread is not reachable by
 hash), a hash that is not 64 lowercase hex digits, and a deployment with no artifact store. `src/artifacts.rs` says how the file is sent:
 
 * **streamed** from the store, never held whole (an inline SVG is the one exception, read to be sanitized, up to `MAX_SVG_INLINE_BYTES`, 2 MiB);

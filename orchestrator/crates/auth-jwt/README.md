@@ -52,7 +52,7 @@ stateDiagram-v2
 - **Claims**: `iss` equals the configured issuer exactly; one of the configured audiences is among `aud`; `exp`,
   `iat`, `iss` and `aud` are present; `nbf` is honoured; 60 s of leeway for `exp` and `nbf`; `email_verified` is
   not `false` (a boolean or the text); the user claim (`userClaim`, default `email`) is non-empty text, trimmed and
-  lower-cased by `UserId::new`. The e-mail and the name are `Principal.email` and `.name`. The roles are the texts at
+  lower-cased by `UserId::new`. The e-mail and the name are `Principal.email` and `.name`, and the token's `exp` is `Principal.expires_at` (it bounds the streams opened with the token, ADR 0033). The roles are the texts at
   the dotted path `rolesClaim` (`realm_access.roles`, `groups`): a claim whose own name has dots is found by that
   name first; a list gives its texts, a text is one role, anything else is none, and a bad roles claim never
   refuses a token.
