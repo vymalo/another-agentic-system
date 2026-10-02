@@ -143,6 +143,12 @@ export const panelResizer = (page: Page) =>
  */
 export const activityTab = (page: Page) => panel(page).getByRole("tabpanel", { name: "Activity" });
 
+/** The failed chip of the line an agent turn keeps in the conversation: a button of its own beside the line's. */
+export const turnFailedChip = (page: Page) =>
+  page.locator(
+    '[role="log"][aria-label="Conversation"] [data-slot="turn-summary-line"] [data-slot="failed-chip"]',
+  );
+
 /** The one line an agent turn keeps in the conversation: the button that opens its steps. */
 export const turnSummaries = (page: Page) =>
   // not through the log's role: behind a phone's sheet the page is hidden from the accessibility tree

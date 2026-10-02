@@ -44,7 +44,8 @@ async function axeViolations(page: import("@playwright/test").Page) {
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(`accessibility (${scheme})`, () => {
-    test.use({ colorScheme: scheme });
+    // a turn fades in for 160 ms: axe would read colours that are not at rest yet
+    test.use({ colorScheme: scheme, contextOptions: { reducedMotion: "reduce" } });
 
     test("axe: new thread page has no serious violations", async ({ page }) => {
       await page.goto("/");

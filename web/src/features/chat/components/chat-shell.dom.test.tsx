@@ -348,7 +348,8 @@ describe("ChatShell over AG-UI", () => {
     expect(transcript.queryByText("OpenCode")).toBeNull();
     expect(transcript.getAllByRole("button", { name: /steps:/ })).toHaveLength(1);
     // the failure is said in the line, with its words
-    expect(within(line).getByText("1 failed")).toBeTruthy();
+    const chip = transcript.getByRole("button", { name: /^1 failed\./ });
+    expect(chip.textContent).toBe("1 failed");
     expect(line.getAttribute("aria-expanded")).toBe("false");
 
     // the panel lists the tree: the sub-agent as one line, its command inside

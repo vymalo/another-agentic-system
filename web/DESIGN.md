@@ -235,7 +235,11 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   question, a pause and "Paused · 9 steps"; while the gate checks the work, the `--verifying` shield and
   "Verifying"; when it is done, a check and "14 steps · 2m 10s"; "Failed · 14 steps" with a cross; "Stopped · 5
   steps" with a ban. Whenever a step failed it adds a destructive chip with an icon and the words, "1 failed",
-  **even in a turn that went well**: a failure is never hidden by the summary. A turn of words only, which is
+  **even in a turn that went well**: a failure is never hidden by the summary. **The chip is a button of its own**,
+  beside the line's (a button does not hold a button), named "1 failed. Show the first one in the side panel": it
+  opens the panel on the first step that failed, opens the way to it and the step's input and output, and puts the
+  focus on its button (the step is asked for by id: `openSteps(turnId, stepId)`; a turn that failed with no step
+  of the agent to show lands on the turn's header). A turn of words only, which is
   not running, has no line. Its accessible name says it all: "Coder's steps: 14 steps · 2m 10s, 1 failed.
   Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
   shows this turn), so Enter and Space open it.
@@ -352,6 +356,13 @@ runtime already holds, so it is the same on the live stream, on a replay and aft
 
 *The Activity tab with a sub-agent opened to its latest steps and its failed one, and the chat's one line for the turn.*
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-step-io.png">
+  <img src="e2e/__screens__/desktop-light-step-io.png" alt="The Activity panel of a turn of tool calls. “Web search”, tagged “search”, with the query “Stephane Segning” beside it, is opened: Input lists query, limit and a redacted api_key, Output is a monospace box with two results. Below, a failed command is opened to an Error box that holds a build's type error. The other steps are closed one-line rows." width="720">
+</picture>
+
+*A tool step opened (the mock's `steps-io`): what it was called with, what it returned, and the error of the one that failed.*
+
 - **A turn is a section.** One per agent turn that did something (a turn of words has none, and "Turn n" is
   numbered as the chat and the Sources tab number turns), oldest first. Its header is a heading with a button:
   "Turn 3 · Coder · 2m 10s", the turn's state as a glyph, a destructive "1 failed" chip, a chevron. It opens and
@@ -375,6 +386,32 @@ runtime already holds, so it is the same on the live stream, on a replay and aft
   box**, one line, with Show more; a step's detail is a muted line under it. The activities of before (a push, a
   check, a CI report, a rework, the person's click) are drawn by the renderers that always drew them, as leaves.
   The checks, CI reports and reworks of the verification gate are steps of the turn after the agent's own.
+- **A tool step opens onto its input and output** (2026-10-02, the owner: "when I click on search__web_search,
+  nothing. Not a small collapsible block nicely telling me: params → output"; ADR 0030). A step that carries an
+  `input`, an `output` or a note that the record's budget had no room for is a button like the sub-agent's: a
+  chevron, the words, `aria-expanded`, in the tab order, Enter and Space. A step with children opens its children
+  **and** its own block with the one button; one without opens the block. A step that sent neither is a plain row,
+  not a control. What it opens is a small card under the line, in this order:
+  **Input**, the arguments (a key and its value in a two-column list when they are all plain, pretty JSON in a
+  monospace box when they nest; a value is text, `[redacted]` is shown as it came, and an input the orchestrator
+  could not keep, `{"_cut": true, "bytes": n}`, says "Input not kept (18 KiB)"); then **Output**, the tool's text
+  in a monospace box that scrolls (256 px high at most, and focusable, so it is reachable by keyboard) and, when the
+  orchestrator kept only its head and tail, "41 KiB more not kept"; or **Error**, in `--destructive`, in the
+  place of Output when the call failed (`output.error`, a failed step, or the step's own detail when it has no
+  output); and, last, "Some of this step's input or output was not kept: the job passed its recording limit"
+  when `ioDropped`. All of it is an agent's text: **drawn as text nodes, never as markup**, and never parsed
+  (the `output.text` is not read as JSON or Markdown). Open or closed is kept above the panel with the rest of the
+  tree's state.
+- **A tool is called by its tool.** An MCP tool reaches the page as `server__tool`; the row says "Web search" and
+  puts the server in a small muted tag ("search", read "from search"), then one short, muted phrase of what the
+  call was about, the first of `query`, `q`, `url`, `path`, `command`… that is text, else the first text there is,
+  one line and 60 characters at most ("Stephane Segning"). Nothing for a credential, for an input that was not
+  kept and for arguments that are not text. The raw label stays in the tooltip. A label that is not `server__tool`
+  (a command, `run_checks`, a sub-agent) is shown as it is.
+- **The failed chip counts a failure once.** `run_checks` says a red result twice: its step ends `failed` and the
+  `checks` artifact it made is red beside it. The artifact stays a row (it holds the findings) but is not counted
+  again in the chip of the turn, of the line in the chat or of a collapsed level. A red artifact whose step did
+  not fail is the only failure there is, and counts.
 - **A turn that is not running holds no running step**: paused on a question, its steps wait (a pause); ended,
   they are stopped. A turn that ended on a question stays "Paused" in the history after it was answered.
 - **While the thread runs** the pane keeps the step the agent is on in view, until the person scrolls or opens or
@@ -382,7 +419,9 @@ runtime already holds, so it is the same on the live stream, on a replay and aft
 - **Fits** 280 to 560 px and the width of a phone's sheet; nothing scrolls sideways.
 - **Accessibility.** A section per turn named by its heading; each level a nested list (`ol`) named for what it
   holds ("Steps of OpenCode"); every toggle a native button with `aria-expanded`, in the tab order (it is
-  **not** an ARIA tree: "steps are a list" stays true, no roving tabindex); a step that is not simply done says
+  **not** an ARIA tree: "steps are a list" stays true, no roving tabindex; a tool step's block is named by its
+  own headings, Input, Output, Error, and the control names carry no dynamic text that could collide with
+  "Message"); a step that is not simply done says
   its state in words before its name ("Failed: …", "Waiting: …") for a screen reader; a scroll box is a
   labelled, focusable region; there is no live region in the pane (the state pill stays the one polite status).
 

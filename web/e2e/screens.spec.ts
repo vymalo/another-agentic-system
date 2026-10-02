@@ -223,6 +223,24 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "steps-more");
     });
 
+    test("step input and output: a tool step opened, and the one that failed", async ({ page }) => {
+      test.setTimeout(60_000);
+      await startThread(page, "steps-io please");
+      await expect(badge(page)).toHaveText("Done", { timeout: 30_000 });
+      await expect(turnSummaries(page)).toHaveCount(1);
+      await showActivity(page);
+      const turn = turnSections(page).first();
+      const search = turn.getByRole("button", {
+        name: /^Web search from search Stephane Segning$/,
+      });
+      await search.click();
+      await expect(turn.locator('[data-slot="step-output"]').first()).toBeVisible();
+      await turn.getByRole("button", { name: /^Failed: Command failed/ }).click();
+      await expect(turn.getByRole("heading", { name: "Error" })).toBeVisible();
+      // the sheet of a phone covers the chat, so the still is of the panel on both devices
+      await shot(page, "step-io");
+    });
+
     test("steps while the agent works", async ({ page }) => {
       await startThread(page, "Investigate the login redirect");
       await expect(turnSummaries(page)).toContainText("Running cargo test -p auth");
