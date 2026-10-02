@@ -216,6 +216,7 @@ VERBOSE=1 dev/e2e-all.sh       # stream each script's output instead of keeping 
 | `coder` | `dev/coder-e2e.sh` | a chat message becomes a branch, `mock-ci` reports it green and the job is `done`, with a pull request opened once; the coder's work reads as a tree of steps (OpenCode a sub-agent step with its own steps under it, the log bounded per step; each tool step's start carries its `input` and its end its `output`, adam-rs `d56dd94`) and its answer is shown as it is written, then completed by the log's message ([Steps and live text](#steps-and-live-text-the-coder-shows-its-work-as-a-tree-and-its-words-as-it-writes-them)) |
 | `coder-no-opencode` | `NO_OPENCODE=1 dev/coder-e2e.sh` | the same when the check command makes the change (no OpenCode step) |
 | `workspace` | `dev/workspace-e2e.sh` | the coder needs no repository to start ([Workspaces](#workspaces-github-over-mcp-and-a-github-app-the-coder-without-a-repository)): a task that names none is built in a scratch project and the thread waits (`blocked`) with nothing pushed; the person asks for `scratch/fib-<id>` and the coder asks for consent as one form (`Choices`, question `consent`, options `yes` and `no`), which one action answers: `yes` makes exactly one `POST /orgs/scratch/repos` (after the answer, private, empty), the work reaches that repository under the gate `ci+agent_checks` with `mock-ci`'s card for it and one pull request, and no credential is in the thread's log; `no` creates nothing and the thread waits again. A second thread names `local/sandbox` and needs the greeting of `local/library`: the coder asks before adding it (a form again); after `yes` the library is read and the pull request is opened, after `no` git-server's log shows it was never asked for. `GITHUB_AUTH=app dev/workspace-e2e.sh` on a stack started with `-f dev/compose.github-app.yaml` asserts the same with the coder as a GitHub App |
+| `artifact` | `dev/artifact-e2e.sh` | a file the agent made reaches the person ([Files from agents](#files-from-agents-the-artifact-store)): the coder (as `coder-share`, no gate) makes an SVG with a script and event handlers in it, a PNG and a JSON report in a scratch project and shares each with `share_file`; the thread's frames (`vymalo.artifact`) and its log hold only the reference (`kind: "file"`, `href` = `/api/threads/<id>/artifacts/<sha256>`, the same hash, which is the SHA-256 of the file made) and no bytes; a surface places the SVG and the PNG as `Image`s and comes after the files; `GET href` returns the bytes with the kept type, `nosniff`, the sandboxing CSP and an immutable private cache (the PNG's and the JSON's hash is the file's; the SVG inline is sanitized: no `<script`, no `on*`; with `?download=1` it is the original); another user, another thread, an unknown or malformed hash get a 404 |
 | `verify` | `dev/verify-e2e.sh` | red once, sent back, green; red always, failed; and a run cannot weaken the gate |
 | `verifier` | `dev/verifier-e2e.sh` | the verifier finds fault, the agent is sent back, the verifier passes it |
 | `mcp` | `dev/mcp-e2e.sh` | an MCP client starts a job and follows it with progress notifications |
@@ -340,13 +341,13 @@ host. The `app` profile also runs a real agent, adam-coder, the default agent
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
 | `mock-verifier` | `wiremock/wiremock:3.13.2` | `8083` (`MOCK_VERIFIER_PORT`) | default | A fake A2A 1.0 **verifier** agent ([ADR 0018](../docs/decisions/0018-verification-gate-and-rework-loop.md)): it answers a request to review a commit with a `verdict` artifact, findings for a commit of forty `a` and a pass for any other ([below](#verifier-the-verifier-agent-of-the-gate)). |
 | `mock-registry` | `wiremock/wiremock:3.13.2` | `8084` (`MOCK_REGISTRY_PORT`) | default | The platform's agent registry ([`agent-registry/v1`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md), [ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md)) as a stub: a linkset that lists `platform-coder`. The orchestrator reads it (`AGENT_REGISTRY_URL`); see [The agent registry](#the-agent-registry). |
-| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). Configured by [`orchestrator.yaml`](orchestrator.yaml) ([how](#how-the-orchestrator-is-configured)). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `server.surfaces` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`server.surfaces` naming `chat-api` stops the orchestrator at startup). |
+| `orchestrator` | built from [`orchestrator/`](../orchestrator/Dockerfile) | not published | `app` | The real orchestrator, with [`dev/agents.yaml`](agents.yaml): the coder first (the default agent, under a gate of its own checks and CI), then `chat` and `researcher`, then `coder-share` (the same coder with no gate, for [`artifact-e2e.sh`](artifact-e2e.sh)), then the mocks (`mock-coder`, `mock-coder-gated` under the verification gate, `mock-coder-verified` under the verifier's, the `verifier` itself, `mock-coder-ci` under a CI gate, `mock-coder-releases`). Configured by [`orchestrator.yaml`](orchestrator.yaml) ([how](#how-the-orchestrator-is-configured)). `ORCH_ROLE` is `all` unless `ORCHESTRATOR_ROLE` says otherwise, and `server.surfaces` is `agui,mcp,thread-tools,webhook-generic,webhook-github`: the AG-UI routes the web and the scripts here run on, beside the resource API, the [MCP server](#the-mcp-server) at `/mcp`, the [thread tools](#the-thread-tools) at `/thread-tools/{threadId}/mcp` (not routed by the edge), and the two webhooks `POST /webhooks/ci` and `POST /webhooks/github` (secret `dev-webhook-secret-0123456789abcdef0123`, see [CI](#ci-the-gate-by-webhook)). The legacy chat API routes were removed on 2026-09-30 (`server.surfaces` naming `chat-api` stops the orchestrator at startup). |
 | `web` | built from [`web/Dockerfile`](../web/Dockerfile) | not published | `app` | The real chat UI. |
 | `edge` | `caddy:2.11.4-alpine` | `8080` (`EDGE_PORT`) | `app` | Stands in for oauth2-proxy: one origin for the UI, the API (`/api/*`), the AG-UI routes (`/agui/*`, streams unbuffered) and the MCP server (`/mcp`, unbuffered, **no identity header**: it authenticates a bearer token itself). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. They read the same `orchestrator.yaml`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s (`OUTBOX_LEASE_SECS`, a variable over the file). See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
-| `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`, and the SSE twin of each script of `mock-coder` that answers a request with `"stream": true` (the coder streams its model calls). Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM). |
+| `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: two scripts, `mock-coder` and `mock-opencode`, and the SSE twin of each script of `mock-coder` that answers a request with `"stream": true` (the coder streams its model calls). Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM), plus one script of ours beside them, `[mock:share]` ([`wiremock/coder-share/`](wiremock/coder-share), with its twins: the coder makes three files and shares them, [Files from agents](#files-from-agents-the-artifact-store)). The two folders are mounted next to each other under `/home/wiremock/mappings`, which WireMock reads recursively. |
 | `agents-postgres` | `postgres:16.15-alpine` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
 | `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings), and an SSE twin of the first two (`*-stream.json`: the agents stream their model calls). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. |
@@ -1215,8 +1216,78 @@ new volume is writable. Take the `artifacts` section out and a file is refused (
 | The file | `GET /api/threads/{id}/artifacts/{sha256}` (the `href` of the artifact the chat shows): inline for a PNG, JPEG, GIF, WebP, SVG (sanitized), text or JSON, an attachment for everything else and for `?download=1`; `nosniff`, a sandboxing `Content-Security-Policy`, immutable. Only the thread's owner: another person gets a 404 |
 | The limits | `artifacts.maxFileBytes` (10 MiB), `artifacts.maxPerJobBytes` (100 MiB), 50 files a job; a file over one is an artifact entry without a file and an error in the chat |
 | A `url` instead of bytes | stays a link unless its host is in `artifacts.fetchHosts` (empty here); then the orchestrator reads it, without following a redirect |
-| What the mocks send | none of them sends a file: the mock A2A agents (WireMock) answer in text, and adam's `share_file` arrives with the adam pin of slice S13, whose scenario `dev/artifact-e2e.sh` will drive it. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
+| What sends a file | adam's `share_file`, in the coder (the image pinned in `compose.yaml` has it since adam-rs `0e44c14`; the pin is `c0f12dd`): [`artifact-e2e.sh`](artifact-e2e.sh) drives it, below. The mock A2A agents (WireMock) answer in text and send none. The orchestrator's own tests send files through the fake A2A agent (`cargo test -p orch-e2e --test files`, on the in-memory store and on Postgres, over a directory store) |
 | Look inside | `docker compose exec` has no shell in the distroless image; `docker run --rm -v <project>_orchestrator-artifacts:/files busybox find /files` lists `threads/<thread>/<sha256>` and its `.meta.json` |
+
+### The scenario: an agent hands over a file (`dev/artifact-e2e.sh`)
+
+```mermaid
+sequenceDiagram
+  actor S as artifact-e2e.sh
+  participant E as edge
+  participant O as orchestrator
+  participant C as coder (coder-share)
+  participant M as mock-openai ([mock:share])
+  participant V as orchestrator-artifacts
+  participant L as event log
+  S->>E: POST /agui/agents/coder-share "[mock:share] ..." with the web's catalog
+  E->>O: the run
+  O->>C: SendStreamingMessage
+  C->>M: model call
+  M-->>C: start_scratch, write_file x2, run (makes square.png)
+  C->>M: model call (each tool result in)
+  M-->>C: share_file x3
+  C-->>O: three artifacts, each a raw part with mediaType and filename
+  O->>V: put the file by its hash (before the commit)
+  O->>L: artifact with file sha256, size, filename: no bytes
+  C->>M: model call
+  M-->>C: ui_catalog, then show (a Text and two Images by sha256)
+  C-->>O: the surface (after the files)
+  S->>E: GET the artifact href, /api/threads/ID/artifacts/SHA256
+  E->>O: with the identity header it adds
+  O->>V: get
+  O-->>S: the bytes (SVG sanitized inline), nosniff, CSP sandbox
+```
+
+**Why the coder, and why `coder-share`.** `share_file` is a tool of adam-coder: it reads one file of the coder's workspace and returns it as
+a file artifact. `chat` and `researcher` (`adam-agent` over a folder) have no workspace and no such tool, and a WireMock A2A mock could only replay a
+fixed body, which would not show that a file an agent made arrives intact. The coder's gate in [`agents.yaml`](agents.yaml) wants the checks of a pushed
+commit and a green CI report, and this task, a result and not a change to a repository, pushes nothing: scratch work that shared a file completes without a
+pull request ([adam ADR 0013](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0013-run-keeps-changes-edit-file-and-scratch-completion.md), decision 4),
+and the orchestrator's gate would then send the job back for "no checks reported". So the same coder is listed once more as `coder-share`, with no gate. (A deployment that
+gates its coder on CI and asks it for a file meets the same thing: a gate has to allow a job with no commit.)
+
+**The script** is `[mock:share]` on `mock-coder` ([`wiremock/coder-share/mappings/`](wiremock/coder-share/mappings), a plain script and its SSE twins, one
+turn per request, told by the call ids the history holds). The bytes are in [`wiremock/coder-share/files/`](wiremock/coder-share/files): `chart.svg`
+(an SVG that carries a `<script>` and two event handlers on purpose, so what is served inline can be checked to be the sanitized one), `square.png`
+(eight pixels square: a binary file the model cannot write as text, so the coder makes it with `run` and `base64 -d`) and `report.json`. The script embeds them
+and `dev/check-agent-mocks.sh` asserts the embedded copy equals the files and that the `Image`s name their SHA-256, so `artifact-e2e.sh` reads the expected hashes
+from the same files.
+
+| Turn | The model asks the coder to |
+|---|---|
+| 1 to 4 | `start_scratch`, `write_file` `chart.svg`, `write_file` `report.json`, `run` (makes `square.png`) |
+| 5 to 7 | `share_file` `chart.svg` ("Chart"), `square.png` ("Square") and `report.json` ("Report"), each answered `Shared <file> (<n> bytes, <type>).` |
+| 8, 9 | `ui_catalog`, then `show` a Text and two `Image`s (the SVG and the PNG, by sha256, with an alt each): after the files, because a surface that names a file the thread does not hold yet is refused |
+| 10 | the answer, which names the three files; the run ends with no pull request and the thread is `done` |
+
+**What it asserts** (the header of the script has the full list): the thread's frames and log hold exactly three file artifacts, in order, each with
+`kind: "file"`, `href` equal to `/api/threads/<id>/artifacts/<sha256>`, the same hash in `sha256` (the SHA-256 of the file the coder made), its size, file name, sniffed type
+and preview, and the log's entry holds no bytes; the surface's `Image`s are the SVG and the PNG and every file they place is in the thread before the surface; the model's
+`share_file` and `show` results are the expected lines; `GET href` through the edge returns the bytes with the kept `Content-Type`, `nosniff`, the sandboxing CSP, `inline`
+and an immutable private cache, and the PNG's and the JSON's SHA-256 is the hash; the SVG inline has no `<script`, no `on*` attribute and none of the coder's markers (and so is not
+the file's hash) while `?download=1` is the original, an attachment; another user, another thread of the same person, a wrong hash, a hash in capitals and a short one are each a 404, and a bad `download` a 400.
+
+Another user's request cannot go through the edge, which replaces the identity header, so the script makes it from inside the compose
+network: `docker compose exec edge wget --header "X-Auth-Request-Email: ..." http://orchestrator:8080/...`, straight to the orchestrator,
+after a control with the owner's header on the same path (so a 404 means the file is not the other user's, not that the path is wrong). Without a running `edge`
+container visible to `docker compose` that one check is skipped with a line, and the rest runs. CI also runs the script on the `split` stack, where a worker keeps the file and
+the control plane serves it.
+
+```sh
+dev/artifact-e2e.sh           # on the running app profile
+dev/e2e-all.sh artifact       # the same, with the summary
+```
 
 ## The split profile: a control plane and two workers
 
