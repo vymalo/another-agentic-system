@@ -18,7 +18,8 @@ import type { ThreadRenamer } from "@/features/chat/hooks/use-rename-thread";
  * description" (or "Add description") the line under it (not offered when the configuration hides
  * descriptions: no `describer`). "Export JSON" downloads the whole thread as a file to send to a
  * developer. All are disabled until the thread is known, and the export while a download is being
- * fetched.
+ * fetched. On a thread the person may only read, rename and describe are disabled, with the reason as
+ * their title; the export is a read and stays.
  */
 export function ThreadMenu({
   exporter,
@@ -26,6 +27,7 @@ export function ThreadMenu({
   describer,
   hasDescription = false,
   disabled,
+  readOnly,
 }: {
   exporter: ThreadExporter;
   renamer: ThreadRenamer;
@@ -33,6 +35,8 @@ export function ThreadMenu({
   /** The thread has a description: the item says "Edit", else "Add". */
   hasDescription?: boolean;
   disabled: boolean;
+  /** The thread is the person's to read and not to change: why (`Read only: …`). Rename and describe are off. */
+  readOnly?: string;
 }) {
   /** The menu closes and would hand the focus back to its button: the field being edited has it instead. */
   const editing = useRef<ThreadRenamer | null>(null);
@@ -61,24 +65,27 @@ export function ThreadMenu({
         }}
       >
         <DropdownMenuItem
-          disabled={disabled || renamer.saving}
+          disabled={disabled || renamer.saving || readOnly !== undefined}
           onSelect={() => {
             editing.current = renamer;
             renamer.start();
           }}
-          title="Give this chat another title"
+          title={readOnly ?? "Give this chat another title"}
         >
           <PencilIcon aria-hidden="true" />
           Rename
         </DropdownMenuItem>
         {describer ? (
           <DropdownMenuItem
-            disabled={disabled || describer.saving}
+            disabled={disabled || describer.saving || readOnly !== undefined}
             onSelect={() => {
               editing.current = describer;
               describer.start();
             }}
-            title="Say what this chat is about. What you write stays: the model does not change it."
+            title={
+              readOnly ??
+              "Say what this chat is about. What you write stays: the model does not change it."
+            }
           >
             <TextCursorInputIcon aria-hidden="true" />
             {hasDescription ? "Edit description" : "Add description"}

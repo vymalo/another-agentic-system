@@ -11,6 +11,7 @@ import {
 } from "@/features/chat/lib/a2ui/catalog";
 import { problemMessage } from "@/lib/api/client";
 import type { paths } from "@/lib/api/schema";
+import { signInAgain } from "@/lib/api/session";
 import type { ApiActor, ThreadState } from "@/lib/api/types";
 import {
   applyLive,
@@ -284,6 +285,8 @@ export class ThreadAgent extends AbstractAgent {
       baseUrl: options.baseUrl ?? "",
       fetch: (request) => fetchImpl(request),
     });
+    // the connect stream's reconnect meets the expired session first: send the person to sign in
+    this.client.use(signInAgain);
   }
 
   // ---- the observable state (useSyncExternalStore) ------------------------------------------

@@ -9,6 +9,7 @@ import { useExportThread } from "@/features/chat/hooks/use-export-thread";
 import { type ThreadRenamer, useRenameThread } from "@/features/chat/hooks/use-rename-thread";
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
 import type { Connection } from "@/features/chat/lib/agui/thread-agent";
+import { ReadOnlyChip } from "@/features/me/components/read-only-notice";
 import { PanelToggle } from "@/features/panel/components/panel-toggle";
 import { ForkError, useThreadFork } from "@/features/threads/components/fork-provider";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
@@ -69,7 +70,8 @@ function TitleField({ renamer, current }: { renamer: ThreadRenamer; current: str
  * The top bar of a thread: the agent picker (a menu, like a model picker), the title, the state,
  * and the overflow menu. The title is the page's heading; below `md` it is for screen readers only.
  * Under it the thread's description, a muted line a person can read in full and write (ADR 0035),
- * unless the configuration hides descriptions (`ui.showDescriptions`).
+ * unless the configuration hides descriptions (`ui.showDescriptions`). A thread the person may only
+ * read (ADR 0033) says "Read only" beside its state, and its menu does not rename or describe it.
  */
 export function ThreadHeader({
   thread,
@@ -101,7 +103,11 @@ export function ThreadHeader({
               ? Promise.resolve(false)
               : fork.continueWith({ agentId: to.agentId, release: to.release })
           }
-          {...(fork.turnOpen ? { blocked: CONTINUE_BLOCKED } : {})}
+          {...(fork.readOnly
+            ? { blocked: fork.readOnly }
+            : fork.turnOpen
+              ? { blocked: CONTINUE_BLOCKED }
+              : {})}
         />
         <div className="flex min-w-0 flex-1 items-center ps-2">
           {thread && renamer.draft !== null ? (
@@ -129,6 +135,7 @@ export function ThreadHeader({
               Reconnecting…
             </span>
           ) : null}
+          {fork.readOnly ? <ReadOnlyChip /> : null}
           <StateBadge state={state} needsAnswer={waiting} />
           <div className="flex items-center">
             <PanelToggle />
@@ -137,6 +144,7 @@ export function ThreadHeader({
               renamer={renamer}
               {...(showDescription ? { describer, hasDescription: !!thread?.description } : {})}
               disabled={thread === null}
+              {...(fork.readOnly ? { readOnly: fork.readOnly } : {})}
             />
           </div>
         </div>

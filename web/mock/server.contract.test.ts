@@ -1959,7 +1959,7 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
 
   let sessions = 0;
   /** A session of its own (the cookie the web carries) that is `me`: the hook, then the headers. */
-  async function as(me: "user" | "admin" | "read-only" | "no-access") {
+  async function as(me: "user" | "admin" | "read-only" | "limited" | "no-access") {
     const session = `roles-${++sessions}`;
     expect((await post(`/__mock/config?me=${me}&session=${session}`)).status).toBe(204);
     return { Cookie: `mock-registry=${session}` };

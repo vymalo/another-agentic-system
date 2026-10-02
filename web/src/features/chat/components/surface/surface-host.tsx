@@ -33,12 +33,14 @@ export type UserAction = {
  * What the surfaces need from the app. `canSend`: the thread waits for the owner (`blocked`), so
  * the orchestrator accepts an action, and none is on its way already. `canCompose`: the message
  * box takes text (the thread is not finished). `send` and `fillComposer` are called by a click on
- * a rendered control, and by nothing else.
+ * a rendered control, and by nothing else. `readOnly` is why the person may not act on this thread
+ * at all (it is another's, ADR 0033): then neither is true, and the surface says it in words.
  */
 export type SurfaceHost = {
   state: ThreadState | undefined;
   canSend: boolean;
   canCompose: boolean;
+  readOnly?: string | null;
   send: (action: UserAction) => void;
   /** Put agent-authored text in the message box, focused and unsent. */
   fillComposer: (text: string) => void;
@@ -61,6 +63,8 @@ export const SurfaceHostContext = Ctx;
 
 type Props = {
   agent: ThreadAgent;
+  /** Why the person may not act on the thread (`threadAccess`), when they may not. */
+  readOnly?: string | null;
   /** What the server says the thread is doing. */
   state: ThreadState | undefined;
   /** The message box's textarea, to focus it. */
@@ -79,7 +83,14 @@ type Props = {
  *    action is staged on the `ThreadAgent`, which sends it instead of the `resume`.
  * Either way the request has no message and no `resume`, and only one action is in flight.
  */
-export function SurfaceHostProvider({ agent, state, composerRef, onRejected, children }: Props) {
+export function SurfaceHostProvider({
+  agent,
+  readOnly = null,
+  state,
+  composerRef,
+  onRejected,
+  children,
+}: Props) {
   const aui = useAui();
   const interrupts = useAgUiInterrupts();
   const sendA2uiAction = useAgUiSendA2uiAction();
@@ -95,8 +106,8 @@ export function SurfaceHostProvider({ agent, state, composerRef, onRejected, chi
   // biome-ignore lint/correctness/useExhaustiveDependencies: both are the triggers, not inputs
   useEffect(() => setBusy(false), [state, sendFailures]);
 
-  const canSend = state === "blocked" && !busy;
-  const canCompose = state !== undefined && !isTerminal(state);
+  const canSend = state === "blocked" && !busy && readOnly === null;
+  const canCompose = state !== undefined && !isTerminal(state) && readOnly === null;
 
   const send = useCallback(
     (action: UserAction) => {
@@ -131,8 +142,8 @@ export function SurfaceHostProvider({ agent, state, composerRef, onRejected, chi
   );
 
   const value = useMemo<SurfaceHost>(
-    () => ({ state, canSend, canCompose, send, fillComposer, reject: onRejected }),
-    [state, canSend, canCompose, send, fillComposer, onRejected],
+    () => ({ state, canSend, canCompose, readOnly, send, fillComposer, reject: onRejected }),
+    [state, canSend, canCompose, readOnly, send, fillComposer, onRejected],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
