@@ -3,8 +3,8 @@
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-01 ("while an agent is working, it should also
   be possible for a human to send a message … e.g. 'you were wrong since line #1'"). The details are delegated to the
   planner (plan 11, owner decision 5: **the full `steer/v1`**, with the cut line below) and the owner may revisit
-  them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11)) and the AG-UI member
-  (PR-12, see [Built in PR-12](#built-in-pr-12)); the dispatcher's steer path, the web and the adam-rs side are not.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
+  them. **Built in part, 2026-10-02: the core and the application (PR-11, see [Built in PR-11](#built-in-pr-11)), the AG-UI member
+  (PR-12, see [Built in PR-12](#built-in-pr-12)) and the web (PR-15, see [Built in PR-15](#built-in-pr-15)); the dispatcher's steer path and the adam-rs side are not.** Amends [ADR 0020](0020-a-thread-is-a-conversation.md) (what a message sent while a job is open
   is, and the race of open question 33), [ADR 0012](0012-ag-ui-user-facing-protocol.md) (a second run while one is open
   is no longer always a 409) and [ADR 0018](0018-verification-gate-and-rework-loop.md) (a job abandoned by a person is
   not verified). Builds on [ADR 0021](0021-context-across-a2a-tasks.md) and
@@ -322,3 +322,31 @@ Where the build is not what the text above says, or the text was silent:
   six of the new e2e test). The commit now carries `skip_unsent_delegates` and the store finishes the rows in its own transaction,
   before inserting the commit's (`Commit.skip_unsent_delegates`, conformance case
   `a_commit_can_skip_the_unsent_delegates_it_supersedes` on both stores).
+
+## Built in PR-15
+
+*2026-10-02.* The web: while a run is open the box stays usable, with a split **Send** (Enter, `steer`) whose menu offers **Stop and
+send** (Ctrl/⌘+Shift+Enter, `interrupt`), and a note under a message that was sent while the agent worked
+([`web/DESIGN.md`](../../web/DESIGN.md#sending-while-the-agent-works), [`web/README.md`](../../web/README.md#sending-while-the-agent-works)).
+Not built: the dispatcher's steer path and `steer/v1` (PR-13), so Send is delivered after the turn and the note says so for any agent
+whose card does not list the extension.
+
+Where the build is not what the text above says, or the text was silent:
+
+- **The web does not send through the runtime.** The *Verified* note above holds (*verified again 2026-10-02*,
+  `@assistant-ui/react-ag-ui` 0.0.62, by the first test of `web/src/features/chat/lib/agui/thread-agent.dom.test.tsx`): the runtime
+  supersedes the active run on an append, and the transcript keeps every message once. But it supersedes by dispatching
+  `RUN_CANCELLED` to the run's message, which ends it as `incomplete: cancelled` and detaches from the run. The web draws a turn with
+  that status as "Stopped", so the turn of an agent that is still working (a steer) would read so, and a send the server refused would
+  leave the rest of the run unseen. The fallback the *Verified* note names was a `POST` message route; what is built is nearer: the
+  consumer posts the run itself (`ThreadAgent.sendWhileWorking`, the same `POST /agui/agents/{id}` with `forwardedProps["vymalo.send"]`,
+  read to `RUN_STARTED`) and the runtime is not involved. The message comes back by the connect stream as a run another tab started
+  would, and the runtime shows the first run's end as the log ends it (`success` at the message), then the message with its `delivery`.
+  No change to the contract or to the orchestrator.
+- **The message is drawn a moment after it is sent**, when the orchestrator has accepted it and the stream says so, not at once. A
+  refused message is never drawn, and its text goes back into the box.
+- **A send is held back until the conversation is on screen** (the stream is caught up and the runs it delivered are in the
+  transcript): the buttons are disabled, Enter does nothing and the text is kept. The runtime's own send would replace the turns it has not
+  drawn when it comes first; the message here does not go through it, so the rule is mostly that a reply follows what it replies to.
+- **The wording of Send** follows the agent's card, read live: "reads it at its next step" only for an agent that lists `steer/v1`
+  (the mock lists it for the coder), "after this turn" for any other and for a card that could not be read.
