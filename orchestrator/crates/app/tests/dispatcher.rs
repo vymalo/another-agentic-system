@@ -48,6 +48,47 @@ async fn echo_completes_with_the_expected_event_sequence() {
     run.shutdown().await;
 }
 
+/// A task can be over before its stream says anything: a fast agent's stream begins with a
+/// snapshot of the finished task (a local echo agent does, when its worker wins the race). The
+/// first envelope records the message as sent, and must not record the task's end as if it were
+/// applied already, or the end is dropped as a duplicate and the thread waits forever.
+#[tokio::test]
+async fn a_task_that_ended_before_its_stream_began_ends_the_job() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "instant hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    let ev = events(&app, &alice(), t.id).await;
+    assert_eq!(
+        shape(&ev),
+        [
+            "user_message",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
+    );
+    let v = serde_json::to_value(&ev[1]).unwrap();
+    assert_eq!(v["data"]["detail"], "instant hi");
+
+    // The next job's task too, though the binding holds the end of the task before it.
+    app.post_message(&alice(), t.id, "instant again".into())
+        .await
+        .unwrap();
+    eventually("the second job is done", || async {
+        let ev = events(&app, &alice(), t.id).await;
+        (shape(&ev)
+            .iter()
+            .filter(|s| *s == "thread_state:done")
+            .count()
+            == 2)
+            .then_some(())
+    })
+    .await;
+    assert!(w.store.list_open_outbox(t.id).await.unwrap().is_empty());
+    run.shutdown().await;
+}
+
 #[tokio::test]
 async fn blocked_then_follow_up_continues_the_same_task() {
     let w = World::new();

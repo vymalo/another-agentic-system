@@ -181,6 +181,9 @@ struct Shared {
 /// - `files`: `working`, then the updates given to [`ScriptedAgent::set_files`] (files an adapter
 ///   reports, ADR 0032: `AgentUpdate::File`, or links), each under its own key, `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
+/// - `instant`: `completed` with the text as its words and nothing before it, not even
+///   `submitted`: the task is over before its stream says anything, like a fast agent whose
+///   stream begins with a snapshot of the finished task;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
 pub struct ScriptedAgent {
@@ -637,6 +640,10 @@ async fn verify(shared: Arc<Shared>, task: String, script: VerdictScript) {
 async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
     use AgentTaskState::{Completed, Failed, InputRequired, Working};
     let script = text.split_whitespace().next().unwrap_or("").to_owned();
+    if script == "instant" {
+        shared.push_status(&task, Completed, Some(&text));
+        return;
+    }
     shared.push_status(&task, Working, None);
     match script.as_str() {
         "ask" if !resumed => shared.push_status(&task, InputRequired, Some("Which branch?")),
@@ -873,7 +880,8 @@ impl AgentClient for ScriptedAgent {
                 (id, false, 0)
             }
         };
-        if !resumed {
+        // `instant` says nothing before the end: its stream begins with it.
+        if !resumed && script != "instant" {
             self.shared
                 .push_status(&task, AgentTaskState::Submitted, None);
         }
