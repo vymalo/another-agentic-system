@@ -28,9 +28,9 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use orch_app::{PublicConfig, TaskSettings, UiSettings};
+use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiSettings};
 use orch_config::{Resolve, SecretRef, Validated};
-use orch_core::{LanguageRule, TaskKind};
+use orch_core::{AgentId, LanguageRule, TaskKind};
 use secrecy::SecretString;
 use serde_json::{Map, Value};
 
@@ -66,6 +66,12 @@ pub enum Note {
     },
     /// No file: the environment alone configures the process, which is deprecated.
     EnvironmentOnly,
+    /// A tool server (`toolServers`) that has a credential is at a plain `http://` URL: the
+    /// credential travels in the clear. A warning naming the server's id, never a URL or a value.
+    ToolServerCredentialOverHttp {
+        /// The server's id.
+        id: String,
+    },
 }
 
 impl Note {
@@ -91,6 +97,10 @@ impl Note {
                 variables alone, which are deprecated; set ORCH_CONFIG_FILE to a YAML file \
                 (docs/api/config.md)"
                 .to_owned(),
+            Note::ToolServerCredentialOverHttp { id } => format!(
+                "the tool server {id} has a credential and a plain http:// URL: the credential is \
+                 sent in the clear; use https outside development"
+            ),
         }
     }
 
@@ -103,6 +113,9 @@ impl Note {
             }
             Note::Process { var, .. } => tracing::info!(variable = *var, "{message}"),
             Note::EnvironmentOnly => tracing::warn!("{message}"),
+            Note::ToolServerCredentialOverHttp { id } => {
+                tracing::warn!(server = id.as_str(), "{message}");
+            }
         }
     }
 }
@@ -902,6 +915,8 @@ fn load_file(
         .map_err(|_| document("the configuration cannot be written as YAML (a bug)"))?;
     let loaded = Config::load_with(file_args, resolved, &env, &read)
         .map_err(|e| ConfigError::Document(vec![legacy_line(&e)]))?;
+    tool_server_agents(&valid.config.tool_servers, &loaded)?;
+    notes.extend(tool_server_notes(&valid));
     notes.extend(process_notes(&args, &env));
     Ok(Loaded {
         config: loaded,
@@ -1008,6 +1023,7 @@ fn project(valid: &Validated, tree: &Value, hostname: Option<String>) -> (Args, 
         artifacts: artifact_settings(valid),
         auth: super::AuthSettings::from_file(&c.auth),
         models: Some(models_of(valid)),
+        tool_servers: tool_servers_of(&c.tool_servers),
         public: Some(PublicConfig {
             ui: UiSettings {
                 show_descriptions: c.ui.show_descriptions,
@@ -1110,6 +1126,85 @@ fn models_of(valid: &Validated) -> ModelsSettings {
         );
     }
     ModelsSettings { endpoints, tasks }
+}
+
+/// The tool servers of the valid file, as far as the application knows them (ADR 0024): the public
+/// part. The URL and the credentials stay in the validated file, which only the relay will read;
+/// nothing the application keeps, writes or serves holds them.
+fn tool_servers_of(servers: &[orch_config::ToolServer]) -> Vec<ToolServerInfo> {
+    servers
+        .iter()
+        .map(|server| ToolServerInfo {
+            id: server.id.clone(),
+            name: server.name.trim().to_owned(),
+            description: server
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(str::to_owned),
+            icon: server.icon.clone(),
+            tools: server.tools.clone(),
+            agents: server
+                .agents
+                .as_ref()
+                .map(|agents| agents.iter().map(AgentId::new).collect()),
+            timeout: Duration::from_secs(server.timeout_secs),
+        })
+        .collect()
+}
+
+/// A server's `agents` list names agents that exist: with a platform registry the agents are not
+/// all known at startup, so the check is made only when the file's own list is the whole list. A
+/// typo would otherwise be a server that is never offered, with nothing to say so.
+fn tool_server_agents(
+    servers: &[orch_config::ToolServer],
+    loaded: &Config,
+) -> Result<(), ConfigError> {
+    #[cfg(feature = "registry-platform")]
+    if loaded.registry.is_some() {
+        return Ok(());
+    }
+    let known: std::collections::BTreeSet<&str> = loaded
+        .agents
+        .iter()
+        .map(|a| a.endpoint.id.as_str())
+        .collect();
+    let mut errors = Vec::new();
+    for (i, server) in servers.iter().enumerate() {
+        for (j, agent) in server.agents.iter().flatten().enumerate() {
+            if !known.contains(agent.as_str()) {
+                errors.push(format!(
+                    "toolServers[{i}].agents[{j}]: names no agent of the agents file"
+                ));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigError::Document(errors))
+    }
+}
+
+/// What startup says about the tool servers: a credential that would travel over plain `http://`.
+fn tool_server_notes(valid: &Validated) -> Vec<Note> {
+    valid
+        .config
+        .tool_servers
+        .iter()
+        .filter(|server| {
+            valid.secrets.tool_servers.contains_key(&server.id)
+                && server
+                    .url
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("http://")
+        })
+        .map(|server| Note::ToolServerCredentialOverHttp {
+            id: server.id.clone(),
+        })
+        .collect()
 }
 
 /// The core's rule for a language the file names (the same names: a test asserts they agree).
@@ -1929,6 +2024,118 @@ ui: { showDescriptions: false }
         let merged = loaded.merged.unwrap();
         assert!(merged.contains("showDescriptions: false"), "{merged}");
         assert!(merged.contains("maxChars: 200"), "{merged}");
+    }
+
+    const TOOL_SERVERS: &str = "\
+toolServers:
+  - id: websearch
+    name: ' Web search '
+    description: Search the web.
+    url: http://search.internal:8080/mcp
+    icon: 'data:image/svg+xml;base64,PHN2Zy8+'
+    bearer: { env: SEARCH_TOKEN }
+    tools: [search]
+    agents: [coder]
+    timeoutSecs: 45
+  - id: docs
+    name: Documentation
+    url: https://docs.example.com/mcp
+";
+
+    /// The servers of the file reach the application as their public part (ADR 0024): the names,
+    /// the icon, the agents and the timeout; no URL, no credential, in any `Debug`.
+    #[test]
+    fn the_tool_servers_reach_the_application_without_their_urls_or_credentials() {
+        let mut pairs = base();
+        pairs.push(("SEARCH_TOKEN", "search-token-must-not-leak"));
+        let loaded = load_file_only(&pairs, &format!("{FILE}{TOOL_SERVERS}")).unwrap();
+        let app = loaded.config.app_config();
+        assert_eq!(app.tool_servers.len(), 2);
+        let web = &app.tool_servers[0];
+        assert_eq!(web.id, "websearch");
+        assert_eq!(web.name, "Web search", "trimmed");
+        assert_eq!(web.description.as_deref(), Some("Search the web."));
+        assert_eq!(
+            web.icon.as_deref(),
+            Some("data:image/svg+xml;base64,PHN2Zy8+")
+        );
+        assert_eq!(web.tools.as_deref(), Some(&["search".to_owned()][..]));
+        assert_eq!(web.agents.as_deref(), Some(&[AgentId::new("coder")][..]));
+        assert_eq!(web.timeout, Duration::from_secs(45));
+        assert_eq!(app.tool_servers[1].timeout, Duration::from_secs(120));
+        assert!(app.tool_servers[1].agents.is_none());
+        // nothing that says where a server is, or how to get in, is kept by the application
+        let shown = format!("{:?} {:?} {:?}", loaded.config, app, loaded.notes);
+        for hidden in [
+            "search-token-must-not-leak",
+            "search.internal",
+            "docs.example.com",
+            "PHN2Zy8+",
+        ] {
+            assert!(!shown.contains(hidden), "{hidden} is in a Debug: {shown}");
+        }
+        let merged = loaded.merged.unwrap();
+        assert!(
+            merged.contains("toolServers:") && merged.contains("env: SEARCH_TOKEN"),
+            "{merged}"
+        );
+        assert!(!merged.contains("search-token-must-not-leak"), "{merged}");
+    }
+
+    /// The default is no server, and the variables alone cannot name one.
+    #[test]
+    fn without_the_key_nothing_is_attachable() {
+        let loaded = load_file_only(&base(), FILE).unwrap();
+        assert!(loaded.config.app_config().tool_servers.is_empty());
+        assert!(!loaded.merged.unwrap().contains("toolServers"));
+    }
+
+    /// An agent a server names that the agents file does not have is a typo that would otherwise
+    /// make a server nobody is offered (checked when the file's agents are the whole list).
+    #[test]
+    fn a_server_for_an_agent_the_agents_file_lacks_is_refused_naming_the_key() {
+        let file = format!(
+            "{FILE}toolServers:\n  - id: a\n    name: A\n    url: https://a.example.com/mcp\n    agents: [coder, ghost]\n"
+        );
+        let got = lines(load_file_only(&base(), &file));
+        assert_eq!(
+            got,
+            ["toolServers[0].agents[1]: names no agent of the agents file"]
+        );
+    }
+
+    /// A credential at a plain `http://` URL is a warning that names the server and nothing else.
+    #[test]
+    fn a_credential_over_plain_http_is_a_note_naming_the_server() {
+        let mut pairs = base();
+        pairs.push(("SEARCH_TOKEN", "search-token-must-not-leak"));
+        let loaded = load_file_only(&pairs, &format!("{FILE}{TOOL_SERVERS}")).unwrap();
+        assert!(
+            loaded.notes.contains(&Note::ToolServerCredentialOverHttp {
+                id: "websearch".to_owned()
+            }),
+            "{:?}",
+            loaded.notes
+        );
+        // `docs` is https and has none; a server with no credential over http says nothing
+        assert_eq!(
+            loaded
+                .notes
+                .iter()
+                .filter(|n| matches!(n, Note::ToolServerCredentialOverHttp { .. }))
+                .count(),
+            1
+        );
+        let said = loaded
+            .notes
+            .iter()
+            .map(Note::describe)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !said.contains("search.internal") && !said.contains("must-not-leak"),
+            "{said}"
+        );
     }
 
     /// The names the file spells a language with are the core's: none falls back to the person's

@@ -7,10 +7,12 @@
   `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send
   time, only for an agent whose live card lists the extension). `turn_output` (an agent announces its answer,
   [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md) amendment of 2026-10-02) is built, below.
-  **Written 2026-10-02 (contract accepted on the owner's delegation, not built):** the `attached` member of the message,
-  the relayed tools of attached MCP servers (slice 8: their `_meta`, the step the orchestrator reports for each call,
-  the error table) and `ask_agent` with the `ask:<n>` ledger (slice 10), all [below](#attached-servers-and-the-relay-slice-8).
-  "Not yet" is marked where it matters. The adam-rs side (an agent
+  **Built 2026-10-02 (slice 8, first half):** the servers a person attaches to a thread (the configuration, the events
+  and the API: [below](#what-is-attached-and-by-whom)) and the `attached` member of the message
+  ([below](#the-attached-member)). **Written 2026-10-02 (contract accepted on the owner's delegation,
+  not built):** the relayed tools of attached MCP servers (slice 8, second half: their `_meta`, the step the orchestrator
+  reports for each call, the error table) and `ask_agent` with the `ask:<n>` ledger (slice 10), all
+  [below](#attached-servers-and-the-relay-slice-8). "Not yet" is marked where it matters. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
   support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
@@ -128,7 +130,7 @@ test that makes the adapter log the metadata fails.
 
 ### The `attached` member
 
-*Written 2026-10-02; not built (slice 8).* When MCP servers are attached to the thread
+*Built 2026-10-02 (slice 8, first half).* When MCP servers are attached to the thread
 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)), the metadata above also has `attached`:
 
 ```json
@@ -157,6 +159,16 @@ test that makes the adapter log the metadata fails.
   extension gets nothing, and the screen says so before the person sends (ADR 0024).
 - It carries **never a URL, a header or a credential**: the agent reaches a server only through the endpoint.
 - An asked agent ([`ask_agent`](#ask_agent)) gets `attached` for the servers allowed for **it**.
+
+*Built and tested (2026-10-02):* the dispatcher reads the thread's set when it **sends** (a retry sends what is attached
+at the retry, and a server attached or detached between two messages is told or dropped by the next one), keeps those
+the deployment lists for the thread's agent (a server it no longer lists is not told) and puts them in the grant; the A2A
+adapter writes `attached` only into a message that carries the grant, so a card without the extension, an adapter without
+keys and a request without a grant (the verifier's) get exactly the message they got before. The thread's agent in the
+orchestrator's end-to-end tests is one whose card lists the extension (told) and one whose card does not (not told, the
+message untouched). The relay and its tools are not built: today the endpoint lists `get_ui_catalog` and `turn_output`
+whatever is attached, so an agent that reads `attached` knows what the person wants and finds the tools only when the
+relay lands.
 
 ### Trying it
 
@@ -322,7 +334,7 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 |---|---|---|---|
 | 3 (built) | `get_ui_catalog` | built in | below |
 | built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
-| 8 (written, not built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
+| 8 (attaching built; relay written, not built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
 | 10 (written, not built) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
@@ -438,7 +450,9 @@ fake agent's `turn-output` scripts (the `turn-output` golden of [`examples/`](ex
 ## Attached servers and the relay (slice 8)
 
 *Written 2026-10-02 on the owner's decisions of plan 11 (the servers come from the YAML configuration, who may attach, the
-icons, no doubled steps); contract accepted on the owner's delegation; **not built**. It amends the plan of
+icons, no doubled steps); contract accepted on the owner's delegation. **Built:** what is attached and by whom (the
+configuration, the events, the API, the message's `attached`). **Not built:** the relay (the tools on the endpoint, the
+step of a call, the error table). It amends the plan of
 [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) as that ADR's status note of 2026-10-02 says.*
 
 ### What is attached, and by whom
@@ -449,12 +463,18 @@ icons, no doubled steps); contract accepted on the owner's delegation; **not bui
   `bearer` (a **secret reference**), `headers` (header name to a **secret reference**; `Authorization`, `Accept`,
   `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused), `tools` (an allow-list
   of upstream tool names, default all), `agents` (the agent ids it may be attached for, default every agent) and
-  `timeoutSecs` (1 to 600, default 120). The keys are written into `config.md` and its schema by the pull request that
-  builds them. A person cannot enter a URL: the list is the deployment's.
+  `timeoutSecs` (1 to 600, default 120). The keys are in [`config.md`](config.md#toolservers) and its schema; the
+  loader refuses a bad list at startup (exit 78). A person cannot enter a URL: the list is the deployment's.
 - **Who may attach:** anyone with `thread.write` on the thread, for the servers whose `agents` list includes the thread's
   agent. There is no per-role filter yet. The set is at most 16 servers; the thread records `tools_attached` and
   `tools_detached` ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)) and carries the set from job to job.
-  An unknown server, one not allowed for the agent, or more than 16 is a **422**.
+  An unknown server, one not allowed for the agent, or more than 16 is a **422**. *Built (2026-10-02):* a person attaches
+  when the thread is created (`forwardedProps["vymalo.tools"]`, [`agui.md`](agui.md#attaching-mcp-servers)) and afterwards
+  with [`PUT /api/threads/{threadId}/tools`](chat-api.yaml) (`putThreadTools`); the picker reads
+  [`GET /api/tool-servers`](chat-api.yaml) (`listToolServers`): id, name, description, icon and the agents it is for, never
+  a URL or a credential. A person who may read a thread and not change it (an administrator on another's) gets a 403
+  `read_only`; one who may not read it a 404. A server a deployment stops listing stays attached to the threads that have
+  it, is not told to the agent and can be detached.
 - **Icons are `data:` URIs from the configuration only.** The relay never fetches an icon from a URL and drops the icons an
   upstream server offers (open question 38); the screen draws a `data:` icon and a generic one otherwise.
 - **Credentials** live in the orchestrator's configuration and environment, by reference, and appear in no A2A message, no

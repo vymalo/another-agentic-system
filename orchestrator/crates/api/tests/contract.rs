@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
+const CAROL: &str = "carol@example.com";
 const RANDOM: &str = "0190aaaa-0000-7000-8000-000000000123";
 
 type Stack = PortSet<
@@ -262,6 +263,19 @@ impl Harness {
                 directory,
                 AppConfig {
                     stream_poll: Duration::from_millis(100),
+                    // the servers a person may attach (ADR 0024): the second one is the coder's
+                    tool_servers: vec![
+                        orch_app::ToolServerInfo {
+                            description: Some("Search the web.".to_owned()),
+                            icon: Some("data:image/svg+xml;base64,PHN2Zy8+".to_owned()),
+                            ..orch_app::ToolServerInfo::new("websearch", "Web search")
+                        },
+                        orch_app::ToolServerInfo {
+                            agents: Some(vec![AgentId::new("coder")]),
+                            ..orch_app::ToolServerInfo::new("repos", "Repositories")
+                        },
+                        orch_app::ToolServerInfo::new("docs", "Documentation"),
+                    ],
                     ..AppConfig::default()
                 },
             )
@@ -360,6 +374,42 @@ impl Harness {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
+        Resp {
+            status,
+            content_type,
+            cache_control,
+            location,
+            body: resp.bytes().await.unwrap().to_vec(),
+        }
+    }
+
+    /// A `PUT` with a body (`None` sends none).
+    async fn put(&self, path: &str, user: Option<&str>, body: Option<&str>) -> Resp {
+        let mut req = self
+            .client
+            .request(reqwest::Method::PUT, format!("{}{path}", self.base));
+        if let Some(u) = user {
+            req = req.header("X-Auth-Request-Email", u);
+        }
+        if let Some(body) = body {
+            req = req
+                .header("Content-Type", "application/json")
+                .body(body.to_owned());
+        }
+        let resp = req.send().await.unwrap();
+        let status = resp.status().as_u16();
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        };
+        let (content_type, cache_control, location) = (
+            header("content-type"),
+            header("cache-control"),
+            header("location"),
+        );
         Resp {
             status,
             content_type,
@@ -542,11 +592,16 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 11] = [
+    let auth_ops: [(&str, reqwest::Method, String); 13] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("getConfig", reqwest::Method::GET, "/api/config".into()),
+        (
+            "listToolServers",
+            reqwest::Method::GET,
+            "/api/tool-servers".into(),
+        ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
             "getThread",
@@ -557,6 +612,11 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "exportThread",
             reqwest::Method::GET,
             format!("/api/threads/{RANDOM}/export"),
+        ),
+        (
+            "putThreadTools",
+            reqwest::Method::PUT,
+            format!("/api/threads/{RANDOM}/tools"),
         ),
         (
             "cancelThread",
@@ -654,6 +714,154 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     assert_eq!(r.status, 200);
     c.check("getConfig", &r);
     assert_eq!(r.json(), json!({"ui": {"showDescriptions": true}}));
+
+    // listToolServers (ADR 0024): the deployment's list, in its order, with no URL, header,
+    // credential or allow-list; `agents` only where the deployment limits a server.
+    let r = h.get("/api/tool-servers", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("listToolServers", &r);
+    assert_eq!(
+        r.json(),
+        json!([
+            {"id": "websearch", "name": "Web search", "description": "Search the web.",
+             "icon": "data:image/svg+xml;base64,PHN2Zy8+"},
+            {"id": "repos", "name": "Repositories", "agents": ["coder"]},
+            {"id": "docs", "name": "Documentation"},
+        ])
+    );
+
+    // putThreadTools: 200 with the set after (sorted), the same set again is the same 200 and writes
+    // nothing, `Thread.tools` says it, and the log has the events.
+    let tooled = h
+        .create(CAROL, Some("Tools"), "plain", None, "echo tools")
+        .await;
+    h.wait_state(CAROL, &tooled, "done").await;
+    let before = h.events(CAROL, &tooled).await.len();
+    let path = format!("/api/threads/{tooled}/tools");
+    let r = h
+        .put(
+            &path,
+            Some(CAROL),
+            Some(r#"{"servers":["websearch","docs"]}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    c.check("putThreadTools", &r);
+    assert_eq!(r.json(), json!({"servers": ["docs", "websearch"]}));
+    let r = h
+        .put(
+            &path,
+            Some(CAROL),
+            Some(r#"{"servers":["websearch","docs","docs"]}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("putThreadTools", &r);
+    assert_eq!(r.json(), json!({"servers": ["docs", "websearch"]}));
+    let log = h.events(CAROL, &tooled).await;
+    assert_eq!(
+        shape(&log[before..]),
+        ["tools_attached"],
+        "one event, not two"
+    );
+    assert_eq!(
+        log[before]["data"],
+        json!({"servers": ["docs", "websearch"]})
+    );
+    c.contract.validate_component("Event", &log[before]);
+    let r = h.get(&format!("/api/threads/{tooled}"), Some(CAROL)).await;
+    c.check("getThread", &r);
+    assert_eq!(r.json()["tools"], json!(["docs", "websearch"]));
+    // a detach, and the empty set: `tools` is absent when there are none
+    let r = h
+        .put(&path, Some(CAROL), Some(r#"{"servers":["docs"]}"#))
+        .await;
+    assert_eq!(r.json(), json!({"servers": ["docs"]}));
+    let log = h.events(CAROL, &tooled).await;
+    assert_eq!(log.last().unwrap()["kind"], "tools_detached");
+    assert_eq!(
+        log.last().unwrap()["data"],
+        json!({"servers": ["websearch"]})
+    );
+    let r = h.put(&path, Some(CAROL), Some(r#"{"servers":[]}"#)).await;
+    assert_eq!(r.status, 200);
+    c.check("putThreadTools", &r);
+    assert_eq!(r.json(), json!({"servers": []}));
+    let r = h.get(&format!("/api/threads/{tooled}"), Some(CAROL)).await;
+    assert!(r.json().get("tools").is_none(), "{}", r.json());
+    // 400: what is not exactly `{servers: [string]}`, and an id that is not one; nothing is written
+    let written = h.events(CAROL, &tooled).await.len();
+    for body in [
+        None,
+        Some(r#"not json"#),
+        Some(r#"[]"#),
+        Some(r#"{}"#),
+        Some(r#"{"servers":"docs"}"#),
+        Some(r#"{"servers":[1]}"#),
+        Some(r#"{"servers":["docs"],"extra":1}"#),
+        Some(r#"{"servers":["Web Search"]}"#),
+        Some(r#"{"servers":[""]}"#),
+    ] {
+        let r = h.put(&path, Some(CAROL), body).await;
+        assert_eq!(
+            r.status,
+            400,
+            "{body:?}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        c.check("putThreadTools", &r);
+    }
+    // 404: a thread that is not the caller's, and one that does not exist, alike
+    for (user, id) in [
+        (BOB, tooled.as_str()),
+        (CAROL, RANDOM),
+        (CAROL, "not-a-uuid"),
+    ] {
+        let r = h
+            .put(
+                &format!("/api/threads/{id}/tools"),
+                Some(user),
+                Some(r#"{"servers":["docs"]}"#),
+            )
+            .await;
+        assert_eq!(r.status, 404, "{user} {id}");
+        c.check("putThreadTools", &r);
+    }
+    // 422: a server nobody lists, one that is not for this thread's agent, too many; and a server
+    // the plain agent may not have is one the coder may
+    for body in [
+        r#"{"servers":["nosuch"]}"#.to_owned(),
+        r#"{"servers":["repos"]}"#.to_owned(),
+        serde_json::to_string(
+            &json!({"servers": (0..17).map(|n| format!("s{n}")).collect::<Vec<_>>()}),
+        )
+        .unwrap(),
+    ] {
+        let r = h.put(&path, Some(CAROL), Some(&body)).await;
+        assert_eq!(r.status, 422, "{body}");
+        c.check("putThreadTools", &r);
+        let text = String::from_utf8_lossy(&r.body).to_string();
+        assert!(!text.contains("http"), "no URL in a refusal: {text}");
+    }
+    assert_eq!(
+        h.events(CAROL, &tooled).await.len(),
+        written,
+        "the refusals wrote nothing"
+    );
+    let coders = h
+        .create(CAROL, Some("Repos"), "coder", None, "echo repos")
+        .await;
+    let r = h
+        .put(
+            &format!("/api/threads/{coders}/tools"),
+            Some(CAROL),
+            Some(r#"{"servers":["repos"]}"#),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("putThreadTools", &r);
+    // (403 is the roles' business, in `rbac.rs`: the proxy header carries none)
 
     // getThread
     let id = h

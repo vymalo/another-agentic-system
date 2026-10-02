@@ -350,6 +350,12 @@ export class Projector {
   private catalog = new CatalogLedger();
   /** Where the thread was forked from, once its `thread_forked` is read: every snapshot says so (ADR 0029). */
   private forkedFrom: { threadId: string; seq: number; kind: string } | undefined;
+  /**
+   * The MCP servers attached to the thread now (ADR 0024), by id: folded from `tools_attached` and
+   * `tools_detached`. They belong to the conversation, so a new job keeps them; every snapshot
+   * says them as `thread.tools` (sorted, no member when there are none).
+   */
+  private readonly tools = new Set<string>();
   /** Which job of the thread the log is in (from 1; `job_started` moves it, ADR 0020). */
   private jobNumber = 1;
   /** The attempt the agent is on, and the commit it pushed in it (`job` of the snapshot). */
@@ -492,6 +498,46 @@ export class Projector {
     out.push({ type: "RUN_FINISHED", threadId, runId, outcome: { type: "success" } });
   }
 
+  /**
+   * MCP servers were attached to the thread, or detached from it (the real projection's `on_tools`,
+   * ADR 0024). Inside a run: the new `STATE_SNAPSHOT`, then the `vymalo.tools` card. Outside any
+   * run, with the thread active: the run opens (its own snapshot says the new set), then the card.
+   * With the thread finished or waiting: a run of its own, the card, the snapshot and the run's
+   * close by the state the thread is in, which the web drops as material-less. Ids only.
+   */
+  private onTools(e: Event, out: Ev[]) {
+    const ids = Array.isArray(e.data.servers)
+      ? e.data.servers.filter((s): s is string => typeof s === "string")
+      : [];
+    const attached = e.kind === "tools_attached";
+    for (const id of ids) {
+      if (attached) this.tools.add(id);
+      else this.tools.delete(id);
+    }
+    const card = this.activity(e, "vymalo.tools", { [attached ? "attached" : "detached"]: ids });
+    const active =
+      this.state === "queued" || this.state === "working" || this.state === "verifying";
+    const threadId = this.info.threadId;
+    if (this.run) {
+      out.push(this.snapshot());
+      out.push(card);
+      return;
+    }
+    const runId = `run-${e.seq}`;
+    out.push({ type: "RUN_STARTED", threadId, runId, protocolVersion: "1.0" });
+    this.run = { runId };
+    if (active) {
+      out.push(this.snapshot());
+      out.push(card);
+      return;
+    }
+    out.push(card);
+    out.push(this.snapshot());
+    out.push(this.runEnd());
+    this.run = null;
+    this.invocation = null;
+  }
+
   private snapshot(): Ev {
     const job = this.job();
     return {
@@ -502,6 +548,7 @@ export class Projector {
           ...(this.jobNumber > 1 ? { jobNumber: this.jobNumber } : {}),
           ...(this.catalog.current ? { uiCatalog: this.catalog.current } : {}),
           ...(this.forkedFrom ? { forkedFrom: this.forkedFrom } : {}),
+          ...(this.tools.size > 0 ? { tools: [...this.tools].sort() } : {}),
           state: this.state,
           title: this.info.title,
           ...(this.info.description ? { description: this.info.description } : {}),
@@ -908,6 +955,11 @@ export class Projector {
     this.now = e.at;
     if (e.kind === "thread_forked") {
       this.onThreadForked(e, out);
+      return out.map((event, i) => (i === out.length - 1 ? { id: e.seq, event } : { event }));
+    }
+    // the set of MCP servers is part of every snapshot, and a change is a card of its own
+    if (e.kind === "tools_attached" || e.kind === "tools_detached") {
+      this.onTools(e, out);
       return out.map((event, i) => (i === out.length - 1 ? { id: e.seq, event } : { event }));
     }
     // the title is part of every snapshot: a rename's own say it

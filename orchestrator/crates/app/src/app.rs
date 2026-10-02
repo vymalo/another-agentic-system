@@ -8,10 +8,11 @@ use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentInfo, AgentTarget, AgentUpdate, BranchPoint, Classify, Command,
     DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource, GatePolicy, Input, Job,
-    LiveText, MAX_FORK_FAMILY, Origin, Replacement, Snapshot, TaskKind, ThreadForkedData, ThreadId,
-    ThreadRecord, ThreadState, Timestamp, TitleSource, UiCatalogData, UserId, WatchKey,
-    branch_points, check_answer, check_description, check_title, copied, family_root, fork_commit,
-    fork_cut, is_commit_hash, repo_key, report, transition,
+    LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Origin, Replacement, Snapshot, TaskKind,
+    ThreadForkedData, ThreadId, ThreadRecord, ThreadState, Timestamp, TitleSource, ToolsError,
+    UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
+    check_title, copied, family_root, fork_commit, fork_cut, is_commit_hash, repo_key, report,
+    transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -25,6 +26,7 @@ use orch_ports::{
 use tokio::time::Instant;
 
 use crate::dispatcher::FileLimits;
+use crate::tool_servers::ToolServerInfo;
 use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, Scope, TaskSettings, check_catalog_schemas,
@@ -114,6 +116,11 @@ pub struct AppConfig {
     /// ADR's `user` and `admin`, and everyone without a known role a `user`, so that a process
     /// that configures none behaves as before roles existed.
     pub policy: Policy,
+    /// The MCP servers a person may attach to a conversation (ADR 0024: `toolServers` of the
+    /// configuration), in the order the web lists them. Only the public part: the URL and the
+    /// credentials of a server belong to the relay and never reach the application. Empty: nothing
+    /// is attachable.
+    pub tool_servers: Vec<ToolServerInfo>,
 }
 
 impl Default for AppConfig {
@@ -132,6 +139,7 @@ impl Default for AppConfig {
             public: PublicConfig::default(),
             files: FileLimits::default(),
             policy: Policy::default(),
+            tool_servers: Vec::new(),
         }
     }
 }
@@ -231,6 +239,12 @@ pub struct Inbound {
     /// ([`UiCatalogData::from_json`]); it is checked again here. Recorded first in the thread's
     /// log, and delivered to the agent inline with the first message.
     pub ui_catalog: Option<UiCatalogData>,
+    /// The MCP servers to attach to the thread the request creates (AG-UI
+    /// `forwardedProps["vymalo.tools"]`, ADR 0024), by id. Each must be one the deployment lists
+    /// for the target's agent, and there may be at most [`MAX_ATTACHED_SERVERS`]
+    /// ([`AppError::Unprocessable`] otherwise). Recorded in the same commit as the first message,
+    /// after it, so the first delegation already sees them.
+    pub tools: Vec<String>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -757,8 +771,10 @@ impl<P: Ports> App<P> {
         self.validate_target(&access, &req.target).await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
+        let tools = self.checked_tools(&req.target.agent_id, &[], &inbound.tools)?;
+
         let now = self.ports.clock().now();
-        let (next, cmds) = transition(
+        let (mut next, mut cmds) = transition(
             &Snapshot::queued(gate),
             &Input::UserMessage {
                 user: user.clone(),
@@ -769,6 +785,19 @@ impl<P: Ports> App<P> {
                 catalog: inbound.ui_catalog,
             },
         )?;
+        // The servers are attached in the commit that holds the first message, after it, so that
+        // the first delegation (read from the job when it is sent) already has them.
+        if !tools.is_empty() {
+            let (after, attach) = transition(
+                &next,
+                &Input::SetTools {
+                    user: user.clone(),
+                    servers: tools,
+                },
+            )?;
+            next = after;
+            cmds.extend(attach);
+        }
         let title = req
             .title
             .filter(|t| !t.trim().is_empty())
@@ -1182,6 +1211,31 @@ impl<P: Ports> App<P> {
             replacement,
         )?;
         let now = self.ports.clock().now();
+        // A fork has the servers its copied log left attached, but for the agent it talks to: one
+        // that agent may not use is detached in the fork's own log, so the log and the thread
+        // agree (a server the deployment no longer lists is kept: a thread keeps its attachments).
+        let (next, cmds) = {
+            let (mut next, mut cmds) = (next, cmds);
+            let kept: Vec<String> = next
+                .job
+                .tools
+                .iter()
+                .filter(|id| self.may_attach(id, &target.agent_id))
+                .cloned()
+                .collect();
+            if kept != next.job.tools {
+                let (after, detach) = transition(
+                    &next,
+                    &Input::SetTools {
+                        user: user.clone(),
+                        servers: kept,
+                    },
+                )?;
+                next = after;
+                cmds.extend(detach);
+            }
+            (next, cmds)
+        };
         let job = (next.job != Job::default()).then_some(next.job);
         let commit = self.build_commit(&target, next.state, job, cmds, None, None, now);
         let id = req
@@ -1528,6 +1582,9 @@ impl<P: Ports> App<P> {
             | Input::TitleDeclined { .. }
             | Input::Described { .. }
             | Input::DescriptionDeclined { .. }
+            // the servers a person may attach are checked against the deployment's list, which
+            // only `set_tools` does
+            | Input::SetTools { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -1627,6 +1684,119 @@ impl<P: Ports> App<P> {
                 "a commit without a lease was reported as fenced",
             )),
         }
+    }
+
+    /// The servers a person may attach, in the order the deployment lists them: what
+    /// `GET /api/tool-servers` shows. It needs `thread.write`, as attaching does.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] for a person whose roles do not grant `thread.write`.
+    pub fn list_tool_servers(&self, who: &impl Requester) -> Result<&[ToolServerInfo], AppError> {
+        if !self.access(who).has(Permission::ThreadWrite) {
+            return Err(AppError::missing_permission(Permission::ThreadWrite));
+        }
+        Ok(&self.cfg.tool_servers)
+    }
+
+    /// Sets the MCP servers attached to one of the person's threads, in any state of the thread
+    /// (ADR 0024): `servers` is the whole set they want, by id. What differs from the set the
+    /// thread has is logged as `tools_attached` and `tools_detached`; the same set is left as it is
+    /// with no event. The set applies to the next message sent to the agent. Returns the thread as
+    /// it is afterwards.
+    ///
+    /// Anyone who may act on the thread (`thread.write`) may attach, the servers the deployment
+    /// offers for the thread's agent; a thread that keeps a server the deployment no longer lists
+    /// may keep it.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a thread the person may not read, [`AppError::Forbidden`] for one
+    /// they may read and not change (`read_only`) or without `thread.write`,
+    /// [`AppError::Invalid`] for an id that is not one, and [`AppError::Unprocessable`] for a server
+    /// that is unknown, not offered for the thread's agent, or more than
+    /// [`MAX_ATTACHED_SERVERS`](orch_core::MAX_ATTACHED_SERVERS) servers.
+    pub async fn set_tools(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        servers: Vec<String>,
+    ) -> Result<ThreadRecord, AppError> {
+        let record = self.writable_thread(&self.access(who), id).await?;
+        let wanted = self.checked_tools(&record.target.agent_id, &record.job.tools, &servers)?;
+        if wanted == record.job.tools {
+            return Ok(record);
+        }
+        let input = Input::SetTools {
+            user: who.user().clone(),
+            servers: wanted,
+        };
+        match self.apply(id, input, None, None, None).await? {
+            ApplyOutcome::Applied { thread, .. } => Ok(thread),
+            ApplyOutcome::Duplicate => Err(AppError::internal(
+                "a tools change without an idempotency key was reported as a duplicate",
+            )),
+            ApplyOutcome::Fenced => Err(AppError::internal(
+                "a commit without a lease was reported as fenced",
+            )),
+        }
+    }
+
+    /// Whether the server `id` may be attached for `agent`: the deployment offers it for that
+    /// agent, or does not list it at all (a thread keeps what it has).
+    fn may_attach(&self, id: &str, agent: &AgentId) -> bool {
+        self.cfg
+            .tool_servers
+            .iter()
+            .find(|s| s.id == id)
+            .is_none_or(|s| s.allows(agent))
+    }
+
+    /// `servers` as a thread's set, checked for a thread talking to `agent` that has `current`
+    /// attached: sorted and unique, each id of the right shape, no more than
+    /// [`MAX_ATTACHED_SERVERS`], and every server that is **new** one the deployment lists for
+    /// `agent`. A server the thread has already is not checked again: a deployment that stopped
+    /// listing it leaves the thread its attachment, and a person can still detach it.
+    fn checked_tools(
+        &self,
+        agent: &AgentId,
+        current: &[String],
+        servers: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        let set = check_servers(servers).map_err(|e| match e {
+            ToolsError::BadId(_) => AppError::Invalid(e.to_string()),
+            ToolsError::TooMany => AppError::Unprocessable(e.to_string()),
+        })?;
+        for id in set.iter().filter(|id| !current.contains(id)) {
+            match self.cfg.tool_servers.iter().find(|s| &s.id == id) {
+                None => {
+                    return Err(AppError::Unprocessable(format!(
+                        "no server `{id}` is offered for attaching"
+                    )));
+                }
+                Some(server) if !server.allows(agent) => {
+                    return Err(AppError::Unprocessable(format!(
+                        "the server `{id}` is not offered for the agent {agent}"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(set)
+    }
+
+    /// The servers of `ids` that `agent` is told are attached (`attached` of the `thread-tools/v1`
+    /// message): those the deployment lists and offers for `agent`, in the order of their ids, at
+    /// most [`MAX_ATTACHED_SERVERS`]. A server the deployment no longer lists is not told.
+    pub fn attached_for(&self, agent: &AgentId, ids: &[String]) -> Vec<orch_core::AttachedServer> {
+        let mut told: Vec<orch_core::AttachedServer> = self
+            .cfg
+            .tool_servers
+            .iter()
+            .filter(|s| ids.contains(&s.id) && s.allows(agent))
+            .map(ToolServerInfo::told)
+            .collect();
+        told.sort_by(|a, b| a.id.cmp(&b.id));
+        told.truncate(MAX_ATTACHED_SERVERS);
+        told
     }
 
     /// Records a step of the thread's work that the orchestrator reports itself (ADR 0025): a

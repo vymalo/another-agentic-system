@@ -346,12 +346,25 @@ pub struct Call {
     pub ui_catalog: Option<Value>,
     /// The catalogs the message carried inline: the `inlineCatalogs` of its renderer capabilities.
     pub inline_catalogs: Vec<Value>,
-    /// `metadata[<thread-tools/v1 URI>]` of the message: `{url, token, expiresAt}`, the grant of
-    /// the thread's MCP endpoint, when it carried one (ADR 0023).
+    /// `metadata[<thread-tools/v1 URI>]` of the message: `{url, token, expiresAt, attached?}`, the
+    /// grant of the thread's MCP endpoint, when it carried one (ADR 0023), and `attached`
+    /// (`[{server, name, description?}]`) when MCP servers are attached to the thread that the
+    /// agent may use (ADR 0024). Recorded as received, so a test can assert what an agent is told.
     pub thread_tools: Option<Value>,
 }
 
 impl Call {
+    /// The `attached` member of the message's thread-tools metadata: the servers the agent was
+    /// told are attached to the thread (empty when the message carried no grant, or no `attached`).
+    pub fn attached(&self) -> Vec<Value> {
+        self.thread_tools
+            .as_ref()
+            .and_then(|grant| grant.get("attached"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The request activated the A2UI extension under `uri`.
     pub fn activates(&self, uri: &str) -> bool {
         self.extensions_header

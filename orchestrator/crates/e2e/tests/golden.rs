@@ -264,6 +264,25 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             assert!(thread.get("description").is_none(), "{thread}");
             (id, "done")
         }
+        // MCP servers attached to a thread (ADR 0024): one when the run creates it (the creation
+        // commit holds the message, then the server), and once it is done another is added and that
+        // one dropped in a single `PUT`, which is an attach and a detach.
+        "tools-attach" => {
+            let (status, created) = chat
+                .try_create_thread_with_tools("plain", "echo hi", &["websearch"])
+                .await;
+            assert_eq!(status, 200, "{created}");
+            let id = created["threadId"].as_str().unwrap().to_owned();
+            chat.wait_state(&id, "done").await;
+            let (status, set) = chat.put_tools(&id, &["docs", "repos"]).await;
+            assert_eq!(status, 422, "`repos` is the coder's: {set}");
+            let (status, set) = chat.put_tools(&id, &["websearch", "repos_"]).await;
+            assert_eq!(status, 400, "{set}");
+            let (status, set) = chat.put_tools(&id, &["docs"]).await;
+            assert_eq!(status, 200, "{set}");
+            assert_eq!(set, json!({"servers": ["docs"]}));
+            (id, "done")
+        }
         // Forking a thread (ADR 0029). The log is the fork's: a copy of the parent's events up to
         // the cut, `thread_forked`, then its own life. `fork`: the second message of a finished
         // thread is edited, so the fork holds the first turn and the replacing message, which
@@ -337,7 +356,7 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     chat.events(&id).await
 }
 
-const SCENARIOS: [&str; 24] = [
+const SCENARIOS: [&str; 25] = [
     "echo",
     "file",
     "ask",
@@ -362,6 +381,7 @@ const SCENARIOS: [&str; 24] = [
     "description",
     "fork",
     "fork-blocked",
+    "tools-attach",
 ];
 
 /// The world a scenario runs in: the plain agent lists the A2UI extension for `a2ui`.
@@ -425,6 +445,17 @@ async fn world_for(name: &str) -> World {
                         ],
                         ..FakeAgentOptions::default()
                     },
+                    ..Setup::default()
+                },
+            )
+            .await
+        }
+        // the deployment offers servers to attach (ADR 0024)
+        "tools-attach" => {
+            World::with(
+                Backend::Memory,
+                Setup {
+                    tool_servers: sample_tool_servers(),
                     ..Setup::default()
                 },
             )

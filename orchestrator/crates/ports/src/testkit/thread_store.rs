@@ -6,9 +6,10 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
-    CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, EventBody,
-    GatePolicy, Hold, Job, Origin, PushedRef, ReworkData, SourceFindings, ThreadId, ThreadState,
-    Timer, UiCatalogData, UiCatalogLedger, UiDelivery, UserId, UserMessageData, WatchKey,
+    CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, Event,
+    EventBody, EventKind, GatePolicy, Hold, Job, Origin, PushedRef, ReworkData, SourceFindings,
+    ThreadId, ThreadState, Timer, UiCatalogData, UiCatalogLedger, UiDelivery, UserId,
+    UserMessageData, WatchKey,
 };
 use uuid::Uuid;
 
@@ -1775,6 +1776,7 @@ fn busy_job() -> Job {
         answer: orch_core::AnswerLedger::default(),
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
         description: orch_core::DescriptionLedger::of(orch_core::DescriptionSource::Model),
+        tools: vec!["docs".to_owned(), "websearch".to_owned()],
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -1827,6 +1829,120 @@ fn busy_job() -> Job {
     .unwrap();
     assert!(announced.job.answer.is_announced());
     announced.job
+}
+
+/// The MCP servers attached to a thread (ADR 0024) live in its job ledger and in the log. A thread
+/// created with servers, and a commit that attaches one and detaches another, read back with the
+/// set in every read (the thread, the listing) and with the `tools_attached` and `tools_detached`
+/// events as written (ids only); a commit that leaves the job alone leaves the set; and the next job
+/// of the thread keeps it, as the core's `Job::next` does.
+pub async fn job_tools_roundtrip<S: ThreadStore>(store: S) {
+    use orch_core::ToolsData;
+    let event = |body: EventBody| NewEvent {
+        at: t0(),
+        actor: Actor::user(&alice()),
+        body,
+        idempotency_key: None,
+    };
+    let servers = |ids: &[&str]| ToolsData {
+        servers: ids.iter().map(|id| (*id).to_owned()).collect(),
+    };
+
+    // Created with two servers: the creation commit holds the message, then the event.
+    let mut first = commit(
+        ThreadState::Queued,
+        vec![
+            user_event("hi", None),
+            event(EventBody::ToolsAttached(servers(&["docs", "websearch"]))),
+        ],
+        vec![],
+    );
+    first.job = Some(Job {
+        tools: vec!["docs".to_owned(), "websearch".to_owned()],
+        ..Job::default()
+    });
+    let (created, events) = store
+        .create_thread(new_thread(&alice(), 1), first)
+        .await
+        .unwrap();
+    assert_eq!(created.job.tools, ["docs", "websearch"]);
+    assert_eq!(
+        events.iter().map(Event::kind).collect::<Vec<_>>(),
+        [EventKind::UserMessage, EventKind::ToolsAttached]
+    );
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(got, created);
+    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    assert_eq!(listed[0].job.tools, ["docs", "websearch"]);
+
+    // One attached and one detached, in one commit.
+    let mut change = commit(
+        ThreadState::Queued,
+        vec![
+            event(EventBody::ToolsAttached(servers(&["files"]))),
+            event(EventBody::ToolsDetached(servers(&["docs"]))),
+        ],
+        vec![],
+    );
+    change.job = Some(Job {
+        tools: vec!["files".to_owned(), "websearch".to_owned()],
+        ..Job::default()
+    });
+    let (record, written) = applied(store.commit(thread_id(1), 1, change).await.unwrap());
+    assert_eq!(record.job.tools, ["files", "websearch"]);
+    assert_eq!(
+        written.iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
+        [
+            EventBody::ToolsAttached(servers(&["files"])),
+            EventBody::ToolsDetached(servers(&["docs"]))
+        ]
+    );
+    let read = store.list_events(thread_id(1), 2, 10).await.unwrap();
+    assert_eq!(read, written, "the events read back as they were written");
+    assert_eq!(
+        serde_json::to_value(&read[0]).unwrap()["data"],
+        serde_json::json!({"servers": ["files"]}),
+        "the event holds ids and nothing else"
+    );
+
+    // A commit that leaves the job alone leaves the set.
+    let (record, _) = applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(ThreadState::Working, vec![user_event("more", None)], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(record.job.tools, ["files", "websearch"]);
+
+    // The thread's next job keeps the set; clearing it empties it.
+    let mut next = commit(ThreadState::Queued, vec![], vec![]);
+    next.job = Some(record.job.next());
+    let (record, _) = applied(store.commit(thread_id(1), 3, next).await.unwrap());
+    assert_eq!(
+        (record.job.number, record.job.tools.clone()),
+        (2, vec!["files".to_owned(), "websearch".to_owned()])
+    );
+    let mut clear = commit(
+        ThreadState::Queued,
+        vec![event(EventBody::ToolsDetached(servers(&[
+            "files",
+            "websearch",
+        ])))],
+        vec![],
+    );
+    clear.job = Some(Job {
+        tools: vec![],
+        ..record.job.clone()
+    });
+    let (record, _) = applied(store.commit(thread_id(1), 4, clear).await.unwrap());
+    assert!(record.job.tools.is_empty());
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(got, record);
+    assert_eq!(got.job.number, 2, "the rest of the ledger is as it was");
 }
 
 /// The job is stored with the thread, comes back exactly, and a commit without one leaves it.

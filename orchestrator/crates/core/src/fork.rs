@@ -18,6 +18,7 @@ use crate::gate::{GatePolicy, Job, Snapshot};
 use crate::ids::{ThreadId, UserId};
 use crate::thread::{AgentTarget, ThreadState};
 use crate::title::{TitleLedger, agent_words};
+use crate::tools::attached_by;
 use crate::transition::{Command, Input, TransitionError, append, transition};
 use crate::ui_catalog::UiCatalogData;
 
@@ -193,6 +194,8 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::AgentStep
                 | EventKind::ThreadTitled
                 | EventKind::ThreadDescribed
+                | EventKind::ToolsAttached
+                | EventKind::ToolsDetached
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -213,6 +216,8 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
 /// * `description`: the parent's ledger ([`DescriptionLedger`]) with nothing in flight and no job
 ///   asked: the fork has the parent's description, a person's stays final, and the fork's first job
 ///   to end asks as any job does (ADR 0035).
+/// * `tools`: the servers the copied events leave attached ([`attached_by`]): the copy says they
+///   were attached, so the fork has them. (The application drops those its agent may not use.)
 /// * the UI catalog ledger is **empty**: a fork is a new A2A context and its agent has been sent
 ///   no catalog, so the first message that carries one sends it in full.
 pub fn forked_snapshot(
@@ -252,6 +257,7 @@ pub fn forked_snapshot(
             verification,
             title: title.inherited(),
             description: description.inherited(),
+            tools: attached_by(copied),
             ..Job::default()
         },
     }
@@ -436,6 +442,8 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::AgentStep(_)
             | EventBody::ThreadTitled(_)
             | EventBody::ThreadDescribed(_)
+            | EventBody::ToolsAttached(_)
+            | EventBody::ToolsDetached(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

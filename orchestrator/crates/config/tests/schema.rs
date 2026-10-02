@@ -28,14 +28,14 @@ fn the_committed_schema_is_the_one_the_types_generate() {
     );
 }
 
-/// Every property of the schema that is a `SecretRef` (or a list of them): `Type.property`.
+/// Every property of the schema that is a `SecretRef` (or a list or a mapping of them):
+/// `Type.property`.
 fn secret_fields(schema: &Value) -> Vec<String> {
+    let is_ref = |v: Option<&Value>| {
+        v.and_then(|v| v.get("$ref")).and_then(Value::as_str) == Some("#/$defs/SecretRef")
+    };
     let is_secret = |v: &Value| {
-        v.get("$ref").and_then(Value::as_str) == Some("#/$defs/SecretRef")
-            || v.get("items")
-                .and_then(|i| i.get("$ref"))
-                .and_then(Value::as_str)
-                == Some("#/$defs/SecretRef")
+        is_ref(Some(v)) || is_ref(v.get("items")) || is_ref(v.get("additionalProperties"))
     };
     let mut found = Vec::new();
     for (type_name, def) in schema["$defs"].as_object().unwrap() {
@@ -52,10 +52,11 @@ fn secret_fields(schema: &Value) -> Vec<String> {
 }
 
 /// ADR 0034: "the secrets are the eight values of today that are secrets" and, with ADR 0032, the
-/// two credentials of the S3 store. A eleventh, or a string where one of these is, would be a change
-/// of the contract, so it fails here first.
+/// two credentials of the S3 store, and, with ADR 0024, the bearer and the headers of a tool
+/// server. A thirteenth, or a string where one of these is, would be a change of the contract, so
+/// it fails here first.
 #[test]
-fn the_secrets_are_the_ten_the_contract_names() {
+fn the_secrets_are_the_twelve_the_contract_names() {
     assert_eq!(
         secret_fields(&orch_config::schema()),
         [
@@ -67,6 +68,8 @@ fn the_secrets_are_the_ten_the_contract_names() {
             "Registry.token",
             "ThreadTools.previousSecret",
             "ThreadTools.secret",
+            "ToolServer.bearer",
+            "ToolServer.headers",
             "WebhookGeneric.secrets",
             "WebhookGithub.secrets",
         ]

@@ -122,6 +122,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Forbidden` | 403, the domain message, with `code: forbidden` (`read_only` for a thread the person may read and not change) |
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
+/// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
@@ -167,6 +168,12 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
                 None,
             ),
         };
+    }
+    if let AppError::Unprocessable(detail) = err {
+        return (
+            Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()),
+            None,
+        );
     }
     if let AppError::Forbidden {
         detail, read_only, ..
@@ -260,6 +267,7 @@ mod tests {
             (AppError::NotFound, 404, None),
             (AppError::Store(StoreError::NotFound), 404, None),
             (AppError::Invalid("bad".into()), 400, None),
+            (AppError::Unprocessable("no server `x`".into()), 422, None),
             (AppError::Finished, 409, None),
             (
                 AppError::Transition(TransitionError::InvalidInState {

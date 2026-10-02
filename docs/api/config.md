@@ -1,6 +1,6 @@
 # The orchestrator's configuration file
 
-> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; `auth.roles` and `auth.defaultRole` by S15; the `models`, `tasks` and `ui` sections by S18).** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; `auth.roles` and `auth.defaultRole` by S15; the `models`, `tasks` and `ui` sections by S18; the `toolServers` section by slice 8, [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
 > validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections),
 > [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section) and
@@ -123,6 +123,15 @@ webhooks:
     secrets: [{ env: WEBHOOK_GENERIC_SECRET }]
   github:
     secrets: [{ env: WEBHOOK_GITHUB_SECRET }]
+toolServers:                  # what a person may attach to a conversation (see "toolServers")
+  - id: websearch
+    name: Web search
+    description: Search the web.
+    url: https://search.example.com/mcp
+    icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnLz4=
+    bearer: { env: WEBSEARCH_TOKEN }
+    tools: [search]
+    agents: [chat, researcher]
 ```
 
 `orchestrator --print-config` prints the configuration this process would run with (the file, the environment over it,
@@ -249,6 +258,34 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `artifacts.maxFileBytes` | 1 to 268435456 (256 MiB), `10485760` (10 MiB). Read by the ingest (ADR 0032, S11): a larger file is not kept; the agent's artifact is logged without it, with an error "the file is too large to keep" | — | now |
 | `artifacts.maxPerJobBytes` | 1 to 4294967296 (4 GiB), `104857600` (100 MiB). The bytes of files one job (one run of an agent) keeps; a job also keeps at most 50 files (not a key). A file over either is refused like one over `maxFileBytes` | — | now (S11) |
 | `artifacts.fetchHosts` | list of hosts (`files.example.com`, `10.0.0.5:8080`: a host name or address with or without a port, which without one is the scheme's default, 80 or 443; no scheme, path, wildcard or credentials), default none. A `url` part of an agent's artifact on one of them is fetched by the worker and kept like a `raw` part; any other `url` stays a link. The list is the SSRF control: a host on it is trusted; the fetch is `http(s)` only, follows no redirect, sends no credential and stops at `maxFileBytes` | — | now (S11) |
+
+### `toolServers`
+
+*Built 2026-10-02 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), slice 8).* The MCP servers a person may
+attach to a conversation, **the deployment's own list**: a person cannot enter a URL. A list of at most 64 servers, in the
+order the web shows them; absent or empty, nothing is attachable. The orchestrator will call a server on the agent's behalf
+and holds its credentials ([the relay](thread-tools-v1.md#attached-servers-and-the-relay-slice-8), not built yet); the
+application, the API and the log hold only the part that is not secret. Replaces nothing: it has no variable.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `toolServers[].id` | `a-z`, `0-9`, `-`, starting with a letter or a digit, 1 to 31 characters, **unique**; required. What a thread records and the prefix of the server's tools on the thread's endpoint (`<id>__<tool>`): no `_`, so the first `__` is the split | — | now |
+| `toolServers[].name` | 1 to 80 characters of one line, not blank; required | — | now |
+| `toolServers[].description` | at most 500 characters of one line, none. Shown by the picker, and told to the agent (`attached` of its message) | — | now |
+| `toolServers[].url` | `http(s)` URL with a host, **no user name, password, query or fragment** (a credential goes in `bearer` or `headers`); required. An `http` URL with a credential logs a warning at startup, naming the server | — | now |
+| `toolServers[].icon` | a `data:` URI, `data:image/(svg+xml\|png\|webp);base64,…`, at most 8 KiB, none. The screen draws it as it is: an icon at a URL is never fetched (open question 38), and the icons the server offers itself are dropped | — | now |
+| `toolServers[].bearer` | **secret**, none; sent as `Authorization: Bearer <value>` on the orchestrator's own requests | — | now |
+| `toolServers[].headers` | map from a header name to a **secret**, none. A name is letters, digits and `-`; `Authorization` (use `bearer`), `Accept`, `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused, whatever their case, and a name twice that differs only by case is too. A resolved value must be one a header can hold (visible ASCII, no line break) | — | now |
+| `toolServers[].tools` | list of the server's own tool names, at least one, none (every tool the relay can expose). Each is `a-z A-Z 0-9 _ -`, not starting with `_`, and `<id>__<tool>` is at most 64 characters | — | now |
+| `toolServers[].agents` | list of agent ids, at least one, none (every agent). The agents the server may be attached for: a thread whose agent is not listed cannot attach it (422). With no platform registry the ids must be agents of the agents file (exit 78 otherwise); with one they cannot all be known at startup, and an id that matches no agent is a server nobody is offered | — | now |
+| `toolServers[].timeoutSecs` | 1 to 600, `120`; the longest one call may take | — | now |
+
+A server's `bearer` and each of its `headers` are two of the **twelve** secrets of the contract (the ten of ADR 0032 and the
+two here): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
+printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
+`agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the
+URL, a header or a credential. A server the deployment stops listing stays attached to the threads that have it (the thread keeps
+its attachments); it is no longer told to their agents, and a person can detach it.
 
 ### Authentication
 

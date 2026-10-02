@@ -243,6 +243,101 @@ pub(crate) async fn patch_thread<P: Ports>(
     }
 }
 
+/// Contract `ToolServer`: a server a person may attach to a conversation (ADR 0024). The URL, the
+/// headers, the credentials, the allow-list of its tools and the timeout are not here and never
+/// will be: this is what the picker shows.
+#[derive(Serialize)]
+pub(crate) struct ToolServerView {
+    id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    /// A `data:` URI, drawn as it is; never a URL to fetch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    /// The agents it may be attached for; absent when it may be for every agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents: Option<Vec<String>>,
+}
+
+/// `GET /api/tool-servers`: the servers the deployment offers for attaching, in the order it lists
+/// them. 403 for a person whose roles do not grant `thread.write`.
+pub(crate) async fn list_tool_servers<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Response> {
+    let servers: Vec<ToolServerView> = state
+        .app
+        .list_tool_servers(&principal)?
+        .iter()
+        .map(|s| ToolServerView {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            description: s.description.clone(),
+            icon: s.icon.clone(),
+            agents: s
+                .agents
+                .as_ref()
+                .map(|agents| agents.iter().map(ToString::to_string).collect()),
+        })
+        .collect();
+    let mut response = Json(servers).into_response();
+    // The deployment's list changes with its configuration, not with the request.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+/// Contract `ThreadTools`: the servers attached to a thread, after a change.
+#[derive(Serialize)]
+pub(crate) struct ThreadTools {
+    servers: Vec<String>,
+}
+
+/// `PUT /api/threads/{threadId}/tools` with `{"servers": [ids]}`: sets the MCP servers attached to
+/// a thread, whatever its state (see [`orch_app::App::set_tools`]). 200 with the set after the
+/// change (the same set is a 200 with no change), 400 for a body that is not exactly an object with
+/// a `servers` array of strings or an id that is not one, 403 for a thread the caller may read and
+/// not change (`read_only`) or without `thread.write`, 404 for one they may not read, 422 for a
+/// server that is unknown or not offered for the thread's agent, and for more than 16.
+pub(crate) async fn put_thread_tools<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
+) -> ApiResult<Json<ThreadTools>> {
+    let id = parse_thread_id(&id)?;
+    let mut servers = None;
+    for (member, value) in body {
+        match (member.as_str(), value) {
+            ("servers", serde_json::Value::Array(items)) => {
+                let ids = items
+                    .into_iter()
+                    .map(|item| match item {
+                        serde_json::Value::String(id) => Ok(id),
+                        _ => Err(Problem::bad_request(
+                            "`servers` must be an array of strings",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                servers = Some(ids);
+            }
+            ("servers", _) => {
+                return Err(Problem::bad_request("`servers` must be an array of strings").into());
+            }
+            (other, _) => {
+                return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
+            }
+        }
+    }
+    let servers = servers.ok_or_else(|| Problem::bad_request("`servers` is required"))?;
+    let thread = state.app.set_tools(&principal, id, servers).await?;
+    Ok(Json(ThreadTools {
+        servers: thread.job.tools,
+    }))
+}
+
 /// `GET /api/config`: the public subset of the configuration, exactly `{"ui": {...}}`
 /// ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)).
 /// Behind the identity layer like every `/api` route. It changes only when the process restarts.

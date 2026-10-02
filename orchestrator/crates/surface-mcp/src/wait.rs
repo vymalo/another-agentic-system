@@ -155,6 +155,8 @@ pub fn describe(event: &Event) -> Option<String> {
         EventBody::UiCatalog(_) => return None,
         // a label of the conversation, not progress of the job
         EventBody::ThreadTitled(_) | EventBody::ThreadDescribed(_) => return None,
+        // the set of tools attached to the conversation, not progress of the job
+        EventBody::ToolsAttached(_) | EventBody::ToolsDetached(_) => return None,
         EventBody::ThreadForked(f) => {
             format!("forked from thread {} at #{}", f.from.thread_id, f.from.seq)
         }

@@ -101,3 +101,26 @@ is not built. It settles what this ADR and its note of 2026-10-01 left to the sl
   are not logged.
 - **Timeouts:** `_meta` `timeoutSecs` tells the agent how long a call may run, in place of a fixed 60 seconds.
 - **The message:** `attached` names the servers (id, name, description), never a URL or credential.
+
+## Status note, 2026-10-02: attaching is built; the relay is not
+
+Built (slice 8, first half): the `toolServers` section of the configuration ([`config.md`](../api/config.md#toolservers)); the
+events `tools_attached` and `tools_detached` and the set in the thread's job ledger (carried from job to job, migration
+`0012_tools.sql`); `GET /api/tool-servers` and `PUT /api/threads/{threadId}/tools`
+([`chat-api.yaml`](../api/chat-api.yaml)); `forwardedProps["vymalo.tools"]` on the run that creates a thread, in the same commit as
+the first message; the `vymalo.tools` activity and `thread.tools` of the state snapshot ([`agui.md`](../api/agui.md#attaching-mcp-servers));
+and `attached` in the `thread-tools/v1` message, for an agent whose card lists the extension ([`thread-tools-v1.md`](../api/thread-tools-v1.md#the-attached-member)).
+Decided where the plan was silent, on the same delegation:
+
+- **A thread keeps what it has.** Only a server that is *new* to the thread is checked against the deployment's list and the
+  thread's agent; one the thread has already is not, so a deployment that stops listing a server does not make the set of its
+  threads unsettable, and a person can detach it. It is no longer told to the agent.
+- **A fork carries the set its copied log left**, minus the servers its agent may not use; those are detached in the fork's own
+  first events, so the log and the thread agree.
+- **`GET /api/tool-servers` says which agents a server is for** (`agents`, absent for every agent), beside the id, name,
+  description and icon, so the picker offers only what the thread's agent can have; the allow-list of a server's tools, its
+  timeout, its URL and its credentials are not in it.
+- **A sixty-fifth server is a configuration error**, so the list the API shows is bounded.
+
+Still to build: the relay (the tools on the thread's endpoint, the step of each call, the errors), the client port it needs, and the
+picker in the composer.

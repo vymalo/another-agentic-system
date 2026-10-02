@@ -11,6 +11,7 @@ mod error;
 mod gate_config;
 mod inbox;
 mod tasks;
+mod tool_servers;
 
 pub use app::{
     AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView, Branches, Creation,
@@ -34,3 +35,4 @@ pub use inbox::{
     InboxConfig, InboxWorker,
 };
 pub use tasks::{PublicConfig, TaskSettings, UiSettings};
+pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};

@@ -726,6 +726,120 @@ fn a_configuration_file_with_many_mistakes_lists_every_one_and_exits_78_without_
     assert!(!out.stderr.contains("hunter2-s3cr3t") && !out.stdout.contains("hunter2-s3cr3t"));
 }
 
+/// `toolServers` (ADR 0024): every mistake is listed, the process exits 78 before anything
+/// connects, and no line carries a value of the file or of a credential.
+#[test]
+fn a_tool_server_with_mistakes_lists_every_one_and_exits_78_without_a_value() {
+    const SECRET: &str = "tool-s3cr3t-must-not-leak";
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}toolServers:\n\
+             \x20 - id: Web_Search\n    name: Web\n    url: 'https://u:{SECRET}@a.example.com/mcp'\n\
+             \x20   icon: 'https://a.example.com/{SECRET}.png'\n    bearer: {{ env: TOOL_TOKEN_UNSET }}\n\
+             \x20   headers: {{ Accept: {{ env: SMOKE_AGENT_TOKEN }} }}\n    agents: [nosuch]\n"
+        ),
+    );
+    let out = run_to_end(
+        &[],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            // unreachable on purpose: configuration is validated first
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(78), "EX_CONFIG: {}", out.stderr);
+    for line in [
+        "toolServers[0].id: an id is",
+        "toolServers[0].url: expected an absolute http:// or https:// URL",
+        "toolServers[0].icon: an icon is a data: URI",
+        "toolServers[0].bearer: the environment variable TOOL_TOKEN_UNSET is unset or empty",
+        "toolServers[0].headers.Accept: this header is the orchestrator's own to set",
+    ] {
+        assert!(
+            out.stderr.contains(line),
+            "stderr lacks {line:?}:\n{}",
+            out.stderr
+        );
+    }
+    for value in [SECRET, TOKEN, "Web_Search"] {
+        assert!(
+            !out.stderr.contains(value) && !out.stdout.contains(value),
+            "{value} is printed:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+    // an agent that is not in the agents file is the next mistake, once the file's own are fixed
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}toolServers:\n  - id: websearch\n    name: Web\n    url: https://a.example.com/mcp\n    agents: [fake, nosuch]\n"
+        ),
+    );
+    let out = run_to_end(
+        &[],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none"),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(78), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("toolServers[0].agents[1]: names no agent of the agents file"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("toolServers[0].agents[0]"),
+        "{}",
+        out.stderr
+    );
+}
+
+/// The servers of the file are in the printed configuration with their credentials as references
+/// and the credential's value nowhere.
+#[test]
+fn print_config_shows_the_tool_servers_with_references_and_never_a_credential() {
+    const BEARER: &str = "bearer-value-must-not-leak";
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}toolServers:\n  - id: websearch\n    name: Web search\n    url: https://search.example.com/mcp\n\
+             \x20   bearer: {{ env: SEARCH_TOKEN }}\n    headers: {{ X-Api-Key: {{ env: SEARCH_KEY }} }}\n    agents: [fake]\n"
+        ),
+    );
+    let out = run_to_end(
+        &["--print-config"],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", SECRET_URL),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("SEARCH_TOKEN", BEARER),
+            ("SEARCH_KEY", "key-value-must-not-leak"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", out.stderr);
+    assert!(out.stdout.contains("toolServers:"), "{}", out.stdout);
+    assert!(out.stdout.contains("env: SEARCH_TOKEN"), "{}", out.stdout);
+    assert!(out.stdout.contains("env: SEARCH_KEY"), "{}", out.stdout);
+    for value in [BEARER, "key-value-must-not-leak", TOKEN] {
+        assert!(
+            !out.stdout.contains(value) && !out.stderr.contains(value),
+            "{value} is printed:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
 #[test]
 fn a_syntax_error_and_a_missing_file_are_exit_78() {
     let scratch = Scratch::new();

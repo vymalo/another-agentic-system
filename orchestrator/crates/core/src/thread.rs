@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::fork::ForkedFrom;
-use crate::gate::{Job, Snapshot};
+use crate::gate::{Job, JobView, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
 
 /// MVP subset of the job lifecycle (contract `ThreadState`).
@@ -102,8 +102,7 @@ impl Releases {
 }
 
 /// A thread as stored. Serialises to the contract `Thread` (the version stays internal).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadRecord {
     /// Thread id.
     pub id: ThreadId,
@@ -114,25 +113,18 @@ pub struct ThreadRecord {
     pub title: String,
     /// What the thread is about now, in a sentence or two (ADR 0035); absent until the model or
     /// a person writes one, and again when a person clears it.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Target agent and release.
     pub target: AgentTarget,
     /// Current state.
     pub state: ThreadState,
     /// The job ledger. Serialised as the contract `Thread.job`, the part of it clients see, and
-    /// only under an active gate.
-    #[serde(
-        serialize_with = "serialize_job",
-        skip_serializing_if = "job_is_hidden",
-        rename = "job"
-    )]
+    /// only under an active gate; the servers attached to the thread (`job.tools`) are the contract
+    /// `Thread.tools`, whatever the gate.
     pub job: Job,
     /// Optimistic-concurrency version (never serialised).
-    #[serde(skip)]
     pub version: i64,
     /// Where the thread was forked from (ADR 0029); `None` for a thread that was not.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ForkedFrom>,
     /// Sequence number of the last event, 0 when empty.
     pub last_seq: i64,
@@ -142,12 +134,44 @@ pub struct ThreadRecord {
     pub updated_at: Timestamp,
 }
 
-fn job_is_hidden(job: &Job) -> bool {
-    !job.gate.is_active()
-}
-
-fn serialize_job<S: serde::Serializer>(job: &Job, serializer: S) -> Result<S::Ok, S::Error> {
-    job.view().serialize(serializer)
+impl Serialize for ThreadRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire<'a> {
+            id: ThreadId,
+            owner: &'a UserId,
+            title: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<&'a str>,
+            target: &'a AgentTarget,
+            state: ThreadState,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            job: Option<JobView>,
+            #[serde(skip_serializing_if = "<[String]>::is_empty")]
+            tools: &'a [String],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            forked_from: Option<&'a ForkedFrom>,
+            last_seq: i64,
+            created_at: Timestamp,
+            updated_at: Timestamp,
+        }
+        Wire {
+            id: self.id,
+            owner: &self.owner,
+            title: &self.title,
+            description: self.description.as_deref(),
+            target: &self.target,
+            state: self.state,
+            job: self.job.view(),
+            tools: &self.job.tools,
+            forked_from: self.forked_from.as_ref(),
+            last_seq: self.last_seq,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+        .serialize(serializer)
+    }
 }
 
 impl ThreadRecord {

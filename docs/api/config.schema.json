@@ -938,6 +938,76 @@
       ],
       "type": "object"
     },
+    "ToolServer": {
+      "additionalProperties": false,
+      "description": "An MCP server a person may attach to a conversation (ADR 0024, `thread-tools/v1`). The orchestrator calls it for the agent and holds its credentials: they are secret references and appear in no event, no API answer, no log line and no agent message. A person cannot enter a URL: this list is the deployment's.",
+      "properties": {
+        "agents": {
+          "description": "The ids of the agents the server may be attached for (default: every agent). A thread whose agent is not listed cannot attach it (422).",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "bearer": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "A bearer token the server wants, sent as `Authorization: Bearer <value>` on the orchestrator's own requests."
+        },
+        "description": {
+          "description": "What the server is for, at most 500 characters. The web shows it, and the agent is told it.",
+          "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretRef"
+          },
+          "description": "Further headers the server wants: the header's name to a secret reference that holds its value. `Authorization` (use `bearer`), `Accept`, `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused.",
+          "type": "object"
+        },
+        "icon": {
+          "description": "The icon the web draws for the server and for its steps: a `data:` URI, `data:image/svg+xml;base64,...` (or `image/png`, `image/webp`), at most 8 KiB. An icon at a URL is never fetched (open question 38), and the icons the server itself offers are dropped.",
+          "type": "string"
+        },
+        "id": {
+          "description": "The server's id: `a-z`, `0-9` and `-`, starting with a letter or a digit, 1 to 31 characters, unique in the list. No `_`, so the first `__` of a relayed tool's name (`<id>__<tool>`) is the split.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "The name the picker and the steps show, 1 to 80 characters.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeoutSecs": {
+          "default": 120,
+          "description": "Seconds one call may take, 1 to 600 (default 120).",
+          "format": "uint64",
+          "maximum": 600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tools": {
+          "description": "An allow-list of the server's own tool names to relay (default: every tool whose name the relay can expose: `a-z`, `A-Z`, `0-9`, `_` and `-`, not starting with `_`).",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "url": {
+          "description": "The server's MCP endpoint (streamable HTTP), `http` or `https`, with a host and no user name, password, query or fragment: a credential goes in `bearer` or `headers`.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
     "Ui": {
       "additionalProperties": false,
       "description": "What the web is told about how to show things: the one part of the file it can read, served as `GET /api/config` (ADR 0034). **It has no secret and never will**: a test asserts that its schema holds no secret reference.",
@@ -1126,6 +1196,14 @@
         "tokenTtlSecs": 7200
       },
       "description": "The thread tools: the endpoint agents call back, and the key of its tokens."
+    },
+    "toolServers": {
+      "description": "The MCP servers a person may attach to a conversation (ADR 0024), in the order the web lists them. Absent or empty: nothing is attachable. At most 64.",
+      "items": {
+        "$ref": "#/$defs/ToolServer"
+      },
+      "maxItems": 64,
+      "type": "array"
     },
     "ui": {
       "$ref": "#/$defs/Ui",

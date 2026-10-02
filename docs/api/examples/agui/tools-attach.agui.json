@@ -1,0 +1,323 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "echo hi",
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "tools": [
+            "websearch"
+          ]
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "attached": [
+          "websearch"
+        ]
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "subagentRunId": "sub-3",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "status": "working"
+      },
+      "messageId": "evt-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-3",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "tools": [
+            "websearch"
+          ]
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "kind": "file",
+        "name": "result",
+        "text": "echo: echo hi",
+        "uri": "https://github.com/acme/demo/pull/1"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-3",
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:05Z",
+        "status": "completed"
+      },
+      "messageId": "evt-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-3",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-3",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "tools": [
+            "websearch"
+          ]
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-7",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "attached": [
+          "docs"
+        ]
+      },
+      "messageId": "evt-7",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "tools": [
+            "docs",
+            "websearch"
+          ]
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-7",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-8",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.tools",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "detached": [
+          "websearch"
+        ]
+      },
+      "messageId": "evt-8",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "echo hi",
+          "tools": [
+            "docs"
+          ]
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-8",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 8
+  }
+]

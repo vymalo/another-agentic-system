@@ -470,6 +470,13 @@ function normalise(list: Frame[], threadId: string): Frame[] {
  */
 const FORKS = ["fork", "fork-blocked"];
 
+/**
+ * The scenario of the MCP servers attached to a thread (ADR 0024, `tools-attach`). The mock server
+ * has no route to attach one yet (the composer's picker brings it), so it is not driven through its
+ * server: its projection reads the golden event log and must produce the golden stream.
+ */
+const TOOLS = ["tools-attach"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -482,9 +489,9 @@ function forkLog(name: string): Event[] {
   }));
 }
 
-describe("the mock's projection against the AG-UI goldens of a fork and of a description", () => {
+describe("the mock's projection against the AG-UI goldens of a fork, a description and attached servers", () => {
   // the description's log too: the projection alone, from the events the orchestrator wrote
-  for (const name of [...FORKS, "description"]) {
+  for (const name of [...FORKS, ...TOOLS, "description"]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real
@@ -510,7 +517,7 @@ describe("the mock server against the AG-UI goldens", () => {
     const files = readdirSync(path.join(DIR, ".."))
       .filter((f) => f.endsWith(".events.json"))
       .map((f) => f.replace(/\.events\.json$/, ""))
-      .filter((f) => !FORKS.includes(f));
+      .filter((f) => !FORKS.includes(f) && !TOOLS.includes(f));
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
 

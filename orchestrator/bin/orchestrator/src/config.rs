@@ -29,7 +29,7 @@ use clap::Parser;
 use orch_app::{
     AgentDirectory, AgentEntry, AgentScope, AppConfig, DEFAULT_MAX_ATTEMPTS_CAP, GateLayer,
     GateRules, InboxConfig, Layer, MAX_ATTEMPTS_CAP_CEILING, Permission, Policy, PublicConfig,
-    RoleGrant, Scope, TaskSettings, built_in_roles, known_sources,
+    RoleGrant, Scope, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
 };
 use orch_core::{
     AgentId, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
@@ -1158,6 +1158,11 @@ pub struct Config {
     pub models: ModelsSettings,
     /// `ui` of the configuration file: what `GET /api/config` says to the web.
     pub public: PublicConfig,
+    /// `toolServers` of the configuration file: the MCP servers a person may attach to a
+    /// conversation (ADR 0024), the public part of each. Empty without the key (and always from
+    /// the environment alone: the section has no variable). The URL and the credentials are not
+    /// here.
+    pub tool_servers: Vec<ToolServerInfo>,
     /// `INBOX_LEASE_SECS`, `INBOX_POLL_SECS`, `INBOX_PARKED_TTL_SECS`, `INBOX_MAX_ATTEMPTS`: the
     /// inbox worker (timers and reports).
     pub inbox: InboxConfig,
@@ -1196,6 +1201,7 @@ impl fmt::Debug for Config {
             .field("steps_record_io", &self.steps_record_io)
             .field("models", &self.models)
             .field("public", &self.public)
+            .field("tool_servers", &self.tool_servers)
             .field("inbox", &self.inbox)
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace)
@@ -1495,6 +1501,7 @@ impl Config {
         )?;
         let models = resolved.models.unwrap_or(from_variables);
         let public = resolved.public.unwrap_or_default();
+        let tool_servers = resolved.tool_servers;
         let inbox = InboxConfig {
             lease: Duration::from_secs(number(
                 clean(args.inbox_lease_secs),
@@ -1565,6 +1572,7 @@ impl Config {
             steps_record_io,
             models,
             public,
+            tool_servers,
             inbox,
             instance_id,
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
@@ -1605,6 +1613,7 @@ impl Config {
             tasks: self.models.tasks.clone(),
             public: self.public.clone(),
             policy: self.auth.policy.clone(),
+            tool_servers: self.tool_servers.clone(),
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2346,6 +2355,8 @@ struct Resolved {
     models: Option<ModelsSettings>,
     /// `ui`, for `GET /api/config`.
     public: Option<PublicConfig>,
+    /// `toolServers`, the public part of each server.
+    tool_servers: Vec<ToolServerInfo>,
     /// `webhooks.generic.secrets`, separated.
     #[cfg(feature = "surface-webhook")]
     webhook_generic: Option<Vec<String>>,

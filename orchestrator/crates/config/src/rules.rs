@@ -20,7 +20,7 @@ use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
     ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, Config, Environment, Prompt,
-    SecretRef, Surface,
+    SecretRef, Surface, ToolServer,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -31,6 +31,21 @@ pub const MIN_SECRET_BYTES: usize = 32;
 
 /// The longest a task's prompt may be, 4 KiB: the guidance of a model call that costs a few tokens.
 pub const MAX_PROMPT_BYTES: usize = 4 * 1024;
+
+/// The most bytes of a tool server's icon (`toolServers[].icon`, a `data:` URI): 8 KiB.
+pub const MAX_ICON_BYTES: usize = 8 * 1024;
+
+/// The headers a tool server's `headers` may not set: the ones the orchestrator's own MCP client
+/// owns (`Authorization` is `bearer`).
+const RESERVED_HEADERS: &[&str] = &[
+    "authorization",
+    "accept",
+    "content-type",
+    "host",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+];
 
 /// The secrets of a valid configuration, resolved. `Debug` shows references, never values.
 #[derive(Debug, Clone)]
@@ -56,6 +71,17 @@ pub struct Secrets {
     pub webhook_generic: Vec<Secret>,
     /// `webhooks.github.secrets`; empty as above.
     pub webhook_github: Vec<Secret>,
+    /// The credentials of `toolServers`, by server id; a server that has none has no entry.
+    pub tool_servers: BTreeMap<String, ToolServerSecrets>,
+}
+
+/// The credentials of one tool server, resolved. `Debug` shows references, never values.
+#[derive(Debug, Clone, Default)]
+pub struct ToolServerSecrets {
+    /// `toolServers[].bearer`.
+    pub bearer: Option<Secret>,
+    /// `toolServers[].headers`, by header name as written in the file, in the order of the names.
+    pub headers: Vec<(String, Secret)>,
 }
 
 /// The prompts of the tasks (`tasks.<task>.system`), read: the text itself, whether it was written
@@ -367,7 +393,129 @@ impl Checker<'_> {
             );
         }
 
+        self.tool_servers(&cfg.tool_servers);
         self.auth(cfg);
+    }
+
+    /// `toolServers` (ADR 0024): ids that tell the servers apart and make `<id>__<tool>` unambiguous,
+    /// a URL with no credential in it, an icon that is a small `data:` image, header names the
+    /// client can send, tool and agent lists that name something.
+    fn tool_servers(&mut self, servers: &[ToolServer]) {
+        let mut ids: Vec<&str> = Vec::new();
+        for (i, server) in servers.iter().enumerate() {
+            let at = format!("toolServers[{i}]");
+            if !is_server_id(&server.id) {
+                self.invalid(
+                    format!("{at}.id"),
+                    "an id is a to z, 0 to 9 and -, starting with a letter or a digit, 1 to 31 \
+                     characters",
+                );
+            } else if ids.contains(&server.id.as_str()) {
+                self.invalid(format!("{at}.id"), "another server has this id");
+            }
+            ids.push(&server.id);
+            if server.name.trim().is_empty()
+                || server.name.chars().count() > 80
+                || server.name.chars().any(char::is_control)
+            {
+                self.invalid(
+                    format!("{at}.name"),
+                    "a name is 1 to 80 characters of one line, and not blank",
+                );
+            }
+            if let Some(description) = &server.description
+                && (description.chars().count() > 500 || description.chars().any(char::is_control))
+            {
+                self.invalid(
+                    format!("{at}.description"),
+                    "a description is at most 500 characters of one line",
+                );
+            }
+            if !is_plain_http_url(&server.url)
+                || Url::parse(&server.url)
+                    .is_ok_and(|u| u.query().is_some() || u.fragment().is_some())
+            {
+                self.invalid(
+                    format!("{at}.url"),
+                    "expected an absolute http:// or https:// URL with a host and no user name, \
+                     password, query or fragment: a credential goes in bearer or headers",
+                );
+            }
+            if let Some(icon) = &server.icon
+                && !is_icon(icon)
+            {
+                self.invalid(
+                    format!("{at}.icon"),
+                    format!(
+                        "an icon is a data: URI, data:image/svg+xml;base64,... (or image/png, \
+                         image/webp), at most {MAX_ICON_BYTES} bytes: an icon at a URL is never \
+                         fetched"
+                    ),
+                );
+            }
+            if server.bearer.is_some()
+                && server
+                    .headers
+                    .keys()
+                    .any(|h| h.eq_ignore_ascii_case("authorization"))
+            {
+                self.invalid(
+                    format!("{at}.headers"),
+                    "Authorization is set by bearer, once",
+                );
+            }
+            let mut names: Vec<String> = Vec::new();
+            for name in server.headers.keys() {
+                let header = format!("{at}.headers.{}", crate::tree::display_key(name));
+                let lower = name.to_ascii_lowercase();
+                if !is_header_name(name) {
+                    self.invalid(&header, "not a header name: letters, digits and - only");
+                } else if RESERVED_HEADERS.contains(&lower.as_str()) {
+                    self.invalid(
+                        &header,
+                        if lower == "authorization" {
+                            "Authorization is set by bearer".to_owned()
+                        } else {
+                            "this header is the orchestrator's own to set".to_owned()
+                        },
+                    );
+                } else if names.contains(&lower) {
+                    self.invalid(
+                        &header,
+                        "the same header is named twice (names do not differ by case)",
+                    );
+                }
+                names.push(lower);
+            }
+            // (an empty list is a shape error: `minItems`)
+            if let Some(tools) = &server.tools {
+                for (j, tool) in tools.iter().enumerate() {
+                    let tool_at = format!("{at}.tools[{j}]");
+                    if !is_tool_name(tool) || server.id.len() + 2 + tool.len() > 64 {
+                        self.invalid(
+                            &tool_at,
+                            "a tool the relay can expose: a to z, A to Z, 0 to 9, _ and -, not \
+                             starting with _, and <id>__<tool> at most 64 characters",
+                        );
+                    } else if tools[..j].contains(tool) {
+                        self.invalid(&tool_at, "a tool is listed more than once");
+                    }
+                }
+            }
+            if let Some(agents) = &server.agents {
+                for (j, agent) in agents.iter().enumerate() {
+                    let agent_at = format!("{at}.agents[{j}]");
+                    if agent.trim().is_empty() || agent.trim() != agent {
+                        self.invalid(
+                            &agent_at,
+                            "an agent id is not empty and has no space around it",
+                        );
+                    } else if agents[..j].contains(agent) {
+                        self.invalid(&agent_at, "an agent is listed more than once");
+                    }
+                }
+            }
+        }
     }
 
     /// `auth` (ADR 0033): the mode has what it needs, nothing is set that the mode ignores, and
@@ -680,6 +828,35 @@ impl Checker<'_> {
             }
             _ => Vec::new(),
         };
+        let mut tool_servers = BTreeMap::new();
+        for (i, server) in cfg.tool_servers.iter().enumerate() {
+            let at = format!("toolServers[{i}]");
+            let bearer = self.optional(&server.bearer, &format!("{at}.bearer"));
+            let mut headers = Vec::new();
+            for (name, reference) in &server.headers {
+                let path = format!("{at}.headers.{}", crate::tree::display_key(name));
+                if let Some(secret) = self.resolve(reference, &path, true) {
+                    // A value the HTTP client cannot send (a newline in a file, a control
+                    // character) is refused here, naming the key, never the value.
+                    if is_header_value(secret.expose()) {
+                        headers.push((name.clone(), secret));
+                    } else {
+                        self.invalid(&path, "the value is not one a header can hold");
+                    }
+                }
+            }
+            if let Some(bearer) = &bearer
+                && !is_header_value(bearer.expose())
+            {
+                self.invalid(
+                    format!("{at}.bearer"),
+                    "the value is not one a header can hold",
+                );
+            }
+            if bearer.is_some() || !headers.is_empty() {
+                tool_servers.insert(server.id.clone(), ToolServerSecrets { bearer, headers });
+            }
+        }
         Some(Secrets {
             database_url: database_url?,
             registry_token,
@@ -691,6 +868,7 @@ impl Checker<'_> {
             model_api_keys,
             webhook_generic,
             webhook_github,
+            tool_servers,
         })
     }
 
@@ -818,6 +996,59 @@ impl Checker<'_> {
         }
         Ok(text.to_owned())
     }
+}
+
+/// A tool server's id: `^[a-z0-9][a-z0-9-]{0,30}$`.
+fn is_server_id(id: &str) -> bool {
+    let mut bytes = id.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    id.len() <= 31
+        && (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// An upstream tool name the relay can expose: `^[A-Za-z0-9_-]{1,64}$`, not starting with `_`.
+fn is_tool_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && !name.starts_with('_')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// A header name a client can send: an HTTP token of letters, digits and `-`.
+fn is_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// A header value: visible ASCII, space and tab, nothing that ends a line.
+fn is_header_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
+}
+
+/// An icon: `data:image/(svg+xml|png|webp);base64,<base64>`, at most [`MAX_ICON_BYTES`] bytes.
+fn is_icon(icon: &str) -> bool {
+    let Some(rest) = icon.strip_prefix("data:image/") else {
+        return false;
+    };
+    let Some((kind, data)) = rest.split_once(";base64,") else {
+        return false;
+    };
+    icon.len() <= MAX_ICON_BYTES
+        && matches!(kind, "svg+xml" | "png" | "webp")
+        && !data.is_empty()
+        && data.len() % 4 == 0
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+        && data.trim_end_matches('=').len() + 2 >= data.len()
+        && !data.trim_end_matches('=').contains('=')
 }
 
 fn is_slug(name: &str) -> bool {
