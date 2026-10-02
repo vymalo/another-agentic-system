@@ -25,10 +25,15 @@ type Props = {
   /** The textarea, so an A2UI `userMessage` can focus it. */
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   /**
-   * The left of the box's bottom row. Empty today: the agent is picked in the top bar
-   * (agent-menu.tsx), and this is where the tools picker and mentions will go (plan 05).
+   * The left of the box's bottom row: the tools picker and its chips (`features/tools`). The agent
+   * is picked in the top bar (agent-menu.tsx); mentions will go here too (plan 05).
    */
   toolbar?: ReactNode;
+  /**
+   * What is true of the message before it is sent, as lines above the box: the agent cannot use the
+   * attached tools, a change of them was refused. The send error is the last of them.
+   */
+  notices?: ReactNode;
 };
 
 /** `RUN_ERROR.code` of a job whose last attempt did not pass the verification gate (ADR 0018). */
@@ -51,6 +56,7 @@ export function Composer({
   onCancel,
   inputRef,
   toolbar,
+  notices,
 }: Props) {
   const aui = useAui();
   const interrupts = useAgUiInterrupts();
@@ -111,6 +117,7 @@ export function Composer({
           </AlertDescription>
         </Alert>
       ) : null}
+      {notices}
       {sendError ? (
         <InlineStatus tone="error" role="alert">
           {sendError}

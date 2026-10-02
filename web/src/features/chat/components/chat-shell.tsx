@@ -12,15 +12,23 @@ import {
   Suggestions,
 } from "@/features/agents/components/new-thread-panel";
 import { RegistryNotice } from "@/features/agents/components/registry-notice";
+import { useAgentCapabilities } from "@/features/agents/hooks/use-agent-capabilities";
 import { useAgents } from "@/features/agents/hooks/use-agents";
 import { effectiveSelection, requestedAgent } from "@/features/agents/lib/selection";
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
+import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
 import { NoAccess } from "@/features/me/components/no-access";
 import { ReadOnlyNotice } from "@/features/me/components/read-only-notice";
 import { useMe } from "@/features/me/hooks/use-me";
-import { hasNoAccess, invokable, newChatAccess, threadAccess } from "@/features/me/lib/access";
+import {
+  hasNoAccess,
+  invokable,
+  newChatAccess,
+  scopeOf,
+  threadAccess,
+} from "@/features/me/lib/access";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
 import { BranchesProvider } from "@/features/threads/components/branches-provider";
@@ -34,6 +42,11 @@ import { useScrollToMessage } from "@/features/threads/hooks/use-scroll-to-messa
 import { useThreadScope } from "@/features/threads/hooks/use-thread-scope";
 import { useThreads } from "@/features/threads/hooks/use-threads";
 import { SIDEBAR_KEY } from "@/features/threads/lib/sidebar-state";
+import { ToolServersProvider } from "@/features/tools/components/tool-servers-context";
+import { ToolsPicker, ToolsWarning } from "@/features/tools/components/tools-picker";
+import { useThreadTools } from "@/features/tools/hooks/use-thread-tools";
+import { useToolServers } from "@/features/tools/hooks/use-tool-servers";
+import { sameSet, stillOffered } from "@/features/tools/lib/servers";
 import { problemMessage } from "@/lib/api/client";
 import { Composer } from "./composer";
 import { DataUIs } from "./data-uis";
@@ -85,7 +98,7 @@ export function ChatShell({ threadId }: { threadId: string | null }) {
 }
 
 function Chat({ threadId }: { threadId: string | null }) {
-  const { me } = useMe();
+  const { me, status: meStatus } = useMe();
   const meta = useThreadMeta(threadId);
   const { scope } = useThreadScope();
   const [threadsKey, setThreadsKey] = useState("");
@@ -117,13 +130,30 @@ function Chat({ threadId }: { threadId: string | null }) {
     [agents.agents, selection],
   );
 
+  // The MCP servers (ADR 0024). The deployment's list is read for the chat (the picker, the names and
+  // icons of the steps); a person whose roles hold no `thread.write` is not offered it (it would be a 403).
+  // (asked once who the person is is known; an orchestrator that cannot say is asked, and decides)
+  const mayAttach = me ? scopeOf(me, "thread.write") !== null : meStatus === "unknown";
+  const toolServers = useToolServers(mayAttach);
+  // a new chat keeps its choice here until the run that creates the thread carries it
+  const [newTools, setNewTools] = useState<string[]>([]);
+  const { servers: offered } = toolServers;
+  const chosenAgent = effective.agentId;
+  useEffect(() => {
+    // another agent, or a list that no longer has a server: what the orchestrator would refuse (422) goes
+    setNewTools((chosen) => {
+      const kept = stillOffered(chosen, offered, chosenAgent);
+      return sameSet(kept, chosen) ? chosen : kept;
+    });
+  }, [offered, chosenAgent]);
+
   // A send goes to the thread's own agent; only a new thread takes the picker's choice.
-  const target = useMemo<Selection>(
+  const target = useMemo<Target>(
     () =>
       threadId === null
-        ? effective
+        ? { ...effective, tools: newTools }
         : { agentId: meta.thread?.target.agentId ?? null, release: null },
-    [threadId, effective, meta.thread?.target.agentId],
+    [threadId, effective, newTools, meta.thread?.target.agentId],
   );
 
   const onSendFailed = useCallback((message: string) => setSendError(message), []);
@@ -155,6 +185,23 @@ function Chat({ threadId }: { threadId: string | null }) {
       `${threadId}:${state}:${meta.thread?.lastSeq}:${meta.thread?.title}:${meta.thread?.description}`,
     );
   }, [threadId, state, meta.thread?.lastSeq, meta.thread?.title, meta.thread?.description]);
+
+  // The servers attached to an open thread: the log's truth (the stream's snapshot, else the resource)
+  // and the person's own change in between; a new chat has the choice it is keeping.
+  const attached = useThreadTools({
+    threadId,
+    stream: snapshot.tools,
+    streamSeq: snapshot.lastSeq,
+    fetched: meta.thread?.tools,
+    fetchedSeq: meta.thread?.lastSeq ?? null,
+    refetchSoon,
+  });
+  const chosenTools = threadId === null ? newTools : attached.tools;
+  // the agent's card, read live: does it list thread-tools/v1? Said before anything is sent.
+  const toolsAgentId = target.agentId;
+  const capabilities = useAgentCapabilities(toolsAgentId);
+  const toolsAgentName =
+    listed.agents.find((a) => a.id === toolsAgentId)?.name ?? toolsAgentId ?? "The agent";
 
   const cancel = useCallback(() => {
     agent.cancel().catch((e: unknown) => setSendError(problemMessage(e)));
@@ -204,6 +251,30 @@ function Chat({ threadId }: { threadId: string | null }) {
       sendError={sendError}
       onCancel={cancel}
       inputRef={composerRef}
+      toolbar={
+        <ToolsPicker
+          view={toolServers}
+          agentId={toolsAgentId}
+          chosen={chosenTools}
+          onChange={threadId === null ? setNewTools : (next) => void attached.set(next)}
+          busy={attached.busy}
+          capabilities={capabilities}
+        />
+      }
+      notices={
+        <>
+          <ToolsWarning
+            chosen={chosenTools}
+            capabilities={capabilities}
+            agentName={toolsAgentName}
+          />
+          {attached.error ? (
+            <InlineStatus tone="error" role="alert">
+              {attached.error}
+            </InlineStatus>
+          ) : null}
+        </>
+      }
     />
   );
   const leading = (
@@ -252,96 +323,98 @@ function Chat({ threadId }: { threadId: string | null }) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <SurfaceHostProvider
-        agent={agent}
-        readOnly={readOnly}
-        state={state}
-        composerRef={composerRef}
-        onRejected={onSendFailed}
-      >
-        <DataUIs />
-        <LiveRuns agent={agent} runtime={runtime} />
-        <ThreadViewProvider value={view}>
-          {inFork(
-            <Panels>
-              <div className="flex h-dvh overflow-hidden">
-                <ThreadSidebar
-                  threads={threads}
-                  open={sidebarOpen}
-                  onCollapse={collapseSidebar}
-                  collapseRef={collapseRef}
-                />
-                <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-                  {threadId === null ? (
-                    <>
-                      <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
-                        {leading}
-                        <AgentMenu
-                          mode="new"
-                          agents={agents}
-                          value={effective}
-                          onChange={setSelection}
-                        />
-                      </header>
-                      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-                        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
-                          <NewChatGreeting agents={agents} selection={effective} />
-                          {readOnly ? null : <AgentsProblem agents={agents} />}
-                          <RegistryNotice agents={agents} />
-                          {composer}
-                          {readOnly ? null : <Suggestions inputRef={composerRef} />}
+      <ToolServersProvider servers={toolServers.servers}>
+        <SurfaceHostProvider
+          agent={agent}
+          readOnly={readOnly}
+          state={state}
+          composerRef={composerRef}
+          onRejected={onSendFailed}
+        >
+          <DataUIs />
+          <LiveRuns agent={agent} runtime={runtime} />
+          <ThreadViewProvider value={view}>
+            {inFork(
+              <Panels>
+                <div className="flex h-dvh overflow-hidden">
+                  <ThreadSidebar
+                    threads={threads}
+                    open={sidebarOpen}
+                    onCollapse={collapseSidebar}
+                    collapseRef={collapseRef}
+                  />
+                  <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    {threadId === null ? (
+                      <>
+                        <header className="flex h-14 shrink-0 items-center gap-1 px-2 md:px-4">
+                          {leading}
+                          <AgentMenu
+                            mode="new"
+                            agents={agents}
+                            value={effective}
+                            onChange={setSelection}
+                          />
+                        </header>
+                        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-7 px-4 pt-4 pb-[12vh] md:px-6">
+                            <NewChatGreeting agents={agents} selection={effective} />
+                            {readOnly ? null : <AgentsProblem agents={agents} />}
+                            <RegistryNotice agents={agents} />
+                            {composer}
+                            {readOnly ? null : <Suggestions inputRef={composerRef} />}
+                          </div>
                         </div>
-                      </div>
-                    </>
-                  ) : meta.notFound || snapshot.notFound ? (
-                    <>
-                      <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
-                        {leading}
-                      </header>
-                      <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
-                        <InlineStatus role="status">
-                          Thread not found. <Link href="/">Start a new thread</Link>.
-                        </InlineStatus>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <ThreadHeader
-                        thread={thread}
-                        agents={agents}
-                        state={state}
-                        waiting={snapshot.waiting}
-                        connection={snapshot.connection}
-                        leading={leading}
-                        onRenamed={meta.apply}
-                      />
-                      {meta.error ? (
-                        <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
-                          <InlineStatus
-                            tone="error"
-                            role="alert"
-                            action={{ label: "Retry", onClick: meta.reload }}
-                          >
-                            Could not load the thread: {meta.error}
+                      </>
+                    ) : meta.notFound || snapshot.notFound ? (
+                      <>
+                        <header className="flex h-14 shrink-0 items-center gap-2 px-2 md:px-4">
+                          {leading}
+                        </header>
+                        <div className="mx-auto w-full max-w-3xl px-4 pt-8 md:px-6">
+                          <InlineStatus role="status">
+                            Thread not found. <Link href="/">Start a new thread</Link>.
                           </InlineStatus>
                         </div>
-                      ) : null}
-                      <LiveDraftsProvider agent={agent}>
-                        <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
-                          {composer}
-                        </Thread>
-                      </LiveDraftsProvider>
-                    </>
-                  )}
-                </main>
-                {threadId !== null && !(meta.notFound || snapshot.notFound) ? (
-                  <ThreadPanel />
-                ) : null}
-              </div>
-            </Panels>,
-          )}
-        </ThreadViewProvider>
-      </SurfaceHostProvider>
+                      </>
+                    ) : (
+                      <>
+                        <ThreadHeader
+                          thread={thread}
+                          agents={agents}
+                          state={state}
+                          waiting={snapshot.waiting}
+                          connection={snapshot.connection}
+                          leading={leading}
+                          onRenamed={meta.apply}
+                        />
+                        {meta.error ? (
+                          <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+                            <InlineStatus
+                              tone="error"
+                              role="alert"
+                              action={{ label: "Retry", onClick: meta.reload }}
+                            >
+                              Could not load the thread: {meta.error}
+                            </InlineStatus>
+                          </div>
+                        ) : null}
+                        <LiveDraftsProvider agent={agent}>
+                          <Thread loading={!loaded} empty={loaded && snapshot.lastSeq === 0}>
+                            {composer}
+                          </Thread>
+                        </LiveDraftsProvider>
+                      </>
+                    )}
+                  </main>
+                  {threadId !== null && !(meta.notFound || snapshot.notFound) ? (
+                    <ThreadPanel />
+                  ) : null}
+                </div>
+              </Panels>,
+            )}
+          </ThreadViewProvider>
+        </SurfaceHostProvider>
+      </ToolServersProvider>
     </AssistantRuntimeProvider>
   );
 }

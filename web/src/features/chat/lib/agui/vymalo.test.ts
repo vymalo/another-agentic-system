@@ -12,7 +12,10 @@ import {
   parseRework,
   parseStatus,
   parseStep,
+  parseToolIds,
+  parseTools,
   parseUiCatalog,
+  serverOfIcon,
 } from "./vymalo";
 
 describe("reading an activity's content", () => {
@@ -602,9 +605,11 @@ describe("vymalo.step (ADR 0025)", () => {
     expect(parseStep({ ...step, label: "" })?.label).toBe("");
   });
 
-  it("ignores an icon outside the vocabulary (the orchestrator's mcp-server:<id> included)", () => {
+  it("ignores an icon outside the vocabulary; the orchestrator's mcp-server:<id> is the server of the step", () => {
     expect(parseStep({ ...step, icon: "mcp-server:search" })).not.toHaveProperty("icon");
+    expect(parseStep({ ...step, icon: "mcp-server:search" })?.server).toBe("search");
     expect(parseStep({ ...step, icon: 7 })).not.toHaveProperty("icon");
+    expect(parseStep({ ...step, icon: 7 })).not.toHaveProperty("server");
     for (const icon of ["agent", "read", "edit", "delete", "move", "search", "execute", "think"]) {
       expect(parseStep({ ...step, icon })?.icon).toBe(icon);
     }
@@ -627,5 +632,70 @@ describe("vymalo.step (ADR 0025)", () => {
   it("keeps a detail that is empty out", () => {
     expect(parseStep({ ...step, detail: "" })).not.toHaveProperty("detail");
     expect(parseStep({ ...step, detail: 3 })).not.toHaveProperty("detail");
+  });
+});
+
+describe("the MCP server a step is a call of (thread-tools/v1, ADR 0024)", () => {
+  it("is the id after mcp-server:, when it is a server id", () => {
+    expect(serverOfIcon("mcp-server:websearch")).toBe("websearch");
+    expect(serverOfIcon("mcp-server:a-1")).toBe("a-1");
+    for (const icon of [
+      undefined,
+      "",
+      "tool",
+      "mcp-server:",
+      "mcp-server:Web",
+      "mcp-server:-x",
+      "mcp-server:a_b",
+      "mcp-server:a/b",
+      "mcp-server:https://tracker.example/x.svg",
+      "mcp-server:data:image/png;base64,AAAA",
+      `mcp-server:${"a".repeat(32)}`,
+      "MCP-SERVER:x",
+    ]) {
+      expect(serverOfIcon(icon), String(icon)).toBeUndefined();
+    }
+  });
+
+  it("is drawn from the id and nothing else: a step's label or detail never names a server", () => {
+    const step = { id: "T/tool:1", label: "Web search \u00b7 search", state: "completed" };
+    expect(parseStep(step)).not.toHaveProperty("server");
+    expect(parseStep({ ...step, icon: "mcp-server:websearch" })?.server).toBe("websearch");
+  });
+});
+
+describe("vymalo.tools", () => {
+  it("reads the ids that came and the ids that went, with the actor and the time", () => {
+    expect(
+      parseTools({
+        attached: ["websearch", "docs"],
+        at: "2027-01-15T08:00:02Z",
+        actor: { type: "user", name: "alice@example.com" },
+      }),
+    ).toEqual({
+      attached: ["websearch", "docs"],
+      at: "2027-01-15T08:00:02Z",
+      actor: { type: "user", name: "alice@example.com" },
+    });
+    expect(parseTools({ detached: ["docs"] })).toEqual({ detached: ["docs"] });
+  });
+
+  it("keeps only server ids, and is nothing when no id is left", () => {
+    expect(parseTools({ attached: ["ok", "Not an id", 7, null, "https://x.example"] })).toEqual({
+      attached: ["ok"],
+    });
+    expect(parseTools({ attached: [] })).toBeNull();
+    expect(parseTools({ attached: "websearch" })).toBeNull();
+    expect(parseTools({})).toBeNull();
+    expect(parseTools("websearch")).toBeNull();
+    expect(parseTools(null)).toBeNull();
+  });
+
+  it("reads thread.tools of a snapshot: the ids, or nothing when there are none", () => {
+    expect(parseToolIds(["a", "b"])).toEqual(["a", "b"]);
+    expect(parseToolIds([])).toBeUndefined();
+    expect(parseToolIds(undefined)).toBeUndefined();
+    expect(parseToolIds("a")).toBeUndefined();
+    expect(parseToolIds(["a", 1, "B"])).toEqual(["a"]);
   });
 });

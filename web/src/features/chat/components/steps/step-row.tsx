@@ -20,8 +20,20 @@ const RING: Record<StepState, string> = {
   muted: "bg-muted text-muted-foreground",
 };
 
-/** The icon of a step: its own glyph once finished, a spinner while it runs or waits. */
-function StepIcon({ state, icon: Icon }: { state: StepState; icon: LucideIcon | undefined }) {
+/**
+ * The icon of a step: its own glyph once finished, a spinner while it runs or waits. A step that is
+ * a call of an MCP server shows the server's own image instead of the glyph once it has ended
+ * or been stopped (`image` is an `<img src>` that `features/tools/lib/icon.ts` vetted: a `data:` URI, never a URL).
+ */
+function StepIcon({
+  state,
+  icon: Icon,
+  image,
+}: {
+  state: StepState;
+  icon: LucideIcon | undefined;
+  image: string | undefined;
+}) {
   const Glyph =
     state === "live" || state === "pending"
       ? LoaderCircleIcon
@@ -30,6 +42,8 @@ function StepIcon({ state, icon: Icon }: { state: StepState; icon: LucideIcon | 
         : state === "failed"
           ? (Icon ?? XIcon)
           : (Icon ?? CheckIcon);
+  const drawsImage =
+    image !== undefined && (state === "done" || state === "failed" || state === "muted");
   return (
     <span
       aria-hidden="true"
@@ -38,13 +52,27 @@ function StepIcon({ state, icon: Icon }: { state: StepState; icon: LucideIcon | 
         RING[state],
       )}
     >
-      <Glyph
-        className={cn(
-          "size-3",
-          (state === "live" || state === "pending") && "motion-safe:animate-spin",
-        )}
-        strokeWidth={2.25}
-      />
+      {drawsImage ? (
+        // biome-ignore lint/performance/noImgElement: a data: URI from the configuration, nothing to optimise
+        <img
+          data-slot="step-server-icon"
+          src={image}
+          alt=""
+          width={14}
+          height={14}
+          draggable={false}
+          referrerPolicy="no-referrer"
+          className="size-3.5 rounded-[3px] object-contain"
+        />
+      ) : (
+        <Glyph
+          className={cn(
+            "size-3",
+            (state === "live" || state === "pending") && "motion-safe:animate-spin",
+          )}
+          strokeWidth={2.25}
+        />
+      )}
     </span>
   );
 }
@@ -67,6 +95,8 @@ type Props = Omit<ComponentProps<"li">, "children"> & {
   state: StepState;
   /** The step's own glyph (a branch, a terminal); a check or a cross when it has none. */
   icon?: LucideIcon;
+  /** A server's own image in the place of the glyph (a vetted `data:` URI), once the step has ended. */
+  image?: string;
   /** The one line that says what happened. */
   label: ReactNode;
   /** Anything under the line: a command, a summary, findings, a link. */
@@ -77,7 +107,7 @@ type Props = Omit<ComponentProps<"li">, "children"> & {
  * One line of an agent's step list: the icon on a hairline rail, the words, and what belongs to
  * the step under them. The lists are `steps/steps-pane.tsx` and `steps/step-node.tsx`.
  */
-export function StepRow({ state, icon, label, children, className, ...li }: Props) {
+export function StepRow({ state, icon, image, label, children, className, ...li }: Props) {
   const placed = useContext(RowPropsContext);
   return (
     <li
@@ -97,7 +127,7 @@ export function StepRow({ state, icon, label, children, className, ...li }: Prop
         className="absolute top-5 bottom-0 left-2.5 w-px -translate-x-1/2 bg-border group-last/step:hidden"
       />
       <RowPropsContext.Provider value={null}>
-        <StepIcon state={state} icon={icon} />
+        <StepIcon state={state} icon={icon} image={image} />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5 pt-px">
           <div
             className={cn(

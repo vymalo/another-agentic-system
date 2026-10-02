@@ -18,8 +18,11 @@ export type Selection = { agentId: string | null; release: string | null };
 type Args = {
   /** null on the new-thread page: the agent mints the id of the thread its first send creates. */
   threadId: string | null;
-  /** Where a send goes: the open thread's agent, or the new-thread page's selection. */
-  target: Selection;
+  /**
+   * Where a send goes: the open thread's agent, or the new-thread page's selection and, for a new
+   * thread, the MCP servers to attach to it (ADR 0024).
+   */
+  target: Target;
   threads: ThreadsView;
   /** `lastSeq` of `GET /api/threads/{id}`: how far the conversation is; null until fetched. */
   threadLastSeq: number | null;

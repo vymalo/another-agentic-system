@@ -65,6 +65,8 @@ type Base = {
   label: string;
   state: StepState;
   icon?: StepIcon;
+  /** The MCP server the step is a call of (`icon: "mcp-server:<id>"`); its icon is the deployment's. */
+  server?: string;
   detail?: string;
   /** RFC 3339, from the activity: when the step started and when it last said something. */
   startedAt?: string;
@@ -281,6 +283,7 @@ export function stepNode(content: StepContent, part?: StepNode["part"]): StepNod
     label: content.label,
     state: content.state,
     ...(content.icon ? { icon: content.icon } : {}),
+    ...(content.server ? { server: content.server } : {}),
     ...(content.detail ? { detail: content.detail } : {}),
     ...(content.input ? { input: content.input } : {}),
     ...(content.output ? { output: content.output } : {}),
@@ -453,6 +456,7 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
           known.label = content.label;
           known.state = content.state;
           if (content.icon) known.icon = content.icon;
+          if (content.server) known.server = content.server;
           if (content.detail !== undefined) known.detail = content.detail;
           else delete known.detail;
           // the input comes with the start and every snapshot says it again; the output only with the end

@@ -843,6 +843,33 @@ describe("ThreadAgent.run", () => {
     });
   });
 
+  it("puts the servers of a new chat in forwardedProps[vymalo.tools], only when there are some and never on an action", async () => {
+    const bodies: { forwardedProps: Record<string, unknown> }[] = [];
+    let tools: readonly string[] | undefined = ["websearch", "docs"];
+    const { agent } = agentWith(
+      (call) => {
+        bodies.push(call.body as { forwardedProps: Record<string, unknown> });
+        return problem(400, "Invalid request");
+      },
+      { target: () => ({ agentId: "coder", release: null, tools }) },
+    );
+    const go = () => new Promise<void>((r) => agent.run(input()).subscribe({ error: () => r() }));
+    await go();
+    tools = [];
+    await go();
+    tools = undefined;
+    await go();
+    tools = ["websearch"];
+    agent.stageA2uiAction({ surfaceId: "s1", name: "go" });
+    await go();
+    expect(bodies[0]?.forwardedProps["vymalo.tools"]).toEqual(["websearch", "docs"]);
+    // none chosen: no member (the orchestrator reads it on every run, and an empty list means nothing)
+    expect(Object.keys(bodies[1]?.forwardedProps ?? {})).not.toContain("vymalo.tools");
+    expect(Object.keys(bodies[2]?.forwardedProps ?? {})).not.toContain("vymalo.tools");
+    // an action is not the run that creates a thread
+    expect(Object.keys(bodies[3]?.forwardedProps ?? {})).not.toContain("vymalo.tools");
+  });
+
   it("puts the selected release in forwardedProps under the extension URI, only when there is one", async () => {
     const bodies: { forwardedProps: unknown }[] = [];
     let release: string | null = "staging";
@@ -1001,6 +1028,36 @@ describe("ThreadAgent: the UI catalog (ADR 0023)", () => {
       new Promise<void>((r) => agent.run(input).subscribe({ error: () => r() }));
     return { agent, bodies, send };
   }
+
+  it("reads thread.tools of a snapshot, and a snapshot without it says no server is attached", async () => {
+    const stream = new LiveStream();
+    const { agent } = agentWith(() => sse(stream.body));
+    agent.start();
+    const snapshot = (id: number, tools?: string[]) => ({
+      event: {
+        type: "STATE_SNAPSHOT",
+        snapshot: {
+          thread: {
+            state: "done",
+            title: "t",
+            target: { agentId: "plain" },
+            ...(tools ? { tools } : {}),
+          },
+        },
+      },
+      id,
+    });
+    stream.frames([
+      { event: { type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-1" } },
+      snapshot(1, ["docs", "websearch"]),
+    ]);
+    await until(() => agent.getSnapshot().lastSeq === 1, "the first snapshot");
+    expect(agent.getSnapshot().tools).toEqual(["docs", "websearch"]);
+    stream.frames([snapshot(2)]);
+    await until(() => agent.getSnapshot().lastSeq === 2, "the second snapshot");
+    expect(agent.getSnapshot().tools).toBeUndefined();
+    agent.stop();
+  });
 
   it("reads thread.uiCatalog of a snapshot, and a snapshot without one clears it", async () => {
     const { agent } = await afterSnapshot(ref(3));
