@@ -2,14 +2,14 @@
 
 import { ChevronRightIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { formatDuration, type TurnSteps } from "@/features/chat/lib/step-tree";
+import { formatDuration, pathTo, type TurnSteps } from "@/features/chat/lib/step-tree";
 import { EmptyPanel } from "@/features/panel/components/empty-panel";
 import { cn } from "@/lib/utils";
-import { type ExpansionState, withFocused } from "./expansion";
+import { type ExpansionState, withFocused, withPathOpen } from "./expansion";
 import { FailedChip, StepLevel, type TreeScope } from "./step-node";
 import { TurnGlyph, turnGlyph } from "./turn-glyph";
 
-export type StepsFocus = { turnId: string; key: number };
+export type StepsFocus = { turnId: string; key: number; stepId?: string };
 
 const FLASH_MS = 1500;
 
@@ -146,26 +146,49 @@ export function StepsPane({
   }, []);
   const key = pending?.key;
   const wanted = pending?.turnId;
+  const wantedStep = pending?.stepId;
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
   useEffect(() => {
     if (key === undefined || wanted === undefined) return;
     const section = [...(root.current?.querySelectorAll<HTMLElement>("[data-turn]") ?? [])].find(
       (el) => el.dataset.turn === wanted,
     );
-    latest.current.onExpandedChange(withFocused(latest.current.expanded, wanted, key));
+    // a step of the turn: the way to it opens, and it opens (its input and output, or its steps)
+    const turn = wantedStep ? turnsRef.current.find((t) => t.turnId === wanted) : undefined;
+    const path = turn && wantedStep ? pathTo(turn, wantedStep) : [];
+    const opened = withFocused(latest.current.expanded, wanted, key);
+    latest.current.onExpandedChange(path.length > 0 ? withPathOpen(opened, wanted, path) : opened);
     if (!section) return;
     section.scrollIntoView({ block: "start" });
     // a frame later: a sheet's own focus handling runs as it opens, and this has to be last
     const handles = scheduled.current;
     if (handles.frame !== undefined) cancelAnimationFrame(handles.frame);
-    handles.frame = requestAnimationFrame(() => {
-      section
-        .querySelector<HTMLElement>('[data-slot="turn-heading"]')
-        ?.focus({ preventScroll: true });
-    });
+    const rowOf = (): HTMLElement | undefined =>
+      path.length > 0
+        ? [...section.querySelectorAll<HTMLElement>("[data-step]")].find(
+            (el) => el.dataset.step === wantedStep,
+          )
+        : undefined;
+    // the step's own row exists once what the click above opened has been drawn: look for it for a
+    // few frames, then settle for the turn's header
+    const focusTarget = (framesLeft: number) => {
+      const row = rowOf();
+      if (path.length > 0 && !row && framesLeft > 0) {
+        handles.frame = requestAnimationFrame(() => focusTarget(framesLeft - 1));
+        return;
+      }
+      const target =
+        row?.querySelector<HTMLElement>('[data-slot="step-toggle"]') ??
+        section.querySelector<HTMLElement>('[data-slot="turn-heading"]');
+      row?.scrollIntoView({ block: "nearest" });
+      target?.focus({ preventScroll: true });
+    };
+    handles.frame = requestAnimationFrame(() => focusTarget(5));
     setFlash(wanted);
     clearTimeout(handles.flash);
     handles.flash = setTimeout(() => setFlash(null), FLASH_MS);
-  }, [key, wanted]);
+  }, [key, wanted, wantedStep]);
 
   // while the thread runs and the person has not chosen a turn, keep the step it is on in view
   const [followed, setFollowed] = useState(true);

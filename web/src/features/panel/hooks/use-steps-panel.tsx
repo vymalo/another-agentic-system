@@ -19,14 +19,15 @@ export type StepsPanel = {
   tab: string;
   /**
    * The turn the panel was asked to show; `key` changes on every request, so a second click on the
-   * same turn focuses it again. Null until something asks.
+   * same turn focuses it again. Null until something asks. `stepId` is a step of that turn to show
+   * (the chat's failed chip): its way is opened and its input and output with it.
    */
-  focus: { turnId: string; key: number } | null;
+  focus: { turnId: string; key: number; stepId?: string } | null;
   /**
-   * Show a turn's steps: opens the panel if it is closed (the sheet on a phone), selects the
-   * Activity tab and sets `focus` with a new `key`.
+   * Show a turn's steps, and one step of it when `stepId` is given: opens the panel if it is
+   * closed (the sheet on a phone), selects the Activity tab and sets `focus` with a new `key`.
    */
-  openSteps(turnId: string): void;
+  openSteps(turnId: string, stepId?: string): void;
 };
 
 /** What the shell keeps for the tree besides the contract: its expansion state, opaque to the shell. */
@@ -76,9 +77,9 @@ export function StepsPanelTestProvider({
   const [expansion, setExpansion] = useState<unknown>(undefined);
   const [focus, setFocus] = useState<StepsPanel["focus"]>(null);
   const [open, setOpen] = useState(false);
-  const openSteps = useCallback((turnId: string) => {
+  const openSteps = useCallback((turnId: string, stepId?: string) => {
     setOpen(true);
-    setFocus((f) => ({ turnId, key: (f?.key ?? 0) + 1 }));
+    setFocus((f) => ({ turnId, key: (f?.key ?? 0) + 1, ...(stepId ? { stepId } : {}) }));
   }, []);
   const state = useMemo<StepsPanelState>(
     () => ({

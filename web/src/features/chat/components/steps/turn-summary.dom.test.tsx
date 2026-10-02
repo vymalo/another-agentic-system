@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ACTIVITY } from "@/features/chat/lib/agui/vymalo";
 import type { TurnSteps } from "@/features/chat/lib/step-tree";
 import {
+  AT,
   assistant,
   openCodeTurn,
+  part,
   RUNNING_VIEW,
   statusPart,
   stepPart,
@@ -16,7 +19,10 @@ import { TurnSummary } from "./turn-summary";
 afterEach(cleanup);
 
 const first = (turns: TurnSteps[]): TurnSteps => turns[0] as TurnSteps;
-const show = (turn: TurnSteps, props: { shows?: boolean; onOpen?: (id: string) => void } = {}) =>
+const show = (
+  turn: TurnSteps,
+  props: { shows?: boolean; onOpen?: (id: string, stepId?: string) => void } = {},
+) =>
   render(
     <TurnSummary
       turn={turn}
@@ -24,7 +30,8 @@ const show = (turn: TurnSteps, props: { shows?: boolean; onOpen?: (id: string) =
       onOpen={props.onOpen ?? (() => {})}
     />,
   );
-const summary = () => screen.getByRole("button");
+const summary = () => screen.getByRole("button", { name: /steps:/ });
+const line = () => summary().closest('[data-slot="turn-summary-line"]') as HTMLElement;
 
 describe("the turn's one line", () => {
   it("is a button that says the steps it opens and where: its name tells it all", () => {
@@ -65,10 +72,40 @@ describe("the turn's one line", () => {
 
   it("says a failed step even when the turn went well, with an icon and the words", () => {
     show(first(turnsOf([openCodeTurn(3, { failAt: 0 })])));
-    const chip = within(summary()).getByText("1 failed");
+    const chip = within(line()).getByText("1 failed");
     expect(chip.closest('[data-slot="failed-chip"]')).not.toBeNull();
     expect(chip.closest('[data-slot="failed-chip"]')?.querySelector("svg")).not.toBeNull();
     expect(summary().querySelector('[data-glyph="check"]')).not.toBeNull();
+  });
+
+  it("has the failed chip as a button of its own, beside the line's, that opens the first failed step", () => {
+    const onOpen = vi.fn();
+    const turns = turnsOf([openCodeTurn(3, { id: "turn-x", failAt: 1 })]);
+    show(first(turns), { onOpen });
+    const chip = screen.getByRole("button", { name: /^1 failed\. Show the first one/ });
+    // beside the line's button, not inside it: a button does not hold a button
+    expect(summary().contains(chip)).toBe(false);
+    expect(chip.closest('[data-slot="turn-summary-line"]')).toBe(line());
+    expect(chip.getAttribute("aria-label")).not.toMatch(/message/i);
+    fireEvent.click(chip);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith("turn-x", "T/c1");
+    onOpen.mockClear();
+    fireEvent.click(summary());
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith("turn-x");
+  });
+
+  it("counts a failed run_checks once, not as its step and its checks artifact", () => {
+    const parts = [
+      statusPart("working", undefined, 1),
+      stepPart("T/rc", "running", { label: "run_checks" }, 2),
+      part(ACTIVITY.artifact, { kind: "checks", name: "checks", passed: false, at: AT(3) }),
+      stepPart("T/rc", "failed", { label: "run_checks" }, 4),
+    ];
+    show(first(turnsOf([assistant(parts)])));
+    expect(summary().getAttribute("aria-label")).toBe(
+      "Coder's steps: 3 steps · 3s, 1 failed. Show in the side panel",
+    );
+    expect(within(line()).getByText("1 failed")).toBeTruthy();
   });
 
   it("says no failure when there is none", () => {

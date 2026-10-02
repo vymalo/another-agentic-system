@@ -4,8 +4,11 @@ import { ACTIVITY, ACTOR_PART, activityPartName } from "./agui/vymalo";
 import {
   buildTurnSteps,
   countUnder,
+  firstFailed,
   formatDuration,
+  hasIo,
   nodeDuration,
+  pathTo,
   type StepMessage,
   type StepNode,
   summaryLine,
@@ -596,5 +599,149 @@ describe("rebuilding", () => {
     const b = build([message], { ...VIEW, state: "verifying" })[0];
     expect(a?.state).toBe("running");
     expect(b?.state).toBe("verifying");
+  });
+});
+
+describe("input and output (ADR 0030)", () => {
+  const IN = { query: "Stephane Segning", limit: 3 };
+  const OUT = { text: "1. a result", truncated: true, bytes: 9000 };
+
+  it("keeps the input of the start and the output of the end on one node", () => {
+    const [turn] = build([
+      assistant([
+        step("T/s", "running", { input: IN }, 1),
+        step("T/s", "completed", { input: IN, output: OUT }, 2),
+      ]),
+    ]);
+    const [node] = root(turn as TurnSteps).children;
+    expect(node).toMatchObject({ id: "T/s", state: "completed", input: IN, output: OUT });
+    expect(hasIo(node as StepNode)).toBe(true);
+  });
+
+  it("keeps the input when a later report does not repeat it, and takes a retry's new output", () => {
+    const [turn] = build([
+      assistant([
+        step("T/s", "running", { input: IN }, 1),
+        step("T/s", "running", {}, 2),
+        step("T/s", "failed", { output: { text: "boom", error: true } }, 3),
+        step("T/s", "completed", { output: { text: "ok" } }, 4),
+      ]),
+    ]);
+    const [node] = root(turn as TurnSteps).children;
+    expect(node?.input).toEqual(IN);
+    expect(node?.output).toEqual({ text: "ok" });
+  });
+
+  it("notes a step the record's budget had no room for, and a step with nothing has nothing to open", () => {
+    const [turn] = build([
+      assistant([
+        step("T/a", "completed", { ioDropped: true }, 1),
+        step("T/b", "completed", {}, 2),
+      ]),
+    ]);
+    const [a, b] = root(turn as TurnSteps).children as StepNode[];
+    expect(a).toMatchObject({ ioDropped: true });
+    expect(hasIo(a as StepNode)).toBe(true);
+    expect(hasIo(b as StepNode)).toBe(false);
+  });
+
+  it("names a tool step by its tool in the line the chat keeps", () => {
+    const [turn] = build(
+      [
+        assistant([step("T/s", "running", { label: "search__web_search" }, 1)], {
+          type: "running",
+        }),
+      ],
+      { state: "working", waiting: false, agentId: "coder" },
+    );
+    expect(turn?.summary.current).toBe("Web search");
+  });
+});
+
+describe("a failed run_checks is one failure", () => {
+  const redChecks = (at: number) =>
+    data(ACTIVITY.artifact, { kind: "checks", name: "checks", passed: false, at: AT(at) });
+  const greenChecks = (at: number) =>
+    data(ACTIVITY.artifact, { kind: "checks", name: "checks", passed: true, at: AT(at) });
+  const runChecks = (id: string, state: string, at: number) =>
+    step(id, state, { label: "run_checks" }, at);
+
+  it("counts its step and its checks artifact once, in the chip of the turn and of the node", () => {
+    const [turn] = build([
+      assistant([runChecks("T/rc", "running", 1), redChecks(2), runChecks("T/rc", "failed", 3)]),
+    ]);
+    const t = turn as TurnSteps;
+    // two rows (the step and the artifact it made), one failure
+    expect(t.summary).toMatchObject({ total: 2, failed: 1 });
+    expect(countUnder(root(t))).toMatchObject({ total: 2, failed: 1 });
+    expect(summaryLine(t)).toMatchObject({ failed: 1 });
+    const [stepNode, artifact] = root(t).children as StepNode[];
+    expect(stepNode?.echo).toBeUndefined();
+    expect(artifact).toMatchObject({ kind: "artifact", state: "failed", echo: true });
+  });
+
+  it("counts the owner's coder thread once per failed run: two reds, two failures (not four)", () => {
+    const [turn] = build([
+      assistant([
+        runChecks("T/1", "running", 1),
+        redChecks(2),
+        runChecks("T/1", "failed", 3),
+        step("T/fix", "failed", { label: "apply_patch" }, 4),
+        step("T/fix2", "completed", { label: "apply_patch" }, 5),
+        runChecks("T/2", "running", 6),
+        redChecks(7),
+        runChecks("T/2", "failed", 8),
+        runChecks("T/3", "running", 9),
+        greenChecks(10),
+        runChecks("T/3", "completed", 11),
+      ]),
+    ]);
+    expect((turn as TurnSteps).summary.failed).toBe(3);
+  });
+
+  it("counts a red artifact whose run_checks did not fail, or that has no step, as the failure it is", () => {
+    const failed = (parts: StepMessage["content"]) => build([assistant(parts)])[0]?.summary.failed;
+    expect(failed([runChecks("T/rc", "completed", 1), redChecks(2)])).toBe(1);
+    expect(failed([redChecks(3)])).toBe(1);
+    expect(failed([step("T/o", "failed", { label: "write_file" }, 1), redChecks(2)])).toBe(2);
+  });
+
+  it("does not let one failed run_checks excuse two red artifacts", () => {
+    const [turn] = build([assistant([runChecks("T/rc", "failed", 1), redChecks(2), redChecks(3)])]);
+    expect((turn as TurnSteps).summary.failed).toBe(2);
+  });
+});
+
+describe("finding a step", () => {
+  const nested = () =>
+    build([
+      assistant([
+        step("T/oc", "completed", { kind: "subagent", label: "OpenCode" }, 1),
+        step("T/ok", "completed", { label: "ok" }, 2, ["T/oc"]),
+        step("T/bad", "failed", { kind: "command", label: "npm test" }, 3, ["T/oc"]),
+        step("T/bad2", "failed", { label: "later" }, 4),
+      ]),
+    ])[0] as TurnSteps;
+
+  it("walks from the turn's root to the step", () => {
+    const turn = nested();
+    expect(pathTo(turn, "T/bad").map((n) => n.id)).toEqual([root(turn).id, "T/oc", "T/bad"]);
+    expect(pathTo(turn, "nowhere")).toEqual([]);
+  });
+
+  it("names the first failed step: where the chat's failed chip goes", () => {
+    expect(firstFailed(nested())?.id).toBe("T/bad");
+    const none = build([assistant([step("T/a", "completed", {}, 1)])])[0] as TurnSteps;
+    expect(firstFailed(none)).toBeUndefined();
+  });
+
+  it("does not offer an echo, and falls back to a failed check of the gate", () => {
+    const [echoed] = build([
+      assistant([
+        step("T/rc", "failed", { label: "run_checks" }, 1),
+        data(ACTIVITY.artifact, { kind: "checks", name: "checks", passed: false, at: AT(2) }),
+      ]),
+    ]);
+    expect(firstFailed(echoed as TurnSteps)?.id).toBe("T/rc");
   });
 });

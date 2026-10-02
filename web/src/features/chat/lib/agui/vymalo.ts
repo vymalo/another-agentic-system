@@ -188,7 +188,34 @@ export type StepContent = WithActor<{
   icon?: StepIcon;
   detail?: string;
   startedAt?: string;
+  input?: StepInput;
+  output?: StepOutput;
+  ioDropped?: true;
 }>;
+
+/**
+ * What a tool was called with (ADR 0030): a JSON object with any keys, from an agent, so untrusted:
+ * it is drawn as text and never read for meaning. The orchestrator cut it (strings at 512
+ * characters, 4096 bytes in all) and redacted credentials (`"[redacted]"`); one that was bigger is
+ * exactly `{"_cut": true, "bytes": n}` (`inputCut`).
+ */
+export type StepInput = Record<string, unknown>;
+
+/**
+ * What a tool returned, on its step's end (ADR 0030). `text` is at most 8192 bytes: of a longer one
+ * only the head and the tail are kept, with a line between that says how much is not
+ * (`truncated`, and `bytes`, the size of all of it). `error`: `text` is the error the tool returned.
+ */
+export type StepOutput = { text: string; truncated?: true; bytes?: number; error?: true };
+
+/** `{_cut: true, bytes}`: an input that was too big to keep, and how big it was. */
+export function inputCut(input: StepInput): { bytes: number } | null {
+  const keys = Object.keys(input);
+  if (input._cut !== true || keys.length > 2 || (keys.length === 2 && !("bytes" in input))) {
+    return null;
+  }
+  return { bytes: typeof input.bytes === "number" && input.bytes >= 0 ? input.bytes : 0 };
+}
 
 /** `job` of a `STATE_SNAPSHOT` and of `Thread` (chat-api.yaml, `ThreadJob`): only under a gate. */
 export type JobView = {
@@ -462,10 +489,29 @@ export function parseRework(v: unknown): ReworkContent | null {
   return { attempt, maxAttempts, findings, ...(actor ? { actor } : {}), ...readAt(v) };
 }
 
+function readStepInput(v: unknown): StepInput | undefined {
+  return isRecord(v) && Object.keys(v).length > 0 ? v : undefined;
+}
+
+function readStepOutput(v: unknown): StepOutput | undefined {
+  if (!isRecord(v)) return undefined;
+  const text = str(v.text);
+  if (text === undefined) return undefined;
+  const bytes = typeof v.bytes === "number" && Number.isInteger(v.bytes) && v.bytes >= 0;
+  return {
+    text,
+    ...(v.truncated === true ? { truncated: true as const } : {}),
+    ...(bytes ? { bytes: v.bytes as number } : {}),
+    ...(v.error === true ? { error: true as const } : {}),
+  };
+}
+
 /**
  * `vymalo.step`; a payload without an `id`, a `label` and a known `state` renders nothing (the
  * orchestrator's door checked it already, and the log is data). An unknown `kind` is a tool, an
  * icon outside the vocabulary is none, a `path` that is not a list of strings is the top level.
+ * `input` and `output` (ADR 0030) are read leniently, as the orchestrator reads them: one of the
+ * wrong shape is dropped and the step is kept.
  */
 export function parseStep(v: unknown): StepContent | null {
   if (!isRecord(v)) return null;
@@ -479,6 +525,8 @@ export function parseStep(v: unknown): StepContent | null {
   const detail = str(v.detail);
   const actor = readActor(v.actor);
   const startedAt = str(v.startedAt);
+  const input = readStepInput(v.input);
+  const output = readStepOutput(v.output);
   return {
     id,
     path: Array.isArray(v.path) ? v.path.filter((p): p is string => typeof p === "string") : [],
@@ -488,6 +536,9 @@ export function parseStep(v: unknown): StepContent | null {
     ...(icon && (STEP_ICONS as readonly string[]).includes(icon) ? { icon: icon as StepIcon } : {}),
     ...(detail ? { detail } : {}),
     ...(startedAt && !Number.isNaN(Date.parse(startedAt)) ? { startedAt } : {}),
+    ...(input ? { input } : {}),
+    ...(output ? { output } : {}),
+    ...(v.ioDropped === true ? { ioDropped: true as const } : {}),
     ...(actor ? { actor } : {}),
     ...readAt(v),
   };

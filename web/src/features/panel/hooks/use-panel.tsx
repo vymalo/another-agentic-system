@@ -27,7 +27,7 @@ import {
   parseWidth,
   resolveOpen,
 } from "../lib/panel-state";
-import { StepsPanelContext } from "./use-steps-panel";
+import { type StepsPanel, StepsPanelContext } from "./use-steps-panel";
 
 /** What the panel's own components read; the step tree reads the smaller `useStepsPanel()`. */
 export type PanelController = {
@@ -105,7 +105,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [tab, setTabState] = useState<PanelTab>("activity");
   const [wanted, setWanted] = useState(PANEL_DEFAULT_WIDTH);
-  const [focus, setFocus] = useState<{ turnId: string; key: number } | null>(null);
+  const [focus, setFocus] = useState<StepsPanel["focus"]>(null);
   const [expansion, setExpansion] = useState<unknown>(undefined);
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const pendingTurn = useRef<string | null>(null);
@@ -178,7 +178,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     if (remember) write(PANEL_WIDTH_KEY, String(clamped));
   }, []);
 
-  const openSteps = useCallback((turnId: string) => {
+  const openSteps = useCallback((turnId: string, stepId?: string) => {
     // asked for, not chosen: it opens the panel for now and leaves the remembered choice alone
     if (latest.current.docked) {
       setDockedOpen(true);
@@ -188,7 +188,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       setSheetOpen(true);
     }
     setTabState("activity");
-    setFocus((f) => ({ turnId, key: (f?.key ?? 0) + 1 }));
+    setFocus((f) => ({ turnId, key: (f?.key ?? 0) + 1, ...(stepId ? { stepId } : {}) }));
   }, []);
 
   const showTurn = useCallback((turnId: string) => {

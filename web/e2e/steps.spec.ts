@@ -8,6 +8,7 @@ import {
   hideActivity,
   showActivity,
   startThread,
+  turnFailedChip,
   turnSections,
   turnSummaries,
 } from "./helpers";
@@ -42,7 +43,7 @@ test("a delegation is one line in the chat; the panel has the tree, one line per
   await expect(line).toHaveAccessibleName(
     /^Coder's steps: 20 steps · \d+s, 1 failed\. Show in the side panel$/,
   );
-  await expect(line.getByText("1 failed")).toBeVisible();
+  await expect(turnFailedChip(page)).toHaveText("1 failed");
   await expect(line).toHaveAttribute("aria-controls", "thread-panel");
   await expect(line).toHaveAttribute("aria-expanded", "false");
   await expect(conversation(page).getByRole("list", { name: "Steps" })).toHaveCount(0);
@@ -200,7 +201,7 @@ test("while OpenCode works the line spins and names its step; Stop ends it and n
   await expect(badge(page)).toHaveText("Stopped");
   // the stop is a step of its own: "Stopped", and the run's failed test run is still said
   await expect(line).toContainText("Stopped · 11 steps");
-  await expect(line.getByText("1 failed")).toBeVisible();
+  await expect(turnFailedChip(page)).toHaveText("1 failed");
   await expect(line.locator('[data-glyph="spinner"]')).toHaveCount(0);
   await showActivity(page);
   await expect(activityTab(page).locator('[data-state="live"]')).toHaveCount(0);

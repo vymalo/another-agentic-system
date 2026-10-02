@@ -18,10 +18,13 @@ import {
   type StatusContent,
   type StepContent,
   type StepIcon,
+  type StepInput,
+  type StepOutput,
   type StepState,
 } from "@/features/chat/lib/agui/vymalo";
 import { conclusionLabel } from "./ci";
 import { truncate } from "./findings";
+import { toolName } from "./step-label";
 import { checkLabel, commandOf, drawsPart, drawsStep, pullRequestOf, reworkLabel } from "./steps";
 
 export type { StepIcon, StepState };
@@ -64,6 +67,16 @@ type Base = {
   /** RFC 3339, from the activity: when the step started and when it last said something. */
   startedAt?: string;
   at?: string;
+  /** What the tool was called with, and what it returned (ADR 0030): untrusted, drawn as text. */
+  input?: StepInput;
+  output?: StepOutput;
+  /** The job's record budget had no room for this step's input or output. */
+  ioDropped?: true;
+  /**
+   * A failed `checks` artifact that says what the failed `run_checks` step beside it already said:
+   * drawn, but not counted a second time.
+   */
+  echo?: true;
   /** The runtime part it came from. */
   part?: { messageId: string; index: number };
   children: StepNode[];
@@ -137,7 +150,8 @@ export function phraseOf(node: Pick<StepNode, "kind" | "label" | "state">): stri
       ? `Running ${commandLine(node.label)}`
       : commandLine(node.label);
   }
-  return truncate(firstLine(node.label).trim(), CURRENT_MAX).text;
+  const label = node.kind === "tool" ? toolName(node.label).title : node.label;
+  return truncate(firstLine(label).trim(), CURRENT_MAX).text;
 }
 
 /** The plain-text label of a `working` status. */
@@ -176,6 +190,9 @@ function artifactLabel(artifact: ArtifactContent): string {
 }
 
 // ---- building a turn -------------------------------------------------------------------------
+
+/** The coder's tool that runs the repository's checks (its step is `failed` when they are red). */
+const RUN_CHECKS = "run_checks";
 
 const STEP_PART = activityPartName(ACTIVITY.step);
 const STATUS_PART = activityPartName(ACTIVITY.status);
@@ -248,6 +265,9 @@ export function stepNode(content: StepContent, part?: StepNode["part"]): StepNod
     state: content.state,
     ...(content.icon ? { icon: content.icon } : {}),
     ...(content.detail ? { detail: content.detail } : {}),
+    ...(content.input ? { input: content.input } : {}),
+    ...(content.output ? { output: content.output } : {}),
+    ...(content.ioDropped ? { ioDropped: true } : {}),
     ...((content.startedAt ?? content.at) ? { startedAt: content.startedAt ?? content.at } : {}),
     ...(content.at ? { at: content.at } : {}),
     ...(part ? { part } : {}),
@@ -272,7 +292,7 @@ export function countUnder(node: StepNode): Counts {
   const counts: Counts = { total: 0, failed: 0, running: 0 };
   for (const child of node.children) {
     counts.total += 1;
-    if (child.state === "failed") counts.failed += 1;
+    if (child.state === "failed" && !child.echo) counts.failed += 1;
     if (child.state === "running") counts.running += 1;
     const under = countUnder(child);
     counts.total += under.total;
@@ -305,7 +325,7 @@ function summaryOf(roots: readonly StepNode[], durationMs: number | undefined): 
   for (const node of walk(roots)) {
     if (node.kind === "agent") continue;
     total.total += 1;
-    if (node.state === "failed") total.failed += 1;
+    if (node.state === "failed" && !node.echo) total.failed += 1;
     if (node.state === "running") total.running += 1;
   }
   const current = currentOf(roots);
@@ -324,6 +344,29 @@ function settle(nodes: StepNode[], turn: TurnState) {
   if (isLive(turn)) return;
   for (const node of walk(nodes)) {
     if (node.state === "running") node.state = turn === "waiting" ? "waiting" : "canceled";
+  }
+}
+
+/**
+ * `run_checks` reports the same failure twice: its own step ends `failed`, and the `checks`
+ * artifact it made (a red `passed: false`) is a node of its own, right beside it. The artifact stays
+ * a row (it holds the findings) but is marked an echo, so the failure is counted once. A red
+ * artifact of a `run_checks` that did not fail (or that has no step before it) is the only
+ * failure there is, and counts.
+ */
+function markEchoes(nodes: StepNode[]) {
+  let lastRunChecks: StepNode | undefined;
+  for (const node of nodes) {
+    if (node.kind === "tool" && node.label === RUN_CHECKS) {
+      lastRunChecks = node;
+    } else if (
+      node.kind === "artifact" &&
+      node.content.kind === "checks" &&
+      node.state === "failed"
+    ) {
+      if (lastRunChecks?.state === "failed") node.echo = true;
+      lastRunChecks = undefined;
+    }
   }
 }
 
@@ -372,6 +415,10 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
           if (content.icon) known.icon = content.icon;
           if (content.detail !== undefined) known.detail = content.detail;
           else delete known.detail;
+          // the input comes with the start and every snapshot says it again; the output only with the end
+          if (content.input) known.input = content.input;
+          if (content.output) known.output = content.output;
+          if (content.ioDropped) known.ioDropped = true;
           if (content.at) known.at = content.at;
           known.part = ref;
           return;
@@ -514,6 +561,7 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
     }
   });
 
+  markEchoes(agent.children);
   const roots = [agent, ...gate];
   settle(roots, turn);
 
@@ -646,3 +694,41 @@ export function summaryLine(
       return null;
   }
 }
+
+/** The nodes from a turn's roots down to the node with this id, outermost first; empty when it is not there. */
+export function pathTo(turn: Pick<TurnSteps, "roots">, id: string): StepNode[] {
+  const visit = (nodes: readonly StepNode[], trail: StepNode[]): StepNode[] | undefined => {
+    for (const node of nodes) {
+      if (node.id === id) return [...trail, node];
+      const found = visit(node.children, [...trail, node]);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return visit(turn.roots, []) ?? [];
+}
+
+const STEP_KINDS_OF_AGENT: ReadonlySet<StepKind> = new Set([
+  "subagent",
+  "tool",
+  "command",
+  "message",
+]);
+
+/**
+ * The first step of a turn that failed and is counted so (a step of the agent, else any other
+ * failed node): where the failed chip of the chat's line takes the person. Undefined when none.
+ */
+export function firstFailed(turn: Pick<TurnSteps, "roots">): StepNode | undefined {
+  let other: StepNode | undefined;
+  for (const node of walk(turn.roots)) {
+    if (node.state !== "failed" || node.echo) continue;
+    if (STEP_KINDS_OF_AGENT.has(node.kind)) return node;
+    other ??= node;
+  }
+  return other;
+}
+
+/** A step has something to open: what it was called with, what it returned, or a note that it was not kept. */
+export const hasIo = (node: Pick<StepNode, "input" | "output" | "ioDropped">): boolean =>
+  node.input !== undefined || node.output !== undefined || node.ioDropped === true;

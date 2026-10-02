@@ -4,8 +4,10 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRightIcon, CircleXIcon, LoaderCircleIcon } from "lucide-react";
 import { useId, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
+import { inputPreview, toolName } from "@/features/chat/lib/step-label";
 import {
   countUnder,
+  hasIo,
   nodeDuration,
   plural,
   type StepNode,
@@ -27,6 +29,7 @@ import {
   withShown,
 } from "./expansion";
 import { iconOf } from "./step-icons";
+import { StepIo } from "./step-io";
 import { ActionStep, ArtifactStep, ReworkStep, STEP_PREVIEW, StatusStep } from "./step-items";
 import { type RowProps, RowPropsContext, type StepState as RowState, StepRow } from "./step-row";
 
@@ -65,6 +68,25 @@ export function FailedChip({ count }: { count: number }) {
       <CircleXIcon aria-hidden="true" />
       {count} failed
     </Badge>
+  );
+}
+
+/**
+ * The failed chip as a button, for the one place it is a control of its own: the chat's line for a
+ * turn, where it takes the person to the first step that failed. Its name does not say "message".
+ */
+export function FailedChipButton({ count, onClick }: { count: number; onClick(): void }) {
+  return (
+    <button
+      type="button"
+      data-slot="failed-chip"
+      aria-label={`${count} failed. Show the first one in the side panel`}
+      onClick={onClick}
+      className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-destructive-soft px-2 text-xs font-medium text-destructive hover:brightness-95 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none [&_svg]:size-3"
+    >
+      <CircleXIcon aria-hidden="true" />
+      {count} failed
+    </button>
   );
 }
 
@@ -116,27 +138,67 @@ export function StepNodeView({
 
 function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
   const listId = useId();
+  const ioId = `${listId}-io`;
   const key = nodeKey(scope.turnId, node.id);
   const shown = shownOf(scope.expanded, key);
   const counts = countUnder(node);
   const hasChildren = node.children.length > 0;
-  const open = hasChildren && shown > 0;
+  const hasDetails = hasIo(node);
+  const expandable = hasChildren || hasDetails;
+  const open = expandable && shown > 0;
   const Icon = iconOf(node);
   const duration = nodeDuration(node);
   const word = STATE_WORD[node.state];
   const isCommand = node.kind === "command";
-  const text = isCommand ? COMMAND_WORDS[node.state] : node.label;
+  // an MCP tool is "Web search" from the server "search", with what it was asked
+  const tool = node.kind === "tool" ? toolName(node.label) : undefined;
+  const preview = node.kind === "tool" ? inputPreview(node.input) : undefined;
+  const text = isCommand ? COMMAND_WORDS[node.state] : (tool?.title ?? node.label);
+  // a step with children lists them; one without opens its input and output
   const toggle = () =>
     scope.onExpandedChange(
-      open ? withShown(scope.expanded, key, 0) : showMore(scope.expanded, key),
+      hasChildren
+        ? open
+          ? withShown(scope.expanded, key, 0)
+          : showMore(scope.expanded, key)
+        : withShown(scope.expanded, key, open ? 0 : 1),
     );
+  const controls = [hasDetails && open ? ioId : null, hasChildren && open ? listId : null]
+    .filter(Boolean)
+    .join(" ");
 
   const words = (
     <>
       {word ? <span className="sr-only">{word}: </span> : null}
-      <span className={cn("min-w-0 truncate", isCommand && "text-muted-foreground")} title={text}>
+      <span
+        className={cn(
+          "min-w-0 truncate",
+          // a tool's name is short: it is the quoted argument that gives way on a narrow panel
+          tool?.server && "shrink-0",
+          isCommand && "text-muted-foreground",
+        )}
+        title={isCommand || !tool?.server ? text : node.label}
+      >
         {text}
       </span>
+      {tool?.server ? (
+        <span
+          data-slot="step-server"
+          className="shrink-0 rounded-sm bg-muted px-1 font-mono text-[0.6875rem] leading-4 text-muted-foreground"
+        >
+          <span className="sr-only">from </span>
+          {tool.server}
+        </span>
+      ) : null}
+      {preview ? (
+        <span
+          data-slot="step-preview"
+          className="min-w-0 truncate text-xs text-muted-foreground"
+          title={preview}
+        >
+          {preview}
+        </span>
+      ) : null}
     </>
   );
 
@@ -147,16 +209,17 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
       data-slot="step"
       data-kind={node.kind}
       data-node-state={node.state}
+      data-step={node.id}
       label={
         <>
-          {hasChildren ? (
+          {expandable ? (
             <button
               type="button"
               aria-expanded={open}
-              aria-controls={open ? listId : undefined}
+              aria-controls={open && controls ? controls : undefined}
               onClick={toggle}
               data-slot="step-toggle"
-              className="-ms-1 inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-md px-1 text-start hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              className="-ms-1 inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1 text-start hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
             >
               <ChevronRightIcon
                 aria-hidden="true"
@@ -166,12 +229,14 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
                 )}
               />
               {words}
-              <span className="shrink-0 text-xs text-muted-foreground">
-                · {plural(counts.total, "step")}
-              </span>
+              {hasChildren ? (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  · {plural(counts.total, "step")}
+                </span>
+              ) : null}
             </button>
           ) : (
-            words
+            <span className="inline-flex max-w-full min-w-0 items-center gap-1.5">{words}</span>
           )}
           {counts.failed > 0 && !open ? <FailedChip count={counts.failed} /> : null}
           {node.state !== "running" && counts.running > 0 ? (
@@ -198,7 +263,17 @@ function TreeStep({ node, scope }: { node: StepNode; scope: TreeScope }) {
           <ExpandableText text={node.detail} limit={STEP_PREVIEW} />
         </p>
       ) : null}
-      {open ? (
+      {open && hasDetails ? (
+        <StepIo
+          id={ioId}
+          input={node.input}
+          output={node.output}
+          ioDropped={node.ioDropped}
+          failed={node.state === "failed"}
+          detail={node.detail}
+        />
+      ) : null}
+      {open && hasChildren ? (
         <ChildLevel
           id={listId}
           node={node}

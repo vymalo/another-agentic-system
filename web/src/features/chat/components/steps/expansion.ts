@@ -52,3 +52,32 @@ export const showMore = (state: ExpansionState, key: string): ExpansionState =>
 export function withFocused(state: ExpansionState, turnId: string, key: number): ExpansionState {
   return { ...state, turns: new Set(state.turns).add(turnId), seenKey: key };
 }
+
+type PathNode = { id: string; kind: string; children: readonly { id: string }[] };
+
+/**
+ * Opens the way to a step (a deep link, the failed chip of the chat's line): every step it runs
+ * under lists far enough back to include the next one, and the step itself opens (its children, if
+ * it has any, else its input and output). What was open stays open, and the turn's own root is not
+ * a row, so it has nothing to open.
+ */
+export function withPathOpen(
+  state: ExpansionState,
+  turnId: string,
+  path: readonly PathNode[],
+): ExpansionState {
+  let next = state;
+  path.forEach((node, i) => {
+    if (node.kind === "agent") return;
+    const key = nodeKey(turnId, node.id);
+    const following = path[i + 1];
+    const behind = following ? node.children.findIndex((c) => c.id === following.id) : -1;
+    const wanted = following
+      ? Math.max(FIRST_SHOWN, behind < 0 ? 0 : node.children.length - behind)
+      : node.children.length > 0
+        ? FIRST_SHOWN
+        : 1;
+    next = withShown(next, key, Math.max(shownOf(next, key), wanted));
+  });
+  return next;
+}

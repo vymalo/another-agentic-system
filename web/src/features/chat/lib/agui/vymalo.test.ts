@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  inputCut,
   parseAction,
   parseActor,
   parseAnswers,
@@ -482,6 +483,61 @@ describe("vymalo.step (ADR 0025)", () => {
     expect(parseStep("a step")).toBeNull();
     expect(parseStep(null)).toBeNull();
     expect(parseStep([step])).toBeNull();
+  });
+
+  it("reads input, output and ioDropped (ADR 0030) as they are logged", () => {
+    const io = {
+      input: { query: "Stephane Segning", limit: 3, nested: { a: [1, 2] } },
+      output: { text: "1. a result", truncated: true, bytes: 50_000, error: true, extra: 1 },
+      ioDropped: true,
+    };
+    expect(parseStep({ ...step, ...io })).toMatchObject({
+      input: { query: "Stephane Segning", limit: 3, nested: { a: [1, 2] } },
+      output: { text: "1. a result", truncated: true, bytes: 50_000, error: true },
+      ioDropped: true,
+    });
+    // a step that carries none is a step as before
+    const plain = parseStep(step);
+    expect(plain).not.toHaveProperty("input");
+    expect(plain).not.toHaveProperty("output");
+    expect(plain).not.toHaveProperty("ioDropped");
+    // only what the shape allows is kept of an output
+    expect(parseStep({ ...step, output: { text: "x" } })?.output).toEqual({ text: "x" });
+  });
+
+  it("drops a member of the wrong shape and keeps the step", () => {
+    for (const bad of ["a string", 7, null, [1, 2], {}]) {
+      const read = parseStep({ ...step, input: bad });
+      expect(read?.id).toBe("T/tool:c2");
+      expect(read).not.toHaveProperty("input");
+    }
+    for (const bad of ["a string", null, [], {}, { text: 7 }, { truncated: true }]) {
+      const read = parseStep({ ...step, output: bad });
+      expect(read?.id).toBe("T/tool:c2");
+      expect(read).not.toHaveProperty("output");
+    }
+    const odd = parseStep({
+      ...step,
+      output: { text: "t", truncated: "yes", bytes: -3, error: 1 },
+    });
+    expect(odd?.output).toEqual({ text: "t" });
+    expect(parseStep({ ...step, output: { text: "t", bytes: 1.5 } })?.output).toEqual({
+      text: "t",
+    });
+    expect(parseStep({ ...step, ioDropped: "yes" })).not.toHaveProperty("ioDropped");
+  });
+
+  it("keeps an empty output text (an error with no words) and knows an input that was cut", () => {
+    expect(parseStep({ ...step, output: { text: "", error: true } })?.output).toEqual({
+      text: "",
+      error: true,
+    });
+    expect(inputCut({ _cut: true, bytes: 18432 })).toEqual({ bytes: 18432 });
+    expect(inputCut({ _cut: true })).toEqual({ bytes: 0 });
+    // an input that happens to have a `_cut` among its arguments is not the marker
+    expect(inputCut({ _cut: true, bytes: 1, other: 2 })).toBeNull();
+    expect(inputCut({ _cut: "yes", bytes: 1 })).toBeNull();
+    expect(inputCut({ query: "x" })).toBeNull();
   });
 
   it("reads every state of the extension", () => {
