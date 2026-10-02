@@ -934,7 +934,7 @@ of it in a surface (`components/surface/image.tsx`, catalog version 4).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-files.png">
-  <img src="e2e/__screens__/desktop-light-files.png" alt="An answer of the Reviewer, “I made three files: a chart, my notes and an export of everything”, under three cards: results.png with a bar chart of five green bars, notes.txt with its text shown in a box, and export.zip alone. Every card has a Download button beside its name, its size and its type. The Sources panel on the right lists the same three files." width="720">
+  <img src="e2e/__screens__/desktop-light-files.png" alt="An answer of the Reviewer, “I made three files: a chart, my notes and an export of everything”, under three cards: results.png with a bar chart of five green bars, notes.txt with its text shown in a box, and export.zip alone. Every card has a Download button beside its name, its size and its type. The Activity panel on the right lists three steps, “Shared results.png”, “Shared notes.txt” and “Shared export.zip”." width="720">
 </picture>
 
 <picture>
@@ -942,7 +942,12 @@ of it in a surface (`components/surface/image.tsx`, catalog version 4).
   <img src="e2e/__screens__/desktop-light-file-image.png" alt="An answer whose interface places the chart in the words: “The results at a glance”, the bar chart with the caption “Figure 1: the results of the run”, and under the answer the card of the same file with its Download button." width="720">
 </picture>
 
-*The mock's `files` and `file-image` answers, from the Reviewer, with the Sources panel docked on the right.*
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-panel-files.png">
+  <img src="e2e/__screens__/desktop-light-panel-files.png" alt="The Sources tab of the panel for the thread of three files, with a Files section: results.png, notes.txt and export.zip, each with its size and type, a download button and a Turn 1 button." width="720">
+</picture>
+
+*The mock's `files` and `file-image` answers, from the Reviewer, and the panel's Sources tab (Files).*
 
 | Piece | What it does |
 |---|---|
