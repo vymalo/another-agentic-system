@@ -1,21 +1,26 @@
 //! The model port: one question to a language model and its answer (ADR 0005, ADR 0009).
 //!
-//! The orchestrator's first use of a model is small and its own: the title of a thread, written
-//! from the first words of the conversation (`orch_core::title_prompt`). It is not an agent, it has
-//! no tools and no memory, and it speaks the one protocol every model endpoint speaks (an
-//! OpenAI-compatible chat completion, ADR 0005). The port is what the dispatcher calls, so a
-//! deployment without a model (`NoModel`) and a test with a scripted one (`memory::ScriptedModel`)
-//! are the same code path.
+//! The orchestrator's own use of a model is small: the utility tasks of ADR 0035, the title of a
+//! thread and its description, each written from the conversation (`orch_core::task_prompt`). It is
+//! not an agent, it has no tools and no memory, and it speaks the one protocol every model endpoint
+//! speaks (an OpenAI-compatible chat completion, ADR 0005). A request names the **endpoint** it is
+//! for, by the name the configuration gives it, so one deployment can ask several providers. The
+//! port is what the dispatcher calls, so a deployment without a model (`NoModel`) and a test with a
+//! scripted one (`memory::ScriptedModel`) are the same code path.
 
 use std::future::Future;
 use std::time::Duration;
 
 use orch_core::{BoxError, Classify, ErrorClass};
 
-/// One question: the instruction (`system`), the text to work on (`user`), the model to ask and
-/// how long an answer may be.
+/// One question: the endpoint to ask, the model to ask there, the instruction (`system`), the
+/// text to work on (`user`) and how long an answer may be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatRequest {
+    /// The endpoint to ask: its name in the configuration (`models.endpoints.<name>`), never an
+    /// implementation type (ADR 0009). A model that holds no endpoint of this name answers
+    /// [`ModelError::NotConfigured`].
+    pub endpoint: String,
     /// The model's name at the endpoint (a deployment's choice, never a secret).
     pub model: String,
     /// What the model is told to do.
@@ -79,7 +84,8 @@ pub enum ModelError {
         #[source]
         source: Option<BoxError>,
     },
-    /// This deployment has no model to ask ([`NoModel`]).
+    /// This deployment has no model to ask ([`NoModel`]), or none at the endpoint the request
+    /// names.
     #[error("no model is configured")]
     NotConfigured,
 }
@@ -194,6 +200,7 @@ mod tests {
     #[tokio::test]
     async fn no_model_is_not_configured() {
         let request = ChatRequest {
+            endpoint: "default".into(),
             model: "m".into(),
             system: "s".into(),
             user: "u".into(),

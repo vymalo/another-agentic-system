@@ -117,9 +117,9 @@ impl PgStore {
         }
         // Creation is version 1 whatever the first commit does.
         let inserted = sqlx::query(
-            "INSERT INTO threads (id, owner, title, agent_id, release, state, job, version, \
-             last_seq, created_at, updated_at, forked_from, forked_at, fork_kind) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12)",
+            "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
+             version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind) \
+             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12)",
         )
         .bind(new.id.0)
         .bind(new.owner.as_str())
@@ -133,6 +133,7 @@ impl PgStore {
         .bind(fork.map(|o| o.parent.0))
         .bind(fork.map(|o| o.cut))
         .bind(fork.map(|o| o.kind.as_str()))
+        .bind(new.description.as_deref().filter(|d| !d.is_empty()))
         .execute(&mut *tx)
         .await;
         if let Err(e) = inserted {
@@ -803,6 +804,7 @@ impl ThreadStore for PgStore {
         let job = commit.job.as_ref().map(job_json).transpose()?;
         let row = sqlx::query(concat!(
             "UPDATE threads SET state = $2, job = COALESCE($5, job), title = COALESCE($6, title), \
+             description = CASE WHEN $7::text IS NULL THEN description ELSE NULLIF($7, '') END, \
              version = version + 1, last_seq = $3, updated_at = $4 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
@@ -812,6 +814,7 @@ impl ThreadStore for PgStore {
         .bind(to_db(commit.now))
         .bind(job)
         .bind(commit.title.as_deref())
+        .bind(commit.description.as_deref())
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -935,7 +938,7 @@ impl ThreadStore for PgStore {
                SELECT o.id FROM outbox o \
                WHERE ((o.status = 'pending' AND o.next_attempt_at <= $1) \
                    OR (o.status = 'inflight' AND o.lease_until <= $1)) \
-                 AND (o.kind IN ('cancel', 'verify', 'title') OR NOT EXISTS ( \
+                 AND (o.kind IN ('cancel', 'verify', 'title', 'description') OR NOT EXISTS ( \
                        SELECT 1 FROM outbox p \
                        WHERE p.thread_id = o.thread_id AND p.kind = 'delegate' \
                          AND p.ord < o.ord AND p.status IN ('pending', 'inflight'))) \

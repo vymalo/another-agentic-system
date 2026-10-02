@@ -60,6 +60,7 @@ fn new_thread(owner: &UserId, n: u128) -> NewThreadRecord {
         id: thread_id(n),
         owner: owner.clone(),
         title: format!("thread {n}"),
+        description: None,
         target: AgentTarget {
             agent_id: AgentId::new("coder"),
             release: None,
@@ -128,6 +129,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         inbox: None,
         finishes_outbox: None,
         title: None,
+        description: None,
     }
 }
 
@@ -1733,6 +1735,7 @@ fn busy_job() -> Job {
         steps: orch_core::StepLedger::default(),
         answer: orch_core::AnswerLedger::default(),
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
+        description: orch_core::DescriptionLedger::of(orch_core::DescriptionSource::Model),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -2108,6 +2111,204 @@ pub async fn thread_titled_roundtrip<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 2).await;
     let other = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
     assert_eq!(other.title, "thread 2");
+}
+
+/// A description is one transaction like a title: the `thread_described` event, the thread's
+/// description (for the listing) and the ledger that remembers whose it is. A commit that does not
+/// set one leaves it, `Some("")` clears it, and one that is refused writes none. A `description` row
+/// is the orchestrator's own and depends on nothing, like a `title` row, and reads back as written.
+/// A fork starts with the description it is given.
+pub async fn thread_described_roundtrip<S: ThreadStore>(store: S) {
+    use orch_core::{DescribedBy, DescriptionLedger, DescriptionSource, ThreadDescribedData};
+    seed(&store, &alice(), 1).await;
+    let event = |description: &str, by: DescribedBy, key: Option<&str>| NewEvent {
+        at: t0(),
+        actor: Actor::system(),
+        body: EventBody::ThreadDescribed(ThreadDescribedData {
+            description: description.to_owned(),
+            source: by,
+        }),
+        idempotency_key: key.map(str::to_owned),
+    };
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(before.description, None);
+
+    // The description, the event and the ledger are written together.
+    let mut describe = commit(
+        ThreadState::Queued,
+        vec![event(
+            "Moving the build to Rust.",
+            DescribedBy::Model,
+            Some("k"),
+        )],
+        vec![],
+    );
+    describe.description = Some("Moving the build to Rust.".to_owned());
+    describe.job = Some(Job {
+        description: DescriptionLedger::of(DescriptionSource::Model),
+        ..Job::default()
+    });
+    let (record, events) = applied(store.commit(thread_id(1), 1, describe).await.unwrap());
+    assert_eq!(
+        record.description.as_deref(),
+        Some("Moving the build to Rust.")
+    );
+    assert_eq!(record.job.description.source(), DescriptionSource::Model);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind(), orch_core::EventKind::ThreadDescribed);
+    let read = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    assert_eq!(read, events, "the event reads back as it was written");
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        got.description.as_deref(),
+        Some("Moving the build to Rust.")
+    );
+    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    assert_eq!(
+        listed[0].description.as_deref(),
+        Some("Moving the build to Rust."),
+        "the sidebar's listing says it"
+    );
+    assert_eq!(got.title, "thread 1", "the title is not the description");
+
+    // A commit with no description leaves it.
+    let plain = commit(ThreadState::Queued, vec![user_event("more", None)], vec![]);
+    let (record, _) = applied(store.commit(thread_id(1), 2, plain).await.unwrap());
+    assert_eq!(
+        record.description.as_deref(),
+        Some("Moving the build to Rust.")
+    );
+
+    // A refused commit writes none: a stale version, a replayed key, a stale claim.
+    let mut stale = commit(
+        ThreadState::Queued,
+        vec![event("Stale", DescribedBy::Model, None)],
+        vec![],
+    );
+    stale.description = Some("Stale".to_owned());
+    let res = store.commit(thread_id(1), 1, stale).await;
+    assert_eq!(class_of(&res), Some(ErrorClass::Conflict), "{res:?}");
+    let mut replay = commit(
+        ThreadState::Queued,
+        vec![event("Replay", DescribedBy::Model, Some("k"))],
+        vec![],
+    );
+    replay.description = Some("Replay".to_owned());
+    assert_eq!(
+        store.commit(thread_id(1), 3, replay).await.unwrap(),
+        CommitOutcome::Duplicate
+    );
+    let held = claim(&store, "a", t0()).await;
+    let lease = held[0].lease().unwrap();
+    let mut fenced = under(
+        commit(
+            ThreadState::Queued,
+            vec![event("Fenced", DescribedBy::Model, None)],
+            vec![],
+        ),
+        Lease {
+            attempt: lease.attempt + 1,
+            ..lease
+        },
+    );
+    fenced.description = Some("Fenced".to_owned());
+    assert_eq!(
+        store.commit(thread_id(1), 3, fenced).await.unwrap(),
+        CommitOutcome::Fenced
+    );
+    let got = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        got.description.as_deref(),
+        Some("Moving the build to Rust.")
+    );
+    assert_eq!(got.version, 3);
+
+    // A person clears it: the event says so and the thread has none.
+    let mut clear = commit(
+        ThreadState::Queued,
+        vec![event("", DescribedBy::User, None)],
+        vec![],
+    );
+    clear.description = Some(String::new());
+    clear.job = Some(Job {
+        description: DescriptionLedger::of(DescriptionSource::User),
+        ..Job::default()
+    });
+    let (record, _) = applied(store.commit(thread_id(1), 3, clear).await.unwrap());
+    assert_eq!(record.description, None);
+    assert_eq!(record.job.description.source(), DescriptionSource::User);
+    let listed = store.list_threads(&alice(), None, 10, false).await.unwrap();
+    assert_eq!(listed[0].description, None);
+
+    // Another thread's description is its own.
+    seed(&store, &alice(), 2).await;
+    let other = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(other.description, None);
+
+    // A `description` row depends on nothing: claimable while the delegate is in flight, and it
+    // reads back as written.
+    let row = NewOutbox {
+        id: outbox_id(201),
+        payload: OutboxPayload::Description { job: 3 },
+    };
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![row]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(201)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Description);
+    assert_eq!(stored.payload, OutboxPayload::Description { job: 3 });
+    assert_eq!(stored.task_id, None);
+    let got = claim(&store, "t", t0()).await;
+    assert!(
+        got.iter()
+            .any(|r| r.id == outbox_id(201) && r.kind == OutboxKind::Description),
+        "not held back by the delegate of its thread"
+    );
+}
+
+/// A fork starts with the description it is given (its parent's), which the listing and the
+/// thread resource say.
+pub async fn a_fork_starts_with_the_description_it_is_given<S: ThreadStore>(store: S) {
+    use orch_core::ForkKind;
+    seed_conversation(&store, &alice(), 1, 0).await;
+    let mut new = new_thread(&alice(), 2);
+    new.description = Some("The parent's description.".to_owned());
+    let mut first = commit(
+        ThreadState::Done,
+        vec![forked_event(1, 2, ForkKind::Fork)],
+        vec![],
+    );
+    first.description = Some("Ignored: a thread is created with the new thread's own.".to_owned());
+    let (record, _) = store
+        .fork_thread(
+            new,
+            crate::ForkOrigin {
+                parent: thread_id(1),
+                cut: 2,
+                kind: ForkKind::Fork,
+            },
+            first,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        record.description.as_deref(),
+        Some("The parent's description.")
+    );
+    let got = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(
+        got.description.as_deref(),
+        Some("The parent's description.")
+    );
+    let parent = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(parent.description, None, "the parent is untouched");
 }
 
 /// The `ui_catalog` event, the thread's catalog ledger and the delivery in an outbox row are
@@ -3487,6 +3688,7 @@ fn forked_event(parent: u128, cut: i64, kind: orch_core::ForkKind) -> NewEvent {
             },
             kind,
             title: "thread".to_owned(),
+            description: None,
             target: AgentTarget {
                 agent_id: AgentId::new("coder"),
                 release: None,

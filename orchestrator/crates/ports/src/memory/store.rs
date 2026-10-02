@@ -154,6 +154,9 @@ fn write_commit(
     if let Some(title) = commit.title {
         entry.record.title = title;
     }
+    if let Some(description) = commit.description {
+        entry.record.description = Some(description).filter(|d| !d.is_empty());
+    }
     entry.record.version += 1;
     entry.record.updated_at = commit.now;
     if let Some(update) = &commit.binding {
@@ -301,6 +304,7 @@ fn insert_thread(
         inbox: None,
         finishes_outbox: None,
         title: None,
+        description: None,
         ..first
     };
     if inner.threads.contains_key(&new.id) {
@@ -335,6 +339,7 @@ fn insert_thread(
         id: new.id,
         owner: new.owner,
         title: new.title,
+        description: new.description.filter(|d| !d.is_empty()),
         target: new.target.clone(),
         state: first.new_state,
         job: Job::default(),
@@ -655,7 +660,10 @@ impl ThreadStore for MemoryStore {
                 continue;
             }
             let blocked = match row.kind {
-                OutboxKind::Cancel | OutboxKind::Verify | OutboxKind::Title => false,
+                OutboxKind::Cancel
+                | OutboxKind::Verify
+                | OutboxKind::Title
+                | OutboxKind::Description => false,
                 OutboxKind::Delegate => inner.outbox[..i].iter().any(|older| {
                     older.thread_id == row.thread_id
                         && older.kind == OutboxKind::Delegate

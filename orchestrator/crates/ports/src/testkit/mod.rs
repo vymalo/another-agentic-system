@@ -35,7 +35,8 @@ macro_rules! thread_store_conformance {
             commit_after_complete_is_fenced expired_unclaimed_lease_still_commits
             job_roundtrip job_is_written_with_the_state gate_events_roundtrip ui_catalog_roundtrip
             ui_catalog_event_by_digest agent_step_roundtrip thread_titled_roundtrip
-            title_rows_are_unordered_and_roundtrip
+            title_rows_are_unordered_and_roundtrip thread_described_roundtrip
+            a_fork_starts_with_the_description_it_is_given
             inbox_dedupes_by_source_and_key inbox_claims_are_leases_and_lapse
             inbox_claimers_never_share_a_row inbox_parks_and_rearms_in_one_commit
             inbox_park_finds_a_watch_that_appeared inbox_commit_is_fenced_and_marks_applied
@@ -162,6 +163,7 @@ macro_rules! chat_model_conformance {
             the_answer_is_the_models_text an_endpoint_that_fails_is_transient
             nonsense_is_not_an_answer a_rate_limit_is_rate_limited a_refusal_is_permanent
             a_refused_credential_is_unauthenticated the_credential_is_never_in_an_error
+            an_unknown_endpoint_is_not_configured
         );
     };
     (@cases $make:path; $($case:ident)*) => {

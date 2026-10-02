@@ -68,6 +68,7 @@ fn commit(state: ThreadState, events: Vec<NewEvent>, outbox: Vec<NewOutbox>) -> 
         inbox: None,
         finishes_outbox: None,
         title: None,
+        description: None,
     }
 }
 
@@ -91,6 +92,7 @@ async fn create(store: &PgStore, outbox: Vec<NewOutbox>) -> ThreadId {
                 id,
                 owner: user(),
                 title: "t".into(),
+                description: None,
                 target: AgentTarget {
                     agent_id: AgentId::new("coder"),
                     release: Some("stable".into()),
@@ -516,6 +518,7 @@ async fn timestamps_round_trip_at_microsecond_precision() {
                 id,
                 owner: user(),
                 title: "t".into(),
+                description: None,
                 target: AgentTarget {
                     agent_id: AgentId::new("coder"),
                     release: None,
@@ -545,6 +548,7 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
                 id,
                 owner: user(),
                 title: "other".into(),
+                description: None,
                 target: AgentTarget {
                     agent_id: AgentId::new("coder"),
                     release: None,
@@ -1724,6 +1728,178 @@ async fn migration_0010_upgrades_a_database_that_holds_a_log() {
     );
 }
 
+/// Migration 0011 on a database that has run 0001 to 0010 and holds a thread with a log and a
+/// `title` row: the old rows stay, the old thread has no description, the old constraints refuse a
+/// `thread_described` event and a `description` row, the new ones take them and still refuse a kind
+/// nobody knows, a description the core wrote reads back, and the column refuses an empty or an
+/// over long one.
+#[tokio::test]
+async fn migration_0011_upgrades_a_database_that_holds_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, sql) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_ui_events.sql",
+            include_str!("../migrations/0002_ui_events.sql"),
+        ),
+        (
+            "0003_job_ledger.sql",
+            include_str!("../migrations/0003_job_ledger.sql"),
+        ),
+        (
+            "0004_inbox.sql",
+            include_str!("../migrations/0004_inbox.sql"),
+        ),
+        (
+            "0005_job_started.sql",
+            include_str!("../migrations/0005_job_started.sql"),
+        ),
+        (
+            "0006_ui_catalog.sql",
+            include_str!("../migrations/0006_ui_catalog.sql"),
+        ),
+        (
+            "0007_agent_step.sql",
+            include_str!("../migrations/0007_agent_step.sql"),
+        ),
+        (
+            "0008_thread_titled.sql",
+            include_str!("../migrations/0008_thread_titled.sql"),
+        ),
+        (
+            "0009_title_requests.sql",
+            include_str!("../migrations/0009_title_requests.sql"),
+        ),
+        (
+            "0010_thread_forks.sql",
+            include_str!("../migrations/0010_thread_forks.sql"),
+        ),
+    ] {
+        std::fs::write(dir.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let thread = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
+    )
+    .bind(thread)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let event = |seq: i64, kind: &'static str, data: &'static str| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"system\",\"name\":\"orchestrator\"}', $4::jsonb)",
+        )
+        .bind(thread)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    let row = |kind: &'static str, payload: &'static str| {
+        sqlx::query(
+            "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
+             created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
+        )
+        .bind(Uuid::now_v7())
+        .bind(thread)
+        .bind(kind)
+        .bind(payload)
+    };
+    event(1, "user_message", r#"{"text":"hi"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    row("title", r#"{"title": {"ask": 1}}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let description_data = r#"{"description":"Moving the build to Rust.","source":"model"}"#;
+    assert!(
+        event(2, "thread_described", description_data)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0010 has no event kind `thread_described`"
+    );
+    assert!(
+        row("description", r#"{"description": {"job": 1}}"#)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0010 has no outbox kind `description`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    event(2, "thread_described", description_data)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    row("description", r#"{"description": {"job": 1}}"#)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        event(3, "nonsense", "{}")
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    assert!(
+        row("nonsense", "{}").execute(store.pool()).await.is_err(),
+        "the constraint still names the kinds"
+    );
+    // the old rows are as they were
+    let events = store.list_events(ThreadId(thread), 0, 10).await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[1].body,
+        EventBody::ThreadDescribed(d)
+            if d.description == "Moving the build to Rust." && d.source == orch_core::DescribedBy::Model
+    ));
+    let old = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.description, None, "the old thread has no description");
+    // the column takes a description and refuses an empty one or one over the limit
+    let set = |text: String| {
+        sqlx::query("UPDATE threads SET description = $2 WHERE id = $1")
+            .bind(thread)
+            .bind(text)
+    };
+    set("Moving the build to Rust.".to_owned())
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(set(String::new()).execute(store.pool()).await.is_err());
+    assert!(set("x".repeat(501)).execute(store.pool()).await.is_err());
+    set("é".repeat(500)).execute(store.pool()).await.unwrap();
+    let described = store
+        .get_thread(None, ThreadId(thread))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        described.description.as_deref(),
+        Some("é".repeat(500).as_str())
+    );
+}
+
 /// A fork outlives its parent: deleting the parent leaves the fork whole, with its own copy of the
 /// log and an origin that no longer names a thread, and a family of edits starts again at the
 /// edit whose parent is gone.
@@ -1753,6 +1929,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                 id,
                 owner: user(),
                 title: format!("fork {n}"),
+                description: None,
                 target: AgentTarget {
                     agent_id: AgentId::new("coder"),
                     release: None,
@@ -1767,6 +1944,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                 },
                 kind,
                 title: "t".to_owned(),
+                description: None,
                 target: new.target.clone(),
             };
             let forked = NewEvent {
@@ -1885,6 +2063,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                 id,
                 owner: user(),
                 title: "f".to_owned(),
+                description: None,
                 target: AgentTarget {
                     agent_id: AgentId::new("coder"),
                     release: None,
@@ -1902,6 +2081,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                     },
                     kind: ForkKind::Fork,
                     title: "f".to_owned(),
+                    description: None,
                     target: new.target.clone(),
                 }),
                 idempotency_key: None,

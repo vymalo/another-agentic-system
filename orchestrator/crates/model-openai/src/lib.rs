@@ -1,13 +1,19 @@
-//! [`ChatModel`] over an OpenAI-compatible chat completions endpoint (ADR 0005).
+//! [`ChatModel`] over OpenAI-compatible chat completions endpoints (ADR 0005, ADR 0035).
 //!
 //! One JSON `POST {base}/chat/completions` with `stream: false`, and the text of the first choice
 //! as the answer. It is the one protocol every model endpoint speaks (a hosted model, a gateway, a
 //! local server), so nothing here is specific to a vendor: no host SDK, no gateway product
 //! (ADR 0007).
 //!
+//! [`OpenAiChat`] holds **one client configuration per endpoint name** (`models.endpoints.<name>`
+//! of the configuration file: a base URL, a credential, a timeout) and sends each request to the
+//! endpoint it names ([`ChatRequest::endpoint`]). A name it does not hold is
+//! [`ModelError::NotConfigured`]: the configuration checks that every task names an endpoint, so
+//! that is a bug and never a configuration outcome, and nothing is sent anywhere else.
+//!
 //! The credential is a bearer token. It is marked sensitive in the request, never part of an error
 //! or of a `Debug` ([`OpenAiChat`] prints `<redacted>` for it), and a redirect is never followed:
-//! the token goes to the configured endpoint and nowhere else.
+//! the token goes to the endpoint it was configured for and nowhere else.
 //!
 //! How an answer maps to the port's errors: a refusal of the request for good (4xx other than the
 //! cases below) is [`ModelError::Rejected`]; 401 and 403 are [`ModelError::Unauthenticated`]; 429 is
@@ -15,7 +21,9 @@
 //! connection that failed are [`ModelError::Unreachable`]; a 2xx that is not a chat completion is
 //! [`ModelError::Protocol`]. The last two are transient: the caller may ask again.
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use orch_core::BoxError;
@@ -84,23 +92,41 @@ impl fmt::Debug for OpenAiConfig {
     }
 }
 
-/// The adapter could not be built.
+/// The adapter could not be built. Each error names the endpoint, by the name the configuration
+/// gives it (never a URL or a credential).
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
     /// The base URL is not an `http` or `https` URL.
-    #[error("the model base URL must start with http:// or https://")]
-    BadBaseUrl,
+    #[error("the base URL of the model endpoint `{endpoint}` must start with http:// or https://")]
+    BadBaseUrl {
+        /// The endpoint's name.
+        endpoint: String,
+    },
     /// The token cannot be sent in a header (a newline in it).
-    #[error("the model API key cannot be sent as a header")]
-    BadApiKey,
+    #[error("the API key of the model endpoint `{endpoint}` cannot be sent as a header")]
+    BadApiKey {
+        /// The endpoint's name.
+        endpoint: String,
+    },
     /// The HTTP client could not be built (TLS backend initialisation).
-    #[error("cannot build the model HTTP client")]
-    Http(#[source] BoxError),
+    #[error("cannot build the HTTP client of the model endpoint `{endpoint}`")]
+    Http {
+        /// The endpoint's name.
+        endpoint: String,
+        /// The cause.
+        #[source]
+        source: BoxError,
+    },
 }
 
-/// A [`ChatModel`] that asks an OpenAI-compatible endpoint.
+/// A [`ChatModel`] that asks OpenAI-compatible endpoints, one per name.
 #[derive(Clone)]
 pub struct OpenAiChat {
+    endpoints: Arc<BTreeMap<String, Endpoint>>,
+}
+
+/// One endpoint: its client (with its timeout), its URL and its credential.
+struct Endpoint {
     http: reqwest::Client,
     url: String,
     authorization: Option<HeaderValue>,
@@ -108,31 +134,66 @@ pub struct OpenAiChat {
 
 impl fmt::Debug for OpenAiChat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpenAiChat")
-            .field("url", &self.url)
-            .field(
-                "authorization",
-                &self.authorization.as_ref().map(|_| "<redacted>"),
-            )
+        f.debug_map()
+            .entries(self.endpoints.iter().map(|(name, e)| {
+                (
+                    name,
+                    format!(
+                        "{} (authorization: {})",
+                        e.url,
+                        if e.authorization.is_some() {
+                            "<redacted>"
+                        } else {
+                            "none"
+                        }
+                    ),
+                )
+            }))
             .finish()
     }
 }
 
 impl OpenAiChat {
-    /// Builds the adapter and installs the `rustls` crypto provider if none is installed yet.
+    /// Builds the adapter over the endpoints `endpoints` (name and configuration) and installs the
+    /// `rustls` crypto provider if none is installed yet. No endpoints is a model that holds none:
+    /// every question is [`ModelError::NotConfigured`].
     ///
     /// # Errors
     /// [`BuildError`] for a base URL that is not `http(s)`, a token that is not a header value,
-    /// or a TLS backend that fails to start.
-    pub fn new(cfg: OpenAiConfig) -> Result<Self, BuildError> {
+    /// or a TLS backend that fails to start; the first endpoint (by name) that is wrong.
+    pub fn new(
+        endpoints: impl IntoIterator<Item = (String, OpenAiConfig)>,
+    ) -> Result<Self, BuildError> {
+        let mut built = BTreeMap::new();
+        for (name, cfg) in endpoints {
+            let endpoint = Endpoint::new(&name, &cfg)?;
+            built.insert(name, endpoint);
+        }
+        Ok(OpenAiChat {
+            endpoints: Arc::new(built),
+        })
+    }
+
+    /// The names of the endpoints this model holds, in order.
+    pub fn endpoint_names(&self) -> impl Iterator<Item = &str> {
+        self.endpoints.keys().map(String::as_str)
+    }
+}
+
+impl Endpoint {
+    fn new(name: &str, cfg: &OpenAiConfig) -> Result<Self, BuildError> {
         let base = cfg.base_url.trim().trim_end_matches('/');
         if !(base.starts_with("http://") || base.starts_with("https://")) || base.len() < 9 {
-            return Err(BuildError::BadBaseUrl);
+            return Err(BuildError::BadBaseUrl {
+                endpoint: name.to_owned(),
+            });
         }
         let authorization = match &cfg.api_key {
             Some(key) if !key.expose_secret().is_empty() => {
                 let mut value = HeaderValue::from_str(&format!("Bearer {}", key.expose_secret()))
-                    .map_err(|_| BuildError::BadApiKey)?;
+                    .map_err(|_| BuildError::BadApiKey {
+                    endpoint: name.to_owned(),
+                })?;
                 value.set_sensitive(true);
                 Some(value)
             }
@@ -148,10 +209,11 @@ impl OpenAiChat {
         } else {
             builder.no_proxy()
         };
-        let http = builder
-            .build()
-            .map_err(|e| BuildError::Http(e.without_url().into()))?;
-        Ok(OpenAiChat {
+        let http = builder.build().map_err(|e| BuildError::Http {
+            endpoint: name.to_owned(),
+            source: e.without_url().into(),
+        })?;
+        Ok(Endpoint {
             http,
             url: format!("{base}/chat/completions"),
             authorization,
@@ -254,6 +316,15 @@ async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>, ModelErro
 }
 
 impl ChatModel for OpenAiChat {
+    async fn complete(&self, request: &ChatRequest) -> Result<String, ModelError> {
+        let Some(endpoint) = self.endpoints.get(&request.endpoint) else {
+            return Err(ModelError::NotConfigured);
+        };
+        endpoint.complete(request).await
+    }
+}
+
+impl Endpoint {
     async fn complete(&self, request: &ChatRequest) -> Result<String, ModelError> {
         let body = WireRequest {
             model: &request.model,

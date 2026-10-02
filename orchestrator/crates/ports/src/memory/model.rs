@@ -1,6 +1,6 @@
 //! A scripted model: answers a test says it will give, in order, and remembers what it was asked.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -27,6 +27,8 @@ pub enum ModelStep {
 
 #[derive(Debug)]
 struct Inner {
+    /// The endpoints the model holds; `None` holds every name (a test that does not care).
+    endpoints: Option<BTreeSet<String>>,
     steps: VecDeque<ModelStep>,
     /// What to do when the script has run out.
     otherwise: ModelStep,
@@ -52,11 +54,21 @@ impl ScriptedModel {
     pub fn new(otherwise: ModelStep) -> Self {
         ScriptedModel {
             inner: Arc::new(Mutex::new(Inner {
+                endpoints: None,
                 steps: VecDeque::new(),
                 otherwise,
                 calls: Vec::new(),
             })),
         }
+    }
+
+    /// A model that holds only the endpoints `names`, as the real one holds those of the
+    /// configuration: a question for any other is [`ModelError::NotConfigured`] and is not
+    /// recorded. Without this it holds every name.
+    #[must_use]
+    pub fn with_endpoints<'a>(self, names: impl IntoIterator<Item = &'a str>) -> Self {
+        self.lock().endpoints = Some(names.into_iter().map(str::to_owned).collect());
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -84,6 +96,13 @@ impl ChatModel for ScriptedModel {
     async fn complete(&self, request: &ChatRequest) -> Result<String, ModelError> {
         let step = {
             let mut inner = self.lock();
+            if inner
+                .endpoints
+                .as_ref()
+                .is_some_and(|held| !held.contains(&request.endpoint))
+            {
+                return Err(ModelError::NotConfigured);
+            }
             inner.calls.push(request.clone());
             inner
                 .steps
