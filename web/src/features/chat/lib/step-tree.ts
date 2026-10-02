@@ -26,6 +26,7 @@ import { conclusionLabel } from "./ci";
 import { truncate } from "./findings";
 import { toolName } from "./step-label";
 import { checkLabel, commandOf, drawsPart, drawsStep, pullRequestOf, reworkLabel } from "./steps";
+import { textRoles, tickerLine } from "./working";
 
 export type { StepIcon, StepState };
 
@@ -83,6 +84,13 @@ type Base = {
 };
 
 /**
+ * What the agent said while it worked (ADR 0031): a row among the steps, at the place in time it
+ * was said, with its words whole (untrusted text, drawn as text). It is not a step: it is not
+ * counted, it has no state of its own, and it never fails.
+ */
+export type NoteContent = { text: string };
+
+/**
  * A node of a turn's tree. `agent` is the turn's own root (the panel's turn header stands for it);
  * `subagent`, `tool`, `command` and `message` are steps/v1's kinds; the rest are today's
  * activities as leaves, which carry their parsed `content` for the renderers that draw them.
@@ -90,6 +98,7 @@ type Base = {
 export type StepNode = Base &
   (
     | { kind: "agent" | "subagent" | "tool" | "command" | "message"; content?: undefined }
+    | { kind: "note"; content: NoteContent }
     | { kind: "status"; content: StatusContent }
     | { kind: "artifact"; content: ArtifactContent }
     | { kind: "check"; content: CheckContent }
@@ -101,8 +110,10 @@ export type StepNode = Base &
 export type StepKind = StepNode["kind"];
 
 export type StepSummary = {
-  /** Every step of the turn's tree (the turn's own root is not one). */
+  /** Every step of the turn's tree (the turn's own root is not one); the notes are not steps. */
   total: number;
+  /** How many notes of working text the turn has (ADR 0031). */
+  notes: number;
   running: number;
   failed: number;
   durationMs?: number;
@@ -128,6 +139,11 @@ export type TurnSteps = {
   /** The turn's agent first, then the orchestrator's gate nodes (checks, CI reports, reworks). */
   roots: StepNode[];
   summary: StepSummary;
+  /**
+   * While the turn runs: the last line of the last working note, as one quiet line for the chat's
+   * line of the turn (ADR 0031). Absent when the turn has no note or is not running.
+   */
+  ticker?: string;
 };
 
 // ---- labels ----------------------------------------------------------------------------------
@@ -291,6 +307,7 @@ export function countUnder(node: StepNode): Counts {
   if (known) return known;
   const counts: Counts = { total: 0, failed: 0, running: 0 };
   for (const child of node.children) {
+    if (child.kind === "note") continue;
     counts.total += 1;
     if (child.state === "failed" && !child.echo) counts.failed += 1;
     if (child.state === "running") counts.running += 1;
@@ -309,7 +326,7 @@ function currentOf(roots: readonly StepNode[]): StepNode | undefined {
   let last: StepNode | undefined;
   const visit = (nodes: readonly StepNode[], depth: number) => {
     for (const node of nodes) {
-      if (node.kind !== "agent") {
+      if (node.kind !== "agent" && node.kind !== "note") {
         last = node;
         if (node.state === "running" && (!best || depth >= best.depth)) best = { node, depth };
       }
@@ -321,9 +338,13 @@ function currentOf(roots: readonly StepNode[]): StepNode | undefined {
 }
 
 function summaryOf(roots: readonly StepNode[], durationMs: number | undefined): StepSummary {
-  const total = { total: 0, failed: 0, running: 0 };
+  const total = { total: 0, notes: 0, failed: 0, running: 0 };
   for (const node of walk(roots)) {
     if (node.kind === "agent") continue;
+    if (node.kind === "note") {
+      total.notes += 1;
+      continue;
+    }
     total.total += 1;
     if (node.state === "failed" && !node.echo) total.failed += 1;
     if (node.state === "running") total.running += 1;
@@ -387,6 +408,10 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
   const steps = new Map<string, StepNode>();
   const times: string[] = [];
 
+  // what the agent said while it worked is a note among its steps, in the place it was said
+  const roles = textRoles(parts, message.status?.type === "running");
+  let lastNote: string | undefined;
+
   // the last part that draws a step: while the turn runs, a status or an artifact there is the
   // step the agent is on (a check that waits spins on its own)
   let lastDrawn = -1;
@@ -398,6 +423,20 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
     if (part.type === "data" && part.name?.startsWith("agui-activity/vymalo.")) {
       const at = (part.data as { at?: unknown } | undefined)?.at;
       if (typeof at === "string") times.push(at);
+    }
+    if (part.type === "text" && roles.get(index) === "working") {
+      const text = part.text ?? "";
+      lastNote = text;
+      agent.children.push({
+        id: `part-${message.id}-${index}`,
+        kind: "note",
+        label: truncate(firstLine(text.trim()), CURRENT_MAX).text,
+        state: "completed",
+        content: { text },
+        part: { messageId: message.id, index },
+        children: [],
+      });
+      return;
     }
     if (!drawsStep(part)) return;
     const ref = { messageId: message.id, index };
@@ -576,6 +615,9 @@ function build(message: StepMessage, number: number, turn: TurnState, view: Turn
     ...(last && !live ? { endedAt: last } : {}),
     roots,
     summary: summaryOf(roots, durationMs),
+    ...(live && lastNote !== undefined && tickerLine(lastNote)
+      ? { ticker: tickerLine(lastNote) }
+      : {}),
   };
 }
 
@@ -670,8 +712,10 @@ export type SummaryIcon = "spinner" | "check" | "cross" | "pause" | "verifying" 
 export function summaryLine(
   turn: Pick<TurnSteps, "state" | "summary">,
 ): { icon: SummaryIcon; text: string; failed: number } | null {
-  const { total, failed, current, durationMs } = turn.summary;
-  const steps = plural(total, "step");
+  const { total, notes, failed, current, durationMs } = turn.summary;
+  // a turn of notes and no steps (a plain agent that said several things) says its notes
+  const steps = total > 0 || notes === 0 ? plural(total, "step") : plural(notes, "note");
+  const did = total + notes;
   switch (turn.state) {
     case "running": {
       const on = current ?? "Working";
@@ -680,13 +724,13 @@ export function summaryLine(
     case "verifying":
       return { icon: "verifying", text: "Verifying", failed };
     case "waiting":
-      return total > 0 ? { icon: "pause", text: `Paused · ${steps}`, failed } : null;
+      return did > 0 ? { icon: "pause", text: `Paused · ${steps}`, failed } : null;
     case "failed":
-      return total > 0 ? { icon: "cross", text: `Failed · ${steps}`, failed } : null;
+      return did > 0 ? { icon: "cross", text: `Failed · ${steps}`, failed } : null;
     case "canceled":
-      return total > 0 ? { icon: "stopped", text: `Stopped · ${steps}`, failed } : null;
+      return did > 0 ? { icon: "stopped", text: `Stopped · ${steps}`, failed } : null;
     case "completed": {
-      if (total === 0) return null;
+      if (did === 0) return null;
       const took = durationMs !== undefined ? formatDuration(durationMs) : undefined;
       return { icon: "check", text: took ? `${steps} · ${took}` : steps, failed };
     }

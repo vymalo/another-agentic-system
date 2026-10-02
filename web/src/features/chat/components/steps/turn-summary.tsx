@@ -16,7 +16,9 @@ const capitalise = (name: string): string => name.charAt(0).toUpperCase() + name
  * when it is done, a failure chip whenever a step failed, even in a turn that went well. The
  * steps themselves are in the side panel; this opens it on this turn, and its failed chip opens
  * it on the first step that failed, with that step's input and output. Nothing for a turn of words
- * only. Prop-driven: `panelShowsTurn` and `onOpen` come from the shell (`useStepsPanel`).
+ * only. While the turn runs, under the line, the last thing the agent said while it worked, as one
+ * quiet line that gives way to an ellipsis (the ticker; the notes themselves are in the panel).
+ * Prop-driven: `panelShowsTurn` and `onOpen` come from the shell (`useStepsPanel`).
  */
 export const TurnSummary = memo(function TurnSummary({
   turn,
@@ -35,43 +37,55 @@ export const TurnSummary = memo(function TurnSummary({
   const name = `${who}'s steps: ${line.text}${line.failed > 0 ? `, ${line.failed} failed` : ""}. Show in the side panel`;
   const failed = line.failed > 0 ? firstFailed(turn) : undefined;
   return (
-    // the chip is a control of its own, so it sits beside the line's button and not inside it
-    <span
-      data-slot="turn-summary-line"
-      className={cn(
-        "group/summary -ms-2 inline-flex h-7 max-w-full min-w-0 items-center self-start rounded-full text-[0.8125rem] leading-5 text-muted-foreground",
-        "hover:bg-muted hover:text-foreground",
-        panelShowsTurn && "bg-muted text-foreground",
-      )}
-    >
-      <button
-        type="button"
-        data-slot="turn-summary"
-        data-state={turn.state}
-        aria-label={name}
-        aria-controls={panelId}
-        aria-expanded={panelShowsTurn}
-        onClick={() => onOpen(turn.turnId)}
-        className="inline-flex h-7 min-w-0 cursor-pointer items-center gap-2 rounded-full ps-2 pe-2 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+    <div className="flex w-full min-w-0 flex-col items-start gap-0.5">
+      {/* the chip is a control of its own, so it sits beside the line's button and not inside it */}
+      <span
+        data-slot="turn-summary-line"
+        className={cn(
+          "group/summary -ms-2 inline-flex h-7 max-w-full min-w-0 items-center self-start rounded-full text-[0.8125rem] leading-5 text-muted-foreground",
+          "hover:bg-muted hover:text-foreground",
+          panelShowsTurn && "bg-muted text-foreground",
+        )}
       >
-        <TurnGlyph icon={line.icon} />
-        <span
-          className={cn("min-w-0 truncate", line.icon === "spinner" && "text-shimmer")}
-          data-slot="turn-summary-text"
+        <button
+          type="button"
+          data-slot="turn-summary"
+          data-state={turn.state}
+          aria-label={name}
+          aria-controls={panelId}
+          aria-expanded={panelShowsTurn}
+          onClick={() => onOpen(turn.turnId)}
+          className="inline-flex h-7 min-w-0 cursor-pointer items-center gap-2 rounded-full ps-2 pe-2 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
         >
-          {line.text}
-        </span>
-        <ChevronRightIcon
-          aria-hidden="true"
-          className="size-3.5 shrink-0 opacity-60 group-hover/summary:opacity-100"
-        />
-      </button>
-      {line.failed > 0 ? (
-        <span className="pe-1.5">
-          <FailedChipButton count={line.failed} onClick={() => onOpen(turn.turnId, failed?.id)} />
-        </span>
+          <TurnGlyph icon={line.icon} />
+          <span
+            className={cn("min-w-0 truncate", line.icon === "spinner" && "text-shimmer")}
+            data-slot="turn-summary-text"
+          >
+            {line.text}
+          </span>
+          <ChevronRightIcon
+            aria-hidden="true"
+            className="size-3.5 shrink-0 opacity-60 group-hover/summary:opacity-100"
+          />
+        </button>
+        {line.failed > 0 ? (
+          <span className="pe-1.5">
+            <FailedChipButton count={line.failed} onClick={() => onOpen(turn.turnId, failed?.id)} />
+          </span>
+        ) : null}
+      </span>
+      {turn.ticker ? (
+        // the last thing the agent said while it works, quietly (ADR 0031): not a live region, so
+        // that a sentence every few seconds is not read out over the state pill and the reply
+        <p
+          data-slot="turn-ticker"
+          className="max-w-full min-w-0 truncate text-xs leading-5 text-muted-foreground"
+        >
+          {turn.ticker}
+        </p>
       ) : null}
-    </span>
+    </div>
   );
 });
 

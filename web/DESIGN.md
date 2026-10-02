@@ -222,8 +222,45 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   on a touch screen). The bubble is `id="m-<seq>"` with `data-seq`, where `<seq>` is its event in the log, which
   is what a link to a version scrolls to. See "Fork and branch".
 - **The agent**: its avatar (a 28 px circle with its first letter, see "Brand") and its name once, then, in order:
-  one **summary line** for its steps, its **words** as prose, and its **cards**. Nothing of the agent's sits in
-  a bubble.
+  one **summary line** for its steps, its **answer** as prose, and its **cards**. Nothing of the agent's sits in
+  a bubble. What the agent said while it worked is not here ("One answer per turn", below).
+- **One answer per turn** (2026-10-02, the owner on the coder's chat: the tool calls went to the right rail "while the
+  working comments were staying in the middle of the page"; "working tokens like thinking tokens and a final turn
+  answer, so that all other ones appear like thinking, but all hidden, not collapsed"; ADR 0031). The column holds
+  the turn's **answer** and what the agent drew on the way, and nothing of the sentences it said before each tool
+  call: those are **working text**, which is not drawn in the column at all (no "show more", no disclosure, no
+  hidden-but-focusable element) and is a **note** among the steps of the Activity tab ("Steps panel"). Which text is
+  which is `lib/working.ts`: text the log marked (`working`, `answer`) is what it says; text it did not mark (a plain
+  agent, the status words, an older log) is read by a rule: in a turn that is over the **last text is the answer** and
+  the earlier text is working, and in a turn that runs an unmarked text shows as a draft of the answer until a step
+  starts after it, and then folds. So an old thread has the new view. A **surface** drawn on the way (`show`) stays in
+  the column, between the line and the answer: it is an output, not a sentence. A **question** that ends the turn is
+  the answer, with its "Waiting for your reply". **Copy** copies the answer. A live draft is the answer unless its
+  end says it was working text, and then it leaves the column for Activity: a working sentence is on screen for as
+  long as the model writes it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-working.png">
+  <img src="e2e/__screens__/desktop-light-working.png" alt="A finished coder chat. In the middle column the agent's one answer, a surface of two cards drawn on the way (a background and a sun) and the line “11 steps · 5s” with a “1 failed” chip. In the Activity panel the same turn: six notes, each a sentence the agent said before a tool call, in order among the tool steps they announced." width="720">
+</picture>
+
+*The mock's `coder-notes`: one answer and the surface in the column; the six sentences said on the way are notes in Activity.*
+
+- **The ticker.** While a turn runs, **under its summary line** one line shows what the agent said last while it
+  worked: the last line of its last note, plain (code ticks and emphasis dropped), in 12 px `--muted-foreground`
+  (the full colour: a lighter one fails 4.5:1), one line that gives way to an ellipsis, at most 160 characters. It is
+  not a control, takes no focus and is **not a live region** (no `aria-live`): the thread's state pill is the one
+  polite status, and a sentence every few seconds read out over it and over the reply would be noise; the notes are
+  in Activity, in order, for a screen reader or anyone who wants them, and the line's accessible name does not change.
+  It is gone when the turn ends.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-working-running.png">
+  <img src="e2e/__screens__/desktop-light-working-running.png" alt="A coder turn that is still working. The line under the agent's name says what it is on, and under it one muted line, the last thing the agent said (a longer one would end in an ellipsis). There is no answer in the column yet; the Activity panel lists the notes said so far among the steps." width="720">
+</picture>
+
+*While the turn runs: the line, and under it the last working sentence.*
+
 - **The steps are not in the chat** (amended 2026-10-01; before it, "steps always visible, never collapsed": a
   compact list of one 28 px line per step, the live one spinning, past 30 steps the earliest folded). The owner
   asked for a cleaner interface where agents and sub-agents work ("the right side of the page is usually unused"),
@@ -402,6 +439,13 @@ runtime already holds, so it is the same on the live stream, on a replay and aft
   when `ioDropped`. All of it is an agent's text: **drawn as text nodes, never as markup**, and never parsed
   (the `output.text` is not read as JSON or Markdown). Open or closed is kept above the panel with the rest of the
   tree's state.
+- **Working text is a note** (2026-10-02, ADR 0031). What the agent said while it worked is a row among the steps, at
+  the place in time it was said: the same icon rail, a speech-bubble glyph, the words in `--muted-foreground` (the
+  steps are `foreground/85`), whole in the page and clamped to three lines for the eye with a **Show more** control
+  when a note is longer than about 240 characters or four lines (`aria-expanded`, `aria-controls`). A screen reader
+  hears "Working note: …" before the words and then all of them, in order with the steps. A note is **not a step**:
+  not counted in "14 steps", not the step a turn is on, never failed, no input or output. A turn that has notes is
+  listed even with no step (its line says "3 notes"). Notes are the agent's words: text nodes, never markup.
 - **A tool is called by its tool.** An MCP tool reaches the page as `server__tool`; the row says "Web search" and
   puts the server in a small muted tag ("search", read "from search"), then one short, muted phrase of what the
   call was about, the first of `query`, `q`, `url`, `path`, `command`… that is text, else the first text there is,
@@ -481,6 +525,12 @@ the screen, in both schemes, on a desktop and on a phone.
 A turn's summary line is a button that names its steps and where it opens them; the step tree is nested lists with
 native buttons (no ARIA tree), and axe is run with the tree open, a level that scrolls, and a turn that runs, in both
 schemes, on a desktop and on a phone's sheet.
+
+Working text is **not in the column at all**, so there is nothing hidden-but-focusable in it (a Playwright test lists the
+focusable elements of the log and the ones behind `hidden`, `aria-hidden` or `inert`, and finds no sentence of the agent's
+among them). In Activity a note reads "Working note: …" and then its words, whole, in order with the steps. The ticker
+is not a live region ("One answer per turn"); axe is run on the finished turn with the notes open and on a turn that
+works with its ticker, in both schemes (reduced motion: the turn fades in for 160 ms), on a desktop and on a phone.
 
 The panel is a `complementary` landmark named "Thread details" (hidden and inert while it is closed, so it is
 neither tabbed into nor read); in a sheet it is a dialog with the same name that traps the focus, closes

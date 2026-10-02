@@ -226,6 +226,25 @@ const EXPECTED: Record<string, Summary> = {
       parts: [ACTOR, "status:working", "text:Fibonacci in Rust.", "status:completed"],
     },
   ],
+  // working text and the answer (ADR 0031): each text carries the mark of the START it came with,
+  // in a marker part right before it (the runtime drops a message's metadata)
+  working: [
+    USER("stream-words go"),
+    {
+      role: "assistant",
+      status: DONE,
+      parts: [
+        ACTOR,
+        "status:working",
+        "purpose:working",
+        "text:Let me run the tests first.",
+        "step",
+        "purpose:answer",
+        "text:Streaming a reply, word by word, as it is written.",
+        "status:completed",
+      ],
+    },
+  ],
   // nested steps (ADR 0025): a sub-agent step opens its own subagent in the stream, which the
   // runtime turns into one more actor marker; each step is one part, said again in place
   steps: [
@@ -401,6 +420,39 @@ describe("the goldens through the runtime", () => {
     expect(summarize(mounted.messages())).toEqual(EXPECTED.stream);
     const texts = mounted.messages().flatMap((m) => m.content.filter((p) => p.type === "text"));
     expect(texts.map((p) => p.text)).toEqual(["write fibonacci in rust", "Fibonacci in Rust."]);
+    mounted.agent.stop();
+  });
+
+  it("stream, ended as working text (ADR 0031): the draft is never the transcript's, and the log's message says on its START what it was", async () => {
+    const stream = new LiveStream();
+    const mounted = mountRuntime(() => sse(stream.body));
+    mounted.agent.start();
+    // the `stream` golden with one change: the END of the log's message says the words were working
+    const frames = loadGolden("stream").map((f) => {
+      const live = (f.event.metadata as Record<string, Record<string, unknown>> | undefined)?.[
+        "vymalo.live"
+      ];
+      return f.event.type === "TEXT_MESSAGE_END" && live?.final === true
+        ? {
+            ...f,
+            event: { ...f.event, metadata: { "vymalo.live": { final: true, purpose: "working" } } },
+          }
+        : f;
+    });
+    await act(async () => {
+      stream.frames(frames);
+    });
+    await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(5));
+    await waitFor(() => expect(mounted.runtime().thread.getState().isRunning).toBe(false));
+    expect(summarize(mounted.messages())[1]?.parts).toEqual([
+      ACTOR,
+      "status:working",
+      "purpose:working",
+      "text:Fibonacci in Rust.",
+      "status:completed",
+    ]);
+    // the draft that held the words is said to be working: it draws nothing
+    expect(mounted.agent.getDrafts().every((d) => d.purpose === "working")).toBe(true);
     mounted.agent.stop();
   });
 

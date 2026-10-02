@@ -6,10 +6,12 @@ import {
   GitBranchIcon,
   GitPullRequestIcon,
   KeyRoundIcon,
+  MessageSquareTextIcon,
   MousePointerClickIcon,
   PlayIcon,
   RotateCcwIcon,
 } from "lucide-react";
+import { useId, useState } from "react";
 import type {
   ActionContent,
   ArtifactContent,
@@ -23,6 +25,7 @@ import {
   reworkLabel,
   shortRepository,
 } from "@/features/chat/lib/steps";
+import { cn } from "@/lib/utils";
 import { ActorLabel } from "../actor-label";
 import { ExpandableText } from "../parts/expandable-text";
 import { FindingsList } from "../parts/findings-list";
@@ -216,5 +219,56 @@ export function ActionStep({ data }: { data: ActionContent }) {
         </>
       }
     />
+  );
+}
+
+/** A note longer than this (or of more lines than `NOTE_LINES`) is clamped, with a control for the rest. */
+const NOTE_FOLD = 240;
+const NOTE_LINES = 4;
+
+/**
+ * What the agent said while it worked (ADR 0031), as a row among its steps, in the place in time
+ * it was said. The chat keeps one answer per turn; this is where the rest is. The words are the
+ * agent's own: a text node, never markup. They are whole in the page for a screen reader even when
+ * a long one is clamped to three lines for the eye, and "Working note" is said before them so the
+ * row reads as what it is.
+ */
+export function NoteStep({ id, text }: { id: string; text: string }) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const long = text.length > NOTE_FOLD || text.split("\n").length > NOTE_LINES;
+  return (
+    <StepRow
+      state="done"
+      icon={MessageSquareTextIcon}
+      data-slot="step"
+      data-kind="note"
+      data-step={id}
+      label={
+        <span
+          id={bodyId}
+          data-slot="note-text"
+          className={cn(
+            "block min-w-0 flex-1 basis-full whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]",
+            long && !open && "line-clamp-3",
+          )}
+        >
+          <span className="sr-only">Working note: </span>
+          {text}
+        </span>
+      }
+    >
+      {long ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => setOpen((o) => !o)}
+          className="cursor-pointer self-start rounded-sm text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+        >
+          {open ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </StepRow>
   );
 }

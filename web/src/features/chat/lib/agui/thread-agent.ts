@@ -27,7 +27,10 @@ import {
   ACTOR_KEY,
   ACTOR_PART,
   type JobView,
+  PURPOSE_KEY,
+  PURPOSE_PART,
   parseJob,
+  parsePurpose,
   parseUiCatalog,
   RELEASE_CHANNELS_URI,
 } from "./vymalo";
@@ -594,7 +597,10 @@ export class ThreadAgent extends AbstractAgent {
   /**
    * What the runtime gets. It drops an event's `metadata`, so the actor moves into the activity
    * content, and into a `CUSTOM` marker part in front of an invocation's output (with the `runId`
-   * of the run, which is how a turn finds its end in the log, `endOfRun`).
+   * of the run, which is how a turn finds its end in the log, `endOfRun`). What an assistant's
+   * words are for (`vymalo.purpose`, ADR 0031) moves into a marker part right before the text it
+   * marks, for the same reason: the turn reads it to keep the answer in the chat and file the
+   * working text with the steps.
    */
   private normalize(event: Ev, runId: string): BaseEvent[] {
     if (event.type === EventType.ACTIVITY_SNAPSHOT) {
@@ -616,6 +622,22 @@ export class ThreadAgent extends AbstractAgent {
       }
       if (actor && type.startsWith("vymalo.") && isRecord(event.content)) {
         return [{ ...event, content: { ...event.content, actor } } as BaseEvent];
+      }
+    }
+    if (event.type === EventType.TEXT_MESSAGE_START && event.role === "assistant") {
+      const purpose = parsePurpose(
+        isRecord(event.metadata) ? event.metadata[PURPOSE_KEY] : undefined,
+      );
+      if (purpose) {
+        const messageId = str(event.messageId);
+        return [
+          {
+            type: EventType.CUSTOM,
+            name: PURPOSE_PART,
+            value: { purpose, ...(messageId ? { messageId } : {}) },
+          } as BaseEvent,
+          event,
+        ];
       }
     }
     if (event.type === EventType.SUBAGENT_STARTED) {

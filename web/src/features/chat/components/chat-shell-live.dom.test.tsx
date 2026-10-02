@@ -151,6 +151,40 @@ describe("live text, in the app", () => {
     expect(times("Fibonacci in Rust.")).toBe(1);
   });
 
+  // ADR 0031: a live message opens before anyone knows what its words are for. The words before a
+  // tool call turn out to be working text: the draft leaves the column and is a note in Activity.
+  // The reply that ends the turn is the answer: its draft stays, and is the one message.
+  it("stream-words: a draft that ends as working text leaves the column for Activity; the reply stays", async () => {
+    const id = await makeThread("stream-words go");
+    shell(id);
+    await waitFor(() => expect(drafts()[0]?.textContent).toContain("Let me run"));
+    const activity = () =>
+      within(screen.getByRole("complementary", { name: "Thread details" })).getByRole("tabpanel", {
+        name: "Activity",
+      });
+    // the log's message says it was working: no draft of it, no reply of it, and it is a note
+    await waitFor(() =>
+      expect(activity().querySelector('li[data-kind="note"]')?.textContent).toContain(
+        "Let me run the tests first.",
+      ),
+    );
+    // not in the column as words (while the turn runs its line shows it, as the ticker)
+    expect(drafts().filter((d) => d.textContent?.includes("tests first"))).toHaveLength(0);
+    expect(replies()).toHaveLength(0);
+    expect(log().querySelector('[data-slot="turn-ticker"]')?.textContent).toBe(
+      "Let me run the tests first.",
+    );
+    // the reply is written as a draft of the answer, and stays as the one reply
+    await waitFor(() => expect(drafts()[0]?.textContent).toContain("Streaming a reply"));
+    await waitFor(() => expect(stateBadge().textContent).toBe("Done"));
+    await waitFor(() => expect(drafts()).toHaveLength(0));
+    expect(replies().map((r) => r.textContent)).toEqual([
+      "Streaming a reply, word by word, as it is written.",
+    ]);
+    await waitFor(() => expect(times("Let me run the tests first.")).toBe(0));
+    expect(activity().querySelectorAll('li[data-kind="note"]')).toHaveLength(1);
+  });
+
   it("a reply that is still being written is a draft the transcript does not hold, and Stop ends it", async () => {
     const id = await makeThread("stream-hold write the plan");
     shell(id);

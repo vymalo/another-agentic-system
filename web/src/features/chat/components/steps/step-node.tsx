@@ -30,7 +30,14 @@ import {
 } from "./expansion";
 import { iconOf } from "./step-icons";
 import { StepIo } from "./step-io";
-import { ActionStep, ArtifactStep, ReworkStep, STEP_PREVIEW, StatusStep } from "./step-items";
+import {
+  ActionStep,
+  ArtifactStep,
+  NoteStep,
+  ReworkStep,
+  STEP_PREVIEW,
+  StatusStep,
+} from "./step-items";
 import { type RowProps, RowPropsContext, type StepState as RowState, StepRow } from "./step-row";
 
 /** What the tree needs to draw a level: which turn it is in, and what the person has opened. */
@@ -127,6 +134,8 @@ export function StepNodeView({
         return <ReworkStep data={node.content} />;
       case "action":
         return <ActionStep data={node.content} />;
+      case "note":
+        return <NoteStep id={node.id} text={node.content.text} />;
       case "agent":
         return null;
       default:

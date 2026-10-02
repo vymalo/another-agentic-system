@@ -110,7 +110,16 @@ stateDiagram-v2
 - `via` is a member nothing writes. Reserving it costs a line in the contract and spares a second change to the event.
 - Required elsewhere: the A2A adapter, the core types, the projection and the overlay, `chat-api.yaml`,
   [`agui.md`](../api/agui.md#the-agents-words), [`text-stream-v1.md`](../api/text-stream-v1.md), the goldens (a
-  `working` scenario) and the web mock. Not built: the web's rendering, and the `turn_output` tool.
+  `working` scenario) and the web mock. Not built: the `turn_output` tool.
+- *Status note, 2026-10-02 (plan 10 S6):* the web's rendering is built, as this ADR says it. One answer per turn in the
+  chat, the working text as `note` rows among the steps of the Activity tab, the screen's rule for unmarked text in
+  `web/src/features/chat/lib/working.ts`, a working live draft leaving the column when its `END` says so, and the last
+  working sentence of a running turn as a quiet line under the turn's line (the ticker, not a live region). Two edges the
+  rule leaves, both known: a live draft whose `END` says only `final` is read as unmarked text once the transcript has it
+  (the START the runtime reads does not carry `answer`), so an answer that streamed live and is followed by more words in
+  the same turn is read by the fallback until a reload says it plainly; and an agent that states its whole reply on a
+  `working` status shows nothing in the column (the consequence above). See
+  [`web/README.md`](../../web/README.md#the-answer-and-the-working-text).
 
 ## Alternatives rejected
 

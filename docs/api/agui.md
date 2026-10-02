@@ -227,7 +227,8 @@ does any log written before the field existed. The projection puts it on the mes
 
 - **A generic AG-UI client reads today's transcript**: the working sentences and the answer are all assistant
   messages, in order. A screen that knows the key can keep the answer in the conversation and put the working text with
-  the steps. The words stated on a status with no stream marker are the [status words](#the-agents-words) above, `st-<seq>`,
+  the steps. The web does: one answer per turn in the chat, the rest as notes among the steps in
+  its Activity tab ([`web/README.md`](../../web/README.md#the-answer-and-the-working-text)). The words stated on a status with no stream marker are the [status words](#the-agents-words) above, `st-<seq>`,
   and carry no purpose: an agent that does not state its reply as a stream gets the screen's fallback (in an ended turn
   the last text is the answer).
 - **Rejected: `REASONING_*`.** A live text message cannot become a reasoning message after the fact, so a generic client

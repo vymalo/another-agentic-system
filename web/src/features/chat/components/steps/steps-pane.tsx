@@ -18,11 +18,11 @@ const isLiveTurn = (t: TurnSteps): boolean => t.state === "running" || t.state =
 const capitalise = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
 
 /**
- * The turns the pane lists: the ones that did something, and the one that is running. A turn of
- * words only has no steps to show.
+ * The turns the pane lists: the ones that did something or said something while they worked (a
+ * note, ADR 0031), and the one that is running. A turn that is its answer only has nothing to show.
  */
 export const listedTurns = (turns: readonly TurnSteps[]): TurnSteps[] =>
-  turns.filter((t) => t.summary.total > 0 || isLiveTurn(t));
+  turns.filter((t) => t.summary.total > 0 || t.summary.notes > 0 || isLiveTurn(t));
 
 function TurnSection({
   turn,

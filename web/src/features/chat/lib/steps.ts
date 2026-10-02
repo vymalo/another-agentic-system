@@ -4,6 +4,7 @@ import {
   type ArtifactContent,
   activityPartName,
   type CheckContent,
+  PURPOSE_PART,
   parseAnswers,
   parseArtifact,
   parseStatus,
@@ -49,13 +50,17 @@ export function isAnswerPart(part: PartLike): boolean {
   );
 }
 
+/** The markers `ThreadAgent` puts in the transcript: who ran, and what the next text is for. */
+const isMarker = (part: PartLike): boolean =>
+  part.name === ACTOR_PART || part.name === PURPOSE_PART;
+
 /**
  * Whether a part belongs in the step list. A failed status is not a step: it is an error in the
- * flow of the turn. The actor marker goes with the steps so that it never splits a list.
+ * flow of the turn. The markers go with the steps so that they never split a list.
  */
 export function isStepPart(part: PartLike): boolean {
   if (part.type !== "data" || !part.name) return false;
-  if (part.name === ACTOR_PART) return true;
+  if (isMarker(part)) return true;
   if (!STEP_PARTS.has(part.name)) return false;
   if (isAnswerPart(part)) return false;
   if (part.name === activityPartName(ACTIVITY.status)) {
@@ -66,11 +71,11 @@ export function isStepPart(part: PartLike): boolean {
 
 /**
  * Whether a step part draws a line. The statuses that come with the agent's words (`completed`,
- * `input_required`) say nothing the words and the thread's state do not; the actor marker and the
- * job marker draw nothing.
+ * `input_required`) say nothing the words and the thread's state do not; the markers and the job
+ * marker draw nothing.
  */
 export function drawsStep(part: PartLike): boolean {
-  if (!isStepPart(part) || part.name === ACTOR_PART) return false;
+  if (!isStepPart(part) || isMarker(part)) return false;
   if (part.name === activityPartName(ACTIVITY.job)) return false;
   if (part.name === activityPartName(ACTIVITY.status)) {
     const status = parseStatus(part.data)?.status;

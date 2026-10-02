@@ -630,6 +630,133 @@ type StepIo = {
   ioDropped?: true;
 };
 
+/**
+ * What the agent says while it works, as the log has it since ADR 0031: a final message the
+ * adapter marked `working` (said on a `working` status, before a tool call). With no purpose it is
+ * the same words with no mark, as a plain A2A agent or a log from before the mark says them.
+ */
+const said = (
+  text: string,
+  purpose: "working" | "answer" | undefined,
+  messageId = nextMessageId(),
+): Step => ({
+  kind: "agent_message",
+  data: { messageId, final: true, text, ...(purpose ? { purpose } : {}) },
+});
+
+/** One finished tool step, reported once as it ended, with what it was called with and returned. */
+const tool = (n: number, label: string, icon: string, io?: StepIo, failed?: string): Step => ({
+  ...agentStep(
+    `tool:n${n}`,
+    [],
+    "tool",
+    label,
+    failed ? "failed" : "completed",
+    "end",
+    icon,
+    failed,
+    io,
+  ),
+  quick: true,
+});
+
+/** The surface the coder draws mid-turn (`show`): what the drawing holds, as two cards. */
+const drawingSurface = (): Step =>
+  ownSurface([
+    { id: "root", component: "Column", children: ["intro", "shapes"] },
+    { id: "intro", component: "Text", text: "The export, as the shapes it holds" },
+    {
+      id: "shapes",
+      component: "Cards",
+      title: "What the drawing holds",
+      layout: "list",
+      cards: [
+        { title: "Background", subtitle: "A rectangle, 800 by 450", tags: ["fill #0b1020"] },
+        {
+          title: "Sun",
+          subtitle: "A circle of radius 70",
+          body: "Centred at 640, 120.",
+          tags: ["#f5b942"],
+        },
+      ],
+    },
+  ]);
+
+/**
+ * The owner's coder chat of 2026-10-02, in its shape and in other words: the coder says a sentence
+ * before each tool call, a test run fails once, a surface is drawn mid-turn and the turn ends with
+ * one answer. In the log since ADR 0031 each sentence is marked `working` and the last words
+ * `answer`; with `marked` false none is (an older log), and the screen reads the turn by its rule.
+ */
+const coderNotes = (marked: boolean): Step[] => {
+  const w = marked ? "working" : undefined;
+  const answer = [
+    "The drawing is exported, and its shape is in the cards above.",
+    "",
+    "**What I built:** a scratch project `canvas-draw`, a tiny Node.js drawing layer with no dependencies.",
+    "",
+    "- `src/draw.js` builds the picture from rectangles and circles",
+    "- `src/export.js` writes it as an SVG",
+    "- seven tests cover both, and they all pass",
+    "",
+    "Say the word and I will turn it into a repository.",
+  ].join("\n");
+  return [
+    working,
+    said("I'll build something small in a scratch project first, then show you the export.", w),
+    tool(1, "start_scratch", "tool", { input: { name: "canvas-draw" }, output: { text: "ready" } }),
+    said(
+      "Your screen draws text, cards and diagrams, not images. So Node draws it and I show its shapes.",
+      w,
+    ),
+    tool(2, "write_file", "edit", {
+      input: { path: "src/draw.js" },
+      output: { text: "wrote 41 lines" },
+    }),
+    tool(3, "write_file", "edit", {
+      input: { path: "src/export.js" },
+      output: { text: "wrote 23 lines" },
+    }),
+    said("Now the tests for both.", w),
+    tool(4, "write_file", "edit", {
+      input: { path: "test/draw.test.js" },
+      output: { text: "wrote 58 lines" },
+    }),
+    tool(
+      5,
+      "run_checks",
+      "test",
+      { input: { check: "npm test" }, output: { text: "2 of 7 failed", error: true } },
+      "checks failed: npm test",
+    ),
+    said(
+      "Node 24 wants an explicit glob for the test directory. I'll fix the script, not the tests.",
+      w,
+    ),
+    tool(6, "apply_patch", "edit", {
+      input: { path: "package.json" },
+      output: { text: "patched" },
+    }),
+    tool(7, "run_checks", "test", { input: { check: "npm test" }, output: { text: "7 passed" } }),
+    said("All 7 tests pass. Now I'll export the drawing.", w),
+    tool(8, "run_command", "execute", {
+      input: { command: "npm run render" },
+      output: { text: "wrote out/drawing.svg" },
+    }),
+    said("Here is the drawing. Your screen has no images, so these are its shapes.", w),
+    agentStep("tool:n9", [], "tool", "show", "running", "start", "tool"),
+    drawingSurface(),
+    agentStep("tool:n9", [], "tool", "show", "completed", "end", "tool"),
+    tool(10, "read_file", "read", {
+      input: { path: "out/drawing.svg" },
+      output: { text: "<svg …>" },
+    }),
+    said(answer, marked ? "answer" : undefined),
+    { kind: "agent_status", data: { status: "completed", detail: answer } },
+    done,
+  ];
+};
+
 /** The coder's branch, checks and pull request artifacts for a commit. */
 function coderPushed(
   commit: string,
@@ -881,6 +1008,14 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  *   five pieces, then nothing until the test releases it (`POST /__mock/release?thread=<id>`), then the other three,
  *   the log's message and done; `stream-abandon …` a stream the model gives up halfway, after the test releases it,
  *   then the words the agent says next under another id; done.
+ * - Working text and the answer (ADR 0031, plan 10 S6): `stream-words …` is the `working` golden (words before a tool call
+ *   as live pieces, marked `working`, then the reply marked `answer`). `coder-notes …` (and `Draw …`, for the screenshots) is
+ *   the owner's coder chat of 2026-10-02 in its shape: six sentences said before tool calls (marked `working`), ten tool steps
+ *   with a failed test run among them, a surface drawn mid-turn (`show`) and one answer (marked `answer`), done.
+ *   `coder-notes-hold …` (and `Sketch …`, for the screenshots) is its first five sentences and the steps between, still
+ *   working until cancelled. `coder-notes-legacy …` is the same turn with no mark on any word (an older log, a plain A2A agent): the screen reads it by
+ *   its rule. `coder-notes-running …` says one unmarked sentence and waits for the test to release it (a draft of the answer
+ *   while the turn runs), then a step, then the words that end the turn; done.
  */
 export function scriptFor(text: string): {
   start: Step[];
@@ -1264,6 +1399,41 @@ export function scriptFor(text: string): {
         ],
       };
     }
+    // mock only, the owner's coder chat (plan 10 S6): notes while it works, a surface, one answer.
+    // `Draw` is the same in plain words, for the screenshots
+    case "coder-notes":
+    case "Draw":
+      return { start: coderNotes(true) };
+    // mock only: the same, still working when it stops (until cancelled): the last thing said is a
+    // note, so the turn's line shows it as its ticker. `Sketch` is the same in plain words
+    case "coder-notes-hold":
+    case "Sketch":
+      return { start: [...coderNotes(true).slice(0, 13), { pause: "cancel" }] };
+    // the same turn as an older log or a plain A2A agent says it: no word is marked, so the screen
+    // reads it by its rule (the last words of a turn that is over are its answer)
+    case "coder-notes-legacy":
+      return { start: coderNotes(false) };
+    // mock only: the legacy rule while the turn runs. The first words are said and nothing else
+    // happens until the test releases the run: they show as a draft of the answer. Then a step
+    // starts after them, they fold into the steps, and the words that end the turn are its answer
+    case "coder-notes-running":
+      return {
+        start: [
+          working,
+          said("Let me look at the failing test first.", undefined),
+          { pause: "release" },
+          tool(1, "read_file", "read", {
+            input: { path: "test/login.test.js" },
+            output: { text: "…" },
+          }),
+          said("Fixed: the redirect no longer loops.", undefined),
+          {
+            kind: "agent_status",
+            data: { status: "completed", detail: "Fixed: the redirect no longer loops." },
+          },
+          done,
+        ],
+      };
     // mock only: a longer reply in Markdown, written piece by piece
     case "stream-long": {
       const id = nextMessageId();
