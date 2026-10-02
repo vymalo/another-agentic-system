@@ -1,10 +1,10 @@
 # The orchestrator's configuration file
 
-> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; the `models`, `tasks` and `ui` sections by S18).** The decision is
+> **Status: built (PR S9 of plan 10, 2026-10-02; the `artifacts` section by S10; `auth.mode`, `auth.jwt` and `server.environment` by S14; `auth.roles` and `auth.defaultRole` by S15; the `models`, `tasks` and `ui` sections by S18).** The decision is
 > [ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md) (the file, secrets by reference,
 > validation, migration), [ADR 0035](../decisions/0035-utility-model-tasks.md) (the `models` and `tasks` sections),
 > [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md) (the `artifacts` section) and
-> [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) (the `auth` section and `server.environment`).
+> [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) (the `auth` section, its roles, and `server.environment`).
 > The loader builds every key marked **now** (crate [`orch-config`](../../orchestrator/crates/config/README.md), the
 > loader in [`orchestrator/bin/orchestrator`](../../orchestrator/bin/orchestrator/README.md#the-configuration-file));
 > a key marked **reserved** belongs to the PR named beside it and is refused (exit 78, naming that PR and ADR) until it
@@ -111,6 +111,13 @@ threadTools:
 mcp:
   tokensFile: mcp-tokens.yaml
   allowedHosts: [chat.example.com]
+auth:
+  mode: jwt
+  jwt:
+    issuer: https://idp.example/realms/main
+    audiences: [oauth2-proxy-client-id]
+    rolesClaim: realm_access.roles
+  defaultRole: user           # the built-in user and admin (see "Roles and permissions")
 webhooks:
   generic:
     secrets: [{ env: WEBHOOK_GENERIC_SECRET }]
@@ -125,7 +132,7 @@ value does for a check elsewhere); the notes about variables that override the f
 
 ## Every key
 
-**Now** is built (S9; the `artifacts` keys by S10 and S11, the `auth` keys by S14, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
+**Now** is built (S9; the `artifacts` keys by S10 and S11, the `auth` keys by S14 and S15, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
 (and flag) of today; during the transition release it still works and wins over the file, with a warning naming the
 variable and the key ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md#migration)). A
 secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` set means
@@ -208,7 +215,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `threadTools.previousSecret` | **secret**, ≥ 32 bytes, not the current one | `THREAD_TOOLS_SECRET_PREVIOUS` | now |
 | `threadTools.tokenTtlSecs` | 60 to 86400, `7200` | `THREAD_TOOLS_TOKEN_TTL_SECS` | now |
 | `threadTools.allowedHosts` | list of `host[:port]`, the host of `url` | `THREAD_TOOLS_ALLOWED_HOSTS` | now |
-| `mcp.tokensFile` | path; required when `mcp` is mounted. Its format (`{user, tokenEnv}`) does not change | `MCP_TOKENS_FILE` | now; a `role` per token: S15, ADR 0033 |
+| `mcp.tokensFile` | path; required when `mcp` is mounted. Its format is `{user, tokenEnv, role?}`: the optional `role` is one of `auth.roles` (the built-in `user` and `admin` without them); without one the token has the default role | `MCP_TOKENS_FILE` | now; `role`: S15, ADR 0033 |
 | `mcp.allowedHosts` | list of `host[:port]`; required when `mcp` is mounted | `MCP_ALLOWED_HOSTS` | now |
 | `mcp.allowedOrigins` | list of origins, `[]` | `MCP_ALLOWED_ORIGINS` | now |
 | `mcp.waitMaxSecs` | 1 to 86400, `3600` | `MCP_WAIT_MAX_SECS` | now |
@@ -224,8 +231,12 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.audiences` | list of at least one non-empty text; required with `issuer` | — | now |
 | `auth.jwt.jwksUrl` | `http(s)` URL without credentials, none (the keys are found from `<issuer>/.well-known/openid-configuration`) | — | now |
 | `auth.jwt.userClaim` | the claim whose value is the user, `email` | — | now |
-| `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, nothing reads them until S15 |
-| `auth.defaultRole`, `auth.roles` | plan 10 §3.4 | — | reserved: S15, ADR 0033 |
+| `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
+| `auth.roles` | map from a role name to `{ permissions, scope?, agents? }` ([Roles and permissions](#roles-and-permissions)); absent: the built-in `user` and `admin`; given: it replaces both, and at least one role | — | now (S15) |
+| `auth.roles.<role>.permissions` | list of `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read`, `admin`; required, may be empty (a role that is known and grants nothing) | — | now (S15) |
+| `auth.roles.<role>.scope` | `own` \| `any` \| `{ read: own\|any, write: own\|any }`, `own`; only with a role that holds `thread.read`, `thread.write` or `artifact.read` | — | now (S15) |
+| `auth.roles.<role>.agents` | list of agent ids and/or `"*"`, `["*"]`; only with a role that holds `agent.read` or `agent.invoke`; not empty | — | now (S15) |
+| `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
 | `artifacts.store` | `fs` \| `s3`; required with the section. Names only what this build compiled in: `fs` needs the Cargo feature `artifacts-fs`, `s3` needs `artifacts-s3`, else exit 78 naming it. The section of the store chosen is required and the other one is an error | — | now |
 | `artifacts.fs.root` | path (relative to this file's directory); required with `store: fs`. Made (mode `0700`) when missing. Every role must see the same directory (one machine, or a shared volume) | — | now |
@@ -268,6 +279,67 @@ auth:
   for the key cache (10 minutes; an unknown `kid` at most once in 30 seconds; an hour of grace) and what is bounded.
 - **Responses:** 401 with `WWW-Authenticate: Bearer` for no token or a refused one; **503** with `Retry-After` while the
   issuer's keys cannot be fetched; `/readyz` is 503 until they have been fetched.
+
+### Roles and permissions
+
+([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#4-roles-and-permissions), built by S15.)
+The roles of a request are the ones its credential carries: the token's `auth.jwt.rolesClaim`, or the `role` of an
+MCP token's entry. The proxy header carries none. `auth.roles` says what each role grants; a role it does not name
+grants nothing (the names are compared exactly: `Admin` is not `admin`). A person none of whose roles is named gets
+`auth.defaultRole`, and a person with nothing at all is refused (403) by every operation but
+[`GET /api/me`](chat-api.yaml), which says why.
+
+```yaml
+auth:
+  defaultRole: user
+  roles:
+    user:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any, write: own }, agents: ["*"] }
+```
+
+That is what an absent `auth.roles` means (the built-in roles). A deployment that wants Keycloak groups to decide, and
+nobody else in:
+
+```yaml
+auth:
+  jwt: { issuer: https://idp.example/realms/main, audiences: [oauth2-proxy-client-id], rolesClaim: groups }
+  roles:
+    chat-users:  { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read], agents: [chat, researcher] }
+    chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, artifact.read, admin], scope: { read: any }, agents: ["*"] }
+  # no defaultRole: a token with neither group is refused (403)
+```
+
+| Permission | What it lets the person do |
+|---|---|
+| `agent.read` | See an agent in `GET /api/agents`, read its AG-UI capabilities, see `GET /api/registry`. Limited to the role's `agents` |
+| `agent.invoke` | Start a thread on an agent, send a message to a thread on it (a fork too). Limited to the role's `agents` |
+| `thread.read` | Read a thread: `GET /api/threads/{id}`, its export, its branches, its AG-UI stream. `scope.read` says whose |
+| `thread.write` | Start a thread, send, answer, cancel, rename, describe, fork. `scope.write` says whose |
+| `artifact.read` | Download the files of a thread. `scope.read` says whose (it is its own permission: `thread.read` alone does not give files) |
+| `admin` | `GET /api/threads?owner=<e-mail>` and `?owner=*`: other people's threads, or everyone's, which also takes `thread.read` of scope `any` |
+
+- **Own and any.** `own` is the threads the person owns (the owner is the e-mail, [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#2-the-jwt-authenticator-orch-auth-jwt-authmode-jwt)),
+  `any` is every thread. **Reading is not acting**: the administrator has `scope: { read: any, write: own }`, so
+  they read every thread and change only their own (owner decision 4 of plan 10). `scope: any` writes everywhere,
+  which no built-in role does.
+- **What a person gets** when a request is not theirs to make: **404** for a thread they may not read (the answer for one
+  that does not exist, so existence never leaks), **403 `read_only`** for a thread they may read and not change, **403
+  `forbidden`** for a permission their roles lack (the same for every id, so it says nothing of what exists) and for an
+  agent their roles do not name, **403 `no_access`** when their roles grant nothing.
+- **Several roles** are unioned, each judged alone: a person with a role that holds `thread.read` and another that holds
+  `agent.invoke` for `coder` has both, and may invoke `coder` and no other agent (a role's `agents` limit only the agent
+  permissions that role holds).
+- **Rules** (exit 78, each naming its key): `auth.defaultRole` is one of the roles; a role name has no space around
+  it; no permission is listed twice; a `scope` or `agents` that its role would ignore is an error, and so is an empty
+  `agents`; `auth.roles: {}` is an error (leave the key out for the built-ins). An agent id that no agent has matches
+  nothing (the roles are read before the agents are). A `role` of the MCP tokens file that `auth.roles` does not define
+  is exit 78 too: a typo would otherwise hand the token the default role.
+- **A stream lasts as long as the token it was opened with**: an AG-UI connect or run stream is ended at the token's
+  `exp` plus 60 s, and after an hour at most; the client reconnects with `Last-Event-ID`. A credential that does not run
+  out (the proxy header, an MCP token) does not bound a stream.
+- **The proxy header** carries no roles, so every request of `auth.mode: proxy_header` has the default role: with the
+  built-ins, everybody is a `user`, as before roles existed. To have an administrator in that mode, name `admin` the
+  default role (everybody is one: for one person on a local machine) or use `jwt`.
 
 ### Variables that are not keys
 
