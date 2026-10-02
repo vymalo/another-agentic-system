@@ -536,6 +536,44 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(doc.events.length).toBe(doc.thread.lastSeq);
   });
 
+  it("artifact: a file the thread holds, inline or as an attachment, and the 404s (ADR 0032)", async () => {
+    const { threadId } = await startThread("file make a chart", "reviewer");
+    await waitForState(threadId, ["done"]);
+    const doc = (await (await fetch(`${base}/api/threads/${threadId}/export`)).json()) as {
+      events: { kind: string; data: { file?: { sha256: string; size: number } } }[];
+    };
+    const file = doc.events.find((e) => e.kind === "artifact")?.data.file;
+    expect(file).toBeDefined();
+    const sha = file?.sha256 ?? "";
+    const path = `/api/threads/${threadId}/artifacts/${sha}`;
+
+    const inline = await fetch(base + path);
+    expect(inline.status).toBe(200);
+    expect(inline.headers.get("content-type")).toBe("image/png");
+    expect(inline.headers.get("content-disposition")).toBe('inline; filename="chart.png"');
+    expect(inline.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(inline.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+    );
+    expect(inline.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+    expect((await inline.arrayBuffer()).byteLength).toBe(file?.size);
+
+    const download = await fetch(`${base}${path}?download=1`);
+    expect(download.headers.get("content-disposition")).toBe('attachment; filename="chart.png"');
+
+    for (const missing of [
+      `/api/threads/${threadId}/artifacts/${"0".repeat(64)}`,
+      `/api/threads/${newId()}/artifacts/${sha}`,
+    ]) {
+      const res = await fetch(base + missing);
+      expect(res.status).toBe(404);
+      await expectDocumented("/api/threads/{threadId}/artifacts/{sha256}", "get", res);
+    }
+    const bad = await fetch(`${base}${path}?download=2`);
+    expect(bad.status).toBe(400);
+    await expectDocumented("/api/threads/{threadId}/artifacts/{sha256}", "get", bad);
+  });
+
   it("connect route rejects a bad cursor and a bad mode with 400", async () => {
     const { threadId } = await startThread("echo");
     for (const res of [

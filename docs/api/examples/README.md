@@ -13,6 +13,7 @@ the log itself, which the AG-UI streams below project.)
 | `cancel.events.json` | `slow`, then Cancel | `cancelled` |
 | `fail.events.json` | `fail`: `agent_status: failed` with `detail`, no `error` event | `failed` |
 | `talk.events.json` | `talk`: status text, one final `agent_message`, the artifact | `done` |
+| `file.events.json` | `file make a chart` on the fake agent (ADR 0032): an artifact whose only part is a PNG (an A2A `raw` part with `mediaType` and `filename`); the worker keeps the bytes in the artifact store and the artifact holds `file: {sha256, size, filename}` and the sniffed `mimeType`, no byte of the file | `done` |
 | `release.events.json` | `echo` with release `staging`: the revision on every agent actor | `done` |
 | `verify-green.events.json` | `verify-red-once`, on the fake agent and under a gate that requires the agent's own checks (the test world gives `plain` `gate: {require: [agent-checks]}`, like an `AGENTS_FILE` entry): the checks fail, `check_result` and `rework`, the agent goes again in a new task, the checks pass (ADR 0018) | `done`, attempt 2 of 3 |
 | `verify-red.events.json` | `verify-red`, the same gate: three attempts whose checks all fail, two `rework`s, then the `error` and `thread_state: failed` | `failed`, `checks_failed` |
@@ -92,6 +93,11 @@ The `catalog.agui.json`, `run-catalog.agui.json` and `connect-catalog.agui.json`
 ([`../agui.md`](../agui.md#the-ui-catalog), ADR 0023): the `ui_catalog` event has **no frame**, so each run is an ordinary run, and the only trace
 is `thread.uiCatalog` (`{catalogId, version, digest}`) in every `STATE_SNAPSHOT`: version 1 in the first job, version 2 from the second job on, and
 still version 2 in the third, whose version-1 catalog was known already. The reference client's `expected/catalog.json` shows the last state it holds.
+
+The `file.agui.json` golden is a file the artifact store keeps ([`../agui.md`](../agui.md#typed-artifacts), ADR 0032): the artifact is one
+`vymalo.artifact` activity (`evt-3`, in the agent's invocation) of `kind: "file"` with `href` (`/api/threads/<thread-id>/artifacts/<sha256>`),
+`sha256`, `size`, `filename` and `preview: "image"`, and nothing of the file's bytes; the file is fetched from `href`. The reference client's
+`expected/file.json` shows the activity among the messages.
 
 The `fork.agui.json` and `fork-blocked.agui.json` goldens are the forks a viewer reads ([`../agui.md`](../agui.md#forks), ADR 0029): the
 parent's frames up to the cut, with the parent's ids and resume points (`run-1`, `evt-1` … `id: 5`), then **the marker as a run of

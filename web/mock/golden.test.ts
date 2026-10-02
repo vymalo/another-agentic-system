@@ -137,6 +137,16 @@ const SCENARIOS: Record<string, (id: string) => Promise<{ agent: string; last: T
       expect(res.status).toBe(200);
       return { agent: "reviewer", last: "done" };
     },
+    // a file the agent hands over (ADR 0032): the artifact holds the reference to the kept file
+    file: async (id) => {
+      const res = await postRun(base, "reviewer", {
+        threadId: id,
+        runId: "run-1",
+        messages: [{ id: "evt-1", role: "user", content: "file make a chart" }],
+      });
+      expect(res.status).toBe(200);
+      return { agent: "reviewer", last: "done" };
+    },
     // a surface, the question, and the owner's action on the surface (not a message, not a resume)
     a2ui: async (id) => {
       const first = await postRun(base, "reviewer", {

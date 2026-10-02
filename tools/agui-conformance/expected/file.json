@@ -1,0 +1,69 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "file make a chart"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "evt-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.artifact",
+      "content": {
+        "at": "2027-01-15T08:00:03Z",
+        "filename": "chart.png",
+        "href": "/api/threads/<thread-id>/artifacts/4ff6ab670a58c14270e034e2090d9a432caa263a14e0a25785386b0c12f880b5",
+        "kind": "file",
+        "mimeType": "image/png",
+        "name": "chart",
+        "preview": "image",
+        "sha256": "4ff6ab670a58c14270e034e2090d9a432caa263a14e0a25785386b0c12f880b5",
+        "size": 70
+      }
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "file make a chart"
+    }
+  },
+  "pendingInterrupts": []
+}

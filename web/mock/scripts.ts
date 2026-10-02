@@ -1,4 +1,5 @@
 import type { components } from "../src/lib/api/schema";
+import { CHART } from "./files";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
@@ -958,6 +959,8 @@ const openCodeSteps = (count: number, finish: boolean): Step[] => [
  * - `slow`: works until cancelled.
  * - `fail`: `agent_status: failed` with detail, thread failed.
  * - `talk`: a status with text, one agent message, the result.
+ * - `file`: one artifact that is a file the artifact store keeps (ADR 0032: a PNG, `chart.png`, the reference in
+ *   the event's `file`), then done (the `file` golden). The mock serves it as `getArtifact` does.
  * - anything else (`echo`): working, result artifact (a PR link), done.
  *
  * Mock-only, not produced by the current orchestrator:
@@ -1906,6 +1909,23 @@ export function scriptFor(text: string): {
       return { newerCatalog: 99, start: [working, gizmoSurface(), ...finish(`echo: ${text}`)] };
     case "catalog-unknown":
       return { start: [working, gizmoSurface(), ...finish(`echo: ${text}`)] };
+    // a file the agent handed over (ADR 0032, the `file` golden): the artifact holds the reference
+    // to the file the artifact store keeps, and the agent says nothing else
+    case "file":
+      return {
+        start: [
+          working,
+          {
+            kind: "artifact",
+            data: {
+              name: "chart",
+              mimeType: CHART.mimeType,
+              file: { sha256: CHART.sha256, size: CHART.bytes.length, filename: CHART.filename },
+            },
+          },
+          ...finishQuietly,
+        ],
+      };
     case "slow":
       return { start: [working, { pause: "cancel" }] };
     case "fail":

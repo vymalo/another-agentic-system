@@ -6,10 +6,12 @@
  * cannot drift from the real one unnoticed.
  */
 import type { components } from "../src/lib/api/schema";
+import { previewOf } from "./files";
 
 type Event = components["schemas"]["Event"];
 type ThreadState = components["schemas"]["ThreadState"];
 type CheckSource = components["schemas"]["CheckSource"];
+type ArtifactFile = components["schemas"]["ArtifactFile"];
 
 type Ev = Record<string, unknown> & { type: string };
 export type Frame = { id?: number; event: Ev };
@@ -265,7 +267,25 @@ function pullRequestLocation(url: string): { repository: string; number: number 
  * (the real projection's `typed_artifact`). A `branch` or `checks` artifact that cannot be used is
  * a `file`.
  */
-export function typedArtifact(name: unknown, uri: unknown, text: unknown): Record<string, unknown> {
+export function typedArtifact(
+  name: unknown,
+  uri: unknown,
+  text: unknown,
+  file?: ArtifactFile,
+  mimeType?: unknown,
+  threadId?: string,
+): Record<string, unknown> {
+  // a file the artifact store keeps (ADR 0032): where to fetch it, how big, what a preview is
+  if (file !== undefined && threadId !== undefined) {
+    return {
+      kind: "file",
+      href: `/api/threads/${threadId}/artifacts/${file.sha256}`,
+      sha256: file.sha256,
+      size: file.size,
+      ...(file.filename !== undefined ? { filename: file.filename } : {}),
+      preview: previewOf(typeof mimeType === "string" ? mimeType : undefined),
+    };
+  }
   const n = typeof name === "string" ? name : "";
   const url = pullRequestUrl(n, uri, text);
   if (url !== undefined) {
@@ -1058,7 +1078,7 @@ export class Projector {
       }
       case "artifact": {
         const inv = this.ensureInvocation(e, out);
-        const { name, mimeType, uri, text } = e.data;
+        const { name, mimeType, uri, text, file } = e.data;
         // what is verified is what the agent had pushed when it finished
         const pushed = pushedCommit(name, uri, text);
         if (this.job() && this.state !== "verifying" && pushed !== undefined) this.sha = pushed;
@@ -1067,7 +1087,7 @@ export class Projector {
             e,
             "vymalo.artifact",
             {
-              ...typedArtifact(name, uri, text),
+              ...typedArtifact(name, uri, text, file, mimeType, this.info.threadId),
               name,
               ...(mimeType !== undefined ? { mimeType } : {}),
               ...(uri !== undefined ? { uri } : {}),

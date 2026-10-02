@@ -14,6 +14,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
+import { FILES, fileHeaders } from "./files";
 import { AGENTS, DEV_USER, REGISTRY_UNREACHABLE } from "./fixtures";
 import { LiveOverlay, type LivePiece } from "./live";
 import {
@@ -569,6 +570,20 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const connect = /^\/agui\/threads\/([^/]+)\/connect$/.exec(path);
     if (connect && method === "GET") {
       return connectThread(req, res, url, decodeURIComponent(connect[1] ?? ""));
+    }
+
+    // `GET /api/threads/{id}/artifacts/{sha256}` (`getArtifact`, ADR 0032): a file of the thread
+    const artifact = /^\/api\/threads\/([^/]+)\/artifacts\/([^/]+)$/.exec(path);
+    if (artifact && method === "GET") {
+      const thread = threads.get(decodeURIComponent(artifact[1] ?? ""));
+      const file = FILES.get(decodeURIComponent(artifact[2] ?? ""));
+      if (!thread || !file) return problem(res, 404, "Not found");
+      const download = url.searchParams.get("download");
+      if (download !== null && !["0", "1", "true", "false"].includes(download)) {
+        return problem(res, 400, "Bad Request", "download must be 1");
+      }
+      res.writeHead(200, fileHeaders(file, download === "1" || download === "true"));
+      return void res.end(file.bytes);
     }
 
     const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches))?$/.exec(path);
