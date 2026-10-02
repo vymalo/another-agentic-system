@@ -40,8 +40,8 @@
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
-#   BASE_URL         http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`, which injects the identity
-#   AUTH_EMAIL       dev@example.com, sent as X-Auth-Request-Email (the edge replaces it)
+#   BASE_URL         http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
+#   AUTH_EMAIL       dev@example.com, the user: a token of the mock issuer (dev/auth-header.sh)
 #   MOCK_OPENAI_URL  http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}, the coder's model
 #   CODER_URL        http://127.0.0.1:${CODER_PORT:-8090}, the coder itself, only to read its card
 #   CATALOG_FILE     web/src/features/chat/lib/a2ui/catalog/catalog.json        the screen's catalog
@@ -56,6 +56,8 @@ set -eu
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 openai=${MOCK_OPENAI_URL:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
 openai=${openai%/}
 coder=${CODER_URL:-http://127.0.0.1:${CODER_PORT:-8090}}
@@ -86,7 +88,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
-  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
+  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
@@ -172,7 +174,7 @@ echo "thread $thread"
 stream() {
   _deadline=$(( $(date +%s) + timeout ))
   _code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-    "$base/agui/agents/coder" -H "X-Auth-Request-Email: $email" \
+    "$base/agui/agents/coder" -H "$id_header" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' --data-binary "@$1" 2>"$tmp/err" || true)
   if [ "$_code" != 200 ]; then
     bad "$2: POST /agui/agents/coder answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
@@ -199,7 +201,7 @@ stream() {
     sleep 2
   done
   events=$tmp/events.json
-  curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' \
     "$base/agui/threads/$thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$events" 2>/dev/null ||
     echo '[]' > "$events"
   echo "$2: the coder said: ${said:-<nothing>}"

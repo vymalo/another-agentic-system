@@ -18,9 +18,9 @@
 #               which is the real `coder`: use dev/coder-e2e.sh for that one; see dev/agents.yaml)
 #   RELEASE     channel or revision         (only for mock-coder-releases)
 #   THREAD_ID   send TEXT as a follow-up to this thread instead of creating one
-#   AUTH_EMAIL  X-Auth-Request-Email to send (default dev@example.com). Behind the compose
-#               `edge` the proxy sets it anyway; when talking to `cargo run` directly it is
-#               what identifies you.
+#   AUTH_EMAIL  the user (default dev@example.com): a token of the mock issuer (dev/auth-header.sh), which the
+#               compose `edge` wants. Talking to `cargo run` directly with `auth.mode: proxy_header` (or
+#               AUTH_DEV_USER), use AUTH_MODE=proxy-header: it sends X-Auth-Request-Email, which identifies you.
 #   TIMEOUT     seconds to wait for the thread to stop moving (default 60)
 #
 # Exit status: 0 when the thread ends `done` or `blocked`, 1 on `failed`/`cancelled` or a timeout.
@@ -30,6 +30,8 @@ set -eu
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080}
 AGENT_ID=${AGENT_ID:-mock-coder}
 AUTH_EMAIL=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$AUTH_EMAIL")
 TIMEOUT=${TIMEOUT:-60}
 [ $# -ge 1 ] || { echo "usage: $0 TEXT..." >&2; exit 2; }
 TEXT=$*
@@ -40,7 +42,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 api() { # api PATH: GET on the resource API, non-zero when the status is not 2xx
-  curl --fail-with-body -sS -H "X-Auth-Request-Email: $AUTH_EMAIL" "$BASE_URL$1"
+  curl --fail-with-body -sS -H "$id_header" "$BASE_URL$1"
 }
 
 ID=${THREAD_ID:-$(uuid)}
@@ -58,7 +60,7 @@ echo "thread $ID" >&2
 # Closing it early would not cancel the run; the state loop below is what decides.
 deadline=$(( $(date +%s) + TIMEOUT ))
 code=$(curl -sS -N --max-time "$TIMEOUT" -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-  "$BASE_URL/agui/agents/$AGENT_ID" -H "X-Auth-Request-Email: $AUTH_EMAIL" \
+  "$BASE_URL/agui/agents/$AGENT_ID" -H "$id_header" \
   -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$INPUT" || true)
 if [ "$code" != 200 ]; then
   echo "POST /agui/agents/$AGENT_ID answered HTTP ${code:-none}: $(head -c 400 "$tmp/run.sse" 2>/dev/null)" >&2
@@ -74,7 +76,7 @@ done
 
 # The thread's frames, one per line: the whole conversation, every run. `mode=run` ends the stream
 # once the replay is done and no run is open.
-curl -sS --max-time 60 -H "X-Auth-Request-Email: $AUTH_EMAIL" -H 'accept: text/event-stream' \
+curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' \
   "$BASE_URL/agui/threads/$ID/connect?mode=run" | sed -n 's/^data: *//p' | jq -rs '
   to_entries[] | .key as $n | .value
   | ((.metadata // {})["vymalo.actor"].revision // "") as $rev

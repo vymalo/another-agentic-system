@@ -33,7 +33,7 @@
 #   CI_E2E_FORCE  1 = run even when this database has run the script before
 #   BASE_URL    where the API and the webhook are served  (default http://127.0.0.1:8080, the compose `edge`)
 #   AGENT_ID    the CI-gated agent                        (default mock-coder-ci)
-#   AUTH_EMAIL  X-Auth-Request-Email to send              (default dev@example.com; the edge sets it anyway)
+#   AUTH_EMAIL  the user (default dev@example.com): a token of the mock issuer (dev/auth-header.sh)
 #   TIMEOUT     seconds any one wait may take             (default 90)
 #
 # The mock pushes the same two commits every time, and a commit is watched by the first job that pushed
@@ -50,6 +50,8 @@ set -eu
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080}
 AGENT_ID=${AGENT_ID:-mock-coder-ci}
 AUTH_EMAIL=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$AUTH_EMAIL")
 TIMEOUT=${TIMEOUT:-90}
 here=$(cd "$(dirname "$0")" && pwd)
 fail=0
@@ -75,7 +77,7 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
 }
 
 api() { # api PATH: GET on the resource API
-  curl -fsS -H "X-Auth-Request-Email: $AUTH_EMAIL" "$BASE_URL$1"
+  curl -fsS -H "$id_header" "$BASE_URL$1"
 }
 
 # ci ARGS...: play CI (dev/ci-webhook.sh) against the same base URL; prints its one status line.
@@ -126,7 +128,7 @@ input=$(jq -n --arg thread "$THREAD" --arg run "$(uuid)" --arg msg "$(uuid)" '{
   messages: [{id: $msg, role: "user", content: "red-once fix the login"}], forwardedProps: {}}')
 # The run stays open while the job is queued, working or verifying, so it is left running.
 curl -sS -N --max-time $((TIMEOUT * 4)) -o "$tmp/run.sse" -X POST "$BASE_URL/agui/agents/$AGENT_ID" \
-  -H "X-Auth-Request-Email: $AUTH_EMAIL" -H 'content-type: application/json' -H 'accept: text/event-stream' \
+  -H "$id_header" -H 'content-type: application/json' -H 'accept: text/event-stream' \
   -d "$input" >/dev/null 2>&1 &
 run_pid=$!
 wait_for "attempt 1 pushed a commit and the thread is verifying" '[.state, .job.sha[0:7]] | join(" ")' "verifying 1111111" || exit 1
@@ -179,7 +181,7 @@ else
 fi
 
 echo "== the chat shows every report as a card"
-curl -sS --max-time 60 -H "X-Auth-Request-Email: $AUTH_EMAIL" -H 'accept: text/event-stream' \
+curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' \
   "$BASE_URL/agui/threads/$THREAD/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' >"$tmp/events.json" || echo '[]' >"$tmp/events.json"
 expect "the vymalo.ci cards, in order: red, the old commit's report, the unnamed check, green" \
   "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.ci") | "\(.content.shortSha)=\(.content.conclusion)"] | join(",")' "$tmp/events.json")" \

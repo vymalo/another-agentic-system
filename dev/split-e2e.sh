@@ -34,8 +34,8 @@
 # The killed worker is started again when the script ends, whatever the result.
 #
 # Environment (defaults match compose.yaml on one machine):
-#   BASE_URL          http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`, which injects the identity
-#   AUTH_EMAIL        dev@example.com, sent as X-Auth-Request-Email (the edge replaces it)
+#   BASE_URL          http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
+#   AUTH_EMAIL        dev@example.com, the user: a token of the mock issuer (dev/auth-header.sh)
 #   AGENT_ID          mock-coder, the mock A2A agent whose `slow` keyword is used
 #   COMPOSE_PROFILES  app,split unless set, so `docker compose` can address the worker services
 #   TIMEOUT           120    seconds to wait for each step
@@ -48,6 +48,8 @@ set -eu
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
+# The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 agent_id=${AGENT_ID:-mock-coder}
 timeout=${TIMEOUT:-120}
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-app,split}"
@@ -77,7 +79,7 @@ finish() {
 }
 
 api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
-  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "X-Auth-Request-Email: $email"
+  curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
@@ -136,7 +138,7 @@ input=$(jq -n --arg thread "$thread" --arg run "$(uuid)" --arg msg "$(uuid)" '{
   threadId: $thread, runId: $run, state: {}, tools: [], context: [],
   messages: [{id: $msg, role: "user", content: "a slow task for the split roles"}], forwardedProps: {}}')
 curl -sS -N --max-time $(( timeout * 3 )) -o "$tmp/run.sse" -w '%{http_code}' -X POST \
-  "$base/agui/agents/$agent_id" -H "X-Auth-Request-Email: $email" \
+  "$base/agui/agents/$agent_id" -H "$id_header" \
   -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" \
   > "$tmp/run.code" 2>"$tmp/err" &
 run_pid=$!
@@ -188,7 +190,7 @@ while :; do
 done
 # The thread's AG-UI frames as one JSON array: the viewer replay, which closes after the run.
 events=$tmp/events.json
-curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' \
   "$base/agui/threads/$thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$events" 2>/dev/null ||
   echo '[]' > "$events"
 if [ "$state" = "done" ]; then
@@ -259,7 +261,7 @@ input=$(jq -n --arg thread "$stream_thread" --arg run "$(uuid)" --arg msg "$(uui
   threadId: $thread, runId: $run, state: {}, tools: [], context: [],
   messages: [{id: $msg, role: "user", content: "stream a reply across the processes"}], forwardedProps: {}}')
 curl -sS -N --max-time $(( timeout * 2 )) -o "$tmp/stream-run.sse" -X POST \
-  "$base/agui/agents/$agent_id" -H "X-Auth-Request-Email: $email" \
+  "$base/agui/agents/$agent_id" -H "$id_header" \
   -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$input" \
   >/dev/null 2>"$tmp/err" &
 run_pid=$!
@@ -273,13 +275,13 @@ done
 # about 2 s into the reply: it is told the text so far by the sender's refresh, then the log's message.
 (
   sleep 2
-  curl -sS --max-time "$timeout" -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+  curl -sS --max-time "$timeout" -H "$id_header" -H 'accept: text/event-stream' \
     -H 'Last-Event-ID: 2' "$base/agui/threads/$stream_thread/connect?mode=run" 2>/dev/null |
     sed -n 's/^data: *//p' | jq -s '.' > "$tmp/late.json" 2>/dev/null || echo '[]' > "$tmp/late.json"
 ) &
 late_pid=$!
 live=$tmp/live.json
-curl -sS --max-time "$timeout" -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+curl -sS --max-time "$timeout" -H "$id_header" -H 'accept: text/event-stream' \
   "$base/agui/threads/$stream_thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$live" 2>/dev/null ||
   echo '[]' > "$live"
 reply=$(jq -r '[.[] | select(.type == "TEXT_MESSAGE_START" and .metadata["vymalo.live"] != null) | .messageId] | first // empty' "$live")
@@ -332,7 +334,7 @@ else
   bad "cannot export the thread: $(head -c 300 "$tmp/err")"
 fi
 replay=$tmp/replay.json
-curl -sS --max-time 60 -H "X-Auth-Request-Email: $email" -H 'accept: text/event-stream' \
+curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' \
   "$base/agui/threads/$stream_thread/connect?mode=run" 2>/dev/null | sed -n 's/^data: *//p' | jq -s '.' > "$replay" 2>/dev/null ||
   echo '[]' > "$replay"
 replay_live=$(jq -r '[.[] | select(.metadata["vymalo.live"] != null)] | length' "$replay" 2>/dev/null || echo '?')
