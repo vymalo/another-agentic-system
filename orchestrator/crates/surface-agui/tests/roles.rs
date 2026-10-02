@@ -73,6 +73,14 @@ impl Rig {
         };
         let directory = AgentDirectory::new(vec![entry("coder"), entry("plain")]);
         let auth = MemoryAuth::new();
+        // A token that ran out a day ago, and one that runs out in a day.
+        let now = orch_core::Timestamp::now();
+        let expiring = |email: &str, seconds: i64| Principal {
+            expires_at: Some(orch_core::Timestamp::from_second(now.as_second() + seconds).unwrap()),
+            ..principal(email, &["user"])
+        };
+        auth.allow("expired", expiring("alice@example.com", -86_400));
+        auth.allow("for-a-day", expiring("alice@example.com", 86_400));
         for (token, email, role) in [
             ("alice", "alice@example.com", "user"),
             ("bob", "bob@example.com", "user"),
@@ -338,4 +346,41 @@ async fn a_person_whose_roles_grant_nothing_is_refused_before_any_stream() {
         .await;
     assert_eq!(resp.status().as_u16(), 200);
     Stream::new(resp).all().await;
+}
+
+#[tokio::test]
+async fn a_stream_lasts_as_long_as_the_token_it_was_opened_with() {
+    let rig = Rig::start(chat_policy()).await;
+    let thread = rig.finished_thread_of_alice().await;
+    let url = format!("{}/agui/threads/{thread}/connect", rig.base);
+    let open = |token: &'static str| {
+        let (client, url) = (rig.client.clone(), url.clone());
+        async move {
+            Stream::new(
+                client
+                    .get(url)
+                    .bearer_auth(token)
+                    .header("Accept", "text/event-stream")
+                    .send()
+                    .await
+                    .unwrap(),
+            )
+        }
+    };
+    // A token that ran out beyond the leeway gets a stream that ends at once, with no event: the
+    // client reconnects with a fresh one.
+    let mut expired = open("expired").await;
+    assert_eq!(expired.status, 200);
+    let first = expired.next(Duration::from_secs(2)).await;
+    assert!(first.is_none(), "{first:?}");
+    assert!(expired.ended(), "the stream of an expired token is over");
+    // A token for a day gets the whole thread, and the stream stays open after it.
+    let mut live = open("for-a-day").await;
+    let frames = live.until(|f| f.kind() == "RUN_FINISHED").await;
+    assert_eq!(frames.first().unwrap().kind(), "RUN_STARTED");
+    assert!(live.is_quiet_for(Duration::from_millis(400)).await);
+    // So does a credential that does not run out (the same token without an expiry).
+    let mut forever = open("alice").await;
+    forever.until(|f| f.kind() == "RUN_FINISHED").await;
+    assert!(forever.is_quiet_for(Duration::from_millis(400)).await);
 }
